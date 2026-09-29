@@ -6,26 +6,24 @@ cannot send there, cannot read the history, and cannot react. All it holds is an
 token, which buys unlimited edits of one original response plus a small number of follow-ups, and
 only for as long as Discord keeps that token alive.
 
-`TurnSurface` is that difference, and only that difference. It rides beside `message` through the
-classes that already hold one, and `for_message` reproduces today's gateway behaviour exactly, so
-nothing on the `on_message` path changes shape.
+`TurnSurface` is that difference, and only that difference. It carries the turn's message, and
+`for_message` reproduces the gateway behaviour exactly, so the `on_message` path answers as it
+would without one.
 
 Three notes on what it deliberately does not paper over:
 
-- **Progress signals are dropped rather than replaced.** `update_reaction` already suppresses its
-  own failures, so the pipeline's status chain and the per-marker "working on it" emoji are silent
-  no-ops on the interaction path — which is right, because Discord shows its own thinking state
-  while the response is deferred and the reply then streams in place. Only the best-effort FAILURE
-  hints (a dropped clip's ⏱️ / ⚠️) have nothing left to say them, which is what `hint` collects
-  and the streamer writes onto the reply as one line.
+- **Progress signals are dropped rather than replaced.** The pipeline's status chain and the
+  per-marker "working on it" emoji are never attempted on the interaction path — which is right,
+  because Discord shows its own thinking state while the response is deferred and the reply then
+  streams in place. Only the best-effort FAILURE hints (a dropped clip's ⏱️ / ⚠️) have nothing
+  left to say them, which is what `hint` collects and the streamer writes onto the reply as one
+  line.
 - **`send` and `send_unparented` are two methods, not one with a fallback.** A `nextcord.File` is
-  read once, so a caller that wants a second attempt has to rebuild its payload first; the failure
-  notice in `cog.py` already does exactly that with its embed spacer.
-- **`guild_id` is carried rather than read.** `Message.guild` resolves out of the client's own
-  cache and misses for a server the bot was never added to, so the synthesized message's is always
-  None. Everything that must not be wrong about where a turn happened — the location line at
-  developer authority, the memory source stamp, the compartments a memory read may open — takes it
-  from here instead.
+  read once, so a caller that wants a second attempt has to rebuild its payload first.
+- **`guild_id` is carried rather than read.** The synthesized `/ask` message's `guild` is None in
+  every server, one the bot is in included. Everything that must not be wrong about where a turn
+  happened — the location line at developer authority, the memory source stamp, the compartments
+  a memory read may open — takes it from here instead.
 """
 
 from typing import Any

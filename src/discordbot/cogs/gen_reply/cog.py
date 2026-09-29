@@ -82,8 +82,8 @@ def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
     `guild_id` / `guild_name` are None in a DM.
 
     Read off the surface rather than the message so a `/ask` turn in a server is not logged as
-    a DM. `guild_name` still comes from the message and so stays None there: the bot is not a
-    member of that server and does not know what it is called.
+    a DM. `guild_name` still comes from the message and so stays None there, since the
+    synthesized message carries no guild.
     """
     message = surface.message
     guild = message.guild

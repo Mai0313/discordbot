@@ -1,10 +1,11 @@
 """The reply context: what one turn hands the answer model, and how it is built.
 
 `ReplyContext` is the value; `ReplyContextBuilder` is the single speculative build that produces
-it while the route call is still in flight. Everything the builder does only READS — channel
-history and memory files — so a non-QA route can discard it safely, and the IMAGE / VIDEO routes
-consume it after their media is on screen instead. Whose memory the turn may carry is settled
-before the route call (`plan_recall`), since that call is what picks the optional members.
+it while the route call is still in flight. Every route consumes it, the IMAGE / VIDEO routes
+once their media is on screen. Everything the builder does only READS — channel history and
+memory files — so a turn that fails before consuming it can discard it safely. Whose memory the
+turn may carry is settled before the route call (`plan_recall`), since that call is what picks
+the optional members.
 """
 
 import time
@@ -245,8 +246,8 @@ class ReplyContextBuilder(BaseModel):
     """Builds one turn's `ReplyContext` from Discord history plus stored memory.
 
     Everything here reads and nothing writes, which is what lets the pipeline start the build
-    speculatively alongside the route call and throw it away when the route turns out not to
-    need it.
+    speculatively alongside the route call and throw it away when the turn fails before
+    consuming it.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -530,7 +531,8 @@ class ReplyContextBuilder(BaseModel):
         """Builds history, shared parts, server memory, and the memory the turn carries.
 
         Runs speculatively as its own task concurrent with routing: everything here only reads
-        (channel history, memory files), so a non-QA route can discard it safely. `parts_task`
+        (channel history, memory files), so a turn that fails before consuming it can discard it
+        safely. `parts_task`
         carries the answer-path reference/current renders (uploaded files). `recall_picks` is
         the route's optional recall picks, which the pipeline resolves as soon as the route
         returns; it is awaited only after the history and uploads, which almost always outlast

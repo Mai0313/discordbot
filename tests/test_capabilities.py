@@ -21,8 +21,8 @@ _BARE_COMMAND_RE = re.compile(pattern=r"(?<![\w:/.\-])(/[a-z][\w-]*)")
 _PICKER_GATE_KEYWORD = "default_member_permissions"
 # The two context fields every root command owes, each mapped to the shared tuple that has to be
 # handed to it. Both are checked by the constant's name rather than by reading a literal: a
-# command spelling its own list out would pass a membership check while drifting from the other
-# fifteen, and it is the drift that costs a surface rather than any one list being wrong.
+# command spelling its own list out would pass a membership check while drifting from the
+# others, and it is the drift that costs a surface rather than any one list being wrong.
 _CONTEXT_DECLARATIONS = {
     "integration_types": "INSTALL_CONTEXTS",
     "contexts": "INTERACTION_CONTEXTS",

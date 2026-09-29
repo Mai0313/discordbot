@@ -5,8 +5,8 @@ one nextcord hook that rebuilds it. What an empty registry costs is not a missin
 deleted one: nextcord's lazy-load path answers an interaction it cannot resolve by deleting
 every command Discord holds, so the failure is silent, global and outlives the process.
 
-`on_connect` is called unbound on a stub rather than on a real bot: constructing one loads all
-fifteen cogs, and the contract under test is one call in one method.
+`on_connect` is called unbound on a stub rather than on a real bot: constructing one loads every
+cog, and the contract under test is one call in one method.
 """
 
 from __future__ import annotations

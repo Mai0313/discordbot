@@ -10,14 +10,11 @@ The table is new rather than an extra column anywhere, which is what makes it sa
 bot: `SqliteBootstrap.ensure_schema` is one `create_all`, which creates but never alters, so this
 touches no existing table and the repo's lack of a migration mechanism does not bite.
 
-Engine and bootstrap follow `cogs/research/database.py` exactly: a module-level `AsyncEngine`
-singleton on the shared `reply.db` (a `cached_property` one would leak the pool and the dialect
-cache, and tests monkeypatch it by that name) with this module owning its own `Base`, distinct
-from research's `research` table and the memory inbox's `memory_job` in the same file. No money
-columns, so no `StoredInteger`. Like both of them it avoids `from __future__ import annotations`:
-SQLAlchemy resolves the `Mapped[datetime]` column when the class is built, and under postponed
-evaluation ruff's TC rules move the annotation-only `datetime` import under `TYPE_CHECKING`, where
-the mapper cannot resolve it and the module fails to import.
+This module owns its own `Base` on the shared `reply.db`. It avoids
+`from __future__ import annotations`: SQLAlchemy resolves the `Mapped[datetime]` column when the
+class is built, and under postponed evaluation ruff's TC rules move the annotation-only
+`datetime` import under `TYPE_CHECKING`, where the mapper cannot resolve it and the module fails
+to import.
 """
 
 from datetime import datetime

@@ -139,12 +139,9 @@ def find_youtube_url(*, message: Message) -> str | None:
 
     A reply to a message that merely links a video would otherwise be missed, so the parent is
     searched too and "summarize this" on a replied-to video still watches it. The current
-    message wins. Threads, Facebook and Instagram reach the same one hop (`link_url_for_source`,
-    `search_replied_to_message`); Douyin and Bilibili deliberately do not, since their value is
-    the clip rather than a discussion and both are rate-limit sensitive, and Twitter does not for
-    a third reason — it serves no replies at all, so a second read finds exactly what the first
-    did. This one keeps scanning embeds out there — a YouTube link card is the link itself, not a
-    rendering of some other post the way a Threads expansion is.
+    message wins. Unlike `link_url_for_source`, this keeps scanning the parent's embeds: a
+    YouTube link card is the link itself, not a rendering of some other post the way a Threads
+    expansion is.
     """
     found = _youtube_url_in_message(message=message, strip_usage_footer=False)
     if found is not None:

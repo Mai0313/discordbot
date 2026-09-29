@@ -70,10 +70,9 @@ def build_runtime_instructions(
     model can reason about where it is speaking; the memory rules lean on it as the
     anchor for never attributing a remembered fact to another server.
 
-    `guild_id` is handed in rather than read off the message because `Message.guild` resolves
-    out of the client's own cache: on the `/ask` route that misses for a server the bot was
-    never added to, and a guild conversation would tell the model at developer authority that
-    it is in a DM. `TurnSurface` is what knows better.
+    `guild_id` is handed in rather than read off the message because the synthesized `/ask`
+    message carries no guild even in a server, and a guild conversation would then tell the
+    model at developer authority that it is in a DM. `TurnSurface` is what knows better.
     """
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
     request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
@@ -188,7 +187,7 @@ class AnswerTurn(BaseModel):
 
         Shared by the IMAGE and VIDEO routes' post-delivery reply. `reply` is the delivered media
         message (native attachment) or None when the media was hosted as a separate URL; the
-        persona-base message is built from it INSIDE the protected flow (`_persona_base_reply`), so a
+        persona-base message is built from it INSIDE the protected flow (`persona_base_reply`), so a
         base-creation or streaming failure is swallowed here instead of surfacing to the outer error
         path, and a fresh hosted-case base that never received content is deleted (never an orphan).
         Builds the answer-path input (history, selected user memory, tone note, reference, current),

@@ -108,10 +108,7 @@ REPLY_PROMPT = f"""
     * Never mention the tags, never wrap them in backticks or a code block, and never narrate what you recorded. Acknowledging in persona what the user asked for is fine; the note itself is not part of your reply.
 """
 
-# Appended to the QA system prompt only when the inline-image renderer is actually active
-# (kill-switch on, QA route). Kept out of REPLY_PROMPT so a deployment with
-# INLINE_IMAGE_ENABLED=false never advertises a marker the streamer would strip without
-# producing anything, which would silently drop the visual request from the reply.
+# Appended to the QA system prompt only while the inline-image renderer is active.
 INLINE_IMAGE_INSTRUCTION = f"""
 * Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. Each such block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished images are attached to your reply afterward.
 * Write each description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
@@ -119,10 +116,7 @@ INLINE_IMAGE_INSTRUCTION = f"""
 * Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. You may include several `{IMAGE_OPEN}...{IMAGE_CLOSE}` blocks when the reply genuinely calls for distinct pictures (each becomes its own attached image), but use at most {MAX_INLINE_IMAGES} per reply and skip it entirely when an image would not add anything. Never wrap the tags in backticks and never mention them.
 """
 
-# Appended to the QA system prompt only when the music generator is actually active (kill-switch
-# on, key present, QA route). Kept out of REPLY_PROMPT for the same reason as
-# INLINE_IMAGE_INSTRUCTION: a deployment with INLINE_MUSIC_ENABLED=false (or no Gemini key) must
-# not be told about a marker the streamer would strip without producing anything.
+# Appended to the QA system prompt only while the music generator is active.
 MUSIC_INSTRUCTION = f"""
 * Optional music: when the user wants a song or a piece of music, or would genuinely enjoy one alongside your answer, wrap a description of that music in `{MUSIC_OPEN}...{MUSIC_CLOSE}`. That block is removed from your written reply and sent straight to a music generator, so the description never shows in chat; the finished clip is attached to your reply afterward.
     * Default to a Japanese anime / J-pop style with Japanese lyrics, and write both that style and "Japanese lyrics" explicitly into the description; only depart from it when the user clearly asks for a different genre, style, or lyric language, or for an instrumental ("Instrumental only, no vocals"), in which case follow what they asked for instead.
@@ -132,8 +126,7 @@ MUSIC_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks or a code block.
 """
 
-# Appended to the QA system prompt only when the video generator is actually active (kill-switch
-# on, key present, QA route). Kept out of REPLY_PROMPT for the same reason as INLINE_IMAGE_INSTRUCTION.
+# Appended to the QA system prompt only while the video generator is active.
 # NOTE: the "one video per reply" cap is a deliberate throttle stated as a plain capability limit,
 # never as a cost warning: telling the model a clip is expensive makes it over-refuse, so the cap
 # alone does the throttling while the model still reaches for video when it genuinely helps.
@@ -147,10 +140,7 @@ VIDEO_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks or a code block.
 """
 
-# Appended to the QA system prompt only when deep research can actually run (kill-switch on,
-# direct Gemini key present, QA route).
-# Kept out of REPLY_PROMPT for the same reason as INLINE_IMAGE_INSTRUCTION: a deployment with
-# DEEP_RESEARCH_ENABLED=false must not be told about a marker the streamer would strip with no effect.
+# Appended to the QA system prompt only while deep research can run from this message.
 DEEP_RESEARCH_INSTRUCTION = f"""
 * Deep research: when the user clearly wants a thorough, multi-source, cited investigation that is worth several minutes and real cost (market or competitive analysis, due diligence, a literature review, "深入研究 X", "幫我好好查一下 X"), you may launch a long-running research agent by wrapping a clean, self-contained research brief in `{DEEP_RESEARCH_OPEN}...{DEEP_RESEARCH_CLOSE}`. That block is removed from your written reply, so the brief never shows in chat; a separate agent then researches it in a dedicated thread and posts a cited report, mentioning the user when it is done.
     * Use this VERY sparingly — only for genuinely research-worthy requests. A normal question you can just answer now gets a normal reply, never a research thread.

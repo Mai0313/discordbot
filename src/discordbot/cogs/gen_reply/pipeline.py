@@ -2,9 +2,9 @@
 
 `ReplyPipeline` owns the order the phases run in and nothing else: it starts the speculative
 builds, waits on the one call every dispatch depends on, and hands the turn to whichever handler
-the route named. Each phase lives in its own module (`routing`, `context`, `answer`,
-`media_reply`), so what is left here is the sequencing, the shared post-route deadline the link
-builders run against, and the teardown that guarantees no speculative task outlives the turn.
+the route named. Each phase lives in its own module, so what is left here is the sequencing, the
+shared post-route deadline the link builders run against, and the teardown that guarantees no
+speculative task outlives the turn.
 """
 
 import time
@@ -289,9 +289,9 @@ class ReplyPipeline(BaseModel):
                 self.reactions.advance(emoji=ROUTING_EMOJI)
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route call uses
-                # the text-only renders, so it never waits on the Files API. The QA context
-                # builds speculatively in parallel with the route call since QA is the dominant
-                # route — non-QA routes discard it.
+                # the text-only renders, so it never waits on the Files API. The reply context
+                # builds speculatively in parallel with the route call, and every route consumes
+                # it: IMAGE / VIDEO once their media is on screen.
                 parts_task = asyncio.create_task(coro=context_builder.render_parts())
                 text_reference, text_current = await context_builder.render_parts(text_only=True)
                 recall = context_builder.plan_recall()

@@ -7,9 +7,9 @@ this module assembles, on the `PartialMessageable` the interaction resolved to.
 
 Two things such a message cannot carry, and both are deliberate rather than missing:
 
-- **No guild.** `Message.__init__` resolves `guild` out of the client's own cache, which misses for
-  a server the bot was never added to, so `message.guild` is None however the payload is written.
-  Where the conversation is really happening is carried beside the message by `TurnSurface`, and
+- **No guild.** The payload names no `guild_id` and a `PartialMessageable` carries no guild of its
+  own, so `message.guild` is None in every server, one the bot is in included. Where the
+  conversation is really happening is carried beside the message by `TurnSurface`, and
   everything that must not be wrong about it (the location line at developer authority, the memory
   source stamp, the compartments a read may open) reads it from there.
 - **No mentions.** Discord does not resolve user mentions inside a command option, so

@@ -94,11 +94,9 @@ class MediaReplyRoutes(BaseModel):
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
 
         Returns the delivered media message the persona reply should stream onto, or None when the
-        bytes were too big and hosted as a standalone URL reply instead. On None the caller posts
-        the persona reply on a fresh non-pinging message (via `AnswerTurn.persona_base_reply`) only
-        if it proceeds, so the hosted-URL message is never clobbered and no stray persona-base is
-        left if the persona reply bails. If hosting is unavailable the native attach is attempted
-        anyway, raising on oversize so the route stays on its existing hard-fail error path.
+        bytes were too big and hosted as a standalone URL reply instead, which the persona reply
+        must not overwrite. If hosting is unavailable the native attach is attempted anyway,
+        raising on oversize so the route stays on its existing hard-fail error path.
         """
         item = MediaItem(source=data, filename=filename)
         plan = await self.media_delivery.plan(
