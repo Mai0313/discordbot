@@ -33,7 +33,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
+from discordbot.typings.media import LoadedMedia, RenderedPart, UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.emojis import (
     DOUYIN_EMOJI,
@@ -165,6 +165,7 @@ from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploa
 
 from tests.helpers.casting import (
     as_bot,
+    as_client,
     as_message,
     step_dicts,
     make_forbidden,
@@ -835,15 +836,9 @@ def _png_b64() -> str:
 
 
 def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
-    """A GeminiFileUploader with its lazy Gemini client pre-seeded to a fake.
-
-    `gemini_client` is a cached_property, so seeding `__dict__` bypasses the real
-    factory and the upload path runs against the fake instead; the key it would have
-    built from is therefore never read.
-    """
-    uploader = GeminiFileUploader(api_key="test-key")
-    uploader.__dict__["gemini_client"] = FakeGeminiClient(files=files)
-    return uploader
+    """A GeminiFileUploader whose client is a fake, so the upload path runs against it."""
+    client = as_client(fake=FakeGeminiClient(files=files))
+    return GeminiFileUploader(gemini_client=lambda: client)
 
 
 def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUploader:
@@ -873,7 +868,10 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
-        handler.__dict__["gemini_client"] = FakeGeminiClient()
+        # A fake of its own rather than the toolkit's video fake, whose uploads all answer
+        # with one uri; the keyless toolkit would hand the uploader no client at all.
+        files_client = as_client(fake=FakeGeminiClient())
+        handler.gemini_client = lambda: files_client
     # Seeded into the cached_property's slot, so every path reads this one rather than
     # building a real toolkit against the test deployment's empty credentials.
     cog.__dict__["toolkit"] = toolkit
@@ -956,6 +954,27 @@ def _classifier(
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
     return RouteClassifier(toolkit=toolkit or cog.toolkit, message=message)
+
+
+def _streamer(*, message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
+    """A streamer answering `message` on the gateway surface `ReplyPipeline` would give it."""
+    return ResponseStreamer(
+        message=message,
+        surface=TurnSurface.for_message(message=as_message(fake=message)),
+        **fields,
+    )
+
+
+async def _attachment_parts(
+    *, builder: MessageInputBuilder, message: object
+) -> list[RenderedPart]:
+    """Renders a message's attachments from its own gated sources, as the answer render does."""
+    discord_message = as_message(fake=message)
+    sources = builder._supported_sources(
+        sources=builder.collect_attachment_sources(message=discord_message),
+        message_id=discord_message.id,
+    )
+    return await builder.get_attachment_parts(message=discord_message, sources=sources)
 
 
 def _answer(
@@ -1353,7 +1372,7 @@ async def test_handle_streaming_allows_missing_output_token_details() -> None:
     """Regression: LiteLLM may return usage with output_tokens_details=null."""
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message).stream(responses=_stream_events())
+    result = await _streamer(message=message).stream(responses=_stream_events())
 
     expected = f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
     assert result == expected
@@ -1386,7 +1405,7 @@ def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
 
 async def test_streaming_counts_only_url_citation_annotations() -> None:
     """Grounding is counted off the completed output, past the reasoning and refusal shapes."""
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
 
     await streamer.stream(
         responses=_stream_events_from(
@@ -1408,7 +1427,7 @@ async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no
     A zero here would read as an ungrounded answer, which is exactly the reading CLAUDE.md
     records three separate investigations getting wrong.
     """
-    streamer = ResponseStreamer(message=FakeMessage(), backend="interactions")
+    streamer = _streamer(message=FakeMessage(), backend="interactions")
 
     await streamer.stream(
         responses=_stream_events_from(
@@ -1449,7 +1468,7 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
     del price_table_unavailable
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message).stream(responses=_stream_events())
+    result = await _streamer(message=message).stream(responses=_stream_events())
 
     assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
     assert message.replies[0].content == result
@@ -1460,7 +1479,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
 
-    result = await ResponseStreamer(message=message).stream(
+    result = await _streamer(message=message).stream(
         responses=_stream_events_from(
             events=[
                 SimpleNamespace(type="response.output_text.delta", delta=body),
@@ -1501,7 +1520,7 @@ async def test_streaming_falls_back_to_channel_send_when_source_deleted(
     message = FakeMessage()
     message.reply_error = error
 
-    result = await ResponseStreamer(message=message).stream(responses=_stream_events())
+    result = await _streamer(message=message).stream(responses=_stream_events())
 
     assert message.replies == []  # reply() raised, so nothing was recorded there
     assert message.channel.sent[0].content == result
@@ -1513,7 +1532,7 @@ async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> 
     message.reply_error = make_invalid_form_body()
     body = "x" * 4500
 
-    await ResponseStreamer(message=message).stream(
+    await _streamer(message=message).stream(
         responses=_stream_events_from(
             events=[_text_event(delta=body), _completed_event(input_tokens=1, output_tokens=2)]
         )
@@ -1532,7 +1551,7 @@ async def test_streaming_reraises_non_deletion_http_errors() -> None:
     message.reply_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
-        await ResponseStreamer(message=message).stream(responses=_stream_events())
+        await _streamer(message=message).stream(responses=_stream_events())
     assert message.channel.sent == []
 
 
@@ -1541,7 +1560,7 @@ async def test_streaming_tolerates_reply_deleted_before_final_edit() -> None:
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = make_not_found()
-    streamer = ResponseStreamer(message=message, reply=reply)
+    streamer = _streamer(message=message, reply=reply)
 
     result = await streamer.stream(responses=_stream_events())
 
@@ -1560,7 +1579,7 @@ async def test_streaming_reraises_non_deletion_edit_errors() -> None:
     reply.edit_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
-        await ResponseStreamer(message=message, reply=reply).stream(responses=_stream_events())
+        await _streamer(message=message, reply=reply).stream(responses=_stream_events())
 
 
 async def test_deleted_reply_skips_media_attach_without_hint() -> None:
@@ -1570,7 +1589,7 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     reply.edit_error = make_not_found()
     synthesizer = _FakeVoiceGenerator()
 
-    await ResponseStreamer(
+    await _streamer(
         message=message, reply=reply, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -1616,7 +1635,7 @@ async def test_set_memory_note_splices_before_the_usage_footer() -> None:
     render would carry the model / token / cost line inside the bot's own answer.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="好喔"),
@@ -1641,7 +1660,7 @@ async def test_set_memory_note_declines_when_the_reply_is_already_full() -> None
     chunked flag.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 5)),
@@ -1661,7 +1680,7 @@ async def test_the_outcome_note_replaces_the_pending_one() -> None:
     separate pieces of memory work.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
@@ -1684,7 +1703,7 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
     the pending note mid-string. Removing it off the end would then leave both notes on screen.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
@@ -1712,7 +1731,7 @@ async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     downstream either: the note sits before the ⬆⬇ line and that regex only reaches what follows.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     full_reply = await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
@@ -1745,7 +1764,7 @@ async def test_the_pending_note_is_written_only_when_something_can_take_it_back(
     caption a delivered image with `正在整理記憶⋯` and nothing would ever replace it.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message, carries_turn_notices=carries_turn_notices)
+    streamer = _streamer(message=message, carries_turn_notices=carries_turn_notices)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta=delta),
@@ -1764,7 +1783,7 @@ async def test_an_outcome_too_long_to_splice_withdraws_the_pending_note() -> Non
     is the one outcome worse than showing nothing at all.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 90)),
@@ -1789,7 +1808,7 @@ async def test_no_pending_note_on_a_reply_that_chunks() -> None:
     it is looking for is on another message entirely.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from([
             _text_event(delta="x" * DISCORD_MESSAGE_LIMIT),
@@ -1819,7 +1838,7 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -1840,9 +1859,9 @@ async def test_voice_marker_absent_no_synthesis() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
 
-    await ResponseStreamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events())
+    await _streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)).stream(
+        responses=_stream_events()
+    )
 
     assert synthesizer.calls == []
     assert message.replies[0].file is None
@@ -1854,7 +1873,7 @@ async def test_voice_disabled_still_strips_marker() -> None:
     """With no synthesizer (voice off) the tags are still stripped and no file attaches."""
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message).stream(
+    result = await _streamer(message=message).stream(
         responses=_stream_events_from(_voice_marker_events())
     )
 
@@ -1868,7 +1887,7 @@ async def test_voice_synthesis_failure_leaves_text_reply() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.ERROR)
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -1883,7 +1902,7 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.TIMEOUT)
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -1904,7 +1923,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
         )
     )
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", synthesizer),
         media_delivery=MediaDeliveryPlanner(media_hosting=service),
@@ -1934,7 +1953,7 @@ async def test_voice_too_big_without_hosting_drops_with_hint() -> None:
     message.guild = FakeGuild(filesize_limit=4)
     synthesizer = _FakeVoiceGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -1954,7 +1973,7 @@ def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
 
 async def test_finalize_media_edit_posts_followup_when_content_would_overflow() -> None:
     """A hosted URL on an already-near-2000-char reply rides a follow-up, not the main edit."""
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
     reply = FakeReply()
     streamer.reply = as_message(fake=reply)
     streamer.stored_content = "x" * (DISCORD_MESSAGE_LIMIT - 10)
@@ -1973,7 +1992,7 @@ async def test_finalize_media_edit_posts_followup_when_content_would_overflow() 
 async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> None:
     """A follow-up that never lands is the whole clip, so it earns the ⚠️ hint, not silence."""
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     reply = FakeReply()
     reply.reply_error = RuntimeError("follow-up refused")
     streamer.reply = as_message(fake=reply)
@@ -1998,7 +2017,7 @@ async def test_a_refused_media_attach_is_never_logged_as_attached(
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = RuntimeError("file uploads are limited here")
-    streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
     logged: list[str] = []
 
     async def voice_clip() -> MediaItem:
@@ -2258,7 +2277,7 @@ async def test_voice_text_strips_discord_markup() -> None:
     message.guild = FakeGuild(members={239270225441193986: SimpleNamespace(display_name="小明")})
     synthesizer = _FakeVoiceGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_mention_events()))
 
@@ -2326,7 +2345,7 @@ async def test_image_marker_generates_and_attaches() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, image_generator=cast("ImageGenerator", generator)
     ).stream(responses=_stream_events_from(_image_marker_events()))
 
@@ -2358,7 +2377,7 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
 
     builder = SimpleNamespace(get_image_sources_with_mime=_load)
 
-    await ResponseStreamer(
+    await _streamer(
         message=message,
         image_generator=cast("ImageGenerator", generator),
         input_builder=cast("MessageInputBuilder", builder),
@@ -2377,7 +2396,7 @@ async def test_image_disabled_still_strips_marker() -> None:
     """With no generator (inline image off) the block is still pulled and no file attaches."""
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message).stream(
+    result = await _streamer(message=message).stream(
         responses=_stream_events_from(_image_marker_events())
     )
 
@@ -2391,7 +2410,7 @@ async def test_image_generation_failure_hints() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator(image=None)
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, image_generator=cast("ImageGenerator", generator)
     ).stream(responses=_stream_events_from(_image_marker_events()))
 
@@ -2406,7 +2425,7 @@ async def test_voice_and_image_attach_in_one_edit() -> None:
     synthesizer = _FakeVoiceGenerator()
     generator = _FakeImageGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", synthesizer),
         image_generator=cast("ImageGenerator", generator),
@@ -2431,7 +2450,7 @@ async def test_multiple_image_markers_attach_distinct_files() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, image_generator=cast("ImageGenerator", generator)
     ).stream(
         responses=_stream_events_from([
@@ -2459,9 +2478,7 @@ async def test_image_markers_capped_at_limit() -> None:
         f"<generate-image>image {index}</generate-image>" for index in range(MAX_INLINE_IMAGES + 3)
     )
 
-    await ResponseStreamer(
-        message=message, image_generator=cast("ImageGenerator", generator)
-    ).stream(
+    await _streamer(message=message, image_generator=cast("ImageGenerator", generator)).stream(
         responses=_stream_events_from([
             _text_event(delta=f"好多圖 {blocks}"),
             _completed_event(input_tokens=3, output_tokens=4),
@@ -2508,7 +2525,7 @@ async def test_music_marker_generates_and_attaches() -> None:
     message = FakeMessage()
     generator = _FakeMusicGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, music_generator=cast("MusicGenerator", generator)
     ).stream(responses=_stream_events_from(_music_marker_events()))
 
@@ -2528,7 +2545,7 @@ async def test_music_disabled_still_strips_marker() -> None:
     """With no generator (music off) the block is still pulled and no file attaches."""
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message).stream(
+    result = await _streamer(message=message).stream(
         responses=_stream_events_from(_music_marker_events())
     )
 
@@ -2542,7 +2559,7 @@ async def test_music_generation_failure_hints() -> None:
     message = FakeMessage()
     generator = _FakeMusicGenerator(audio=None)
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, music_generator=cast("MusicGenerator", generator)
     ).stream(responses=_stream_events_from(_music_marker_events()))
 
@@ -2566,7 +2583,7 @@ async def test_voice_music_image_attach_in_one_edit() -> None:
     music_generator = _FakeMusicGenerator()
     image_generator = _FakeImageGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", synthesizer),
         music_generator=cast("MusicGenerator", music_generator),
@@ -2645,7 +2662,7 @@ async def test_video_marker_generates_and_attaches() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, video_generator=cast("VideoGenerator", generator)
     ).stream(responses=_stream_events_from(_video_marker_events()))
 
@@ -2675,7 +2692,7 @@ async def test_video_marker_uses_uploaded_image_as_reference() -> None:
 
     builder = SimpleNamespace(get_image_sources_with_mime=_load)
 
-    await ResponseStreamer(
+    await _streamer(
         message=message,
         video_generator=cast("VideoGenerator", generator),
         input_builder=cast("MessageInputBuilder", builder),
@@ -2693,7 +2710,7 @@ async def test_video_disabled_still_strips_marker() -> None:
     """With no generator (video off) the block is still pulled and no file attaches."""
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message).stream(
+    result = await _streamer(message=message).stream(
         responses=_stream_events_from(_video_marker_events())
     )
 
@@ -2709,7 +2726,7 @@ async def test_video_generation_failure_hints() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator(video=None)
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, video_generator=cast("VideoGenerator", generator)
     ).stream(responses=_stream_events_from(_video_marker_events()))
 
@@ -2726,7 +2743,7 @@ async def test_voice_music_video_image_attach_in_one_edit() -> None:
     video_generator = _FakeVideoGenerator()
     image_generator = _FakeImageGenerator()
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", voice_generator),
         music_generator=cast("MusicGenerator", music_generator),
@@ -2852,7 +2869,7 @@ async def test_voice_oversized_clip_not_attached() -> None:
     message.guild = FakeGuild(filesize_limit=8)
     synthesizer = _FakeVoiceGenerator(audio=b"x" * 16)
 
-    result = await ResponseStreamer(
+    result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -3563,8 +3580,7 @@ async def test_media_semaphore_bounds_media_io_concurrency(
     Counting concurrency in the byte loader proves non-image downloads (which run before the
     Gemini upload) are bounded too, so concurrent pipelines cannot buffer every file at once.
     """
-    # The cap is module-level now, shared by the one renderer each Gemini key holds, and the
-    # loop-local holder reads it fresh on this test's own loop.
+    # The cap is module-level, and the loop-local holder reads it fresh on this test's own loop.
     monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.base.MEDIA_CONCURRENCY", 2)
     uploader = _fake_uploader()
     state = {"active": 0, "peak": 0}
@@ -3578,7 +3594,7 @@ async def test_media_semaphore_bounds_media_io_concurrency(
 
     results = await asyncio.gather(*[
         uploader._resolve_file_upload(
-            cache_key=f"k{index}", filename=f"f{index}", load_data=_slow_load
+            cache_key=f"k{index}", filename=f"f{index}", load_data=_slow_load, kind="file"
         )
         for index in range(6)
     ])
@@ -3652,7 +3668,7 @@ async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previ
     """
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message, preview_interval_seconds=0.01)
+    streamer = _streamer(message=message, preview_interval_seconds=0.01)
     opened = 0
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
@@ -3686,7 +3702,7 @@ async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previ
 async def test_a_non_retryable_answer_failure_never_re_opens_the_stream() -> None:
     """A refusal is the provider answering, so it surfaces on the first attempt."""
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     opened = 0
     request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
     refusal = BadRequestError(
@@ -3713,7 +3729,7 @@ async def test_an_exhausted_answer_retry_raises_the_provider_error_itself(
     """`reraise` keeps the outer error path showing the provider failure, not a retry wrapper."""
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     opened = 0
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
@@ -3738,7 +3754,7 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
     """
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message, reply=cast("Message", FakeReply()))
+    streamer = _streamer(message=message, reply=cast("Message", FakeReply()))
     opened = 0
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
@@ -3770,7 +3786,7 @@ async def test_a_spent_retry_takes_its_own_notice_back(monkeypatch: pytest.Monke
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     reply = FakeReply()
-    streamer = ResponseStreamer(message=message, reply=cast("Message", reply))
+    streamer = _streamer(message=message, reply=cast("Message", reply))
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
         return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
@@ -3794,7 +3810,7 @@ async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     reply = FakeReply()
-    streamer = ResponseStreamer(
+    streamer = _streamer(
         message=message, reply=cast("Message", reply), preview_interval_seconds=0.01
     )
 
@@ -3821,7 +3837,7 @@ async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
     """Creating a reply just to say "Retrying" would orphan it on the turns that then fail."""
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
         return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
@@ -3887,7 +3903,7 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
     async def failing_answer(self: object, **kwargs: object) -> None:
         """Streams half an answer onto a reply already on screen, then fails every attempt."""
         del kwargs
-        streamer = ResponseStreamer(
+        streamer = _streamer(
             message=cast("Message", message),
             reply=cast("Message", reply),
             preview_interval_seconds=0.01,
@@ -3919,7 +3935,7 @@ async def test_a_failure_over_a_thinking_preview_clears_it() -> None:
     message = FakeMessage()
     reply = FakeReply()
     reply.content = "-# <:message:1517560873000898860> Thinking..."
-    streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
     streamer.reasoning_content = "weighing the options"
 
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is True
@@ -3933,7 +3949,7 @@ async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_me
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = make_not_found()
-    streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
 
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
 
@@ -3946,7 +3962,7 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
     still raise, and an error landing on the finished reply would take its attachments with it.
     """
     message = FakeMessage()
-    streamer = ResponseStreamer(message=cast("Message", message))
+    streamer = _streamer(message=cast("Message", message))
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
         return _stream_events_from(events=[_text_event(delta="done"), _completed_event(1, 2)])
@@ -4107,7 +4123,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
         lambda image_file: base64.b64decode(_png_b64()),
     )
-    parts = await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
+    parts = await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
 
 
@@ -4119,16 +4135,14 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     async def _no_sleep(delay: float) -> None:
         del delay
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", _no_sleep)
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
         return _fake_uploader(files=files)
 
     # PROCESSING for two polls, then ACTIVE: the file URI and its expiry are returned.
     active = _uploader(FakeGeminiFiles(processing_rounds=2))
-    uploaded = await active._upload_file(
+    uploaded = await active._upload_or_pend(
         filename="doc.pdf", data=b"x", content_type="application/pdf"
     )
     assert uploaded == UploadedFile(
@@ -4138,7 +4152,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     # Terminal non-active state: the file is dropped.
     failed = _uploader(FakeGeminiFiles(final_state=FileState.FAILED))
     assert (
-        await failed._upload_file(filename="bad.pdf", data=b"x", content_type="application/pdf")
+        await failed._upload_or_pend(filename="bad.pdf", data=b"x", content_type="application/pdf")
         is None
     )
 
@@ -4151,11 +4165,9 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         clock["now"] += 50.0
         return clock["now"]
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
     stuck = _uploader(FakeGeminiFiles(processing_rounds=99))
-    pending = await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4")
+    pending = await stuck._upload_or_pend(filename="slow.mp4", data=b"x", content_type="video/mp4")
     assert isinstance(pending, PendingUpload)
     assert pending.name == "slow.mp4"
     assert pending.uri == "https://files.test/slow.mp4"
@@ -4165,9 +4177,12 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         del file, config
         raise RuntimeError("upload failed")
 
-    boom = _uploader(FakeGeminiFiles())
-    monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
-    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    boom_files = FakeGeminiFiles()
+    boom = _uploader(boom_files)
+    monkeypatch.setattr(boom_files, "upload", _raise)
+    assert (
+        await boom._upload_or_pend(filename="x.txt", data=b"x", content_type="text/plain") is None
+    )
 
 
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
@@ -4178,9 +4193,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     async def _no_sleep(delay: float) -> None:
         del delay
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", _no_sleep)
 
     # Auto-advancing clock: each call jumps well past the 15s activation bound, so the first
     # reference times out to PENDING regardless of how many monotonic() calls the upload path
@@ -4191,9 +4204,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         clock["now"] += 50.0
         return clock["now"]
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
 
     files = FakeGeminiFiles(processing_rounds=99)
     uploader = _fake_uploader(files=files)
@@ -4206,7 +4217,9 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         return LoadedMedia(data=b"x", mime_type="video/mp4")
 
     # First reference times out while still PROCESSING: dropped for now, cached as pending.
-    first = await uploader._resolve_file_upload(cache_key="vid", filename="v.mp4", load_data=_load)
+    first = await uploader._resolve_file_upload(
+        cache_key="vid", filename="v.mp4", load_data=_load, kind="file"
+    )
     assert first is None
     assert "vid" in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]
@@ -4225,7 +4238,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
 
     monkeypatch.setattr(files, "get", _active_get)
     second = await uploader._resolve_file_upload(
-        cache_key="vid", filename="v.mp4", load_data=_load
+        cache_key="vid", filename="v.mp4", load_data=_load, kind="file"
     )
     assert second == UploadedFile(
         uri="https://files.test/v.mp4", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
@@ -4316,7 +4329,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     errored = _fake_openai_uploader(files=FakeOpenAIFiles(status="error"))
     assert (
         await errored._upload_file(
-            filename="bad.txt", data=b"x", content_type="text/plain", purpose="user_data"
+            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4335,7 +4348,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     monkeypatch.setattr(boom.client.files, "create", _raise)
     assert (
         await boom._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", purpose="user_data"
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4344,7 +4357,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
     """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
     assert isinstance(
-        build_attachment_handler(model=ModelSettings(name="gpt-5.1"), gemini_api_key="test-key"),
+        build_attachment_handler(model=ModelSettings(name="gpt-5.1"), gemini_client=lambda: None),
         InlineRenderer,
     )
 
@@ -4352,7 +4365,7 @@ def test_gpt_attachment_handler_path_stays_disabled() -> None:
 def test_grok_attachment_handler_path_stays_disabled() -> None:
     """Grok models still use inline attachments until the xAI uploader branch is enabled."""
     assert isinstance(
-        build_attachment_handler(model=ModelSettings(name="grok-4.5"), gemini_api_key="test-key"),
+        build_attachment_handler(model=ModelSettings(name="grok-4.5"), gemini_client=lambda: None),
         InlineRenderer,
     )
 
@@ -4361,7 +4374,7 @@ def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
     """The Gemini branch uploads to the Files API while the switch is on."""
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_api_key="test-key"
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: None
         ),
         GeminiFileUploader,
     )
@@ -4374,7 +4387,7 @@ def test_the_file_api_kill_switch_inlines_gemini_attachments(
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_api_key="test-key"
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: None
         ),
         InlineRenderer,
     )
@@ -4465,7 +4478,10 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     """XAI upload errors and id-less responses degrade to a dropped attachment."""
     idless = _fake_grok_uploader(files=FakeXAIFiles(file_id=""))
     assert (
-        await idless._upload_file(filename="bad.txt", data=b"x", content_type="text/plain") is None
+        await idless._upload_file(
+            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
     )
 
     boom = _fake_grok_uploader()
@@ -4477,7 +4493,12 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
         raise RuntimeError("upload failed")
 
     monkeypatch.setattr(boom.xai_client.files, "upload", _raise)
-    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    assert (
+        await boom._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
+    )
 
 
 async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
@@ -4502,7 +4523,10 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
         "discordbot.cogs.gen_reply.attachment.grok_file_api.GROK_FILE_UPLOAD_TIMEOUT_SECONDS", 0.01
     )
     assert (
-        await stalled._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+        await stalled._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
     )
 
 
@@ -4523,16 +4547,55 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     )
     renderer = GrokFileUploader()
     assert (
-        await renderer._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+        await renderer._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
     )
     assert logged == ["xAI Files API key missing; dropping attachment"]
+
+
+async def test_gemini_uploader_uploads_through_the_toolkit_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attachments upload with the toolkit's own direct client; a keyless one names the key.
+
+    A file is readable only by the key that uploaded it, so the uploader holds no client of its
+    own: the one the answer's direct paths use is the one it uploads with.
+    """
+    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    keyed = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="test-key")
+    keyed_handler = keyed.input_builder.attachment_handler
+    assert isinstance(keyed_handler, GeminiFileUploader)
+    assert keyed_handler.gemini_client() is keyed.gemini_client
+
+    logged: list[str] = []
+
+    def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the missing-key log."""
+        del kwargs
+        logged.append(message)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.logfire.error", record_error
+    )
+    keyless = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
+    keyless_handler = keyless.input_builder.attachment_handler
+    assert isinstance(keyless_handler, GeminiFileUploader)
+    assert (
+        await keyless_handler._upload_or_pend(
+            filename="x.txt", data=b"x", content_type="text/plain"
+        )
+        is None
+    )
+    assert logged == ["gemini Files API key missing; dropping attachment"]
 
 
 async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
     """A response without an expiry still bounds the render cache by the requested TTL."""
     renderer = _fake_grok_uploader(files=FakeXAIFiles(expires_at=None))
     uploaded = await renderer._upload_file(
-        filename="notes.txt", data=b"hello", content_type="text/plain"
+        filename="notes.txt", data=b"hello", content_type="text/plain", kind="file"
     )
     assert uploaded is not None
     assert uploaded.expires_at > datetime.now(tz=UTC) + timedelta(days=29)
@@ -4971,8 +5034,8 @@ async def test_uploaded_image_without_extension_marks_as_image(
     ]
 
     # Classification is by content_type, not filename, so the marker render needs no upload.
-    rendered = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    rendered = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
     )
     parts = rendered["content"]
     assert isinstance(parts, list)
@@ -4997,8 +5060,8 @@ async def test_text_only_render_names_a_sticker_instead_of_calling_it_an_image(
         )
     ]
 
-    rendered = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    rendered = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
     )
     parts = rendered["content"]
     assert isinstance(parts, list)
@@ -5021,8 +5084,8 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
         FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
     ]
 
-    text_only = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    text_only = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
     )
     full = await cog.toolkit.input_builder.process_single_message(message=as_message(fake=message))
 
@@ -5039,11 +5102,27 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     assert len(text_markers) == len(full_files) == 1
 
 
-async def test_text_only_render_degrades_when_the_modality_gate_raises(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("text_only", "logged"),
+    [
+        (True, "gen_reply failed to render message for routing"),
+        (False, "gen_reply failed to process message"),
+    ],
+    ids=["route", "answer"],
+)
+async def test_a_render_degrades_when_the_modality_gate_raises(
+    monkeypatch: pytest.MonkeyPatch, text_only: bool, logged: str
 ) -> None:
-    """A raising modality gate degrades to empty text, not a pipeline abort."""
+    """A raising modality gate degrades either render to empty text, not a pipeline abort."""
     cog = _cog()
+    warned: list[str] = []
+
+    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records which render reported the failure."""
+        del kwargs
+        warned.append(message)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.input.logfire.warn", record_warn)
 
     def boom(model_name: str) -> set[str]:
         """Stands in for any unexpected failure inside the gate; the lookup itself cannot."""
@@ -5056,11 +5135,12 @@ async def test_text_only_render_degrades_when_the_modality_gate_raises(
         FakeAttachment(filename="pic.png", content_type="image/png", payload=b"x")
     ]
 
-    rendered = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    rendered = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=text_only
     )
 
     assert rendered == EasyInputMessageParam(role="user", content="")
+    assert warned == [logged]
 
 
 # ---- prompt director (PromptGenerator) ----
@@ -7934,7 +8014,7 @@ def test_widen_allowlist_with_aliases_skips_absent_members() -> None:
 async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
     """The reasoning preview renders as -# subtext and real content replaces it in place."""
     message = FakeMessage()
-    streamer = ResponseStreamer(message=message)
+    streamer = _streamer(message=message)
     streamer.reasoning_content = "first thought\n\nsecond thought"
 
     await streamer._write_preview_snapshot()
@@ -7954,7 +8034,7 @@ async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
 
 def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
     """A long think keeps only its newest tail lines within the short preview window."""
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
     streamer.reasoning_content = "\n".join(f"thought line {i} " + "x" * 80 for i in range(60))
 
     preview = streamer._render_preview()
@@ -7972,7 +8052,7 @@ def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
 
 def test_streamer_reasoning_preview_caps_short_line_count() -> None:
     """Many short thought lines are trimmed to the newest few, not stacked up."""
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
     streamer.reasoning_content = "\n".join(f"step {i}" for i in range(20))
 
     lines = streamer._render_preview().splitlines()
@@ -7984,7 +8064,7 @@ def test_streamer_reasoning_preview_caps_short_line_count() -> None:
 
 def test_streamer_reasoning_preview_keeps_tail_of_one_long_paragraph() -> None:
     """A single paragraph wider than the budget still shows its newest words."""
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
     streamer.reasoning_content = "a" * 900 + " ending words"
 
     lines = streamer._render_preview().splitlines()
@@ -7997,7 +8077,7 @@ def test_streamer_reasoning_preview_keeps_tail_of_one_long_paragraph() -> None:
 
 def test_streamer_reasoning_preview_escapes_mentions() -> None:
     """Transient thought text can never ping people or roles."""
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
     streamer.reasoning_content = "should I ping @everyone or <@123456789012345678>?"
 
     preview = streamer._render_preview()
@@ -8014,7 +8094,7 @@ async def test_streamer_strips_leading_newlines_from_first_reasoning_delta() -> 
         _text_event(delta="answer"),
         _completed_event(input_tokens=1, output_tokens=1),
     ]
-    streamer = ResponseStreamer(message=FakeMessage())
+    streamer = _streamer(message=FakeMessage())
 
     await streamer.stream(responses=_stream_events_from(events=events))
 
@@ -8033,7 +8113,7 @@ async def test_streamer_edits_are_time_throttled() -> None:
             await asyncio.sleep(0.002)
         yield _completed_event(input_tokens=1, output_tokens=1)
 
-    streamer = ResponseStreamer(message=message, preview_interval_seconds=0.02)
+    streamer = _streamer(message=message, preview_interval_seconds=0.02)
     result = await streamer.stream(responses=cast("AsyncIterator[ResponseStreamEvent]", _events()))
 
     assert len(message.replies) == 1
@@ -8048,7 +8128,7 @@ async def test_streamer_footer_shows_route_effort() -> None:
     """The usage footer labels the model with the route-decided effort."""
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message, model_effort="low").stream(
+    result = await _streamer(message=message, model_effort="low").stream(
         responses=_stream_events()
     )
 
@@ -8270,14 +8350,14 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
     message.attachments = [attachment]
 
-    first = await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
-    again = await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
+    first = await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
+    again = await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
 
     assert attachment.read_count == 1
     assert again == first
 
     message.edited_at = datetime.now(tz=UTC)
-    await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     assert attachment.read_count == 2
 
 
@@ -8289,17 +8369,17 @@ async def test_attachment_cache_reuploads_expired_handle() -> None:
     attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
     message.attachments = [attachment]
 
-    await builder.get_attachment_parts(message=as_message(fake=message))
+    await _attachment_parts(builder=builder, message=message)
     assert attachment.read_count == 1
 
     # Within expiry: the cached handle is reused, so no second download.
-    await builder.get_attachment_parts(message=as_message(fake=message))
+    await _attachment_parts(builder=builder, message=message)
     assert attachment.read_count == 1
 
     # Force the entry past its stored expiry: the next render re-downloads and re-uploads.
     (cache_key, (_expiry, cached_parts)) = next(iter(builder._attachment_cache.items()))
     builder._attachment_cache[cache_key] = (datetime(2000, 1, 1, tzinfo=UTC), cached_parts)
-    await builder.get_attachment_parts(message=as_message(fake=message))
+    await _attachment_parts(builder=builder, message=message)
     assert attachment.read_count == 2
 
 
@@ -8332,13 +8412,13 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
         return SimpleNamespace(image=SimpleNamespace(proxy_url=url, url=url), thumbnail=None)
 
     message.embeds = [cast("Embed", _embed("https://media.test/a.png"))]
-    await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
-    await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
+    await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     assert rendered_urls == ["https://media.test/a.png"]
 
     # Same embed count, different image URL: the cache must not serve the stale part.
     message.embeds = [cast("Embed", _embed("https://media.test/b.png"))]
-    await cog.toolkit.input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     # order-contract: each awaited cache lookup renders its source before returning.
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 

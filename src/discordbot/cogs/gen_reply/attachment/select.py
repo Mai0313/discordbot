@@ -1,5 +1,9 @@
 """Selects the attachment renderer that matches the current answer model's provider."""
 
+from collections.abc import Callable
+
+from google import genai
+
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
@@ -11,7 +15,9 @@ from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploa
 # from discordbot.cogs.gen_reply.attachment.anthropic_file_api import AnthropicFileUploader
 
 
-def build_attachment_handler(model: ModelSettings, gemini_api_key: str) -> AttachmentRenderer:
+def build_attachment_handler(
+    model: ModelSettings, gemini_client: Callable[[], genai.Client | None]
+) -> AttachmentRenderer:
     """Returns the attachment renderer matching the answer (slow) model's provider.
 
     Only Gemini resolves an uploaded Files-API URI; OpenAI / Anthropic answer models reject
@@ -20,11 +26,11 @@ def build_attachment_handler(model: ModelSettings, gemini_api_key: str) -> Attac
     reference path is verified. This is the single place that maps an answer model to its
     attachment handling, so adding a provider changes only here.
 
-    `gemini_api_key` is passed rather than read from the environment here, so the one credential
-    a deployment answers on is the one it uploads with: an uploaded file is readable only by the
+    `gemini_client` hands back the deployment's own direct client, so the one credential a
+    deployment answers on is the one it uploads with: an uploaded file is readable only by the
     project that uploaded it, so an uploader holding a different key from the deployment behind
-    the answer model fails the whole request. An empty string is the no-key case, where the
-    client raises lazily and the attachment is dropped.
+    the answer model fails the whole request. None is the no-key case, where each attachment is
+    dropped.
 
     `file_api_enabled` overrides the provider branch entirely: a provider whose Files API is
     refusing to resolve references costs the WHOLE reply, since the answer carries the failing
@@ -35,7 +41,7 @@ def build_attachment_handler(model: ModelSettings, gemini_api_key: str) -> Attac
     if not LLMConfig().file_api_enabled:
         return InlineRenderer()
     if model.is_gemini:
-        return GeminiFileUploader(api_key=gemini_api_key)
+        return GeminiFileUploader(gemini_client=gemini_client)
     # if "gpt" in model.name:
     #     return OpenAIFileUploader(model_name=model.name)
     # if "claude" in model.name:

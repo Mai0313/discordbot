@@ -35,29 +35,19 @@ import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import Field
 from anthropic import AsyncAnthropic
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import UploadedFile, RenderedAttachment
-from discordbot.cogs.gen_reply.attachment.base import (
-    FileBytesLoader,
-    AttachmentRenderer,
-    media_semaphore,
-)
-from discordbot.cogs.gen_reply.attachment.loaders import (
-    attachment_mime,
-    load_image_bytes,
-    load_attachment_bytes,
-    resolve_source_filename,
-)
+from discordbot.cogs.gen_reply.attachment.base import UploadKind, FileUploadRenderer
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
 
 # Anthropic Files API entries persist until explicitly deleted (no provider expiry), so the
 # per-message render cache reuses an upload for a fixed window as a cheap CDN-rehost safety net.
 ANTHROPIC_FILE_CACHE_TTL = timedelta(hours=12)
 
 
-class AnthropicFileUploader(AttachmentRenderer):
+class AnthropicFileUploader(FileUploadRenderer):
     """Uploads attachments to the Anthropic Files API and references them by file id."""
 
     config: LLMConfig = Field(
@@ -90,6 +80,7 @@ class AnthropicFileUploader(AttachmentRenderer):
             cache_key=cache_key,
             filename=source_name,
             load_data=lambda: load_image_bytes(source=source),
+            kind="image",
             allow_dead_cache=allow_dead_cache,
         )
         if uploaded is None:
@@ -97,55 +88,8 @@ class AnthropicFileUploader(AttachmentRenderer):
         part = ResponseInputImageParam(type="input_image", file_id=uploaded.uri, detail="auto")
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
-    async def render_file(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> RenderedAttachment | None:
-        mime_type = attachment_mime(attachment=attachment)
-        if not mime_type:
-            logfire.warn(
-                "skipping attachment with unknown MIME type",
-                filename=attachment.filename,
-                url=attachment.url,
-            )
-            return None
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=attachment.filename,
-            load_data=lambda: load_attachment_bytes(attachment=attachment),
-            allow_dead_cache=allow_dead_cache,
-        )
-        if uploaded is None:
-            return None
-        part = ResponseInputFileParam(
-            type="input_file", file_id=uploaded.uri, filename=attachment.filename
-        )
-        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
-
-    async def _resolve_file_upload(
-        self,
-        cache_key: int | str,
-        filename: str,
-        load_data: "FileBytesLoader",
-        allow_dead_cache: bool = False,
-    ) -> UploadedFile | None:
-        """Returns an uploaded Anthropic file id and its synthetic cache expiry."""
-        if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
-            return None
-        async with media_semaphore.get():
-            loaded = await self._load_source_bytes(
-                cache_key=cache_key,
-                filename=filename,
-                load_data=load_data,
-                allow_dead_cache=allow_dead_cache,
-            )
-            if loaded is None:
-                return None
-            return await self._upload_file(
-                filename=filename, data=loaded.data, content_type=loaded.mime_type
-            )
-
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str
+        self, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
         """Uploads bytes to the Anthropic Files API and returns the uploaded handle.
 
@@ -154,6 +98,7 @@ class AnthropicFileUploader(AttachmentRenderer):
         the module docstring). Anthropic files have no provider expiry, so the cache window is
         a fixed synthetic TTL.
         """
+        del kind
         started = time.monotonic()
         logfire.debug(
             "anthropic upload start", filename=filename, content_type=content_type, bytes=len(data)

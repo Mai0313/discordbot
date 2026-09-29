@@ -1,7 +1,8 @@
 """Media-generation services: the image, voice, video, and music render calls behind one shape.
 
-All runtime media generators are BaseModel services held as cog `cached_property`s, so every media
-render goes through the same calling convention instead of a half-free-function / half-class mix:
+All runtime media generators are BaseModel services held as `ReplyToolkit` `cached_property`s, so
+every media render goes through the same calling convention instead of a half-free-function /
+half-class mix:
 
 - `PromptGenerator` is the upstream prompt director shared by the router IMAGE and VIDEO routes:
   `refine` expands a thin user request into one rich, self-contained generation prompt with the
@@ -37,7 +38,6 @@ Keeping them here means a future provider swap (or a move of a render off the pr
 one place.
 """
 
-from io import BytesIO
 import re
 from enum import StrEnum
 import time
@@ -64,7 +64,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.llm import output_text_or_empty
-from discordbot.utils.images import convert_base64_to_data_uri
+from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.timeouts import (
@@ -76,6 +76,7 @@ from discordbot.typings.timeouts import (
     PROMPT_REFINE_TIMEOUT_SECONDS,
 )
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
+from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
@@ -91,9 +92,17 @@ TTS_SPEED = 1.5
 
 # Filename of the attached voice clip. Shared so input rendering can recognise and skip the
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
-# Its upload-size guard lives at the attach site (`streaming.py`), where the guild's real
-# `filesize_limit` is known, not as a hardcoded byte ceiling here.
 VOICE_REPLY_FILENAME = "reply.wav"
+
+# Filename a generated image is attached under, by the IMAGE route and by a QA reply's
+# `<generate-image>` alike, so the bot's own generated images render the same in history. A reply
+# carrying several falls back to `generated_<n>.png`, since Discord collides on duplicate names.
+INLINE_IMAGE_FILENAME = "generated.png"
+
+# Filename a generated video is attached under, by the VIDEO route and by a QA reply's
+# `<generate-video>` alike (one clip per reply, so no numbering); MP4 is what the omni renderer
+# returns and what Discord inline-plays.
+INLINE_VIDEO_FILENAME = "generated.mp4"
 
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
 # Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
@@ -352,11 +361,7 @@ class PromptGenerator(BaseModel):
         for image_bytes in image_bytes_list or []:
             director_content.append(
                 ResponseInputImageParam(
-                    image_url=convert_base64_to_data_uri(
-                        base64_image=base64.b64encode(image_bytes).decode()
-                    ),
-                    detail="auto",
-                    type="input_image",
+                    image_url=to_data_uri(data=image_bytes), detail="auto", type="input_image"
                 )
             )
         director_input: list[EasyInputMessageParam] = [
@@ -707,19 +712,24 @@ class VideoGenerator(BaseModel):
         (`FILES_READY_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
         and can sit in PROCESSING longer than the reply-upload's window.
         """
-        uploaded = await self.client.aio.files.upload(
-            file=BytesIO(source_video.data),
-            config={"mime_type": source_video.mime_type, "display_name": "source.mp4"},
+        uploaded = await upload_file(
+            client=self.client,
+            source=source_video.data,
+            mime_type=source_video.mime_type,
+            display_name="source.mp4",
         )
         file_name = uploaded.name
         if file_name is None:
             raise RuntimeError("Source video upload returned no file name")
-        deadline = time.monotonic() + FILES_READY_TIMEOUT_SECONDS
-        while uploaded.state == FileState.PROCESSING:
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Source video did not become ACTIVE before the deadline")
-            await asyncio.sleep(1.0)
-            uploaded = await self.client.aio.files.get(name=file_name)
+        uploaded = await poll_while_processing(
+            client=self.client,
+            uploaded=uploaded,
+            name=file_name,
+            poll_interval_seconds=1.0,
+            timeout_seconds=FILES_READY_TIMEOUT_SECONDS,
+        )
+        if uploaded.state == FileState.PROCESSING:
+            raise RuntimeError("Source video did not become ACTIVE before the deadline")
         if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
             raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
         return uploaded.uri

@@ -20,7 +20,7 @@ USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$")
 
 # A display name (or legacy username) containing an `[id: ...]`-shaped string
 # could forge the sender-identity prefix the input builder prepends, which the
-# reply persona prompt and the memory extraction prompt both treat as the trusted
+# reply persona prompt and the memory review prompts both treat as the trusted
 # authorship signal. Neutralize the lookalike before rendering.
 _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 

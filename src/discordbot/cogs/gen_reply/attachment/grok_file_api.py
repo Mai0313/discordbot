@@ -49,18 +49,12 @@ import logfire
 from xai_sdk import AsyncClient
 from nextcord import Attachment, StickerItem
 from pydantic import Field
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.typings.timeouts import GROK_FILE_UPLOAD_TIMEOUT_SECONDS
-from discordbot.cogs.gen_reply.attachment.base import (
-    FileBytesLoader,
-    AttachmentRenderer,
-    media_semaphore,
-)
+from discordbot.cogs.gen_reply.attachment.base import UploadKind, FileUploadRenderer
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
-from discordbot.cogs.gen_reply.attachment.loaders import attachment_mime, load_attachment_bytes
 
 # TTL sent with every upload. An xAI file is kept until it is deleted, so without this the
 # uploads accumulate against the team's storage forever; 30 days is the documented maximum,
@@ -68,7 +62,7 @@ from discordbot.cogs.gen_reply.attachment.loaders import attachment_mime, load_a
 GROK_FILE_EXPIRY_SECONDS = 2_592_000
 
 
-class GrokFileUploader(AttachmentRenderer):
+class GrokFileUploader(FileUploadRenderer):
     """Uploads file attachments to the xAI Files API and references them by file id."""
 
     config: LLMConfig = Field(
@@ -110,55 +104,8 @@ class GrokFileUploader(AttachmentRenderer):
             source=source, cache_key=cache_key, allow_dead_cache=allow_dead_cache
         )
 
-    async def render_file(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> RenderedAttachment | None:
-        mime_type = attachment_mime(attachment=attachment)
-        if not mime_type:
-            logfire.warn(
-                "skipping attachment with unknown MIME type",
-                filename=attachment.filename,
-                url=attachment.url,
-            )
-            return None
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=attachment.filename,
-            load_data=lambda: load_attachment_bytes(attachment=attachment),
-            allow_dead_cache=allow_dead_cache,
-        )
-        if uploaded is None:
-            return None
-        part = ResponseInputFileParam(
-            type="input_file", file_id=uploaded.uri, filename=attachment.filename
-        )
-        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
-
-    async def _resolve_file_upload(
-        self,
-        cache_key: int | str,
-        filename: str,
-        load_data: "FileBytesLoader",
-        allow_dead_cache: bool = False,
-    ) -> UploadedFile | None:
-        """Returns an uploaded xAI file id and its expiry."""
-        if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
-            return None
-        async with media_semaphore.get():
-            loaded = await self._load_source_bytes(
-                cache_key=cache_key,
-                filename=filename,
-                load_data=load_data,
-                allow_dead_cache=allow_dead_cache,
-            )
-            if loaded is None:
-                return None
-            return await self._upload_file(
-                filename=filename, data=loaded.data, content_type=loaded.mime_type
-            )
-
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str
+        self, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
         """Uploads bytes to the xAI Files API and returns the uploaded handle.
 
@@ -166,6 +113,7 @@ class GrokFileUploader(AttachmentRenderer):
         module docstring). The timeout is this call's only deadline, since the SDK's own covers
         every RPC shape except the client-streaming one an upload uses.
         """
+        del kind
         started = time.monotonic()
         logfire.debug(
             "xai upload start", filename=filename, content_type=content_type, bytes=len(data)

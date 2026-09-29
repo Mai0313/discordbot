@@ -120,27 +120,27 @@ def get_image_data(image_file: str) -> bytes:
     return buffered.getvalue()
 
 
-def convert_base64_to_data_uri(base64_image: str) -> str:
-    """Wraps a base64 image string in a `data:image/<mime>;base64,...` URI.
-
-    Sniffs the MIME type from the first 12 decoded bytes (enough for every
-    format we recognise). Falls back to `image/jpeg` for unknown payloads.
+def to_data_uri(data: bytes, mime_type: str | None = None) -> str:
+    """Encodes bytes already in hand as a `data:<mime>;base64,...` URI.
 
     Args:
-        base64_image: Base64-encoded image payload without a data URI prefix.
+        data: The payload to inline.
+        mime_type: The payload's MIME type, or None to sniff an image type from its first 12
+            bytes (enough for every format recognised here), `image/jpeg` when unrecognised.
 
     Returns:
-        A data URI containing the detected image MIME type and original payload.
+        A data URI carrying the MIME type and the base64-encoded payload.
     """
-    header = base64.b64decode(s=base64_image[:16])
-    if header.startswith(b"\xff\xd8\xff"):
-        mime_type = "image/jpeg"
-    elif header.startswith(b"\x89PNG\r\n\x1a\n"):
-        mime_type = "image/png"
-    elif header.startswith(b"GIF87a") or header.startswith(b"GIF89a"):
-        mime_type = "image/gif"
-    elif header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        mime_type = "image/webp"
-    else:
-        mime_type = "image/jpeg"
-    return f"data:{mime_type};base64,{base64_image}"
+    if mime_type is None:
+        header = data[:12]
+        if header.startswith(b"\xff\xd8\xff"):
+            mime_type = "image/jpeg"
+        elif header.startswith(b"\x89PNG\r\n\x1a\n"):
+            mime_type = "image/png"
+        elif header.startswith(b"GIF87a") or header.startswith(b"GIF89a"):
+            mime_type = "image/gif"
+        elif header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+    return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"

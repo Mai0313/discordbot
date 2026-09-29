@@ -27,12 +27,13 @@ SSML — which would otherwise let a reply that merely SHOWS such example markup
 generation request and stripped from the reply.
 
 Every tag's three patterns (the complete block, the bare tag, the unclosed trailing open) are
-derived from its name by `_Marker` rather than written out per tag: they only ever differed by
-that name, and eight hand-written triples is eight places for one of them to be spelled wrong.
+derived from its name by `_Marker`, and every marker is declared through `_declare`, so a pass
+that has to reach them all cannot be left behind when one is added.
 """
 
 import re
 from typing import Final
+from functools import cached_property
 
 from pydantic import Field, BaseModel
 
@@ -51,10 +52,7 @@ MAX_INLINE_IMAGES = 9
 MAX_MEMORY_NOTES = 5
 
 
-_MARKER_NAMES: Final[list[str]] = []
-
-
-class _Marker:
+class _Marker(BaseModel):
     """One marker tag plus the three patterns every marker is read through.
 
     The block pattern is non-greedy and DOTALL so a multi-line body is captured whole, and every
@@ -62,17 +60,38 @@ class _Marker:
     extraction pass stricter than the model's own output is no pass at all.
     """
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-        _MARKER_NAMES.append(name)
-        self.open = f"<{name}>"
-        self.close = f"</{name}>"
-        self.block = re.compile(rf"<{name}>(.*?)</{name}>", re.IGNORECASE | re.DOTALL)
-        # A bare, unpaired tag, scrubbed so it never leaks into the visible reply.
-        self.tag = re.compile(rf"</?{name}>", re.IGNORECASE)
-        # An unclosed open tag and everything after it: the whole block is going to be pulled,
-        # so hide it the moment it starts streaming in (and tolerate a model that never closes).
-        self.trailing = re.compile(rf"<{name}>.*\Z", re.IGNORECASE | re.DOTALL)
+    name: str = Field(
+        ..., description="The tag name the model writes.", examples=["generate-image"]
+    )
+
+    @property
+    def open(self) -> str:
+        """The opening tag."""
+        return f"<{self.name}>"
+
+    @property
+    def close(self) -> str:
+        """The closing tag."""
+        return f"</{self.name}>"
+
+    @cached_property
+    def block(self) -> re.Pattern[str]:
+        """A complete block, capturing its body."""
+        return re.compile(rf"<{self.name}>(.*?)</{self.name}>", re.IGNORECASE | re.DOTALL)
+
+    @cached_property
+    def tag(self) -> re.Pattern[str]:
+        """A bare, unpaired tag, scrubbed so it never leaks into the visible reply."""
+        return re.compile(rf"</?{self.name}>", re.IGNORECASE)
+
+    @cached_property
+    def trailing(self) -> re.Pattern[str]:
+        """An unclosed open tag and everything after it.
+
+        The whole block is going to be pulled, so it is hidden the moment it starts streaming in,
+        which also tolerates a model that never closes it.
+        """
+        return re.compile(rf"<{self.name}>.*\Z", re.IGNORECASE | re.DOTALL)
 
     def pull(self, text: str) -> tuple[list[str], str]:
         """Removes this marker's blocks from `text`, returning their bodies and what is left.
@@ -94,18 +113,28 @@ class _Marker:
         return self.trailing.sub("", self.block.sub("", text))
 
 
-_VOICE = _Marker("generate-voice")
-_IMAGE = _Marker("generate-image")
-_MUSIC = _Marker("generate-music")
-_VIDEO = _Marker("generate-video")
-_DEEP_RESEARCH = _Marker("deep-research")
-_WRITE_MEMORY = _Marker("write-memory")
-_FORGET_MEMORY = _Marker("forget-memory")
-_WRITE_SERVER_MEMORY = _Marker("write-server-memory")
+# Every marker this module knows, in the order declared.
+_MARKERS: Final[list[_Marker]] = []
 
-# Every tag this module knows, built as each marker is declared so a pass that has to neutralise
-# them all cannot be left behind when one is added.
-MARKER_TAG_NAMES: Final[tuple[str, ...]] = tuple(_MARKER_NAMES)
+
+def _declare(name: str) -> _Marker:
+    """Declares one marker, registering it so a pass over every marker cannot miss it."""
+    marker = _Marker(name=name)
+    _MARKERS.append(marker)
+    return marker
+
+
+_VOICE = _declare(name="generate-voice")
+_IMAGE = _declare(name="generate-image")
+_MUSIC = _declare(name="generate-music")
+_VIDEO = _declare(name="generate-video")
+_DEEP_RESEARCH = _declare(name="deep-research")
+_WRITE_MEMORY = _declare(name="write-memory")
+_FORGET_MEMORY = _declare(name="forget-memory")
+_WRITE_SERVER_MEMORY = _declare(name="write-server-memory")
+
+# Every tag name, for a pass that has to neutralise them all.
+MARKER_TAG_NAMES: Final[tuple[str, ...]] = tuple(marker.name for marker in _MARKERS)
 
 # Tag literals are the single source of truth shared by the prompt instructions and this parser.
 VOICE_OPEN = _VOICE.open
@@ -127,15 +156,7 @@ WRITE_SERVER_MEMORY_CLOSE = _WRITE_SERVER_MEMORY.close
 
 # Every marker whose block is PULLED from the reply, in extraction order. Voice is not here: its
 # content stays visible and only the tags come off, which is the one asymmetry in this module.
-_PULLED = (
-    _IMAGE,
-    _MUSIC,
-    _VIDEO,
-    _DEEP_RESEARCH,
-    _WRITE_MEMORY,
-    _FORGET_MEMORY,
-    _WRITE_SERVER_MEMORY,
-)
+_PULLED = tuple(marker for marker in _MARKERS if marker is not _VOICE)
 
 # Every tag, for the half-streamed-tail trim in a live preview.
 _ALL_TAGS = tuple(
@@ -150,7 +171,10 @@ class InlineMarkers(BaseModel):
 
     cleaned_text: str = Field(
         ...,
-        description="Reply text with image blocks removed and voice tags stripped (voice content kept).",
+        description=(
+            "Reply text with every pulled block removed and voice tags stripped "
+            "(voice content kept)."
+        ),
     )
     voice_text: str = Field(
         default="",

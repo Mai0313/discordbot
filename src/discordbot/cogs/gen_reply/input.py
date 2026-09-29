@@ -501,21 +501,13 @@ class MessageInputBuilder(BaseModel):
         return list(await asyncio.gather(*tasks))
 
     async def get_attachment_parts(
-        self,
-        message: Message,
-        sources: list[AttachmentSource] | None = None,
-        allow_dead_cache: bool = False,
+        self, message: Message, sources: list[AttachmentSource], allow_dead_cache: bool = False
     ) -> list[RenderedPart]:
         """Extracts attachment content parts from a message, with a per-message cache.
 
-        Pass the pre-collected supported `sources` to avoid re-collecting; when omitted
-        they are collected and gated here so direct callers keep working. `allow_dead_cache`
+        `sources` are the message's collected sources after the modality gate. `allow_dead_cache`
         is opt-in for history scrollback only (see `GeminiFileUploader._resolve_file_upload`).
         """
-        if sources is None:
-            sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message), message_id=message.id
-            )
         if not sources:
             return []
         # Key on the exact sources rendered plus the edit time, so a late embed unfurl
@@ -630,35 +622,23 @@ class MessageInputBuilder(BaseModel):
             message=message, content=content, parts=markers, has_attachments=bool(sources)
         )
 
-    async def process_single_message_text_only(self, message: Message) -> EasyInputMessageParam:
-        """Renders a message for the route call without uploading."""
-        try:
-            sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message), message_id=message.id
-            )
-            return await self.render_text_only(message=message, sources=sources)
-        except Exception:
-            # Broad on purpose, and the route awaits this before dispatching: any failure
-            # across the collect, gate and render steps (an unexpected nextcord shape, say)
-            # must degrade to empty text like process_single_message does, not abort the
-            # whole reply through the generic error path.
-            logfire.warn(
-                "gen_reply failed to render message for routing",
-                message_id=message.id,
-                _exc_info=True,
-            )
-            return EasyInputMessageParam(role="user", content="")
-
     async def process_single_message(
-        self, message: Message, allow_dead_cache: bool = False
+        self, message: Message, text_only: bool = False, allow_dead_cache: bool = False
     ) -> EasyInputMessageParam:
         """Processes a single Discord message into a Responses API input message.
 
-        `allow_dead_cache` is set only for history scrollback, where an expired CDN source
-        re-fails every turn; current/reference renders leave it off so a transient failure
-        on a just-posted attachment is retried on the next reply.
+        `text_only` renders the attachments as markers without uploading, for the route call
+        that must not wait on the Files API. `allow_dead_cache` is set only for history
+        scrollback, where an expired CDN source re-fails every turn; current/reference renders
+        leave it off so a transient failure on a just-posted attachment is retried on the next
+        reply. A text-only render fetches nothing, so it ignores the flag.
         """
         try:
+            if text_only:
+                sources = self._supported_sources(
+                    sources=self.collect_attachment_sources(message=message), message_id=message.id
+                )
+                return await self.render_text_only(message=message, sources=sources)
             content = await self.get_cleaned_content(message=message)
             sources = self._supported_sources(
                 sources=self.collect_attachment_sources(message=message), message_id=message.id
@@ -673,14 +653,23 @@ class MessageInputBuilder(BaseModel):
                 has_attachments=bool(sources),
             )
         except Exception as exc:
-            # Broad on purpose: this render feeds the answer request directly, so any failure
-            # (an unexpected nextcord shape, say) must degrade this one message to empty text
-            # rather than abort the reply. Per-attachment download/upload failures never reach
-            # here; the handlers drop them to None with their own step-named warn.
-            logfire.warn(
-                "gen_reply failed to process message",
-                message_id=message.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+            # Broad on purpose: the route awaits the text-only render before dispatching and the
+            # answer request carries the full one, so any failure across the collect, gate and
+            # render steps (an unexpected nextcord shape, say) must degrade this one message to
+            # empty text rather than abort the whole reply through the generic error path.
+            # Per-attachment download/upload failures never reach here; the handlers drop them
+            # to None with their own step-named warn.
+            if text_only:
+                logfire.warn(
+                    "gen_reply failed to render message for routing",
+                    message_id=message.id,
+                    _exc_info=True,
+                )
+            else:
+                logfire.warn(
+                    "gen_reply failed to process message",
+                    message_id=message.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
             return EasyInputMessageParam(role="user", content="")

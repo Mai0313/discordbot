@@ -15,9 +15,9 @@ from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 
-# Helpers that turn bytes already in hand into a `data:` URI. An `image_url` built by one of
-# these is inlined on purpose (the non-Gemini renderer and the generated-media reply paths).
-_DATA_URI_BUILDERS = frozenset({"convert_base64_to_data_uri", "_data_uri"})
+# The helper that turns bytes already in hand into a `data:` URI. An `image_url` built by it is
+# inlined on purpose (the non-Gemini renderer and the generated-media reply paths).
+_DATA_URI_BUILDER = "to_data_uri"
 
 _MEDIA_PART_CALLS = frozenset({"ResponseInputImageParam", "ResponseInputFileParam"})
 _MEDIA_PART_TYPES = frozenset({"input_image", "input_file"})
@@ -59,7 +59,7 @@ def _offending_arguments(fields: list[tuple[str, ast.expr]]) -> list[str]:
     for name, value in fields:
         if name == "file_url":
             offenders.append("file_url")
-        elif name == "image_url" and _called_name(node=value) not in _DATA_URI_BUILDERS:
+        elif name == "image_url" and _called_name(node=value) != _DATA_URI_BUILDER:
             offenders.append("image_url")
     return offenders
 
