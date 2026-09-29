@@ -2754,23 +2754,46 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
     )
 
 
-async def repay_personal_loans(
+async def _collect_loan_payment(  # noqa: PLR0913 -- a payment names both sides, the amount and its kind
     borrower_id: int,
     borrower_name: str,
-    lender_id: int,
-    amount: int,
-    borrower_avatar_url: str = "",
+    borrower_avatar_url: str,
+    lender_type: LoanLenderType,
+    lender_id: int | None,
+    amount: int | None,
+    forced: bool,
+    guild_id: int | None = None,
 ) -> LoanPaymentResult | None:
-    """Repays active personal loans from `borrower_id` to `lender_id`."""
+    """Applies one repayment or forced collection across a borrower's contracts and commits it.
+
+    A forced collection accrues interest on every contract before taking anything, and a
+    `None` amount then takes everything owed. A repayment accrues only the contracts its
+    amount reaches. With `guild_id`, a borrower who does not take part in that guild's
+    economy is refused.
+
+    Returns:
+        The committed payment, or None when nothing was paid.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
+        if guild_id is not None and not await _is_guild_participant_in_session(
+            session=session, guild_id=guild_id, user_id=borrower_id
+        ):
+            return None
         contracts = await _loan_contracts_for_payment_in_session(
-            session=session,
-            borrower_id=borrower_id,
-            lender_type=LoanLenderType.USER,
-            lender_id=lender_id,
+            session=session, borrower_id=borrower_id, lender_type=lender_type, lender_id=lender_id
         )
+        if forced:
+            for contract in contracts:
+                await _accrue_contract_interest_in_session(
+                    session=session, contract=contract, now=now
+                )
+        if amount is None:
+            total_owed = sum(
+                contract.principal_remaining + contract.interest_due for contract in contracts
+            )
+            amount = max(total_owed, 1)
         result = await _apply_loan_payment_in_session(
             session=session,
             contracts=contracts,
@@ -2785,6 +2808,25 @@ async def repay_personal_loans(
             return None
         await _commit_balance_write(session=session)
         return result
+
+
+async def repay_personal_loans(
+    borrower_id: int,
+    borrower_name: str,
+    lender_id: int,
+    amount: int,
+    borrower_avatar_url: str = "",
+) -> LoanPaymentResult | None:
+    """Repays active personal loans from `borrower_id` to `lender_id`."""
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.USER,
+        lender_id=lender_id,
+        amount=amount,
+        forced=False,
+    )
 
 
 async def call_personal_loans(
@@ -2795,61 +2837,30 @@ async def call_personal_loans(
     borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
     """Forcibly collects active personal loans owed to `lender_id`."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        contracts = await _loan_contracts_for_payment_in_session(
-            session=session,
-            borrower_id=borrower_id,
-            lender_type=LoanLenderType.USER,
-            lender_id=lender_id,
-        )
-        for contract in contracts:
-            await _accrue_contract_interest_in_session(session=session, contract=contract, now=now)
-        total_owed = sum(
-            contract.principal_remaining + contract.interest_due for contract in contracts
-        )
-        payment_amount = amount if amount is not None else max(total_owed, 1)
-        result = await _apply_loan_payment_in_session(
-            session=session,
-            contracts=contracts,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name,
-            borrower_avatar_url=borrower_avatar_url,
-            amount=payment_amount,
-            now=now,
-        )
-        if result is None:
-            await session.rollback()
-            return None
-        await _commit_balance_write(session=session)
-        return result
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.USER,
+        lender_id=lender_id,
+        amount=amount,
+        forced=True,
+    )
 
 
 async def repay_central_bank_loans(
     borrower_id: int, borrower_name: str, amount: int, borrower_avatar_url: str = ""
 ) -> LoanPaymentResult | None:
     """Repays active central-bank loans for a borrower."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        contracts = await _loan_contracts_for_payment_in_session(
-            session=session, borrower_id=borrower_id, lender_type=LoanLenderType.CENTRAL_BANK
-        )
-        result = await _apply_loan_payment_in_session(
-            session=session,
-            contracts=contracts,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name,
-            borrower_avatar_url=borrower_avatar_url,
-            amount=amount,
-            now=now,
-        )
-        if result is None:
-            await session.rollback()
-            return None
-        await _commit_balance_write(session=session)
-        return result
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.CENTRAL_BANK,
+        lender_id=None,
+        amount=amount,
+        forced=False,
+    )
 
 
 async def call_central_bank_loans(
@@ -2866,36 +2877,16 @@ async def call_central_bank_loans(
     by creating one, so without this an administrator anywhere could sweep the
     balance of any borrower in the whole economy.
     """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        if not await _is_guild_participant_in_session(
-            session=session, guild_id=guild_id, user_id=borrower_id
-        ):
-            return None
-        contracts = await _loan_contracts_for_payment_in_session(
-            session=session, borrower_id=borrower_id, lender_type=LoanLenderType.CENTRAL_BANK
-        )
-        for contract in contracts:
-            await _accrue_contract_interest_in_session(session=session, contract=contract, now=now)
-        total_owed = sum(
-            contract.principal_remaining + contract.interest_due for contract in contracts
-        )
-        payment_amount = amount if amount is not None else max(total_owed, 1)
-        result = await _apply_loan_payment_in_session(
-            session=session,
-            contracts=contracts,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name,
-            borrower_avatar_url=borrower_avatar_url,
-            amount=payment_amount,
-            now=now,
-        )
-        if result is None:
-            await session.rollback()
-            return None
-        await _commit_balance_write(session=session)
-        return result
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.CENTRAL_BANK,
+        lender_id=None,
+        amount=amount,
+        forced=True,
+        guild_id=guild_id,
+    )
 
 
 async def list_loan_contracts(
