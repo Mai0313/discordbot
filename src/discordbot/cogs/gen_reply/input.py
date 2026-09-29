@@ -1,6 +1,5 @@
 """Builds Responses API input messages from Discord messages."""
 
-import re
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -16,6 +15,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.typings.media import LoadedMedia, RenderedPart, RenderedAttachment
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.utils.mentions import bot_mention_pattern
 from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
@@ -92,8 +92,7 @@ class MessageInputBuilder(BaseModel):
     async def get_user_prompt(self, content: str) -> str:
         """Removes bot mention syntax from image/video generation prompts."""
         if self.bot.user:
-            bot_id = re.escape(str(self.bot.user.id))
-            content = re.sub(rf"<@!?{bot_id}>", "", content)
+            content = bot_mention_pattern(bot_id=self.bot.user.id).sub(repl="", string=content)
         return content.strip()
 
     @staticmethod
