@@ -82,10 +82,11 @@ from discordbot.services.memory.writer import (
     MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
+    user_subject,
     redact_secrets,
+    server_subject,
     parse_turn_payload,
     render_turn_payload,
-    subject_source_line,
     parse_subject_source,
     render_forget_requests,
     transcript_from_messages,
@@ -124,7 +125,7 @@ TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="minimal")
 _NOTES = ("使用者提到一件值得記住的事",)
 
 # The subject a reply schedules for its author: the target, then where the turn happened.
-_SUBJECT = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}"
+_SUBJECT = user_subject(user_id=USER_ID, guild_id=42)
 
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
@@ -2079,7 +2080,7 @@ async def test_a_failed_review_still_writes_the_forgets_of_later_rounds(
     fake_client.responses.raises = RuntimeError("review is down")
     pipeline.resume_memory_update(
         scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+        subject=user_subject(user_id=USER_ID, guild_id=42),
         transcript=render_turn_payload(
             transcript="Alice (alice) [id: 123456789]: 哈囉",
             rounds=((("他住在台中",), ()), ((), ("他已經不住台中了",))),
@@ -2128,7 +2129,7 @@ async def test_a_partly_failed_merge_still_reports_what_it_staged(
     inflight.enqueue_memory_update(
         turn=inflight.MemoryTurn(
             scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+            subject=user_subject(user_id=USER_ID, guild_id=42),
             transcript=render_turn_payload(
                 transcript="Alice (alice) [id: 123456789]: 哈囉",
                 rounds=((("他養了一隻貓",), ()), (("他住在台中",), ("別提舊筆電",))),
@@ -2238,7 +2239,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 
     fake_client.responses.answer = slow_answer
     # A two-line subject: the source line must round-trip through the deferred replay.
-    subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=99)}"
+    subject = user_subject(user_id=USER_ID, guild_id=99)
     _schedule(writer=writer, subject=subject, full_reply="第一")
     await started.wait()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
@@ -2330,7 +2331,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
         _schedule(
             writer=writer,
             remember_notes=(note,),
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
+            subject=user_subject(user_id=USER_ID, guild_id=guild),
         )
         if guild == 99 and note == "在 99 說的":
             await started.wait()
@@ -3637,9 +3638,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
     scopes = [user_scope(user_id=USER_ID + offset) for offset in range(3)]
     for offset, scope in enumerate(scopes):
         _schedule(
-            writer=writer,
-            subject=f"target_user_id: {USER_ID + offset}\n{subject_source_line(guild_id=42)}",
-            scope=scope,
+            writer=writer, subject=user_subject(user_id=USER_ID + offset, guild_id=42), scope=scope
         )
     tasks = [
         task for scope in scopes if (task := inflight._inflight_tasks.get(key=scope)) is not None
@@ -4118,14 +4117,14 @@ def test_render_memory_observations_without_source_keeps_legacy_format() -> None
     assert "- sharing:" not in rendered
 
 
-def test_subject_source_line_round_trips_through_parse() -> None:
-    guild_subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}"
+def test_subjects_round_trip_through_parse() -> None:
+    guild_subject = user_subject(user_id=USER_ID, guild_id=123)
     assert parse_subject_source(subject=guild_subject) == "guild 123"
-    dm_subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=None)}"
+    dm_subject = user_subject(user_id=USER_ID, guild_id=None)
     assert parse_subject_source(subject=dm_subject) == "dm"
     # Legacy user jobs and server-flavor subjects carry no source line.
     assert parse_subject_source(subject=f"target_user_id: {USER_ID}") is None
-    assert parse_subject_source(subject="target_server_id: 9") is None
+    assert parse_subject_source(subject=server_subject(server_id=9)) is None
 
 
 def test_filter_duplicate_observations_pairs_each_key_with_its_own_block_source() -> None:
@@ -4363,9 +4362,7 @@ async def test_pipeline_dedupes_against_evidence_already_in_detail(
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    _schedule(
-        writer=writer, subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}"
-    )
+    _schedule(writer=writer, subject=user_subject(user_id=USER_ID, guild_id=123))
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "- source: guild 123" in raw_text

@@ -89,7 +89,7 @@ _OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention
 # The target-user id inside a phase-1 subject; None for the server flavor.
 _SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", flags=re.MULTILINE)
 # The optional second subject line naming where the conversation happened. Format and
-# parser are co-located so the writer (`subject_source_line`) and the reader
+# parser are co-located so the writer (`user_subject`) and the reader
 # (`parse_subject_source`) cannot drift apart across the memory_job round-trip.
 _SUBJECT_SOURCE_RE = re.compile(r"^source: (?P<source>guild \d+|dm)$", flags=re.MULTILINE)
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
@@ -703,9 +703,19 @@ def _note_text(note: str) -> str:
     return _trim_text(text=redact_secrets(text=note), max_chars=MEMORY_NOTE_MAX_CHARS)
 
 
-def subject_source_line(guild_id: int | None) -> str:
-    """Renders the subject's second line naming where the conversation happened."""
-    return f"source: guild {guild_id}" if guild_id is not None else "source: dm"
+def user_subject(user_id: int, guild_id: int | None) -> str:
+    """Renders the subject of one user's memory review.
+
+    The second line names where the conversation happened: the guild, or `dm` when
+    `guild_id` is None.
+    """
+    source = f"guild {guild_id}" if guild_id is not None else "dm"
+    return f"target_user_id: {user_id}\nsource: {source}"
+
+
+def server_subject(server_id: int) -> str:
+    """Renders the subject of one server's memory review, which carries no source line."""
+    return f"target_server_id: {server_id}"
 
 
 def parse_subject_source(subject: str) -> str | None:

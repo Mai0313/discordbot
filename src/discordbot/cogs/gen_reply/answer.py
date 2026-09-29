@@ -41,7 +41,11 @@ from discordbot.cogs.gen_reply.prompts import (
 )
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
-from discordbot.services.memory.writer import subject_source_line, target_centered_memory_messages
+from discordbot.services.memory.writer import (
+    user_subject,
+    server_subject,
+    target_centered_memory_messages,
+)
 from discordbot.cogs.gen_reply.streaming import (
     MEMORY_WRITE_EMOJI,
     MEMORY_FORGET_EMOJI,
@@ -541,10 +545,9 @@ class AnswerTurn(BaseModel):
         # `dm` there would file a server conversation's `source_only` observations —
         # roughly half of them — in the user's private DM compartment, where the read
         # side of that same conversation would never look for them again.
-        source_line = subject_source_line(guild_id=self.surface.guild_id)
         schedule_memory_update(
             scope=user_scope(user_id=message.author.id),
-            subject=f"target_user_id: {message.author.id}\n{source_line}",
+            subject=user_subject(user_id=message.author.id, guild_id=self.surface.guild_id),
             message_list=memory_message_list,
             full_reply=full_reply,
             writer=self.toolkit.memory_writer,
@@ -573,7 +576,7 @@ class AnswerTurn(BaseModel):
             return
         schedule_memory_update(
             scope=server_scope(server_id=message.guild.id),
-            subject=f"target_server_id: {message.guild.id}",
+            subject=server_subject(server_id=message.guild.id),
             message_list=context.message_list,
             full_reply=full_reply,
             writer=self.toolkit.server_memory_writer,
