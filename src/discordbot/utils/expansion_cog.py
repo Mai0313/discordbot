@@ -24,7 +24,7 @@ from nextcord import File, Embed, Message, NotFound
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
 
-from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.expansion_placeholder import (
@@ -66,7 +66,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         bot: The Discord bot instance that owns this cog.
     """
 
-    SOURCE: ClassVar[str]
+    SOURCE: ClassVar[LinkSourceName]
     """Keys this cog's rows in the pending-expansion table and its marker in
     `LINK_SOURCE_EMOJIS`, so one platform is spelled one way wherever it is named."""
 

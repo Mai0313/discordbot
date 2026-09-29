@@ -9,10 +9,16 @@ Scope is the platform markers alone; the status marks an auto-expansion answers 
 the protocol that gives each of them its meaning.
 
 The keys below are also what an expansion names its `pending_expansion` rows by, so a platform is
-spelled one way wherever it is named.
+spelled one way wherever it is named; `LinkSourceName` is that spelling.
 """
 
-from typing import Final
+from typing import Final, Literal
+
+# Every registered link source's name: the registry's, the route call's schema's, each
+# expansion's, and the keys below. A plain alias rather than a `type` statement, because the
+# route call's schema has to carry the enum inline and pydantic hoists a `type` alias into
+# `$defs` behind a `$ref`.
+LinkSourceName = Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
 
 FACEBOOK_EMOJI: Final[str] = "<:facebook:1546179601288396810>"
 INSTAGRAM_EMOJI: Final[str] = "<:instagram:1546181126945505340>"
@@ -42,4 +48,5 @@ __all__ = [
     "LINK_SOURCE_EMOJIS",
     "THREADS_EMOJI",
     "TWITTER_EMOJI",
+    "LinkSourceName",
 ]

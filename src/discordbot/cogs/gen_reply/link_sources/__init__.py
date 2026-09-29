@@ -34,6 +34,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.emojis import LinkSourceName
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
 from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
 from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
@@ -275,7 +276,7 @@ class LinkContextSource(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    name: str = Field(
+    name: LinkSourceName = Field(
         ...,
         description="Source label used for logs, task-discard labels, and the splice order.",
         examples=["douyin"],

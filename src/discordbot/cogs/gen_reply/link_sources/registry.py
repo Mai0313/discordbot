@@ -1,9 +1,10 @@
 """The linked-content sources `gen_reply` reads into answer context, in splice order.
 
 The blocks land in the answer input in `LINK_CONTEXT_SOURCES` order, just before the current
-message. Adding a source is one entry here, its builder module beside this one, and its name in
-`RouteClassification.link_context_sources` (a source the router cannot name is never selected, so
-its builder never starts); the pipeline loops stay untouched.
+message. Adding a source is one entry here, its builder module beside this one, its name in
+`typings/emojis.py::LinkSourceName` (a source the router cannot name is never selected, so its
+builder never starts) with a marker in `LINK_SOURCE_EMOJIS`, and a line in `ROUTE_PROMPT` saying
+when the router should select it; the pipeline loops stay untouched.
 
 Each entry is a thin adapter over its builder function rather than the function itself: an
 adapter body resolves the builder name from THIS module's globals at call time, so a test
@@ -183,9 +184,9 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="threads",
         url_pattern=THREADS_URL_RE,
-        # The one source that reads a link the user only replied to: what it fetches is the
-        # discussion under the post, which the `parse_threads` expansion deliberately does not
-        # show, so "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
+        # Reads a link the user only replied to: what it fetches is the discussion under the
+        # post, which the `parse_threads` expansion deliberately does not show, so
+        # "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
         search_replied_to_message=True,
         build=_build_threads_link_context,
         timeout_notice=THREADS_TIMEOUT_NOTICE,
