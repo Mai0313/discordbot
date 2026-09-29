@@ -1541,6 +1541,7 @@ async def test_a_forget_reaches_what_was_staged_before_it(memory_isolated_dir: P
         identity=IDENTITY,
     )
 
+    # order-contract: what precedes a forget is consolidated before it, so the forget reaches it.
     assert calls == ["observe", "forget"]
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.summary for fact in facts] == [_PET.summary_zh]
@@ -1573,6 +1574,7 @@ async def test_a_restatement_after_the_forget_survives_it(memory_isolated_dir: P
         identity=IDENTITY,
     )
 
+    # order-contract: the forget splits the batch, so a restatement after it is consolidated after it.
     assert calls == ["observe", "forget", "observe"]
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
@@ -1612,6 +1614,7 @@ async def test_each_forget_reaches_only_what_came_before_it(memory_isolated_dir:
         identity=IDENTITY,
     )
 
+    # order-contract: each forget splits the batch at its own stamp, one forget at a time.
     assert calls == ["observe", "forget", "observe", "forget"]
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
@@ -1799,6 +1802,7 @@ async def test_each_tone_forget_sees_only_what_came_before_it(memory_isolated_di
 
     tone_calls = [body for body in fake_client.responses.parse_bodies if "<tone_note>" in body]
     assert len(tone_calls) == 2
+    # order-contract: the batch's forgets run one at a time, oldest stamp first.
     assert _ROAST.summary_zh not in tone_calls[0]
     assert _ROAST.summary_zh in tone_calls[1]
 

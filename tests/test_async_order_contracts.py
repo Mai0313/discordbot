@@ -16,6 +16,11 @@ Which positions get exchanged is the one assumption: a stated `len(recorder) == 
 whole range, and otherwise only the positions the test indexes. A recorder holding more records
 than the test reads is therefore a known false negative, deliberately, in the same class as the
 two gaps recorded in #425.
+
+A recorder is only recognised as one when the test both creates it and writes it from a callable
+nested inside the test. A list handed to a test double built outside the test, such as a
+module-level factory taking the recorder as an argument, is never scanned, so an order assertion
+on it passes unflagged and carries its `# order-contract:` marker by convention alone.
 """
 
 from __future__ import annotations
