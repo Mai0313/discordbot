@@ -372,20 +372,3 @@ async def list_resumable() -> list[MemoryJob]:
             statement=select(MemoryJobRow).where(MemoryJobRow.status.in_(("pending", "failed")))
         )
         return [_row_to_model(row=row) for row in result.scalars().all()]
-
-
-async def get_job(*, scope: str) -> MemoryJob | None:
-    """Reads one scope's row, or `None` when it is not tracked.
-
-    No production caller: the pipeline writes only its own scope's state and the restart
-    sweep reads in bulk. Kept so a test can assert one row's status unwrapped, where the
-    bulk read degrades a failure to "nothing to resume" and would pass without having
-    looked.
-    """
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(MemoryJobRow).where(MemoryJobRow.scope == scope)
-        )
-        row = result.scalars().one_or_none()
-        return _row_to_model(row=row) if row is not None else None
