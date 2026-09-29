@@ -1,4 +1,4 @@
-"""Builders for the memory store's stored facts and consolidation deltas.
+"""Builders for the memory store's stored facts and consolidation deltas, and a row reader.
 
 Every default is an ordinary per-user preference, so a test names only the fields it is about.
 A fact carries no default owner: the owner is what a scope's stored identity is read back from,
@@ -6,6 +6,8 @@ so each test module binds its own.
 """
 
 from datetime import UTC, datetime
+
+from sqlalchemy import select
 
 from discordbot.typings.memory import (
     MemoryFact,
@@ -17,6 +19,13 @@ from discordbot.typings.memory import (
 from discordbot.services.memory.facts import node_type_for
 from discordbot.services.memory.store import GLOBAL_COMPARTMENT
 from discordbot.services.memory.writer import MemoryFactDelta
+from discordbot.services.memory.database import (
+    MemoryJob,
+    MemoryJobRow,
+    open_session,
+    _row_to_model,
+    _ensure_schema,
+)
 
 # The moment a built fact was written and last confirmed, unless a test ages it on purpose.
 STAMPED_AT = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
@@ -77,3 +86,18 @@ def make_delta(  # noqa: PLR0913 -- mirrors the delta schema
         display_name=display_name,
         aliases=aliases,
     )
+
+
+async def get_job(scope: str) -> MemoryJob | None:
+    """Reads one scope's `memory_job` row, or None when it is not tracked.
+
+    Unwrapped on purpose: the restart sweep's bulk read degrades a failure to "nothing to
+    resume", so a test asserting through it would pass without having looked.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(MemoryJobRow).where(MemoryJobRow.scope == scope)
+        )
+        row = result.scalars().one_or_none()
+        return _row_to_model(row=row) if row is not None else None

@@ -10,7 +10,11 @@ from nextcord.ui import View, Button
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
-from discordbot.services.memory.store import DM_COMPARTMENT, GLOBAL_COMPARTMENT
+from discordbot.services.memory.store import (
+    DM_COMPARTMENT,
+    GLOBAL_COMPARTMENT,
+    compartment_guild_id,
+)
 from discordbot.services.memory.pipeline import clear_scope_memory
 
 MEMORY_VIEW_TIMEOUT_SECONDS = 180
@@ -31,8 +35,8 @@ def compartment_label(compartment: str, bot: commands.Bot) -> str:
         return "全部聊天都看得到"
     if compartment == DM_COMPARTMENT:
         return "只有我們的私訊看得到"
-    guild_id = compartment.removeprefix("g/")
-    guild = bot.get_guild(int(guild_id)) if guild_id.isdigit() else None
+    guild_id = compartment_guild_id(compartment=compartment)
+    guild = bot.get_guild(guild_id) if guild_id is not None else None
     return f"只有 {guild.name} 看得到" if guild is not None else f"只有伺服器 {guild_id} 看得到"
 
 

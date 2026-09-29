@@ -7,9 +7,10 @@ this quietly rather than filling an ignored directory with one nobody asked for.
 
 Three properties are what make committing from inside a running bot safe:
 
-* **One worker.** Every invocation goes through a single queue and one process-wide
-  lock. Memory writes run concurrently and ``git commit`` takes ``.git/index.lock``, so
-  unserialised commits would start failing exactly when the store is busiest.
+* **One worker.** Every invocation goes through a single queue drained by one task, one
+  commit at a time. Memory writes run concurrently and ``git commit`` takes
+  ``.git/index.lock``, so unserialised commits would start failing exactly when the store is
+  busiest.
 * **Under the scope lock.** A delta batch is N renames, not one atomic replace, so a
   commit taken mid-batch would record a tree that never existed. The worker takes the
   same ``scope_lock`` the writer used; it is background work, so waiting costs nothing.
@@ -30,7 +31,6 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 
 from discordbot.typings.memory import MemoryConfig
-from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.services.memory.store import scope_lock, memory_root
 
 # Consecutive failures before the service stops trying. A repository that is missing,
@@ -70,7 +70,6 @@ class MemoryGitService(BaseModel):
     _queue: asyncio.Queue[_GitRequest] | None = PrivateAttr(default=None)
     _worker: asyncio.Task[None] | None = PrivateAttr(default=None)
     _failures: int = PrivateAttr(default=0)
-    _lock: LoopLocalLock = PrivateAttr(default_factory=LoopLocalLock)
 
     def start(self) -> None:
         """Starts the single worker, if git history is enabled and a repository exists.
@@ -121,7 +120,7 @@ class MemoryGitService(BaseModel):
     async def _commit(self, request: _GitRequest) -> None:
         """Stages and commits one scope, swallowing and counting any failure."""
         try:
-            async with self._lock.get(), scope_lock(scope=request.scope):
+            async with scope_lock(scope=request.scope):
                 if not await self._has_changes(scope=request.scope):
                     # `git add` on a path that was never tracked and no longer exists
                     # exits 128, so this guard is required rather than an optimization.

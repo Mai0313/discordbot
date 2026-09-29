@@ -19,10 +19,9 @@ and ``tone.md`` is the short always-read note of how the user wants the bot to s
 
 IO is synchronous, which one fact per file would otherwise make untenable on the reply
 path: ``read_memory_document`` is cached under a per-scope generation counter that
-every write bumps, so a repeat read costs no syscalls at all. The counter is exact
-because every write in this process goes through here under ``scope_lock``; editing the
-tree from outside while the bot runs is not supported (nor is it today, for
-``_cleared_at``).
+every fact write bumps, so a repeat read costs no syscalls at all. The counter is exact
+because every write in this process goes through here; editing the tree from outside
+while the bot runs is not supported.
 """
 
 import os
@@ -38,16 +37,18 @@ from collections.abc import Callable
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
-    MemoryFlavor,
     parse_fact_file,
     render_fact_file,
     render_memory_document,
 )
-from discordbot.typings.context_budgets import MEMORY_INJECTION_MAX_CHARS
+from discordbot.typings.context_budgets import (
+    MEMORY_INJECTION_MAX_CHARS,
+    MEMORY_DETAIL_CONTEXT_MAX_CHARS,
+)
 from discordbot.services.memory.constants import (
     RAW_FILE_MAX_BYTES,
     TONE_FILE_MAX_BYTES,
@@ -99,6 +100,12 @@ def server_scope(server_id: int) -> str:
 def guild_compartment(guild_id: int) -> str:
     """Returns the compartment holding facts readable only inside one guild."""
     return f"{_GUILD_DIR_NAME}/{guild_id}"
+
+
+def compartment_guild_id(compartment: str) -> int | None:
+    """Returns the guild a `guild_compartment` is readable in, or None for any other shape."""
+    parent, _, guild_id = compartment.partition("/")
+    return int(guild_id) if parent == _GUILD_DIR_NAME and guild_id.isdecimal() else None
 
 
 def scope_owner_id(scope: str) -> int:
@@ -638,6 +645,19 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
     return text.strip()
 
 
+def read_evidence(scope: str) -> str:
+    """Returns the scope's evidence corpus, oldest first: the detail tail, then `raw.md`.
+
+    Detail entries are retired raw entries verbatim, under the same `## <ISO timestamp>`
+    headers, so the corpus reads as one raw batch. Empty when neither file holds anything.
+    """
+    parts = (
+        read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
+        read_raw_entries(scope=scope),
+    )
+    return "\n\n".join(part for part in parts if part)
+
+
 def count_raw_entries(scope: str) -> int:
     """Returns how many raw entries are waiting for consolidation."""
     return len(_split_raw_entries(text=_read_text(path=_raw_path(scope=scope))))
@@ -669,11 +689,11 @@ def clear_raw(scope: str) -> None:
 
 
 def clear_tone(scope: str) -> None:
-    """Deletes the tone note when a full-evidence rebuild found no tone signal.
+    """Deletes the tone note.
 
-    Or when a forget took its last line. Those are the only two callers: an incremental
-    consolidation's empty tone output merely means "no tone signal in this batch" and must
-    never remove the note.
+    Only for a rebuild that read the whole evidence corpus and found no tone signal, or a
+    forget that took the note's last line: an incremental consolidation's empty tone output
+    merely means "no tone signal in this batch" and must never remove the note.
     """
     _tone_path(scope=scope).unlink(missing_ok=True)
 

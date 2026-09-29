@@ -14,15 +14,18 @@ the two vocabularies meet.
 """
 
 import re
-from typing import Literal
 import hashlib
 from datetime import UTC, datetime
 
 import logfire
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryNodeType
-
-type MemoryFlavor = Literal["user", "server"]
+from discordbot.typings.memory import (
+    MemoryFact,
+    MemoryOwner,
+    MemoryFlavor,
+    MemorySection,
+    MemoryNodeType,
+)
 
 _FENCE = "---"
 # The rendered `<name> [id: <N>]` identity line. It crosses the review job's round-trip
@@ -164,11 +167,10 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
     """Parses one fact file, or returns None when it is unusable.
 
     `compartment` is the directory the file was found in and is authoritative: a stored
-    `compartment` that disagrees means the tree was hand-edited or a migration stopped
-    half way, and there is no safe way to guess which side is right. Returning None keeps the
-    fact out of every reply rather than guessing the permissive answer. A mismatch means the
-    tree was edited outside the store, so it is logged; a header that simply will not parse is
-    not.
+    `compartment` that disagrees means the tree was edited outside the store, and there is no
+    safe way to guess which side is right. Returning None keeps the fact out of every reply
+    rather than guessing the permissive answer. That mismatch is logged at error and a header
+    whose values do not validate at warn; a file with no readable header is skipped silently.
     """
     header, body = _split_front_matter(text=text)
     if header is None:

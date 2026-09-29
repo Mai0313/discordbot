@@ -28,7 +28,7 @@ token, so a stale turn's write no-ops once a newer turn has overwritten the
 scope's row.
 """
 
-from typing import Literal, cast
+from typing import Literal, cast, get_args
 from datetime import datetime
 from itertools import count
 from threading import Lock
@@ -39,11 +39,10 @@ from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
+from discordbot.typings.memory import MemoryFlavor
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
-# Memory flavor stored per row so the restart sweep rebuilds the matching writer.
-MemoryJobFlavor = Literal["user", "server"]
 # Lifecycle of a persisted review turn, stored in the `status` column.
 MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
 # `last_error` is a bounded blurb, not a full traceback.
@@ -115,7 +114,7 @@ class MemoryJob(BaseModel):
     """A memory_job row read back from `reply.db`."""
 
     scope: str = Field(..., description="Opaque memory scope; primary key.")
-    flavor: MemoryJobFlavor = Field(..., description="User or server flavor of the scope.")
+    flavor: MemoryFlavor = Field(..., description="User or server flavor of the scope.")
     subject: str = Field(..., description="The phase-1 directive naming the review target.")
     transcript: str | None = Field(
         ..., description="The rendered phase-1 input, or None once the turn is done."
@@ -140,14 +139,14 @@ def open_session() -> AsyncSession:
     return _database.open_session(engine=_engine)
 
 
-def cast_flavor(value: str) -> MemoryJobFlavor:
+def cast_flavor(value: str) -> MemoryFlavor:
     """Narrows a stored flavor string, defaulting odd values to user."""
     return "server" if value == "server" else "user"
 
 
 def cast_status(value: str) -> MemoryJobStatus:
     """Narrows a stored status string, defaulting odd values to pending."""
-    if value in ("pending", "done", "failed", "cleared"):
+    if value in get_args(tp=MemoryJobStatus):
         return cast("MemoryJobStatus", value)
     return "pending"
 
@@ -220,13 +219,7 @@ async def _resolve_token(*, token: int) -> int:
 
 
 async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call inputs
-    *,
-    scope: str,
-    flavor: MemoryJobFlavor,
-    subject: str,
-    transcript: str,
-    identity: str,
-    token: int,
+    *, scope: str, flavor: MemoryFlavor, subject: str, transcript: str, identity: str, token: int
 ) -> None:
     """Records (newest-wins) a pending review turn for a scope.
 
@@ -297,7 +290,7 @@ async def mark_failed(*, scope: str, token: int, error: str) -> None:
         await session.commit()
 
 
-async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
+async def clear_job(*, scope: str, flavor: MemoryFlavor, token: int) -> bool:
     """Scrubs a scope's row and leaves a token-guarded clear tombstone.
 
     The tombstone closes both possible commit orderings with a staging write. A
@@ -379,20 +372,3 @@ async def list_resumable() -> list[MemoryJob]:
             statement=select(MemoryJobRow).where(MemoryJobRow.status.in_(("pending", "failed")))
         )
         return [_row_to_model(row=row) for row in result.scalars().all()]
-
-
-async def get_job(*, scope: str) -> MemoryJob | None:
-    """Reads one scope's row, or `None` when it is not tracked.
-
-    No production caller: the pipeline writes only its own scope's state and the restart
-    sweep reads in bulk. Kept so a test can assert one row's status unwrapped, where the
-    bulk read degrades a failure to "nothing to resume" and would pass without having
-    looked.
-    """
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(MemoryJobRow).where(MemoryJobRow.scope == scope)
-        )
-        row = result.scalars().one_or_none()
-        return _row_to_model(row=row) if row is not None else None

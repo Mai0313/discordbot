@@ -1,8 +1,8 @@
 """Turning one compartment's consolidation deltas into files, and aging what is left.
 
-Three jobs live here, all pure-plus-store and synchronous so the caller can hold them
-inside the scope lock without an await in between (the `cleared_since` guard depends on
-that):
+Everything here is pure-plus-store and synchronous, so the caller can hold it inside the
+scope lock without an await in between (the `cleared_since` guard depends on that). The
+main jobs:
 
 * **Partitioning.** `raw.md` stays one file per scope — it is staging, never injected,
   and splitting it would multiply job rows and cooldowns by the number of guilds for
@@ -28,10 +28,15 @@ from itertools import groupby
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection
+from discordbot.typings.memory import (
+    FORGET_REQUEST_CATEGORY,
+    MemoryFact,
+    MemoryOwner,
+    MemoryFlavor,
+    MemorySection,
+)
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
-    MemoryFlavor,
     utc_now,
     mint_fact_id,
     node_type_for,
@@ -46,7 +51,7 @@ from discordbot.services.memory.store import (
     delete_fact,
     guild_compartment,
 )
-from discordbot.services.memory.writer import FORGET_REQUEST_CATEGORY, MemoryFactDelta
+from discordbot.services.memory.writer import MemoryFactDelta
 from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,

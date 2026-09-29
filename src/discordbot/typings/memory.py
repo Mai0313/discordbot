@@ -10,9 +10,9 @@ A fact's fields split into two ownership zones. The model authors ``summary``,
 ``section``, ``durability`` and the body, and names ``subject_id`` plus the keys a fact
 distils from; everything else is stamped by code — provenance the model cannot copy
 wrong. Stamped is not the same as hidden: ``MemoryFact`` below has what an update or
-delete is handed back and why. ``compartment`` is the exception that proves the
-ownership rule: it is stored only so a hand-edited or half-migrated tree can be
-*detected*, and the containing directory always wins (see ``store.read_facts``).
+delete is handed back and why. ``compartment`` is stamped too, but only so a tree edited
+outside the store can be *detected*: the containing directory always wins
+(``facts.parse_fact_file``).
 """
 
 from typing import Literal
@@ -20,6 +20,9 @@ from datetime import datetime
 
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings
+
+# Whose memory a scope holds: one user's, or the bot's own memory of one server.
+type MemoryFlavor = Literal["user", "server"]
 
 type MemoryCategory = Literal[
     "stable_preference", "stable_fact", "interaction_style", "recurring_pattern", "recent_context"
@@ -38,6 +41,7 @@ type MemoryEvidenceKind = Literal[
     "other_user_context",
     "unknown",
 ]
+
 type MemoryConfidence = Literal["low", "medium", "high"]
 type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
 type MemorySharing = Literal["global", "source_only"]
@@ -65,6 +69,16 @@ type MemoryNodeType = Literal["memory", "member_alias"]
 # What one consolidation delta asks for. `create` mints a fresh id, `update` and
 # `delete` name an existing one.
 type MemoryDeltaAction = Literal["create", "update", "delete"]
+
+# The `### <category>` header a forget request carries inside `raw.md`. Deliberately not a
+# `MemoryCategory`: a forget is an instruction to consolidation, not an observation to store, and
+# keeping it out of that vocabulary is what keeps it out of every reader that walks observation
+# fields.
+FORGET_REQUEST_CATEGORY = "forget_request"
+
+# The exact header a tone note must lead with. The tier is injected on every reply, so anything
+# else is a rewrite that did not land and must not be written.
+TONE_HEADER = "## 語氣偏好"
 
 
 class MemoryOwner(BaseModel):
