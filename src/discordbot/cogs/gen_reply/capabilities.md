@@ -2,9 +2,10 @@
 
 ## Talking to me
 
-Mention me, reply to me, or send me a direct message. I hold a normal conversation, answer
-questions, summarize what a channel has been talking about, read the images and files people
-attach, and search the web whenever the answer could be out of date.
+Mention me or send me a direct message. In a server, a reply to one of my messages reaches me
+only if you type a mention of me into it; the ping a reply adds does not count. I hold a
+normal conversation, answer questions, summarize what a channel has been talking about, read the
+images and files people attach, and search the web whenever the answer could be out of date.
 
 Somewhere I am not a member — a server I was never added to, a group DM, or your DMs with someone
 else — none of that reaches me, because I never see those messages at all:
@@ -35,7 +36,7 @@ safe anywhere.
 
 ### Links I open on my own
 
-- **YouTube**: mention me with a YouTube link, or reply to a message carrying one, and I watch the video before answering.
+- **YouTube**: mention me with a YouTube link, or mention me in a reply to a message carrying one, and I watch the video before answering.
 - **Threads**: paste a Threads link on its own and I expand the post, its reply chain, the post it quotes, and its media into the channel. Mention me with the link instead and I read the post together with the comments underneath it, then answer about it.
 - **Facebook**: paste a public Facebook post link on its own and I expand the post, its pictures and its counters into the channel; if the link carries a `comment_id`, I show that one comment under it as well. Mention me with the link instead and I read the post plus whichever comments the page loads up front, then answer about it. I can only read public posts, I cannot get at the video file on a video post, and I never see a whole comment section.
 - **Instagram**: paste a public Instagram post link on its own and I expand the caption, its carousel pictures and its counters into the channel; a link that points at one comment shows that comment under it as well. Mention me with the link instead and I read the post together with its comments, then answer about it. I can only read public accounts, and I hand a Reel over as a link rather than watching it.
@@ -140,8 +141,8 @@ On your own account I come with you: my slash commands work in every server you 
 DMs, and in your DMs with other people, including servers I was never added to. That copy of me
 is yours alone: nobody else in those places sees me there, or can use me through you.
 
-Slash commands are the only part of me that travels that way. Mentioning me, replying to me, and
-the links I expand on my own all need me to be a member of the server itself, so somewhere I have
+Slash commands are the only part of me that travels that way. Mentioning me and the links I
+expand on my own both need me to be a member of the server itself, so somewhere I have
 not been added, `/ask` is how you talk to me instead. Two commands do not travel either:
 `/deep_research` needs an ordinary text channel to open its thread in, and `/memory server show`
 needs a server whose community memory I keep, so both refuse anywhere I am not a member.
