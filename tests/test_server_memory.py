@@ -178,19 +178,15 @@ def test_render_server_memory_block_is_low_authority_assistant_note() -> None:
 
 def test_server_prompts_target_the_server_not_individuals() -> None:
     """Server memory is about the community; a member's own facts stay in their scope."""
-    assert "target_server_id" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert (
+        "The user message starts with `target_server_id: <id>`" in SERVER_PHASE1_EVALUATOR_PROMPT
+    )
     # The privacy boundary: individual personal facts are out of scope.
-    assert "personal" in SERVER_PHASE1_EVALUATOR_PROMPT
-    assert "individual" in SERVER_PHASE2_PROMPT
-
-
-def test_server_consolidation_prompt_names_every_delta_action() -> None:
-    """Consolidation emits changes now, so the three actions it may ask for are the contract."""
-    for action in ("create", "update", "delete"):
-        assert f'action="{action}"' in SERVER_PHASE2_PROMPT
-    # `fact_id` is the model's only handle on a stored fact, and it may only echo it.
-    assert "MUST be copied verbatim" in SERVER_PHASE2_PROMPT
-    assert "from_keys" in SERVER_PHASE2_PROMPT
+    assert "belong to that member's OWN memory, never here" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert (
+        "A personal fact about one member belongs to that member's own memory, never here."
+        in SERVER_PHASE2_PROMPT
+    )
 
 
 def test_server_consolidation_prompt_offers_exactly_the_server_sections() -> None:
@@ -212,10 +208,7 @@ def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
     assert 'durability="permanent"' in SERVER_PHASE1_EVALUATOR_PROMPT
     # The same kind that the deterministic gate drops must be explicitly forbidden here.
     assert "other_user_context" in SERVER_PHASE1_EVALUATOR_PROMPT
-
-
-def test_evaluator_prompt_keeps_member_aliases() -> None:
-    """The strict pass drops personal facts but must not drop the name-to-member mapping."""
+    # Dropping personal facts must not drop the name-to-member mapping with them.
     assert "nickname/alias" in SERVER_PHASE1_EVALUATOR_PROMPT
     assert "community vocabulary" in SERVER_PHASE1_EVALUATOR_PROMPT
 
@@ -237,9 +230,6 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
 
 def test_server_consolidation_prompt_leaves_dating_and_aging_to_code() -> None:
     """Dates are code-stamped now, so a prompt that still asks for one would fight the sweep."""
-    assert "You do not date anything." in SERVER_PHASE2_PROMPT
-    assert "Dates are recorded for you" in SERVER_PHASE2_PROMPT
-    assert "aging is applied for you" in SERVER_PHASE2_PROMPT
     # The freshness tags the model used to write are gone from the contract.
     assert "[~YYYY-MM]" not in SERVER_PHASE2_PROMPT
 

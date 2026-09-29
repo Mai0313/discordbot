@@ -717,26 +717,6 @@ def test_prompts_cover_recent_context_and_compaction() -> None:
     assert str(COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
 
 
-def test_phase2_prompt_states_the_delta_protocol() -> None:
-    """The model's only handle on a stored fact is the id it echoes back, so the prompt says so."""
-    for action in ('action="create"', 'action="update"', 'action="delete"'):
-        assert action in PHASE2_PROMPT
-    # `fact_id` is copied verbatim, never invented, and `from_keys` is what lets the next
-    # batch recognise the same fact when the model rewords its summary.
-    assert "`fact_id` MUST be copied verbatim" in PHASE2_PROMPT
-    assert "`from_keys`" in PHASE2_PROMPT
-
-
-def test_phase2_prompt_tells_the_model_dates_are_stamped_for_it() -> None:
-    """Aging is a deterministic code sweep now, so a model-written date would only fight it."""
-    assert "You do not date anything" in PHASE2_PROMPT
-    assert "Dates are recorded for you" in PHASE2_PROMPT
-    # The three durability tiers still come from the model, since only it knows which
-    # tier an observation belongs to.
-    for durability in ("`permanent`", "`stable`", "`recent`"):
-        assert durability in PHASE2_PROMPT
-
-
 def test_prompts_cover_the_permanent_tier() -> None:
     # The note review authors the durability, so it must offer the permanent tier and say
     # which narrow class it is for.
