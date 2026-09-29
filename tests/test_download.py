@@ -1,5 +1,6 @@
 """Tests for the yt-dlp downloader facade and the `/download_video` command."""
 
+import re
 import time
 from types import TracebackType, SimpleNamespace
 from typing import Any, Self, NoReturn, get_args
@@ -480,6 +481,21 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
 
     cog = VideoCogs(bot=as_bot(fake=object()))
     assert cog.download_video.options["quality"].default in presets
+
+
+def test_a_quality_label_names_what_each_downloader_asks_for() -> None:
+    """A label naming a resolution names exactly the ones requested, Douyin's where it differs."""
+    for label, preset in QUALITY_CHOICES.items():
+        named = set(re.findall(pattern=r"(\d+)p", string=label))
+        if not named:
+            continue
+        ytdlp = set(
+            re.findall(pattern=r"height<=(\d+)", string=VideoDownloader.quality_formats[preset])
+        )
+        douyin = DouyinDownloader.quality_ratios[preset].removesuffix("p")
+        assert named == {*ytdlp, douyin}, label
+        if douyin not in ytdlp:
+            assert f"{douyin}p on Douyin" in label, label
 
 
 class DownloadResultStub:
