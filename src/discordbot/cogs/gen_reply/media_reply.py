@@ -17,7 +17,6 @@ exactly as they were there.
 """
 
 import time
-import base64
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
@@ -30,7 +29,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.images import convert_base64_to_data_uri
+from discordbot.utils.images import to_data_uri
 from discordbot.typings.timeouts import GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
 from discordbot.cogs.gen_reply.answer import AnswerTurn
@@ -214,11 +213,7 @@ class MediaReplyRoutes(BaseModel):
             context_task=context_task,
             system_prompt=IMAGE_REPLY_PROMPT,
             focus_part=ResponseInputImageParam(
-                image_url=convert_base64_to_data_uri(
-                    base64_image=base64.b64encode(image_bytes).decode()
-                ),
-                detail="auto",
-                type="input_image",
+                image_url=to_data_uri(data=image_bytes), detail="auto", type="input_image"
             ),
             media_noun="image",
         )

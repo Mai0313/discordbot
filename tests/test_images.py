@@ -1,8 +1,10 @@
 from io import BytesIO
+import base64
 
 from PIL import Image
+import pytest
 
-from discordbot.utils.images import shrink_image_bytes
+from discordbot.utils.images import to_data_uri, shrink_image_bytes
 
 
 def _encoded_bytes(size: tuple[int, int], mode: str, image_format: str) -> bytes:
@@ -94,3 +96,33 @@ def test_shrink_passes_undecodable_payload_through() -> None:
 
     assert shrunk.data == payload
     assert shrunk.mime_type == "image/png"
+
+
+@pytest.mark.parametrize(
+    ("image_format", "mode", "mime_type"),
+    [
+        ("JPEG", "RGB", "image/jpeg"),
+        ("PNG", "RGB", "image/png"),
+        ("GIF", "P", "image/gif"),
+        ("WEBP", "RGB", "image/webp"),
+        ("BMP", "RGB", "image/jpeg"),
+    ],
+)
+def test_data_uri_sniffs_an_image_type_when_none_is_given(
+    image_format: str, mode: str, mime_type: str
+) -> None:
+    """Without a MIME type the payload's own header names it, JPEG when unrecognised."""
+    payload = _encoded_bytes(size=(7, 5), mode=mode, image_format=image_format)
+
+    uri = to_data_uri(data=payload)
+
+    assert uri == f"data:{mime_type};base64,{base64.b64encode(payload).decode()}"
+
+
+def test_data_uri_keeps_a_given_type_over_the_header() -> None:
+    """A MIME type the caller knows is used as-is, even when the bytes look like an image."""
+    payload = _encoded_bytes(size=(7, 5), mode="RGB", image_format="PNG")
+
+    uri = to_data_uri(data=payload, mime_type="application/pdf")
+
+    assert uri == f"data:application/pdf;base64,{base64.b64encode(payload).decode()}"

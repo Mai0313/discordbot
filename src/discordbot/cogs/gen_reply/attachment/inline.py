@@ -1,6 +1,5 @@
 """Inline attachment renderer for answer models that cannot resolve Gemini Files URIs."""
 
-import base64
 from datetime import UTC, datetime, timedelta
 
 import logfire
@@ -9,6 +8,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import RenderedAttachment
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
@@ -17,11 +17,6 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
     load_attachment_bytes,
     resolve_source_filename,
 )
-
-
-def _data_uri(data: bytes, mime_type: str) -> str:
-    """Builds a base64 data URI for inlining bytes into a content part."""
-    return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
 
 
 def _inline_expiry() -> datetime:
@@ -65,7 +60,7 @@ class InlineRenderer(AttachmentRenderer):
             return None
         image_part = ResponseInputImageParam(
             type="input_image",
-            image_url=_data_uri(data=loaded.data, mime_type=loaded.mime_type),
+            image_url=to_data_uri(data=loaded.data, mime_type=loaded.mime_type),
             detail="auto",
         )
         return RenderedAttachment(part=image_part, expires_at=_inline_expiry())
@@ -124,7 +119,7 @@ class InlineRenderer(AttachmentRenderer):
             pdf_part = ResponseInputFileParam(
                 type="input_file",
                 filename=filename,
-                file_data=_data_uri(data=data, mime_type=mime_type),
+                file_data=to_data_uri(data=data, mime_type=mime_type),
             )
             return RenderedAttachment(part=pdf_part, expires_at=_inline_expiry())
         try:

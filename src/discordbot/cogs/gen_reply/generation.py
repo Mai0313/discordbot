@@ -63,7 +63,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.llm import output_text_or_empty
-from discordbot.utils.images import convert_base64_to_data_uri
+from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.timeouts import (
@@ -352,11 +352,7 @@ class PromptGenerator(BaseModel):
         for image_bytes in image_bytes_list or []:
             director_content.append(
                 ResponseInputImageParam(
-                    image_url=convert_base64_to_data_uri(
-                        base64_image=base64.b64encode(image_bytes).decode()
-                    ),
-                    detail="auto",
-                    type="input_image",
+                    image_url=to_data_uri(data=image_bytes), detail="auto", type="input_image"
                 )
             )
         director_input: list[EasyInputMessageParam] = [

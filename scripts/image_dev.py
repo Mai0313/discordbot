@@ -8,7 +8,7 @@ from openai import OpenAI
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.images import convert_base64_to_data_uri
+from discordbot.utils.images import to_data_uri
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
 
@@ -68,7 +68,7 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     if image_b64 is None:
         raise ValueError("Image operation returned no b64_json")
 
-    image_url = convert_base64_to_data_uri(base64_image=image_b64)
+    image_url = to_data_uri(data=base64.b64decode(s=image_b64))
     reply_responses = client.responses.create(
         model=MEDIA_REPLY_MODEL.name,
         instructions=IMAGE_REPLY_PROMPT,
