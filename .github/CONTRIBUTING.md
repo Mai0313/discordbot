@@ -65,7 +65,7 @@ docs: simplify user README
 
 - Add or update tests for behavior changes.
 - Update user-facing docs when commands, configuration, or visible behavior changes.
-- For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` in the same change and keep `tests/test_capabilities.py` passing. That English document is the only description of the bot's features anywhere, injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line.
+- For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` and the command table of all three READMEs in the same change, and keep `tests/test_capabilities.py` passing. That English document is injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line there.
 - Run local checks before opening the PR:
 
 ```bash

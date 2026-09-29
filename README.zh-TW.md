@@ -20,7 +20,7 @@
 
 </div>
 
-一個自架 Discord bot，提供 AI chat、圖片與影片生成、Threads 連結展開、影片下載、虛擬歡樂豆與賭場小遊戲。它基於 nextcord 執行，用本機 SQLite 保存 runtime data，並連接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
+一個自架 Discord bot，提供 AI chat、圖片與影片生成、Threads、Facebook、Instagram、Twitter 與抖音連結展開、影片下載、虛擬歡樂豆與賭場小遊戲。它基於 nextcord 執行，用本機 SQLite 保存 runtime data，並連接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
 
 ## 功能展示
 
@@ -97,6 +97,8 @@ flowchart TD
 | 指令                                        | 功能                                                                                          |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `@bot <message>`                            | 和 AI chat。需要 bot 檢查檔案或圖片時，可附上支援的附件。                                     |
+| `/ask <question> [attachment]`              | 在 bot 看不到對話的地方和 AI chat：bot 沒加入的伺服器、群組 DM，或你和別人的 DM。             |
+| `/deep_research <topic>`                    | 在自己開的討論串裡產出一份附引用的長篇研究報告；只能在 bot 所在伺服器的一般文字頻道使用。     |
 | _Threads URL_                               | 自動展開 Threads 貼文與 media；被 tag 時改為連留言一起讀過再回答。                            |
 | `/clean_threads_url <url>`                  | 私密地把 Threads 分享連結還原成貼文本身的網址，轉貼時不會帶出分享者。                         |
 | _Facebook URL_                              | 自動展開公開貼文與圖片；被 tag 時改為讀過貼文再回答。帶 `comment_id` 的連結會多顯示那則留言。 |
@@ -115,9 +117,11 @@ flowchart TD
 | `/admin refund_tax\|collect_tax`            | 手動調整成員或 bot 餘額；限定 `economy admin` 帳號 flag，不是 Discord 身分組。                |
 | `/games blackjack <bet>`                    | 開一個多人 Blackjack lobby；`bet` 可輸入含逗號的數字，`0` 就是 all in。                       |
 | `/games dragon_gate`                        | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                                                |
+| `/games blackjack_history [member] [count]` | 顯示某位玩家最近的 Blackjack 牌局：手牌、下注與結果（預設 10 場，最多 50 場）。               |
 | `/casino`                                   | 顯示賭場系統累積 P&L (跨伺服器)。                                                             |
 | `/pocat`                                    | 顯示 bot 玩家自己的錢包 (等同 `/balance @bot`)。                                              |
 | `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。        |
+| `/memory server show`                       | 私密查看 bot 對這個伺服器社群的記憶；只能在 bot 所在的伺服器使用。                            |
 | `/ping`                                     | 檢查 bot latency。                                                                            |
 
 ## 開發

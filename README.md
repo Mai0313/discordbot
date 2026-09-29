@@ -20,7 +20,7 @@
 
 </div>
 
-A self-hosted Discord bot for AI chat, image and video generation, Threads link expansion, video downloads, virtual currency, and casino mini-games. It runs on nextcord, stores runtime data in local SQLite files, and talks to an OpenAI-compatible LLM endpoint such as LiteLLM.
+A self-hosted Discord bot for AI chat, image and video generation, Threads, Facebook, Instagram, Twitter and Douyin link expansion, video downloads, virtual currency, and casino mini-games. It runs on nextcord, stores runtime data in local SQLite files, and talks to an OpenAI-compatible LLM endpoint such as LiteLLM.
 
 ## Showcase
 
@@ -97,6 +97,8 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | Command                                     | What it does                                                                                                                                               |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@bot <message>`                            | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                                                                  |
+| `/ask <question> [attachment]`              | Chats with the AI where the bot cannot see the conversation: a server it was never added to, a group DM, or a DM with someone else.                        |
+| `/deep_research <topic>`                    | Starts a long, cited research report in a thread of its own; only in an ordinary text channel of a server the bot is in.                                   |
 | _Threads URL_                               | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the comments too).                                       |
 | `/clean_threads_url <url>`                  | Privately turns a Threads share link into the post's own URL, so passing it on no longer names whoever shared it.                                          |
 | _Facebook URL_                              | Automatically expands a public post and its pictures, unless the bot is mentioned (then it answers about it). A `comment_id` link also shows that comment. |
@@ -115,9 +117,11 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | `/admin refund_tax\|collect_tax`            | Manual balance adjustments for members or bots; gated on the `economy admin` account flag, not on a Discord role.                                          |
 | `/games blackjack <bet>`                    | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                                                          |
 | `/games dragon_gate`                        | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                                                        |
+| `/games blackjack_history [member] [count]` | Shows a player's recent Blackjack rounds: hands, bets, and results (10 by default, up to 50).                                                              |
 | `/casino`                                   | Shows the casino system's cumulative profit and loss.                                                                                                      |
 | `/pocat`                                    | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                                                          |
 | `/memory show\|regenerate\|clear`           | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first.           |
+| `/memory server show`                       | Privately shows what the bot remembers about this server's community; only inside a server the bot is in.                                                  |
 | `/ping`                                     | Checks bot latency.                                                                                                                                        |
 
 ## Development

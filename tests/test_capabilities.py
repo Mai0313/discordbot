@@ -1,4 +1,4 @@
-"""Tests for keeping the injected capability reference aligned with what the bot can do."""
+"""Tests for keeping the capability reference and the READMEs aligned with what the bot can do."""
 
 import re
 import ast
@@ -67,6 +67,14 @@ _BUTTON_GATED_REQUESTS: dict[str, str] = {
 # difference between what the command is called and what it does to a member holding less
 # than the amount asked for.
 _COLLECT_TAX_CLAMP_WORDING = "never below zero"
+# The READMEs mirror each other, so each one's command table is held to the full set.
+_READMES = ("README.md", "README.zh-CN.md", "README.zh-TW.md")
+# A table row splits on unescaped pipes only: a command cell writes sibling subcommands as
+# `/group a\|b`, and those pipes belong to the cell.
+_TABLE_CELL_RE = re.compile(pattern=r"(?<!\\)\|")
+# One word of a command path, siblings included. An option (`<url>`, `[member]`) or an
+# argument (`@bot`) is not one, and ends the path.
+_PATH_WORD_RE = re.compile(pattern=r"[\w\\|]+")
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -213,6 +221,40 @@ def _mentions_command(body: str, command: str) -> bool:
     by prefix, so `/games blackjack_history` never answers for `/games blackjack`.
     """
     return re.search(pattern=rf"/{re.escape(pattern=command)}(?![\w-])", string=body) is not None
+
+
+def _span_command_paths(span: str) -> set[str]:
+    r"""Returns the command paths a README span spells, e.g. `/credit status\|borrow <amount>`."""
+    words: list[str] = []
+    for word in span.removeprefix("/").split(sep=" "):
+        if _PATH_WORD_RE.fullmatch(string=word) is None:
+            break
+        words.append(word)
+    *parents, leaf = words
+    return {" ".join([*parents, sibling]) for sibling in leaf.split(sep="\\|")}
+
+
+def _readme_command_table(readme: str) -> tuple[set[str], set[str]]:
+    """Returns the commands one README's table lists, and every command the table names.
+
+    A row lists its command in the first cell; a command a description mentions, such as
+    `/pocat`'s `/balance @bot`, is named without being listed.
+    """
+    text = (Path(__file__).resolve().parents[1] / readme).read_text(encoding="utf-8")
+    listed: set[str] = set()
+    named: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        for index, cell in enumerate(_TABLE_CELL_RE.split(string=line)[1:-1]):
+            for span in _CODE_SPAN_RE.findall(string=cell):
+                if not span.startswith("/"):
+                    continue
+                paths = _span_command_paths(span=span)
+                named |= paths
+                if index == 0:
+                    listed |= paths
+    return listed, named
 
 
 def _account_flag_columns() -> set[str]:
@@ -481,6 +523,29 @@ def test_capabilities_doc_writes_every_command_as_a_span_of_its_own() -> None:
     assert not unreadable, (
         f"the capability reference must write each command as a span of its own: {unreadable}"
     )
+
+
+def test_readme_command_tables_list_every_slash_command() -> None:
+    """A command missing from a README's table is one a reader of that language never meets."""
+    runnable = _slash_command_paths()
+    missing = {
+        readme: sorted(f"/{path}" for path in absent)
+        for readme in _READMES
+        if (absent := runnable - _readme_command_table(readme=readme)[0])
+    }
+    assert not missing, f"README command tables are missing slash commands: {missing}"
+
+
+def test_readme_command_tables_name_no_command_that_cannot_be_run() -> None:
+    """The mirror of the guard above: a renamed or removed command must not leave its row."""
+    runnable = _slash_command_paths()
+    typable = runnable | _group_paths(paths=runnable)
+    stale = {
+        readme: sorted(f"/{path}" for path in unknown)
+        for readme in _READMES
+        if (unknown := _readme_command_table(readme=readme)[1] - typable)
+    }
+    assert not stale, f"README command tables name commands that cannot be run: {stale}"
 
 
 def test_capabilities_doc_accounts_for_every_inline_marker() -> None:
