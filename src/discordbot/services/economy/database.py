@@ -20,8 +20,8 @@ monkeypatch `_engine` per-test and every subsequent call sees the swap.
 VIP bumps the player's winning payout from games and is permanent once set.
 Admin status gates maintenance-only economy commands and is set out-of-band by a
 direct DB write; `set_admin` exists for that path rather than for a runtime
-caller. Daily casino counters live on `casino_account` so a current-day loss
-ranking needs no audit-log scan.
+caller. Daily casino counters live on `casino_account`, one row per user, which
+the current-day loss ranking reads directly.
 
 Personal loan requests debit the lender on acceptance, and central-bank loans
 mint borrower balance on approval. What bounds that minting is the per-borrower
@@ -162,7 +162,7 @@ class UserWallet(Base):
 
     __tablename__ = "user_wallet"
     __table_args__ = (
-        # No query filters on the balance alone — the two that mention it pin the primary
+        # No query filters on the balance alone — any that mentions it pins the primary
         # key as well — and the ranking sort is a computed integer-aware expression this
         # cannot satisfy either. It stays because the schema is never altered in place.
         Index("ix_user_wallet_balance", "balance"),
@@ -954,7 +954,7 @@ async def get_casino_ledger() -> CasinoLedgerSnapshot:
     )
 
 
-async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
+async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and the delta
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
     """Applies a casino or jackpot player delta and returns the balance plus applied delta.
@@ -1035,9 +1035,9 @@ async def adjust_balance(
 ) -> BalanceAdjustmentResult:
     """Applies an explicit manual balance adjustment.
 
-    This is the public maintenance API for scripts and admin tooling. It does
-    not touch loan contracts or daily casino counters, so leaderboards and
-    house P&L remain clean.
+    This is the public maintenance API for scripts and admin tooling. It
+    touches neither loan contracts, daily casino counters nor the casino
+    ledger, so the loss leaderboard and house P&L do not move.
 
     Args:
         user_id: Discord user ID whose balance should be adjusted.

@@ -100,9 +100,9 @@ async def modify_balance(
 ) -> BalanceChange:
     """Applies a manual economy balance adjustment via the database API.
 
-    Routes the change through `adjust_balance` so admin edits are logged as
-    manual adjustments instead of casino activity. Dry runs read the current
-    state and compute the expected applied delta without writing.
+    Routes the change through `adjust_balance`, so it counts as neither casino
+    activity nor a loan payment. Dry runs read the current state and compute
+    the expected applied delta without writing.
 
     Args:
         user_id (int): Discord user ID whose account should be adjusted.

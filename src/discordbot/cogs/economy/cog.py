@@ -183,7 +183,7 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Credits points to a member through the manual-adjustment audit path."""
+        """Credits points to a member through a manual balance adjustment."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
@@ -228,7 +228,7 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Debits points from a member through the manual-adjustment audit path."""
+        """Debits points from a member through a manual balance adjustment."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(

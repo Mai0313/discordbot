@@ -131,7 +131,7 @@ class LoanContractStatus(StrEnum):
 
 
 class AccountSnapshot(BaseModel):
-    """Read-only account totals for maintenance and house-ledger views."""
+    """Read-only totals for one user's account."""
 
     model_config = ConfigDict(frozen=True)
 
