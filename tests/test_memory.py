@@ -73,6 +73,7 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     drop_released_evidence,
     partition_forget_requests,
+    filter_duplicate_observations,
 )
 from discordbot.services.memory.writer import (
     ToneForget,
@@ -89,9 +90,7 @@ from discordbot.services.memory.writer import (
     render_forget_requests,
     transcript_from_messages,
     render_memory_observations,
-    filter_duplicate_observations,
     target_centered_memory_messages,
-    observation_key_sources_from_text,
 )
 from discordbot.services.memory.prompts import (
     PHASE2_PROMPT,
@@ -1885,7 +1884,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
     def _blow_up(**kwargs: object) -> str:
         """Stands in for a store read that fails after the review succeeded."""
         del kwargs
-        raise RuntimeError("detail read blew up")
+        raise RuntimeError("evidence read blew up")
 
     writer, fake_client = _writer()
     if outcome == "review-failed":
@@ -1893,7 +1892,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         # as a review that returned nothing: that one is `kept-nothing`.
         fake_client.responses.raises = RuntimeError("the evaluator call blew up")
     elif outcome == "raised":
-        monkeypatch.setattr(pipeline, "read_detail_tail", _blow_up)
+        monkeypatch.setattr(pipeline, "read_evidence", _blow_up)
     else:
         fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, observations=())
     reported: list[MemoryWriteSummary] = []
@@ -4121,8 +4120,12 @@ def test_subject_source_line_round_trips_through_parse() -> None:
     assert parse_subject_source(subject="target_server_id: 9") is None
 
 
-def test_observation_key_sources_from_text_pairs_keys_with_block_sources() -> None:
+def test_filter_duplicate_observations_pairs_each_key_with_its_own_block_source() -> None:
+    # `fact.b` predates source stamping; the forget request after it carries a `- source:`
+    # line of its own, which must not become `fact.b`'s source.
+    forget = render_forget_requests(notes=("忘掉那件事",), source="dm")
     text = (
+        "## 2026-01-01T00:00:00.000000+00:00\n"
         "### stable_preference\n"
         "- normalized_key: preference.a\n"
         "- ttl_days: null\n"
@@ -4133,11 +4136,23 @@ def test_observation_key_sources_from_text_pairs_keys_with_block_sources() -> No
         "### stable_fact\n"
         "- normalized_key: fact.b\n"
         "- summary_zh: 沒有 source 行的舊條目\n"
+        "\n"
+        f"## 2026-01-02T00:00:00.000000+00:00\n{forget}"
     )
-    assert observation_key_sources_from_text(text=text) == {
-        ("preference.a", "guild 1"),
-        ("fact.b", None),
-    }
+    observations = (
+        _observation(summary="甲", normalized_key="preference.a"),
+        _observation(summary="乙", normalized_key="fact.b"),
+    )
+
+    def kept_keys(source: str | None) -> list[str]:
+        kept = filter_duplicate_observations(
+            observations=observations, existing_text=text, source=source
+        )
+        return [observation.normalized_key for observation in kept]
+
+    assert kept_keys(source="guild 1") == ["fact.b"]
+    assert kept_keys(source=None) == ["preference.a"]
+    assert kept_keys(source="dm") == ["preference.a", "fact.b"]
 
 
 async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
@@ -4318,6 +4333,23 @@ def test_filter_duplicate_observations_legacy_evidence_pairs_with_none() -> None
         source="dm",
     )
     assert len(kept_for_dm) == 1
+
+
+async def test_pipeline_dedupes_against_evidence_already_in_detail(
+    memory_isolated_dir: Path,
+) -> None:
+    """Evidence a consolidation already retired to `detail.md` still counts as staged."""
+    observation = render_memory_observations(
+        observations=(_observation(summary="喜歡簡短", normalized_key="preference.test"),),
+        source="guild 42",
+    )
+    append_detail(scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00.000000+00:00\n{observation}")
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = _draft("喜歡簡短", normalized_key="preference.test")
+    _schedule(writer=writer)
+    await _wait_for_inflight()
+    assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
+    assert read_raw_entries(scope=USER_SCOPE) == ""
 
 
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:

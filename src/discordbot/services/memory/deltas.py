@@ -51,7 +51,7 @@ from discordbot.services.memory.store import (
     delete_fact,
     guild_compartment,
 )
-from discordbot.services.memory.writer import MemoryFactDelta
+from discordbot.services.memory.writer import MemoryFactDelta, MemoryObservation
 from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,
@@ -588,6 +588,31 @@ def _compartment_for_block(block: str) -> str:
     # in `global` would publish exactly what the flag asked to confine, so it goes to
     # the owner's own DMs — visible to them alone.
     return DM_COMPARTMENT
+
+
+def filter_duplicate_observations(
+    observations: tuple[MemoryObservation, ...], existing_text: str, source: str | None
+) -> tuple[MemoryObservation, ...]:
+    """Drops observations already evidenced from the SAME conversation source.
+
+    The dedupe key is `(normalized_key, source)`, not the key alone: a fact re-stated in
+    another guild (or a DM) must re-enter raw so `partition_raw_entries` can file it in
+    that conversation's own compartment; key-only dedupe would lock every fact to the
+    first source that ever observed it. A key pairs with its own block's `- source:`
+    field, and with None when that block has none.
+    """
+    existing_pairs: set[tuple[str, str | None]] = set()
+    for _, block in _iter_observations(text=existing_text):
+        fields = _fields_of(block=block)
+        if fields.get("normalized_key"):
+            existing_pairs.add((fields["normalized_key"], fields.get("source")))
+    kept: list[MemoryObservation] = []
+    for observation in observations:
+        if (observation.normalized_key, source) in existing_pairs:
+            continue
+        kept.append(observation)
+        existing_pairs.add((observation.normalized_key, source))
+    return tuple(kept)
 
 
 def _fields_of(block: str) -> dict[str, str]:

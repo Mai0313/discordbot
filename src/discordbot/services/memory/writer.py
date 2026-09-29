@@ -93,10 +93,6 @@ _SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", fla
 # (`parse_subject_source`) cannot drift apart across the memory_job round-trip.
 _SUBJECT_SOURCE_RE = re.compile(r"^source: (?P<source>guild \d+|dm)$", flags=re.MULTILINE)
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
-_STRUCTURED_KEY_RE = re.compile(r"^\s*-\s*normalized_key:\s*(?P<key>\S+)\s*$", flags=re.MULTILINE)
-# The code-stamped `- source:` field inside one observation block; paired with the
-# block's normalized_key by `observation_key_sources_from_text`.
-_STRUCTURED_SOURCE_RE = re.compile(r"^\s*-\s*source:\s*(?P<source>guild \d+|dm)\s*$")
 # Column-0 transcript block marker (`[message N | role]`). Used to realign a middle-
 # truncated tail to a trusted block boundary so a sliced indent never leaves user
 # content at column 0, where the marker scheme reserves the trusted authorship signal.
@@ -728,51 +724,6 @@ def parse_subject_source(subject: str) -> str | None:
     """
     match = _SUBJECT_SOURCE_RE.search(subject)
     return match.group("source") if match else None
-
-
-def observation_key_sources_from_text(text: str) -> set[tuple[str, str | None]]:
-    """Extracts `(normalized_key, source)` pairs from raw/detail evidence.
-
-    The renderer emits `- source:` after `- normalized_key:` inside one block, so a
-    line walk can pair each key with its block's source; a block with no `- source:` line
-    pairs with None.
-    """
-    pairs: set[tuple[str, str | None]] = set()
-    pending_key: str | None = None
-    for line in text.splitlines():
-        key_match = _STRUCTURED_KEY_RE.match(line)
-        if key_match:
-            if pending_key is not None:
-                pairs.add((pending_key, None))
-            pending_key = key_match.group("key")
-            continue
-        source_match = _STRUCTURED_SOURCE_RE.match(line)
-        if source_match and pending_key is not None:
-            pairs.add((pending_key, source_match.group("source")))
-            pending_key = None
-    if pending_key is not None:
-        pairs.add((pending_key, None))
-    return pairs
-
-
-def filter_duplicate_observations(
-    observations: tuple[MemoryObservation, ...], existing_text: str, source: str | None
-) -> tuple[MemoryObservation, ...]:
-    """Drops observations already evidenced from the SAME conversation source.
-
-    The dedupe key is `(normalized_key, source)`, not the key alone: a fact re-stated in
-    another guild (or a DM) must re-enter raw so `partition_raw_entries` can file it in
-    that conversation's own compartment; key-only dedupe would lock every fact to the
-    first source that ever observed it.
-    """
-    existing_pairs = observation_key_sources_from_text(text=existing_text)
-    kept: list[MemoryObservation] = []
-    for observation in observations:
-        if (observation.normalized_key, source) in existing_pairs:
-            continue
-        kept.append(observation)
-        existing_pairs.add((observation.normalized_key, source))
-    return tuple(kept)
 
 
 def redact_secrets(text: str) -> str:
