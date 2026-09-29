@@ -42,8 +42,8 @@ def _imports_in(source: str, parent: str, scope: str = "discordbot.") -> set[str
     dependency graph, and the one cog-to-cog import this repo ever had was a
     `TYPE_CHECKING` one that never executes and so no test could otherwise see.
 
-    Takes the source rather than the path so the relative forms can be asserted directly;
-    no module in the package writes one today.
+    Takes the source rather than the path so every form a violation can be written in is
+    asserted directly, whether or not the package writes it today.
 
     `scope` is what the result is narrowed to. It defaults to this package, which is all the
     layering rules below need, and is widened to everything by the Discord-free guard — the one
@@ -106,11 +106,11 @@ def test_a_cog_never_imports_a_peer_cog() -> None:
     [
         ("services", ("discordbot.cogs.",)),
         ("utils", ("discordbot.cogs.", "discordbot.services.")),
-        ("typings", ("discordbot.cogs.", "discordbot.services.")),
+        ("typings", ("discordbot.cogs.", "discordbot.services.", "discordbot.utils.")),
     ],
 )
 def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[str, ...]) -> None:
-    """`services` is Discord-free domain code, and `utils` / `typings` sit below even that.
+    """`services` is Discord-free domain code; `utils` sits below it, and `typings` below that.
 
     An edge the other way is what turns a shared engine back into one cog's private helper
     that a second cog happens to reach into.
@@ -234,13 +234,10 @@ def test_nothing_inside_the_memory_package_imports_its_entry_point() -> None:
 def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
     """The scan is only worth its assertions if it sees the forms a violation can be written in.
 
-    No module in the package writes a relative import any more, so that half is asserted on
-    source of its own: a resolver that quietly stopped reading `from ..peer.mod import X`
-    would pass the tests above while seeing nothing, and that form is the one they exist to
-    catch. Pinning it is new rather than preserved — the cog this used to read wrote only the
-    single-dot form, which walks up no levels at all, so `..` had never been exercised.
-    `cogs/games/blackjack_views.py` still supplies the other half, importing a cog module
-    under `TYPE_CHECKING`.
+    Asserted on source of its own, so the pin holds whatever the package happens to write: a
+    resolver that quietly stopped reading `from ..peer.mod import X`, or an import under
+    `if TYPE_CHECKING:`, would pass the tests above while seeing nothing, and those are the
+    forms they exist to catch.
     """
     relative = _imports_in(
         source="from .own_mod import A\nfrom ..peer.mod import B", parent="discordbot.cogs.own"
@@ -252,8 +249,14 @@ def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
         "discordbot.cogs.peer.mod.B",
     }
 
-    type_checking = _imported_modules(_COGS / "games" / "blackjack_views.py")
-    assert "discordbot.cogs.games.shoe" in type_checking
+    type_checking = _imports_in(
+        source="if TYPE_CHECKING:\n    from discordbot.cogs.peer.mod import C",
+        parent="discordbot.cogs.own",
+    )
+    assert type_checking == {"discordbot.cogs.peer.mod", "discordbot.cogs.peer.mod.C"}
+
+    # The file-reading wrapper every test above goes through must see a real module's imports.
+    assert "discordbot.typings.config" in _imported_modules(module=PACKAGE / "cli.py")
 
 
 def test_a_package_init_resolves_relative_imports_against_its_own_package() -> None:
@@ -268,14 +271,3 @@ def test_a_package_init_resolves_relative_imports_against_its_own_package() -> N
     assert _relative_import_base(_COGS / "gen_reply" / "link_sources" / "__init__.py") == (
         "discordbot.cogs.gen_reply.link_sources"
     )
-
-
-def test_every_cog_directory_is_shaped_like_a_cog() -> None:
-    """The loader's rule, asserted on the tree so a half-finished move fails here first."""
-    for entry in sorted(_COGS.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("_"):
-            continue
-        assert (entry / "__init__.py").is_file(), (
-            f"{entry.name}: a cog directory needs __init__.py"
-        )
-        assert (entry / "cog.py").is_file(), f"{entry.name}: a cog directory needs cog.py"

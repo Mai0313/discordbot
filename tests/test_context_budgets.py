@@ -48,7 +48,7 @@ def test_the_injection_warning_fires_before_the_injection_cap_binds() -> None:
 def test_the_budgets_module_imports_nothing_from_the_package() -> None:
     """It is a leaf of plain constants, like `typings/timeouts.py`.
 
-    `tests/test_package_layering.py` already forbids `typings` importing `cogs` or `services`.
+    `tests/test_package_layering.py` already forbids `typings` importing any higher layer.
     This is the stricter property the module actually has: no `discordbot` import at all, so it
     can never become a place where a budget is computed from something that has a runtime.
     """
