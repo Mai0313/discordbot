@@ -120,7 +120,11 @@ async def modify_balance(
     before = account.balance if account is not None else 0
     effective_name = name or existing_name or str(user_id)
 
-    projected_after = before + delta if allow_negative else max(before + delta, 0)
+    if allow_negative or delta >= 0:
+        projected_after = before + delta
+    else:
+        # A clamped debit stops at zero and leaves a balance already at or below zero alone.
+        projected_after = min(before, max(before + delta, 0))
     projected_applied_delta = projected_after - before
 
     if dry_run or delta == 0:

@@ -4,7 +4,7 @@ import pytest
 from scripts import modify_balance as modify_balance_script
 
 from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
-from discordbot.services.economy.database import get_account
+from discordbot.services.economy.database import get_account, adjust_balance
 
 from tests.helpers.economy import seed_balance
 
@@ -130,14 +130,24 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
         (30, -100, True, (30, -100, -70)),
         (0, 100, False, (0, 100, 100)),
         (0, -100, False, (0, 0, 0)),
+        (-100, -50, False, (-100, 0, -100)),
+        (-100, 30, False, (-100, 30, -70)),
     ],
-    ids=["credit", "clamped-debit", "allow-negative", "missing-account", "missing-account-debit"],
+    ids=[
+        "credit",
+        "clamped-debit",
+        "allow-negative",
+        "missing-account",
+        "missing-account-debit",
+        "debit-below-zero",
+        "credit-below-zero",
+    ],
 )
 async def test_dry_run_projects_the_change_without_writing(
     start: int, delta: int, allow_negative: bool, expected: tuple[int, int, int]
 ) -> None:
-    """A dry run reports `(before, applied_delta, after)` and leaves the account as it was."""
-    await seed_balance(user_id=1, name="alice", amount=start)
+    """A dry run reports the `(before, applied_delta, after)` the real run applies, and writes nothing."""
+    await adjust_balance(user_id=1, name="alice", delta=start, allow_negative=True)
     account = await get_account(user_id=1)
 
     change = await modify_balance_script.modify_balance(
@@ -147,3 +157,8 @@ async def test_dry_run_projects_the_change_without_writing(
     assert (change.before, change.applied_delta, change.after) == expected
     assert change.dry_run is True
     assert await get_account(user_id=1) == account
+
+    applied = await modify_balance_script.modify_balance(
+        user_id=1, name="", delta=delta, allow_negative=allow_negative
+    )
+    assert (applied.before, applied.applied_delta, applied.after) == expected
