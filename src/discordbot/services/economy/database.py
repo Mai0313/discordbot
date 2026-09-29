@@ -36,7 +36,7 @@ player delta and the house-side mirror in one atomic SQLite transaction.
 """
 
 from time import monotonic
-from typing import Any, Final, Literal
+from typing import Any, Final
 import asyncio
 from datetime import datetime, timedelta
 from collections.abc import Mapping, Sequence
@@ -99,14 +99,11 @@ from discordbot.typings.economy import (
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
-from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. The bound is
 # there to stop a degenerate hot-row livelock, not to ride out contention.
-_VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
-_CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
-_JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
+_CONDITIONAL_WRITE_MAX_RETRIES: Final[int] = 8
 _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/economy.db")
@@ -732,7 +729,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
         )
         return read_result.scalar_one_or_none() or 0, 0
 
-    for _ in range(_CLAMPED_DELTA_MAX_RETRIES):
+    for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         read_result = await session.execute(
             statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
         )
@@ -926,13 +923,12 @@ async def _credit_central_bank_ledger_in_session(
     )
 
 
-async def _rollback_sessions(*sessions: AsyncSession) -> None:
-    """Rolls back sessions without masking the original settlement exception."""
-    for session in sessions:
-        try:
-            await session.rollback()
-        except Exception:
-            logfire.warn("Failed to roll back settlement session", _exc_info=True)
+async def _rollback_session(session: AsyncSession) -> None:
+    """Rolls back a session without masking the original settlement exception."""
+    try:
+        await session.rollback()
+    except Exception:
+        logfire.warn("Failed to roll back settlement session", _exc_info=True)
 
 
 async def get_casino_ledger() -> CasinoLedgerSnapshot:
@@ -1168,7 +1164,7 @@ async def apply_round_settlement(
                 )
             await _commit_balance_write(session=session)
         except Exception:
-            await _rollback_sessions(session)
+            await _rollback_session(session=session)
             raise
     return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
 
@@ -1340,7 +1336,7 @@ async def _claim_jackpot_payout_in_session(
         )
         return 0, snapshot, False
 
-    for _ in range(_JACKPOT_CLAIM_MAX_RETRIES):
+    for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=now
         )
@@ -1598,7 +1594,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
     cost = VIP_PURCHASE_COST
 
     async with open_session() as session:
-        for _ in range(_VIP_PURCHASE_MAX_RETRIES):
+        for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
             read_result = await session.execute(
                 statement=select(UserWallet.balance, UserAccount.is_vip, UserAccount.name)
                 .select_from(UserAccount)
@@ -1708,15 +1704,19 @@ async def get_admin(user_id: int) -> bool:
         return bool(result.scalar_one_or_none())
 
 
-async def _set_account_flag(
-    user_id: int, name: str, flag: Literal["is_admin"], value: bool, avatar_url: str
-) -> bool:
-    """Grants or revokes one `user_account` permission flag.
+async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
+    """Sets the economy admin flag for a Discord user.
 
     Granting creates the identity row if the user has never touched the economy
     system; no wallet row is created, so the balance still reads 0. Revoking
     updates an existing row only; missing users are left untouched so revoke
     operations do not create empty account rows.
+
+    Args:
+        user_id: Discord user ID to modify.
+        name: Last-seen Discord username to store when available.
+        is_admin: Desired admin flag value.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         `True` when a row was created or updated; `False` when revoking a
@@ -1725,26 +1725,24 @@ async def _set_account_flag(
     await _ensure_schema()
     now = _database_now()
     effective_name = name or str(user_id)
-    values: dict[str, Any] = {flag: value, "updated_at": now}
+    values: dict[str, Any] = {"is_admin": is_admin, "updated_at": now}
     if name:
         values["name"] = effective_name
     if avatar_url:
         values["avatar_url"] = avatar_url
     async with open_session() as session:
-        if value:
-            insert_values: dict[str, Any] = {
-                "user_id": user_id,
-                "name": effective_name,
-                "avatar_url": avatar_url,
-                "updated_at": now,
-                "is_vip": False,
-                "is_admin": False,
-                "is_central_banker": False,
-                flag: True,
-            }
+        if is_admin:
             statement = (
                 insert(UserAccount)
-                .values(**insert_values)
+                .values(
+                    user_id=user_id,
+                    name=effective_name,
+                    avatar_url=avatar_url,
+                    updated_at=now,
+                    is_vip=False,
+                    is_admin=True,
+                    is_central_banker=False,
+                )
                 .on_conflict_do_update(index_elements=["user_id"], set_=values)
                 .returning(UserAccount.user_id)
             )
@@ -1758,24 +1756,6 @@ async def _set_account_flag(
         result = await session.execute(statement=statement)
         await session.commit()
         return result.scalar_one_or_none() is not None
-
-
-async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
-    """Sets the economy admin flag for a Discord user.
-
-    Args:
-        user_id: Discord user ID to modify.
-        name: Last-seen Discord username to store when available.
-        is_admin: Desired admin flag value.
-        avatar_url: Last-seen Discord avatar URL to store when available.
-
-    Returns:
-        `True` when a row was created or updated; `False` when revoking a
-        missing user.
-    """
-    return await _set_account_flag(
-        user_id=user_id, name=name, flag="is_admin", value=is_admin, avatar_url=avatar_url
-    )
 
 
 async def get_account(user_id: int) -> AccountSnapshot | None:
@@ -1994,7 +1974,7 @@ async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[Loss
         result = await session.execute(statement=stmt)
         rows: list[LossLeaderboardEntry] = []
         for row in result.all():
-            loss_amount = _stored_int_to_int(value=row[3])
+            loss_amount = row[3]
             if loss_amount <= 0:
                 continue
             rows.append(
