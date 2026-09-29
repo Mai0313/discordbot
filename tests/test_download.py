@@ -21,11 +21,14 @@ from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 from tests.helpers.casting import as_bot, as_interaction
 from tests.helpers.discord_mocks import FakeInteraction
 
+# What `extract_info` answers for a finished download: the least `download` reads a result from.
+_DOWNLOADED_INFO = {"id": "video_id", "ext": "mp4", "title": "stub video"}
+
 
 def _install_youtube_dl_stub(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, info: dict[str, Any] | None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Installs a yt-dlp stub and returns captured params and calls."""
+    """Installs a yt-dlp stub answering `extract_info` with `info`; returns params and calls."""
     captured_params: list[dict[str, Any]] = []
     captured_calls: list[dict[str, Any]] = []
 
@@ -49,10 +52,10 @@ def _install_youtube_dl_stub(
         ) -> None:
             """Matches yt-dlp's context-manager shape."""
 
-        def extract_info(self, url: str, download: bool) -> dict[str, str]:
-            """Records the final URL and returns minimal media metadata."""
+        def extract_info(self, url: str, download: bool) -> dict[str, Any] | None:
+            """Records the call and returns the canned info dict."""
             captured_calls.append({"url": url, "download": download})
-            return {"id": "video_id", "ext": "mp4", "title": "stub video"}
+            return info
 
         def prepare_filename(self, info: dict[str, str]) -> str:
             """Returns the filename yt-dlp would prepare for the result."""
@@ -80,7 +83,7 @@ def test_download_dry_run_uses_ytdlp_params(
 ) -> None:
     """Verifies dry-run download setup without depending on live site APIs."""
     captured_params, captured_calls = _install_youtube_dl_stub(
-        monkeypatch=monkeypatch, tmp_path=tmp_path
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
     )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
@@ -99,7 +102,7 @@ def test_download_resolves_facebook_share_links(
 ) -> None:
     """Facebook share URLs are resolved before the yt-dlp call."""
     _captured_params, captured_calls = _install_youtube_dl_stub(
-        monkeypatch=monkeypatch, tmp_path=tmp_path
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
     )
 
     def fake_resolve(self: VideoDownloader, url: str) -> str:
@@ -181,48 +184,13 @@ def test_facebook_share_resolution_never_downloads_the_page(
     assert all(request["allow_redirects"] for request in requests_made)
 
 
-def _install_metadata_stub(
-    monkeypatch: pytest.MonkeyPatch, info: dict[str, Any] | None
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Installs a yt-dlp stub whose extract_info returns a canned metadata dict."""
-    captured_params: list[dict[str, Any]] = []
-    captured_calls: list[dict[str, Any]] = []
-
-    class _YoutubeDLStub:
-        """Small context-manager stub for yt-dlp metadata probes."""
-
-        def __init__(self, params: dict[str, Any]) -> None:
-            """Records the yt-dlp params passed by the downloader."""
-            self.params = params
-            captured_params.append(params)
-
-        def __enter__(self) -> Self:
-            """Returns the stub instance."""
-            return self
-
-        def __exit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc_val: BaseException | None,
-            exc_tb: TracebackType | None,
-        ) -> None:
-            """Matches yt-dlp's context-manager shape."""
-
-        def extract_info(self, url: str, download: bool) -> dict[str, Any] | None:
-            """Records the call and returns the canned info dict."""
-            captured_calls.append({"url": url, "download": download})
-            return info
-
-    monkeypatch.setattr("discordbot.services.platforms.ytdlp.YoutubeDL", _YoutubeDLStub)
-    return captured_params, captured_calls
-
-
 def test_parse_metadata_reads_info_without_downloading(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The metadata probe maps yt-dlp's info dict and never asks for a download."""
-    captured_params, captured_calls = _install_metadata_stub(
+    captured_params, captured_calls = _install_youtube_dl_stub(
         monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
         info={
             "id": "BV1jpK86hEc8",
             "title": "a title",
@@ -261,7 +229,9 @@ def test_parse_metadata_defaults_absent_fields(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Fields a site does not report fall back to typed defaults instead of raising."""
-    _install_metadata_stub(monkeypatch=monkeypatch, info={"id": "BV1", "duration": None})
+    _install_youtube_dl_stub(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info={"id": "BV1", "duration": None}
+    )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
     metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1")
@@ -279,8 +249,9 @@ def test_parse_metadata_unwraps_playlist_shaped_info(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A multi-part page reporting itself playlist-shaped yields its first real entry."""
-    _install_metadata_stub(
+    _install_youtube_dl_stub(
         monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
         info={
             "id": "anthology",
             "entries": [None, {"id": "BV1", "title": "part one", "duration": 10}],
@@ -304,8 +275,9 @@ def test_parse_metadata_keeps_the_playlist_page_url(
     SUCCESSFULLY as a playlist; if the first entry's URL won, the caller could no longer
     detect that the page the user linked was never a single video.
     """
-    _install_metadata_stub(
+    _install_youtube_dl_stub(
         monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
         info={
             "id": "672328094",
             "webpage_url": "https://space.bilibili.com/672328094",
@@ -336,7 +308,9 @@ def test_download_stop_signal_aborts_at_the_next_progress_tick(
     The download blocks its worker thread, so asyncio cancellation cannot reach it; the
     hook is the one place yt-dlp lets the caller abort mid-download.
     """
-    captured_params, _ = _install_youtube_dl_stub(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    captured_params, _ = _install_youtube_dl_stub(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
+    )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
     stop_signal = threading.Event()
 
@@ -361,7 +335,7 @@ def test_parse_metadata_raises_when_ytdlp_returns_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A None info dict is a failed probe, not an empty video."""
-    _install_metadata_stub(monkeypatch=monkeypatch, info=None)
+    _install_youtube_dl_stub(monkeypatch=monkeypatch, tmp_path=tmp_path, info=None)
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
     with pytest.raises(RuntimeError, match="no metadata"):
