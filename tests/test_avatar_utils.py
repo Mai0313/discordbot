@@ -169,10 +169,6 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
         captured_avatar_url = avatar_url
         return SimpleNamespace(new_balance=0)
 
-    async def noop_process_commands(message: SimpleNamespace) -> None:
-        """Ignores command processing during the reward test."""
-        del message
-
     recorded_participation: list[tuple[int, int]] = []
 
     async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
@@ -196,12 +192,7 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
     )
     # `on_message` is invoked unbound with this namespace as `self`, so the double owes every
     # attribute the reward path reads: the cooldown map, its prune stamp, and the prune helper.
-    bot = SimpleNamespace(
-        user=object(),
-        process_commands=noop_process_commands,
-        _message_reward_at={},
-        _message_reward_pruned_at=0.0,
-    )
+    bot = SimpleNamespace(user=object(), _message_reward_at={}, _message_reward_pruned_at=0.0)
     bot._prune_message_reward_cooldowns = partial(
         cli.DiscordBot._prune_message_reward_cooldowns, as_discord_bot(fake=bot)
     )

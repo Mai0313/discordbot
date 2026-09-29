@@ -255,10 +255,10 @@ class DiscordBot(commands.Bot):
             logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
 
     async def on_message(self, message: Message) -> None:
-        """Awards the cooldown-gated message reward, then dispatches commands.
+        """Awards the cooldown-gated message reward.
 
-        This is the only faucet that pays an action reward; it is best-effort, so
-        command dispatch runs whether or not the credit lands.
+        This is the only faucet that pays an action reward, and it is best-effort: a failed
+        credit or participation write is logged and swallowed.
 
         Args:
             message: The message that was sent.
@@ -288,8 +288,8 @@ class DiscordBot(commands.Bot):
                     self._message_reward_at.pop(message.author.id, None)
                 else:
                     self._message_reward_at[message.author.id] = last_rewarded_at
-                # Broad on purpose: the reward is best-effort and must never stop
-                # process_commands, so every failure mode (DB, avatar fetch) is swallowed.
+                # Broad on purpose: the reward is best-effort and must never raise out of
+                # the listener, so every failure mode (DB, avatar fetch) is swallowed.
                 logfire.warn(
                     "Failed to award base message points",
                     user_id=message.author.id,
@@ -312,7 +312,7 @@ class DiscordBot(commands.Bot):
                 except Exception as exc:
                     # Broad for the same reason as the reward: missing one guild's
                     # participation row costs that guild a little lending capacity until
-                    # the member speaks again, and must never stop process_commands.
+                    # the member speaks again, and must never raise out of the listener.
                     logfire.warn(
                         "Failed to record economy participation",
                         user_id=message.author.id,
@@ -320,17 +320,16 @@ class DiscordBot(commands.Bot):
                         error_type=type(exc).__name__,
                         _exc_info=exc,
                     )
-        await self.process_commands(message)
 
     async def on_application_command_error(
         self, interaction: Interaction[commands.Bot], exception: ApplicationError
     ) -> None:
         """Records a slash command that raised, which nothing else in this process does.
 
-        `command_prefix` is never passed to `commands.Bot`, nextcord defaults it to `()`, and
-        `get_context`'s `content.startswith(())` is False for every message, so `invoke` never
-        reaches a prefix command and no `on_command_*` handler can fire. Do not add one without
-        also passing a prefix.
+        No prefix command or `on_command_*` handler can fire: `on_message` never calls
+        `process_commands`, and `command_prefix` is never passed to `commands.Bot`, so nextcord
+        defaults it to `()`, which no message's content starts with. Adding one takes both a
+        prefix and that call.
 
         nextcord's own default here prints the traceback to `sys.stderr`, while `./data/logs`
         receives only logfire's console output (`_TeeStream`), so without this override a failing slash

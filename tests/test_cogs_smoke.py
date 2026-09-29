@@ -2479,14 +2479,11 @@ def test_cli_load_cogs_sync_discovers_exactly_the_cog_directories(tmp_path: Path
     assert "discordbot.cogs.template.cog" in expected
 
 
-async def test_cli_message_and_command_error_branches(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies base message rewards and common command error embeds."""
-    processed: list[SimpleNamespace] = []
+async def test_cli_message_reward_pays_a_member_and_never_the_bot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member's message earns the base reward; the bot's own message earns nothing."""
     rewards: list[dict[str, Any]] = []
-
-    async def record_processed(message: SimpleNamespace) -> None:
-        """Records messages passed to process_commands."""
-        processed.append(message)
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records base reward arguments and returns a fake credit result."""
@@ -2494,18 +2491,16 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         return CreditResult(new_balance=5_000)
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    bot = _reward_bot(process_commands=record_processed)
+    bot = _reward_bot()
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
     await cli.DiscordBot.on_message(
         as_discord_bot(fake=bot), message=as_message(fake=user_message)
     )
-    assert processed == [user_message]
     assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
     await cli.DiscordBot.on_message(
         as_discord_bot(fake=bot),
         message=as_message(fake=SimpleNamespace(author=bot.user, guild=None)),
     )
-    assert len(processed) == 1
     assert len(rewards) == 1
 
 
@@ -2610,7 +2605,7 @@ def test_log_level_setting_accepts_only_real_logfire_levels() -> None:
     assert accepted == set(LEVEL_NUMBERS)
 
 
-def _reward_bot(*, process_commands: object, **state: object) -> SimpleNamespace:
+def _reward_bot(**state: object) -> SimpleNamespace:
     """A bot double carrying everything `on_message`'s reward path reads off a real bot.
 
     These tests invoke `cli.DiscordBot.on_message` UNBOUND with this namespace as `self`, so the
@@ -2619,10 +2614,7 @@ def _reward_bot(*, process_commands: object, **state: object) -> SimpleNamespace
     `self.` method, so it is bound here rather than being reached through the class.
     """
     bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True),
-        process_commands=process_commands,
-        _message_reward_at={},
-        _message_reward_pruned_at=0.0,
+        user=FakeUser(user_id=999, bot=True), _message_reward_at={}, _message_reward_pruned_at=0.0
     )
     bot.__dict__.update(state)
     bot._prune_message_reward_cooldowns = partial(
@@ -2641,11 +2633,8 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
         rewards.append(kwargs)
         return CreditResult(new_balance=10)
 
-    async def noop_process(message: SimpleNamespace) -> None:
-        del message
-
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    bot = _reward_bot(process_commands=noop_process)
+    bot = _reward_bot()
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
@@ -2668,12 +2657,9 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
         rewards.append(kwargs)
         return CreditResult(new_balance=10)
 
-    async def noop_process(message: SimpleNamespace) -> None:
-        del message
-
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
-    bot = _reward_bot(process_commands=noop_process, _message_reward_at={1: 900.0, 2: 975.0})
+    bot = _reward_bot(_message_reward_at={1: 900.0, 2: 975.0})
 
     await cli.DiscordBot.on_message(
         as_discord_bot(fake=bot),
@@ -2701,11 +2687,8 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
             raise RuntimeError("transient DB failure")
         return CreditResult(new_balance=10)
 
-    async def noop_process(message: SimpleNamespace) -> None:
-        del message
-
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=flaky_reward)
-    bot = _reward_bot(process_commands=noop_process)
+    bot = _reward_bot()
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
