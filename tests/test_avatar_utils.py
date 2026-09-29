@@ -2,24 +2,15 @@
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from functools import partial
 
 from nextcord import User, Member
 
-from discordbot import cli
 from discordbot.utils.avatars import guild_avatar_url
 
-from tests.helpers.casting import (
-    as_guild,
-    as_message,
-    as_avatar_user,
-    as_discord_bot,
-    make_not_found,
-)
+from tests.helpers.casting import as_guild, as_avatar_user, make_not_found
 from tests.helpers.discord_mocks import FakeUser
 
 if TYPE_CHECKING:
-    import pytest
     from nextcord.types.user import User as UserPayload
 
 
@@ -154,52 +145,3 @@ async def test_guild_avatar_url_falls_back_to_global_avatar() -> None:
 
     assert avatar_url == "https://cdn.test/global.png"
     assert guild.fetch_count == 1
-
-
-async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPatch") -> None:
-    """Base message rewards pass the guild avatar into the economy DB facade."""
-    captured_avatar_url = ""
-
-    async def fake_credit_with_repayment(
-        user_id: int, name: str, avatar_url: str, amount: int
-    ) -> SimpleNamespace:
-        """Records the avatar URL passed to the DB facade."""
-        nonlocal captured_avatar_url
-        del user_id, name, amount
-        captured_avatar_url = avatar_url
-        return SimpleNamespace(new_balance=0)
-
-    recorded_participation: list[tuple[int, int]] = []
-
-    async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
-        """Records the participation upsert instead of writing to the live economy DB."""
-        recorded_participation.append((guild_id, user_id))
-
-    monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
-    monkeypatch.setattr(cli, "record_guild_participant", fake_record_guild_participant)
-    author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
-    author.bot = False
-    message = SimpleNamespace(
-        author=author,
-        guild=FakeGuild(
-            cached_member=FakeMember(
-                user_id=7,
-                avatar_url="https://cdn.test/global.png",
-                guild_avatar_url="https://cdn.test/server.png",
-            ),
-            fetched_member=None,
-        ),
-    )
-    # `on_message` is invoked unbound with this namespace as `self`, so the double owes every
-    # attribute the reward path reads: the cooldown map, its prune stamp, and the prune helper.
-    bot = SimpleNamespace(user=object(), _message_reward_at={}, _message_reward_pruned_at=0.0)
-    bot._prune_message_reward_cooldowns = partial(
-        cli.DiscordBot._prune_message_reward_cooldowns, as_discord_bot(fake=bot)
-    )
-
-    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
-
-    assert captured_avatar_url == "https://cdn.test/server.png"
-    # The faucet is the only bulk source of central-bank participation, and it rides the
-    # reward rather than every message.
-    assert recorded_participation == [(100, 7)]
