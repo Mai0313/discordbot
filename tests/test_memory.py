@@ -73,6 +73,7 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     drop_released_evidence,
     partition_forget_requests,
+    filter_duplicate_observations,
 )
 from discordbot.services.memory.writer import (
     ToneForget,
@@ -81,23 +82,23 @@ from discordbot.services.memory.writer import (
     MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
+    user_subject,
     redact_secrets,
+    server_subject,
     parse_turn_payload,
     render_turn_payload,
-    subject_source_line,
     parse_subject_source,
     render_forget_requests,
     transcript_from_messages,
     render_memory_observations,
-    filter_duplicate_observations,
     target_centered_memory_messages,
-    observation_key_sources_from_text,
 )
 from discordbot.services.memory.prompts import (
     PHASE2_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
+from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.constants import (
     COMPACTION_TARGET_CHARS,
     COMPACTION_TRIGGER_CHARS,
@@ -125,7 +126,7 @@ TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="minimal")
 _NOTES = ("使用者提到一件值得記住的事",)
 
 # The subject a reply schedules for its author: the target, then where the turn happened.
-_SUBJECT = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}"
+_SUBJECT = user_subject(user_id=USER_ID, guild_id=42)
 
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
@@ -241,11 +242,7 @@ class FakeMemoryClient:
 def _writer() -> tuple[MemoryWriterAI, FakeMemoryClient]:
     """Builds a MemoryWriterAI bound to a fake client."""
     fake_client = FakeMemoryClient()
-    writer = MemoryWriterAI(
-        client=cast("AsyncOpenAI", fake_client),
-        evaluate_model=TEST_MEMORY_MODEL,
-        consolidate_model=TEST_MEMORY_MODEL,
-    )
+    writer = MemoryWriterAI(client=cast("AsyncOpenAI", fake_client), model=TEST_MEMORY_MODEL)
     return writer, fake_client
 
 
@@ -695,19 +692,15 @@ async def test_consolidate_compact_appends_compaction_block() -> None:
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
 
-async def test_writer_uses_distinct_models_per_phase() -> None:
-    """Two phases, two model fields, dispatched in order. There is no third phase left."""
-    fake_client = FakeMemoryClient()
-    writer = MemoryWriterAI(
-        client=cast("AsyncOpenAI", fake_client),
-        evaluate_model=ModelSettings(name="evaluate-model", effort="minimal"),
-        consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
-    )
+async def test_every_writer_call_runs_on_its_one_model() -> None:
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("偏好明確")
     await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request())
-    assert fake_client.responses.parse_models == ["evaluate-model", "consolidate-model"]
+    fake_client.responses.output_parsed = ToneForget()
+    await writer.forget_tone(forgets="忘掉", note_lines=("說話簡短",), evidence=())
+    assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name] * 3
 
 
 def test_prompts_cover_recent_context_and_compaction() -> None:
@@ -1339,6 +1332,22 @@ def test_a_forget_releases_only_older_evidence_its_compartment_holds() -> None:
     assert drop_released_evidence(text=text, released={"g/42": ()}, forgets=forgets) is text
 
 
+def test_a_forget_keeps_a_legacy_identity_header_and_the_stamps_under_it() -> None:
+    """An entry header with a ` | <identity>` suffix, as old detail files still hold, is a header.
+
+    The store splits entries there. Read as a body line of the block before it, the header would
+    leave with that block when a forget released it, and the blocks after it would take its stamp.
+    """
+    city = _observation(summary="住在台中", normalized_key="fact.city", sharing="source_only")
+    job = _observation(summary="在工廠上班", normalized_key="fact.job", sharing="source_only")
+    legacy = _entry("2026-06-05T02:23:02+00:00 | Alice (alice) [id: 1]", job)
+    forget = _forget_entry("2026-09-02T00:00:00+00:00")
+    text = "\n\n".join([_entry("2026-06-05T01:00:00+00:00", city), legacy, forget])
+    forgets = partition_forget_requests(raw_text=text, compartments=("g/42",))
+    dropped = drop_released_evidence(text=text, released={"g/42": ("fact.city",)}, forgets=forgets)
+    assert dropped == f"{legacy}\n\n{forget}"
+
+
 async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
     memory_isolated_dir: Path,
 ) -> None:
@@ -1885,7 +1894,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
     def _blow_up(**kwargs: object) -> str:
         """Stands in for a store read that fails after the review succeeded."""
         del kwargs
-        raise RuntimeError("detail read blew up")
+        raise RuntimeError("evidence read blew up")
 
     writer, fake_client = _writer()
     if outcome == "review-failed":
@@ -1893,7 +1902,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         # as a review that returned nothing: that one is `kept-nothing`.
         fake_client.responses.raises = RuntimeError("the evaluator call blew up")
     elif outcome == "raised":
-        monkeypatch.setattr(pipeline, "read_detail_tail", _blow_up)
+        monkeypatch.setattr(pipeline, "read_evidence", _blow_up)
     else:
         fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, observations=())
     reported: list[MemoryWriteSummary] = []
@@ -2072,7 +2081,7 @@ async def test_a_failed_review_still_writes_the_forgets_of_later_rounds(
     fake_client.responses.raises = RuntimeError("review is down")
     pipeline.resume_memory_update(
         scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+        subject=user_subject(user_id=USER_ID, guild_id=42),
         transcript=render_turn_payload(
             transcript="Alice (alice) [id: 123456789]: 哈囉",
             rounds=((("他住在台中",), ()), ((), ("他已經不住台中了",))),
@@ -2121,7 +2130,7 @@ async def test_a_partly_failed_merge_still_reports_what_it_staged(
     inflight.enqueue_memory_update(
         turn=inflight.MemoryTurn(
             scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+            subject=user_subject(user_id=USER_ID, guild_id=42),
             transcript=render_turn_payload(
                 transcript="Alice (alice) [id: 123456789]: 哈囉",
                 rounds=((("他養了一隻貓",), ()), (("他住在台中",), ("別提舊筆電",))),
@@ -2231,7 +2240,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 
     fake_client.responses.answer = slow_answer
     # A two-line subject: the source line must round-trip through the deferred replay.
-    subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=99)}"
+    subject = user_subject(user_id=USER_ID, guild_id=99)
     _schedule(writer=writer, subject=subject, full_reply="第一")
     await started.wait()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
@@ -2323,7 +2332,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
         _schedule(
             writer=writer,
             remember_notes=(note,),
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
+            subject=user_subject(user_id=USER_ID, guild_id=guild),
         )
         if guild == 99 and note == "在 99 說的":
             await started.wait()
@@ -3630,9 +3639,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
     scopes = [user_scope(user_id=USER_ID + offset) for offset in range(3)]
     for offset, scope in enumerate(scopes):
         _schedule(
-            writer=writer,
-            subject=f"target_user_id: {USER_ID + offset}\n{subject_source_line(guild_id=42)}",
-            scope=scope,
+            writer=writer, subject=user_subject(user_id=USER_ID + offset, guild_id=42), scope=scope
         )
     tasks = [
         task for scope in scopes if (task := inflight._inflight_tasks.get(key=scope)) is not None
@@ -4111,18 +4118,22 @@ def test_render_memory_observations_without_source_keeps_legacy_format() -> None
     assert "- sharing:" not in rendered
 
 
-def test_subject_source_line_round_trips_through_parse() -> None:
-    guild_subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}"
+def test_subjects_round_trip_through_parse() -> None:
+    guild_subject = user_subject(user_id=USER_ID, guild_id=123)
     assert parse_subject_source(subject=guild_subject) == "guild 123"
-    dm_subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=None)}"
+    dm_subject = user_subject(user_id=USER_ID, guild_id=None)
     assert parse_subject_source(subject=dm_subject) == "dm"
     # Legacy user jobs and server-flavor subjects carry no source line.
     assert parse_subject_source(subject=f"target_user_id: {USER_ID}") is None
-    assert parse_subject_source(subject="target_server_id: 9") is None
+    assert parse_subject_source(subject=server_subject(server_id=9)) is None
 
 
-def test_observation_key_sources_from_text_pairs_keys_with_block_sources() -> None:
+def test_filter_duplicate_observations_pairs_each_key_with_its_own_block_source() -> None:
+    # `fact.b` predates source stamping; the forget request after it carries a `- source:`
+    # line of its own, which must not become `fact.b`'s source.
+    forget = render_forget_requests(notes=("忘掉那件事",), source="dm")
     text = (
+        "## 2026-01-01T00:00:00.000000+00:00\n"
         "### stable_preference\n"
         "- normalized_key: preference.a\n"
         "- ttl_days: null\n"
@@ -4133,11 +4144,23 @@ def test_observation_key_sources_from_text_pairs_keys_with_block_sources() -> No
         "### stable_fact\n"
         "- normalized_key: fact.b\n"
         "- summary_zh: 沒有 source 行的舊條目\n"
+        "\n"
+        f"## 2026-01-02T00:00:00.000000+00:00\n{forget}"
     )
-    assert observation_key_sources_from_text(text=text) == {
-        ("preference.a", "guild 1"),
-        ("fact.b", None),
-    }
+    observations = (
+        _observation(summary="甲", normalized_key="preference.a"),
+        _observation(summary="乙", normalized_key="fact.b"),
+    )
+
+    def kept_keys(source: str | None) -> list[str]:
+        kept = filter_duplicate_observations(
+            observations=observations, existing_text=text, source=source
+        )
+        return [observation.normalized_key for observation in kept]
+
+    assert kept_keys(source="guild 1") == ["fact.b"]
+    assert kept_keys(source=None) == ["preference.a"]
+    assert kept_keys(source="dm") == ["preference.a", "fact.b"]
 
 
 async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
@@ -4320,12 +4343,60 @@ def test_filter_duplicate_observations_legacy_evidence_pairs_with_none() -> None
     assert len(kept_for_dm) == 1
 
 
+async def test_pipeline_dedupes_against_evidence_already_in_detail(
+    memory_isolated_dir: Path,
+) -> None:
+    """Evidence a consolidation already retired to `detail.md` still counts as staged."""
+    observation = render_memory_observations(
+        observations=(_observation(summary="喜歡簡短", normalized_key="preference.test"),),
+        source="guild 42",
+    )
+    append_detail(scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00.000000+00:00\n{observation}")
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = _draft("喜歡簡短", normalized_key="preference.test")
+    _schedule(writer=writer)
+    await _wait_for_inflight()
+    assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
+    assert read_raw_entries(scope=USER_SCOPE) == ""
+
+
+async def test_pipeline_dedupe_keeps_a_detail_tail_cut_mid_block_to_itself(
+    memory_isolated_dir: Path,
+) -> None:
+    """A detail window that opens inside a block must not lend its fields to a staged one.
+
+    With no entry header inside the window, the tail starts with fields whose key was cut off.
+    Joined after `raw.md`, its `- source: guild 2` would become the source of the last staged
+    block, so a same-key note from guild 2 would be dropped as already evidenced there.
+    """
+    append_detail(
+        scope=USER_SCOPE,
+        text=(
+            "## 2026-01-01T00:00:00.000000+00:00\n### stable_fact\n- normalized_key: fact.old\n"
+            f"- evidence_quote: {'長' * MEMORY_DETAIL_CONTEXT_MAX_CHARS}\n"
+            "- source: guild 2\n- sharing: source_only\n- summary_zh: 舊"
+        ),
+    )
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_memory_observations(
+            observations=(_observation(summary="住在台中", normalized_key="fact.city"),),
+            source="guild 1",
+        ),
+    )
+    # Holds the consolidation back, so the staged batch stays readable in `raw.md`.
+    consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = _draft("住在台中", normalized_key="fact.city")
+    _schedule(writer=writer, subject=user_subject(user_id=USER_ID, guild_id=2))
+    await _wait_for_inflight()
+    assert read_raw_entries(scope=USER_SCOPE).count("- source: guild 2") == 1
+
+
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    _schedule(
-        writer=writer, subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}"
-    )
+    _schedule(writer=writer, subject=user_subject(user_id=USER_ID, guild_id=123))
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "- source: guild 123" in raw_text

@@ -89,14 +89,10 @@ _OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention
 # The target-user id inside a phase-1 subject; None for the server flavor.
 _SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", flags=re.MULTILINE)
 # The optional second subject line naming where the conversation happened. Format and
-# parser are co-located so the writer (`subject_source_line`) and the reader
+# parser are co-located so the writer (`user_subject`) and the reader
 # (`parse_subject_source`) cannot drift apart across the memory_job round-trip.
 _SUBJECT_SOURCE_RE = re.compile(r"^source: (?P<source>guild \d+|dm)$", flags=re.MULTILINE)
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
-_STRUCTURED_KEY_RE = re.compile(r"^\s*-\s*normalized_key:\s*(?P<key>\S+)\s*$", flags=re.MULTILINE)
-# The code-stamped `- source:` field inside one observation block; paired with the
-# block's normalized_key by `observation_key_sources_from_text`.
-_STRUCTURED_SOURCE_RE = re.compile(r"^\s*-\s*source:\s*(?P<source>guild \d+|dm)\s*$")
 # Column-0 transcript block marker (`[message N | role]`). Used to realign a middle-
 # truncated tail to a trusted block boundary so a sliced indent never leaves user
 # content at column 0, where the marker scheme reserves the trusted authorship signal.
@@ -328,14 +324,11 @@ class MemoryWriterAI(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Async OpenAI client for the Responses API memory calls."
     )
-    consolidate_model: ModelSettings = Field(
-        ..., description="Model running the phase-2 consolidation call."
-    )
-    evaluate_model: ModelSettings = Field(
+    model: ModelSettings = Field(
         ...,
         description=(
-            "Model reviewing the answer model's memory notes. Required rather than optional: "
-            "it is the only step that authors a raw entry's fields, so omitting it would turn "
+            "Model running every memory call. Required rather than optional: the note review "
+            "is the only step that authors a raw entry's fields, so omitting it would turn "
             "memory writing into a silent no-op."
         ),
     )
@@ -344,10 +337,6 @@ class MemoryWriterAI(BaseModel):
     )
     consolidate_prompt: str = Field(
         default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
-    )
-    compaction_block: str = Field(
-        default=PHASE2_COMPACTION_BLOCK,
-        description="Extra block appended to the consolidation prompt when compacting.",
     )
 
     async def evaluate(
@@ -381,7 +370,7 @@ class MemoryWriterAI(BaseModel):
             else ()
         )
         draft = await self._parse(
-            model=self.evaluate_model,
+            model=self.model,
             instructions=self.evaluator_prompt,
             user_text=(
                 f"{subject}\n\n"
@@ -412,12 +401,12 @@ class MemoryWriterAI(BaseModel):
             blocks.append(_tagged(tag="existing_tone", body=request.existing_tone))
             blocks.append(_tagged(tag="tone_evidence", body=request.tone_evidence))
         instructions = (
-            self.consolidate_prompt + self.compaction_block
+            self.consolidate_prompt + PHASE2_COMPACTION_BLOCK
             if request.compact
             else self.consolidate_prompt
         )
         result = await self._parse(
-            model=self.consolidate_model,
+            model=self.model,
             instructions=instructions,
             user_text="\n\n".join(blocks),
             text_format=ConsolidatedMemory,
@@ -442,7 +431,7 @@ class MemoryWriterAI(BaseModel):
         land in the note. None means the LLM path failed.
         """
         return await self._parse(
-            model=self.consolidate_model,
+            model=self.model,
             instructions=TONE_FORGET_PROMPT,
             user_text="\n\n".join([
                 _tagged(tag="forget_requests", body=forgets),
@@ -714,9 +703,19 @@ def _note_text(note: str) -> str:
     return _trim_text(text=redact_secrets(text=note), max_chars=MEMORY_NOTE_MAX_CHARS)
 
 
-def subject_source_line(guild_id: int | None) -> str:
-    """Renders the subject's second line naming where the conversation happened."""
-    return f"source: guild {guild_id}" if guild_id is not None else "source: dm"
+def user_subject(user_id: int, guild_id: int | None) -> str:
+    """Renders the subject of one user's memory review.
+
+    The second line names where the conversation happened: the guild, or `dm` when
+    `guild_id` is None.
+    """
+    source = f"guild {guild_id}" if guild_id is not None else "dm"
+    return f"target_user_id: {user_id}\nsource: {source}"
+
+
+def server_subject(server_id: int) -> str:
+    """Renders the subject of one server's memory review, which carries no source line."""
+    return f"target_server_id: {server_id}"
 
 
 def parse_subject_source(subject: str) -> str | None:
@@ -728,51 +727,6 @@ def parse_subject_source(subject: str) -> str | None:
     """
     match = _SUBJECT_SOURCE_RE.search(subject)
     return match.group("source") if match else None
-
-
-def observation_key_sources_from_text(text: str) -> set[tuple[str, str | None]]:
-    """Extracts `(normalized_key, source)` pairs from raw/detail evidence.
-
-    The renderer emits `- source:` after `- normalized_key:` inside one block, so a
-    line walk can pair each key with its block's source; a block with no `- source:` line
-    pairs with None.
-    """
-    pairs: set[tuple[str, str | None]] = set()
-    pending_key: str | None = None
-    for line in text.splitlines():
-        key_match = _STRUCTURED_KEY_RE.match(line)
-        if key_match:
-            if pending_key is not None:
-                pairs.add((pending_key, None))
-            pending_key = key_match.group("key")
-            continue
-        source_match = _STRUCTURED_SOURCE_RE.match(line)
-        if source_match and pending_key is not None:
-            pairs.add((pending_key, source_match.group("source")))
-            pending_key = None
-    if pending_key is not None:
-        pairs.add((pending_key, None))
-    return pairs
-
-
-def filter_duplicate_observations(
-    observations: tuple[MemoryObservation, ...], existing_text: str, source: str | None
-) -> tuple[MemoryObservation, ...]:
-    """Drops observations already evidenced from the SAME conversation source.
-
-    The dedupe key is `(normalized_key, source)`, not the key alone: a fact re-stated in
-    another guild (or a DM) must re-enter raw so `partition_raw_entries` can file it in
-    that conversation's own compartment; key-only dedupe would lock every fact to the
-    first source that ever observed it.
-    """
-    existing_pairs = observation_key_sources_from_text(text=existing_text)
-    kept: list[MemoryObservation] = []
-    for observation in observations:
-        if (observation.normalized_key, source) in existing_pairs:
-            continue
-        kept.append(observation)
-        existing_pairs.add((observation.normalized_key, source))
-    return tuple(kept)
 
 
 def redact_secrets(text: str) -> str:

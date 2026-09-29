@@ -46,20 +46,20 @@ from discordbot.services.memory.facts import (
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
+    RAW_ENTRY_HEADER_RE,
     read_facts,
     write_fact,
     delete_fact,
     guild_compartment,
 )
-from discordbot.services.memory.writer import MemoryFactDelta
+from discordbot.services.memory.writer import MemoryFactDelta, MemoryObservation
 from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
 
-# One raw entry's `## <ISO timestamp>` header, and one observation block inside it.
-_ENTRY_HEADER_RE = re.compile(r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T\S+)\s*$")
+# One observation block's header inside a raw entry.
 _OBSERVATION_HEADER_RE = re.compile(r"^### (?P<category>\S+)")
 # Observation categories that carry how the user wants the bot to SOUND. Everything
 # else is a fact and has no business in the always-injected tone note.
@@ -590,6 +590,31 @@ def _compartment_for_block(block: str) -> str:
     return DM_COMPARTMENT
 
 
+def filter_duplicate_observations(
+    observations: tuple[MemoryObservation, ...], existing_text: str, source: str | None
+) -> tuple[MemoryObservation, ...]:
+    """Drops observations already evidenced from the SAME conversation source.
+
+    The dedupe key is `(normalized_key, source)`, not the key alone: a fact re-stated in
+    another guild (or a DM) must re-enter raw so `partition_raw_entries` can file it in
+    that conversation's own compartment; key-only dedupe would lock every fact to the
+    first source that ever observed it. A key pairs with its own block's `- source:`
+    field, and with None when that block has none.
+    """
+    existing_pairs: set[tuple[str, str | None]] = set()
+    for _, block in _iter_observations(text=existing_text):
+        fields = _fields_of(block=block)
+        if fields.get("normalized_key"):
+            existing_pairs.add((fields["normalized_key"], fields.get("source")))
+    kept: list[MemoryObservation] = []
+    for observation in observations:
+        if (observation.normalized_key, source) in existing_pairs:
+            continue
+        kept.append(observation)
+        existing_pairs.add((observation.normalized_key, source))
+    return tuple(kept)
+
+
 def _fields_of(block: str) -> dict[str, str]:
     """Extracts one observation block's `- name: value` fields."""
     fields: dict[str, str] = {}
@@ -613,7 +638,7 @@ def _iter_observations(text: str) -> list[tuple[str, str]]:
         current.clear()
 
     for line in text.splitlines():
-        header = _ENTRY_HEADER_RE.match(line)
+        header = RAW_ENTRY_HEADER_RE.match(line)
         if header is not None:
             flush()
             timestamp = header.group("timestamp")

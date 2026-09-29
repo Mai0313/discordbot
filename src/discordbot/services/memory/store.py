@@ -73,8 +73,11 @@ _COMPARTMENT_RE = re.compile(r"^(?:global|dm|g/\d{1,20})$")
 _GUILD_DIR_NAME = "g"
 
 # Raw entries start with a `## <ISO-8601 timestamp>` header line. An entry's
-# body is bullet-style prose, so the date prefix doubles as the split marker.
-_RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
+# body is bullet-style prose, so the date prefix doubles as the split marker;
+# `timestamp` is the rest of the header line.
+RAW_ENTRY_HEADER_RE = re.compile(
+    r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T.*?)\s*$", flags=re.MULTILINE
+)
 
 # Per-scope file-write locks, rebuilt per event loop by the shared registry.
 _scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
@@ -640,7 +643,7 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
     text = data.decode(encoding="utf-8", errors="ignore")
     if size > len(data) or len(text) > max_chars:
         tail = text[max(0, len(text) - max_chars) :]
-        match = _RAW_ENTRY_HEADER_RE.search(tail)
+        match = RAW_ENTRY_HEADER_RE.search(tail)
         text = tail[match.start() :] if match else tail
     return text.strip()
 
@@ -743,7 +746,7 @@ def delete_memory_files(scope: str) -> bool:
 
 def _split_raw_entries(text: str) -> list[str]:
     """Splits raw file text into stripped per-entry blocks including headers."""
-    starts = [match.start() for match in _RAW_ENTRY_HEADER_RE.finditer(text)]
+    starts = [match.start() for match in RAW_ENTRY_HEADER_RE.finditer(text)]
     if not starts:
         return []
     bounds = [*starts, len(text)]

@@ -28,11 +28,11 @@ from discordbot.services.memory.store import (
     scope_lock,
     mark_cleared,
     cleared_since,
+    read_evidence,
     append_raw_entry,
-    read_detail_tail,
-    read_raw_entries,
     delete_memory_files,
 )
+from discordbot.services.memory.deltas import filter_duplicate_observations
 from discordbot.services.memory.writer import (
     MemoryWriterAI,
     MemoryObservation,
@@ -42,9 +42,7 @@ from discordbot.services.memory.writer import (
     render_forget_requests,
     transcript_from_messages,
     render_memory_observations,
-    filter_duplicate_observations,
 )
-from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.inflight import (
     MemoryTurn,
     MemoryWriteReport,
@@ -384,10 +382,9 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         if draft is None:
             reviewed = False
             continue
-        recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
         deduped = filter_duplicate_observations(
             observations=draft.observations,
-            existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
+            existing_text=read_evidence(scope=scope),
             source=source,
         )
         if forget_notes and len(deduped) < len(draft.observations):

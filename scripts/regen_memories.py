@@ -328,9 +328,7 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
         return
     config = LLMConfig()
     writer = MemoryWriterAI(
-        client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
-        evaluate_model=model,
-        consolidate_model=model,
+        client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key), model=model
     )
     console.print(f"Rebuilding with [bold]{model.name}[/bold] (effort: {model.effort})")
     _report(rows=await _rebuild_batch(writer=writer, scopes=scopes))
