@@ -32,7 +32,6 @@ from discordbot.typings.timeouts import (
 from discordbot.utils.link_errors import (
     LinkRetryableError,
     LinkUnavailableError,
-    link_fetch_error,
     is_retryable_fetch_failure,
 )
 from discordbot.services.platforms.base import (
@@ -40,6 +39,7 @@ from discordbot.services.platforms.base import (
     PlatformDownloader,
     PlatformConversation,
 )
+from discordbot.services.platforms.page_json import FetchedPage, fetch_page
 from discordbot.services.platforms.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
@@ -653,22 +653,6 @@ class ThreadsPage(BaseModel):
         return self.chain[-1] if self.chain else None
 
 
-class FetchedPage(BaseModel):
-    """One page as it came back: its HTML, and the URL the request actually ended on.
-
-    `final_url` is what makes a `share/<code>` link readable. That form names its post nowhere
-    else — its code is unrelated to the post's and appears nowhere in the page — so the redirect
-    the fetch already followed is the only thing that names it. Reading it off the response costs
-    nothing, while resolving it separately would spend another round trip on the reply pipeline's
-    critical path.
-    """
-
-    html: str = Field(..., description="The fetched page's HTML body")
-    final_url: str = Field(
-        ..., description="The URL the request ended on, after every redirect it followed"
-    )
-
-
 class ParsedPage(BaseModel):
     """One fetched page's outcome: what it yielded, and whether it was an answer at all.
 
@@ -813,16 +797,17 @@ class ThreadsDownloader(PlatformDownloader):
     def _fetch_page(self, url: str) -> FetchedPage:
         """Fetches the given URL, returning its HTML and the URL the request ended on.
 
-        Redirects are followed, as they always were, but where they land is now part of the
-        result: a `share/<code>` link names its post only there. See `FetchedPage`.
+        Where it landed is what makes a `share/<code>` link readable. That form names its post
+        nowhere else — its code is unrelated to the post's and appears nowhere in the page — so
+        the redirect the fetch already followed is the only thing that names it. Reading it off
+        the response costs nothing, while resolving it separately would spend another round trip
+        on the reply pipeline's critical path.
         """
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
-        try:
-            response = requests.get(url=url, headers=headers, timeout=THREADS_PAGE_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            return FetchedPage(html=response.text, final_url=response.url)
-        except requests.RequestException as error:
-            raise link_fetch_error(error=error, url=url) from error
+        return fetch_page(
+            url=url,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"},
+            timeout=THREADS_PAGE_TIMEOUT_SECONDS,
+        )
 
     @staticmethod
     def _find_media_nodes(

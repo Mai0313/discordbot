@@ -33,32 +33,31 @@ Image candidates are ordered widest first and carry no dimensions of their own, 
 """
 
 import re
-import json
 from typing import Any
 from functools import cached_property
 from urllib.parse import urlparse
-from collections.abc import Iterator
 
 import logfire
 from pydantic import Field, BaseModel, computed_field
-import requests
 
 from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
-from discordbot.utils.link_errors import link_fetch_error
 from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
     PlatformConversation,
+    thread_branches,
 )
 from discordbot.services.platforms.page_json import (
-    JSON_SCRIPT_RE,
     BROWSER_HEADERS,
     JsonValue,
+    FetchedPage,
     walk,
     str_of,
     time_of,
     deep_get,
+    fetch_page,
+    json_payloads,
 )
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
@@ -88,6 +87,9 @@ _COMMENT_PATH_RE = re.compile(r"/c/(?P<comment>[0-9]+)")
 
 # Instagram's own media-type enum, as it appears on both a post and a carousel child.
 _MEDIA_TYPE_VIDEO = 2
+
+# Where a fetch lands when Instagram will not show the post logged out.
+_LOGIN_WALL_PATHS = ("/accounts/login", "/challenge", "/accounts/suspended")
 
 
 def _int_of(*, value: JsonValue) -> int:
@@ -154,20 +156,6 @@ class InstagramURL(BaseModel):
         return f"{_CANONICAL_INSTAGRAM_ORIGIN}/{kind}/{match.group('code')}/"
 
 
-class FetchedPage(BaseModel):
-    """One page fetch: its HTML and the URL the request ended on."""
-
-    html: str = Field(..., description="The fetched page's HTML body")
-    final_url: str = Field(..., description="The URL the request ended on after redirects")
-
-    @computed_field
-    @cached_property
-    def is_login_wall(self) -> bool:
-        """Whether the fetch was redirected to a login or challenge page."""
-        path = urlparse(self.final_url).path.lower()
-        return path.startswith(("/accounts/login", "/challenge", "/accounts/suspended"))
-
-
 class InstagramOutput(PlatformOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
@@ -223,31 +211,8 @@ class InstagramDownloader(PlatformDownloader):
     """
 
     def _fetch_page(self, *, url: str) -> FetchedPage:
-        """Fetches a page with the browser headers the full payload needs.
-
-        Raises:
-            LinkRetryableError: The platform refused the request or never answered.
-            LinkUnavailableError: The platform answered that there is no such page.
-            RuntimeError: The fetch failed in a way HTTP does not classify.
-        """
-        try:
-            response = requests.get(
-                url=url, headers=BROWSER_HEADERS, timeout=INSTAGRAM_PAGE_TIMEOUT_SECONDS
-            )
-            response.raise_for_status()
-            return FetchedPage(html=response.text, final_url=response.url)
-        except requests.RequestException as error:
-            raise link_fetch_error(error=error, url=url) from error
-
-    @staticmethod
-    def _json_payloads(*, html: str) -> Iterator[Any]:
-        """Yields every embedded JSON block on the page, skipping the ones that do not parse."""
-        for match in JSON_SCRIPT_RE.finditer(string=html):
-            try:
-                yield json.loads(s=match.group(1))
-            except ValueError:
-                logfire.debug("Skipped an unparsable Instagram JSON block", _exc_info=True)
-                continue
+        """Fetches a page with the browser headers the full payload needs."""
+        return fetch_page(url=url, headers=BROWSER_HEADERS, timeout=INSTAGRAM_PAGE_TIMEOUT_SECONDS)
 
     @staticmethod
     def _find_media(*, payloads: list[Any], shortcode: str) -> dict[str, Any] | None:
@@ -331,18 +296,7 @@ class InstagramDownloader(PlatformDownloader):
                     taken_at=time_of(value=node.get("created_at")),
                     comment_id=comment_id,
                 )
-        branches: list[list[InstagramOutput]] = []
-        index: dict[str, list[InstagramOutput]] = {}
-        for comment_id, comment in found.items():
-            parent = parents.get(comment_id)
-            branch = index.get(parent) if parent else None
-            if branch is None:
-                branch = [comment]
-                branches.append(branch)
-            else:
-                branch.append(comment)
-            index[comment_id] = branch
-        return branches
+        return thread_branches(comments=found, parents=parents)
 
     def parse_metadata(self, *, url: str) -> InstagramConversation:
         """Reads one public Instagram post and the comments under it.
@@ -370,14 +324,14 @@ class InstagramDownloader(PlatformDownloader):
             return InstagramConversation()
 
         fetched = self._fetch_page(url=instagram_url.clean_url)
-        if fetched.is_login_wall:
+        if fetched.landed_on(path_prefixes=_LOGIN_WALL_PATHS):
             logfire.info(
                 "An Instagram post is not public; treating it as unreadable",
                 url=instagram_url.clean_url,
             )
             return InstagramConversation()
 
-        payloads = list(self._json_payloads(html=fetched.html))
+        payloads = list(json_payloads(html=fetched.html, platform="Instagram"))
         media = self._find_media(payloads=payloads, shortcode=instagram_url.shortcode)
         if media is None:
             logfire.info(

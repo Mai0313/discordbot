@@ -9,6 +9,9 @@ Three bases, each answering a question that used to be answered once per platfor
 - `PlatformConversation` is a post plus the discussion around it, generic in the Output its
   `chain` holds, so a subclass names its own model once and gets the four accessors typed.
 
+`thread_branches` builds that model's `reply_branches` for a platform whose comments name the one
+they answer.
+
 `raise NotImplementedError` rather than `abc.ABC`, matching `TemporaryDownload.unlink` one module
 over: this repo's answer to an unimplemented member is a raise, and an ABC would catch only the
 forgotten override while saying nothing about the signature — which is the half that actually
@@ -168,3 +171,32 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
     def posts(self) -> list[OutputT]:
         """Everything the page yielded: the chain oldest first, then the replies in page order."""
         return [*self.chain, *self.comments]
+
+
+def thread_branches[OutputT: PlatformOutput](
+    *, comments: dict[str, OutputT], parents: dict[str, str]
+) -> list[list[OutputT]]:
+    """Groups comments into the `reply_branches` shape, each reply behind the comment it answers.
+
+    A comment whose parent has not appeared before it opens a branch of its own rather than being
+    dropped, so a reply the page served without its parent still reaches the caller.
+
+    Args:
+        comments: Every comment, keyed by its own id, in page order.
+        parents: The id of the comment each reply answers, keyed by the reply's id.
+
+    Returns:
+        One list per branch, in the order each branch's first comment appeared.
+    """
+    branches: list[list[OutputT]] = []
+    index: dict[str, list[OutputT]] = {}
+    for comment_id, comment in comments.items():
+        parent = parents.get(comment_id)
+        branch = index.get(parent) if parent else None
+        if branch is None:
+            branch = [comment]
+            branches.append(branch)
+        else:
+            branch.append(comment)
+        index[comment_id] = branch
+    return branches

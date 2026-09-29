@@ -24,16 +24,16 @@ _MODEL_BASES = frozenset({"BaseModel", "BaseSettings"})
 _ENTRY = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*):\s")
 
 
-def _classes() -> list[tuple[Path, ast.ClassDef]]:
-    """Every class in the package, one entry each.
+def _classes(*, root: Path) -> list[tuple[Path, ast.ClassDef]]:
+    """Every class under `root`, one entry each.
 
-    A list rather than a name-keyed map because the package defines `FetchedPage` three times,
-    once per platform that fetches one, and a map would scan whichever came last and skip the
-    rest. `_by_name` below is still a map, but only to walk bases with — a name that resolves to
-    the wrong `FetchedPage` still resolves to a model, and nothing here reads a base's fields.
+    A list rather than a name-keyed map because two modules can define the same name, and a map
+    would scan whichever came last and skip the rest. `_by_name` below is still a map, but only to
+    walk bases with — a name that resolves to the wrong one of two same-named models still
+    resolves to a model, and nothing here reads a base's fields.
     """
     found: list[tuple[Path, ast.ClassDef]] = []
-    for path in sorted(_PACKAGE.rglob("*.py")):
+    for path in sorted(root.rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
         for node in ast.walk(ast.parse(source=path.read_text(encoding="utf-8"))):
@@ -105,7 +105,7 @@ def _documented_attributes(node: ast.ClassDef) -> set[str]:
 
 def test_no_field_is_described_twice() -> None:
     """A field with a `Field(description=)` must not also have an `Attributes:` entry."""
-    classes = _classes()
+    classes = _classes(root=_PACKAGE)
     by_name = {node.name: node for _, node in classes}
     scanned: list[str] = []
     offenders: list[str] = []
@@ -120,11 +120,19 @@ def test_no_field_is_described_twice() -> None:
             )
 
     assert "models.py::RouteClassification" in scanned, "the walk found no models"
-    # The name that proved the walk cannot be keyed on one: three platforms define it.
-    assert sum(entry.endswith("::FetchedPage") for entry in scanned) == 3, (
-        f"the walk stopped seeing every FetchedPage: {[e for e in scanned if 'FetchedPage' in e]}"
-    )
     assert not offenders, (
         "these fields are documented twice and the two copies will drift; keep the "
         f"`Field(description=)` and drop the `Attributes:` entry: {sorted(offenders)}"
     )
+
+
+def test_the_walk_keeps_every_class_that_shares_a_name(tmp_path: Path) -> None:
+    """Two modules defining one name both reach the scan, so neither can hide an offence."""
+    for module in ("first", "second"):
+        (tmp_path / f"{module}.py").write_text(
+            data="class Twin(BaseModel):\n    pass\n", encoding="utf-8"
+        )
+
+    walked = [(path.name, node.name) for path, node in _classes(root=tmp_path)]
+
+    assert walked == [("first.py", "Twin"), ("second.py", "Twin")]
