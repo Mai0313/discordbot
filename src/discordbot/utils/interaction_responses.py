@@ -25,20 +25,14 @@ class _MessageOwningView(Protocol):
 
 
 async def send_expiring_followup(
-    interaction: Interaction[commands.Bot],
-    embed: Embed,
-    view: View | None = None,
-    file: File | None = None,
+    interaction: Interaction[commands.Bot], embed: Embed, file: File | None = None
 ) -> None:
     """Sends a public embed as an interaction followup and schedules its deletion."""
     extra_files = [file] if file is not None else None
     spacer = embed_spacer_payload(
         embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
     )
-    if view is not None:
-        message = await interaction.followup.send(embed=embed, view=view, wait=True, **spacer)
-    else:
-        message = await interaction.followup.send(embed=embed, wait=True, **spacer)
+    message = await interaction.followup.send(embed=embed, wait=True, **spacer)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_public_message_delete(message=message, user_name=user_name)
 
