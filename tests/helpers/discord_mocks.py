@@ -129,8 +129,20 @@ class FakeFollowup:
 class FakeDiscordMessage:
     """Discord message stub that records mutations."""
 
-    def __init__(self) -> None:
-        """Initializes message mutation records."""
+    def __init__(
+        self,
+        *,
+        author: FakeUser | None = None,
+        content: str = "",
+        guild: FakeGuild | SimpleNamespace | None = None,
+    ) -> None:
+        """Initializes the fields a listener reads and the message mutation records.
+
+        `guild` defaults to None, which a real message carries only in a DM.
+        """
+        self.author = author or FakeUser()
+        self.content = content
+        self.guild = guild
         self.id = 1
         self.channel = SimpleNamespace(id=2)
         self.edits: list[DiscordPayload] = []

@@ -1,15 +1,12 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
-from types import SimpleNamespace
 from typing import Any
 import asyncio
 from pathlib import Path
-import tempfile
 import threading
 
 import pytest
 
-from discordbot.utils import scratch_dir
 from discordbot.services.platforms import douyin as douyin_fetch
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.services.platforms.douyin import (
@@ -33,6 +30,7 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
 )
 
 from tests.helpers.casting import step_dicts, make_stub_gemini_client
+from tests.helpers.link_sources import FakeUploads, race_every_scratch_teardown
 
 _URL = "https://v.douyin.com/abc123"
 
@@ -49,35 +47,6 @@ def _post(is_photo: bool = False, images: int = 0) -> DouyinMetadata:
     )
 
 
-class _Uploads:
-    """Records every media upload the builder performs and hands back canned uris."""
-
-    def __init__(self, fail: bool = False) -> None:
-        """Initializes the upload record and whether every upload should fail."""
-        self.calls: list[tuple[object, str, str]] = []
-        self.fail = fail
-
-    async def __call__(
-        self,
-        *,
-        client: object,
-        source: object,
-        mime_type: str,
-        filename: str,
-        timeout_seconds: float,
-    ) -> dict[str, str] | None:
-        """Stands in for `upload_as_input_file`, returning a Files-API-shaped part."""
-        del client, timeout_seconds
-        self.calls.append((source, mime_type, filename))
-        if self.fail:
-            return None
-        return {
-            "type": "input_file",
-            "file_id": f"https://files.test/{filename}",
-            "filename": filename,
-        }
-
-
 def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder can hit
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -85,8 +54,8 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
     files: list[str] | None = None,
     parse_error: Exception | None = None,
     download_error: Exception | None = None,
-    uploads: _Uploads | None = None,
-) -> tuple[_Uploads, dict[str, object]]:
+    uploads: FakeUploads | None = None,
+) -> tuple[FakeUploads, dict[str, object]]:
     """Stubs the downloader and the Files API upload so no network or SDK is touched."""
     resolved_post = post or _post()
     recorded: dict[str, object] = {}
@@ -126,32 +95,9 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
 
     monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=fake_parse_metadata)
     monkeypatch.setattr(target=DouyinDownloader, name="download", value=fake_download)
-    resolved_uploads = uploads or _Uploads()
+    resolved_uploads = uploads or FakeUploads()
     monkeypatch.setattr(douyin_builder, "upload_as_input_file", resolved_uploads)
     return resolved_uploads, recorded
-
-
-def _race_every_scratch_teardown(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Makes every scratch removal fail the way one racing a live writer does.
-
-    Returns the list each attempt records itself in, so a test can tell a teardown that ran
-    and failed from one the builder never reached.
-    """
-    removed: list[str] = []
-
-    class _RacedTemporaryDirectory(tempfile.TemporaryDirectory[str]):
-        """Loses the race the way a file arriving after the scan makes the closing rmdir lose it."""
-
-        def cleanup(self) -> None:
-            """Removes the tree, then raises what an ENOTEMPTY on the last step raises."""
-            removed.append(self.name)
-            super().cleanup()
-            raise OSError("directory not empty")
-
-    monkeypatch.setattr(
-        scratch_dir, "tempfile", SimpleNamespace(TemporaryDirectory=_RacedTemporaryDirectory)
-    )
-    return removed
 
 
 async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any]]:
@@ -301,7 +247,7 @@ async def test_an_oversize_clip_degrades_to_the_caption(monkeypatch: pytest.Monk
 
 async def test_a_failed_upload_degrades_to_the_caption(monkeypatch: pytest.MonkeyPatch) -> None:
     """A download that works but an upload that fails must not claim the clip was watched."""
-    _stub_douyin(monkeypatch, uploads=_Uploads(fail=True))
+    _stub_douyin(monkeypatch, uploads=FakeUploads(fail=True))
 
     blocks = await _build()
 
@@ -369,7 +315,7 @@ async def test_a_raced_scratch_teardown_keeps_the_clip_the_build_already_uploade
     the post it was holding. `scratch_directory` reports the removal instead of raising it.
     """
     _stub_douyin(monkeypatch)
-    removed = _race_every_scratch_teardown(monkeypatch)
+    removed = race_every_scratch_teardown(monkeypatch)
 
     blocks = await _build()
 
@@ -393,7 +339,7 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
     reported to the model as one that answered without its media.
     """
     _stub_douyin(monkeypatch)
-    removed = _race_every_scratch_teardown(monkeypatch)
+    removed = race_every_scratch_teardown(monkeypatch)
     release = threading.Event()
 
     def blocking_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
@@ -467,7 +413,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class _SlowUploads(_Uploads):
+    class _SlowUploads(FakeUploads):
         async def __call__(
             self,
             *,
