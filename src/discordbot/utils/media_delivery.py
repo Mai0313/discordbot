@@ -638,27 +638,22 @@ class MediaDeliveryPlanner(BaseModel):
         return await asyncio.to_thread(item.host_with, service=self.media_hosting)
 
     async def plan(
-        self,
-        *,
-        items: list[MediaItem],
-        upload_limit: int,
-        envelope_margin: int = 0,
-        attachment_limit: int = DISCORD_ATTACHMENT_LIMIT,
+        self, *, items: list[MediaItem], upload_limit: int, envelope_margin: int = 0
     ) -> MediaPlan:
         """Splits items into native attachments, hosted URLs, and dropped items.
 
         (a) Each individually-oversize item is hosted (or dropped when hosting is off / fails),
-        concurrently. (b) The native list is clamped to `attachment_limit` first, the trailing
-        overflow dropped, so a marginal combined overflow then sheds a low-priority trailing image
-        rather than a prioritized voice/music clip. (c) The largest remaining are peeled to hosted
-        URLs until the combined body clears `upload_limit - envelope_margin`. Input order is
-        preserved in `native`, so a caller leading with voice/music keeps a trailing image as the drop.
+        concurrently. (b) The native list is clamped to `DISCORD_ATTACHMENT_LIMIT` first, the
+        trailing overflow dropped, so a marginal combined overflow then sheds a low-priority
+        trailing image rather than a prioritized voice/music clip. (c) The largest remaining are
+        peeled to hosted URLs until the combined body clears `upload_limit - envelope_margin`.
+        Input order is preserved in `native`, so a caller leading with voice/music keeps a trailing
+        image as the drop.
 
         Args:
             items: The built media items to deliver, in caller-preferred order.
             upload_limit: The destination's attachment ceiling (see `upload_limit_for`).
             envelope_margin: Headroom held back for the multipart body / embeds JSON.
-            attachment_limit: Max native attachments Discord allows in one message.
 
         Returns:
             A `MediaPlan` partitioning the items.
@@ -683,9 +678,9 @@ class MediaDeliveryPlanner(BaseModel):
         # cannot ride the edit anyway, so dropping the trailing overflow first means a marginal
         # combined overflow sheds a low-priority trailing image instead of peeling the prioritized
         # voice/music clip (callers lead with those).
-        if len(fitting) > attachment_limit:
-            dropped.extend(fitting[attachment_limit:])
-            fitting = fitting[:attachment_limit]
+        if len(fitting) > DISCORD_ATTACHMENT_LIMIT:
+            dropped.extend(fitting[DISCORD_ATTACHMENT_LIMIT:])
+            fitting = fitting[:DISCORD_ATTACHMENT_LIMIT]
 
         # (c) Combined total: peel the largest remaining to a URL until the multipart body fits.
         total = sum(sizes[id(item)] for item in fitting)
