@@ -5,10 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 
-import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
-from nextcord.ui import Item, View, Modal, Button, TextInput, StringSelect
+from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.cogs.games.lobby import (
@@ -35,6 +34,7 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGatePairChoiceUnavailableError,
 )
 from discordbot.cogs.games.interactions import (
+    GameView,
     table_edit_kwargs,
     publish_final_table,
     set_view_item_visible,
@@ -54,7 +54,6 @@ from discordbot.cogs.games.presentation import (
     lobby_participant_line,
 )
 from discordbot.services.economy.database import get_balance, apply_jackpot_settlement
-from discordbot.utils.interaction_responses import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
@@ -393,8 +392,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
 
 
-class DragonGateView(View):
+class DragonGateView(GameView):
     """High / low buttons, bet select, and leave button for an active 射龍門 table."""
+
+    interaction_failure_log = "Dragon Gate action interaction failed"
+    notice_failure_log = "Failed to send Dragon Gate action notice"
 
     def __init__(
         self,
@@ -511,9 +513,7 @@ class DragonGateView(View):
         """Routes a select-menu choice to a fixed bet or custom modal."""
         if choice == "custom":
             if self.round_state.needs_pair_choice():
-                await interaction.response.send_message(
-                    content="同點門柱要先猜大或猜小", ephemeral=True
-                )
+                await self._send_notice(interaction=interaction, content="同點門柱要先猜大或猜小")
                 return
             modal = DragonGateBetModal(
                 view=self,
@@ -534,7 +534,7 @@ class DragonGateView(View):
         """Handles the custom bet modal submission."""
         amount = parse_decimal_amount(raw=raw_amount)
         if amount is None:
-            await interaction.response.send_message(content="下注金額要是整數", ephemeral=True)
+            await self._send_notice(interaction=interaction, content="下注金額要是整數")
             return
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
@@ -883,25 +883,6 @@ class DragonGateView(View):
         else:
             content = "這桌已經不能操作了"
         await self._send_notice(interaction=interaction, content=content)
-
-    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private action notice to the interacting user."""
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content=content,
-            log_message="Failed to send Dragon Gate action notice",
-        )
-
-    async def on_error(
-        self, error: Exception, item: Item[DragonGateView], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Logs active-table component failures instead of only printing to stderr."""
-        logfire.error(
-            "Dragon Gate action interaction failed",
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
 
 
 class DragonGateBetModal(Modal):

@@ -6,22 +6,20 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 import asyncio
 import contextlib
 
-import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction
-from nextcord.ui import Item, View, Button
 
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
-from discordbot.cogs.games.interactions import disable_view_components
+from discordbot.cogs.games.interactions import GameView
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
-from discordbot.utils.interaction_responses import send_ephemeral_notice
 
 if TYPE_CHECKING:
     from random import Random
     from collections.abc import Iterable
 
+    from nextcord.ui import Button
     from nextcord.ext import commands
 
     from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
@@ -49,9 +47,11 @@ class RefreshParticipants(Protocol):
         """Returns refreshed participants and display names removed from the table."""
 
 
-class BaseGameLobbyView(View):
+class BaseGameLobbyView(GameView):
     """Join / leave / start scaffold shared by multiplayer game lobbies."""
 
+    interaction_failure_log = "Lobby interaction failed"
+    notice_failure_log = "Failed to send lobby notice"
     max_players: ClassVar[int | None] = None
 
     def __init__(  # noqa: PLR0913 -- lobby owns all table dependencies
@@ -188,30 +188,6 @@ class BaseGameLobbyView(View):
             view=self,
             **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
         )
-
-    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private lobby notice to the interacting user."""
-        await send_ephemeral_notice(
-            interaction=interaction, content=content, log_message="Failed to send lobby notice"
-        )
-
-    async def on_error(
-        self,
-        error: Exception,
-        item: Item[BaseGameLobbyView],
-        interaction: Interaction[commands.Bot],
-    ) -> None:
-        """Logs lobby component failures instead of only printing to stderr."""
-        logfire.error(
-            "Lobby interaction failed",
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
-
-    def _disable_buttons(self) -> None:
-        """Disables all button components on the lobby view."""
-        disable_view_components(children=self.children, component_types=(Button,))
 
     def _build_lobby_embed(self, status: str) -> Embed:
         """Builds the lobby embed for a concrete game type."""

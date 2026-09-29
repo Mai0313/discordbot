@@ -391,9 +391,7 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
     ) -> None:
         notices.append(content)
 
-    monkeypatch.setattr(
-        "discordbot.cogs.games.blackjack_views.send_ephemeral_notice", _fake_notice
-    )
+    monkeypatch.setattr("discordbot.cogs.games.interactions.send_ephemeral_notice", _fake_notice)
 
     interaction = MagicMock()
     interaction.user.id = 1
@@ -428,9 +426,7 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh(
     ) -> None:
         notices.append(content)
 
-    monkeypatch.setattr(
-        "discordbot.cogs.games.blackjack_views.send_ephemeral_notice", _fake_notice
-    )
+    monkeypatch.setattr("discordbot.cogs.games.interactions.send_ephemeral_notice", _fake_notice)
     monkeypatch.setattr(BlackjackView, "_edit_in_progress_locked", AsyncMock(return_value=None))
 
     decided = await view._take_insurance_locked(

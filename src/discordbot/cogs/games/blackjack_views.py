@@ -10,7 +10,6 @@ import contextlib
 import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction
-from nextcord.ui import Item, View, Button
 
 from discordbot.typings.games import (
     Card,
@@ -42,10 +41,10 @@ from discordbot.cogs.games.settlement import (
     blackjack_player_early_finish_note,
 )
 from discordbot.cogs.games.interactions import (
+    GameView,
     table_edit_kwargs,
     publish_final_table,
     set_view_item_visible,
-    disable_view_components,
     edit_message_with_retry,
 )
 from discordbot.cogs.games.presentation import (
@@ -63,13 +62,13 @@ from discordbot.cogs.games.presentation import (
     settlement_metadata,
     lobby_participant_line,
 )
-from discordbot.utils.interaction_responses import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
     from collections.abc import Callable, Coroutine
 
+    from nextcord.ui import Button
     from nextcord.ext import commands
 
     from discordbot.cogs.games.shoe import BlackjackShoeStore
@@ -559,8 +558,11 @@ class BlackjackLobbyView(BaseGameLobbyView):
         return True
 
 
-class BlackjackView(View):
+class BlackjackView(GameView):
     """Hit / Stand / Double / Split / Surrender / Insurance controls."""
+
+    interaction_failure_log = "Blackjack action interaction failed"
+    notice_failure_log = "Failed to send Blackjack action notice"
 
     def __init__(  # noqa: PLR0913 -- view needs table identity and bot/shoe context
         self,
@@ -602,11 +604,7 @@ class BlackjackView(View):
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
         if self._settled:
-            await send_ephemeral_notice(
-                interaction=interaction,
-                content="這局已經結束, 等下一局吧",
-                log_message="Failed to send Blackjack settled notice",
-            )
+            await self._send_notice(interaction=interaction, content="這局已經結束, 等下一局吧")
             return False
         if interaction.user is None:
             return False
@@ -756,11 +754,8 @@ class BlackjackView(View):
         try:
             self.round_state.take_insurance(user_id=user_id)
         except ValueError as error:
-            content = _insurance_refusal_notice(error=error)
-            await send_ephemeral_notice(
-                interaction=interaction,
-                content=content,
-                log_message="Failed to send Blackjack insurance rejection notice",
+            await self._send_notice(
+                interaction=interaction, content=_insurance_refusal_notice(error=error)
             )
             await self._edit_in_progress_locked(message=message)
             return False
@@ -1004,23 +999,11 @@ class BlackjackView(View):
         )
         await message.edit(**table_edit_kwargs(embeds=seat_embeds, view=self, target=message))
 
-    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private action notice to the interacting user."""
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content=content,
-            log_message="Failed to send Blackjack action notice",
-        )
-
     async def _reject_stale_action_locked(
         self, interaction: Interaction[commands.Bot], message: Message
     ) -> None:
         """Sends a private stale-action notice and refreshes the table."""
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content="這個操作已經失效，請看最新牌桌",
-            log_message="Failed to send Blackjack stale action notice",
-        )
+        await self._send_notice(interaction=interaction, content="這個操作已經失效，請看最新牌桌")
         await self._edit_in_progress_locked(message=message)
 
     async def _finalize_locked(self, message: Message) -> None:
@@ -1218,21 +1201,6 @@ class BlackjackView(View):
         """
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))
-
-    def _disable_buttons(self) -> None:
-        """Disables every currently visible action / insurance control."""
-        disable_view_components(children=self.children, component_types=(Button,))
-
-    async def on_error(
-        self, error: Exception, item: Item[BlackjackView], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Logs active-table component failures instead of only printing to stderr."""
-        logfire.error(
-            "Blackjack action interaction failed",
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
 
 
 __all__: list[str] = [

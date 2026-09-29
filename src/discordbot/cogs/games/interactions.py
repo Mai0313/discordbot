@@ -1,17 +1,19 @@
 """Shared helpers for game view interactions."""
 
-from typing import Any, Final, Unpack, TypedDict
+from typing import Any, Self, Final, Unpack, ClassVar, TypedDict
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 
 import logfire
-from nextcord import Embed, Message, NotFound
+from nextcord import Embed, Message, NotFound, Interaction
 from nextcord.ui import Item, View, Button
+from nextcord.ext import commands
 from nextcord.errors import DiscordServerError
 
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
+from discordbot.utils.interaction_responses import send_ephemeral_notice
 
 _EDIT_ATTEMPTS: Final[int] = 3
 
@@ -29,6 +31,40 @@ class _FinalRenderFailureFields(TypedDict, total=False):
     reason: str
 
 
+class GameView(View):
+    """Failure logging, private notices and button disabling, shared by every game view.
+
+    A subclass names its two log lines: `interaction_failure_log` for a control whose callback
+    raised, `notice_failure_log` for a private notice Discord refused.
+    """
+
+    interaction_failure_log: ClassVar[str]
+    notice_failure_log: ClassVar[str]
+
+    async def on_error(
+        self, error: Exception, item: Item[Self], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Logs a control's failure instead of letting nextcord only print it to stderr."""
+        logfire.error(
+            self.interaction_failure_log,
+            item_label=getattr(item, "label", None),
+            user_id=getattr(interaction.user, "id", None),
+            _exc_info=(type(error), error, error.__traceback__),
+        )
+
+    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
+        """Sends a private notice to the interacting user; a refusal is logged, never raised."""
+        await send_ephemeral_notice(
+            interaction=interaction, content=content, log_message=self.notice_failure_log
+        )
+
+    def _disable_buttons(self) -> None:
+        """Disables every button currently attached to the view."""
+        for child in self.children:
+            if isinstance(child, Button):
+                child.disabled = True
+
+
 def table_edit_kwargs(
     *, embeds: list[Embed], view: View | None, target: object | None = None
 ) -> dict[str, Any]:
@@ -38,15 +74,6 @@ def table_edit_kwargs(
         "view": view,
         **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
     }
-
-
-def disable_view_components(
-    children: Iterable[Item[View]], component_types: tuple[type[Button[View]], ...]
-) -> None:
-    """Disables view children matching any supplied component type."""
-    for child in children:
-        if isinstance(child, component_types) and isinstance(child, Button):
-            child.disabled = True
 
 
 def set_view_item_visible(view: View, item: Item[View], visible: bool) -> None:
