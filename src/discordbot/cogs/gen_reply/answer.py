@@ -23,7 +23,6 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
-from discordbot.typings.models import ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
@@ -176,16 +175,14 @@ class AnswerTurn(BaseModel):
         """The message being answered, read off the surface that carries it."""
         return self.surface.message
 
-    async def stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route
+    async def stream_media_persona_reply(
         self,
         *,
         reply: Message | None,
         context_task: asyncio.Task[ReplyContext],
-        model: ModelSettings,
         system_prompt: str,
         focus_part: ResponseInputFileParam | ResponseInputImageParam,
         media_noun: str,
-        span_name: str,
     ) -> None:
         """Best-effort: streams a persona reply onto an already-delivered generated image/video.
 
@@ -203,6 +200,7 @@ class AnswerTurn(BaseModel):
         speculative `context_task` (awaited here so its build overlaps generation); any failure
         leaves the delivered media untouched.
         """
+        model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
         streamer: ResponseStreamer | None = None
         try:
@@ -243,7 +241,9 @@ class AnswerTurn(BaseModel):
                 memory_lookups=context.memory_credits,
                 model_effort=model.effort or "",
             )
-            with logfire.span(span_name, model=model.name, message_id=self.message.id):
+            with logfire.span(
+                f"gen_reply {media_noun} reply", model=model.name, message_id=self.message.id
+            ):
 
                 async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
                     """Issues the persona-reply request; called again per retry attempt."""
