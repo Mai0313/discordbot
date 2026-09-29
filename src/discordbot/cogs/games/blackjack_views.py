@@ -41,9 +41,9 @@ from discordbot.cogs.games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
 )
-from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.interactions import (
     table_edit_kwargs,
+    publish_final_table,
     set_view_item_visible,
     disable_view_components,
     edit_message_with_retry,
@@ -1084,30 +1084,19 @@ class BlackjackView(View):
             round_state=self.round_state, results=results, dealer_steps=self._dealer_steps
         )
         self.clear_items()
-        try:
-            await asyncio.wait_for(
-                message.edit(**table_edit_kwargs(embeds=seat_embeds, view=None, target=message)),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
-        except nextcord.NotFound:
-            # Opener deleted the public table before the round finished; nothing to render.
-            logfire.info("Blackjack table message gone before final edit", message_id=message.id)
-        # Broad on purpose: settlement is already committed, so this render must never
-        # raise back into the round and skip the cleanup scheduling below.
-        except Exception as exc:
-            logfire.warn(
-                "Blackjack final table edit failed; settled round never rendered",
-                channel_id=self._channel_id,
-                message_id=message.id,
-                players=len(self.round_state.players),
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-        else:
+        landed = await publish_final_table(
+            message=message,
+            embeds=seat_embeds,
+            user_name=self.owner.account_name,
+            game_name="Blackjack",
+            channel_id=self._channel_id,
+            message_id=message.id,
+            players=len(self.round_state.players),
+        )
+        if landed:
             logfire.debug(
                 "Blackjack final edit done", channel_id=self._channel_id, message_id=message.id
             )
-        schedule_public_message_delete(message=message, user_name=self.owner.account_name)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""

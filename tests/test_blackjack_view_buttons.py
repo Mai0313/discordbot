@@ -16,6 +16,7 @@ import pytest
 from nextcord import Interaction
 from nextcord.ui import Button
 
+from discordbot.cogs.games import interactions as game_interactions
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import (
     BotAction,
@@ -90,7 +91,7 @@ def scheduled_cleanups(monkeypatch: pytest.MonkeyPatch) -> list[object]:
         del delay, user_name
         scheduled.append(message)
 
-    monkeypatch.setattr(blackjack_views, "schedule_public_message_delete", record)
+    monkeypatch.setattr(game_interactions, "schedule_public_message_delete", record)
     return scheduled
 
 

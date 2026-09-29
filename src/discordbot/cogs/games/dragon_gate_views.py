@@ -16,10 +16,8 @@ from discordbot.cogs.games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
-from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.number_text import compact_amount
 from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -38,6 +36,7 @@ from discordbot.cogs.games.dragon_gate import (
 )
 from discordbot.cogs.games.interactions import (
     table_edit_kwargs,
+    publish_final_table,
     set_view_item_visible,
     edit_message_with_retry,
 )
@@ -837,25 +836,14 @@ class DragonGateView(View):
             embeds.append(history_embed)
         self.clear_items()
         self.stop()
-        try:
-            await asyncio.wait_for(
-                message.edit(**table_edit_kwargs(embeds=embeds, view=None, target=message)),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
-        except nextcord.NotFound:
-            # Opener deleted the public table before the round finished; nothing to render.
-            logfire.info("Dragon Gate table message gone before final edit", message_id=message.id)
-        # Broad on purpose: settlement is already committed, so this render must never
-        # raise back into the round and skip the cleanup scheduling below.
-        except Exception as exc:
-            logfire.warn(
-                "Dragon Gate final table edit failed; settled round never rendered",
-                message_id=message.id,
-                reason=reason,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-        schedule_public_message_delete(message=message, user_name=self.owner.account_name)
+        await publish_final_table(
+            message=message,
+            embeds=embeds,
+            user_name=self.owner.account_name,
+            game_name="Dragon Gate",
+            message_id=message.id,
+            reason=reason,
+        )
 
     def _participant_for(self, user_id: int) -> GameParticipant | None:
         """Returns the participant matching a Discord user ID."""

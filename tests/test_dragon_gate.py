@@ -232,7 +232,7 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
 
     monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
-        "discordbot.cogs.games.dragon_gate_views.schedule_public_message_delete",
+        "discordbot.cogs.games.interactions.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
     monkeypatch.setattr(
@@ -838,7 +838,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
 
     monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
-        "discordbot.cogs.games.dragon_gate_views.schedule_public_message_delete",
+        "discordbot.cogs.games.interactions.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 
