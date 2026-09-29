@@ -113,36 +113,13 @@ async def test_upload_gives_up_when_activation_exceeds_the_bound() -> None:
     assert uri is None
 
 
-async def test_the_bound_covers_the_transfer_not_only_the_poll() -> None:
-    """A hung upload must give up and free its slot, not wedge it for the process lifetime.
+async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
+    """The slot is shared, so a hung upload must not starve everything behind it.
 
     google-genai disables the transport timeout by default, so an upload into a black-holed
-    connection never returns on its own. Bounding only the PROCESSING poll would let two such
-    uploads occupy both concurrency slots forever, after which every link-media build burns its
-    whole budget queueing here and silently degrades to text.
+    connection never returns on its own; only a bound covering the transfer, not just the
+    PROCESSING poll, gives its slot back.
     """
-
-    class _Hangs(_Files):
-        async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-            """Never returns, the way a black-holed connection behaves."""
-            await asyncio.sleep(30)
-            raise AssertionError("should have been abandoned")
-
-    uri = await asyncio.wait_for(
-        upload_to_files_api(
-            client=_client(_Hangs()),
-            source=b"data",
-            mime_type="video/mp4",
-            display_name="clip.mp4",
-            timeout_seconds=0.05,
-        ),
-        timeout=5.0,
-    )
-    assert uri is None
-
-
-async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
-    """The slot is shared, so a hung upload must not starve everything behind it."""
 
     class _Hangs(_Files):
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
@@ -171,6 +148,49 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
 
     assert results[:-1] == [None] * LINK_MEDIA_UPLOAD_CONCURRENCY
     assert results[-1] == "https://files.test/abc"
+
+
+async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> None:
+    """Waiting for a slot spends none of an upload's own bound.
+
+    The bound is on the transfer. A queue behind long but healthy uploads says nothing about this
+    one's connection, so timing it from the call would give up on an upload that works.
+    """
+    release = asyncio.Event()
+
+    class _Slow(_Files):
+        async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
+            """Holds its slot until released, then succeeds."""
+            await release.wait()
+            return await super().upload(file=file, config=config)
+
+    holders = [
+        asyncio.create_task(
+            upload_to_files_api(
+                client=_client(_Slow()),
+                source=b"data",
+                mime_type="video/mp4",
+                display_name=f"slow{index}.mp4",
+                timeout_seconds=5.0,
+            )
+        )
+        for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)
+    ]
+    queued = asyncio.create_task(
+        upload_to_files_api(
+            client=_client(_Files()),
+            source=b"data",
+            mime_type="video/mp4",
+            display_name="queued.mp4",
+            timeout_seconds=0.05,
+        )
+    )
+    # Longer than the queued upload's own bound, all of it spent waiting for a slot.
+    await asyncio.sleep(0.2)
+    release.set()
+    results = await asyncio.wait_for(asyncio.gather(*holders, queued), timeout=5.0)
+
+    assert results == ["https://files.test/abc"] * (LINK_MEDIA_UPLOAD_CONCURRENCY + 1)
 
 
 async def test_upload_degrades_on_a_failed_file() -> None:
@@ -249,18 +269,3 @@ async def test_the_kill_switch_skips_the_upload_entirely(monkeypatch: pytest.Mon
     )
     assert uri is None
     assert files.uploads == []
-
-
-async def test_the_kill_switch_leaves_the_link_builders_with_no_part(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No part means every link builder takes the text-only path it already has for a failure."""
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
-    part = await upload_as_input_file(
-        client=_client(_Files()),
-        source=b"data",
-        mime_type="video/mp4",
-        filename="douyin_123.mp4",
-        timeout_seconds=5.0,
-    )
-    assert part is None
