@@ -1,10 +1,8 @@
 """Pins the entry point every platform downloader answers on.
 
 `tests/test_link_source_shape.py` holds the conversation MODELS to one surface and says
-nothing about what produces them — which is how five downloaders answering the same question ended
-up disagreeing on how to ask it. Two allowed a positional `url` where three were keyword-only, and
-two spelled the download half `download` while one called it `parse`. None of that was visible to
-any test.
+nothing about what produces them, so downloaders answering the same question can drift apart on
+how it is asked — a positional `url` on one and keyword-only on another — with no test seeing it.
 
 So the classes here are DISCOVERED, the same way and for the same reason: every `*Downloader` under
 `discordbot.services.platforms` is swept up, and each guard covers a new platform without being

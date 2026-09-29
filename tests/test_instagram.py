@@ -195,7 +195,7 @@ def test_clean_url_drops_the_share_token_and_the_image_index() -> None:
 
 
 def test_a_reel_keeps_its_own_path() -> None:
-    """`/reel/` and `/p/` both resolve, and keeping the pasted one cannot be wrong."""
+    """A reel keeps its own kind rather than becoming `/p/`, and `/reels/` folds into `/reel/`."""
     assert InstagramURL(raw_url=f"https://www.instagram.com/reels/{_CODE}/").clean_url == (
         f"https://www.instagram.com/reel/{_CODE}/"
     )
