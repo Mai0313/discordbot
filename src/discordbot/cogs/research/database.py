@@ -31,8 +31,8 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
-# Lifecycle of a research session, persisted in the `phase` column. A row left `planning` by the
-# removed escalation tiers is not migrated: nothing selects that value any more, so it is inert.
+# Lifecycle of a research session, persisted in the `phase` column. A stored value outside this
+# set (a legacy `planning` row) is inert: nothing selects it.
 ResearchPhase = Literal["researching", "done", "failed", "cancelled"]
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")

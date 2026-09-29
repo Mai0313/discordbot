@@ -2,8 +2,9 @@
 
 A user asks for deep research (the QA answer model emits a `<deep-research>` marker, handed
 here by `gen_reply`, or they run `/deep_research`). The bot opens a thread, runs the
-`antigravity-preview-09-2026` agent, and posts the cited report there, pinging the user. That
-one report is the whole feature: there is no tier to upgrade into and no button under it.
+`RuntimeModelCatalog.antigravity_model` agent, and posts the cited report there, pinging the
+user. That one report is the whole feature: there is no tier to upgrade into and no button under
+it.
 
 Everything talks DIRECT to Google (`gemini_api_key`, no proxy), like every Interactions API path
 in this project (see `agent.py`). Sessions persist in `reply.db` so a restart resumes an
@@ -122,8 +123,7 @@ class ResearchCogs(commands.Cog):
         """The Gemini Interactions client, built lazily on first use.
 
         DIRECT to Google (`gemini_api_key`, no base_url / proxy): a managed agent rides the native
-        Interactions API, which this project always calls direct. Built inline like every other
-        direct-to-Google path (the `create_*_client` factories are gone). `genai.Client` raises
+        Interactions API, which this project always calls direct. `genai.Client` raises
         `ValueError` on a missing key rather than deferring it to the first call (measured), and
         both run loops read this property inside their own try, so that raise still lands as a
         thread failure notice instead of an unhandled background-task error.
@@ -134,9 +134,8 @@ class ResearchCogs(commands.Cog):
     def responses_client(self) -> AsyncOpenAI:
         """The LiteLLM-proxy Responses client for small side calls (the thread-title generator).
 
-        Built inline like every other client here (there is no `utils/llm.py` client factory left);
-        distinct from the direct `interactions_client` since a plain Responses call rides the proxy
-        fine.
+        Distinct from the direct `interactions_client`, since a plain Responses call rides the
+        proxy fine.
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 

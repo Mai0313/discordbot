@@ -64,9 +64,9 @@ def split_report_by_sections(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -
     dropped. A section still longer than `limit` is sub-packed by `split_report` (paragraph then
     line boundaries, a hard cut only as a last resort), and empty sections yield nothing. A report
     with no thematic break is a single section, so its output is byte-for-byte `split_report`'s
-    paragraph packing (today's behavior). A `---`-only line inside a fenced code block, a setext
-    `## heading` underline (no blank line above), and a table delimiter row (`| --- |`) are all
-    left intact -- only a line of pure dashes with a blank line on both sides splits a section.
+    paragraph packing. A `---`-only line inside a fenced code block, a setext `## heading`
+    underline (no blank line above), and a table delimiter row (`| --- |`) are all left intact --
+    only a line of pure dashes with a blank line on both sides splits a section.
     """
     lines = text.split("\n")
     sections: list[str] = []
