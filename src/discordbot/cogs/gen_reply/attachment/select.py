@@ -1,6 +1,7 @@
 """Selects the attachment renderer that matches the current answer model's provider."""
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.models import ModelSettings
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
@@ -10,7 +11,7 @@ from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploa
 # from discordbot.cogs.gen_reply.attachment.anthropic_file_api import AnthropicFileUploader
 
 
-def build_attachment_handler(model_name: str, gemini_api_key: str) -> AttachmentRenderer:
+def build_attachment_handler(model: ModelSettings, gemini_api_key: str) -> AttachmentRenderer:
     """Returns the attachment renderer matching the answer (slow) model's provider.
 
     Only Gemini resolves an uploaded Files-API URI; OpenAI / Anthropic answer models reject
@@ -33,12 +34,12 @@ def build_attachment_handler(model_name: str, gemini_api_key: str) -> Attachment
     """
     if not LLMConfig().file_api_enabled:
         return InlineRenderer()
-    if "gemini" in model_name:
+    if model.is_gemini:
         return GeminiFileUploader(api_key=gemini_api_key)
-    # if "gpt" in model_name:
-    #     return OpenAIFileUploader(model_name=model_name)
-    # if "claude" in model_name:
+    # if "gpt" in model.name:
+    #     return OpenAIFileUploader(model_name=model.name)
+    # if "claude" in model.name:
     #     return AnthropicFileUploader()
-    # if "grok" in model_name:
+    # if "grok" in model.name:
     #     return GrokFileUploader()
     return InlineRenderer()

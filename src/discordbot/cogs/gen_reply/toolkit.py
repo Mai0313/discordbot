@@ -187,7 +187,7 @@ class ReplyToolkit(BaseModel):
             bot=self.bot,
             runtime_models=self.runtime_models,
             attachment_handler=build_attachment_handler(
-                model_name=self.runtime_models.slow_model.name, gemini_api_key=self.gemini_api_key
+                model=self.runtime_models.slow_model, gemini_api_key=self.gemini_api_key
             ),
         )
 

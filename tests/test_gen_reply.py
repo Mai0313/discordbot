@@ -2987,7 +2987,7 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
         inline_voice_enabled=False,
         inline_image_enabled=False,
         youtube_video_enabled=True,
-        gemini_api_key="key",
+        gemini_key_configured=True,
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
@@ -3019,7 +3019,7 @@ async def test_youtube_interactions_passes_effort_as_thinking_level() -> None:
         inline_voice_enabled=False,
         inline_image_enabled=False,
         youtube_video_enabled=True,
-        gemini_api_key="key",
+        gemini_key_configured=True,
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
@@ -3072,7 +3072,7 @@ async def test_youtube_qa_falls_back_to_responses(
         inline_voice_enabled=False,
         inline_image_enabled=False,
         youtube_video_enabled=scenario != "kill_switch_off",
-        gemini_api_key="" if scenario == "no_key" else "key",
+        gemini_key_configured=scenario != "no_key",
     )
     if scenario == "non_gemini_model":
         monkeypatch.setattr(
@@ -4344,21 +4344,25 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
     """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
     assert isinstance(
-        build_attachment_handler(model_name="gpt-5.1", gemini_api_key="test-key"), InlineRenderer
+        build_attachment_handler(model=ModelSettings(name="gpt-5.1"), gemini_api_key="test-key"),
+        InlineRenderer,
     )
 
 
 def test_grok_attachment_handler_path_stays_disabled() -> None:
     """Grok models still use inline attachments until the xAI uploader branch is enabled."""
     assert isinstance(
-        build_attachment_handler(model_name="grok-4.5", gemini_api_key="test-key"), InlineRenderer
+        build_attachment_handler(model=ModelSettings(name="grok-4.5"), gemini_api_key="test-key"),
+        InlineRenderer,
     )
 
 
 def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
     """The Gemini branch uploads to the Files API while the switch is on."""
     assert isinstance(
-        build_attachment_handler(model_name="gemini-3.8-flash", gemini_api_key="test-key"),
+        build_attachment_handler(
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_api_key="test-key"
+        ),
         GeminiFileUploader,
     )
 
@@ -4369,7 +4373,9 @@ def test_the_file_api_kill_switch_inlines_gemini_attachments(
     """With the switch off, even a Gemini answer model gets inlined attachments."""
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     assert isinstance(
-        build_attachment_handler(model_name="gemini-3.8-flash", gemini_api_key="test-key"),
+        build_attachment_handler(
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_api_key="test-key"
+        ),
         InlineRenderer,
     )
 

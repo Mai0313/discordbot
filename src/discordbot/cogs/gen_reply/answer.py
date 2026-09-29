@@ -395,9 +395,9 @@ class AnswerTurn(BaseModel):
         # memory / preview are shared.
         use_interactions = (
             yt_url is not None
-            and "gemini" in slow_model.name
+            and slow_model.is_gemini
             and self.config.youtube_video_enabled
-            and bool(self.config.gemini_api_key.strip())
+            and self.config.gemini_key_configured
         )
         backend = "interactions" if use_interactions else "responses"
         if yt_url is not None and not use_interactions:
@@ -408,7 +408,7 @@ class AnswerTurn(BaseModel):
                 "gen_reply youtube watch declined; answering on the responses backend",
                 message_id=self.message.id,
                 reason="model"
-                if "gemini" not in slow_model.name
+                if not slow_model.is_gemini
                 else "kill-switch"
                 if not self.config.youtube_video_enabled
                 else "no-gemini-key",
