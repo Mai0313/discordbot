@@ -2054,23 +2054,64 @@ def _loan_proposal_is_expired(proposal: LoanProposal, now: datetime) -> bool:
     return elapsed_seconds >= LOAN_PROPOSAL_TIMEOUT_SECONDS
 
 
+async def _decide_pending_proposal_in_session(
+    session: AsyncSession, proposal_id: int, status: LoanProposalStatus, now: datetime
+) -> bool:
+    """Moves a proposal out of pending to `status` inside the caller's session.
+
+    Returns:
+        False when the proposal was no longer pending, because another decision got there
+        first; nothing is written then.
+    """
+    result = await session.execute(
+        statement=update(LoanProposal)
+        .where(LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING)
+        .values(status=status, updated_at=now)
+        .returning(LoanProposal.id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def _reject_expired_loan_proposal_in_session(
     session: AsyncSession, proposal: LoanProposal, now: datetime
 ) -> LoanProposalView | None:
     """Marks an expired pending proposal as rejected inside the caller's session."""
     if not _loan_proposal_is_expired(proposal=proposal, now=now):
         return None
-    status_result = await session.execute(
-        statement=update(LoanProposal)
-        .where(LoanProposal.id == proposal.id, LoanProposal.status == LoanProposalStatus.PENDING)
-        .values(status=LoanProposalStatus.REJECTED, updated_at=now)
-        .returning(LoanProposal.id)
-    )
-    if status_result.scalar_one_or_none() is None:
+    if not await _decide_pending_proposal_in_session(
+        session=session, proposal_id=proposal.id, status=LoanProposalStatus.REJECTED, now=now
+    ):
         return None
     proposal.status = LoanProposalStatus.REJECTED
     proposal.updated_at = now
     return _loan_proposal_view(proposal=proposal)
+
+
+async def _undecided_proposal_in_session(
+    session: AsyncSession, proposal_id: int, now: datetime, creator_id: int | None = None
+) -> LoanProposal | None:
+    """Loads a pending proposal that is still inside its decision window.
+
+    One whose window has passed is rejected and committed here instead. That one reads as
+    None, as does a proposal that is missing, already decided, or (given `creator_id`)
+    created by someone else.
+    """
+    statement = select(LoanProposal).where(
+        LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
+    )
+    if creator_id is not None:
+        statement = statement.where(LoanProposal.creator_id == creator_id)
+    result = await session.execute(statement=statement)
+    proposal = result.scalar_one_or_none()
+    if proposal is None:
+        return None
+    expired = await _reject_expired_loan_proposal_in_session(
+        session=session, proposal=proposal, now=now
+    )
+    if expired is not None:
+        await session.commit()
+        return None
+    return proposal
 
 
 def _loan_interest_delta(
@@ -2362,31 +2403,14 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=select(LoanProposal).where(
-                LoanProposal.id == proposal_id,
-                LoanProposal.status == LoanProposalStatus.PENDING,
-                LoanProposal.creator_id == actor_id,
-            )
+        proposal = await _undecided_proposal_in_session(
+            session=session, proposal_id=proposal_id, now=now, creator_id=actor_id
         )
-        proposal = result.scalar_one_or_none()
         if proposal is None:
             return None
-        expired = await _reject_expired_loan_proposal_in_session(
-            session=session, proposal=proposal, now=now
-        )
-        if expired is not None:
-            await session.commit()
-            return None
-        status_result = await session.execute(
-            statement=update(LoanProposal)
-            .where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
-            .values(status=LoanProposalStatus.CANCELED, updated_at=now)
-            .returning(LoanProposal.id)
-        )
-        if status_result.scalar_one_or_none() is None:
+        if not await _decide_pending_proposal_in_session(
+            session=session, proposal_id=proposal_id, status=LoanProposalStatus.CANCELED, now=now
+        ):
             await session.rollback()
             return None
         proposal.status = LoanProposalStatus.CANCELED
@@ -2401,19 +2425,10 @@ async def reject_loan_proposal(
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=select(LoanProposal).where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
+        proposal = await _undecided_proposal_in_session(
+            session=session, proposal_id=proposal_id, now=now
         )
-        proposal = result.scalar_one_or_none()
         if proposal is None:
-            return None
-        expired = await _reject_expired_loan_proposal_in_session(
-            session=session, proposal=proposal, now=now
-        )
-        if expired is not None:
-            await session.commit()
             return None
         allowed = False
         if proposal.kind == LoanProposalKind.PERSONAL_REQUEST:
@@ -2422,15 +2437,9 @@ async def reject_loan_proposal(
             allowed = approver_is_guild_admin
         if not allowed:
             return None
-        status_result = await session.execute(
-            statement=update(LoanProposal)
-            .where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
-            .values(status=LoanProposalStatus.REJECTED, updated_at=now)
-            .returning(LoanProposal.id)
-        )
-        if status_result.scalar_one_or_none() is None:
+        if not await _decide_pending_proposal_in_session(
+            session=session, proposal_id=proposal_id, status=LoanProposalStatus.REJECTED, now=now
+        ):
             await session.rollback()
             return None
         proposal.status = LoanProposalStatus.REJECTED
@@ -2478,19 +2487,10 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
     async with open_session() as session:
         # Acquire SQLite's write lock before reading capacity or proposal state.
         await session.execute(statement=text("BEGIN IMMEDIATE"))
-        result = await session.execute(
-            statement=select(LoanProposal).where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
+        proposal = await _undecided_proposal_in_session(
+            session=session, proposal_id=proposal_id, now=now
         )
-        proposal = result.scalar_one_or_none()
         if proposal is None:
-            return None
-        expired = await _reject_expired_loan_proposal_in_session(
-            session=session, proposal=proposal, now=now
-        )
-        if expired is not None:
-            await session.commit()
             return None
 
         lender_balance: int | None = None
@@ -2542,15 +2542,9 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
         else:
             return None
 
-        status_result = await session.execute(
-            statement=update(LoanProposal)
-            .where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
-            .values(status=LoanProposalStatus.ACCEPTED, updated_at=now)
-            .returning(LoanProposal.id)
-        )
-        if status_result.scalar_one_or_none() is None:
+        if not await _decide_pending_proposal_in_session(
+            session=session, proposal_id=proposal_id, status=LoanProposalStatus.ACCEPTED, now=now
+        ):
             await session.rollback()
             return None
 
