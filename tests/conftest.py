@@ -98,12 +98,11 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.services.memory.database._engine", memory_db_engine)
     monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
     monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
-    # _scope_locks, _staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
+    # _scope_locks, staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
     # and the memory semaphore are loop-local helpers that rebuild on the per-test event
-    # loop, so they need no manual reset. The two in-flight registries used to be reset by
-    # hand here; `LoopLocalRegistry` is what took that over, and an `asyncio.Task` left in
-    # one is unusable on the next loop anyway, so the rebuild is the correctness rule
-    # rather than a test convenience.
+    # loop, so they need no manual reset. An `asyncio.Task` left in a registry is unusable
+    # on the next loop anyway, so the rebuild is the correctness rule rather than a test
+    # convenience.
     return memories_dir
 
 
