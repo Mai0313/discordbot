@@ -450,11 +450,11 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
         raise ValueError("Cannot settle an unfinished Blackjack hand")
     if hand.surrendered:
         return "surrender", -surrender_loss(bet=hand.base_bet)
-    if not hand.doubled and is_five_card_twenty_one(cards=hand.cards):
+    if is_five_card_twenty_one(cards=hand.cards):
         dealer_total = hand_value(cards=dealer)
         delta = 0 if dealer_total == 21 else hand.bet
         return "five_card_twenty_one", delta
-    if not hand.doubled and is_five_card_win(cards=hand.cards):
+    if is_five_card_win(cards=hand.cards):
         return "five_card_win", hand.bet
     if hand.is_split_hand and is_blackjack(cards=hand.cards):
         return _settle_split_twenty_one(hand=hand, dealer=dealer)
@@ -810,8 +810,6 @@ class BlackjackRound(BaseModel):
     def needs_dealer_play(self) -> bool:
         """Returns whether the dealer must draw before settlement."""
         if self.peeked_blackjack:
-            return False
-        if is_blackjack(cards=self.dealer):
             return False
         for player in self.players:
             for hand in player.hands:

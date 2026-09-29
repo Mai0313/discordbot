@@ -178,23 +178,6 @@ def test_settle_double_blackjack_is_push() -> None:
     assert delta == 0
 
 
-def test_blackjack_early_finish_note_explains_dealer_natural() -> None:
-    """A dealer natural Blackjack can end the round before the player acts."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Bob")]
-    )
-    player = round_state.players[0]
-    player.hands[0].cards = [Card(rank="9", suit="♠"), Card(rank="7", suit="♥")]
-    assert (
-        blackjack_player_early_finish_note(
-            player=player,
-            dealer=[Card(rank="A", suit="♣"), Card(rank="Q", suit="♦")],
-            peeked_blackjack=False,
-        )
-        == "莊家起手 Blackjack, 依規則本局直接結算"
-    )
-
-
 def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
     """A non-natural 21 should not be described as an early Blackjack finish."""
     round_state = BlackjackRound.from_participants(

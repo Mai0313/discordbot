@@ -24,7 +24,7 @@ from discordbot.services.economy.database import (
 )
 
 
-def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early-finish reason keeps the mapping explicit
+def blackjack_player_early_finish_note(
     player: BlackjackPlayerHand, dealer: list[Card], peeked_blackjack: bool
 ) -> str | None:
     """Returns a short explanation for round paths that skipped player actions.
@@ -37,7 +37,6 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
     Returns:
         The explanation text, or `None` when no early-finish path applies.
     """
-    dealer_bj = is_blackjack(cards=dealer)
     if not player.hands:
         return None
     first_hand = player.hands[0]
@@ -50,21 +49,14 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
         return f"{_dealer_peek_note(dealer=dealer)}, 你也起手 Blackjack, 本局直接平手"
     if peeked_blackjack:
         return f"{_dealer_peek_note(dealer=dealer)}, 本局直接結算"
-    if dealer_bj and player_bj:
-        return "雙方起手 Blackjack, 本局直接平手"
     if player_bj:
         return "你起手 Blackjack, 本局直接結算"
-    if dealer_bj:
-        return "莊家起手 Blackjack, 依規則本局直接結算"
     return None
 
 
 def _dealer_peek_note(dealer: list[Card]) -> str:
     """Returns the reason text for dealer Blackjack revealed by a hole-card peek."""
-    up = dealer_up_card(dealer=dealer)
-    if up is None:
-        return "莊家 peek 暗牌確認 Blackjack"
-    return f"莊家明牌 {up}, peek 暗牌確認 Blackjack"
+    return f"莊家明牌 {dealer_up_card(dealer=dealer)}, peek 暗牌確認 Blackjack"
 
 
 async def settle_wager(
