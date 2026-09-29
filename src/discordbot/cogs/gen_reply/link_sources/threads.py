@@ -24,7 +24,6 @@ route gate. Here the parse is independent, and the media fetch is bounded intern
 this always returns inside the pipeline's post-route grace.
 """
 
-from typing import TYPE_CHECKING
 import asyncio
 from pathlib import Path
 import tempfile
@@ -34,7 +33,6 @@ import logfire
 from pydantic import Field, BaseModel
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
@@ -50,14 +48,12 @@ from discordbot.services.platforms.threads import (
     ThreadsConversation,
 )
 from discordbot.cogs.gen_reply.link_sources import (
+    PostSeparators,
     system_block,
     defuse_markers,
-    link_context_blocks,
+    post_context_blocks,
 )
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
-
-if TYPE_CHECKING:
-    from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 # Closes the quoted block, and is always the LAST part of it (past the attachments on the media
 # path). The guard on the separator opens the data; this one closes it, which matters once the
@@ -863,6 +859,7 @@ async def build_threads_context_messages(
     if answer_model_is_gemini and gemini_client is not None:
         media = await _ingest_media(target=target, gemini_client=gemini_client)
 
+    url_lines: list[str] = []
     if media.parts:
         # Ownership is stated only once a quote post makes it ambiguous; with a single post the
         # separator's "the post's media" already says whose it is.
@@ -881,42 +878,32 @@ async def build_threads_context_messages(
                         video_urls=group.missing_video_urls,
                     )
                 )
-        # The trailer rides AFTER the attachments, not at the end of the text: the media is the
-        # one part of this block nothing here ever looked inside, so a fence that closed before
-        # it would leave an instruction-shaped screenshot sitting past the end-of-data marker.
-        content: list[
-            ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-        ] = [
-            ResponseInputTextParam(text="\n\n".join(text_sections), type="input_text"),
-            *media.parts,
-            ResponseInputTextParam(text=THREADS_CONTEXT_TRAILER, type="input_text"),
+    else:
+        # No media parts: either the answer model cannot read a Files uri, the posts carry no
+        # media, or every fetch/upload failed. All three supply the URLs as text under a
+        # separator that does NOT claim the media was seen, so the model never describes what it
+        # never got. The quoted post's URLs ride here too, named separately: they are as
+        # unattached as the target's, and a block that listed only the target's would hide half
+        # the post.
+        url_owners = [(target, _TARGET_MEDIA_OWNER)]
+        if target.quoted is not None:
+            url_owners.append((target.quoted, _QUOTED_MEDIA_OWNER))
+        url_lines = [
+            line
+            for post, owner in url_owners
+            for line in _media_url_lines(
+                owner=owner, image_urls=post.image_urls, video_urls=post.video_urls
+            )
         ]
-        return [
-            system_block(
-                text=(
-                    THREADS_PARTIAL_MEDIA_SEPARATOR
-                    if media.has_missing
-                    else THREADS_CONTEXT_SEPARATOR
-                )
+    return post_context_blocks(
+        text="\n\n".join([*text_sections, *url_lines]),
+        media_parts=media.parts,
+        post_carries_media=bool(media.parts or url_lines),
+        separators=PostSeparators(
+            attached=(
+                THREADS_PARTIAL_MEDIA_SEPARATOR if media.has_missing else THREADS_CONTEXT_SEPARATOR
             ),
-            EasyInputMessageParam(role="user", content=content),
-        ]
-
-    # No media parts: either the answer model cannot read a Files uri, the posts carry no
-    # media, or every fetch/upload failed. All three supply the URLs as text under a separator
-    # that does NOT claim the media was seen, so the model never describes what it never got.
-    # The quoted post's URLs ride here too, named separately: they are as unattached as the
-    # target's, and a block that listed only the target's would hide half the post.
-    url_owners = [(target, _TARGET_MEDIA_OWNER)]
-    if target.quoted is not None:
-        url_owners.append((target.quoted, _QUOTED_MEDIA_OWNER))
-    url_lines = [
-        line
-        for post, owner in url_owners
-        for line in _media_url_lines(
-            owner=owner, image_urls=post.image_urls, video_urls=post.video_urls
-        )
-    ]
-    text = "\n\n".join([*text_sections, *url_lines, THREADS_CONTEXT_TRAILER])
-    separator = THREADS_TEXT_ONLY_SEPARATOR if url_lines else THREADS_CONTEXT_SEPARATOR
-    return link_context_blocks(separator=separator, text=text)
+            text_only=THREADS_TEXT_ONLY_SEPARATOR,
+            trailer=THREADS_CONTEXT_TRAILER,
+        ),
+    )
