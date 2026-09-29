@@ -1129,15 +1129,10 @@ class BlackjackView(View):
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
-            participant = player.participant
-            settlement = await settle_blackjack_player(
-                round_state=self.round_state,
-                player=player,
-                player_id=participant.user_id,
-                player_account_name=participant.account_name,
-                player_avatar_url=participant.avatar_url,
+            settlement = await settle_blackjack_player(round_state=self.round_state, player=player)
+            results.append(
+                BlackjackPlayerResult(participant=player.participant, settlement=settlement)
             )
-            results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
         logfire.debug(
             "Blackjack settlement done", results=len(results), channel_id=self._channel_id
         )

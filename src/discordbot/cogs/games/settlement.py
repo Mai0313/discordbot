@@ -161,12 +161,7 @@ def _insurance_settlement(
 
 
 async def settle_blackjack_player(
-    *,
-    round_state: BlackjackRound,
-    player: BlackjackPlayerHand,
-    player_id: int,
-    player_account_name: str,
-    player_avatar_url: str = "",
+    *, round_state: BlackjackRound, player: BlackjackPlayerHand
 ) -> BlackjackPlayerSettlement:
     """Settles every sub-hand plus insurance side bet for one participant.
 
@@ -178,10 +173,7 @@ async def settle_blackjack_player(
 
     Args:
         round_state: Round providing the dealer cards and peek state.
-        player: Player to settle.
-        player_id: Discord user ID for the player account.
-        player_account_name: Account name to store for the player.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
+        player: Player to settle; its participant names the account written.
 
     Returns:
         Aggregated settlement covering every sub-hand and any insurance bet.
@@ -195,16 +187,17 @@ async def settle_blackjack_player(
         base_delta += insurance.delta
     five_card_bonus = sum(settlement.five_card_bonus for settlement in hand_settlements)
 
-    is_vip = await get_vip(user_id=player_id)
+    participant = player.participant
+    is_vip = await get_vip(user_id=participant.user_id)
     casino_paid_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
     casino_paid_vip_bonus = casino_paid_delta - base_delta
     five_card_vip_delta = apply_vip_blackjack_bonus(delta=five_card_bonus, is_vip=is_vip)
     vip_bonus = max(casino_paid_vip_bonus, five_card_vip_delta - five_card_bonus)
     effective_delta = base_delta + vip_bonus + five_card_bonus
     result = await apply_blackjack_settlement(
-        player_id=player_id,
-        player_account_name=player_account_name,
-        player_avatar_url=player_avatar_url,
+        player_id=participant.user_id,
+        player_account_name=participant.account_name,
+        player_avatar_url=participant.avatar_url,
         player_delta=effective_delta,
         casino_delta=-casino_paid_delta,
     )

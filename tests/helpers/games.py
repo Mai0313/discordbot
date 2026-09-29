@@ -30,13 +30,7 @@ def seat(
 
 async def settle_only_seat(round_state: BlackjackRound) -> BlackjackPlayerSettlement:
     """Settles a one-seat round's player against the ledger and returns the settlement."""
-    player = round_state.players[0]
-    return await settle_blackjack_player(
-        round_state=round_state,
-        player=player,
-        player_id=player.participant.user_id,
-        player_account_name=player.participant.account_name,
-    )
+    return await settle_blackjack_player(round_state=round_state, player=round_state.players[0])
 
 
 def longest_hand_the_dealer_must_draw_on() -> int:
