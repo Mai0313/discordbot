@@ -171,7 +171,10 @@ class InlineMarkers(BaseModel):
 
     cleaned_text: str = Field(
         ...,
-        description="Reply text with image blocks removed and voice tags stripped (voice content kept).",
+        description=(
+            "Reply text with every pulled block removed and voice tags stripped "
+            "(voice content kept)."
+        ),
     )
     voice_text: str = Field(
         default="",

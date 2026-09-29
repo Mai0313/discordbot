@@ -1,4 +1,4 @@
-"""Shared Pillow font and text-drawing primitives for board/chart renderers."""
+"""Pillow font loading and text-drawing primitives for PNG board renderers."""
 
 from PIL import ImageDraw, ImageFont
 import logfire

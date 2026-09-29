@@ -132,12 +132,12 @@ def _count_url_citations(*, output: list[ResponseOutputItem]) -> int:
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
 
-    The cog calls `stream` once with the answer-turn stream; reasoning summaries are
+    `stream` is called once per attempt with the answer stream; reasoning summaries are
     previewed as `-#` subtext while the model thinks, the real text replaces them as it
-    arrives, then a usage footer (and an optional memory-credit line) is written. Memory
-    lookups are decided in a separate request before streaming, so the labels are passed
-    in via `memory_lookups` rather than discovered here. Discord edits run on a
-    time-based snapshot editor task so consuming the stream never waits on Discord.
+    arrives, then a usage footer (and an optional memory-credit line) is written. Whose
+    memory the answer read is decided before streaming, so the credits are passed in via
+    `memory_lookups` rather than discovered here. Discord edits run on a time-based snapshot
+    editor task so consuming the stream never waits on Discord.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -256,7 +256,7 @@ class ResponseStreamer(BaseModel):
     )
     memory_notes: list[str] = Field(
         default_factory=list,
-        description="<write-memory> notes about the message author; the cog schedules them.",
+        description="<write-memory> notes about the message author, for the caller to schedule.",
     )
     forget_notes: list[str] = Field(
         default_factory=list,
@@ -292,7 +292,7 @@ class ResponseStreamer(BaseModel):
     # line BEFORE it (USAGE_FOOTER_RE strips only a footer at end-of-message).
     _usage_footer: str = PrivateAttr(default="")
     # The memory note currently on the reply, so the outcome can replace the pending one rather
-    # than stack under it, and so the answer text handed back to the cog can drop it again.
+    # than stack under it, and so the answer text handed back to the caller can drop it again.
     _memory_note: str = PrivateAttr(default="")
     # The dropped-media hint line currently on the reply, tracked for the same second reason:
     # it is chrome the bot added, so it must not reach the transcript the memory reviewer reads
@@ -726,11 +726,11 @@ class ResponseStreamer(BaseModel):
         self.image_prompts = markers.image_prompts
         self.music_prompt = markers.music_prompt
         self.video_prompt = markers.video_prompt
-        # The streamer only surfaces the brief; the cog (not the streamer) launches the research
-        # after the single media edit so it never touches the reply's one attachment edit.
+        # The streamer only surfaces the brief; the caller launches the research once the stream
+        # returns, so the launch never touches the reply's one attachment edit.
         self.research_brief = markers.research_brief
-        # Surfaced for the cog, which owns whose memory each kind is written to; a media persona
-        # reply never sees the marker instructions, so these stay empty there.
+        # Surfaced for the caller, which owns whose memory each kind is written to; a media
+        # persona reply never sees the marker instructions, so these stay empty there.
         self.memory_notes = markers.memory_notes
         self.forget_notes = markers.forget_notes
         self.server_memory_notes = markers.server_memory_notes
@@ -923,7 +923,7 @@ class ResponseStreamer(BaseModel):
         return getattr(channel, "name", None) if channel is not None else None
 
     async def _hint_media_unavailable(self, *, emoji: str) -> None:
-        """Marks that dropped media (voice clip or inline image) is not silent.
+        """Marks that dropped media (a voice clip, image, song or video) is not silent.
 
         The reply stays without the attachment and the user gets no message; this best-effort
         hint is the only signal. On the gateway path it rides on the source message as an
@@ -1345,12 +1345,12 @@ async def stream_answer_with_retry(
 ) -> str:
     """Streams one answer turn, re-opening the stream on a transient upstream failure.
 
-    This is the only LLM call in the process with no retry anywhere beneath it. LiteLLM's
-    router applies `num_retries` and its configured fallbacks to the non-streaming paths,
-    which is why the fast one-shots degrade instead of failing (the triage call has no
-    fallback there and degrades in `routing.py` instead), but a provider 5xx
-    that arrives as an SSE error frame mid-stream reaches the client untouched -- and that is
-    the one turn whose failure a user watches happen.
+    This is the one LLM call the bot re-issues itself. LiteLLM's router applies `num_retries`
+    and its configured fallbacks to the non-streaming proxied paths, which is why the fast
+    one-shots degrade instead of failing (the triage call has no fallback there and degrades in
+    `routing.py` instead), but a provider 5xx that arrives as an SSE error frame mid-stream
+    reaches the client untouched -- and that is the one turn whose failure a user watches
+    happen.
 
     Re-issuing the request is safe because an answer turn is a pure read: nothing is written
     before the stream completes, and the retry stays on the same client and the same model, so

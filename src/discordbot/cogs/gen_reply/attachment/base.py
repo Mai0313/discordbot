@@ -34,11 +34,11 @@ DEAD_SOURCE_TTL = timedelta(minutes=30)
 # source of the worst observed render tail).
 MEDIA_CONCURRENCY = 8
 
-# Module-level rather than per renderer, because there is one renderer per Gemini key now and
-# a per-instance semaphore would multiply the cap by the key count — restoring exactly the
-# starvation the number above was measured against. Loop-local because a module-level
-# `asyncio.Semaphore` binds to the first loop that waits on it and every test runs a fresh one
-# (`utils/asyncio_locks.py` has the mechanism).
+# Module-level rather than per renderer, so the cap holds however many renderers exist: a
+# per-instance semaphore would multiply it by their count, restoring exactly the starvation the
+# number above was measured against. Loop-local because a module-level `asyncio.Semaphore` binds
+# to the first loop that waits on it and every test runs a fresh one (`utils/asyncio_locks.py`
+# has the mechanism).
 media_semaphore = LoopLocalSemaphore(capacity_provider=lambda: MEDIA_CONCURRENCY)
 
 

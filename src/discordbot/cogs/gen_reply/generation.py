@@ -1,7 +1,8 @@
 """Media-generation services: the image, voice, video, and music render calls behind one shape.
 
-All runtime media generators are BaseModel services held as cog `cached_property`s, so every media
-render goes through the same calling convention instead of a half-free-function / half-class mix:
+All runtime media generators are BaseModel services held as `ReplyToolkit` `cached_property`s, so
+every media render goes through the same calling convention instead of a half-free-function /
+half-class mix:
 
 - `PromptGenerator` is the upstream prompt director shared by the router IMAGE and VIDEO routes:
   `refine` expands a thin user request into one rich, self-contained generation prompt with the
@@ -91,8 +92,6 @@ TTS_SPEED = 1.5
 
 # Filename of the attached voice clip. Shared so input rendering can recognise and skip the
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
-# Its upload-size guard lives at the attach site (`streaming.py`), where the guild's real
-# `filesize_limit` is known, not as a hardcoded byte ceiling here.
 VOICE_REPLY_FILENAME = "reply.wav"
 
 # Filename a generated image is attached under, by the IMAGE route and by a QA reply's

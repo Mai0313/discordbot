@@ -3580,8 +3580,7 @@ async def test_media_semaphore_bounds_media_io_concurrency(
     Counting concurrency in the byte loader proves non-image downloads (which run before the
     Gemini upload) are bounded too, so concurrent pipelines cannot buffer every file at once.
     """
-    # The cap is module-level now, shared by the one renderer each Gemini key holds, and the
-    # loop-local holder reads it fresh on this test's own loop.
+    # The cap is module-level, and the loop-local holder reads it fresh on this test's own loop.
     monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.base.MEDIA_CONCURRENCY", 2)
     uploader = _fake_uploader()
     state = {"active": 0, "peak": 0}
