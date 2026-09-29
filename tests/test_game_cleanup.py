@@ -3,16 +3,15 @@
 import asyncio
 
 import pytest
-import nextcord
 from nextcord import Message
 from nextcord.abc import Messageable
 
 from discordbot.utils import message_cleanup as cleanup_module
-from discordbot.utils import interaction_responses as interactions
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
     PendingPublicMessage,
     track_public_message,
+    delete_public_message,
     delete_public_message_after,
     list_pending_public_messages,
     delete_tracked_public_messages,
@@ -22,7 +21,6 @@ from discordbot.utils.message_cleanup import (
 from tests.helpers.casting import (
     as_bot,
     as_message,
-    as_interaction,
     make_forbidden,
     make_not_found,
     make_server_error,
@@ -158,58 +156,6 @@ class _UnfetchableBotStub:
     async def fetch_channel(self, channel_id: int, /) -> _NonMessageableChannelStub:
         """Returns a non-messageable channel shape."""
         return _NonMessageableChannelStub()
-
-
-class _SentFollowupMessageStub:
-    """Message shape returned by fake followup sends."""
-
-    pass
-
-
-class _FollowupStub:
-    """Minimal followup stub that records send arguments."""
-
-    def __init__(self) -> None:
-        """Initializes followup send records."""
-        self.message = _SentFollowupMessageStub()
-        self.sent_wait: bool | None = None
-        self.sent_ephemeral: bool | None = None
-        self.sent_embed: nextcord.Embed | None = None
-        self.sent_view: nextcord.ui.View | None = None
-        self.sent_files: list[nextcord.File] | None = None
-
-    async def send(
-        self,
-        embed: nextcord.Embed,
-        wait: bool = False,
-        ephemeral: bool = False,
-        view: nextcord.ui.View | None = None,
-        files: list[nextcord.File] | None = None,
-    ) -> _SentFollowupMessageStub:
-        """Records the embed send and returns the message object."""
-        self.sent_embed = embed
-        self.sent_wait = wait
-        self.sent_ephemeral = ephemeral
-        self.sent_view = view
-        self.sent_files = files
-        return self.message
-
-
-class _InteractionStub:
-    """Minimal interaction shape for expiring economy followups."""
-
-    def __init__(self) -> None:
-        """Initializes the followup stub used by the helper under test."""
-        self.user = _UserStub(name="alice")
-        self.followup = _FollowupStub()
-
-
-class _UserStub:
-    """Minimal interaction user shape for cleanup readability."""
-
-    def __init__(self, name: str) -> None:
-        """Stores the Discord account name."""
-        self.name = name
 
 
 async def test_delete_public_message_after_waits_then_deletes() -> None:
@@ -372,73 +318,30 @@ async def test_a_transient_http_failure_keeps_its_traceback(
     assert fields.get("_exc_info") is True, "a transport failure still needs its traceback"
 
 
-async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Public economy embeds must retrieve their message before cleanup."""
-    scheduled_messages: list[_SentFollowupMessageStub] = []
-    scheduled_user_names: list[str | None] = []
-
-    def fake_schedule_public_message_delete(
-        message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
-    ) -> None:
-        """Records the message scheduled for later deletion."""
-        scheduled_messages.append(message)
-        scheduled_user_names.append(user_name)
-
-    monkeypatch.setattr(
-        target=interactions,
-        name="schedule_public_message_delete",
-        value=fake_schedule_public_message_delete,
-    )
-    interaction = _InteractionStub()
-    embed = nextcord.Embed(title="balance")
-
-    await interactions.send_expiring_followup(
-        interaction=as_interaction(fake=interaction), embed=embed
-    )
-
-    assert interaction.followup.sent_wait is True
-    assert interaction.followup.sent_embed is embed
-    assert interaction.followup.sent_view is None
-    assert scheduled_messages == [interaction.followup.message]
-    assert scheduled_user_names == ["alice"]
-
-
-async def test_send_private_followup_is_ephemeral_and_not_scheduled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Personal economy embeds should not enter the public cleanup scheduler."""
-    scheduled_messages: list[_SentFollowupMessageStub] = []
-
-    def fake_schedule_public_message_delete(
-        message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
-    ) -> None:
-        """Records any unexpected scheduler calls."""
-        scheduled_messages.append(message)
-
-    monkeypatch.setattr(
-        target=interactions,
-        name="schedule_public_message_delete",
-        value=fake_schedule_public_message_delete,
-    )
-    interaction = _InteractionStub()
-    embed = nextcord.Embed(title="balance")
-
-    await interactions.send_private_followup(
-        interaction=as_interaction(fake=interaction), embed=embed
-    )
-
-    assert interaction.followup.sent_ephemeral is True
-    assert interaction.followup.sent_embed is embed
-    assert scheduled_messages == []
-
-
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
-    """Manual deletion before cleanup should not surface as a task failure."""
+    """A message someone deleted first is cleaned up all the same, restart record included."""
     await delete_public_message_after(
         message=as_message(fake=_AlreadyDeletedMessageStub()), delay=0
     )
+
+    assert await list_pending_public_messages() == []
+
+
+async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
+    """A delete Discord refuses reports failure and leaves the record for the restart sweep."""
+
+    class _UndeletableMessageStub(_AlreadyDeletedMessageStub):
+        async def delete(self) -> None:
+            """Refuses the way Discord refuses a delete the bot lacks the permission for."""
+            raise make_forbidden(message="Missing Permissions")
+
+    message = as_message(fake=_UndeletableMessageStub())
+    await track_public_message(message=message)
+
+    assert await delete_public_message(message=message) is False
+    assert await list_pending_public_messages() == [
+        PendingPublicMessage(channel_id=456, message_id=789)
+    ]
 
 
 async def test_schedule_public_message_delete_uses_default_ttl(

@@ -1,8 +1,8 @@
 """Shared pytest fixtures.
 
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
-`tmp_path` SQLite file for one test; the economy one is autouse, the others are requested by
-the tests that need them and dispose their engine afterwards. `memory_isolated_dir` covers
+`tmp_path` SQLite file for one test; the economy and games-history ones are autouse, the others
+are requested by the tests that need them and dispose their engine afterwards. `memory_isolated_dir` covers
 more than a directory: the store dir, the `memory_job` engine, the process-local caches,
 counters and task registries the store and pipeline hold, and the git committer. The autouse
 fixtures are the other half of that isolation, keeping a real deployment's `.env` and `data/`
@@ -153,6 +153,22 @@ def cleanup_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         "discordbot.utils.message_cleanup._PENDING_PUBLIC_MESSAGE_DB_PATH",
         tmp_path / "game_cleanup.db",
     )
+
+
+@pytest.fixture(autouse=True)
+def games_history_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Points the Blackjack round history at a throwaway `games.db`.
+
+    Autouse for the reason `expansion_store_isolated` is: every settled round records its
+    history in a background task whose failure is swallowed, so a test that settles a table
+    without the swap would pass green while writing rows into the live `games.db`. NullPool
+    closes each connection on return, so this stays a sync fixture; the schema bootstraps
+    lazily on the first read or write.
+    """
+    engine = create_async_engine(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'games_history.db'}", poolclass=NullPool
+    )
+    monkeypatch.setattr("discordbot.cogs.games.database._engine", engine)
 
 
 @pytest.fixture(autouse=True)
