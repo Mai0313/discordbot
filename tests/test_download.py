@@ -1,6 +1,7 @@
-"""Tests for the yt-dlp downloader facade."""
+"""Tests for the yt-dlp downloader facade and the `/download_video` command."""
 
-from types import TracebackType
+import time
+from types import TracebackType, SimpleNamespace
 from typing import Any, Self, NoReturn, get_args
 from pathlib import Path
 import threading
@@ -13,12 +14,13 @@ from discordbot.utils.urls import normalized_host, extract_first_url, host_match
 from discordbot.typings.video import VideoQuality
 from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
 from discordbot.services.platforms import ytdlp as downloader_module
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.ytdlp import VideoDownloader, DownloadStoppedError
 from discordbot.services.platforms.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
-from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.casting import as_bot, as_interaction, make_media_hosting_config
 from tests.helpers.link_sources import SAMPLE_POST_URLS
 from tests.helpers.discord_mocks import FakeInteraction
 
@@ -478,3 +480,177 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
 
     cog = VideoCogs(bot=as_bot(fake=object()))
     assert cog.download_video.options["quality"].default in presets
+
+
+class DownloadResultStub:
+    """Context manager stub for a downloaded video file."""
+
+    def __init__(self, filename: Path) -> None:
+        """Stores the fake downloaded filename."""
+        self.filename = filename
+
+    def __enter__(self) -> Self:
+        """Returns the fake download result."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Leaves the fake downloaded file on disk for assertions."""
+        return
+
+
+class DownloaderStub:
+    """Fake downloader that returns queued download results."""
+
+    def __init__(self, results: list[DownloadResultStub]) -> None:
+        """Initializes queued results and recorded calls."""
+        self.results = results
+        self.calls: list[dict[str, str]] = []
+
+    def download(
+        self, url: str, quality: str, stop_signal: threading.Event | None = None
+    ) -> DownloadResultStub:
+        """Records the download request and returns the next queued result.
+
+        `stop_signal` is accepted and ignored: the real downloader takes it so a caller can
+        abort a blocking yt-dlp run, and `/download_video` now passes one on every call.
+        """
+        del stop_signal
+        kwargs: dict[str, str] = {"url": url, "quality": quality}
+        self.calls.append(kwargs)
+        return self.results.pop(0)
+
+
+class _RaiseDownloader:
+    """Downloader stub that always fails."""
+
+    def download(
+        self, url: str, quality: str, stop_signal: threading.Event | None = None
+    ) -> DownloadResultStub:
+        """Raises a deterministic download failure, taking the signature the command calls."""
+        raise RuntimeError("download failed")
+
+
+async def test_video_deliver_and_download_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies video delivery, oversize URL fallback, hosting-off, and download error branches."""
+    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
+            )
+        )
+    )
+    small = tmp_path / "small.mp4"
+    small.write_bytes(data=b"0" * 100)
+    big = tmp_path / "big.mp4"
+    big.write_bytes(data=b"0" * 300)
+
+    interaction = FakeInteraction()
+    await cog._deliver(
+        interaction=as_interaction(fake=interaction),
+        file_size_mb=1.25,
+        file_path=small,
+        url="https://source.test/video",
+    )
+    success_content = interaction.edits[-1]["content"]
+    assert isinstance(success_content, str)
+    assert success_content == "-# 檔案大小: 1.2MB\n-# 來源: <https://source.test/video>"
+    assert interaction.edits[-1]["file"] is not None
+    assert interaction.followup.sent == []
+
+    # Too big for native upload + hosting on: post the URL, no 480p retry, no attachment.
+    downloader = DownloaderStub(results=[DownloadResultStub(filename=big)])
+    monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
+    host_interaction = FakeInteraction(filesize_limit=200)
+    await VideoCogs.download_video.callback(
+        cog, host_interaction, url="https://x.test", quality="best"
+    )
+    assert [call["quality"] for call in downloader.calls] == ["best"]
+    host_content = host_interaction.edits[-1]["content"]
+    assert any(line.startswith("https://media.test/") for line in host_content.splitlines())
+    # The source link is omitted so the hosted URL is the only link and Discord inline-plays it.
+    assert "https://x.test" not in host_content
+    assert "file" not in host_interaction.edits[-1]
+    assert host_interaction.followup.sent == []
+
+    # Too big + hosting unavailable: fall back to the "file too large" message.
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=make_media_hosting_config(enabled=True, base_url="", serve_dir="")
+        )
+    )
+    big2 = tmp_path / "big2.mp4"
+    big2.write_bytes(data=b"0" * 300)
+    fail_interaction = FakeInteraction(filesize_limit=200)
+    monkeypatch.setattr(
+        video,
+        "VideoDownloader",
+        lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big2)]),
+    )
+    await VideoCogs.download_video.callback(
+        cog, fail_interaction, url="https://x.test", quality="best"
+    )
+    assert "檔案大小超過" in fail_interaction.edits[-1]["content"]
+
+    monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: _RaiseDownloader())
+    error_interaction = FakeInteraction()
+    await VideoCogs.download_video.callback(
+        cog, error_interaction, url="https://x.test", quality="best"
+    )
+    assert "檔案無法下載" in error_interaction.edits[-1]["content"]
+
+
+async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """yt-dlp's own retry budget is not a ceiling, so the command carries one.
+
+    `socket_timeout` applies per socket and each of the three retry settings multiplies it, so
+    without this the user sits on "正在下載影片..." for as long as the host cares to stall. The
+    stop signal is half of it: `asyncio.to_thread` cannot be cancelled, so the bound only ends
+    the download because the worker is watching for it.
+    """
+    monkeypatch.setattr(video, "VIDEO_DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
+
+    class StallingDownloader:
+        """Drips like a stalling host, and watches the stop signal like yt-dlp's progress hook."""
+
+        def __init__(self) -> None:
+            """Records which way the worker ended."""
+            self.aborted = False
+            self.finished = False
+
+        def download(
+            self, url: str, quality: str, stop_signal: threading.Event | None = None
+        ) -> DownloadResultStub:
+            """Outlasts the command's bound by two orders of magnitude unless told to stop."""
+            del url, quality
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if stop_signal is not None and stop_signal.is_set():
+                    self.aborted = True
+                    raise RuntimeError("download stopped")
+                time.sleep(0.01)
+            self.finished = True
+            raise AssertionError("should have been abandoned")
+
+    downloader = StallingDownloader()
+    monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
+    interaction = FakeInteraction()
+    await VideoCogs.download_video.callback(
+        cog, as_interaction(fake=interaction), url="https://x.test", quality="best"
+    )
+
+    assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
+    # Any failure prints that same line, so what proves the BOUND fired is which way the worker
+    # ended: aborted on the signal rather than running its stall out.
+    assert downloader.aborted is True
+    assert downloader.finished is False
