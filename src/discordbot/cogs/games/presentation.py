@@ -107,7 +107,7 @@ def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several o
     return "-# " + " · ".join(segments)
 
 
-def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:
+def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:  # noqa: PLR0911 -- one branch per SettleOutcome label keeps the mapping obvious
     """Formats the H2 result line for one player at Blackjack settlement.
 
     Args:
@@ -118,25 +118,20 @@ def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total:
     Returns:
         Markdown H2 line such as `## 🎉 你贏了 · 20 > 19`.
     """
-    return f"## {player_result_inline(outcome=outcome, player_total=player_total, dealer_total=dealer_total)}"
-
-
-def player_result_inline(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:  # noqa: PLR0911 -- one branch per SettleOutcome label keeps the mapping obvious
-    """Single-line result label without heading prefix, for embed titles."""
     if outcome == "blackjack":
-        return f"{NATURAL_RESULT_EMOJI} Blackjack · {player_total}"
+        return f"## {NATURAL_RESULT_EMOJI} Blackjack · {player_total}"
     if outcome == "five_card_twenty_one":
-        return f"{NATURAL_RESULT_EMOJI} 過五關 · {player_total}"
+        return f"## {NATURAL_RESULT_EMOJI} 過五關 · {player_total}"
     if outcome == "five_card_win":
-        return f"{WIN_RESULT_EMOJI} 過五關 · {player_total}"
+        return f"## {WIN_RESULT_EMOJI} 過五關 · {player_total}"
     if outcome == "dealer_bust":
-        return f"{DEALER_BUST_RESULT_EMOJI} 莊家爆牌, 你贏了 · {dealer_total}"
+        return f"## {DEALER_BUST_RESULT_EMOJI} 莊家爆牌, 你贏了 · {dealer_total}"
     if outcome == "player_bust":
-        return f"{BUST_RESULT_EMOJI} 你爆牌了 · {player_total}"
+        return f"## {BUST_RESULT_EMOJI} 你爆牌了 · {player_total}"
     if outcome == "win":
-        return f"{WIN_RESULT_EMOJI} 你贏了 · {player_total} > {dealer_total}"
+        return f"## {WIN_RESULT_EMOJI} 你贏了 · {player_total} > {dealer_total}"
     if outcome == "lose":
-        return f"{LOSE_RESULT_EMOJI} 你輸了 · {player_total} < {dealer_total}"
+        return f"## {LOSE_RESULT_EMOJI} 你輸了 · {player_total} < {dealer_total}"
     if outcome == "surrender":
-        return "🏳️ 投降 · 退一半"
-    return f"平手 · {player_total} = {dealer_total}"
+        return "## 🏳️ 投降 · 退一半"
+    return f"## 平手 · {player_total} = {dealer_total}"

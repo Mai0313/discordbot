@@ -84,8 +84,7 @@ def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
     """H1 heading combining the hand and its total, e.g. `# 10♠  5♥ = 15`."""
     if not cards:
         return ""
-    spaced = render_hand(cards=cards).replace(" ", "  ")
-    return f"# {spaced} = {hand_value(cards=cards)}{suffix}"
+    return f"{card_line(cards_text=render_hand(cards=cards))} = {hand_value(cards=cards)}{suffix}"
 
 
 def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
