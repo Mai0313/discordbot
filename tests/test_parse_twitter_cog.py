@@ -182,7 +182,8 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
     """Discord counts every embed's text against ONE ceiling and rejects the whole send past it.
 
     A post at the description limit plus a parent plus a quote is the worst case, and losing the
-    expansion entirely is a far worse outcome than trimming the body.
+    expansion entirely is a far worse outcome than trimming the body. The post is what gives way:
+    it shows less of itself beside its context cards than alone, or they are left the scraps.
     """
     parent = twitter_output(text="p" * 3000, url="https://x.com/Dbacks/status/1", image_urls=[])
     quoted = twitter_output(text="q" * 3000, url="https://x.com/OpenAI/status/2", image_urls=[])
@@ -202,8 +203,13 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
         for text in (embed.description, embed.footer.text, embed.author.name)
         if isinstance(text, str)
     )
+    alone = cog._build_embeds(conversation=twitter_post(text="t" * 5000, image_urls=[]))
 
     assert spent <= 6000
+    # The parent card goes first and the quote last, so the post sits between them.
+    assert utf16_length(value=embeds[1].description or "") < utf16_length(
+        value=alone[0].description or ""
+    )
 
 
 async def test_a_post_full_of_emoji_is_clipped_by_the_units_discord_counts() -> None:

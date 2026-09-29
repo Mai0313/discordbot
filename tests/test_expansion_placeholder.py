@@ -7,6 +7,7 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     ExpansionPlaceholder,
+    _load_pending,
     send_expansion_placeholder,
     resume_expansion_placeholders,
 )
@@ -256,7 +257,11 @@ async def test_a_link_withdrawn_while_the_bot_was_down_is_never_expanded() -> No
 
 
 async def test_a_placeholder_removed_by_hand_ends_the_row() -> None:
-    """Nothing is left to deliver onto, so the row goes and the sweep never runs twice."""
+    """Nothing is left to deliver onto, so the row goes and the sweep never runs twice.
+
+    Read off the table rather than off a second sweep: with the placeholder gone, a second sweep
+    finds nothing to expand whether the row survived or not.
+    """
     _source, placeholder_message, channel = await _interrupted()
     del channel.messages[placeholder_message.id]
     expand = _RecordingExpand()
@@ -264,11 +269,9 @@ async def test_a_placeholder_removed_by_hand_ends_the_row() -> None:
     await resume_expansion_placeholders(
         bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=expand
     )
-    await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=expand
-    )
 
     assert expand.calls == []
+    assert await _load_pending(source=_SOURCE) == []
 
 
 async def test_a_delivered_expansion_leaves_nothing_for_a_restart_to_find() -> None:
