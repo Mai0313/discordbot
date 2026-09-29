@@ -835,6 +835,29 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
     assert "https://" not in str(edit["content"])  # nothing was hosted
 
 
+async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With hosting off, a file too big to attach is left out, and the log says which one."""
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
+    await deliver_report(
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=as_message(fake=status),  # minimal status-message double
+        owner_id=1,
+        result=_completed_result(report_text="# Report\nbody"),
+        footer="-# footer",
+        media_delivery=_disabled_delivery(),
+    )
+    assert not status.edits[0].get("files")
+    assert warns == [
+        (
+            "research report file too big to attach and not hosted; left out",
+            {"thread_id": 1, "filename": "research.md"},
+        )
+    ]
+
+
 # ----- restart resume sweep -----------------------------------------------------------------
 
 

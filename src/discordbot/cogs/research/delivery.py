@@ -115,7 +115,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     wasted; the remaining chunks follow as new messages; the LAST chunk carries the usage footer,
     the owner ping, and the full report as a `research.md` attachment (plus any generated image).
     A report file too big to upload is hosted on the external static server and linked on the last
-    chunk instead of being dropped; if hosting is unavailable it degrades to today's silent drop.
+    chunk; when hosting is off or fails, it is left out and a warning names it.
     Every write is best-effort, and every one may ping only the owner (`owner_allowed_mentions`).
     """
     report = result.report_text.strip() or "(the research returned no report text)"
@@ -124,7 +124,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     # they are unrelated files, so one is never peeled to a URL just because their *combined* size
     # crosses the limit (the planner's combined-body guard is for a single multi-file edit; here the
     # `.md` is the durable artifact and must attach whenever it individually fits). A file too big on
-    # its own is hosted; with hosting off it is silently dropped, exactly as before this fold-in.
+    # its own is hosted, or left out with a warning when hosting is off or fails.
     # A Discord Thread always lives in a guild (research never runs in a DM), so the shared
     # helper reads its boost-tier `filesize_limit` with no None-guild fallback in play.
     limit = upload_limit_for(guild=thread.guild)
@@ -137,6 +137,12 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
         item_plan = await media_delivery.plan(items=[item], upload_limit=limit)
         files.extend(native.to_file() for native in item_plan.native)
         hosted_urls.extend(item_plan.hosted_urls)
+        if item_plan.dropped_items:
+            logfire.warn(
+                "research report file too big to attach and not hosted; left out",
+                thread_id=thread.id,
+                filename=item.filename,
+            )
     # The completion suffix (owner ping + usage footer, plus a hosted-URL line for any report file
     # too big to attach) rides the last chunk only when it still fits under Discord's message-length
     # cap; otherwise it becomes its own trailing message so a near-limit final chunk never pushes the
