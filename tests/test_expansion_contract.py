@@ -37,7 +37,7 @@ from nextcord.ext import commands
 from discordbot.utils import expansion_placeholder as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
-from discordbot.utils.expansion_cog import ExpansionCog
+from discordbot.utils.expansion_cog import ExpansionCog, ConversationExpansionCog
 from discordbot.services.platforms.base import PlatformConversation
 from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
 from discordbot.services.platforms.twitter import TwitterConversation
@@ -308,12 +308,22 @@ def test_no_two_expansion_cogs_share_a_source_key() -> None:
 def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
     cog: type[ExpansionCog[Any]],
 ) -> None:
-    """A cog that leaves a hook unfilled does nothing at all, and says nothing about it."""
+    """A cog that leaves a hook unfilled does nothing at all, and says nothing about it.
+
+    A conversation cog inherits its read and its card, so what it owes is the reader, the bound
+    on it and the parts of the card only its platform knows. Its reader is checked here rather
+    than by the tests below, which install a stand-in over it.
+    """
     assert cog.PLATFORM
     assert cog.PLACEHOLDER_TEXT
     assert cog.URL_PATTERN.pattern
     assert cog.read is not ExpansionCog.read
     assert cog.build_delivery is not ExpansionCog.build_delivery
+    if issubclass(cog, ConversationExpansionCog):
+        assert cog.READ_TIMEOUT_SECONDS > 0
+        assert cog.EMBED_COLOR
+        assert callable(getattr(cog, "downloader_factory", None))
+        assert cog._footer_text is not ConversationExpansionCog._footer_text
 
 
 @pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
