@@ -89,9 +89,7 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
             path = Path(self.output_folder) / name
             path.write_bytes(b"media-bytes")
             written.append(path)
-        return DouyinDownload(
-            title=resolved_post.title, is_photo=resolved_post.is_photo, filenames=written
-        )
+        return DouyinDownload(is_photo=resolved_post.is_photo, filenames=written)
 
     monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=fake_parse_metadata)
     monkeypatch.setattr(target=DouyinDownloader, name="download", value=fake_download)

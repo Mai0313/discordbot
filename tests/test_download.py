@@ -23,7 +23,7 @@ from tests.helpers.link_sources import SAMPLE_POST_URLS
 from tests.helpers.discord_mocks import FakeInteraction
 
 # What `extract_info` answers for a finished download: the least `download` reads a result from.
-_DOWNLOADED_INFO = {"id": "video_id", "ext": "mp4", "title": "stub video"}
+_DOWNLOADED_INFO = {"id": "video_id", "ext": "mp4"}
 
 
 def _install_youtube_dl_stub(
@@ -79,22 +79,19 @@ def _install_youtube_dl_stub(
         ),
     ],
 )
-def test_download_dry_run_uses_ytdlp_params(
+def test_download_uses_ytdlp_params(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str, expected_url: str
 ) -> None:
-    """Verifies dry-run download setup without depending on live site APIs."""
+    """Verifies the download setup without depending on live site APIs."""
     captured_params, captured_calls = _install_youtube_dl_stub(
         monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
     )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(url=url, quality="best", dry_run=True) as result:
-        assert result.title == "stub video"
+    with downloader.download(url=url, quality="best") as result:
         assert result.filename == tmp_path / "video_id.mp4"
 
     assert captured_calls == [{"url": expected_url, "download": True}]
-    assert captured_params[0]["simulate"] is True
-    assert captured_params[0]["skip_download"] is True
     assert captured_params[0]["format"] == downloader.quality_formats["best"]
 
 
@@ -117,10 +114,8 @@ def test_download_resolves_facebook_share_links(
     )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(
-        url="https://www.facebook.com/share/r/17h4SsC2p1", quality="best", dry_run=True
-    ) as result:
-        assert result.title == "stub video"
+    with downloader.download(url="https://www.facebook.com/share/r/17h4SsC2p1", quality="best"):
+        pass
 
     assert captured_calls == [
         {"url": "https://www.facebook.com/reel/828357636228730", "download": True}
@@ -206,7 +201,6 @@ def test_parse_metadata_reads_info_without_downloading(
 
     metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1jpK86hEc8")
 
-    assert metadata.video_id == "BV1jpK86hEc8"
     assert metadata.title == "a title"
     assert metadata.uploader == "an uploader"
     assert metadata.description == "a description"
@@ -217,8 +211,8 @@ def test_parse_metadata_reads_info_without_downloading(
     assert captured_calls == [
         {"url": "https://www.bilibili.com/video/BV1jpK86hEc8", "download": False}
     ]
-    # Silent probe params: simulate without the dry_run branch's stdout-dumping shape, and
-    # flat playlists so a channel/space page never costs one request per entry.
+    # Silent probe params: simulate with `quiet` on and no info-dict dump, and flat playlists
+    # so a channel/space page never costs one request per entry.
     assert captured_params[0]["simulate"] is True
     assert captured_params[0]["skip_download"] is True
     assert captured_params[0]["quiet"] is True
@@ -237,7 +231,6 @@ def test_parse_metadata_defaults_absent_fields(
 
     metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1")
 
-    assert metadata.video_id == "BV1"
     assert metadata.title == ""
     assert metadata.uploader == ""
     assert metadata.description == ""
@@ -262,7 +255,6 @@ def test_parse_metadata_unwraps_playlist_shaped_info(
 
     metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1?p=1")
 
-    assert metadata.video_id == "BV1"
     assert metadata.title == "part one"
     assert metadata.duration_seconds == 10.0
 
@@ -295,7 +287,6 @@ def test_parse_metadata_keeps_the_playlist_page_url(
 
     metadata = downloader.parse_metadata(url="https://b23.tv/abc123X")
 
-    assert metadata.video_id == "BV1"
     assert metadata.title == "newest upload"
     assert metadata.webpage_url == "https://space.bilibili.com/672328094"
     assert metadata.from_playlist is True
@@ -315,9 +306,7 @@ def test_download_stop_signal_aborts_at_the_next_progress_tick(
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
     stop_signal = threading.Event()
 
-    with downloader.download(
-        url="https://example.com/v", quality="best", dry_run=True, stop_signal=stop_signal
-    ):
+    with downloader.download(url="https://example.com/v", quality="best", stop_signal=stop_signal):
         pass
 
     (hook,) = captured_params[0]["progress_hooks"]
@@ -327,7 +316,7 @@ def test_download_stop_signal_aborts_at_the_next_progress_tick(
         hook({})
 
     # Without a signal no hook is installed, so the plain path stays untouched.
-    with downloader.download(url="https://example.com/v", quality="best", dry_run=True):
+    with downloader.download(url="https://example.com/v", quality="best"):
         pass
     assert "progress_hooks" not in captured_params[1]
 
@@ -348,7 +337,7 @@ def test_get_params_bilibili_referer_handles_scheme_less_hosts(tmp_path: Path) -
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
     def referer(url: str) -> object:
-        params = downloader.get_params(quality="best", dry_run=False, url=url)
+        params = downloader.get_params(quality="best", url=url)
         headers = params["http_headers"]
         assert isinstance(headers, dict)
         return headers.get("Referer")

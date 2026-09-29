@@ -138,10 +138,7 @@ def is_douyin_post_url(url: str) -> bool:
     """
     if _extract_post_id(url=url):
         return True
-    try:
-        parsed = urlparse(normalized_url(url=url))
-    except ValueError:
-        return False
+    parsed = urlparse(normalized_url(url=url))
     if (parsed.hostname or "").lower().startswith("live."):
         return False
     return len([segment for segment in parsed.path.split("/") if segment]) == 1
@@ -214,7 +211,6 @@ class DouyinMetadata(BaseModel):
 class DouyinDownload(TemporaryDownload):
     """Files downloaded for one Douyin post."""
 
-    title: str = Field(default="", description="Post caption, used as the display title.")
     is_photo: bool = Field(
         default=False, description="True when the files are images rather than a single video."
     )
@@ -853,7 +849,7 @@ class DouyinDownloader(PlatformDownloader):
             filename=f"{post.aweme_id}.mp4",
             max_bytes=max_bytes,
         )
-        return DouyinDownload(title=post.title, is_photo=False, filenames=[filepath])
+        return DouyinDownload(is_photo=False, filenames=[filepath])
 
     def _download_images(
         self, post: DouyinMetadata, max_images: int | None, max_bytes: int | None = None
@@ -880,5 +876,5 @@ class DouyinDownloader(PlatformDownloader):
             raise
 
         return DouyinDownload(
-            title=post.title, is_photo=True, filenames=filenames, total_images=len(post.image_urls)
+            is_photo=True, filenames=filenames, total_images=len(post.image_urls)
         )

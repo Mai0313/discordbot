@@ -112,14 +112,10 @@ class DownloaderStub:
     def __init__(self, results: list[DownloadResultStub]) -> None:
         """Initializes queued results and recorded calls."""
         self.results = results
-        self.calls: list[dict[str, str | bool]] = []
+        self.calls: list[dict[str, str]] = []
 
     def download(
-        self,
-        url: str,
-        quality: str,
-        dry_run: bool = False,
-        stop_signal: threading.Event | None = None,
+        self, url: str, quality: str, stop_signal: threading.Event | None = None
     ) -> DownloadResultStub:
         """Records the download request and returns the next queued result.
 
@@ -127,7 +123,7 @@ class DownloaderStub:
         abort a blocking yt-dlp run, and `/download_video` now passes one on every call.
         """
         del stop_signal
-        kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
+        kwargs: dict[str, str] = {"url": url, "quality": quality}
         self.calls.append(kwargs)
         return self.results.pop(0)
 
@@ -393,11 +389,7 @@ class _RaiseDownloader:
     """Downloader stub that always fails."""
 
     def download(
-        self,
-        url: str,
-        quality: str,
-        dry_run: bool = False,
-        stop_signal: threading.Event | None = None,
+        self, url: str, quality: str, stop_signal: threading.Event | None = None
     ) -> DownloadResultStub:
         """Raises a deterministic download failure, taking the signature the command calls."""
         raise RuntimeError("download failed")
@@ -623,14 +615,10 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
             self.finished = False
 
         def download(
-            self,
-            url: str,
-            quality: str,
-            dry_run: bool = False,
-            stop_signal: threading.Event | None = None,
+            self, url: str, quality: str, stop_signal: threading.Event | None = None
         ) -> DownloadResultStub:
             """Outlasts the command's bound by two orders of magnitude unless told to stop."""
-            del url, quality, dry_run
+            del url, quality
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if stop_signal is not None and stop_signal.is_set():

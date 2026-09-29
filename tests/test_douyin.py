@@ -821,8 +821,7 @@ async def test_cog_routes_douyin_away_from_ytdlp(
     clip = tmp_path / f"{_VIDEO_ID}.mp4"
     clip.write_bytes(b"0" * 128)
     cog, stub = _install_cog(
-        monkeypatch=monkeypatch,
-        outcome=DouyinDownload(title="t", is_photo=False, filenames=[clip]),
+        monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
     )
 
     def _fail(output_folder: str) -> None:
@@ -853,7 +852,7 @@ async def test_cog_states_how_many_gallery_images_were_omitted(
 
     cog, _stub = _install_cog(
         monkeypatch=monkeypatch,
-        outcome=DouyinDownload(title="t", is_photo=True, filenames=images, total_images=48),
+        outcome=DouyinDownload(is_photo=True, filenames=images, total_images=48),
     )
     interaction = FakeInteraction()
 
@@ -884,9 +883,7 @@ async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
 
     cog, _stub = _install_cog(
         monkeypatch=monkeypatch,
-        outcome=DouyinDownload(
-            title="t", is_photo=True, filenames=images, total_images=len(images)
-        ),
+        outcome=DouyinDownload(is_photo=True, filenames=images, total_images=len(images)),
     )
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
@@ -986,8 +983,7 @@ async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
     clip.write_bytes(b"0" * 4096)
 
     cog, _stub = _install_cog(
-        monkeypatch=monkeypatch,
-        outcome=DouyinDownload(title="t", is_photo=False, filenames=[clip]),
+        monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
     )
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(

@@ -210,10 +210,7 @@ class StubDouyinDownloader:
             written.append(path)
         source = post or self.post
         return DouyinDownload(
-            title=source.title,
-            is_photo=source.is_photo,
-            filenames=written,
-            total_images=self.total_images,
+            is_photo=source.is_photo, filenames=written, total_images=self.total_images
         )
 
 
