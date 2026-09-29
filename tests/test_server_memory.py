@@ -2,24 +2,19 @@
 
 from types import SimpleNamespace
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from functools import partial
 
 from nextcord import Embed
 
-from discordbot.typings.memory import (
-    MemoryFact,
-    MemoryOwner,
-    MemorySection,
-    MemoryDurability,
-    MemoryDeltaAction,
-)
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryDurability, MemoryDeltaAction
 from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.utils.llm_transcript import render_server_identity
 from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
-from discordbot.services.memory.facts import node_type_for, sections_for_flavor
+from discordbot.services.memory.facts import sections_for_flavor
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     BOT_MEMORY_DIR_NAME,
@@ -38,37 +33,21 @@ from discordbot.services.memory.server_prompts import (
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
+from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
 from tests.helpers.casting import as_bot, as_interaction
 
 BOT_ID = 555
 GUILD_ID = 777
 SERVER_SCOPE = server_scope(server_id=GUILD_ID)
 SERVER_OWNER = MemoryOwner(owner_id=GUILD_ID, owner_name="My Server")
-_NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
-
-
-def _fact(
-    *,
-    fact_id: str = "0123456789abcdef",
-    section: MemorySection = "culture",
-    durability: MemoryDurability = "stable",
-    text: str = "社群慣於高強度的粗口互嗆",
-    last_confirmed: datetime = _NOW,
-) -> MemoryFact:
-    """Builds a stored fact in the single compartment a server scope ever has."""
-    return MemoryFact(
-        fact_id=fact_id,
-        summary="社群文化",
-        section=section,
-        durability=durability,
-        text=text,
-        compartment=GLOBAL_COMPARTMENT,
-        owner_id=SERVER_OWNER.owner_id,
-        owner_name=SERVER_OWNER.owner_name,
-        node_type=node_type_for(section=section),
-        created=_NOW,
-        last_confirmed=last_confirmed,
-    )
+# An ordinary community fact in the single compartment a server scope ever has.
+_fact = partial(
+    make_fact,
+    owner=SERVER_OWNER,
+    summary="社群文化",
+    section="culture",
+    text="社群慣於高強度的粗口互嗆",
+)
 
 
 def _alias_fact(
@@ -77,17 +56,17 @@ def _alias_fact(
     text: str,
     subject_id: int,
     durability: MemoryDurability = "permanent",
-    last_confirmed: datetime = _NOW,
+    last_confirmed: datetime = STAMPED_AT,
 ) -> MemoryFact:
     """Builds one member-alias row, the server flavor's carve-out from no-individuals."""
-    row = _fact(
+    return _fact(
         fact_id=fact_id,
         section="member_alias",
         durability=durability,
         text=text,
         last_confirmed=last_confirmed,
+        subject_id=subject_id,
     )
-    return row.model_copy(update={"subject_id": subject_id})
 
 
 def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the delta schema
@@ -104,7 +83,7 @@ def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the 
     `text` defaults to empty because the row is rendered from the two structured fields;
     a test passing one is checking that the model's prose is discarded.
     """
-    return MemoryFactDelta(
+    return make_delta(
         action=action,
         section="member_alias",
         durability="permanent",
@@ -437,7 +416,7 @@ def test_an_alias_row_stays_one_clean_line(memory_isolated_dir: Path) -> None:
 
 def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
     """A swept alias row silently shrinks the allowlist, so the sweep skips every one of them."""
-    stale = _NOW - timedelta(days=STABLE_FRESHNESS_WINDOW_DAYS + 30)
+    stale = STAMPED_AT - timedelta(days=STABLE_FRESHNESS_WINDOW_DAYS + 30)
     write_fact(
         scope=SERVER_SCOPE,
         fact=_alias_fact(
@@ -460,7 +439,9 @@ def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
     write_fact(scope=SERVER_SCOPE, fact=_fact(fact_id="d" * 16, text="社群近來只聊楓之谷"))
     assert (
         sweep_stale_facts(
-            scope=SERVER_SCOPE, compartment=GLOBAL_COMPARTMENT, today=_NOW + timedelta(days=1)
+            scope=SERVER_SCOPE,
+            compartment=GLOBAL_COMPARTMENT,
+            today=STAMPED_AT + timedelta(days=1),
         )
         == 1
     )

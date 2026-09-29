@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
 from pathlib import Path
-from datetime import UTC, datetime
+from functools import partial
 import contextlib
 from collections import Counter
 from collections.abc import Callable, Awaitable
@@ -18,14 +18,12 @@ from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import (
-    MemoryFact,
     MemoryOwner,
     MemorySection,
     MemorySharing,
     MemoryCategory,
     MemoryConfidence,
     MemoryDurability,
-    MemoryDeltaAction,
     MemoryEvidenceKind,
     MemoryWriteSummary,
 )
@@ -41,7 +39,7 @@ from discordbot.cogs.memory.views import (
     memory_footer_text,
 )
 from discordbot.utils.llm_transcript import render_author_identity
-from discordbot.services.memory.facts import MemoryFlavor, node_type_for
+from discordbot.services.memory.facts import MemoryFlavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -79,7 +77,6 @@ from discordbot.services.memory.writer import (
     ToneForget,
     MemoryWriterAI,
     RawMemoryDraft,
-    MemoryFactDelta,
     MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
@@ -106,6 +103,7 @@ from discordbot.services.memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 
+from tests.helpers.memory import make_fact, make_delta
 from tests.helpers.casting import as_bot, as_interaction
 from tests.helpers.discord_mocks import FakeInteraction
 
@@ -235,70 +233,19 @@ def _parsed(output: BaseModel | None) -> SimpleNamespace:
     return SimpleNamespace(output_parsed=output, status="completed", incomplete_details=None)
 
 
-_STAMPED_AT = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
-
-
-def _stored_fact(  # noqa: PLR0913 -- test helper mirrors the stored fact's own fields
-    *,
-    fact_id: str = "0" * 16,
-    text: str = "喜歡簡短回覆",
-    summary: str = "回覆長度偏好",
-    section: str = "preference",
-    durability: str = "stable",
-    compartment: str = GLOBAL_COMPARTMENT,
-    keys: tuple[str, ...] = (),
-) -> MemoryFact:
-    """Builds one already-consolidated fact, with the code-stamped fields filled in."""
-    return MemoryFact(
-        fact_id=fact_id,
-        summary=summary,
-        section=cast("MemorySection", section),
-        durability=cast("MemoryDurability", durability),
-        text=text,
-        compartment=compartment,
-        owner_id=USER_ID,
-        owner_name="Alice (alice)",
-        node_type=node_type_for(section=cast("MemorySection", section)),
-        created=_STAMPED_AT,
-        last_confirmed=_STAMPED_AT,
-        keys=keys,
-    )
-
-
-def _delta(  # noqa: PLR0913 -- test helper mirrors the delta schema
-    *,
-    action: str = "create",
-    fact_id: str = "",
-    section: str = "preference",
-    durability: str = "stable",
-    summary: str = "回覆長度偏好",
-    text: str = "喜歡簡短回覆",
-    from_keys: tuple[str, ...] = (),
-    subject_id: str = "",
-) -> MemoryFactDelta:
-    """Builds one consolidation delta with the boilerplate filled in."""
-    return MemoryFactDelta(
-        action=cast("MemoryDeltaAction", action),
-        fact_id=fact_id,
-        section=cast("MemorySection", section),
-        durability=cast("MemoryDurability", durability),
-        summary=summary,
-        text=text,
-        from_keys=from_keys,
-        subject_id=subject_id,
-    )
+_stored_fact = partial(make_fact, owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice (alice)"))
 
 
 def _consolidated(
     *,
     text: str = "合併後",
     summary: str = "整理後的事實",
-    section: str = "preference",
+    section: MemorySection = "preference",
     tone: str = "",
 ) -> ConsolidatedMemory:
     """Builds a one-delta consolidation result, the shape phase-2 now returns."""
     return ConsolidatedMemory(
-        deltas=(_delta(summary=summary, text=text, section=section),), tone_markdown=tone
+        deltas=(make_delta(summary=summary, text=text, section=section),), tone_markdown=tone
     )
 
 
@@ -1143,22 +1090,14 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
         deltas=(
-            MemoryFactDelta(
+            make_delta(
                 action="delete",
                 fact_id="a" * 16,
                 section="fact",
-                durability="stable",
                 summary="住台中",
                 text="使用者住在台中",
             ),
-            MemoryFactDelta(
-                action="create",
-                fact_id="",
-                section="fact",
-                durability="stable",
-                summary="使用者要求忘記住處",
-                text="使用者已經不住台中了",
-            ),
+            make_delta(section="fact", summary="使用者要求忘記住處", text="使用者已經不住台中了"),
         ),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
@@ -1183,7 +1122,7 @@ def test_a_delete_survives_a_section_this_flavor_does_not_allow(memory_isolated_
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(action="delete", fact_id="a" * 16, section="member_alias"),),
+        deltas=(make_delta(action="delete", fact_id="a" * 16, section="member_alias"),),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
         deletes_only=True,
@@ -1353,15 +1292,7 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
             return _parsed(output=_no_change())
         return _parsed(
             output=ConsolidatedMemory(
-                deltas=(
-                    MemoryFactDelta(
-                        action="create",
-                        section="fact",
-                        durability="stable",
-                        summary="住在台中",
-                        text="使用者住在台中",
-                    ),
-                )
+                deltas=(make_delta(section="fact", summary="住在台中", text="使用者住在台中"),)
             )
         )
 
@@ -1412,7 +1343,7 @@ def test_a_delete_releases_only_the_keys_no_remaining_fact_carries(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(action="delete", fact_id="a" * 16),),
+        deltas=(make_delta(action="delete", fact_id="a" * 16),),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
         deletes_only=True,
@@ -1491,7 +1422,7 @@ async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
         bodies.append(body)
         if "forget_request" in body:
             return _parsed(
-                output=ConsolidatedMemory(deltas=(_delta(action="delete", fact_id="a" * 16),))
+                output=ConsolidatedMemory(deltas=(make_delta(action="delete", fact_id="a" * 16),))
             )
         return _parsed(output=_no_change())
 
@@ -1556,7 +1487,9 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
             rebuilt = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
             return _parsed(
                 output=ConsolidatedMemory(
-                    deltas=tuple(_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt)
+                    deltas=tuple(
+                        make_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt
+                    )
                 )
             )
         if "<tone_evidence>" in body:
@@ -1564,7 +1497,7 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
         return _parsed(
             output=ConsolidatedMemory(
                 deltas=(
-                    _delta(
+                    make_delta(
                         section="fact",
                         summary="住在台中",
                         text="使用者住在台中",
@@ -1624,7 +1557,9 @@ def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleName
             ]
             return _parsed(
                 output=ConsolidatedMemory(
-                    deltas=tuple(_delta(action="delete", fact_id=fact.fact_id) for fact in doomed)
+                    deltas=tuple(
+                        make_delta(action="delete", fact_id=fact.fact_id) for fact in doomed
+                    )
                 )
             )
         if "<tone_evidence>" in body:
@@ -1634,7 +1569,7 @@ def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleName
         return _parsed(
             output=ConsolidatedMemory(
                 deltas=tuple(
-                    _delta(
+                    make_delta(
                         section="fact",
                         summary=observation.summary_zh,
                         text=observation.summary_zh,
