@@ -187,9 +187,9 @@ class GuildParticipant(Base):
     lending. It cannot be derived instead: the gateway runs without the members
     intent, so the bot cannot enumerate a guild's membership at all.
 
-    A row records the CALLER of an economy command or the author of a rewarded
-    message. It must never record the target of a `member:` option, which would
-    let anyone import a stranger's balance into a pool they administer.
+    A row records the caller of a `/central_bank` command or the author of a
+    rewarded message. It must never record the target of a `member:` option, which
+    would let anyone import a stranger's balance into a pool they administer.
 
     Nothing ever removes a row. Leaving is invisible here — the gateway runs
     without the members intent — so a sweep would have to guess, and guessing
