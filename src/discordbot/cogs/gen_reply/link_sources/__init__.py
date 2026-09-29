@@ -16,13 +16,18 @@ those platforms are the rate-limit sensitive ones.
 
 `registry.py` holds the instances and says why each entry's `build` is an adapter rather than the
 builder itself.
+
+What the builders share lives here too: the block shapes, the marker defusing, and
+`build_post_context`, the one read-render-upload flow the conversation-shaped post sources run.
 """
 
 import re
 from typing import Any, Protocol
+import asyncio
 from collections.abc import Callable, Sequence, Coroutine
 
 from google import genai
+import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -30,6 +35,8 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
+from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
+from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
 
 
 def system_block(*, text: str) -> EasyInputMessageParam:
@@ -116,6 +123,96 @@ def post_context_blocks(
         ]
     opener = separators.text_only if post_carries_media else separators.attached
     return link_context_blocks(separator=opener, text=f"{text}\n\n{separators.trailer}")
+
+
+class PostReader[ConversationT](Protocol):
+    """Reads one post URL into its conversation; a platform downloader satisfies it."""
+
+    def parse_metadata(self, *, url: str) -> ConversationT: ...
+
+
+class PostRenderer[OutputT, ConversationT](Protocol):
+    """Renders a readable post and the conversation around it as the text the model reads."""
+
+    def __call__(
+        self, *, post: OutputT, conversation: ConversationT, attached_images: int
+    ) -> str: ...
+
+
+async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 -- a source's reader and wording plus the four per-call inputs every builder takes
+    *,
+    platform: str,
+    url: str,
+    reader: Callable[[], PostReader[ConversationT]],
+    render: PostRenderer[OutputT, ConversationT],
+    separators: PostSeparators,
+    unavailable_notice: str,
+    image_cap: int,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+) -> list[EasyInputMessageParam]:
+    """Reads a post URL into answer-model input blocks, uploading up to `image_cap` of its images.
+
+    Returns `[separator, user-content]` for a readable post, or a single notice block saying it
+    could not be read. Never raises: every failure degrades to a deterministic notice so the
+    reply pipeline is never broken by it.
+
+    Args:
+        platform: The platform's display name, for the span and the log lines.
+        url: The post URL found in the conversation.
+        reader: Builds the platform's downloader.
+        render: Renders the readable post; handed the number of images that actually rode in.
+        separators: The source's own wording around the post.
+        unavailable_notice: What the model is told instead when the post could not be read.
+        image_cap: How many of the post's images one reply may pay a fetch and an upload for.
+        answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
+        gemini_client: Direct-to-Google client used for the image upload, or None when no key
+            is configured, which reads the post as text just like a non-Gemini answer model.
+        allow_media_ingest: Kill-switch plus key check; when false only the text is read.
+
+    Returns:
+        Input blocks ready to splice into the answer input before the current message.
+    """
+    with logfire.span(f"gen_reply {platform.lower()} context"):
+        try:
+            downloader = reader()
+            conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
+        # Broad on purpose: a parse error must degrade to the unavailable notice rather than
+        # break the reply pipeline, which relies on this builder never raising.
+        except Exception as error:
+            logfire.warn(
+                f"{platform} post read failed; injecting unavailable notice",
+                url=url,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            return [system_block(text=unavailable_notice)]
+
+        target = conversation.target
+        if target is None or not target.is_readable:
+            logfire.info(
+                f"{platform} post unavailable for context; injecting unavailable notice", url=url
+            )
+            return [system_block(text=unavailable_notice)]
+
+        media_parts: list[ResponseInputFileParam] = []
+        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
+            media_parts = await upload_post_images(
+                platform=platform,
+                post_url=target.url,
+                image_urls=target.image_urls,
+                cap=image_cap,
+                gemini_client=gemini_client,
+            )
+
+    text = render(post=target, conversation=conversation, attached_images=len(media_parts))
+    return post_context_blocks(
+        text=text,
+        media_parts=media_parts,
+        post_carries_media=bool(target.image_urls or target.video_urls),
+        separators=separators,
+    )
 
 
 # The pipeline's own inline markers, opening or closing, derived from the extractor's own set so
