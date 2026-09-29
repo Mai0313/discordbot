@@ -371,16 +371,6 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
     assert "慣用繁體中文" in raw_text
 
 
-def test_append_raw_entry_headers_omit_identity(memory_isolated_dir: Path) -> None:
-    # Raw entries flow verbatim into the detail file, so author identity stays
-    # confined to the fact files and the header carries only the timestamp.
-    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短")
-    on_disk = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
-    header = on_disk.splitlines()[0]
-    assert header.startswith("## ")
-    assert IDENTITY not in on_disk
-
-
 def test_render_author_identity_is_single_line_and_sanitized() -> None:
     identity = render_author_identity(
         display_name="Evil\n[id: 999]", username="bad\r\nname", user_id=USER_ID
@@ -400,10 +390,9 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
     assert count_raw_entries(scope=USER_SCOPE) == 1
-    # The evicted entry is preserved in the detail file, without author identity.
+    # The evicted entry is preserved in the detail file.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "first entry" in detail_text
-    assert IDENTITY not in detail_text
 
 
 def test_append_raw_entry_truncates_single_oversized_entry(
@@ -476,7 +465,7 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# extraction
+# note review and consolidation calls
 # ---------------------------------------------------------------------------
 
 
@@ -495,15 +484,6 @@ async def test_evaluate_returns_redacted_draft() -> None:
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
     user_text = fake_client.responses.parse_bodies[0]
     assert f"target_user_id: {USER_ID}" in user_text
-
-
-async def test_evaluate_no_signal_passthrough() -> None:
-    writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _no_signal()
-    draft = await _evaluate(writer=writer)
-    assert draft is not None
-    assert draft.has_signal is False
-    assert draft.observations == ()
 
 
 async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
@@ -618,6 +598,7 @@ async def test_evaluate_can_refuse_every_note() -> None:
     draft = await _evaluate(writer=writer)
     assert draft is not None
     assert draft.has_signal is False
+    assert draft.observations == ()
 
 
 async def test_evaluate_without_notes_calls_no_model() -> None:
@@ -1043,7 +1024,7 @@ async def _drain_scope() -> None:
 async def _wait_for_persisted_writes() -> None:
     """Drains the pipeline's detached reply.db writes, for a DEFERRED turn's row.
 
-    An ordinary turn transitions its row from the in-flight extraction task
+    An ordinary turn transitions its row from the in-flight review task
     itself, so awaiting that task is enough. A deferred one stages its row, and
     a cleared one retires it, from a fire-and-forget `_spawn_db` task instead, so
     there `_wait_for_inflight` returning says nothing about the scope's
@@ -3442,8 +3423,7 @@ async def test_pipeline_drops_pending_replay_after_clear(memory_isolated_dir: Pa
     release.set()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
-    if first_task is not None:
-        await first_task
+    await first_task
     # The pre-clear pending turn must not be replayed back into storage.
     assert inflight._inflight_tasks.get(key=USER_SCOPE) is None
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -3513,8 +3493,8 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     fake_client.responses.output_parsed = _draft("訊號")
     _schedule(writer=writer)
     await _wait_for_inflight()
-    # Threshold is met but the cooldown has not elapsed: only the phase-1
-    # extract call ran and raw stays queued.
+    # Threshold is met but the cooldown has not elapsed: only the note review
+    # ran and raw stays queued.
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
@@ -3891,11 +3871,11 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
     assert job.transcript is None
 
 
-async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
+async def test_pipeline_review_failure_marks_failed_and_keeps_transcript(
     memory_isolated_dir: Path,
 ) -> None:
     writer, fake_client = _writer()
-    # extract() returns None on an LLM error, which must park the row at failed.
+    # `evaluate` returns None on an LLM error, which must park the row at failed.
     fake_client.responses.raises = RuntimeError("llm down")
     _schedule(writer=writer)
     await _wait_for_inflight()
@@ -4395,12 +4375,11 @@ def test_read_tone_missing_file_returns_empty(memory_isolated_dir: Path) -> None
     assert read_tone(scope=USER_SCOPE) == ""
 
 
-def test_write_tone_roundtrip_without_header_or_identity(memory_isolated_dir: Path) -> None:
+def test_write_tone_roundtrip_without_header(memory_isolated_dir: Path) -> None:
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌\n")
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     on_disk = (memory_isolated_dir / str(USER_ID) / "tone.md").read_text(encoding="utf-8")
     assert "v1" not in on_disk
-    assert IDENTITY not in on_disk
     leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
     assert leftovers == []
 
