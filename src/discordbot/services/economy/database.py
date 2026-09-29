@@ -2556,17 +2556,13 @@ async def _pay_lender_side_in_session(
         return None
     if contract.lender_id is None:
         return None
+    # The contract's lender identity dates from acceptance, so an empty one keeps the newer
+    # stored name and avatar.
     await _upsert_user_metadata_in_session(
-        session=session,
-        user_id=contract.lender_id,
-        name=contract.lender_name,
-        avatar_url=contract.lender_avatar_url,
-        now=now,
+        session=session, user_id=contract.lender_id, name="", avatar_url="", now=now
     )
     credit_result = await session.execute(
-        statement=_build_credit_upsert(
-            user_id=contract.lender_id, name=contract.lender_name, amount=paid, now=now
-        )
+        statement=_build_credit_upsert(user_id=contract.lender_id, name="", amount=paid, now=now)
     )
     return credit_result.scalar_one()
 
