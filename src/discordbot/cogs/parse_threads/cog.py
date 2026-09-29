@@ -303,14 +303,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             embed.set_author(
                 name=output.author_name, url=output.url, icon_url=output.author_icon_url
             )
-        footer_parts = [
-            f"❤️ {output.like_count:,}",
-            f"💬 {output.comment_count:,}",
-            f"🔁 {output.repost_count:,}",
-            f"🔗 {output.quote_count:,}",
-            f"↗️ {output.share_count:,}",
-        ]
-        embed.set_footer(text=" | ".join(footer_parts))
+        embed.set_footer(text=output.counters_line())
         return embed
 
     def _build_post_embeds(

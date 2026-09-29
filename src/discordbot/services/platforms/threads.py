@@ -702,6 +702,13 @@ class ThreadsOutput(PlatformOutput):
         examples=[False],
     )
 
+    def counters_line(self) -> str:
+        """The five counters Threads publishes, as one line."""
+        return (
+            f"❤️ {self.like_count:,} | 💬 {self.comment_count:,} | 🔁 {self.repost_count:,} | "
+            f"🔗 {self.quote_count:,} | ↗️ {self.share_count:,}"
+        )
+
     def unlink(self) -> None:
         """Deletes downloaded video files for this post."""
         for path in self.video_paths:
