@@ -6158,7 +6158,7 @@ def _link_config(*, gemini_api_key: str) -> LLMConfig:
         douyin_video_enabled=True,
         bilibili_video_enabled=True,
         file_api_enabled=True,
-        gemini_api_key=gemini_api_key,
+        gemini_key_configured=bool(gemini_api_key),
     )
 
 
