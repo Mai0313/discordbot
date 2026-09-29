@@ -48,6 +48,8 @@ QUALITY_CHOICES: dict[str, VideoQuality] = {
     "Low (480p)": "low",
 }
 
+_DOWNLOAD_FAILED = "-# 檔案無法下載"
+
 
 def douyin_failure_message(error: Exception) -> str:
     """Maps a Douyin failure to the message a user should see.
@@ -71,7 +73,12 @@ def douyin_failure_message(error: Exception) -> str:
         return "-# 這次檔案沒抓完,稍後再試一次"
     if isinstance(error, TimeoutError):
         return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
-    return "-# 檔案無法下載"
+    return _DOWNLOAD_FAILED
+
+
+def _file_header(*, file_size_mb: float, url: str) -> str:
+    """The size and source lines a delivered file leads with."""
+    return f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
 
 
 class VideoCogs(commands.Cog):
@@ -134,19 +141,15 @@ class VideoCogs(commands.Cog):
 
         upload_limit = upload_limit_for(guild=interaction.guild)
 
-        # Douyin is routed away from yt-dlp entirely: its extractor needs cookies, never yields a
-        # photo post, and caps below the source resolution. The yt-dlp path below is untouched.
+        # Douyin never reaches yt-dlp: `services/platforms/douyin.py` has why.
         if is_douyin_url(url=url):
-            await self._handle_douyin(
+            await self._download_douyin(
                 interaction=interaction, url=url, quality=quality, upload_limit=upload_limit
             )
             return
 
         try:
-            # A scratch dir per invocation rather than the bare temp dir, because the bound
-            # below can abandon a download: yt-dlp keeps writing until its stop signal lands,
-            # and only a directory that goes away takes those bytes with it. On the ordinary
-            # path `with result` already unlinks the file and this removes an empty dir.
+            # The scratch directory is also what removes the downloaded file once it is sent.
             with scratch_directory(prefix="download-video-") as download_dir:
                 downloader = VideoDownloader(output_folder=download_dir)
                 # Bounded because yt-dlp's own `socket_timeout` is per socket and every retry
@@ -169,7 +172,7 @@ class VideoCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+            await self._edit_quietly(interaction=interaction, content=_DOWNLOAD_FAILED)
 
     async def _deliver_download(
         self,
@@ -183,40 +186,32 @@ class VideoCogs(commands.Cog):
         Args:
             interaction: The interaction the command is holding open.
             url: The source URL, appended only when the file is attached natively.
-            result: The finished download, unlinked when this returns.
+            result: The finished download, inside the caller's scratch directory.
             upload_limit: The destination's attachment ceiling.
         """
-        with result:
-            file_size_mb = result.filename.stat().st_size / 1024 / 1024
-            item = MediaItem(source=result.filename, filename=result.filename.name)
-            plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
-            if plan.native:
-                await self._deliver(
-                    interaction=interaction,
-                    file_size_mb=file_size_mb,
-                    file_path=result.filename,
-                    url=url,
-                )
-                return
-
-            # Too big for native upload: host the original-quality file and post its URL,
-            # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
-            # link; above that it is a browser-playable link. Hosting moves the file into the
-            # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
-            # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
-            if plan.hosted_urls:
-                await self._deliver_url(
-                    interaction=interaction,
-                    file_size_mb=file_size_mb,
-                    public_url=plan.hosted_urls[0],
-                )
-                return
-
-            await interaction.edit_original_message(
-                content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+        file_size_mb = result.filename.stat().st_size / 1024 / 1024
+        item = MediaItem(source=result.filename, filename=result.filename.name)
+        plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
+        if plan.native:
+            await self._deliver(
+                interaction=interaction,
+                file_size_mb=file_size_mb,
+                file_path=result.filename,
+                url=url,
             )
+            return
 
-    async def _handle_douyin(
+        # Too big for native upload: host the original-quality file and post its URL, rather
+        # than downgrading quality.
+        if plan.hosted_urls:
+            await self._deliver_url(
+                interaction=interaction, file_size_mb=file_size_mb, public_url=plan.hosted_urls[0]
+            )
+            return
+
+        await self._refuse_oversize(interaction=interaction, file_size_mb=file_size_mb)
+
+    async def _download_douyin(
         self,
         interaction: Interaction[commands.Bot],
         url: str,
@@ -234,100 +229,76 @@ class VideoCogs(commands.Cog):
             quality: The desired video quality; ignored for a photo post.
             upload_limit: The destination's attachment ceiling.
         """
-        # A private directory per invocation, because the filenames are derived from the post id:
-        # two people downloading the same post into one shared temp dir would write the same paths,
-        # letting one truncate the other's file and letting either one's cleanup delete a file the
-        # other is still uploading. The directory is removed once delivery finishes, and reports a
-        # removal it could not finish rather than raising: this branch runs outside the command's
-        # own handler, so a teardown racing the abandoned worker would escape into nothing and
-        # strand the user on the placeholder.
         with scratch_directory(prefix="download-video-douyin-") as download_dir:
-            await self._download_and_deliver_douyin(
-                interaction=interaction,
-                url=url,
-                quality=quality,
-                upload_limit=upload_limit,
-                download_dir=download_dir,
-            )
-
-    async def _download_and_deliver_douyin(
-        self,
-        interaction: Interaction[commands.Bot],
-        url: str,
-        quality: VideoQuality,
-        upload_limit: int,
-        download_dir: str,
-    ) -> None:
-        """Runs the Douyin download and delivery inside a caller-owned download directory."""
-        downloader = DouyinDownloader(output_folder=download_dir)
-        try:
-            # Capped at the attachment limit so a 48-image gallery does not download 38 files
-            # that could never be sent; `omitted_images` reports what the cap left behind.
-            # Bounded on wall-clock too, because a gallery costs `download_timeout` x
-            # `max_retries` per file: a stalling CDN would otherwise hold this command open for
-            # half an hour. The worker keeps running past the timeout (`asyncio.to_thread`
-            # cannot be cancelled), but it writes into the caller's scratch dir, which this
-            # block exits into, so the overshoot is one post rather than a stream.
-            async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
-                result = await asyncio.to_thread(
-                    downloader.download,
+            downloader = DouyinDownloader(output_folder=download_dir)
+            try:
+                # Capped at the attachment limit so a 48-image gallery does not download 38 files
+                # that could never be sent; `omitted_images` reports what the cap left behind.
+                # Bounded on wall-clock too, because a gallery costs `download_timeout` x
+                # `max_retries` per file: a stalling CDN would otherwise hold this command open
+                # for half an hour.
+                async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
+                    result = await asyncio.to_thread(
+                        downloader.download,
+                        url=url,
+                        quality=quality,
+                        max_images=DISCORD_ATTACHMENT_LIMIT,
+                    )
+            except Exception as error:
+                # Deliberately catches everything, not just DouyinError: this runs outside the
+                # command's own try block and nothing answers the interaction on an error, so
+                # anything escaping here would strand the user on "正在下載影片..." forever.
+                logfire.warn(
+                    "Douyin download failed",
                     url=url,
                     quality=quality,
-                    max_images=DISCORD_ATTACHMENT_LIMIT,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
                 )
-        except Exception as error:
-            # Deliberately catches everything, not just DouyinError: this runs outside the
-            # command's own try block and nothing answers the interaction on an error, so
-            # anything escaping here would strand the user on "正在下載影片..." forever.
-            logfire.warn(
-                "Douyin download failed",
-                url=url,
-                quality=quality,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
-            await self._edit_quietly(
-                interaction=interaction, content=douyin_failure_message(error=error)
-            )
-            return
-
-        try:
-            with result:
-                delivery = await plan_douyin_delivery(
-                    planner=self.media_delivery, result=result, upload_limit=upload_limit
+                await self._edit_quietly(
+                    interaction=interaction, content=douyin_failure_message(error=error)
                 )
-                plan = delivery.plan
+                return
 
-                # Nothing to attach has two ways out; anything else is the normal reply.
-                if not plan.native:
-                    # Only a lone oversize file may collapse to the bare-URL reply, which
-                    # deliberately posts nothing but the link so Discord renders the inline
-                    # player. A gallery would lose every URL past the first, plus the omitted /
-                    # dropped notices, so it goes through the normal reply instead.
-                    if plan.hosted_urls and len(result.filenames) == 1:
-                        await self._deliver_url(
-                            interaction=interaction,
-                            file_size_mb=delivery.total_mb,
-                            public_url=plan.hosted_urls[0],
-                        )
-                        return
-                    if not plan.hosted_urls:
-                        await self._edit_quietly(
-                            interaction=interaction,
-                            content=f"-# 下載失敗\n檔案大小超過 {delivery.total_mb:.1f}MB",
-                        )
-                        return
+            try:
+                with result:
+                    delivery = await plan_douyin_delivery(
+                        planner=self.media_delivery, result=result, upload_limit=upload_limit
+                    )
+                    plan = delivery.plan
 
-                await self._deliver_douyin(
-                    interaction=interaction, delivery=delivery, result=result, url=url
+                    # Nothing to attach has two ways out; anything else is the normal reply.
+                    if not plan.native:
+                        # Only a lone oversize file may collapse to the bare-URL reply, which
+                        # deliberately posts nothing but the link so Discord renders the inline
+                        # player. A gallery would lose every URL past the first, plus the omitted
+                        # / dropped notices, so it goes through the normal reply instead.
+                        if plan.hosted_urls and len(result.filenames) == 1:
+                            await self._deliver_url(
+                                interaction=interaction,
+                                file_size_mb=delivery.total_mb,
+                                public_url=plan.hosted_urls[0],
+                            )
+                            return
+                        if not plan.hosted_urls:
+                            await self._refuse_oversize(
+                                interaction=interaction, file_size_mb=delivery.total_mb
+                            )
+                            return
+
+                    await self._deliver_douyin(
+                        interaction=interaction, delivery=delivery, result=result, url=url
+                    )
+            except Exception as error:
+                # Broad on purpose, for the same reason as the download step above: an escape
+                # leaves the interaction unanswered and the user on the placeholder.
+                logfire.warn(
+                    "Douyin delivery failed",
+                    url=url,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
                 )
-        except Exception as error:
-            # Broad on purpose, for the same reason as the download step above: an escape
-            # leaves the interaction unanswered and the user on the placeholder.
-            logfire.warn(
-                "Douyin delivery failed", url=url, error_type=type(error).__name__, _exc_info=error
-            )
-            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+                await self._edit_quietly(interaction=interaction, content=_DOWNLOAD_FAILED)
 
     async def _deliver_douyin(
         self,
@@ -349,7 +320,7 @@ class VideoCogs(commands.Cog):
             url: The source Douyin URL.
         """
         plan = delivery.plan
-        lines = [f"-# 檔案大小: {delivery.total_mb:.1f}MB", f"-# 來源: <{url}>"]
+        lines = [_file_header(file_size_mb=delivery.total_mb, url=url)]
         lines.extend(
             douyin_delivery_lines(
                 result=result,
@@ -389,6 +360,14 @@ class VideoCogs(commands.Cog):
                 _exc_info=error,
             )
 
+    async def _refuse_oversize(
+        self, interaction: Interaction[commands.Bot], file_size_mb: float
+    ) -> None:
+        """Tells the user a file too big to attach could not be hosted either."""
+        await self._edit_quietly(
+            interaction=interaction, content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+        )
+
     async def _deliver(
         self,
         interaction: Interaction[commands.Bot],
@@ -397,9 +376,8 @@ class VideoCogs(commands.Cog):
         url: str,
     ) -> None:
         """Edits the deferred placeholder into the final downloaded file response."""
-        body = f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
         await interaction.edit_original_message(
-            content=body,
+            content=_file_header(file_size_mb=file_size_mb, url=url),
             file=File(fp=file_path, filename=file_path.name),
             allowed_mentions=AllowedMentions.none(),
         )
