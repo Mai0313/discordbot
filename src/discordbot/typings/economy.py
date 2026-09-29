@@ -1,10 +1,11 @@
-"""Shared economy result types, enums, tuning constants, and rate converters."""
+"""Shared economy result types, enums, tuning constants, rate converters, and settings."""
 
 from enum import StrEnum
 from typing import Final
 from datetime import datetime
 
-from pydantic import Field, BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict, AliasChoices
+from pydantic_settings import BaseSettings
 
 BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 10
 VIP_PURCHASE_COST: Final[int] = 50_000
@@ -448,6 +449,17 @@ class PortfolioView(BaseModel):
     net_worth: int = Field(..., description="Balance minus total debt principal and interest.")
 
 
+class EconomyConfig(BaseSettings):
+    """Economy feature settings loaded from environment variables."""
+
+    allow_central_bank_self_approval: bool = Field(
+        False,
+        description="Allow central-bank borrowers to approve their own loan requests for local testing.",
+        examples=[False],
+        validation_alias=AliasChoices("ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL"),
+    )
+
+
 __all__ = [
     "BASE_MESSAGE_REWARD_AMOUNT",
     "CENTRAL_BANK_BASE_CAPACITY",
@@ -468,6 +480,7 @@ __all__ = [
     "CasinoLedgerSnapshot",
     "CentralBankStatus",
     "CreditResult",
+    "EconomyConfig",
     "JackpotSettlementBatchResult",
     "JackpotSettlementRequest",
     "JackpotSettlementResult",
