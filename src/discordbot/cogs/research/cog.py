@@ -479,18 +479,12 @@ class ResearchCogs(commands.Cog):
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
-        try:
-            await thread.send(content=content, allowed_mentions=AllowedMentions.none())
-        except Forbidden:
-            logfire.warn("research thread refused the terminal status", thread_id=thread.id)
-        except Exception as exc:
-            # Broad: callers record the terminal phase right after us and cannot handle a raise.
-            logfire.warn(
-                "failed to post terminal research status",
-                thread_id=thread.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+        await self._safe_send(
+            thread=thread,
+            content=content,
+            refused="research thread refused the terminal status",
+            failed="failed to post terminal research status",
+        )
 
     async def _post_failure(
         self,
@@ -514,23 +508,14 @@ class ResearchCogs(commands.Cog):
         )
         if exc is not None:
             embed.set_footer(text=type(exc).__name__)
-        try:
-            await thread.send(
-                content=f"<@{owner_id}> ⚠️",
-                embed=embed,
-                allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
-            )
-        except Forbidden:
-            logfire.warn("research thread refused the failure notice", thread_id=thread.id)
-        except Exception as send_exc:
-            # Broad: every caller runs its cleanup (phase write, slot release) right after us, so
-            # this last user-facing step must never raise.
-            logfire.warn(
-                "failed to post research failure notice",
-                thread_id=thread.id,
-                error_type=type(send_exc).__name__,
-                _exc_info=send_exc,
-            )
+        await self._safe_send(
+            thread=thread,
+            content=f"<@{owner_id}> ⚠️",
+            embed=embed,
+            allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
+            refused="research thread refused the failure notice",
+            failed="failed to post research failure notice",
+        )
 
     # ----- restart resume -----------------------------------------------------------------
 
@@ -648,28 +633,35 @@ class ResearchCogs(commands.Cog):
 
     # ----- helpers ------------------------------------------------------------------------
 
-    async def _safe_send(
-        self, *, thread: "Thread", content: str, allowed_mentions: "AllowedMentions | None" = None
+    async def _safe_send(  # noqa: PLR0913 -- one thread post plus the two log lines naming it
+        self,
+        *,
+        thread: "Thread",
+        content: str,
+        embed: Embed | None = None,
+        allowed_mentions: "AllowedMentions | None" = None,
+        refused: str = "research thread refused a message",
+        failed: str = "failed to send research thread message",
     ) -> Message | None:
         """Best-effort `thread.send`, returning the message or None on failure.
 
         Mentions default to fully suppressed (`AllowedMentions.none()`); a caller that wants the
         owner pinged passes an owner-only policy, so agent-generated content can never mass-ping.
+        `refused` is logged, with the id alone, when Discord refuses the post, and `failed` with
+        its traceback for any other failure, so each caller's post stays apart in the log.
         """
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
-            return await thread.send(content=content, allowed_mentions=mentions)
+            if embed is None:
+                return await thread.send(content=content, allowed_mentions=mentions)
+            return await thread.send(content=content, embed=embed, allowed_mentions=mentions)
         except Forbidden:
-            logfire.warn("research thread refused a message", thread_id=thread.id)
+            logfire.warn(refused, thread_id=thread.id)
             return None
         except Exception as exc:
-            # Broad: every caller treats a missing message as a degraded outcome, never a failure.
-            logfire.warn(
-                "failed to send research thread message",
-                thread_id=thread.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+            # Broad: every caller treats a missing message as a degraded outcome, never a failure,
+            # and a failed run's cleanup must still run around this post.
+            logfire.warn(failed, thread_id=thread.id, error_type=type(exc).__name__, _exc_info=exc)
             return None
 
 
