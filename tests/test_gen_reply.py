@@ -36,13 +36,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.emojis import THREADS_EMOJI
-from discordbot.typings.memory import (
-    MemoryFact,
-    MemoryOwner,
-    MemoryCredits,
-    MemorySection,
-    MemoryDurability,
-)
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import (
     ModelSettings,
     RouteClassification,
@@ -879,6 +873,68 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     # building a real toolkit against the test deployment's empty credentials.
     cog.__dict__["toolkit"] = toolkit
     return cog
+
+
+def _install_streamer(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: str | Exception = "完整回覆",
+    memory_notes: tuple[str, ...] = (),
+    forget_notes: tuple[str, ...] = (),
+    server_memory_notes: tuple[str, ...] = (),
+) -> list[dict[str, object]]:
+    """Swaps `ResponseStreamer` for a double that returns `reply`, or raises it, unstreamed.
+
+    The double accepts whatever the answer path constructs it with, and the returned list gets
+    those kwargs once per construction. It carries only what a turn with no research launch and
+    no retryable failure reads back (`carries_turn_notices` is the one a failing `stream` needs);
+    a test driving research or a retry needs the attributes those paths read, since a missing one
+    fails with an AttributeError the reply path's own handler would swallow.
+    """
+    built: list[dict[str, object]] = []
+
+    class StreamerDouble:
+        """Stands in for `ResponseStreamer` without touching Discord or the event stream."""
+
+        carries_turn_notices = False
+        content_ever_started = False
+
+        def __init__(self, **kwargs: object) -> None:
+            """Records the constructor kwargs and seeds the marker notes."""
+            built.append(kwargs)
+            self.memory_notes = list(memory_notes)
+            self.forget_notes = list(forget_notes)
+            self.server_memory_notes = list(server_memory_notes)
+
+        async def stream(self, *, responses: object) -> str:
+            """Returns the canned reply, or raises it."""
+            del responses
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", StreamerDouble)
+    return built
+
+
+@pytest.fixture
+def no_memory_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeps the answer from scheduling its fire-and-forget memory review."""
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
+    )
+
+
+@pytest.fixture
+def quiet_turn(monkeypatch: pytest.MonkeyPatch, no_memory_review: None) -> None:
+    """A whole turn with a canned answer, no memory review and no status reactions."""
+
+    async def silent_reaction(**kwargs: object) -> object:
+        """Reports the status reaction as applied without touching the message."""
+        return kwargs["emoji"]
+
+    _install_streamer(monkeypatch=monkeypatch)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", silent_reaction)
 
 
 def _context_builder(
@@ -2728,121 +2784,43 @@ async def test_voice_oversized_clip_not_attached() -> None:
 
 
 @pytest.mark.parametrize(("enabled", "expect_synth"), [(True, True), (False, False)])
+@pytest.mark.usefixtures("no_memory_review")
 async def test_voice_config_gate_controls_synthesizer(
     monkeypatch: pytest.MonkeyPatch, enabled: bool, expect_synth: bool
 ) -> None:
     """config.inline_voice_enabled gates whether the QA streamer receives a synthesizer."""
     cog = _cog()
     cog.config = _config_stub(inline_voice_enabled=enabled)
-    captured: list[object] = []
-
-    class FakeResponder:
-        """Captures the synthesizer the cog wires into the streamer."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            surface: object | None = None,
-            memory_lookups: MemoryCredits | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Records the synthesizer the cog passed."""
-            del message, surface, memory_lookups, input_tokens, output_tokens, model_effort
-            del backend
-            del image_generator, music_generator, video_generator, media_delivery, input_builder
-            # The cog reads these off the streamer after every answer, so a stub without
-            # them fails with an AttributeError the reply path's own handler would swallow.
-            self.memory_notes: list[str] = []
-            self.forget_notes: list[str] = []
-            self.server_memory_notes: list[str] = []
-            captured.append(voice_generator)
-
-        async def stream(self, *, responses: object) -> str:
-            """Returns placeholder reply content."""
-            del responses
-            return "回覆"
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
+    built = _install_streamer(monkeypatch=monkeypatch)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
         system_prompt="SYS", context=ReplyContext(), allow_voice=True
     )
 
-    assert (captured[0] is not None) == expect_synth
+    assert (built[0]["voice_generator"] is not None) == expect_synth
     if expect_synth:
-        assert isinstance(captured[0], VoiceGenerator)
+        assert isinstance(built[0]["voice_generator"], VoiceGenerator)
 
 
 @pytest.mark.parametrize(("enabled", "expect_gen"), [(True, True), (False, False)])
+@pytest.mark.usefixtures("no_memory_review")
 async def test_image_config_gate_controls_generator(
     monkeypatch: pytest.MonkeyPatch, enabled: bool, expect_gen: bool
 ) -> None:
     """config.inline_image_enabled gates whether the QA streamer receives an image generator."""
     cog = _cog()
     cog.config = _config_stub(inline_voice_enabled=False, inline_image_enabled=enabled)
-    captured: list[object] = []
-
-    class FakeResponder:
-        """Captures the image generator the cog wires into the streamer."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            surface: object | None = None,
-            memory_lookups: MemoryCredits | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Records the generator the cog passed."""
-            del message, surface, memory_lookups, input_tokens, output_tokens, model_effort
-            del backend
-            del voice_generator, music_generator, video_generator, media_delivery, input_builder
-            # The cog reads these off the streamer after every answer, so a stub without
-            # them fails with an AttributeError the reply path's own handler would swallow.
-            self.memory_notes: list[str] = []
-            self.forget_notes: list[str] = []
-            self.server_memory_notes: list[str] = []
-            captured.append(image_generator)
-
-        async def stream(self, *, responses: object) -> str:
-            """Returns placeholder reply content."""
-            del responses
-            return "回覆"
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
+    built = _install_streamer(monkeypatch=monkeypatch)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
         system_prompt="SYS", context=ReplyContext(), allow_image=True
     )
 
-    assert (captured[0] is not None) == expect_gen
+    assert (built[0]["image_generator"] is not None) == expect_gen
     if expect_gen:
-        assert isinstance(captured[0], ImageGenerator)
+        assert isinstance(built[0]["image_generator"], ImageGenerator)
 
 
 class _FakeInteractionsResource:
@@ -2906,7 +2884,8 @@ def _interactions_turn_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_youtube_qa_uses_interactions_backend() -> None:
     """A watched YouTube URL streams the answer through Interactions, not Responses."""
     cog = _cog()
     cog.config = _config_stub(
@@ -2917,9 +2896,6 @@ async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPa
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
@@ -2940,9 +2916,8 @@ async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPa
     assert "<:youtube:1517546722535018596>" in message.added_reactions
 
 
-async def test_youtube_interactions_passes_effort_as_thinking_level(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_youtube_interactions_passes_effort_as_thinking_level() -> None:
     """The graded effort is sent straight through as the Interactions thinking_level."""
     cog = _cog()
     cog.config = _config_stub(
@@ -2953,9 +2928,6 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
@@ -2995,6 +2967,7 @@ def test_count_media_parts_counts_only_the_shapes_media_reaches_the_model_in() -
 
 
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"])
+@pytest.mark.usefixtures("no_memory_review")
 async def test_youtube_qa_falls_back_to_responses(
     monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
@@ -3014,9 +2987,6 @@ async def test_youtube_qa_falls_back_to_responses(
         )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
     logged: list[tuple[str, dict[str, object]]] = []
 
     def record(message_text: str, **fields: object) -> None:
@@ -4885,54 +4855,10 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert _recorded(cog).responses.create_streams[-1] is True
     assert _recorded(cog).responses.create_tools[-1] is None
 
-    streamed: list[FakeMessage] = []
-
-    class FakeResponder:
-        """Records the message handed to the streaming responder."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            surface: object | None = None,
-            memory_lookups: MemoryCredits | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Stores the streaming target message."""
-            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
-            del (
-                voice_generator,
-                image_generator,
-                music_generator,
-                video_generator,
-                media_delivery,
-                input_builder,
-            )
-            self.message = message
-            # The cog reads these off the streamer after every answer, so a stub without
-            # them fails with an AttributeError the reply path's own handler would swallow.
-            self.memory_notes: list[str] = []
-            self.forget_notes: list[str] = []
-            self.server_memory_notes: list[str] = []
-
-        async def stream(self, *, responses: object) -> str:
-            """Records the message and returns placeholder content."""
-            del responses
-            streamed.append(self.message)
-            return "done"
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
+    built = _install_streamer(monkeypatch=monkeypatch)
     await _reply_via_pipeline(cog=cog, message=message, system_prompt="system")
     assert _recorded(cog).responses.create_streams[-1] is True
-    assert streamed[-1] is message
+    assert built[-1]["message"] is message
 
 
 async def test_uploaded_image_without_extension_marks_as_image(
@@ -5260,21 +5186,7 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
     cog = _cog()
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
-    class BoomResponder:
-        """Stands in for ResponseStreamer and fails while streaming the reply."""
-
-        carries_turn_notices = False
-
-        def __init__(self, **kwargs: object) -> None:
-            """Ignores the streamer kwargs."""
-            del kwargs
-
-        async def stream(self, *, responses: object) -> str:
-            """Simulates a streaming failure after the image is already delivered."""
-            del responses
-            raise RuntimeError("stream boom")
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", BoomResponder)
+    _install_streamer(monkeypatch=monkeypatch, reply=RuntimeError("stream boom"))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
         user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
@@ -5323,22 +5235,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
         filesize_limit=4
     )  # oversize -> hosted URL deliverable (reply is None)
 
-    class _BoomStreamer:
-        """Stands in for ResponseStreamer and fails while streaming the persona reply."""
-
-        carries_turn_notices = False
-        content_ever_started = False
-
-        def __init__(self, **kwargs: object) -> None:
-            """Ignores the streamer kwargs."""
-            del kwargs
-
-        async def stream(self, *, responses: object) -> str:
-            """Fails after the persona base has been created."""
-            del responses
-            raise RuntimeError("stream boom")
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _BoomStreamer)
+    _install_streamer(monkeypatch=monkeypatch, reply=RuntimeError("stream boom"))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
         user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
@@ -6151,6 +6048,7 @@ async def test_on_message_commented_forward_merges_forwarded_text(
     assert calls == [(message, "please\ndraw a cat")]
 
 
+@pytest.mark.usefixtures("no_memory_review")
 async def test_a_failed_turn_records_the_model_it_dispatched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6174,9 +6072,6 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
         raise RuntimeError("This model is currently experiencing high demand")
 
     monkeypatch.setattr(_recorded(cog).responses, "create", failing_create)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
     failures: list[dict[str, object]] = []
 
     def record_error(message_text: str, **fields: object) -> None:
@@ -6220,6 +6115,7 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     assert events == [("🔀", None), ("❓", "🔀"), ("🆗", "❓")]
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_consumes_speculative_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6261,71 +6157,13 @@ async def test_on_message_consumes_speculative_context_on_image_route(
         del self, user_prompt
         received.append(await context_task)
 
-    async def fake_reaction(
-        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
-    ) -> str:
-        """Skips real reaction calls."""
-        del message, bot_user, previous
-        return emoji
-
     monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
 
     message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
     assert received == [prepared]
-
-
-class _ThreadsStreamer:
-    """Answer-phase streamer stub returning a fixed reply without real streaming."""
-
-    def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-        self,
-        message: FakeMessage,
-        surface: object | None = None,
-        memory_lookups: MemoryCredits | None = None,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        model_effort: str = "",
-        backend: str = "responses",
-        voice_generator: object | None = None,
-        image_generator: object | None = None,
-        music_generator: object | None = None,
-        video_generator: object | None = None,
-        media_delivery: object | None = None,
-        input_builder: object | None = None,
-    ) -> None:
-        """Stores the streaming target message and ignores the rest."""
-        del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
-        del (
-            voice_generator,
-            image_generator,
-            music_generator,
-            video_generator,
-            media_delivery,
-            input_builder,
-        )
-        # The cog reads these off the streamer after every answer, so a stub without
-        # them fails with an AttributeError the reply path's own handler would swallow.
-        self.memory_notes: list[str] = []
-        self.forget_notes: list[str] = []
-        self.server_memory_notes: list[str] = []
-        self.message = message
-
-    async def stream(self, *, responses: object) -> str:
-        """Returns placeholder reply content."""
-        del responses
-        return "完整回覆"
-
-
-async def _silent_reaction(
-    message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
-) -> str:
-    """Skips real reaction calls during pipeline integration tests."""
-    del message, bot_user, previous
-    return emoji
 
 
 def _threads_block(body: str = "MOCK THREADS POST BODY") -> list[dict[str, object]]:
@@ -6397,6 +6235,7 @@ def _link_config() -> LLMConfig:
         ),
     ],
 )
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_does_not_start_incidental_link_context(
     monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str]
 ) -> None:
@@ -6421,11 +6260,6 @@ async def test_on_message_does_not_start_incidental_link_context(
         return []
 
     monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(content=f"<@999> unrelated question {url}", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
@@ -6436,6 +6270,7 @@ async def test_on_message_does_not_start_incidental_link_context(
     )
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_injects_douyin_context_before_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6459,11 +6294,6 @@ async def test_on_message_injects_douyin_context_before_current(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     url = "https://v.douyin.com/abc123"
     message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
@@ -6482,6 +6312,7 @@ async def test_on_message_injects_douyin_context_before_current(
     assert separator_index < current_index
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6510,11 +6341,6 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6526,6 +6352,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     assert has_link_context_block(request=answer, source="douyin")
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """A profile or live-room link is not a post, so reading it would only waste a request."""
     cog = _cog()
@@ -6547,11 +6374,6 @@ async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.Monke
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這個人是誰 https://www.douyin.com/user/MS4wLjABAAAAxyz",
@@ -6564,6 +6386,7 @@ async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.Monke
     assert not has_link_context_block(request=answer, source="douyin")
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
@@ -6586,11 +6409,6 @@ async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.Mo
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6600,6 +6418,7 @@ async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.Mo
     assert seen == [False]
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_does_not_start_douyin_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6642,7 +6461,6 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
     )
     monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 畫這個 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6652,6 +6470,7 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
     assert called == []
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_douyin_grace_timeout_injects_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6675,11 +6494,6 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         slow_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6691,6 +6505,7 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     assert "did not respond in time" in str(answer)
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_link_context_grace_starts_when_route_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6740,11 +6555,6 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         delayed_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6756,6 +6566,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     assert cancelled == [True]
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_keeps_link_context_finished_before_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6799,11 +6610,6 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         immediate_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6815,6 +6621,7 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     assert "did not respond in time" not in str(answer)
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6875,11 +6682,6 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         cleanup_bound_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -6899,7 +6701,8 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     assert "did not respond in time" in str(answer)
 
 
-async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup(  # noqa: PLR0915 -- controls the complete cancellation timeline
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
@@ -6959,11 +6762,6 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         cleanup_bound_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
@@ -7028,6 +6826,7 @@ async def test_run_until_deadline_keeps_result_completed_before_delayed_resume()
     assert result == "ready"
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7063,11 +6862,6 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         delayed_douyin_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content=(
@@ -7082,6 +6876,7 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     assert str(answer).count("did not respond in time") == 2
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_injects_threads_context_before_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7105,11 +6900,6 @@ async def test_on_message_injects_threads_context_before_current(
         "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     url = "https://www.threads.com/@a/post/ABC123"
     message = FakeMessage(content=f"<@999> what is this {url}", author=FakeAuthor(user_id=1))
@@ -7131,6 +6921,7 @@ async def test_on_message_injects_threads_context_before_current(
     assert separator_index < current_index
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_injects_threads_context_from_the_replied_to_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7158,11 +6949,6 @@ async def test_on_message_injects_threads_context_from_the_replied_to_message(
         "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     parent = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}", author=FakeAuthor(user_id=4))
     parent.id = 988
@@ -7189,6 +6975,7 @@ _CLIP_SOURCE_CASES = {
 
 
 @pytest.mark.parametrize("name", list(_CLIP_SOURCE_CASES))
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
@@ -7210,11 +6997,6 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
         return block()
 
     monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     parent = FakeMessage(content=f"看看這個 {url}", author=FakeAuthor(user_id=4))
     parent.id = 988
@@ -7228,6 +7010,7 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     )
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_does_not_start_threads_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7269,7 +7052,6 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
     )
     monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> draw https://www.threads.com/@a/post/ABC123", author=FakeAuthor(user_id=1)
@@ -7278,6 +7060,7 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
     assert called == []
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_skips_threads_context_without_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7301,11 +7084,6 @@ async def test_on_message_skips_threads_context_without_url(
         "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(content="<@999> just a plain question", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
@@ -7316,6 +7094,7 @@ async def test_on_message_skips_threads_context_without_url(
     )
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_threads_context_grace_timeout_injects_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7339,11 +7118,6 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
         "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
         slow_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> what is this https://www.threads.com/@a/post/ABC123",
@@ -7358,6 +7132,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     assert "did not respond in time" in str(answer)
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_injects_bilibili_context_before_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7381,11 +7156,6 @@ async def test_on_message_injects_bilibili_context_before_current(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     url = "https://www.bilibili.com/video/BV1jpK86hEc8"
     message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
@@ -7428,6 +7198,7 @@ _DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str]] = {
 
 
 @pytest.mark.parametrize("name", list(_DISCUSSION_SOURCE_CASES))
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_injects_a_selected_discussion_source_before_current(
     monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
 ) -> None:
@@ -7456,11 +7227,6 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
         ]
 
     monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
@@ -7478,6 +7244,7 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
     assert separator_index < current_index
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """A live-room or space link is not a watchable video, so the build never starts."""
     cog = _cog()
@@ -7499,11 +7266,6 @@ async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.Mo
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這個直播間如何 https://live.bilibili.com/12345",
@@ -7516,6 +7278,7 @@ async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.Mo
     assert not has_link_context_block(request=answer, source="bilibili")
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_bilibili_media_ingest_kill_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7540,11 +7303,6 @@ async def test_on_message_bilibili_media_ingest_kill_switch(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7555,6 +7313,7 @@ async def test_on_message_bilibili_media_ingest_kill_switch(
     assert seen == [False]
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_does_not_start_bilibili_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7597,7 +7356,6 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
     )
     monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 畫這個 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7608,6 +7366,7 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
     assert called == []
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_bilibili_keyless_disables_media_ingest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7636,11 +7395,6 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7651,6 +7405,7 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
     assert seen == [(None, False)]
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_finally_backstop_cancels_link_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7704,7 +7459,6 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     )
     monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7715,6 +7469,7 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     assert cancelled == [True]
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7779,7 +7534,6 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     )
     monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7799,6 +7553,7 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     assert cancellation_count == 1
 
 
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_bilibili_grace_timeout_injects_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7822,11 +7577,6 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         slow_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7859,6 +7609,7 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
         ),
     ],
 )
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
     monkeypatch: pytest.MonkeyPatch,
     selected_sources: list[
@@ -7911,11 +7662,6 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         fake_bilibili_builder,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
         content=(
@@ -7953,8 +7699,9 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
 
 
 @pytest.mark.parametrize(argnames="describe_capabilities", argvalues=[True, False])
+@pytest.mark.usefixtures("no_memory_review")
 async def test_handle_message_reply_leads_with_the_capability_reference(
-    monkeypatch: pytest.MonkeyPatch, describe_capabilities: bool
+    describe_capabilities: bool,
 ) -> None:
     """The feature reference leads the answer input, and only when the route asked for it.
 
@@ -7963,9 +7710,6 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     get none of it.
     """
     cog = _cog()
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> 你會做什麼", author=FakeAuthor(user_id=1))
     _recorded(cog).responses.stream_queue = [
@@ -7985,9 +7729,8 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
         assert "/memory clear" in blocks[0][1]
 
 
-async def test_handle_message_reply_orders_reference_after_memory_before_current(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_handle_message_reply_orders_reference_after_memory_before_current() -> None:
     """The answer input puts memory first, then the reference message, then the current message.
 
     The reference (the message being replied to) rides just above the current message so the
@@ -7996,9 +7739,6 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     """
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent_author = FakeAuthor(user_id=4)
@@ -8035,9 +7775,8 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     assert "reply to the Reference Message above" in blocks[current_index][1]
 
 
-async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it() -> None:
     """The history separator is a label; where the subject may come from is a developer rule.
 
     The old separator read "Chat History that might be helpful for answering", an invitation
@@ -8048,9 +7787,6 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
     second reason the rule cannot live on the block itself.
     """
     cog = _cog()
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     older = FakeMessage(content="舊話題", author=FakeAuthor(user_id=2))
 
@@ -8107,9 +7843,8 @@ def test_only_the_replied_to_message_claims_the_current_message_is_about_it() ->
     assert "An earlier message in the reply thread" not in text
 
 
-async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_handle_message_reply_orders_server_memory_user_memory_then_tone() -> None:
     """The answer injects server memory, user memory, then the tone note before the current message."""
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
@@ -8124,9 +7859,6 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     )
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆,句子精簡")
     write_tone(scope=user_scope(user_id=42), content="第三人語氣不該出現")
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     _recorded(cog).responses.stream_queue = [
@@ -8164,15 +7896,11 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     assert server_index < memory_index < tone_index < current_index
 
 
-async def test_reply_context_always_injects_the_author_tone_block(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_reply_context_always_injects_the_author_tone_block() -> None:
     """The author's tone note rides every reply, with no selection phase of its own."""
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     _recorded(cog).responses.stream_queue = [
@@ -8212,54 +7940,13 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
         subject_id=42,
     )
 
-    class FakeResponder:
-        """Stands in for the answer-phase streamer without real streaming."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            surface: object | None = None,
-            memory_lookups: MemoryCredits | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Stores the streaming target message."""
-            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
-            del (
-                voice_generator,
-                image_generator,
-                music_generator,
-                video_generator,
-                media_delivery,
-                input_builder,
-            )
-            self.message = message
-            # The cog reads these off the streamer after every answer, so a stub without
-            # them fails with an AttributeError the reply path's own handler would swallow.
-            self.memory_notes: list[str] = []
-            self.forget_notes: list[str] = []
-            self.server_memory_notes: list[str] = []
-
-        async def stream(self, *, responses: object) -> str:
-            """Returns placeholder reply content."""
-            del responses
-            return "完整回覆"
-
     scheduled: list[dict[str, object]] = []
 
     def fake_schedule(**kwargs: object) -> None:
         """Records the scheduled memory update arguments."""
         scheduled.append(kwargs)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
+    _install_streamer(monkeypatch=monkeypatch)
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.schedule_memory_update", fake_schedule)
 
     # The route picks nobody for the optional alias. The author's memory is deterministic and
@@ -8304,54 +7991,13 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
 
-    class FakeResponder:
-        """Stands in for the answer-phase streamer without real streaming."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            surface: object | None = None,
-            memory_lookups: MemoryCredits | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Stores the streaming target message."""
-            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
-            del (
-                voice_generator,
-                image_generator,
-                music_generator,
-                video_generator,
-                media_delivery,
-                input_builder,
-            )
-            self.message = message
-            # The cog reads these off the streamer after every answer, so a stub without
-            # them fails with an AttributeError the reply path's own handler would swallow.
-            self.memory_notes: list[str] = []
-            self.forget_notes: list[str] = []
-            self.server_memory_notes: list[str] = []
-
-        async def stream(self, *, responses: object) -> str:
-            """Returns placeholder reply content."""
-            del responses
-            return "回覆"
-
     scheduled: list[object] = []
 
     def fake_schedule(**kwargs: object) -> None:
         """Records that a memory update was scheduled."""
         scheduled.append(kwargs["scope"])
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
+    _install_streamer(monkeypatch=monkeypatch)
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -8377,52 +8023,18 @@ async def test_memory_markers_route_by_the_message_not_by_the_note(
     """
     cog = _cog()
 
-    class FakeResponder:
-        """Streams a reply that carried all three kinds of memory marker."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            surface: object | None = None,
-            memory_lookups: MemoryCredits | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Stores the streaming target message and the marker payloads."""
-            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
-            del (
-                voice_generator,
-                image_generator,
-                music_generator,
-                video_generator,
-                media_delivery,
-                input_builder,
-            )
-            self.message = message
-            self.memory_notes = ["使用者偏好繁體中文"]
-            self.forget_notes = ["使用者不再玩那款遊戲"]
-            self.server_memory_notes = ["這個社群週五都在講炸雞"]
-
-        async def stream(self, *, responses: object) -> str:
-            """Returns placeholder reply content."""
-            del responses
-            return "回覆"
-
     scheduled: list[dict[str, object]] = []
 
     def fake_schedule(**kwargs: object) -> None:
         """Records each scheduled memory update."""
         scheduled.append(kwargs)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
+    _install_streamer(
+        monkeypatch=monkeypatch,
+        memory_notes=("使用者偏好繁體中文",),
+        forget_notes=("使用者不再玩那款遊戲",),
+        server_memory_notes=("這個社群週五都在講炸雞",),
+    )
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -8785,8 +8397,8 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory() -> None:
         "deterministic-memories-not-displaced-by-budget",
     ],
 )
+@pytest.mark.usefixtures("no_memory_review")
 async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- parametrized columns
-    monkeypatch: pytest.MonkeyPatch,
     seeded: dict[int, str],
     server_nick: tuple[int, str, str] | None,
     mention_ids: list[int],
@@ -8814,9 +8426,6 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             durability="permanent",
             subject_id=nick_id,
         )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
     message = FakeMessage(
         content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=channel_public
     )
@@ -8850,16 +8459,12 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     assert answer[-1].get("role") == "user"
 
 
-async def test_deterministic_memories_are_author_reply_mentions_ordered_and_deduped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_deterministic_memories_are_author_reply_mentions_ordered_and_deduped() -> None:
     """Deterministic participants stay author-first and never include the bot twice."""
     cog = _cog()
     for user_id in (1, 2, 3, 999):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))
@@ -8880,16 +8485,12 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
     assert _recorded(cog).responses.create_streams == [True]
 
 
-async def test_history_only_users_are_not_memory_candidates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_history_only_users_are_not_memory_candidates() -> None:
     """A history author is neither deterministic nor an optional nickname candidate."""
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=2), text="歷史使用者記憶")
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     history_message = FakeMessage(content="之前說過", author=FakeAuthor(user_id=2))
 
@@ -8912,9 +8513,8 @@ async def test_history_only_users_are_not_memory_candidates(
 
 
 @pytest.mark.parametrize("where", ["private-thread", "group-dm", "dm"])
-async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
-    monkeypatch: pytest.MonkeyPatch, where: str
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(where: str) -> None:
     """Outside a public guild channel, an absent nickname-table member is never offered.
 
     The route gets the plain shape, so a pick staged for that member has nowhere to land.
@@ -8928,9 +8528,6 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
         section="member_alias",
         durability="permanent",
         subject_id=42,
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
     )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -8957,9 +8554,8 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
     assert set(extract_user_memory_blocks(request=answer)) == {1}
 
 
-async def test_optional_picks_use_only_the_remaining_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_optional_picks_use_only_the_remaining_memory_budget() -> None:
     """Deterministic users fill seven slots, leaving one optional alias slot.
 
     The route names a deterministic participant first, which must not take that slot: only the
@@ -8976,9 +8572,6 @@ async def test_optional_picks_use_only_the_remaining_memory_budget(
             durability="permanent",
             subject_id=user_id,
         )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     message.mentions = [FakeAuthor(user_id=user_id) for user_id in range(2, 8)]
@@ -8993,9 +8586,8 @@ async def test_optional_picks_use_only_the_remaining_memory_budget(
     assert set(extract_user_memory_blocks(request=answer)) == {*range(1, 8), 42}
 
 
-async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_route_is_offered_candidates_with_no_deterministic_memory() -> None:
     """The oblique-reference offer must not be gated on the deterministic lookup finding something.
 
     A conversation where nobody present has a stored fact is exactly the one the code-resolved
@@ -9011,9 +8603,6 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
         section="member_alias",
         durability="permanent",
         subject_id=42,
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
     )
     _recorded(cog).responses.output_parsed = RecallRouteClassification(
         decision="QA", recall_user_ids=["42"]
@@ -9117,8 +8706,8 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
         "only-an-absent-member-leaves-the-count-alone",
     ],
 )
+@pytest.mark.usefixtures("no_memory_review")
 async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametrized columns
-    monkeypatch: pytest.MonkeyPatch,
     seeded_ids: list[int],
     server_nick: tuple[int, str, str] | None,
     mentions: list[tuple[int, str, str]],
@@ -9148,9 +8737,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
             durability="permanent",
             subject_id=nick_id,
         )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     mention_authors: list[FakeAuthor] = []
@@ -9172,6 +8758,7 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         assert fragment not in content
 
 
+@pytest.mark.usefixtures("no_memory_review")
 async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_picks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9187,9 +8774,6 @@ async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_p
         subject_id=42,
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
-    )
     with pytest.raises(ValidationError) as invalid:
         RecallRouteClassification.model_validate(obj={"decision": "QA", "recall_user_ids": 42})
 
