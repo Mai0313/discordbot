@@ -15,13 +15,16 @@ from nextcord import Message, ChannelType, PartialMessageable
 from nextcord.enums import InteractionContextType
 from nextcord.utils import utcnow
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import ask_store
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
-from discordbot.cogs.gen_reply.recall import build_recall_context, compartments_for_reading
-from discordbot.services.memory.store import DM_COMPARTMENT, GLOBAL_COMPARTMENT, guild_compartment
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.cogs.gen_reply.answer import AnswerTurn
+from discordbot.cogs.gen_reply.recall import RecallContext
+from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.surface import INTERACTION_FOLLOWUP_LIMIT, TurnSurface
-from discordbot.services.memory.writer import subject_source_line
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.streaming import TRUNCATED_NOTICE, ResponseStreamer
 from discordbot.cogs.gen_reply.ask_message import (
@@ -30,7 +33,7 @@ from discordbot.cogs.gen_reply.ask_message import (
     rebuild_conversation,
 )
 
-from tests.helpers.casting import as_bot
+from tests.helpers.casting import as_bot, make_media_hosting_config
 
 # A real Discord snowflake, so `Message.created_at` resolves to a real moment rather than 1970.
 ASK_SNOWFLAKE = 1517561877973045349
@@ -216,42 +219,101 @@ def test_only_a_dm_with_the_bot_counts_as_a_direct_message(
     assert surface.is_direct_message is expected_direct
 
 
-def test_a_group_dm_reads_only_the_cross_server_compartment() -> None:
-    """The consequence of the case above, spelled out where the boundary actually is."""
-    interaction = _interaction(guild_id=None, context=InteractionContextType.private_channel)
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
+def _toolkit(interaction: Any) -> ReplyToolkit:  # noqa: ANN401 -- see `_interaction`
+    """A toolkit whose clients no test here ever calls through."""
+    return ReplyToolkit(bot=interaction.client, openai_client=SimpleNamespace(), gemini_api_key="")
+
+
+@pytest.mark.usefixtures("memory_isolated_dir")
+@pytest.mark.parametrize(
+    ("context", "guild_id", "expected"),
+    [
+        (
+            InteractionContextType.guild,
+            GUILD_ID,
+            RecallContext(guild_id=GUILD_ID, dm_partner_id=None),
+        ),
+        (
+            InteractionContextType.bot_dm,
+            None,
+            RecallContext(guild_id=None, dm_partner_id=ASKER_ID),
+        ),
+        (
+            InteractionContextType.private_channel,
+            None,
+            RecallContext(guild_id=None, dm_partner_id=None),
+        ),
+    ],
+)
+def test_an_ask_turn_reads_memory_scoped_to_where_it_happens(
+    context: InteractionContextType, guild_id: int | None, expected: RecallContext
+) -> None:
+    """The recall plan takes both facts off the surface, since the message carries neither.
+
+    `Message.guild` is None on this route whatever the interaction says, so a plan reading it
+    would take a group DM for the asker's own DM, handing a channel full of strangers every
+    compartment the asker has, and would drop a server turn's guild compartment.
+    """
+    interaction = _interaction(guild_id=guild_id, context=context)
+    message = _ask_message(interaction=interaction)
+    builder = ReplyContextBuilder(
+        bot=interaction.client,
+        toolkit=_toolkit(interaction=interaction),
+        message=message,
+        surface=TurnSurface.for_interaction(message=message, interaction=interaction),
     )
 
-    context = build_recall_context(
-        author_id=ASKER_ID, guild_id=surface.guild_id, is_direct_message=surface.is_direct_message
-    )
-
-    assert compartments_for_reading(owner_id=ASKER_ID, context=context) == [GLOBAL_COMPARTMENT]
+    assert builder.plan_recall().recall_context == expected
 
 
-def test_a_guild_ask_reads_the_compartment_its_own_writes_land_in() -> None:
+@pytest.mark.parametrize(
+    ("context", "guild_id", "expected_source"),
+    [
+        (InteractionContextType.guild, GUILD_ID, f"source: guild {GUILD_ID}"),
+        (InteractionContextType.bot_dm, None, "source: dm"),
+    ],
+)
+def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
+    monkeypatch: pytest.MonkeyPatch,
+    context: InteractionContextType,
+    guild_id: int | None,
+    expected_source: str,
+) -> None:
     """The read and the write must name the same compartment, or memory goes in and never out.
 
     `Message.guild` is None here whatever the interaction says, so a source stamp taken from
-    the message would file this turn's `source_only` observations under `dm/` while the next
+    the message would file a server turn's `source_only` observations under `dm/` while the next
     turn in the same server read only `global` and that guild's own.
     """
-    interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
+    scheduled: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer.schedule_memory_update",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+    interaction = _interaction(guild_id=guild_id, context=context)
+    message = _ask_message(interaction=interaction)
+    surface = TurnSurface.for_interaction(message=message, interaction=interaction)
+    turn = AnswerTurn(
+        client=SimpleNamespace(),
+        bot=interaction.client,
+        config=LLMConfig(),
+        media_delivery=MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
+        ),
+        toolkit=_toolkit(interaction=interaction),
+        message=message,
+        surface=surface,
     )
 
-    context = build_recall_context(
-        author_id=ASKER_ID, guild_id=surface.guild_id, is_direct_message=surface.is_direct_message
+    turn._schedule_memory_updates(
+        context=ReplyContext(),
+        full_reply="好",
+        streamer=ResponseStreamer(message=message, surface=surface),
     )
 
-    assert compartments_for_reading(owner_id=ASKER_ID, context=context) == [
-        GLOBAL_COMPARTMENT,
-        guild_compartment(guild_id=GUILD_ID),
+    assert [update["subject"] for update in scheduled] == [
+        f"target_user_id: {ASKER_ID}\n{expected_source}"
     ]
-    assert subject_source_line(guild_id=surface.guild_id) == f"source: guild {GUILD_ID}"
-    assert DM_COMPARTMENT not in compartments_for_reading(owner_id=ASKER_ID, context=context)
 
 
 def test_a_rebuilt_conversation_gives_the_bot_its_own_turns() -> None:
