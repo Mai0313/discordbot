@@ -20,12 +20,19 @@ not drift off `high`, since it is the one tier whose effort is chosen at runtime
 `interactions.create`, where #459 lost whole replies to it.
 """
 
+import json
 from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import (
+    ModelSettings,
+    RouteClassification,
+    RuntimeModelCatalog,
+    RecallRouteClassification,
+)
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 # `disable` and `none` both mean "no thinking", which no Gemini model can honor. Every tier the
 # catalog ships is Gemini, which is what makes this a guard rather than a preference; it is not a
@@ -45,8 +52,8 @@ def _catalog_models() -> dict[str, ModelSettings]:
     return {name: value for name, value in found.items() if isinstance(value, ModelSettings)}
 
 
-def _slow_model_at(*, monkeypatch: pytest.MonkeyPatch, now: datetime) -> ModelSettings:
-    """The slow-model branch the catalog dispatches with its clock pinned to `now`."""
+def _catalog_at(*, monkeypatch: pytest.MonkeyPatch, now: datetime) -> RuntimeModelCatalog:
+    """A catalog whose clock reads `now`, until the test ends or pins another instant."""
 
     def fixed_now(tz: object) -> datetime:
         """Returns the pinned timestamp."""
@@ -54,7 +61,7 @@ def _slow_model_at(*, monkeypatch: pytest.MonkeyPatch, now: datetime) -> ModelSe
         return now
 
     monkeypatch.setattr("discordbot.typings.models.datetime", SimpleNamespace(now=fixed_now))
-    return RuntimeModelCatalog().slow_model
+    return RuntimeModelCatalog()
 
 
 def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
@@ -111,8 +118,8 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     A pinned snapshot's set can at least be looked up; an alias resolves elsewhere, so it cannot.
     Which snapshot a branch names is free to change; that none of them is an alias is not free,
     and nothing else in the tree reports it. Whether two branches may name the SAME snapshot is
-    not this file's question either way — `tests/test_gen_reply.py` is where the peak split is
-    pinned, so parking the branch again is answered there rather than here.
+    not this test's question either way — the peak-hour dispatch test below pins the peak split,
+    so parking the branch again is answered there rather than here.
 
     Every hour of a week is swept rather than one instant per branch the catalog has today: the
     dispatch condition is the catalog's own to change, so a branch added on a second condition
@@ -125,7 +132,7 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     wrong_effort: dict[str, str] = {}
     for offset in range(7 * 24):
         now = monday + timedelta(hours=offset)
-        settings = _slow_model_at(monkeypatch=monkeypatch, now=now)
+        settings = _catalog_at(monkeypatch=monkeypatch, now=now).slow_model
         when = f"{now:%a %H:00} UTC"
         if "latest" in settings.name:
             aliases.setdefault(settings.name, when)
@@ -140,7 +147,67 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     assert wrong_effort == {}, f"Every slow-model branch ships `high`. Offenders: {wrong_effort}"
 
 
+def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies slow-model peak-hour and off-peak dispatch."""
+
+    def snapshot_at(now: datetime) -> tuple[ModelSettings, bool, bool]:
+        """Returns the peak-sensitive fields with the catalog clock pinned to `now`."""
+        catalog = _catalog_at(monkeypatch=monkeypatch, now=now)
+        return catalog.slow_model, catalog.is_peak, catalog.model_dump()["is_peak"] is True
+
+    peak_start = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
+    peak_end = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
+    before_peak = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=7, tzinfo=UTC))
+    after_peak = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
+    weekend = snapshot_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
+
+    assert peak_start[1:] == (True, True)
+    assert peak_end[1:] == (True, True)
+    assert before_peak[1:] == (False, False)
+    assert after_peak[1:] == (False, False)
+    assert weekend[1:] == (False, False)
+    # No tier splits on the peak window, so every hour answers on the same model. Asserted
+    # across all five rather than per branch, because the per-branch form passes either way
+    # once there is one branch; the window itself is still guarded above.
+    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
+
+
+def test_model_settings_and_catalog_helpers() -> None:
+    """Verifies model properties and provider-specific tool dispatch."""
+    catalog = RuntimeModelCatalog()
+    assert isinstance(catalog.fast_model, ModelSettings)
+    assert "image" in catalog.image_model.name
+    assert "omni" in catalog.video_model.name
+    # Code execution is omitted on purpose: it 400s the request on file attachments.
+    assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
+    assert ModelSettings(name="claude-test").tools == [
+        {"type": "web_search_20260209", "name": "web_search"},
+        {"type": "web_fetch_20260209", "name": "web_fetch"},
+    ]
+    assert ModelSettings(name="openai-test").tools == [{"type": "web_search"}]
+
+
 def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
     assert {"triage_model", "fast_model", "slow_model"} <= set(models)
+
+
+@pytest.mark.parametrize("route_shape", [RouteClassification, RecallRouteClassification])
+def test_the_route_schema_names_every_registered_link_source_inline(
+    route_shape: type[RouteClassification],
+) -> None:
+    """The triage call's schema spells out exactly the registry's source names, in place.
+
+    A source the enum lacks can never be selected, so its builder never starts; a name the
+    registry lacks is one the model can pick with nothing behind it. The enum stays inline
+    because the schema reaches the model as-is and both shapes were measured that way (#725):
+    a named alias hoisted into `$defs` behind a `$ref` changes the bytes the route call sends.
+    """
+    schema = route_shape.model_json_schema()
+    field = schema["properties"]["link_context_sources"]
+    assert "$defs" not in schema
+    assert "$ref" not in json.dumps(obj=field)
+    assert set(field["items"]["enum"]) == {source.name for source in LINK_CONTEXT_SOURCES}

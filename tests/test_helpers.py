@@ -4,6 +4,8 @@ The redesigned suite leans on these extractors and invariant asserts, so they
 are pinned here against the real production renderers and database helpers.
 """
 
+from importlib import import_module
+
 import pytest
 import nextcord
 from openai.types.responses import ResponseInputParam, EasyInputMessageParam
@@ -16,9 +18,11 @@ from discordbot.cogs.gen_reply.recall import (
     render_memory_context_block,
 )
 from discordbot.services.economy.database import adjust_balance
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
 from tests.helpers.llm_input import (
+    LINK_SOURCE_BLOCKS,
     request_index,
     request_input,
     iter_text_blocks,
@@ -130,13 +134,33 @@ class _Recorder:
         ]
 
 
-def test_request_index_maps_phase_to_position() -> None:
+def test_request_index_finds_the_answer() -> None:
     """The answer is the last streaming call, not a non-streaming one before it."""
     recorder = _Recorder()
-    assert request_index(responses=recorder, phase="answer") == 1
-    assert request_input(responses=recorder, phase="answer") == [
+    assert request_index(responses=recorder) == 1
+    assert request_input(responses=recorder) == [
         EasyInputMessageParam(role="user", content="answer")
     ]
+
+
+def test_every_link_source_block_is_known_to_the_helpers() -> None:
+    """Each registered source's top-level separators and notices are all in the table.
+
+    A text the table lacks reads as "no block", so `assert not has_link_context_block(...)` would
+    pass on a request that carries one. A `----` notice is a section inside a post's own block,
+    not a block of its own, so it is left out.
+    """
+    assert set(LINK_SOURCE_BLOCKS) == {source.name for source in LINK_CONTEXT_SOURCES}
+    for name, blocks in LINK_SOURCE_BLOCKS.items():
+        module = import_module(name=f"discordbot.cogs.gen_reply.link_sources.{name}")
+        shipped = {
+            value
+            for key, value in vars(module).items()
+            if key.endswith(("_SEPARATOR", "_NOTICE"))
+            and isinstance(value, str)
+            and value.startswith("====")
+        }
+        assert shipped == set(blocks.separators + blocks.notices), name
 
 
 # --- embeds ------------------------------------------------------------------

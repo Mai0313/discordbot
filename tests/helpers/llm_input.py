@@ -15,9 +15,10 @@ breaking these extractors.
 """
 
 import re
-from typing import Literal, Protocol
+from typing import Protocol
 from collections.abc import Mapping, Iterator, Sequence
 
+from pydantic import Field, BaseModel
 from openai.types.responses import ResponseInputParam
 
 from discordbot.cogs.gen_reply.recall import (
@@ -30,6 +31,7 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
     DOUYIN_TIMEOUT_NOTICE,
     DOUYIN_CONTEXT_SEPARATOR,
+    DOUYIN_UNREADABLE_NOTICE,
     DOUYIN_UNAVAILABLE_NOTICE,
     DOUYIN_TEXT_ONLY_SEPARATOR,
 )
@@ -38,6 +40,7 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
     THREADS_TEXT_ONLY_SEPARATOR,
+    THREADS_PARTIAL_MEDIA_SEPARATOR,
 )
 from discordbot.cogs.gen_reply.link_sources.twitter import (
     TWITTER_TIMEOUT_NOTICE,
@@ -105,56 +108,60 @@ _PARTICIPANT_HEADER = _header_line(block=render_memory_context_block(memories=[]
 _SERVER_HEADER = _header_line(block=render_server_memory_block(memory=""))
 _TONE_HEADER = _header_line(block=render_tone_block(tone=""))
 _CALLABLE_HEADER = _header_line(block=render_callable_users_block(allowed={}))
-_THREADS_SEPARATOR_HEADS = (
-    THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    THREADS_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
-)
-_THREADS_NOTICE_HEADS = (
-    THREADS_UNAVAILABLE_NOTICE.split("\n", 1)[0],
-    THREADS_TIMEOUT_NOTICE.split("\n", 1)[0],
-)
-_DOUYIN_SEPARATOR_HEADS = (
-    DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    DOUYIN_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
-)
-_DOUYIN_NOTICE_HEADS = (
-    DOUYIN_UNAVAILABLE_NOTICE.split("\n", 1)[0],
-    DOUYIN_BLOCKED_NOTICE.split("\n", 1)[0],
-    DOUYIN_TIMEOUT_NOTICE.split("\n", 1)[0],
-)
-_BILIBILI_SEPARATOR_HEADS = (
-    BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    BILIBILI_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
-    BILIBILI_TOO_LONG_SEPARATOR.split("\n", 1)[0],
-)
-_BILIBILI_NOTICE_HEADS = (
-    BILIBILI_UNREADABLE_NOTICE.split("\n", 1)[0],
-    BILIBILI_TIMEOUT_NOTICE.split("\n", 1)[0],
-)
-_FACEBOOK_SEPARATOR_HEADS = (
-    FACEBOOK_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    FACEBOOK_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
-)
-_FACEBOOK_NOTICE_HEADS = (
-    FACEBOOK_UNAVAILABLE_NOTICE.split("\n", 1)[0],
-    FACEBOOK_TIMEOUT_NOTICE.split("\n", 1)[0],
-)
-_TWITTER_SEPARATOR_HEADS = (
-    TWITTER_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    TWITTER_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
-)
-_TWITTER_NOTICE_HEADS = (
-    TWITTER_UNAVAILABLE_NOTICE.split("\n", 1)[0],
-    TWITTER_TIMEOUT_NOTICE.split("\n", 1)[0],
-)
-_INSTAGRAM_SEPARATOR_HEADS = (
-    INSTAGRAM_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    INSTAGRAM_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
-)
-_INSTAGRAM_NOTICE_HEADS = (
-    INSTAGRAM_UNAVAILABLE_NOTICE.split("\n", 1)[0],
-    INSTAGRAM_TIMEOUT_NOTICE.split("\n", 1)[0],
-)
+
+
+class LinkSourceBlocks(BaseModel):
+    """The top-level texts one link source injects into the answer input."""
+
+    separators: tuple[str, ...] = Field(
+        ..., description="System separators a fetched post's own block follows."
+    )
+    notices: tuple[str, ...] = Field(
+        ..., description="Notices a failed or timed-out read injects instead of the post."
+    )
+
+
+# Keyed by registry name. A text missing here reads as "no block" in every
+# `has_link_context_block` check, which would leave a negative assertion vacuous.
+LINK_SOURCE_BLOCKS: dict[str, LinkSourceBlocks] = {
+    "threads": LinkSourceBlocks(
+        separators=(
+            THREADS_CONTEXT_SEPARATOR,
+            THREADS_PARTIAL_MEDIA_SEPARATOR,
+            THREADS_TEXT_ONLY_SEPARATOR,
+        ),
+        notices=(THREADS_UNAVAILABLE_NOTICE, THREADS_TIMEOUT_NOTICE),
+    ),
+    "facebook": LinkSourceBlocks(
+        separators=(FACEBOOK_CONTEXT_SEPARATOR, FACEBOOK_TEXT_ONLY_SEPARATOR),
+        notices=(FACEBOOK_UNAVAILABLE_NOTICE, FACEBOOK_TIMEOUT_NOTICE),
+    ),
+    "instagram": LinkSourceBlocks(
+        separators=(INSTAGRAM_CONTEXT_SEPARATOR, INSTAGRAM_TEXT_ONLY_SEPARATOR),
+        notices=(INSTAGRAM_UNAVAILABLE_NOTICE, INSTAGRAM_TIMEOUT_NOTICE),
+    ),
+    "twitter": LinkSourceBlocks(
+        separators=(TWITTER_CONTEXT_SEPARATOR, TWITTER_TEXT_ONLY_SEPARATOR),
+        notices=(TWITTER_UNAVAILABLE_NOTICE, TWITTER_TIMEOUT_NOTICE),
+    ),
+    "douyin": LinkSourceBlocks(
+        separators=(DOUYIN_CONTEXT_SEPARATOR, DOUYIN_TEXT_ONLY_SEPARATOR),
+        notices=(
+            DOUYIN_UNAVAILABLE_NOTICE,
+            DOUYIN_BLOCKED_NOTICE,
+            DOUYIN_UNREADABLE_NOTICE,
+            DOUYIN_TIMEOUT_NOTICE,
+        ),
+    ),
+    "bilibili": LinkSourceBlocks(
+        separators=(
+            BILIBILI_CONTEXT_SEPARATOR,
+            BILIBILI_TEXT_ONLY_SEPARATOR,
+            BILIBILI_TOO_LONG_SEPARATOR,
+        ),
+        notices=(BILIBILI_UNREADABLE_NOTICE, BILIBILI_TIMEOUT_NOTICE),
+    ),
+}
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
 _ID_MARKER = re.compile(r"\[id: (\d+)\]")
@@ -226,36 +233,35 @@ def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
     return set()
 
 
-def extract_threads_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the text of the block following the Threads separator, or None if absent.
+def _head(text: str) -> str:
+    """Returns a block text's first line, which is what identifies the block."""
+    return text.split("\n", 1)[0]
+
+
+def extract_link_context_block(request: ResponseInputParam | str, source: str) -> str | None:
+    """Returns the text of the block following `source`'s separator, or None if absent.
 
     The builder emits a ``role="system"`` separator immediately followed by the
     ``role="user"`` message carrying the post's text and media; this anchors on the
     separator's header line and returns that next block's text.
     """
+    separators = {_head(text=text) for text in LINK_SOURCE_BLOCKS[source].separators}
     items = list(iter_text_blocks(request=request))
     for index, (role, text) in enumerate(items):
-        if role == "system" and text.split("\n", 1)[0] in _THREADS_SEPARATOR_HEADS:
+        if role == "system" and _head(text=text) in separators:
             return items[index + 1][1] if index + 1 < len(items) else ""
     return None
 
 
-def has_threads_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Threads separator or notice block."""
-    for _role, text in iter_text_blocks(request=request):
-        head = text.split("\n", 1)[0]
-        if head in _THREADS_SEPARATOR_HEADS or head in _THREADS_NOTICE_HEADS:
-            return True
-    return False
+def has_link_context_block(request: ResponseInputParam | str, source: str) -> bool:
+    """Whether the input carries any separator or notice block of `source`."""
+    blocks = LINK_SOURCE_BLOCKS[source]
+    heads = {_head(text=text) for text in blocks.separators + blocks.notices}
+    return any(_head(text=text) in heads for _role, text in iter_text_blocks(request=request))
 
 
-def request_index(responses: RecordedResponses, phase: Literal["answer"]) -> int:
-    """Maps a semantic pipeline phase to its recorded ``create`` index.
-
-    The answer is the last streaming call. Lets tests reference phases by name
-    instead of hardcoding positions.
-    """
-    del phase
+def request_index(responses: RecordedResponses) -> int:
+    """Returns the recorded ``create`` index of the answer: the last streaming call."""
     streams = responses.create_streams
     for index in range(len(streams) - 1, -1, -1):
         if streams[index]:
@@ -263,98 +269,6 @@ def request_index(responses: RecordedResponses, phase: Literal["answer"]) -> int
     raise AssertionError("no streaming answer request was recorded")
 
 
-def request_input(
-    responses: RecordedResponses, phase: Literal["answer"]
-) -> ResponseInputParam | str:
-    """Returns the recorded input for a semantic pipeline phase."""
-    return responses.create_inputs[request_index(responses=responses, phase=phase)]
-
-
-def extract_douyin_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the text of the block following the Douyin separator, or None if absent."""
-    items = list(iter_text_blocks(request=request))
-    for index, (role, text) in enumerate(items):
-        if role == "system" and text.split("\n", 1)[0] in _DOUYIN_SEPARATOR_HEADS:
-            return items[index + 1][1] if index + 1 < len(items) else ""
-    return None
-
-
-def has_douyin_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Douyin separator or notice block."""
-    for _role, text in iter_text_blocks(request=request):
-        head = text.split("\n", 1)[0]
-        if head in _DOUYIN_SEPARATOR_HEADS or head in _DOUYIN_NOTICE_HEADS:
-            return True
-    return False
-
-
-def extract_bilibili_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the text of the block following the Bilibili separator, or None if absent."""
-    items = list(iter_text_blocks(request=request))
-    for index, (role, text) in enumerate(items):
-        if role == "system" and text.split("\n", 1)[0] in _BILIBILI_SEPARATOR_HEADS:
-            return items[index + 1][1] if index + 1 < len(items) else ""
-    return None
-
-
-def has_bilibili_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Bilibili separator or notice block."""
-    for _role, text in iter_text_blocks(request=request):
-        head = text.split("\n", 1)[0]
-        if head in _BILIBILI_SEPARATOR_HEADS or head in _BILIBILI_NOTICE_HEADS:
-            return True
-    return False
-
-
-def extract_facebook_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the text of the block following the Facebook separator, or None if absent."""
-    items = list(iter_text_blocks(request=request))
-    for index, (role, text) in enumerate(items):
-        if role == "system" and text.split("\n", 1)[0] in _FACEBOOK_SEPARATOR_HEADS:
-            return items[index + 1][1] if index + 1 < len(items) else ""
-    return None
-
-
-def has_facebook_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Facebook separator or notice block."""
-    for _role, text in iter_text_blocks(request=request):
-        head = text.split("\n", 1)[0]
-        if head in _FACEBOOK_SEPARATOR_HEADS or head in _FACEBOOK_NOTICE_HEADS:
-            return True
-    return False
-
-
-def extract_twitter_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the text of the block following the Twitter separator, or None if absent."""
-    items = list(iter_text_blocks(request=request))
-    for index, (role, text) in enumerate(items):
-        if role == "system" and text.split("\n", 1)[0] in _TWITTER_SEPARATOR_HEADS:
-            return items[index + 1][1] if index + 1 < len(items) else ""
-    return None
-
-
-def has_twitter_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Twitter separator or notice block."""
-    for _role, text in iter_text_blocks(request=request):
-        head = text.split("\n", 1)[0]
-        if head in _TWITTER_SEPARATOR_HEADS or head in _TWITTER_NOTICE_HEADS:
-            return True
-    return False
-
-
-def extract_instagram_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the text of the block following the Instagram separator, or None if absent."""
-    items = list(iter_text_blocks(request=request))
-    for index, (role, text) in enumerate(items):
-        if role == "system" and text.split("\n", 1)[0] in _INSTAGRAM_SEPARATOR_HEADS:
-            return items[index + 1][1] if index + 1 < len(items) else ""
-    return None
-
-
-def has_instagram_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Instagram separator or notice block."""
-    for _role, text in iter_text_blocks(request=request):
-        head = text.split("\n", 1)[0]
-        if head in _INSTAGRAM_SEPARATOR_HEADS or head in _INSTAGRAM_NOTICE_HEADS:
-            return True
-    return False
+def request_input(responses: RecordedResponses) -> ResponseInputParam | str:
+    """Returns the recorded input of the answer request."""
+    return responses.create_inputs[request_index(responses=responses)]

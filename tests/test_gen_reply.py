@@ -18,7 +18,7 @@ from PIL import Image
 # openai 3.x builds its exceptions on httpx2, so a request or response handed to one has to
 # come from there. google-genai is still on httpx 0.x, and both live in the environment.
 import httpx2
-from openai import APIError, APITimeoutError, BadRequestError, APIConnectionError
+from openai import APIError, APITimeoutError, BadRequestError
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
@@ -57,11 +57,6 @@ from discordbot.typings.timeouts import (
     ANSWER_STREAM_MAX_ATTEMPTS,
     INTERACTION_DELIVERY_MARGIN_SECONDS,
 )
-from discordbot.utils.llm_errors import (
-    llm_status_code,
-    extract_friendly_error,
-    is_retryable_llm_error,
-)
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
@@ -83,7 +78,6 @@ from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     render_callable_users_block,
     widen_allowlist_with_aliases,
-    allowlist_ids_from_server_memory,
 )
 from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
 from discordbot.services.memory.store import (
@@ -175,36 +169,38 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
-from tests.helpers.casting import as_bot, as_message, step_dicts, make_media_hosting_config
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    step_dicts,
+    make_forbidden,
+    make_not_found,
+    make_invalid_form_body,
+    make_media_hosting_config,
+)
 from tests.helpers.llm_input import (
     request_index,
     request_input,
     iter_text_blocks,
     extract_tone_block,
-    has_douyin_context_block,
+    has_link_context_block,
     has_memory_context_block,
     extract_callable_user_ids,
-    has_threads_context_block,
-    has_twitter_context_block,
+    extract_link_context_block,
     extract_user_memory_blocks,
-    has_bilibili_context_block,
-    has_facebook_context_block,
     extract_server_memory_block,
-    has_instagram_context_block,
-    extract_douyin_context_block,
-    extract_threads_context_block,
-    extract_twitter_context_block,
-    extract_bilibili_context_block,
-    extract_facebook_context_block,
-    extract_instagram_context_block,
 )
+
+# A reply always reads memory, with no caller-side switch to turn it off, so every test here
+# stays off the live store.
+pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
 
 TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import Callable, AsyncIterator
+    from collections.abc import AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -1043,7 +1039,7 @@ def _resolved_picks(ids: list[str] | None = None) -> asyncio.Future[list[str]]:
     return picks
 
 
-async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply's signature
+async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors AnswerTurn.stream_answer's inputs
     cog: ReplyGeneratorCogs,
     message: FakeMessage,
     system_prompt: str = "SYS",
@@ -1325,7 +1321,6 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
 
 async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
     """Verifies replies over Discord's content limit continue as a reply chain."""
-    cog = _cog()
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
 
@@ -1360,26 +1355,9 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
 
     chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
     assert all(len(chunk) <= DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
-    assert _recorded(cog).responses.create_models == []
 
 
-def _deleted_source_error() -> nextcord.HTTPException:
-    """Builds the Discord 400 50035 raised when replying to a since-deleted source."""
-    return nextcord.HTTPException(
-        cast("ClientResponse", SimpleNamespace(status=400, reason="Bad Request")),
-        {"code": 50035, "message": "Invalid Form Body"},
-    )
-
-
-def _unknown_message_notfound() -> nextcord.NotFound:
-    """Builds the 404 10008 a deleted source can raise on some Discord paths."""
-    return nextcord.NotFound(
-        cast("ClientResponse", SimpleNamespace(status=404, reason="Not Found")),
-        {"code": 10008, "message": "Unknown Message"},
-    )
-
-
-@pytest.mark.parametrize("error", [_deleted_source_error(), _unknown_message_notfound()])
+@pytest.mark.parametrize("error", [make_invalid_form_body(), make_not_found()])
 async def test_streaming_falls_back_to_channel_send_when_source_deleted(
     error: nextcord.HTTPException,
 ) -> None:
@@ -1396,7 +1374,7 @@ async def test_streaming_falls_back_to_channel_send_when_source_deleted(
 async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> None:
     """Overflow follow-ups still chain off the unparented parent when the source is gone."""
     message = FakeMessage(content="<@999> explain")
-    message.reply_error = _deleted_source_error()
+    message.reply_error = make_invalid_form_body()
     body = "x" * 4500
 
     await ResponseStreamer(message=message).stream(
@@ -1415,10 +1393,7 @@ async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> 
 async def test_streaming_reraises_non_deletion_http_errors() -> None:
     """A non-deletion HTTP error (e.g. Forbidden) propagates instead of silently channel.send."""
     message = FakeMessage()
-    message.reply_error = nextcord.HTTPException(
-        cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden")),
-        {"code": 50013, "message": "Missing Permissions"},
-    )
+    message.reply_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
         await ResponseStreamer(message=message).stream(responses=_stream_events())
@@ -1429,7 +1404,7 @@ async def test_streaming_tolerates_reply_deleted_before_final_edit() -> None:
     """A reply deleted while streaming ends the turn quietly instead of raising to the cog."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = _unknown_message_notfound()
+    reply.edit_error = make_not_found()
     streamer = ResponseStreamer(message=message, reply=reply)
 
     result = await streamer.stream(responses=_stream_events())
@@ -1446,10 +1421,7 @@ async def test_streaming_reraises_non_deletion_edit_errors() -> None:
     """A non-deletion edit failure (e.g. Forbidden) still propagates as a real error."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = nextcord.HTTPException(
-        cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden")),
-        {"code": 50013, "message": "Missing Permissions"},
-    )
+    reply.edit_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
         await ResponseStreamer(message=message, reply=reply).stream(responses=_stream_events())
@@ -1459,7 +1431,7 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     """Media requested on a since-deleted reply is dropped silently, with no ⚠️ on the source."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = _unknown_message_notfound()
+    reply.edit_error = make_not_found()
     synthesizer = _FakeVoiceGenerator()
 
     await ResponseStreamer(
@@ -1583,11 +1555,11 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
-    streamer.stored_content = streamer.stored_content.replace(
-        streamer._usage_footer,
-        f"\n-# 媒體過大，改用連結\nhttps://media.example/x.mp4{streamer._usage_footer}",
+    await streamer._finalize_media_edit(
+        reply=as_message(fake=message.replies[0]),
+        files=[],
+        hosted_urls=["https://media.example/x.mp4"],
     )
-    await message.replies[0].edit(content=streamer.stored_content)
 
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
@@ -3094,7 +3066,7 @@ def test_find_youtube_url_ignores_url_inside_replied_to_usage_footer(
     """A memory label in the bot's footer cannot choose the next watched video."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.references.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
-    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# <:tag:1517563887573143595> {url} 的記憶"
+    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {url} 的記憶"
     answer = FakeMessage(content=f"這是我的回答{footer}")
     answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
@@ -3116,9 +3088,7 @@ def test_find_youtube_url_keeps_footer_shaped_text_in_the_current_message(
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(
         content=(
-            "<@999> 再說清楚一點"
-            "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
-            f"\n-# <:tag:1517563887573143595> {url} 的記憶"
+            f"<@999> 再說清楚一點\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {url} 的記憶"
         )
     )
 
@@ -3314,10 +3284,7 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer(
     long enough to hold a whole Threads permalink, so the span has to go before the scan.
     """
     monkeypatch.setattr("discordbot.cogs.gen_reply.references.Message", FakeMessage)
-    footer = (
-        "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
-        f"\n-# <:tag:1517563887573143595> {_THREADS_POST_URL} 的記憶"
-    )
+    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {_THREADS_POST_URL} 的記憶"
     answer = FakeMessage(content=f"這是我的回答{footer}")
     answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
@@ -3463,7 +3430,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     # Forwarding the bot's own reply (snapshot has no author) still strips the usage footer.
     forwarded_bot_reply = FakeMessage(author=FakeAuthor(user_id=1))
     forwarded_bot_reply.snapshots = [
-        FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3")
+        FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0")
     ]
     rendered = await builder.get_cleaned_content(message=as_message(fake=forwarded_bot_reply))
     assert "real answer" in rendered
@@ -3472,7 +3439,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     footer_only_forward = FakeMessage(author=FakeAuthor(user_id=1))
     footer_only_forward.snapshots = [
         FakeSnapshot(
-            content="\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
+            content="\n\n-# model · ⬆ 1 ⬇ 2 · $0.0",
             embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")],
         )
     ]
@@ -3592,141 +3559,6 @@ async def test_media_semaphore_bounds_media_io_concurrency(
 
     assert all(result is not None for result in results)
     assert state["peak"] == 2
-
-
-def test_extract_friendly_error_prefers_nested_provider_message() -> None:
-    """Verifies nested provider errors are preferred over wrapper text."""
-    raw = """wrapper b'{"error": {"message": "quota exceeded"}}'"""
-    assert extract_friendly_error(exc=RuntimeError(raw)) == "quota exceeded"
-    assert extract_friendly_error(exc=RuntimeError("plain failure")) == "plain failure"
-    assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
-
-
-def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
-    """A plain provider 400 is read off the exception, not out of its dict-repr string."""
-    refusal = "Input blocked: Sorry, we can't create videos with real people's names."
-    body = {"error": {"message": refusal, "code": "invalid_request"}}
-
-    # `_make_status_error` unwraps the `error` object into `.body` before raising, and renders
-    # the whole document into the message as a Python dict repr.
-    request = httpx2.Request(method="POST", url="http://proxy/v1/images/generations")
-    response = httpx2.Response(status_code=400, request=request, json=body)
-    proxied = BadRequestError(f"Error code: 400 - {body}", response=response, body=body["error"])
-    assert extract_friendly_error(exc=proxied) == refusal
-
-    # The direct-to-Google path keeps the whole document on `.details` instead.
-    assert extract_friendly_error(exc=ClientError(400, body, None)) == refusal
-
-    # A non-streaming LiteLLM 400 needs both steps: the dict repr escapes the wrapped chain's
-    # quotes to `b\'...\'`, so the bytes literal is only reachable once `.body` has replaced the
-    # text being scanned.
-    chain = """litellm.BadRequestError: VertexAIException - b'{"error": {"message": "quota"}}'"""
-    wrapped_body = {"error": {"message": chain, "code": "400"}}
-    wrapped = BadRequestError(
-        f"Error code: 400 - {wrapped_body}", response=response, body=wrapped_body["error"]
-    )
-    assert extract_friendly_error(exc=wrapped) == "quota"
-
-
-def test_extract_friendly_error_peels_a_flattened_litellm_wrapper_chain() -> None:
-    """The provider's own sentence reaches the embed whichever way LiteLLM rendered it.
-
-    Which of the two shapes arrives records WHEN the request broke, not what broke, so the same
-    provider message shows up in both and neither may bring the wrapper chain along with it.
-    """
-    request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
-    high_demand = (
-        "This model is currently experiencing high demand. Spikes in demand are usually "
-        "temporary. Please try again later."
-    )
-    chain = "litellm.MidStreamFallbackError: litellm.ServiceUnavailableError: Vertex_ai_beta"
-
-    def _mid_stream(message: str) -> APIError:
-        frame = {"message": message, "type": "None", "param": "None", "code": "503"}
-        return APIError(message=message, request=request, body=frame)
-
-    # The stream never opened, so the handler read the body as bytes and `str()` embedded their
-    # repr: the provider document rides along unparsed.
-    document = {"error": {"code": 503, "message": high_demand, "status": "UNAVAILABLE"}}
-    unopened = f"{chain}Exception - {json.dumps(obj=document).encode()!r}\n"
-    assert extract_friendly_error(exc=_mid_stream(message=unopened)) == high_demand
-
-    # The stream opened and a chunk carried the error object, so LiteLLM parsed it and re-rendered
-    # it as `<canonical status> - <message>`, leaving no bytes literal to find.
-    flattened = f"{chain}Exception - UNAVAILABLE - {high_demand}"
-    assert extract_friendly_error(exc=_mid_stream(message=flattened)) == high_demand
-
-    # The shapes are not per-message: a second message came through the same path in the same
-    # window, and its status is a different canonical one.
-    deadline = "Deadline expired before operation could complete."
-    expired = f"{chain}Exception - DEADLINE_EXCEEDED - {deadline}"
-    assert extract_friendly_error(exc=_mid_stream(message=expired)) == deadline
-
-    # A segment is a run of words rather than one token: the vertex mapping puts a second label
-    # inside the marker on some branches, and the openai one puts one in front of it.
-    blocked = "The response was blocked by the safety filter."
-    labelled = f"litellm.BadRequestError: Vertex_ai_betaException BadRequestError - {blocked}"
-    assert extract_friendly_error(exc=_mid_stream(message=labelled)) == blocked
-
-    # The run is anchored, so a class named after neither `Error` nor `Exception` would cost not
-    # its own segment but every segment behind it. `Timeout` is the only one.
-    timed_out = f"litellm.Timeout: Timeout Error: VertexAIException - {deadline}"
-    assert extract_friendly_error(exc=_mid_stream(message=timed_out)) == deadline
-
-    # Peeling that leaves nothing behind is discarded, since a chain still says more than an
-    # empty embed would.
-    bare = "litellm.APIConnectionError: Vertex_ai_betaException - "
-    assert extract_friendly_error(exc=_mid_stream(message=bare)) == bare
-
-
-def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() -> None:
-    """A transient upstream failure is retried; a refusal and an unreadable one are not."""
-    request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
-
-    # The shape this exists for. LiteLLM reports a mid-stream provider failure as an SSE error
-    # frame holding `ProxyException.to_dict()`, whose `code` is a decimal STRING, and openai's
-    # streaming layer re-raises it as a bare APIError carrying that frame as its body. Nothing
-    # here is typed, so a check reading `.status_code` alone sees no status at all.
-    frame = {
-        "message": "litellm.MidStreamFallbackError: litellm.ServiceUnavailableError: ...",
-        "type": "None",
-        "param": "None",
-        "code": "503",
-    }
-    mid_stream = APIError(message=str(frame["message"]), request=request, body=frame)
-    assert llm_status_code(exc=mid_stream) == 503
-    assert is_retryable_llm_error(exc=mid_stream) is True
-
-    # Same wrapper, a refusal underneath: re-sending it only makes the user wait for the same
-    # answer three times.
-    refusal = APIError(message="blocked", request=request, body={**frame, "code": "400"})
-    assert is_retryable_llm_error(exc=refusal) is False
-
-    # A status the SDK typed wins over the body, and an unreadable failure is not retried:
-    # a status that cannot be read is as likely to be a refusal as an outage.
-    response = httpx2.Response(status_code=400, request=request, json={})
-    assert is_retryable_llm_error(exc=BadRequestError("no", response=response, body=None)) is False
-    assert is_retryable_llm_error(exc=APIError(message="?", request=request, body=None)) is False
-    assert is_retryable_llm_error(exc=RuntimeError("boom")) is False
-
-    # A Discord write failure escaping the streamer must never re-run the answer. It carries a
-    # plain int `code` of its own -- 50035 is what an oversized final write raises -- which the
-    # status read would otherwise take for a 5xx.
-    assert llm_status_code(exc=_deleted_source_error()) == 50035
-    assert is_retryable_llm_error(exc=_deleted_source_error()) is False
-
-    # Transport failures carry no status of any kind; `APITimeoutError` rides in as a subclass.
-    assert is_retryable_llm_error(exc=APIConnectionError(request=request)) is True
-    assert is_retryable_llm_error(exc=APITimeoutError(request=request)) is True
-
-    # The YouTube answer backend is direct-to-Google, where the status is an int on `.code`.
-    assert llm_status_code(exc=ClientError(429, {"error": {"message": "slow down"}}, None)) == 429
-    assert (
-        is_retryable_llm_error(exc=ClientError(429, {"error": {"message": "slow"}}, None)) is True
-    )
-    assert (
-        is_retryable_llm_error(exc=ClientError(400, {"error": {"message": "bad"}}, None)) is False
-    )
 
 
 def _mid_stream_unavailable() -> APIError:
@@ -3896,7 +3728,9 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
 
     assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
     reply = cast("FakeReply", streamer.reply)
-    assert reply.edits[0] == f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/3)"
+    assert reply.edits[0] == (
+        f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
+    )
     # And the notice is transient: the finished answer takes the message back.
     assert (reply.content or "").startswith("done")
 
@@ -3976,15 +3810,14 @@ async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
 
 
 async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
-    monkeypatch: pytest.MonkeyPatch, memory_isolated_dir: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pins the wiring, not the helper: the QA answer path must go through the retry.
 
-    Both the helper's own tests and this one would stay green if `_handle_message_reply` were
+    Both the helper's own tests and this one would stay green if `AnswerTurn.stream_answer` were
     quietly put back on a bare `streamer.stream(...)`, except for the second `create` this
     asserts on.
     """
-    del memory_isolated_dir
     _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="hi")
@@ -4073,7 +3906,7 @@ async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_me
     """Discord turning the edit down must not cost the user the error entirely."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = _unknown_message_notfound()
+    reply.edit_error = make_not_found()
     streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
 
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
@@ -4100,7 +3933,7 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
 
 
 async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_path(
-    monkeypatch: pytest.MonkeyPatch, memory_isolated_dir: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The IMAGE route's streamer renders onto the delivered image, so it publishes nothing.
 
@@ -4108,7 +3941,6 @@ async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_p
     the picture the user was handed must not be the message that gets an error embed written
     over it.
     """
-    del memory_isolated_dir
     _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
@@ -4174,8 +4006,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     )
 
     bot_message = FakeMessage(
-        content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
-        author=FakeAuthor(bot=True, user_id=999),
+        content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0", author=FakeAuthor(bot=True, user_id=999)
     )
     assert (
         await _toolkit(cog=cog).input_builder.get_cleaned_content(
@@ -4184,7 +4015,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         == "answer"
     )
     assert USAGE_FOOTER_RE.search(string=bot_message.content)
-    bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3"
+    bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0"
     bot_message.embeds = [Embed(url="https://youtu.be/jNQXAC9IVRw")]
     assert (
         await _toolkit(cog=cog).input_builder.get_cleaned_content(
@@ -4878,7 +4709,7 @@ async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
 def test_trim_history_keeps_the_newest_messages_within_the_budget() -> None:
     """The budget drops the oldest context first and never cuts inside a message.
 
-    Ordering is the contract being checked here, not just the count: `_fetch_history` hands
+    Ordering is the contract being checked here, not just the count: history is handed
     over oldest-first and the answer needs the conversation nearest the question, so a trim
     that kept the wrong end would still pass a length assertion.
     """
@@ -5019,7 +4850,7 @@ async def test_render_history_survives_a_message_the_collector_chokes_on(
 ) -> None:
     """An unexpected message shape costs that message its files, never the whole reply.
 
-    The budget walk runs inside `_prepare_reply_context`'s gather, which has no except of its
+    The budget walk runs inside `ReplyContextBuilder.build`'s gather, which has no except of its
     own, so anything raised here would reach `on_message`'s generic error path and lose the
     answer. Both renders already swallow this same collect step for exactly that reason.
     """
@@ -5068,11 +4899,8 @@ async def test_render_history_degrades_over_budget_attachments_to_markers(
     assert all(part["type"] != "input_text" for part in newest[1:])
 
 
-async def test_gen_reply_routes_and_handlers_without_api(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
-    del memory_isolated_dir
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "QA"
@@ -5151,8 +4979,6 @@ async def test_gen_reply_routes_and_handlers_without_api(
             return "done"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
-    # The reply path now always reads memory, so this test takes `memory_isolated_dir` to
-    # keep it off the live store rather than relying on a caller-side switch.
     await _reply_via_pipeline(cog=cog, message=message, system_prompt="system")
     assert _recorded(cog).responses.create_streams[-1] is True
     assert streamed[-1] is message
@@ -5584,7 +5410,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
 async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> None:
     """IMAGE route, hosting off + oversize: the native attach is attempted and its error propagates.
 
-    With no host available the deliverable cannot degrade to a URL, so `_deliver_generated_media`
+    With no host available the deliverable cannot degrade to a URL, so `MediaReplyRoutes._deliver`
     falls through to the native attach (which Discord 400s on oversize); that error must stay on the
     route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
     """
@@ -5718,6 +5544,68 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
     assert _recorded(cog).responses.create_streams == [True]
     # An edit keeps the source clip's ratio, so no aspect_ratio is sent (omni 400s it otherwise).
     assert "aspect_ratio" not in _recorded_video(cog).create_response_formats[0]
+
+
+_SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENIED"}}, None)
+
+
+@pytest.mark.parametrize(
+    ("uploaded", "expected"),
+    [
+        (_SOURCE_UPLOAD_REFUSED, _SOURCE_UPLOAD_REFUSED),
+        (
+            SimpleNamespace(name=None, uri=None, state=FileState.ACTIVE),
+            RuntimeError("Source video upload returned no file name"),
+        ),
+        (
+            SimpleNamespace(name="files/vid", uri=None, state=FileState.PROCESSING),
+            RuntimeError("Source video did not become ACTIVE before the deadline"),
+        ),
+        (
+            SimpleNamespace(name="files/vid", uri=None, state=FileState.FAILED),
+            RuntimeError("Source video upload failed: state=FileState.FAILED"),
+        ),
+    ],
+    ids=["sdk-error", "no-name", "never-active", "failed-state"],
+)
+async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
+    monkeypatch: pytest.MonkeyPatch, uploaded: object, expected: Exception
+) -> None:
+    """An edit whose clip never uploads fails the VIDEO route with that very error, before omni.
+
+    The clip is the deliverable's input, so there is nothing to degrade to: the route's caller
+    gets the SDK's own exception, or the one naming which step of the upload broke, and it is
+    what the user is shown.
+    """
+    cog = _cog()
+
+    async def fake_video_sources(builder: object, message: object) -> list[LoadedMedia]:
+        """Returns a fake raw source clip for the message."""
+        del builder, message
+        return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
+
+    async def upload(*, file: object, config: dict[str, str]) -> object:
+        """Refuses the upload or hands back the file under test."""
+        del file, config
+        if isinstance(uploaded, Exception):
+            raise uploaded
+        return uploaded
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.0)
+    _recorded_video(cog).aio.files.upload = upload
+    message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
+
+    with pytest.raises(type(expected)) as raised:
+        await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
+            user_prompt="make it snowy", context_task=asyncio.create_task(_ready_reply_context())
+        )
+
+    assert type(raised.value) is type(expected)
+    assert str(raised.value) == str(expected)
+    assert _recorded_video(cog).create_inputs == []
 
 
 async def test_download_output_video_retries_until_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5893,22 +5781,12 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
         "expected_capabilities",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
-        ("VIDEO", "_handle_video_reply", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
-        (
-            "QA",
-            "_handle_message_reply",
-            [HISTORY_MESSAGE_LIMIT],
-            [True],
-            [True],
-            [True],
-            [True],
-            [True],
-        ),
+        ("IMAGE", "handle_image", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
+        ("VIDEO", "handle_video", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
+        ("QA", "stream_answer", [HISTORY_MESSAGE_LIMIT], [True], [True], [True], [True], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     route: Literal["IMAGE", "VIDEO", "QA"],
     expected_call: str,
@@ -5956,7 +5834,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         del self
         await context_task
         prompts.append(user_prompt)
-        calls.append("_handle_image_reply")
+        calls.append("handle_image")
 
     async def fake_video_handler(
         self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
@@ -5965,7 +5843,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         del self
         await context_task
         prompts.append(user_prompt)
-        calls.append("_handle_video_reply")
+        calls.append("handle_video")
 
     voice_flags: list[bool] = []
     image_flags: list[bool] = []
@@ -5975,7 +5853,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
-    async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors _handle_message_reply's signature
+    async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors AnswerTurn.stream_answer's signature
         self: object,
         *,
         system_prompt: str,
@@ -5991,7 +5869,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     ) -> None:
         """Records slow message handler dispatch."""
         del yt_url, allow_research
-        calls.append("_handle_message_reply")
+        calls.append("stream_answer")
         voice_flags.append(allow_voice)
         image_flags.append(allow_image)
         music_flags.append(allow_music)
@@ -6012,9 +5890,9 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     # Route, effort and recall are one triage call on every route, IMAGE and VIDEO included.
     assert len(_recorded(cog).responses.parse_models) == 1
     assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
-    # QA consumes the speculative context as-is; IMAGE/VIDEO discard it after their media is
-    # on screen. Every route now issues exactly one prep request, so what is asserted is which
-    # request was made, not the order two of them arrived in.
+    # Every route consumes the one speculative context, IMAGE/VIDEO once their media is on
+    # screen, so each issues exactly one prep request and what is asserted is which request was
+    # made, not the order two of them arrived in.
     assert Counter(prep_requests) == Counter(expected_prep)
     # Voice is enabled on QA (the only route that streams a reply here); IMAGE/VIDEO never do.
     assert Counter(voice_flags) == Counter(expected_voice)
@@ -6041,9 +5919,9 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 ) -> None:
     """Cancelling the speculative prep must not cancel the shared upload task.
 
-    IMAGE and VIDEO cancel the speculative prep while their media persona reply still reuses
-    `parts_task`; an unshielded `await parts_task` inside prep would propagate the cancellation
-    and make that reply fail with CancelledError.
+    A media route whose generation fails discards the prep it was handed while the turn still
+    owns `parts_task` and drains it; an unshielded `await parts_task` inside prep would take the
+    upload down with the prep instead.
     """
     cog = _cog()
     release = asyncio.Event()
@@ -6085,7 +5963,7 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies bot messages, unmentioned guild messages, empty prompts, and errors."""
     cog = _cog()
@@ -6134,14 +6012,14 @@ async def test_gen_reply_on_message_early_returns_and_errors(
 
     # Source deleted before the error embed lands: it falls back to an unparented send.
     deleted = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
-    deleted.reply_error = _deleted_source_error()
+    deleted.reply_error = make_invalid_form_body()
     await cog.on_message(message=as_message(fake=deleted))
     assert deleted.replies == []
     assert deleted.channel.sent[0].embed is not None
 
 
 async def test_a_reply_records_the_route_it_took(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
     """One reply turn is one usage record, named after the route that served it."""
     cog = _cog()
@@ -6197,7 +6075,7 @@ async def test_a_reply_records_the_route_it_took(
 
 
 async def test_a_failed_reply_records_that_it_never_routed(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
     """Someone still talked to the bot, so a failure before the router is still recorded."""
     cog = _cog()
@@ -6237,7 +6115,7 @@ async def test_a_failed_reply_records_that_it_never_routed(
 
 
 async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The picks are never resolved when the route raises, so the turn must cancel the build."""
     cog = _cog()
@@ -6408,7 +6286,7 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
 
 
 async def test_on_message_consumes_speculative_context_on_image_route(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The IMAGE route hands its speculative context to the image handler, not discards it."""
     cog = _cog()
@@ -6560,51 +6438,35 @@ def _link_config() -> LLMConfig:
 @pytest.mark.parametrize(
     "case",
     [
-        (
-            "threads",
-            "build_threads_context_messages",
-            "https://www.threads.com/@a/post/ABC123",
-            has_threads_context_block,
-        ),
+        ("threads", "build_threads_context_messages", "https://www.threads.com/@a/post/ABC123"),
         (
             "facebook",
             "build_facebook_context_messages",
             "https://www.facebook.com/groups/123/posts/456/",
-            has_facebook_context_block,
         ),
         (
             "instagram",
             "build_instagram_context_messages",
             "https://www.instagram.com/p/Dc5eNjYkoZE/",
-            has_instagram_context_block,
         ),
-        (
-            "douyin",
-            "build_douyin_context_messages",
-            "https://v.douyin.com/abc123",
-            has_douyin_context_block,
-        ),
+        ("douyin", "build_douyin_context_messages", "https://v.douyin.com/abc123"),
         (
             "bilibili",
             "build_bilibili_context_messages",
             "https://www.bilibili.com/video/BV1jpK86hEc8",
-            has_bilibili_context_block,
         ),
         (
             "twitter",
             "build_twitter_context_messages",
             "https://x.com/Dbacks/status/1628549742539194368",
-            has_twitter_context_block,
         ),
     ],
 )
 async def test_on_message_does_not_start_incidental_link_context(
-    memory_isolated_dir: object,
-    monkeypatch: pytest.MonkeyPatch,
-    case: tuple[str, str, str, Callable[..., bool]],
+    monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str]
 ) -> None:
     """An incidental registered link starts no source work and injects no source claim."""
-    source, builder, url, has_context_block = case
+    source, builder, url = case
     cog = _cog()
     route = RouteClassification(decision="QA")
     _recorded(cog).responses.output_parsed = route
@@ -6633,15 +6495,14 @@ async def test_on_message_does_not_start_incidental_link_context(
     message = FakeMessage(content=f"<@999> unrelated question {url}", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
-    assert source not in route.link_context_sources
     assert called == []
-    assert not has_context_block(
-        request=request_input(responses=_recorded(cog).responses, phase="answer")
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source=source
     )
 
 
 async def test_on_message_injects_douyin_context_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A QA message with a Douyin URL injects the read post just before the current message."""
     cog = _cog()
@@ -6674,9 +6535,9 @@ async def test_on_message_injects_douyin_context_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
-    assert extract_douyin_context_block(request=answer) == "MOCK DOUYIN POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
+    assert extract_link_context_block(request=answer, source="douyin") == "MOCK DOUYIN POST BODY"
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0])
@@ -6687,7 +6548,7 @@ async def test_on_message_injects_douyin_context_before_current(
 
 
 async def test_on_message_reads_a_linked_post_without_a_gemini_key(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A keyless deployment still gets the linked post's text, not a generic failure.
 
@@ -6726,13 +6587,11 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     await cog.on_message(message=as_message(fake=message))
 
     assert clients == [None]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
 
 
-async def test_on_message_skips_a_non_post_douyin_link(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """A profile or live-room link is not a post, so reading it would only waste a request."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -6766,13 +6625,11 @@ async def test_on_message_skips_a_non_post_douyin_link(
     await cog.on_message(message=as_message(fake=message))
 
     assert calls == []
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert not has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert not has_link_context_block(request=answer, source="douyin")
 
 
-async def test_on_message_douyin_media_ingest_kill_switch(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -6861,7 +6718,7 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
 
 
 async def test_on_message_douyin_grace_timeout_injects_notice(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A build slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
@@ -6894,13 +6751,13 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
     assert "did not respond in time" in str(answer)
 
 
 async def test_on_message_link_context_grace_starts_when_route_finishes(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A builder that finishes after the deadline cannot win while preparation is still running."""
     cog = _cog()
@@ -6959,13 +6816,13 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "did not respond in time" in str(answer)
     assert cancelled == [True]
 
 
 async def test_on_message_keeps_link_context_finished_before_deadline(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A builder completed before the deadline remains usable after delayed preparation."""
     cog = _cog()
@@ -7018,13 +6875,13 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
     assert "did not respond in time" not in str(answer)
 
 
 async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resolver lets a deadline-cancelled builder finish cleanup before injecting its notice."""
     cog = _cog()
@@ -7103,12 +6960,12 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         cleanup_release.set()
         await message_task
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "did not respond in time" in str(answer)
 
 
 async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup(  # noqa: PLR0915 -- controls the complete cancellation timeline
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
     cog = _cog()
@@ -7237,7 +7094,7 @@ async def test_run_until_deadline_keeps_result_completed_before_delayed_resume()
 
 
 async def test_on_message_selected_link_contexts_share_one_post_route_grace(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sequential resolution cannot grant every selected builder a fresh timeout."""
     cog = _cog()
@@ -7286,12 +7143,12 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert str(answer).count("did not respond in time") == 2
 
 
 async def test_on_message_injects_threads_context_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
@@ -7324,9 +7181,9 @@ async def test_on_message_injects_threads_context_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen_urls == [url]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_threads_context_block(request=answer)
-    assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="threads")
+    assert extract_link_context_block(request=answer, source="threads") == "MOCK THREADS POST BODY"
     # A persistent marker says the post was read, the same one the expansion cog adds.
     assert THREADS_EMOJI in message.added_reactions
 
@@ -7340,7 +7197,7 @@ async def test_on_message_injects_threads_context_before_current(
 
 
 async def test_on_message_injects_threads_context_from_the_replied_to_message(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mentioning the bot in a reply to someone else's Threads link still reads that post.
 
@@ -7380,35 +7237,29 @@ async def test_on_message_injects_threads_context_from_the_replied_to_message(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen_urls == [_THREADS_POST_URL]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert extract_link_context_block(request=answer, source="threads") == "MOCK THREADS POST BODY"
 
 
 # Per clip source: the gen_reply global its builder is monkeypatched onto, a URL its regex
 # really matches (a short BV id matches nothing, so the assertions would hold either way),
-# the block its fake returns, and the predicate that spots that block in the answer input.
+# and the block its fake returns.
 _CLIP_SOURCE_CASES = {
-    "douyin": (
-        "build_douyin_context_messages",
-        "https://v.douyin.com/abc123",
-        _douyin_block,
-        has_douyin_context_block,
-    ),
+    "douyin": ("build_douyin_context_messages", "https://v.douyin.com/abc123", _douyin_block),
     "bilibili": (
         "build_bilibili_context_messages",
         "https://www.bilibili.com/video/BV1jpK86hEc8",
         _bilibili_block,
-        has_bilibili_context_block,
     ),
 }
 
 
 @pytest.mark.parametrize("name", list(_CLIP_SOURCE_CASES))
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """Only the discussion sources widened to it; the clip sources stay on the current message."""
-    builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
+    builder, url, block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
         decision="QA", link_context_sources=["douyin", "bilibili"]
@@ -7439,7 +7290,9 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     await cog.on_message(message=as_message(fake=message))
 
     assert called == []
-    assert not has_block(request=request_input(responses=_recorded(cog).responses, phase="answer"))
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source=name
+    )
 
 
 async def test_on_message_does_not_start_threads_context_on_image_route(
@@ -7493,7 +7346,7 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
 
 
 async def test_on_message_skips_threads_context_without_url(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
@@ -7525,13 +7378,13 @@ async def test_on_message_skips_threads_context_without_url(
     await cog.on_message(message=as_message(fake=message))
 
     assert called == []
-    assert not has_threads_context_block(
-        request=request_input(responses=_recorded(cog).responses, phase="answer")
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source="threads"
     )
 
 
 async def test_on_message_threads_context_grace_timeout_injects_notice(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
@@ -7567,13 +7420,13 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
 
     # The slow parse is dropped, but a deterministic timeout notice keeps the model from
     # claiming it cannot open the link, and the answer still streams.
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_threads_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="threads")
     assert "did not respond in time" in str(answer)
 
 
 async def test_on_message_injects_bilibili_context_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A QA message with a Bilibili URL injects the read video just before the current message."""
     cog = _cog()
@@ -7606,9 +7459,11 @@ async def test_on_message_injects_bilibili_context_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_bilibili_context_block(request=answer)
-    assert extract_bilibili_context_block(request=answer) == "MOCK BILIBILI VIDEO BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="bilibili")
+    assert (
+        extract_link_context_block(request=answer, source="bilibili") == "MOCK BILIBILI VIDEO BODY"
+    )
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
@@ -7620,41 +7475,35 @@ async def test_on_message_injects_bilibili_context_before_current(
 
 _DiscussionSource = Literal["facebook", "instagram", "twitter"]
 
-_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]] = {
+_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str]] = {
     "facebook": (
         "build_facebook_context_messages",
         "https://www.facebook.com/groups/123/posts/456/",
         FACEBOOK_CONTEXT_SEPARATOR,
-        has_facebook_context_block,
-        extract_facebook_context_block,
     ),
     "instagram": (
         "build_instagram_context_messages",
         "https://www.instagram.com/p/Dc5eNjYkoZE/",
         INSTAGRAM_CONTEXT_SEPARATOR,
-        has_instagram_context_block,
-        extract_instagram_context_block,
     ),
     "twitter": (
         "build_twitter_context_messages",
         "https://x.com/Dbacks/status/1628549742539194368",
         TWITTER_CONTEXT_SEPARATOR,
-        has_twitter_context_block,
-        extract_twitter_context_block,
     ),
 }
 
 
 @pytest.mark.parametrize("name", list(_DISCUSSION_SOURCE_CASES))
 async def test_on_message_injects_a_selected_discussion_source_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
+    monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
 ) -> None:
     """The post the router selected reaches the answer input, ahead of the current message.
 
     Threads and Douyin already pin this; the three here were wired without it, so a source whose
     registry entry was right but whose block never spliced would have gone unnoticed.
     """
-    builder, url, separator, has_block, extract_block = _DISCUSSION_SOURCE_CASES[name]
+    builder, url, separator = _DISCUSSION_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
         decision="QA", link_context_sources=[name]
@@ -7684,9 +7533,9 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_block(request=answer)
-    assert extract_block(request=answer) == "MOCK POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source=name)
+    assert extract_link_context_block(request=answer, source=name) == "MOCK POST BODY"
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(separator.split("\n", 1)[0])
@@ -7696,9 +7545,7 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
     assert separator_index < current_index
 
 
-async def test_on_message_skips_a_non_video_bilibili_link(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """A live-room or space link is not a watchable video, so the build never starts."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -7732,12 +7579,12 @@ async def test_on_message_skips_a_non_video_bilibili_link(
     await cog.on_message(message=as_message(fake=message))
 
     assert calls == []
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert not has_bilibili_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert not has_link_context_block(request=answer, source="bilibili")
 
 
 async def test_on_message_bilibili_media_ingest_kill_switch(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
@@ -7829,7 +7676,7 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
 
 
 async def test_on_message_bilibili_keyless_disables_media_ingest(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A blank Gemini key turns the ingest flag off even with the kill-switch on.
 
@@ -7872,7 +7719,7 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
 
 
 async def test_on_message_finally_backstop_cancels_link_tasks(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure after QA routing still cancels its selected in-flight link build."""
     cog = _cog()
@@ -7936,7 +7783,7 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
 
 
 async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
     cog = _cog()
@@ -8020,7 +7867,7 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
 
 
 async def test_on_message_bilibili_grace_timeout_injects_notice(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A build slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
@@ -8054,8 +7901,8 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_bilibili_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="bilibili")
     assert "did not respond in time" in str(answer)
 
 
@@ -8080,7 +7927,6 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     ],
 )
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     selected_sources: list[
         Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
@@ -8147,7 +7993,7 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     current_index = next(
         index for index, head in enumerate(headers) if head.startswith("==== Current Message")
@@ -8175,7 +8021,7 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
 
 @pytest.mark.parametrize(argnames="describe_capabilities", argvalues=[True, False])
 async def test_handle_message_reply_leads_with_the_capability_reference(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, describe_capabilities: bool
+    monkeypatch: pytest.MonkeyPatch, describe_capabilities: bool
 ) -> None:
     """The feature reference leads the answer input, and only when the route asked for it.
 
@@ -8183,7 +8029,6 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     where it costs the least against a prefix cache. A caller that leaves the flag off must
     get none of it.
     """
-    del memory_isolated_dir
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
@@ -8199,9 +8044,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     )
 
     header = str(render_capabilities_block()["content"]).split("\n", 1)[0]
-    blocks = list(
-        iter_text_blocks(request=request_input(responses=_recorded(cog).responses, phase="answer"))
-    )
+    blocks = list(iter_text_blocks(request=request_input(responses=_recorded(cog).responses)))
     carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
     assert carried == ([0] if describe_capabilities else [])
     if describe_capabilities:
@@ -8210,7 +8053,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
 
 
 async def test_handle_message_reply_orders_reference_after_memory_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The answer input puts memory first, then the reference message, then the current message.
 
@@ -8218,7 +8061,6 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     reply pair stays adjacent and reads as the primary context, and the strengthened headers
     spell out the reply relationship.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     monkeypatch.setattr(
@@ -8239,7 +8081,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     blocks = list(iter_text_blocks(request=answer))
     memory_index = next(
         index
@@ -8262,7 +8104,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 
 
 async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The history separator is a label; where the subject may come from is a developer rule.
 
@@ -8270,10 +8112,9 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
     that competed with the Reference Message's own claim to be the primary context. Behaviour
     rules belong in `instructions`, which outranks anything in `input`, so the rule moved there
     and the separator kept only the naming. This render also feeds the media persona reply and
-    the phase-1 extraction transcript, neither of which is answering a question, which is the
+    the memory review's transcript, neither of which is answering a question, which is the
     second reason the rule cannot live on the block itself.
     """
-    del memory_isolated_dir
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
@@ -8294,7 +8135,7 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     history_header = next(
         text
         for _role, text in iter_text_blocks(request=answer)
@@ -8320,7 +8161,7 @@ def test_the_subject_rule_rides_the_developer_prompt_with_its_recap_exception() 
 def test_only_the_replied_to_message_claims_the_current_message_is_about_it() -> None:
     """The one Reference Message block claims the Current Message, and nothing competes with it.
 
-    A reply renders exactly one of these (`_replied_to_message`), so the attachment sentence has
+    A reply renders exactly one of these (`replied_to_message`), so the attachment sentence has
     no sibling. The `An earlier message in the reply thread` wording that used to ride an
     ancestor block went with #593 and must not come back: a second block asserting it is what
     the Current Message is about is the ambiguity this sentence exists to remove.
@@ -8336,10 +8177,9 @@ def test_only_the_replied_to_message_claims_the_current_message_is_about_it() ->
 
 
 async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The answer injects server memory, user memory, then the tone note before the current message."""
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -8364,7 +8204,7 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
 
     await _reply_via_pipeline(cog=cog, message=message, picks=["42"])
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     tone = extract_tone_block(request=answer)
     assert tone is not None
     assert "語氣輕鬆" in tone
@@ -8394,10 +8234,9 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
 
 
 async def test_reply_context_always_injects_the_author_tone_block(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The author's tone note rides every reply, with no selection phase of its own."""
-    del memory_isolated_dir
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
     monkeypatch.setattr(
@@ -8411,70 +8250,25 @@ async def test_reply_context_always_injects_the_author_tone_block(
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert not has_memory_context_block(request=answer)
     tone = extract_tone_block(request=answer)
     assert tone is not None
     assert "語氣輕鬆" in tone
 
 
-def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies model properties and provider-specific tool dispatch."""
-    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
-    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    catalog = RuntimeModelCatalog()
-    cog = ReplyGeneratorCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    # A real cog builds no toolkit until a reply needs one, which is what keeps an
-    # unconfigured deployment from constructing a Gemini client it can never use.
-    assert "toolkit" not in cog.__dict__
-    assert isinstance(catalog.fast_model, ModelSettings)
-    assert "image" in catalog.image_model.name
-    assert "omni" in catalog.video_model.name
-    # Code execution is omitted on purpose: it 400s the request on file attachments.
-    assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
-    assert ModelSettings(name="claude-test").tools == [
-        {"type": "web_search_20260209", "name": "web_search"},
-        {"type": "web_fetch_20260209", "name": "web_fetch"},
-    ]
-    assert ModelSettings(name="openai-test").tools == [{"type": "web_search"}]
-
-
-def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
+def test_the_cog_builds_no_toolkit_until_a_reply_needs_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies slow-model peak-hour and off-peak dispatch."""
-
-    def model_snapshot_at(now: datetime) -> tuple[ModelSettings, bool, bool]:
-        """Returns peak-sensitive model settings with the catalog clock pinned to `now`."""
-
-        def fixed_now(tz: object) -> datetime:
-            """Returns the pinned timestamp."""
-            assert tz is UTC
-            return now
-
-        monkeypatch.setattr("discordbot.typings.models.datetime", SimpleNamespace(now=fixed_now))
-        catalog = RuntimeModelCatalog()
-        return catalog.slow_model, catalog.is_peak, catalog.model_dump()["is_peak"] is True
-
-    peak_start = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
-    peak_end = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
-    before_peak = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=7, tzinfo=UTC))
-    after_peak = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
-    weekend = model_snapshot_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
-
-    assert peak_start[1:] == (True, True)
-    assert peak_end[1:] == (True, True)
-    assert before_peak[1:] == (False, False)
-    assert after_peak[1:] == (False, False)
-    assert weekend[1:] == (False, False)
-    # No tier splits on the peak window, so every hour answers on the same model. Asserted
-    # across all five rather than per branch, because the per-branch form passes either way
-    # once there is one branch; the window itself is still guarded above.
-    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
+    """An unconfigured deployment never constructs a Gemini client it can never use."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    cog = ReplyGeneratorCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    assert "toolkit" not in cog.__dict__
 
 
 async def test_handle_message_reply_answers_with_builtins_and_deterministic_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
@@ -8548,18 +8342,18 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     ]
 
     # Answer keeps the built-in tools and the deterministic author memory.
-    answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
+    answer_idx = request_index(responses=_recorded(cog).responses)
     assert _recorded(cog).responses.create_tools[answer_idx] == list(
         _toolkit(cog=cog).runtime_models.slow_model.tools
     )
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
     )
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "喜歡簡短回覆" in (extract_user_memory_blocks(request=answer).get(1) or "")
     assert 42 not in extract_user_memory_blocks(request=answer)
 
-    # Extraction still receives a memory-free transcript.
+    # The memory review still receives a memory-free transcript.
     scheduled_list = scheduled[0]["message_list"]
     assert isinstance(scheduled_list, list)
     assert "喜歡簡短回覆" not in str(scheduled_list)
@@ -8576,7 +8370,7 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
 
 
 async def test_handle_message_reply_without_stored_memory_keeps_instructions(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
@@ -8634,7 +8428,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
+    answer_idx = request_index(responses=_recorded(cog).responses)
     assert _recorded(cog).responses.create_streams == [True]
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
@@ -8643,7 +8437,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 
 
 async def test_memory_markers_route_by_the_message_not_by_the_note(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Whose memory a note lands in is decided from the message, never from the marker body.
 
@@ -8796,9 +8590,8 @@ def test_build_recall_allowlist_escapes_mention_labels() -> None:
     assert "@everyone" not in allowed[1].credit_label
 
 
-def test_recall_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
+def test_recall_user_memories_enforces_allowlist() -> None:
     """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
-    del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=1), text="甲的記憶")
     allowed = {
         1: RecallCandidate(prompt_label="A (a)", credit_label="A (a)"),
@@ -8818,9 +8611,7 @@ def test_recall_user_memories_enforces_allowlist(memory_isolated_dir: object) ->
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
-    memory_isolated_dir: object,
-) -> None:
+def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row() -> None:
     """A member named only by the nickname table is counted, not named and not id-dropped.
 
     The row is community prose the model reads; it can never be the public footer credit
@@ -8830,7 +8621,6 @@ def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
     channel. The bare id that used to fill the gap read as a memory the bot had just
     written rather than as a person it had read, so the count is what the footer gets.
     """
-    del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
 
     memories = recall_user_memories(
@@ -8894,11 +8684,7 @@ _COMPARTMENT_FACTS = {
     ids=["same-guild", "other-guild", "owner-own-dm", "other-owner-in-dm", "group-dm"],
 )
 def test_memory_read_opens_only_the_permitted_compartments(
-    memory_isolated_dir: object,
-    context: RecallContext,
-    compartments: set[str],
-    present: list[str],
-    absent: list[str],
+    context: RecallContext, compartments: set[str], present: list[str], absent: list[str]
 ) -> None:
     """Where a reply happens decides which of an owner's compartments it may open.
 
@@ -8909,7 +8695,6 @@ def test_memory_read_opens_only_the_permitted_compartments(
     `recall_user_memories`, the one call every reply path reads user memory through, so
     a compartment that is not listed is one whose facts never reach the model.
     """
-    del memory_isolated_dir
     for compartment, text in _COMPARTMENT_FACTS.items():
         _seed_fact(scope=user_scope(user_id=1), text=text, compartment=compartment)
 
@@ -8959,9 +8744,8 @@ def test_build_recall_context_by_channel_kind() -> None:
     assert group_context.dm_partner_id is None
 
 
-def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_dir: object) -> None:
+def test_recall_user_memories_fully_locked_reads_as_no_memory() -> None:
     """A memory stored only in another guild resolves to the no-memory signal, uncredited."""
-    del memory_isolated_dir
     _seed_fact(
         scope=user_scope(user_id=1),
         text="他群祕密",
@@ -9073,7 +8857,6 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
     ],
 )
 async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- parametrized columns
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     seeded: dict[int, str],
     server_nick: tuple[int, str, str] | None,
@@ -9090,7 +8873,6 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     are both the pipeline's own. Injection is asserted by id and the offer structurally, never
     by a sentinel substring over a serialized request.
     """
-    del memory_isolated_dir
     cog = _cog()
     for uid, body in seeded.items():
         _seed_fact(scope=user_scope(user_id=uid), text=body)
@@ -9128,7 +8910,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates=expected_candidates)
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     # An allowlisted-but-memoryless user gets a placeholder block, not a leak; the boundary is
     # which ids' real memory reaches the model, so placeholder sections are filtered out.
     injected = {
@@ -9143,10 +8925,9 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
 
 
 async def test_deterministic_memories_are_author_reply_mentions_ordered_and_deduped(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deterministic participants stay author-first and never include the bot twice."""
-    del memory_isolated_dir
     cog = _cog()
     for user_id in (1, 2, 3, 999):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
@@ -9169,16 +8950,15 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert list(extract_user_memory_blocks(request=answer)) == [1, 2, 3]
     assert _recorded(cog).responses.create_streams == [True]
 
 
 async def test_history_only_users_are_not_memory_candidates(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A history author is neither deterministic nor an optional nickname candidate."""
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=2), text="歷史使用者記憶")
@@ -9202,19 +8982,18 @@ async def test_history_only_users_are_not_memory_candidates(
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates=set())
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {1}
 
 
 @pytest.mark.parametrize("where", ["private-thread", "group-dm", "dm"])
 async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, where: str
+    monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
     """Outside a public guild channel, an absent nickname-table member is never offered.
 
     The route gets the plain shape, so a pick staged for that member has nowhere to land.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -9249,19 +9028,18 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates=set())
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {1}
 
 
 async def test_optional_picks_use_only_the_remaining_memory_budget(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deterministic users fill seven slots, leaving one optional alias slot.
 
     The route names a deterministic participant first, which must not take that slot: only the
     offered candidates can fill it, in the order the route named them.
     """
-    del memory_isolated_dir
     cog = _cog()
     for user_id in (*range(1, 8), 42, 43):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
@@ -9286,12 +9064,12 @@ async def test_optional_picks_use_only_the_remaining_memory_budget(
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates={42, 43})
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {*range(1, 8), 42}
 
 
 async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The oblique-reference offer must not be gated on the deterministic lookup finding something.
 
@@ -9300,7 +9078,6 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
     the case it exists for (#663). Nothing downstream needs a non-empty starting list: the
     picked memories build the block from scratch.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=42), text="李董記憶")
     _seed_fact(
@@ -9322,20 +9099,17 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
     )
 
     _assert_route_offered(cog=cog, candidates={42})
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {42}
 
 
-async def test_an_ask_turn_offers_the_route_no_candidates(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     """`/ask` in a server with a nickname table still gets the plain route shape.
 
     Its synthesized message carries no guild while the surface knows which server it is in, and
     the table is read off the message: the write side can never refresh it from `/ask`, so the
     route there is offered nobody and a pick staged for it has nowhere to land.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -9419,7 +9193,6 @@ async def test_an_ask_turn_offers_the_route_no_candidates(
     ],
 )
 async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametrized columns
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     seeded_ids: list[int],
     server_nick: tuple[int, str, str] | None,
@@ -9438,7 +9211,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     their Discord label. The line opens on 讀了 because the write notes share this corner of the
     reply and a reader has to be able to tell them apart at a glance.
     """
-    del memory_isolated_dir
     cog = _cog()
     for uid in seeded_ids:
         _seed_fact(scope=user_scope(user_id=uid), text=f"記憶{uid}")
@@ -9476,10 +9248,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
 
 
 async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_picks(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A triage answer outside its schema loses the optional pick, never the turn."""
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="甲")
     _seed_fact(scope=user_scope(user_id=42), text="不該注入的第三人")
@@ -9513,7 +9284,7 @@ async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_p
 
     # The answer request still ran with the deterministic memory only.
     assert (message.replies[0].content or "").startswith("照常回答")
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "甲" in (extract_user_memory_blocks(request=answer).get(1) or "")
     assert 42 not in extract_user_memory_blocks(request=answer)
 
@@ -9521,10 +9292,10 @@ async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_p
 def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     """The optional second -# memory line is stripped together with the usage footer."""
     body = "答案內容"
-    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"
+    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 Tester (tester) 的記憶"
     assert USAGE_FOOTER_RE.sub("", f"{body}{double}") == body
-    # Backward compatible: a single-line footer still strips cleanly.
-    single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
+    # A footer with no memory line strips cleanly too.
+    single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
     assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body
 
 
@@ -9537,8 +9308,7 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     ],
     ids=["guild-public", "guild-private", "dm"],
 )
-async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- parametrized columns
-    memory_isolated_dir: object,
+async def test_handle_message_reply_server_memory_gating(
     monkeypatch: pytest.MonkeyPatch,
     has_guild: bool,
     channel_public: bool,
@@ -9551,7 +9321,6 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     guild turn, the per-user write always runs, and the per-server write additionally needs a
     public guild channel.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=server_scope(server_id=1), text="社群風格", section="profile")
     scheduled: list[dict[str, object]] = []
@@ -9573,7 +9342,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
 
     server_scope_value = server_scope(server_id=1)
@@ -9598,23 +9367,6 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
             assert (
                 _toolkit(cog=cog).server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
             )
-
-
-def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
-    """Only ids under the `## 成員稱呼` section are returned, labelled by the table row."""
-    memory = (
-        "## 伺服器輪廓\n社群\n\n"
-        "## 成員稱呼\n"
-        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
-        "* Bob(社群暱稱:阿伯)[id: 456]\n\n"
-        "## 近期脈絡\n* [2026-06-10] 某人 [id: 789] 提到活動\n"
-    )
-    allowed = allowlist_ids_from_server_memory(memory=memory)
-    assert set(allowed) == {123, 456}
-    assert "李董" in allowed[123]
-    assert "[id:" not in allowed[123]
-    # An id outside the nickname section (e.g. in 近期脈絡) is never exposed.
-    assert 789 not in allowed
 
 
 def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
@@ -10071,15 +9823,12 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
 
-async def test_deterministic_memory_lookup_skips_locked_author_memory(
-    memory_isolated_dir: object,
-) -> None:
+async def test_deterministic_memory_lookup_skips_locked_author_memory() -> None:
     """Deterministic lookup injects nothing when memory lives in another guild.
 
     The direct path opens exactly the compartments the optional lookup does, so a
     pick cannot reach a directory the resolver would not have opened.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(
         scope=user_scope(user_id=1),
@@ -10141,7 +9890,7 @@ def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
 
 
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
@@ -10213,13 +9962,11 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     assert by_scope[user_job_scope]["token"] == 11
     assert by_scope[server_job_scope]["writer"] is server_sentinel
     # Every over-threshold scope is swept, including the resumed ones: the scope
-    # lock makes the resumed extraction and the consolidation sweep idempotent.
+    # lock makes the resumed review and the consolidation sweep idempotent.
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
 
 
-async def test_on_ready_resume_runs_once(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """on_ready guards the resume so a gateway reconnect does not re-sweep."""
     cog = _cog(bot_user_id=999)
     cog._tasks = set()
