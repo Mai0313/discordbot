@@ -21,7 +21,7 @@ from openai import APIError, APITimeoutError, BadRequestError
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
-from pydantic import ValidationError
+from pydantic import Field, BaseModel, ValidationError
 import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
@@ -35,7 +35,14 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply import streaming as streaming_module
-from discordbot.typings.emojis import THREADS_EMOJI
+from discordbot.typings.emojis import (
+    DOUYIN_EMOJI,
+    THREADS_EMOJI,
+    TWITTER_EMOJI,
+    BILIBILI_EMOJI,
+    FACEBOOK_EMOJI,
+    INSTAGRAM_EMOJI,
+)
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import (
     ModelSettings,
@@ -142,6 +149,7 @@ from discordbot.cogs.gen_reply.speculation import (
     await_deadline_bound_task,
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
+from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.services.memory.server_prompts import (
@@ -150,13 +158,7 @@ from discordbot.services.memory.server_prompts import (
 )
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
-from discordbot.cogs.gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
-from discordbot.cogs.gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
-from discordbot.cogs.gen_reply.link_sources.twitter import TWITTER_CONTEXT_SEPARATOR
-from discordbot.cogs.gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
-from discordbot.cogs.gen_reply.link_sources.facebook import FACEBOOK_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
-from discordbot.cogs.gen_reply.link_sources.instagram import INSTAGRAM_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
@@ -172,6 +174,7 @@ from tests.helpers.casting import (
     make_media_hosting_config,
 )
 from tests.helpers.llm_input import (
+    LINK_SOURCE_BLOCKS,
     block_index,
     request_index,
     request_input,
@@ -6145,33 +6148,6 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     assert received == [prepared]
 
 
-def _threads_block(body: str = "MOCK THREADS POST BODY") -> list[dict[str, object]]:
-    """Builds a builder-shaped Threads block: the real separator plus a user content message."""
-    return [
-        {"role": "system", "content": [{"type": "input_text", "text": THREADS_CONTEXT_SEPARATOR}]},
-        {"role": "user", "content": [{"type": "input_text", "text": body}]},
-    ]
-
-
-def _douyin_block(body: str = "MOCK DOUYIN POST BODY") -> list[dict[str, object]]:
-    """Builds a builder-shaped Douyin block: the real separator plus a user content message."""
-    return [
-        {"role": "system", "content": [{"type": "input_text", "text": DOUYIN_CONTEXT_SEPARATOR}]},
-        {"role": "user", "content": [{"type": "input_text", "text": body}]},
-    ]
-
-
-def _bilibili_block(body: str = "MOCK BILIBILI VIDEO BODY") -> list[dict[str, object]]:
-    """Builds a builder-shaped Bilibili block: the real separator plus a user content message."""
-    return [
-        {
-            "role": "system",
-            "content": [{"type": "input_text", "text": BILIBILI_CONTEXT_SEPARATOR}],
-        },
-        {"role": "user", "content": [{"type": "input_text", "text": body}]},
-    ]
-
-
 def _link_config() -> LLMConfig:
     """The config fields a QA reply carrying a linked post actually reads."""
     return _config_stub(
@@ -6187,294 +6163,319 @@ def _link_config() -> LLMConfig:
     )
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        ("threads", "build_threads_context_messages", "https://www.threads.com/@a/post/ABC123"),
-        (
-            "facebook",
-            "build_facebook_context_messages",
-            "https://www.facebook.com/groups/123/posts/456/",
-        ),
-        (
-            "instagram",
-            "build_instagram_context_messages",
-            "https://www.instagram.com/p/Dc5eNjYkoZE/",
-        ),
-        ("douyin", "build_douyin_context_messages", "https://v.douyin.com/abc123"),
-        (
-            "bilibili",
-            "build_bilibili_context_messages",
-            "https://www.bilibili.com/video/BV1jpK86hEc8",
-        ),
-        (
-            "twitter",
-            "build_twitter_context_messages",
-            "https://x.com/Dbacks/status/1628549742539194368",
-        ),
-    ],
-)
+class _LinkCase(BaseModel):
+    """How the pipeline tests drive one registered link source."""
+
+    builder: str = Field(..., description="The `registry` global its builder is patched onto.")
+    url: str = Field(..., description="A post URL its pattern and filter both accept.")
+    non_post_url: str = Field(
+        ..., description="A link on the same site that names no post, so nothing is read."
+    )
+    emoji: str = Field(..., description="The marker a read of it leaves on the message.")
+    reads_replied_to: bool = Field(
+        ..., description="Whether a link in the replied-to message is read as well."
+    )
+    media_switch: str | None = Field(
+        ..., description="The config field that turns its media ingest off; None where none does."
+    )
+
+
+# Keyed by registry name. Every family below is parametrized over the registry itself, so a source
+# added there without a row here fails at collection instead of going untested.
+_LINK_CASES: dict[str, _LinkCase] = {
+    "threads": _LinkCase(
+        builder="build_threads_context_messages",
+        url=_THREADS_POST_URL,
+        non_post_url="https://www.threads.com/@a",
+        emoji=THREADS_EMOJI,
+        reads_replied_to=True,
+        # No kill-switch of its own, and the registry adapter never hands its builder the flag:
+        # Threads' media is fetched even with the Files API off.
+        media_switch=None,
+    ),
+    "facebook": _LinkCase(
+        builder="build_facebook_context_messages",
+        url="https://www.facebook.com/groups/123/posts/456/",
+        non_post_url="https://www.facebook.com/groups/123/",
+        emoji=FACEBOOK_EMOJI,
+        reads_replied_to=True,
+        media_switch="file_api_enabled",
+    ),
+    "instagram": _LinkCase(
+        builder="build_instagram_context_messages",
+        url="https://www.instagram.com/p/Dc5eNjYkoZE/",
+        non_post_url="https://www.instagram.com/instagram/",
+        emoji=INSTAGRAM_EMOJI,
+        reads_replied_to=True,
+        media_switch="file_api_enabled",
+    ),
+    "twitter": _LinkCase(
+        builder="build_twitter_context_messages",
+        url="https://x.com/Dbacks/status/1628549742539194368",
+        non_post_url="https://x.com/Dbacks",
+        emoji=TWITTER_EMOJI,
+        reads_replied_to=False,
+        media_switch="file_api_enabled",
+    ),
+    "douyin": _LinkCase(
+        builder="build_douyin_context_messages",
+        url="https://v.douyin.com/abc123",
+        non_post_url="https://www.douyin.com/user/MS4wLjABAAAAxyz",
+        emoji=DOUYIN_EMOJI,
+        reads_replied_to=False,
+        media_switch="douyin_video_enabled",
+    ),
+    "bilibili": _LinkCase(
+        builder="build_bilibili_context_messages",
+        # A real BV id: a short one matches no pattern, so every assertion would hold either way.
+        url="https://www.bilibili.com/video/BV1jpK86hEc8",
+        non_post_url="https://live.bilibili.com/12345",
+        emoji=BILIBILI_EMOJI,
+        reads_replied_to=False,
+        media_switch="bilibili_video_enabled",
+    ),
+}
+_LINK_SOURCES = [source.name for source in LINK_CONTEXT_SOURCES]
+_LINK_POST_BODY = "MOCK POST BODY"
+
+
+class _FakeLinkBuilder:
+    """Stands in for one source's builder, returning the block a readable post produces."""
+
+    def __init__(self, *, source: str, delay: float) -> None:
+        """Answers as `source`, `delay` seconds after each call."""
+        self.source = source
+        self.delay = delay
+        self.calls: list[dict[str, object]] = []
+        self.cancellations = 0
+
+    async def __call__(self, **kwargs: object) -> list[EasyInputMessageParam]:
+        """Records the call's kwargs, and every cancellation that lands while it waits."""
+        self.calls.append(kwargs)
+        if self.delay:
+            try:
+                await asyncio.sleep(self.delay)
+            except asyncio.CancelledError:
+                self.cancellations += 1
+                raise
+        return link_context_blocks(
+            separator=LINK_SOURCE_BLOCKS[self.source].separators[0], text=_LINK_POST_BODY
+        )
+
+
+def _patch_link_builder(
+    *, monkeypatch: pytest.MonkeyPatch, source: str, delay: float = 0
+) -> _FakeLinkBuilder:
+    """Puts a `_FakeLinkBuilder` where the registry looks `source`'s builder up."""
+    builder = _FakeLinkBuilder(source=source, delay=delay)
+    monkeypatch.setattr(
+        f"discordbot.cogs.gen_reply.link_sources.registry.{_LINK_CASES[source].builder}", builder
+    )
+    return builder
+
+
+def _link_cog(*, sources: list[str], decision: str = "QA") -> ReplyGeneratorCogs:
+    """A cog under `_link_config` whose route call picks `decision` and selects `sources`."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification.model_validate({
+        "decision": decision,
+        "link_context_sources": sources,
+    })
+    cog.config = _link_config()
+    return cog
+
+
+def _link_message(*, text: str) -> FakeMessage:
+    """A message addressed to the bot, so the whole turn runs on it."""
+    return FakeMessage(content=f"<@999> {text}", author=FakeAuthor(user_id=1))
+
+
+@pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_does_not_start_incidental_link_context(
-    monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str]
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """An incidental registered link starts no source work and injects no source claim."""
-    source, builder, url = case
-    cog = _cog()
-    route = RouteClassification(decision="QA")
-    _recorded(cog).responses.output_parsed = route
-    cog.config = _link_config()
-    called: list[str] = []
+    cog = _link_cog(sources=[])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    async def fake_builder(
-        *,
-        url: str,
-        answer_model_is_gemini: bool,
-        gemini_client: object,
-        allow_media_ingest: bool | None = None,
-    ) -> list[dict[str, object]]:
-        """Records any call so the test proves the network-capable builder never starts."""
-        del answer_model_is_gemini, gemini_client, allow_media_ingest
-        called.append(url)
-        return []
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"unrelated question {_LINK_CASES[name].url}"))
+    )
 
-    monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
-
-    message = FakeMessage(content=f"<@999> unrelated question {url}", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-
-    assert called == []
+    assert builder.calls == []
     assert not has_link_context_block(
-        request=request_input(responses=_recorded(cog).responses), source=source
+        request=request_input(responses=_recorded(cog).responses), source=name
     )
 
 
+@pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_injects_douyin_context_before_current(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_on_message_injects_a_selected_link_source_before_current(
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """A QA message with a Douyin URL injects the read post just before the current message."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
-    seen: list[tuple[str, bool]] = []
+    """The post the router selected reaches the answer input, ahead of the current message.
 
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Douyin block instead of contacting Douyin."""
-        del answer_model_is_gemini, gemini_client
-        seen.append((url, allow_media_ingest))
-        return _douyin_block()
+    The message also gets the source's persistent marker, the same one its expansion cog adds; a
+    source with no expansion cog is marked by this path alone.
+    """
+    case = _LINK_CASES[name]
+    cog = _link_cog(sources=[name])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
+    message = _link_message(text=f"這在講什麼 {case.url}")
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        fake_builder,
-    )
-
-    url = "https://v.douyin.com/abc123"
-    message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
-    assert seen == [(url, True)]
+    (call,) = builder.calls
+    assert call["url"] == case.url
+    assert call.get("allow_media_ingest") is (None if case.media_switch is None else True)
     answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="douyin")
-    assert extract_link_context_block(request=answer, source="douyin") == "MOCK DOUYIN POST BODY"
-
-    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
-    separator_index = headers.index(DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0])
-    current_index = next(
-        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
-    )
-    assert separator_index < current_index
+    assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
+    assert block_index(request=answer, kind=name) < block_index(request=answer, kind="current")
+    assert case.emoji in message.added_reactions
 
 
+@pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_reads_a_linked_post_without_a_gemini_key(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """A keyless deployment still gets the linked post's text, not a generic failure.
 
     The direct client raises on an empty key, so touching it while assembling the builder call
-    would fail the whole reply before the builder's own text-only degradation could run.
+    would fail the whole reply before the builder's own text-only degradation could run. The
+    ingest flag needs the key as well, or a builder would be told it may upload while holding no
+    client to upload with.
     """
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
+    case = _LINK_CASES[name]
+    cog = _link_cog(sources=[name])
     cog.config.gemini_api_key = ""
-    clients: list[object] = []
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records the client it was handed instead of contacting Douyin."""
-        del url, answer_model_is_gemini, allow_media_ingest
-        clients.append(gemini_client)
-        return _douyin_block()
+    await cog.on_message(message=as_message(fake=_link_message(text=f"這在講什麼 {case.url}")))
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        fake_builder,
+    (call,) = builder.calls
+    assert call["gemini_client"] is None
+    assert call.get("allow_media_ingest") is (None if case.media_switch is None else False)
+    assert has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source=name
     )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
-    )
-    await cog.on_message(message=as_message(fake=message))
 
-    assert clients == [None]
-    answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="douyin")
-
-
+@pytest.mark.parametrize(
+    "name", [name for name in _LINK_SOURCES if _LINK_CASES[name].media_switch is not None]
+)
 @pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A profile or live-room link is not a post, so reading it would only waste a request."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
-    calls: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records that the builder was reached at all."""
-        del answer_model_is_gemini, gemini_client, allow_media_ingest
-        calls.append(url)
-        return _douyin_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        fake_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> 這個人是誰 https://www.douyin.com/user/MS4wLjABAAAAxyz",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert calls == []
-    answer = request_input(responses=_recorded(cog).responses)
-    assert not has_link_context_block(request=answer, source="douyin")
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With the switch off the builder still runs, but is told not to fetch the media."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
-    cog.config.douyin_video_enabled = False
-    seen: list[bool] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records the ingestion flag the pipeline computed."""
-        del url, answer_model_is_gemini, gemini_client
-        seen.append(allow_media_ingest)
-        return _douyin_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        fake_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen == [False]
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_does_not_start_douyin_context_on_image_route(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_on_message_link_media_ingest_kill_switch(
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """A non-QA route never starts Douyin work even if the router selects that source."""
-    cog = _cog()
-    cog.config = _link_config()
-    called: list[str] = []
+    """With the source's switch off the builder still runs, but is told not to fetch the media."""
+    case = _LINK_CASES[name]
+    assert case.media_switch is not None
+    cog = _link_cog(sources=[name])
+    monkeypatch.setattr(cog.config, case.media_switch, False)
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records any call so the test proves routing gates the builder first."""
-        del answer_model_is_gemini, gemini_client, allow_media_ingest
-        called.append(url)
-        return []
+    await cog.on_message(message=as_message(fake=_link_message(text=f"這在講什麼 {case.url}")))
 
-    async def fake_image_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    assert [call["allow_media_ingest"] for call in builder.calls] == [False]
+
+
+@pytest.mark.parametrize("name", _LINK_SOURCES)
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_skips_a_link_that_names_no_post(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A profile, group page or live room is no post, so reading it would only waste a request."""
+    cog = _link_cog(sources=[name])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
+
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這是誰 {_LINK_CASES[name].non_post_url}"))
+    )
+
+    assert builder.calls == []
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source=name
+    )
+
+
+@pytest.mark.parametrize("name", _LINK_SOURCES)
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_does_not_start_link_context_on_image_route(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A non-QA route never starts link work even if the router selects that source."""
+    cog = _link_cog(sources=[name], decision="IMAGE")
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
+
+    async def drain_context(
+        self: MediaReplyRoutes, *, context_task: asyncio.Task[ReplyContext], **kwargs: object
     ) -> None:
         """Accepts the dispatched image request."""
-        del self, user_prompt
+        del self, kwargs
         await context_task
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        fake_builder,
+    monkeypatch.setattr(MediaReplyRoutes, "handle_image", drain_context)
+
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"畫這個 {_LINK_CASES[name].url}"))
     )
-    monkeypatch.setattr(
-        RouteClassifier,
-        "classify",
-        _classify_stub(
-            route=RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
-        ),
-    )
-    monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
 
-    message = FakeMessage(
-        content="<@999> 畫這個 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert called == []
+    assert builder.calls == []
 
 
+@pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_douyin_grace_timeout_injects_notice(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_on_message_link_grace_timeout_injects_notice(
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """A build slower than the post-route grace injects a timeout notice; the answer streams."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
+    """A build slower than the post-route grace injects the source's timeout notice instead.
+
+    The notice keeps the model from claiming it cannot open the link, and the answer still
+    streams.
+    """
+    cog = _link_cog(sources=[name])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.01)
+    _patch_link_builder(monkeypatch=monkeypatch, source=name, delay=5)
 
-    async def slow_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Outlasts the grace so the gate drops it."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        await asyncio.sleep(5)
-        return _douyin_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        slow_builder,
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES[name].url}"))
     )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    assert has_timeout_notice(
+        request=request_input(responses=_recorded(cog).responses), source=name
     )
+
+
+@pytest.mark.parametrize("name", _LINK_SOURCES)
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Mentioning the bot in a reply to someone else's link reads it only where that adds news.
+
+    A discussion source reads the comments its expansion never shows, so a reply asking about
+    them has nothing else to answer from; a clip, or a Twitter post whose endpoint serves no
+    replies, would only be read a second time, and stays on the current message.
+    """
+    case = _LINK_CASES[name]
+    cog = _link_cog(sources=[name])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
+    parent = FakeMessage(content=f"看看這篇 {case.url}", author=FakeAuthor(user_id=4))
+    parent.id = 988
+    message = _link_message(text="這篇底下在吵什麼")
+    message.reference = FakeReference(resolved=parent)
+
     await cog.on_message(message=as_message(fake=message))
 
     answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="douyin")
-    assert has_timeout_notice(request=answer, source="douyin")
+    if case.reads_replied_to:
+        assert [call["url"] for call in builder.calls] == [case.url]
+        assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
+    else:
+        assert builder.calls == []
+        assert not has_link_context_block(request=answer, source=name)
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -6482,40 +6483,19 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A builder that finishes after the deadline cannot win while preparation is still running."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
+    cog = _link_cog(sources=["douyin"])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.12)
-    cancelled: list[bool] = []
-
-    async def delayed_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Finishes after the shared grace but before the delayed resolver observes it."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(0.14)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
-        return _douyin_block()
-
+    # Finishes after the shared grace but before the delayed resolver observes it.
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source="douyin", delay=0.14)
     monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.18))
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        delayed_builder,
-    )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}"))
     )
-    await cog.on_message(message=as_message(fake=message))
 
     answer = request_input(responses=_recorded(cog).responses)
     assert has_timeout_notice(request=answer, source="douyin")
-    assert cancelled == [True]
+    assert builder.cancellations == 1
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -6523,30 +6503,14 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A builder completed before the deadline remains usable after delayed preparation."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
+    cog = _link_cog(sources=["douyin"])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.12)
-
-    async def immediate_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Completes before preparation consumes the post-route grace."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        return _douyin_block()
-
+    _patch_link_builder(monkeypatch=monkeypatch, source="douyin")
     monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.18))
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        immediate_builder,
-    )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}"))
     )
-    await cog.on_message(message=as_message(fake=message))
 
     answer = request_input(responses=_recorded(cog).responses)
     assert has_link_context_block(request=answer, source="douyin")
@@ -6558,11 +6522,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resolver lets a deadline-cancelled builder finish cleanup before injecting its notice."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
+    cog = _link_cog(sources=["douyin"])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
     builder = _CleanupBoundBuilder()
     monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.1))
@@ -6570,9 +6530,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
     )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
-    )
+    message = _link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
         await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
@@ -6592,11 +6550,7 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin"]
-    )
-    cog.config = _link_config()
+    cog = _link_cog(sources=["douyin"])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
     builder = _CleanupBoundBuilder()
     monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.1))
@@ -6604,9 +6558,7 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
     )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
-    )
+    message = _link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
     await asyncio.sleep(0.12)
@@ -6671,46 +6623,15 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sequential resolution cannot grant every selected builder a fresh timeout."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["threads", "douyin"]
-    )
-    cog.config = _link_config()
+    cog = _link_cog(sources=["threads", "douyin"])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+    # Threads uses most of the shared budget before the first registry entry resolves; Douyin
+    # would finish under a second fresh timeout, but not under the same shared deadline.
+    _patch_link_builder(monkeypatch=monkeypatch, source="threads", delay=0.14)
+    _patch_link_builder(monkeypatch=monkeypatch, source="douyin", delay=0.22)
 
-    async def delayed_threads_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Uses most of the shared budget before the first registry entry resolves."""
-        del url, answer_model_is_gemini, gemini_client
-        await asyncio.sleep(0.14)
-        return _threads_block()
-
-    async def delayed_douyin_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Would finish under a second fresh timeout, but not the same shared deadline."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        await asyncio.sleep(0.22)
-        return _douyin_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        delayed_threads_builder,
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        delayed_douyin_builder,
-    )
-
-    message = FakeMessage(
-        content=(
-            "<@999> 這兩個在講什麼 https://www.threads.com/@a/post/ABC123 "
-            "https://v.douyin.com/abc123"
-        ),
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
+    urls = f"{_LINK_CASES['threads'].url} {_LINK_CASES['douyin'].url}"
+    await cog.on_message(message=as_message(fake=_link_message(text=f"這兩個在講什麼 {urls}")))
 
     answer = request_input(responses=_recorded(cog).responses)
     assert has_timeout_notice(request=answer, source="threads")
@@ -6718,564 +6639,22 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
 
 
 @pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_injects_threads_context_before_current(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A QA message with a Threads URL injects the parsed post just before the current message."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["threads"]
-    )
-    cog.config = _link_config()
-    seen_urls: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Threads block instead of hitting the network."""
-        del answer_model_is_gemini, gemini_client
-        seen_urls.append(url)
-        return _threads_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        fake_builder,
-    )
-
-    url = "https://www.threads.com/@a/post/ABC123"
-    message = FakeMessage(content=f"<@999> what is this {url}", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen_urls == [url]
-    answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="threads")
-    assert extract_link_context_block(request=answer, source="threads") == "MOCK THREADS POST BODY"
-    # A persistent marker says the post was read, the same one the expansion cog adds.
-    assert THREADS_EMOJI in message.added_reactions
-
-    # The block lands after memory but before the current message (which stays last).
-    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
-    separator_index = headers.index(THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0])
-    current_index = next(
-        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
-    )
-    assert separator_index < current_index
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_injects_threads_context_from_the_replied_to_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Mentioning the bot in a reply to someone else's Threads link still reads that post.
-
-    The expansion the cog already posted shows the chain, never the comments, so a reply asking
-    about the discussion has nothing else to answer from.
-    """
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["threads"]
-    )
-    cog.config = _link_config()
-    seen_urls: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Threads block instead of hitting the network."""
-        del answer_model_is_gemini, gemini_client
-        seen_urls.append(url)
-        return _threads_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        fake_builder,
-    )
-
-    parent = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}", author=FakeAuthor(user_id=4))
-    parent.id = 988
-    message = FakeMessage(content="<@999> 這篇底下在吵什麼", author=FakeAuthor(user_id=1))
-    message.reference = FakeReference(resolved=parent)
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen_urls == [_THREADS_POST_URL]
-    answer = request_input(responses=_recorded(cog).responses)
-    assert extract_link_context_block(request=answer, source="threads") == "MOCK THREADS POST BODY"
-
-
-# Per clip source: the gen_reply global its builder is monkeypatched onto, a URL its regex
-# really matches (a short BV id matches nothing, so the assertions would hold either way),
-# and the block its fake returns.
-_CLIP_SOURCE_CASES = {
-    "douyin": ("build_douyin_context_messages", "https://v.douyin.com/abc123", _douyin_block),
-    "bilibili": (
-        "build_bilibili_context_messages",
-        "https://www.bilibili.com/video/BV1jpK86hEc8",
-        _bilibili_block,
-    ),
-}
-
-
-@pytest.mark.parametrize("name", list(_CLIP_SOURCE_CASES))
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
-    monkeypatch: pytest.MonkeyPatch, name: str
-) -> None:
-    """Only the discussion sources widened to it; the clip sources stay on the current message."""
-    builder, url, block = _CLIP_SOURCE_CASES[name]
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["douyin", "bilibili"]
-    )
-    cog.config = _link_config()
-    called: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records any call so the test can assert the chain never starts one."""
-        del answer_model_is_gemini, gemini_client, allow_media_ingest
-        called.append(url)
-        return block()
-
-    monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
-
-    parent = FakeMessage(content=f"看看這個 {url}", author=FakeAuthor(user_id=4))
-    parent.id = 988
-    message = FakeMessage(content="<@999> 這在講什麼", author=FakeAuthor(user_id=1))
-    message.reference = FakeReference(resolved=parent)
-    await cog.on_message(message=as_message(fake=message))
-
-    assert called == []
-    assert not has_link_context_block(
-        request=request_input(responses=_recorded(cog).responses), source=name
-    )
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_does_not_start_threads_context_on_image_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A non-QA route never starts Threads work even if the router selects that source."""
-    cog = _cog()
-    called: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Records any call so the test proves routing gates the builder first."""
-        del answer_model_is_gemini, gemini_client
-        called.append(url)
-        return []
-
-    async def fake_image_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
-    ) -> None:
-        """Accepts the dispatched image request."""
-        del self, user_prompt
-        await context_task
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        fake_builder,
-    )
-    monkeypatch.setattr(
-        RouteClassifier,
-        "classify",
-        _classify_stub(
-            route=RouteClassification(decision="IMAGE", link_context_sources=["threads"])
-        ),
-    )
-    monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-
-    message = FakeMessage(
-        content="<@999> draw https://www.threads.com/@a/post/ABC123", author=FakeAuthor(user_id=1)
-    )
-    await cog.on_message(message=as_message(fake=message))
-    assert called == []
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_skips_threads_context_without_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A message with no Threads URL never starts the parse and injects no block."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["threads"]
-    )
-    cog.config = _link_config()
-    called: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Records any call so the test can assert it never runs."""
-        del answer_model_is_gemini, gemini_client
-        called.append(url)
-        return _threads_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        fake_builder,
-    )
-
-    message = FakeMessage(content="<@999> just a plain question", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-
-    assert called == []
-    assert not has_link_context_block(
-        request=request_input(responses=_recorded(cog).responses), source="threads"
-    )
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_threads_context_grace_timeout_injects_notice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["threads"]
-    )
-    cog.config = _link_config()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.01)
-
-    async def slow_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Outlasts the grace so the gate drops it."""
-        del url, answer_model_is_gemini, gemini_client
-        await asyncio.sleep(5)
-        return _threads_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        slow_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> what is this https://www.threads.com/@a/post/ABC123",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    # The slow parse is dropped, but a deterministic timeout notice keeps the model from
-    # claiming it cannot open the link, and the answer still streams.
-    answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="threads")
-    assert has_timeout_notice(request=answer, source="threads")
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_injects_bilibili_context_before_current(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A QA message with a Bilibili URL injects the read video just before the current message."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["bilibili"]
-    )
-    cog.config = _link_config()
-    seen: list[tuple[str, bool]] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Bilibili block instead of contacting Bilibili."""
-        del answer_model_is_gemini, gemini_client
-        seen.append((url, allow_media_ingest))
-        return _bilibili_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        fake_builder,
-    )
-
-    url = "https://www.bilibili.com/video/BV1jpK86hEc8"
-    message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="bilibili")
-    assert (
-        extract_link_context_block(request=answer, source="bilibili") == "MOCK BILIBILI VIDEO BODY"
-    )
-
-    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
-    separator_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
-    current_index = next(
-        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
-    )
-    assert separator_index < current_index
-
-
-_DiscussionSource = Literal["facebook", "instagram", "twitter"]
-
-_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str]] = {
-    "facebook": (
-        "build_facebook_context_messages",
-        "https://www.facebook.com/groups/123/posts/456/",
-        FACEBOOK_CONTEXT_SEPARATOR,
-    ),
-    "instagram": (
-        "build_instagram_context_messages",
-        "https://www.instagram.com/p/Dc5eNjYkoZE/",
-        INSTAGRAM_CONTEXT_SEPARATOR,
-    ),
-    "twitter": (
-        "build_twitter_context_messages",
-        "https://x.com/Dbacks/status/1628549742539194368",
-        TWITTER_CONTEXT_SEPARATOR,
-    ),
-}
-
-
-@pytest.mark.parametrize("name", list(_DISCUSSION_SOURCE_CASES))
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_injects_a_selected_discussion_source_before_current(
-    monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
-) -> None:
-    """The post the router selected reaches the answer input, ahead of the current message.
-
-    Threads and Douyin already pin this; the three here were wired without it, so a source whose
-    registry entry was right but whose block never spliced would have gone unnoticed.
-    """
-    builder, url, separator = _DISCUSSION_SOURCE_CASES[name]
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=[name]
-    )
-    cog.config = _link_config()
-    seen: list[tuple[str, bool]] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable block instead of fetching the post."""
-        del answer_model_is_gemini, gemini_client
-        seen.append((url, allow_media_ingest))
-        return [
-            {"role": "system", "content": [{"type": "input_text", "text": separator}]},
-            {"role": "user", "content": [{"type": "input_text", "text": "MOCK POST BODY"}]},
-        ]
-
-    monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
-
-    message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source=name)
-    assert extract_link_context_block(request=answer, source=name) == "MOCK POST BODY"
-
-    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
-    separator_index = headers.index(separator.split("\n", 1)[0])
-    current_index = next(
-        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
-    )
-    assert separator_index < current_index
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A live-room or space link is not a watchable video, so the build never starts."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["bilibili"]
-    )
-    cog.config = _link_config()
-    calls: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records that the builder was reached at all."""
-        del answer_model_is_gemini, gemini_client, allow_media_ingest
-        calls.append(url)
-        return _bilibili_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        fake_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> 這個直播間如何 https://live.bilibili.com/12345",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert calls == []
-    answer = request_input(responses=_recorded(cog).responses)
-    assert not has_link_context_block(request=answer, source="bilibili")
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_bilibili_media_ingest_kill_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With the switch off the builder still runs, but is told not to fetch the media."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["bilibili"]
-    )
-    cog.config = _link_config()
-    cog.config.bilibili_video_enabled = False
-    seen: list[bool] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records the ingestion flag the pipeline computed."""
-        del url, answer_model_is_gemini, gemini_client
-        seen.append(allow_media_ingest)
-        return _bilibili_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        fake_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen == [False]
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_does_not_start_bilibili_context_on_image_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A non-QA route never starts Bilibili work even if the router selects that source."""
-    cog = _cog()
-    cog.config = _link_config()
-    called: list[str] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records any call so the test proves routing gates the builder first."""
-        del answer_model_is_gemini, gemini_client, allow_media_ingest
-        called.append(url)
-        return []
-
-    async def fake_image_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
-    ) -> None:
-        """Accepts the dispatched image request."""
-        del self, user_prompt
-        await context_task
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        fake_builder,
-    )
-    monkeypatch.setattr(
-        RouteClassifier,
-        "classify",
-        _classify_stub(
-            route=RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
-        ),
-    )
-    monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-
-    message = FakeMessage(
-        content="<@999> 畫這個 https://www.bilibili.com/video/BV1jpK86hEc8",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert called == []
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_bilibili_keyless_disables_media_ingest(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A blank Gemini key turns the ingest flag off even with the kill-switch on.
-
-    The predicate needs both halves; without this the builder would be told it may upload
-    while holding no client to upload with.
-    """
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["bilibili"]
-    )
-    cog.config = _link_config()
-    cog.config.gemini_api_key = ""
-    seen: list[tuple[object, bool]] = []
-
-    async def fake_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Records the client and flag the pipeline computed."""
-        del url, answer_model_is_gemini
-        seen.append((gemini_client, allow_media_ingest))
-        return _bilibili_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        fake_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    assert seen == [(None, False)]
-
-
-@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_finally_backstop_cancels_link_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure after QA routing still cancels its selected in-flight link build."""
-    cog = _cog()
-    cog.config = _link_config()
-    cancelled: list[bool] = []
-
-    async def hanging_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Blocks until cancelled, recording the cancellation."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
-        return []
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        hanging_builder,
-    )
-    monkeypatch.setattr(
-        RouteClassifier,
-        "classify",
-        _classify_stub(
-            route=RouteClassification(decision="QA", link_context_sources=["bilibili"])
-        ),
-    )
+    cog = _link_cog(sources=["bilibili"])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source="bilibili", delay=30)
     # Yields once after the picks, so the selected builder is in flight when the build fails.
     monkeypatch.setattr(
         ReplyContextBuilder, "build", _failing_build(after=lambda: asyncio.sleep(0))
     )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
-        author=FakeAuthor(user_id=1),
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES['bilibili'].url}"))
     )
-    await cog.on_message(message=as_message(fake=message))
 
-    assert cancelled == [True]
+    assert builder.cancellations == 1
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -7283,29 +6662,18 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
-    cog = _cog()
-    cog.config = _link_config()
+    cog = _link_cog(sources=["bilibili"])
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
     builder = _CleanupBoundBuilder()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages", builder
-    )
-    monkeypatch.setattr(
-        RouteClassifier,
-        "classify",
-        _classify_stub(
-            route=RouteClassification(decision="QA", link_context_sources=["bilibili"])
-        ),
     )
     # Fails while the selected builder still owns its deadline cancellation cleanup.
     monkeypatch.setattr(
         ReplyContextBuilder, "build", _failing_build(after=builder.cleanup_started.wait)
     )
 
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
-        author=FakeAuthor(user_id=1),
-    )
+    message = _link_message(text=f"這在講什麼 {_LINK_CASES['bilibili'].url}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
         await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
@@ -7319,69 +6687,16 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     assert builder.cancellations == 1
 
 
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_bilibili_grace_timeout_injects_notice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A build slower than the post-route grace injects a timeout notice; the answer streams."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=["bilibili"]
-    )
-    cog.config = _link_config()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.01)
-
-    async def slow_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Outlasts the grace so the gate drops it."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        await asyncio.sleep(5)
-        return _bilibili_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        slow_builder,
-    )
-
-    message = FakeMessage(
-        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
-
-    answer = request_input(responses=_recorded(cog).responses)
-    assert has_link_context_block(request=answer, source="bilibili")
-    assert has_timeout_notice(request=answer, source="bilibili")
-
-
 @pytest.mark.parametrize(
-    ("selected_sources", "expected_separators"),
+    ("selected_sources", "expected_order"),
     [
-        (
-            ["threads", "douyin", "bilibili"],
-            [
-                THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
-                DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0],
-                BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
-            ],
-        ),
-        (
-            ["bilibili", "threads"],
-            [
-                THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
-                BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
-            ],
-        ),
+        (["threads", "douyin", "bilibili"], ["threads", "douyin", "bilibili"]),
+        (["bilibili", "threads"], ["threads", "bilibili"]),
     ],
 )
 @pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
-    monkeypatch: pytest.MonkeyPatch,
-    selected_sources: list[
-        Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
-    ],
-    expected_separators: list[str],
+    monkeypatch: pytest.MonkeyPatch, selected_sources: list[str], expected_order: list[str]
 ) -> None:
     """Selected sources are injected in registry order, not URL or router-return order.
 
@@ -7389,69 +6704,20 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
     `LINK_CONTEXT_SOURCES` order (threads, douyin, bilibili), not text order, so the answer
     input stays deterministic however the user arranged the links.
     """
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="QA", link_context_sources=selected_sources
-    )
-    cog.config = _link_config()
+    cog = _link_cog(sources=selected_sources)
+    patched = ("threads", "douyin", "bilibili")
+    for name in patched:
+        _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    async def fake_threads_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Threads block instead of hitting the network."""
-        del url, answer_model_is_gemini, gemini_client
-        return _threads_block()
-
-    async def fake_douyin_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Douyin block instead of contacting Douyin."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        return _douyin_block()
-
-    async def fake_bilibili_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Returns a recognizable Bilibili block instead of contacting Bilibili."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        return _bilibili_block()
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
-        fake_threads_builder,
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        fake_douyin_builder,
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        fake_bilibili_builder,
-    )
-
-    message = FakeMessage(
-        content=(
-            "<@999> 這幾個在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8 "
-            "https://v.douyin.com/abc123 https://www.threads.com/@a/post/ABC123"
-        ),
-        author=FakeAuthor(user_id=1),
-    )
-    await cog.on_message(message=as_message(fake=message))
+    urls = " ".join(_LINK_CASES[name].url for name in reversed(patched))
+    await cog.on_message(message=as_message(fake=_link_message(text=f"這幾個在講什麼 {urls}")))
 
     answer = request_input(responses=_recorded(cog).responses)
-    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
-    current_index = next(
-        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
-    )
-    selected_indices = [headers.index(separator) for separator in expected_separators]
-    assert selected_indices == sorted(selected_indices)
-    assert all(index < current_index for index in selected_indices)
-    all_separators = {
-        THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
-        DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0],
-        BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
-    }
-    assert all(separator not in headers for separator in all_separators - set(expected_separators))
+    positions = [block_index(request=answer, kind=name) for name in expected_order]
+    assert positions == sorted(positions)
+    assert positions[-1] < block_index(request=answer, kind="current")
+    for name in set(patched) - set(expected_order):
+        assert not has_link_context_block(request=answer, source=name)
 
 
 def test_reply_context_message_list_orders_hist_ref_current() -> None:
