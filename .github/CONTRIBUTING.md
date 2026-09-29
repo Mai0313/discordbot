@@ -145,7 +145,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 - Runtime LLM calls go through `AsyncOpenAI` clients and the OpenAI Responses API, apart from the direct-to-Google paths below.
 - `OPENAI_BASE_URL` usually points at LiteLLM. Provider-specific behavior should be expressed through model names, `ModelSettings`, tools, or `extra_body`.
-- Do not import a provider-native SDK such as `anthropic` into a request path. `google-genai` is allowed only on the direct-to-Google paths that [AGENTS.md](../AGENTS.md#backend-and-invariants) lists. Development scripts may use any of them.
+- Do not import a provider-native SDK such as `anthropic` into a request path. `google-genai` is allowed only on the direct-to-Google paths that [AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#backend-and-invariants) lists. Development scripts may use any of them.
 - Runtime model strings for `./src` live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; update that catalog instead of hardcoding names at call sites.
 - Preserve the reaction-based progress UX for AI replies. The bot should not send intermediate "thinking" messages there.
 - A link expansion is the exception, and it takes video delivery's shape rather than a status message of its own: the cog replies with one subtext line as it starts and edits that same message into the finished card, so the card cannot drift away from the link while the post is being read. A failure deletes it and the reaction is the whole report. That placeholder is persisted, so a restart runs the interrupted expansion again instead of leaving a line that never resolves. It is also claimed before any reaction goes on, since reactions share a per-channel rate-limit bucket that a message send does not.
@@ -155,11 +155,11 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 ## Long-Term Memory
 
-The memory store's invariants live in the [Memory section of AGENTS.md](../AGENTS.md#memory); read it before changing anything that reads or writes `data/memories`.
+The memory store's invariants live in the [Memory section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#memory); read it before changing anything that reads or writes `data/memories`.
 
 ## Economy And Games
 
-The ledger and casino invariants live in the [Economy](../AGENTS.md#economy) and [Games](../AGENTS.md#games) sections of AGENTS.md; read them before changing anything that moves 虛擬歡樂豆.
+The ledger and casino invariants live in the [Economy](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#economy) and [Games](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#games) sections of AGENTS.md; read them before changing anything that moves 虛擬歡樂豆.
 
 ## Tests And Quality Gates
 
@@ -183,7 +183,7 @@ It runs Ruff formatting and linting, ty type checking, Markdown formatting, Shel
 
 ## Documentation
 
-Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](../AGENTS.md#documentation-split).
+Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split).
 
 ## Text Formatting
 
@@ -204,4 +204,4 @@ Contributors usually do not need to run release commands locally.
 
 ## License
 
-By contributing, you agree that your contribution is licensed under the [MIT License](../LICENSE).
+By contributing, you agree that your contribution is licensed under the [MIT License](https://github.com/Mai0313/discordbot/blob/main/LICENSE).
