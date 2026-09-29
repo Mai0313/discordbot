@@ -1,25 +1,32 @@
 """Shared pytest fixtures.
 
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
-`tmp_path` SQLite file for one test; the economy and games-history ones are autouse, the others
-are requested by the tests that need them and dispose their engine afterwards. `memory_isolated_dir` covers
-more than a directory: the store dir, the `memory_job` engine, the process-local caches,
-counters and task registries the store and pipeline hold, and the git committer. The autouse
-fixtures are the other half of that isolation, keeping a real deployment's `.env` and `data/`
-out of every test whether or not it asked for them.
+`tmp_path` SQLite file for one test, all through `_isolate_engine`; the economy and
+games-history ones are autouse, the others are requested by the tests that need them.
+`memory_isolated_dir` covers more than a directory: the store dir, the `memory_job` engine,
+the process-local caches, counters and task registries the store and pipeline hold, and the
+git committer. The autouse fixtures are the other half of that isolation, keeping a real
+deployment's `.env` and `data/` out of every test whether or not it asked for them.
 """
 
 import os
 from pathlib import Path
 from itertools import count
-from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.cogs.research.database import Base as ResearchBase
-from discordbot.cogs.gen_reply.ask_store import Base as AskTurnBase
+
+def _isolate_engine(*, monkeypatch: pytest.MonkeyPatch, target: str, db_path: Path) -> None:
+    """Points one module's `_engine` at a throwaway SQLite file for the test.
+
+    NullPool closes each connection on return, so there is no pool to dispose and every fixture
+    built on this stays sync. The schema bootstraps on the module's first session, because
+    readiness is keyed on the engine and this one is new.
+    """
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}", poolclass=NullPool)
+    monkeypatch.setattr(target, engine)
 
 
 @pytest.fixture(autouse=True)
@@ -30,42 +37,36 @@ def economy_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     swap moves real balances rather than leaving a stray row: with no transaction table
     behind `total_earned - total_spent == balance`, such a write cannot be reconstructed.
     Patching every ledger function a command reaches is no substitute, since nothing checks
-    that a test patched them all. NullPool closes each connection on return, so this stays a
-    sync fixture; the schema and its seed rows bootstrap lazily on the first ledger call. The
-    leaderboard caches are keyed on the query alone, so each test starts them empty too.
+    that a test patched them all. The leaderboard caches are keyed on the query alone, so each
+    test starts them empty too.
     """
-    engine = create_async_engine(
-        url=f"sqlite+aiosqlite:///{tmp_path / 'economy.db'}", poolclass=NullPool
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.services.economy.database._engine",
+        db_path=tmp_path / "economy.db",
     )
-    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
     monkeypatch.setattr("discordbot.services.economy.database._top_n_cache", {})
     monkeypatch.setattr("discordbot.services.economy.database._top_losers_cache", {})
 
 
 @pytest.fixture
-async def research_isolated_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[None]:
-    """Per-test SQLite file with the research schema (reply.db)."""
-    research_db_path = tmp_path / "reply.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{research_db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(ResearchBase.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs.research.database._engine", engine)
-    yield
-    await engine.dispose()
+def research_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-test SQLite file for the research table (reply.db)."""
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.cogs.research.database._engine",
+        db_path=tmp_path / "reply.db",
+    )
 
 
 @pytest.fixture
-async def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    """Per-test SQLite file with the `/ask` conversation schema (reply.db)."""
-    ask_db_path = tmp_path / "reply.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{ask_db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(AskTurnBase.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ask_store._engine", engine)
-    yield
-    await engine.dispose()
+def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-test SQLite file for the `/ask` conversation table (reply.db)."""
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.cogs.gen_reply.ask_store._engine",
+        db_path=tmp_path / "reply.db",
+    )
 
 
 @pytest.fixture
@@ -90,12 +91,12 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
     # real file: every schedule_memory_update now persists, and those writes are
     # swallowed best-effort, so a missing swap would pass green while polluting the
-    # real DB. NullPool closes each connection on return (no async dispose needed in
-    # this sync fixture); the schema bootstraps lazily on the first helper call.
-    memory_db_engine = create_async_engine(
-        url=f"sqlite+aiosqlite:///{tmp_path / 'memory_reply.db'}", poolclass=NullPool
+    # real DB.
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.services.memory.database._engine",
+        db_path=tmp_path / "memory_reply.db",
     )
-    monkeypatch.setattr("discordbot.services.memory.database._engine", memory_db_engine)
     monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
     monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
     # _scope_locks, staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
@@ -130,13 +131,13 @@ def expansion_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     Autouse for the reason `usage_log_isolated_dir` is: every expansion cog records its
     placeholder, the write is swallowed best-effort, so a test missing the swap would pass
     green while inserting rows into the live `reply.db` — where the next real restart would
-    find them and try to expand a link nobody posted. NullPool closes each connection on
-    return, so this stays a sync fixture; the schema bootstraps lazily on the first write.
+    find them and try to expand a link nobody posted.
     """
-    engine = create_async_engine(
-        url=f"sqlite+aiosqlite:///{tmp_path / 'expansion_reply.db'}", poolclass=NullPool
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.utils.expansion_placeholder._engine",
+        db_path=tmp_path / "expansion_reply.db",
     )
-    monkeypatch.setattr("discordbot.utils.expansion_placeholder._engine", engine)
 
 
 @pytest.fixture(autouse=True)
@@ -160,14 +161,13 @@ def games_history_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
     Autouse for the reason `expansion_store_isolated` is: every settled round records its
     history in a background task whose failure is swallowed, so a test that settles a table
-    without the swap would pass green while writing rows into the live `games.db`. NullPool
-    closes each connection on return, so this stays a sync fixture; the schema bootstraps
-    lazily on the first read or write.
+    without the swap would pass green while writing rows into the live `games.db`.
     """
-    engine = create_async_engine(
-        url=f"sqlite+aiosqlite:///{tmp_path / 'games_history.db'}", poolclass=NullPool
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.cogs.games.database._engine",
+        db_path=tmp_path / "games_history.db",
     )
-    monkeypatch.setattr("discordbot.cogs.games.database._engine", engine)
 
 
 @pytest.fixture(autouse=True)

@@ -8,7 +8,6 @@ from discordbot.services.economy.database import (
     UserAccount,
     CasinoAccount,
     open_session,
-    _ensure_schema,
     adjust_balance,
     _taipei_midnight,
     get_jackpot_snapshot,
@@ -70,7 +69,6 @@ async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
     Returns all-zero when no row exists or when the stored counters are from a
     previous Taipei day (the next casino settlement will reset them anyway).
     """
-    await _ensure_schema()
     today_midnight = _taipei_midnight(now=database_now())
     async with open_session() as session:
         result = await session.execute(

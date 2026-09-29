@@ -12,6 +12,7 @@ than a payload field.
 
 from typing import cast
 from datetime import datetime
+from contextlib import AbstractAsyncContextManager
 from collections.abc import Sequence
 
 from sqlalchemy import Text, Index, String, Boolean, Integer, DateTime, select
@@ -69,16 +70,10 @@ class BlackjackRoundResult(Base):
 
 
 _database = SqliteBootstrap(metadata=Base.metadata)
-_database.install_hooks(engine=_engine)
 
 
-async def _ensure_schema() -> None:
-    """Bootstraps the games-history schema once per engine."""
-    await _database.ensure_schema(engine=_engine)
-
-
-def open_session() -> AsyncSession:
-    """Creates an async session bound to the current games-history engine."""
+def open_session() -> AbstractAsyncContextManager[AsyncSession]:
+    """Opens an async session on the current games-history engine, its schema ensured."""
     return _database.open_session(engine=_engine)
 
 
@@ -138,7 +133,6 @@ async def record_blackjack_history(  # noqa: PLR0913 -- round persistence needs 
     """Persists one Blackjack round's per-player results in a single commit."""
     if not results:
         return
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         for result in results:
@@ -189,7 +183,6 @@ async def fetch_recent_blackjack_rounds(
     *, user_id: int, limit: int
 ) -> tuple[BlackjackHistoryRecord, ...]:
     """Returns the most recent settled rounds for one player, newest first."""
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(BlackjackRoundResult)

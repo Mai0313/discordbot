@@ -10,7 +10,7 @@ checkout listeners, the lazy schema creation and the session factory.
 
 from typing import Any, Protocol, runtime_checkable
 import contextlib
-from collections.abc import Awaitable
+from collections.abc import Awaitable, AsyncIterator
 
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 from sqlalchemy import MetaData, event
@@ -104,12 +104,12 @@ class SqliteBootstrap(BaseModel):
     def install_hooks(self, engine: AsyncEngine) -> None:
         """Installs the connect and checkout listeners on an engine exactly once.
 
-        Called once beside the module's own engine and again on every open, because tests
-        swap those engines; `event.contains` keeps repeat calls from stacking duplicate
-        listeners. The per-open call is required rather than defensive: an engine handed over
-        with a connection already in its pool has one that never saw `connect`, and `checkout`
-        is the only listener that can still register the `StoredInteger` UDFs onto it. Without
-        it that connection raises `no such function: discordbot_int_add_text`.
+        Called on every open, because tests swap the module engines; `event.contains` keeps
+        repeat calls from stacking duplicate listeners. The per-open call is required rather
+        than defensive: an engine handed over with a connection already in its pool has one
+        that never saw `connect`, and `checkout` is the only listener that can still register
+        the `StoredInteger` UDFs onto it. Without it that connection raises
+        `no such function: discordbot_int_add_text`.
 
         Bound methods are safe to hand it, which is not obvious: SQLAlchemy keys a plain
         function on `id(fn)`, which a freshly bound method would defeat, and special-cases
@@ -141,14 +141,18 @@ class SqliteBootstrap(BaseModel):
                     await self.after_create(conn=conn)
             self._ready_for = engine
 
-    def open_session(self, engine: AsyncEngine) -> AsyncSession:
-        """Creates an async session bound to the module's current engine.
+    @contextlib.asynccontextmanager
+    async def open_session(self, engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+        """Opens an async session on the module's current engine, its schema ensured first.
+
+        A module opens every session here, so no caller can reach a table before it exists.
 
         Args:
             engine: The module's current engine.
 
-        Returns:
-            An `AsyncSession` bound to it, with the connection hooks installed.
+        Yields:
+            An `AsyncSession` bound to it, closed on exit.
         """
-        self.install_hooks(engine=engine)
-        return AsyncSession(bind=engine, expire_on_commit=False)
+        await self.ensure_schema(engine=engine)
+        async with AsyncSession(bind=engine, expire_on_commit=False) as session:
+            yield session

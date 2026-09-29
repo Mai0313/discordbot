@@ -39,6 +39,7 @@ from time import monotonic
 from typing import Any, Final
 import asyncio
 from datetime import datetime, timedelta
+from contextlib import AbstractAsyncContextManager
 from collections.abc import Mapping, Sequence
 
 import logfire
@@ -134,8 +135,8 @@ class UserAccount(Base):
         is_admin: Whether the user can run Discord-side economy admin commands.
         is_central_banker: Dead. Central-bank approval is a Discord server
             administrator's now, read off the interaction. The column stays
-            because `_ensure_schema` is one `create_all`, which never alters an
-            existing table, so dropping it would break a deployed database.
+            because `SqliteBootstrap.ensure_schema` is one `create_all`, which never
+            alters an existing table, so dropping it would break a deployed database.
         hide_from_leaderboard: Whether the account is omitted from public balance
             and daily casino loss leaderboards.
     """
@@ -273,8 +274,8 @@ class LoanProposal(Base):
         Integer, default=DEFAULT_LOAN_MONTHLY_RATE_BPS, nullable=False
     )
     # Always zero: nothing escrows a proposal. The column stays because
-    # `_ensure_schema` is one `create_all`, which never alters an existing table,
-    # so dropping it would break a deployed database.
+    # `SqliteBootstrap.ensure_schema` is one `create_all`, which never alters an existing
+    # table, so dropping it would break a deployed database.
     escrow_amount: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -534,19 +535,15 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
 _database = SqliteBootstrap(
     metadata=Base.metadata, enable_foreign_keys=True, after_create=_seed_singleton_rows
 )
-_database.install_hooks(engine=_engine)
 
 
-async def _ensure_schema() -> None:
-    """Bootstraps the economy schema, jackpot seeds, and casino ledger once per engine."""
-    await _database.ensure_schema(engine=_engine)
+def open_session() -> AbstractAsyncContextManager[AsyncSession]:
+    """Opens an async session on the current economy database engine.
 
-
-def open_session() -> AsyncSession:
-    """Creates an async session bound to the current economy database engine.
+    The first session on an engine bootstraps the schema and its seed rows.
 
     Returns:
-        An `AsyncSession` using the current module-level `_engine`.
+        A context manager yielding an `AsyncSession` on the current module-level `_engine`.
     """
     return _database.open_session(engine=_engine)
 
@@ -933,7 +930,6 @@ async def _rollback_session(session: AsyncSession) -> None:
 
 async def get_casino_ledger() -> CasinoLedgerSnapshot:
     """Returns the cumulative casino system ledger snapshot."""
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(
@@ -1013,7 +1009,6 @@ async def credit_with_repayment(
     Returns:
         Outcome capturing post-credit balance.
     """
-    await _ensure_schema()
     if amount <= 0:
         return CreditResult(new_balance=await get_balance(user_id=user_id))
     now = _database_now()
@@ -1049,7 +1044,6 @@ async def adjust_balance(
     Returns:
         The post-adjustment balance and the applied delta after any clamp.
     """
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         if delta == 0:
@@ -1111,7 +1105,6 @@ async def apply_blackjack_settlement(
     Returns:
         A `RoundSettlementResult` with the post-write player and casino balances.
     """
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         try:
@@ -1148,7 +1141,6 @@ async def apply_blackjack_settlement(
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
     """Returns the current jackpot balance and generation for a shared pool."""
-    await _ensure_schema()
     async with open_session() as session:
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=_database_now()
@@ -1420,7 +1412,6 @@ async def apply_jackpot_settlement_batch(
         The latest balance for each touched player, the actual applied deltas,
         and the final jackpot balance after the final settlement and any reseed.
     """
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         player_balances: dict[int, int] = {}
@@ -1526,7 +1517,6 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
         `VipPurchaseResult` describing the post-purchase balance, or
         `None` when the purchase was rejected.
     """
-    await _ensure_schema()
     now = _database_now()
     cost = VIP_PURCHASE_COST
 
@@ -1599,7 +1589,6 @@ async def get_balance(user_id: int) -> int:
     Returns:
         The current balance, or 0 if the user has never been seen.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
@@ -1616,7 +1605,6 @@ async def get_vip(user_id: int) -> bool:
     Returns:
         `True` when the account has `is_vip` set, else `False`.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(UserAccount.is_vip).where(UserAccount.user_id == user_id)
@@ -1633,7 +1621,6 @@ async def get_admin(user_id: int) -> bool:
     Returns:
         `True` when the account has `is_admin` set, else `False`.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(UserAccount.is_admin).where(UserAccount.user_id == user_id)
@@ -1659,7 +1646,6 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
         `True` when a row was created or updated; `False` when revoking a
         missing user.
     """
-    await _ensure_schema()
     now = _database_now()
     effective_name = name or str(user_id)
     values: dict[str, Any] = {"is_admin": is_admin, "updated_at": now}
@@ -1704,7 +1690,6 @@ async def get_account(user_id: int) -> AccountSnapshot | None:
     Returns:
         An account snapshot, or `None` if the user has never been seen.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(
@@ -1763,7 +1748,6 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         The post-transfer balances when the transfer committed, or `None`
         when validation failed or the sender had insufficient funds.
     """
-    await _ensure_schema()
     if amount <= 0 or sender_id == receiver_id:
         return None
 
@@ -1842,7 +1826,6 @@ async def top_n(
         Leaderboard entries ordered by balance descending. `avatar_url` is
         empty when the user has never been seen by an avatar-aware write path.
     """
-    await _ensure_schema()
     if limit is not None and limit <= 0:
         return []
     cache_key: _TopNCacheKey = (limit, include_hidden)
@@ -1886,7 +1869,6 @@ async def top_losers(
         Loss leaderboard entries ordered by loss descending. `loss_amount`
         is always positive.
     """
-    await _ensure_schema()
     if limit <= 0:
         return []
     now = _database_now()
@@ -2183,7 +2165,6 @@ async def get_central_bank_status(
     guild_id: int, exclude_user_ids: tuple[int, ...] = ()
 ) -> CentralBankStatus:
     """Returns one guild's current central-bank lending capacity."""
-    await _ensure_schema()
     async with open_session() as session:
         return await _central_bank_status_in_session(
             session=session, guild_id=guild_id, exclude_user_ids=exclude_user_ids
@@ -2192,7 +2173,6 @@ async def get_central_bank_status(
 
 async def get_credit_ceiling(user_id: int) -> int:
     """Returns how much more central-bank credit `user_id` may still draw."""
-    await _ensure_schema()
     async with open_session() as session:
         return await _credit_ceiling_in_session(session=session, user_id=user_id)
 
@@ -2204,7 +2184,6 @@ async def record_guild_participant(guild_id: int, user_id: int) -> None:
     somebody else's id here hands their whole balance to a guild's lending pool
     without their knowledge.
     """
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -2265,7 +2244,6 @@ async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both 
     lender_avatar_url: str = "",
 ) -> LoanProposalView | None:
     """Creates a borrower-initiated personal loan request."""
-    await _ensure_schema()
     if amount <= 0 or borrower_id == lender_id:
         return None
     return await _insert_loan_proposal(
@@ -2290,7 +2268,6 @@ async def create_central_bank_loan_request(
     borrower_avatar_url: str = "",
 ) -> LoanProposalView | None:
     """Creates a borrower-initiated central-bank loan request."""
-    await _ensure_schema()
     if amount <= 0:
         return None
     return await _insert_loan_proposal(
@@ -2309,7 +2286,6 @@ async def create_central_bank_loan_request(
 
 async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | None:
     """Rejects a pending loan proposal if its decision window has expired."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         result = await session.execute(
@@ -2332,7 +2308,6 @@ async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | N
 
 async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView | None:
     """Cancels a pending proposal created by `actor_id`."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         proposal = await _undecided_proposal_in_session(
@@ -2354,7 +2329,6 @@ async def reject_loan_proposal(
     proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
 ) -> LoanProposalView | None:
     """Rejects a pending proposal when `actor_id` is allowed to decide it."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         proposal = await _undecided_proposal_in_session(
@@ -2390,7 +2364,6 @@ async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, act
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
     """Accepts a pending loan proposal and opens the loan contract."""
-    await _ensure_schema()
     async with _current_loan_accept_lock():
         return await _accept_loan_proposal_locked(
             proposal_id=proposal_id,
@@ -2700,7 +2673,6 @@ async def _collect_loan_payment(  # noqa: PLR0913 -- a payment names both sides,
     Returns:
         The committed payment, or None when nothing was paid.
     """
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         if guild_id is not None and not await _is_guild_participant_in_session(
@@ -2824,7 +2796,6 @@ async def list_loan_contracts(
     matching `get_portfolio`'s lazy-accrual behavior, so the returned views
     reflect interest owed up to now.
     """
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         stmt = select(LoanContract).where(
@@ -2881,7 +2852,6 @@ async def _portfolio_in_session(
 
 async def get_portfolio(user_id: int) -> PortfolioView:
     """Returns a user's current portfolio and estimated net worth."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         portfolio = await _portfolio_in_session(session=session, user_id=user_id, now=now)

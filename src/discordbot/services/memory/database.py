@@ -32,6 +32,7 @@ from typing import Literal, cast, get_args
 from datetime import datetime
 from itertools import count
 from threading import Lock
+from contextlib import AbstractAsyncContextManager
 
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, String, Integer, DateTime, func, text, select, update
@@ -126,16 +127,10 @@ class MemoryJob(BaseModel):
 
 
 _database = SqliteBootstrap(metadata=Base.metadata)
-_database.install_hooks(engine=_engine)
 
 
-async def _ensure_schema() -> None:
-    """Bootstraps this module's tables once per engine (loop-local-locked)."""
-    await _database.ensure_schema(engine=_engine)
-
-
-def open_session() -> AsyncSession:
-    """Creates an async session bound to the current reply.db engine."""
+def open_session() -> AbstractAsyncContextManager[AsyncSession]:
+    """Opens an async session on the current reply.db engine, this module's tables ensured."""
     return _database.open_session(engine=_engine)
 
 
@@ -176,7 +171,7 @@ def new_token() -> int:
 
 async def _reserve_token_block(*, engine: AsyncEngine) -> int:
     """Atomically reserves a token range and returns its exclusive lower bound."""
-    async with AsyncSession(bind=engine, expire_on_commit=False) as session:
+    async with _database.open_session(engine=engine) as session:
         await session.execute(statement=text("BEGIN IMMEDIATE"))
         clock_high = await session.scalar(
             statement=select(MemoryTokenClockRow.high_watermark).where(MemoryTokenClockRow.id == 1)
@@ -227,7 +222,6 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
     newer than the stored one, so an older turn's write can never clobber a newer
     turn's row (the guard that keeps two interleaved turns consistent).
     """
-    await _ensure_schema()
     token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
@@ -264,7 +258,6 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 
 async def mark_done(*, scope: str, token: int) -> None:
     """Marks a turn done and drops its now-consumed transcript (token-guarded)."""
-    await _ensure_schema()
     token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
@@ -278,7 +271,6 @@ async def mark_done(*, scope: str, token: int) -> None:
 
 async def mark_failed(*, scope: str, token: int, error: str) -> None:
     """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
-    await _ensure_schema()
     token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
@@ -316,7 +308,6 @@ async def clear_job(*, scope: str, flavor: MemoryFlavor, token: int) -> bool:
             block; the guard is what keeps a second writer against the same
             `reply.db` loud instead of silent.
     """
-    await _ensure_schema()
     token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
@@ -366,7 +357,6 @@ async def clear_job(*, scope: str, flavor: MemoryFlavor, token: int) -> bool:
 
 async def list_resumable() -> list[MemoryJob]:
     """Returns pending and failed rows for the restart resume sweep."""
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(MemoryJobRow).where(MemoryJobRow.status.in_(("pending", "failed")))

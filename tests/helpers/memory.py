@@ -24,7 +24,6 @@ from discordbot.services.memory.database import (
     MemoryJobRow,
     open_session,
     _row_to_model,
-    _ensure_schema,
 )
 
 # The moment a built fact was written and last confirmed, unless a test ages it on purpose.
@@ -94,7 +93,6 @@ async def get_job(scope: str) -> MemoryJob | None:
     Unwrapped on purpose: the restart sweep's bulk read degrades a failure to "nothing to
     resume", so a test asserting through it would pass without having looked.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(MemoryJobRow).where(MemoryJobRow.scope == scope)
