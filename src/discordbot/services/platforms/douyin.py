@@ -505,6 +505,10 @@ class DouyinDownloader(PlatformDownloader):
 
         Returns:
             The absolute redirect target, or an empty string when the URL does not redirect.
+
+        Raises:
+            DouyinBlockedError: If Douyin refused the probe or it never got an answer.
+            DouyinError: If the probe failed any other way.
         """
         try:
             with requests.Session() as session:
@@ -517,6 +521,7 @@ class DouyinDownloader(PlatformDownloader):
                 )
                 location = response.headers.get("Location", "")
                 response.close()
+                response.raise_for_status()
         except RequestException as e:
             raise _douyin_fetch_error(
                 error=e, message=f"Failed to resolve Douyin link {url}: {e}"
