@@ -188,6 +188,7 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
 )
 from tests.helpers.usage_log import usage_records
+from tests.helpers.link_sources import SAMPLE_POST_URLS
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
 # stays off the live store.
@@ -3215,12 +3216,9 @@ def _link_source(name: str) -> LinkContextSource:
     return next(source for source in LINK_CONTEXT_SOURCES if source.name == name)
 
 
-_THREADS_POST_URL = "https://www.threads.com/@a/post/ABC123"
-
-
 def test_link_url_for_source_searches_the_replied_to_message() -> None:
     """Threads reads a link the user only replied to, like YouTube already does."""
-    referenced = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}")
+    referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")
     referenced.id = 555
     message = FakeMessage(content="<@999> 這篇底下在吵什麼")
     message.reference = FakeReference(resolved=referenced)
@@ -3228,7 +3226,7 @@ def test_link_url_for_source_searches_the_replied_to_message() -> None:
     found = link_url_for_source(
         source=_link_source(name="threads"), message=as_message(fake=message)
     )
-    assert found == _THREADS_POST_URL
+    assert found == SAMPLE_POST_URLS["threads"]
 
 
 def test_link_url_for_source_finds_the_threads_share_form() -> None:
@@ -3248,7 +3246,7 @@ def test_link_url_for_source_finds_the_threads_share_form() -> None:
 
 def test_link_url_for_source_prefers_the_current_message() -> None:
     """With a Threads link on both, the one the user typed wins over the replied-to one."""
-    referenced = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}")
+    referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")
     referenced.id = 555
     own_url = "https://www.threads.com/@b/post/XYZ789"
     message = FakeMessage(content=f"<@999> 跟這篇比 {own_url}")
@@ -3260,19 +3258,8 @@ def test_link_url_for_source_prefers_the_current_message() -> None:
     assert found == own_url
 
 
-@pytest.mark.parametrize(
-    ("name", "url"),
-    [
-        ("douyin", "https://v.douyin.com/abc123"),
-        # A real BV id (BV plus exactly 10 base-62 chars): a short one does not match
-        # `BILIBILI_URL_RE` at all, so the assertion below would hold for the wrong reason.
-        ("bilibili", "https://www.bilibili.com/video/BV1jpK86hEc8"),
-        ("twitter", "https://x.com/Dbacks/status/1628549742539194368"),
-    ],
-)
-def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(
-    name: str, url: str
-) -> None:
+@pytest.mark.parametrize("name", ["douyin", "bilibili", "twitter"])
+def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(name: str) -> None:
     """Three sources never widen to the replied-to message, for two different reasons.
 
     Douyin and Bilibili carry a clip rather than a discussion and both are rate-limit sensitive,
@@ -3280,7 +3267,7 @@ def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(
     serves no replies at all: the three that DO widen are answering "what are people saying under
     this", and a second read of a Twitter link finds exactly what the expansion already showed.
     """
-    referenced = FakeMessage(content=f"看看這個 {url}")
+    referenced = FakeMessage(content=f"看看這個 {SAMPLE_POST_URLS[name]}")
     referenced.id = 555
     message = FakeMessage(content="<@999> 這在講什麼")
     message.reference = FakeReference(resolved=referenced)
@@ -3303,7 +3290,7 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message() -
     expansion.id = 555
     expansion.embeds = [
         Embed(description="the thread's top post", url=root_url),
-        Embed(description="the post the human linked", url=_THREADS_POST_URL),
+        Embed(description="the post the human linked", url=SAMPLE_POST_URLS["threads"]),
     ]
     message = FakeMessage(content="<@999> 留言在說什麼")
     message.reference = FakeReference(resolved=expansion)
@@ -3322,7 +3309,9 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer() 
     The footer credits looked-up memory owners by display name, and a name is user-chosen and
     long enough to hold a whole Threads permalink, so the span has to go before the scan.
     """
-    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {_THREADS_POST_URL} 的記憶"
+    footer = (
+        f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {SAMPLE_POST_URLS['threads']} 的記憶"
+    )
     answer = FakeMessage(content=f"這是我的回答{footer}")
     answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
@@ -3331,9 +3320,10 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer() 
     threads = _link_source(name="threads")
     assert link_url_for_source(source=threads, message=as_message(fake=message)) is None
     # The body above the footer is still scanned, so the strip is what did the work here.
-    answer.content = f"這是我的回答 {_THREADS_POST_URL}{footer}"
+    answer.content = f"這是我的回答 {SAMPLE_POST_URLS['threads']}{footer}"
     assert (
-        link_url_for_source(source=threads, message=as_message(fake=message)) == _THREADS_POST_URL
+        link_url_for_source(source=threads, message=as_message(fake=message))
+        == SAMPLE_POST_URLS["threads"]
     )
 
 
@@ -3341,17 +3331,18 @@ def test_link_url_for_source_reads_a_forwarded_link_in_the_replied_to_message() 
     """A forward counts for what its author wrote, on the same terms as a typed link."""
     forward = FakeMessage(content="")  # a pure forward puts its payload in snapshots
     forward.id = 555
-    forward.snapshots = [FakeSnapshot(content=f"看看這篇 {_THREADS_POST_URL}")]
+    forward.snapshots = [FakeSnapshot(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")]
     message = FakeMessage(content="<@999> 這篇底下在吵什麼")
     message.reference = FakeReference(resolved=forward)
 
     threads = _link_source(name="threads")
     assert (
-        link_url_for_source(source=threads, message=as_message(fake=message)) == _THREADS_POST_URL
+        link_url_for_source(source=threads, message=as_message(fake=message))
+        == SAMPLE_POST_URLS["threads"]
     )
     # A forwarded link CARD is not: it carries the same root-first hazard as the message's own
     # embeds, and forwarding the bot's expansion is exactly how one would arrive here.
-    forward.snapshots = [FakeSnapshot(embeds=[Embed(url=_THREADS_POST_URL)])]
+    forward.snapshots = [FakeSnapshot(embeds=[Embed(url=SAMPLE_POST_URLS["threads"])])]
     assert link_url_for_source(source=threads, message=as_message(fake=message)) is None
 
 
@@ -6167,7 +6158,6 @@ class _LinkCase(BaseModel):
     """How the pipeline tests drive one registered link source."""
 
     builder: str = Field(..., description="The `registry` global its builder is patched onto.")
-    url: str = Field(..., description="A post URL its pattern and filter both accept.")
     non_post_url: str = Field(
         ..., description="A link on the same site that names no post, so nothing is read."
     )
@@ -6185,8 +6175,7 @@ class _LinkCase(BaseModel):
 _LINK_CASES: dict[str, _LinkCase] = {
     "threads": _LinkCase(
         builder="build_threads_context_messages",
-        url=_THREADS_POST_URL,
-        non_post_url="https://www.threads.com/@a",
+        non_post_url="https://www.threads.com/@user",
         emoji=THREADS_EMOJI,
         reads_replied_to=True,
         # No kill-switch of its own, and the registry adapter never hands its builder the flag:
@@ -6195,7 +6184,6 @@ _LINK_CASES: dict[str, _LinkCase] = {
     ),
     "facebook": _LinkCase(
         builder="build_facebook_context_messages",
-        url="https://www.facebook.com/groups/123/posts/456/",
         non_post_url="https://www.facebook.com/groups/123/",
         emoji=FACEBOOK_EMOJI,
         reads_replied_to=True,
@@ -6203,7 +6191,6 @@ _LINK_CASES: dict[str, _LinkCase] = {
     ),
     "instagram": _LinkCase(
         builder="build_instagram_context_messages",
-        url="https://www.instagram.com/p/Dc5eNjYkoZE/",
         non_post_url="https://www.instagram.com/instagram/",
         emoji=INSTAGRAM_EMOJI,
         reads_replied_to=True,
@@ -6211,7 +6198,6 @@ _LINK_CASES: dict[str, _LinkCase] = {
     ),
     "twitter": _LinkCase(
         builder="build_twitter_context_messages",
-        url="https://x.com/Dbacks/status/1628549742539194368",
         non_post_url="https://x.com/Dbacks",
         emoji=TWITTER_EMOJI,
         reads_replied_to=False,
@@ -6219,7 +6205,6 @@ _LINK_CASES: dict[str, _LinkCase] = {
     ),
     "douyin": _LinkCase(
         builder="build_douyin_context_messages",
-        url="https://v.douyin.com/abc123",
         non_post_url="https://www.douyin.com/user/MS4wLjABAAAAxyz",
         emoji=DOUYIN_EMOJI,
         reads_replied_to=False,
@@ -6227,8 +6212,6 @@ _LINK_CASES: dict[str, _LinkCase] = {
     ),
     "bilibili": _LinkCase(
         builder="build_bilibili_context_messages",
-        # A real BV id: a short one matches no pattern, so every assertion would hold either way.
-        url="https://www.bilibili.com/video/BV1jpK86hEc8",
         non_post_url="https://live.bilibili.com/12345",
         emoji=BILIBILI_EMOJI,
         reads_replied_to=False,
@@ -6300,7 +6283,7 @@ async def test_on_message_does_not_start_incidental_link_context(
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
     await cog.on_message(
-        message=as_message(fake=_link_message(text=f"unrelated question {_LINK_CASES[name].url}"))
+        message=as_message(fake=_link_message(text=f"unrelated question {SAMPLE_POST_URLS[name]}"))
     )
 
     assert builder.calls == []
@@ -6322,12 +6305,12 @@ async def test_on_message_injects_a_selected_link_source_before_current(
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
-    message = _link_message(text=f"這在講什麼 {case.url}")
+    message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}")
 
     await cog.on_message(message=as_message(fake=message))
 
     (call,) = builder.calls
-    assert call["url"] == case.url
+    assert call["url"] == SAMPLE_POST_URLS[name]
     assert call.get("allow_media_ingest") is (None if case.media_switch is None else True)
     answer = request_input(responses=_recorded(cog).responses)
     assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
@@ -6352,7 +6335,9 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     cog.config.gemini_api_key = ""
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    await cog.on_message(message=as_message(fake=_link_message(text=f"這在講什麼 {case.url}")))
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
+    )
 
     (call,) = builder.calls
     assert call["gemini_client"] is None
@@ -6376,7 +6361,9 @@ async def test_on_message_link_media_ingest_kill_switch(
     monkeypatch.setattr(cog.config, case.media_switch, False)
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    await cog.on_message(message=as_message(fake=_link_message(text=f"這在講什麼 {case.url}")))
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
+    )
 
     assert [call["allow_media_ingest"] for call in builder.calls] == [False]
 
@@ -6419,7 +6406,7 @@ async def test_on_message_does_not_start_link_context_on_image_route(
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", drain_context)
 
     await cog.on_message(
-        message=as_message(fake=_link_message(text=f"畫這個 {_LINK_CASES[name].url}"))
+        message=as_message(fake=_link_message(text=f"畫這個 {SAMPLE_POST_URLS[name]}"))
     )
 
     assert builder.calls == []
@@ -6440,7 +6427,7 @@ async def test_on_message_link_grace_timeout_injects_notice(
     _patch_link_builder(monkeypatch=monkeypatch, source=name, delay=5)
 
     await cog.on_message(
-        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES[name].url}"))
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
     )
 
     assert has_timeout_notice(
@@ -6462,7 +6449,9 @@ async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
-    parent = FakeMessage(content=f"看看這篇 {case.url}", author=FakeAuthor(user_id=4))
+    parent = FakeMessage(
+        content=f"看看這篇 {SAMPLE_POST_URLS[name]}", author=FakeAuthor(user_id=4)
+    )
     parent.id = 988
     message = _link_message(text="這篇底下在吵什麼")
     message.reference = FakeReference(resolved=parent)
@@ -6471,7 +6460,7 @@ async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
 
     answer = request_input(responses=_recorded(cog).responses)
     if case.reads_replied_to:
-        assert [call["url"] for call in builder.calls] == [case.url]
+        assert [call["url"] for call in builder.calls] == [SAMPLE_POST_URLS[name]]
         assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
     else:
         assert builder.calls == []
@@ -6490,7 +6479,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.18))
 
     await cog.on_message(
-        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}"))
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}"))
     )
 
     answer = request_input(responses=_recorded(cog).responses)
@@ -6509,7 +6498,7 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.18))
 
     await cog.on_message(
-        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}"))
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}"))
     )
 
     answer = request_input(responses=_recorded(cog).responses)
@@ -6530,7 +6519,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
     )
 
-    message = _link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}")
+    message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
         await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
@@ -6558,7 +6547,7 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
     )
 
-    message = _link_message(text=f"這在講什麼 {_LINK_CASES['douyin'].url}")
+    message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
     await asyncio.sleep(0.12)
@@ -6630,7 +6619,7 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     _patch_link_builder(monkeypatch=monkeypatch, source="threads", delay=0.14)
     _patch_link_builder(monkeypatch=monkeypatch, source="douyin", delay=0.22)
 
-    urls = f"{_LINK_CASES['threads'].url} {_LINK_CASES['douyin'].url}"
+    urls = f"{SAMPLE_POST_URLS['threads']} {SAMPLE_POST_URLS['douyin']}"
     await cog.on_message(message=as_message(fake=_link_message(text=f"這兩個在講什麼 {urls}")))
 
     answer = request_input(responses=_recorded(cog).responses)
@@ -6651,7 +6640,7 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     )
 
     await cog.on_message(
-        message=as_message(fake=_link_message(text=f"這在講什麼 {_LINK_CASES['bilibili'].url}"))
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['bilibili']}"))
     )
 
     assert builder.cancellations == 1
@@ -6673,7 +6662,7 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
         ReplyContextBuilder, "build", _failing_build(after=builder.cleanup_started.wait)
     )
 
-    message = _link_message(text=f"這在講什麼 {_LINK_CASES['bilibili'].url}")
+    message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['bilibili']}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
         await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
@@ -6709,7 +6698,7 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
     for name in patched:
         _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
-    urls = " ".join(_LINK_CASES[name].url for name in reversed(patched))
+    urls = " ".join(SAMPLE_POST_URLS[name] for name in reversed(patched))
     await cog.on_message(message=as_message(fake=_link_message(text=f"這幾個在講什麼 {urls}")))
 
     answer = request_input(responses=_recorded(cog).responses)

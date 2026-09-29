@@ -31,6 +31,19 @@ TWITTER_URL = "https://x.com/Dbacks/status/1628549742539194368"
 FACEBOOK_URL = "https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/"
 INSTAGRAM_URL = "https://www.instagram.com/p/Dc5eNjYkoZE/"
 
+# One post URL per registered link source, keyed by registry name, each accepted by its source's
+# URL pattern and post filter.
+SAMPLE_POST_URLS: dict[str, str] = {
+    "threads": "https://www.threads.com/@user/post/ABC123",
+    "facebook": FACEBOOK_URL,
+    "instagram": INSTAGRAM_URL,
+    "twitter": TWITTER_URL,
+    "douyin": "https://v.douyin.com/tLgj3lCAnds",
+    # A real BV id: a short one matches no pattern, so an assertion about it would hold for the
+    # wrong reason.
+    "bilibili": "https://www.bilibili.com/video/BV1jpK86hEc8",
+}
+
 # The id every stub bot answers to, so a test mentions it as `<@999>`.
 BOT_USER_ID = 999
 
