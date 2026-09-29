@@ -175,7 +175,15 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
-from tests.helpers.casting import as_bot, as_message, step_dicts, make_media_hosting_config
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    step_dicts,
+    make_forbidden,
+    make_not_found,
+    make_invalid_form_body,
+    make_media_hosting_config,
+)
 from tests.helpers.llm_input import (
     request_index,
     request_input,
@@ -1357,23 +1365,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
     assert _recorded(cog).responses.create_models == []
 
 
-def _deleted_source_error() -> nextcord.HTTPException:
-    """Builds the Discord 400 50035 raised when replying to a since-deleted source."""
-    return nextcord.HTTPException(
-        cast("ClientResponse", SimpleNamespace(status=400, reason="Bad Request")),
-        {"code": 50035, "message": "Invalid Form Body"},
-    )
-
-
-def _unknown_message_notfound() -> nextcord.NotFound:
-    """Builds the 404 10008 a deleted source can raise on some Discord paths."""
-    return nextcord.NotFound(
-        cast("ClientResponse", SimpleNamespace(status=404, reason="Not Found")),
-        {"code": 10008, "message": "Unknown Message"},
-    )
-
-
-@pytest.mark.parametrize("error", [_deleted_source_error(), _unknown_message_notfound()])
+@pytest.mark.parametrize("error", [make_invalid_form_body(), make_not_found()])
 async def test_streaming_falls_back_to_channel_send_when_source_deleted(
     error: nextcord.HTTPException,
 ) -> None:
@@ -1390,7 +1382,7 @@ async def test_streaming_falls_back_to_channel_send_when_source_deleted(
 async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> None:
     """Overflow follow-ups still chain off the unparented parent when the source is gone."""
     message = FakeMessage(content="<@999> explain")
-    message.reply_error = _deleted_source_error()
+    message.reply_error = make_invalid_form_body()
     body = "x" * 4500
 
     await ResponseStreamer(message=message).stream(
@@ -1409,10 +1401,7 @@ async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> 
 async def test_streaming_reraises_non_deletion_http_errors() -> None:
     """A non-deletion HTTP error (e.g. Forbidden) propagates instead of silently channel.send."""
     message = FakeMessage()
-    message.reply_error = nextcord.HTTPException(
-        cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden")),
-        {"code": 50013, "message": "Missing Permissions"},
-    )
+    message.reply_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
         await ResponseStreamer(message=message).stream(responses=_stream_events())
@@ -1423,7 +1412,7 @@ async def test_streaming_tolerates_reply_deleted_before_final_edit() -> None:
     """A reply deleted while streaming ends the turn quietly instead of raising to the cog."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = _unknown_message_notfound()
+    reply.edit_error = make_not_found()
     streamer = ResponseStreamer(message=message, reply=reply)
 
     result = await streamer.stream(responses=_stream_events())
@@ -1440,10 +1429,7 @@ async def test_streaming_reraises_non_deletion_edit_errors() -> None:
     """A non-deletion edit failure (e.g. Forbidden) still propagates as a real error."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = nextcord.HTTPException(
-        cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden")),
-        {"code": 50013, "message": "Missing Permissions"},
-    )
+    reply.edit_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
         await ResponseStreamer(message=message, reply=reply).stream(responses=_stream_events())
@@ -1453,7 +1439,7 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     """Media requested on a since-deleted reply is dropped silently, with no ⚠️ on the source."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = _unknown_message_notfound()
+    reply.edit_error = make_not_found()
     synthesizer = _FakeVoiceGenerator()
 
     await ResponseStreamer(
@@ -3706,8 +3692,8 @@ def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() ->
     # A Discord write failure escaping the streamer must never re-run the answer. It carries a
     # plain int `code` of its own -- 50035 is what an oversized final write raises -- which the
     # status read would otherwise take for a 5xx.
-    assert llm_status_code(exc=_deleted_source_error()) == 50035
-    assert is_retryable_llm_error(exc=_deleted_source_error()) is False
+    assert llm_status_code(exc=make_invalid_form_body()) == 50035
+    assert is_retryable_llm_error(exc=make_invalid_form_body()) is False
 
     # Transport failures carry no status of any kind; `APITimeoutError` rides in as a subclass.
     assert is_retryable_llm_error(exc=APIConnectionError(request=request)) is True
@@ -4066,7 +4052,7 @@ async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_me
     """Discord turning the edit down must not cost the user the error entirely."""
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = _unknown_message_notfound()
+    reply.edit_error = make_not_found()
     streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
 
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
@@ -6120,7 +6106,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
 
     # Source deleted before the error embed lands: it falls back to an unparented send.
     deleted = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
-    deleted.reply_error = _deleted_source_error()
+    deleted.reply_error = make_invalid_form_body()
     await cog.on_message(message=as_message(fake=deleted))
     assert deleted.replies == []
     assert deleted.channel.sent[0].embed is not None

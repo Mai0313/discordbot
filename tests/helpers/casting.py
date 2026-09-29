@@ -123,6 +123,18 @@ def make_forbidden(message: str = "denied") -> Forbidden:
     return Forbidden(response=response, message=message)
 
 
+def make_invalid_form_body() -> HTTPException:
+    """Builds the 400 ``Invalid Form Body`` (code 50035) Discord answers a rejected write with.
+
+    Replying to a message deleted in the meantime is one such write. Same response stub as
+    `make_not_found`, plus the JSON body nextcord reads ``code`` out of.
+    """
+    response = cast("ClientResponse", SimpleNamespace(status=400, reason="Bad Request"))
+    return HTTPException(
+        response=response, message={"code": 50035, "message": "Invalid Form Body"}
+    )
+
+
 def make_server_error(message: str = "upstream") -> HTTPException:
     """Builds the plain ``HTTPException`` nextcord raises when Discord itself is failing.
 
