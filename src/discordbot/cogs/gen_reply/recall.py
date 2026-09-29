@@ -23,7 +23,6 @@ from nextcord import User, Member
 from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.utils.llm_transcript import sanitize_identity
@@ -34,6 +33,7 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
+from discordbot.cogs.gen_reply.link_sources import system_block
 
 # Returned for an allowed id that has no stored memory file, so the model still
 # sees an explicit signal. Also lets the usage footer tell "looked up" apart from
@@ -194,10 +194,8 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     return allowed
 
 
-def widen_allowlist_with_aliases(
-    *, allowed: dict[int, RecallCandidate], memory: str, include_absent: bool
-) -> None:
-    """Merges the server memory's nickname-table ids and aliases into the allowlist in place.
+def widen_allowlist_with_aliases(*, allowed: dict[int, RecallCandidate], memory: str) -> None:
+    """Merges the server memory's nickname-table aliases into the allowlist's labels in place.
 
     A conversation participant already in the allowlist keeps their label and gains the
     table row as a suffix, so the model sees the Discord names and the community aliases on
@@ -206,10 +204,9 @@ def widen_allowlist_with_aliases(
     label grows: the row is community prose, unbounded in length and free to describe a
     member in joke terms, so the footer credit stays the short Discord label (#463).
 
-    `include_absent` controls whether members present only in the table are added as new
-    callable ids. That does grant access to an absent member's personal memory, so it must
-    stay public-channel only: the nickname table is public content, but the personal memory
-    it would unlock is not, so widening in a private channel would leak it.
+    It never adds a member the table alone names. Offering those members to the route call,
+    which does open their personal memory, is a separate public-channel-only decision made
+    elsewhere.
     """
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         candidate = allowed.get(user_id)
@@ -218,8 +215,6 @@ def widen_allowlist_with_aliases(
                 prompt_label=f"{candidate.prompt_label} | {label}",
                 credit_label=candidate.credit_label,
             )
-        elif include_absent:
-            allowed[user_id] = RecallCandidate(prompt_label=label)
 
 
 def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyInputMessageParam:
@@ -227,9 +222,8 @@ def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyI
     lines = "\n".join(
         f"[id: {user_id}] {candidate.prompt_label}" for user_id, candidate in allowed.items()
     )
-    text = f"==== Additional members eligible for oblique-reference memory lookup ====\n{lines}"
-    return EasyInputMessageParam(
-        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
+    return system_block(
+        text=f"==== Additional members eligible for oblique-reference memory lookup ====\n{lines}"
     )
 
 

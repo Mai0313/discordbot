@@ -12,11 +12,9 @@ import asyncio
 import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
-from openai import AsyncOpenAI
 import logfire
 from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -25,7 +23,6 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
-from discordbot.typings.models import ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
@@ -60,6 +57,7 @@ from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
+from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
@@ -72,10 +70,9 @@ def build_runtime_instructions(
     model can reason about where it is speaking; the memory rules lean on it as the
     anchor for never attributing a remembered fact to another server.
 
-    `guild_id` is handed in rather than read off the message because `Message.guild` resolves
-    out of the client's own cache: on the `/ask` route that misses for a server the bot was
-    never added to, and a guild conversation would tell the model at developer authority that
-    it is in a DM. `TurnSurface` is what knows better.
+    `guild_id` is handed in rather than read off the message because the synthesized `/ask`
+    message carries no guild even in a server, and a guild conversation would then tell the
+    model at developer authority that it is in a DM. `TurnSurface` is what knows better.
     """
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
     request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
@@ -159,13 +156,6 @@ class AnswerTurn(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client every answer request dispatches on."
-    )
-    bot: SkipValidation[commands.Bot] = Field(
-        ...,
-        description="The Discord bot instance, for its own user (reactions) and the research hop.",
-    )
     config: SkipValidation[LLMConfig] = Field(
         ..., description="Runtime LLM config, read for the inline-marker kill-switches."
     )
@@ -173,29 +163,31 @@ class AnswerTurn(BaseModel):
         ..., description="Attach-vs-host-vs-drop planner handed to the streamer."
     )
     toolkit: ReplyToolkit = Field(
-        ..., description="The reply toolkit's clients, generators and model catalog."
+        ..., description="The reply toolkit: the bot, its clients, generators and model catalog."
     )
-    message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
         ..., description="Where this turn's replies go, and which guild it is really happening in."
     )
 
-    async def stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route
+    @property
+    def message(self) -> Message:
+        """The message being answered, read off the surface that carries it."""
+        return self.surface.message
+
+    async def stream_media_persona_reply(
         self,
         *,
         reply: Message | None,
         context_task: asyncio.Task[ReplyContext],
-        model: ModelSettings,
         system_prompt: str,
         focus_part: ResponseInputFileParam | ResponseInputImageParam,
         media_noun: str,
-        span_name: str,
     ) -> None:
         """Best-effort: streams a persona reply onto an already-delivered generated image/video.
 
         Shared by the IMAGE and VIDEO routes' post-delivery reply. `reply` is the delivered media
         message (native attachment) or None when the media was hosted as a separate URL; the
-        persona-base message is built from it INSIDE the protected flow (`_persona_base_reply`), so a
+        persona-base message is built from it INSIDE the protected flow (`persona_base_reply`), so a
         base-creation or streaming failure is swallowed here instead of surfacing to the outer error
         path, and a fresh hosted-case base that never received content is deleted (never an orphan).
         Builds the answer-path input (history, selected user memory, tone note, reference, current),
@@ -207,6 +199,7 @@ class AnswerTurn(BaseModel):
         speculative `context_task` (awaited here so its build overlaps generation); any failure
         leaves the delivered media untouched.
         """
+        model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
         streamer: ResponseStreamer | None = None
         try:
@@ -247,11 +240,13 @@ class AnswerTurn(BaseModel):
                 memory_lookups=context.memory_credits,
                 model_effort=model.effort or "",
             )
-            with logfire.span(span_name, model=model.name, message_id=self.message.id):
+            with logfire.span(
+                f"gen_reply {media_noun} reply", model=model.name, message_id=self.message.id
+            ):
 
                 async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
                     """Issues the persona-reply request; called again per retry attempt."""
-                    return await self.client.responses.create(
+                    return await self.toolkit.openai_client.responses.create(
                         model=model.name,
                         instructions=build_runtime_instructions(
                             system_prompt=system_prompt,
@@ -308,47 +303,33 @@ class AnswerTurn(BaseModel):
             content=self.message.author.mention, allowed_mentions=AllowedMentions.none()
         )
 
-    async def stream_answer(  # noqa: PLR0913 -- per-call reply inputs plus the route's memory/effort/voice gates
+    async def stream_answer(
         self,
         *,
         system_prompt: str,
         context: ReplyContext,
         effort: Literal["low", "high"] = "high",
-        allow_voice: bool = False,
-        allow_image: bool = False,
-        allow_music: bool = False,
-        allow_video: bool = False,
         allow_research: bool = False,
-        describe_capabilities: bool = False,
         yt_url: str | None = None,
     ) -> None:
-        """Streams the answer from a pre-built reply context, then schedules memory updates.
+        """Streams the QA answer from a pre-built reply context, then schedules memory updates.
 
         Both the per-user and the per-server update are scheduled here; the per-server one
-        carries its own guild / public-channel guards. `allow_voice` enables a
-        spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
-        music clip, and `allow_video` an inline generated video clip when the answer model marks
-        the reply for it. All four are QA only: the media persona reply is built with none of the
-        generators, so a marker in one is stripped and produces nothing.
-        `describe_capabilities` injects the feature reference that replaced
-        `/help`, carried by QA alone since a persona reply riding generated media is not fielding
-        a question about the bot. `yt_url`, set only when the router asked
-        to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
-        (which can ingest the video) while reusing the same streamer / footer / memory path.
+        carries its own guild / public-channel guards. The answer leads with the feature
+        reference that replaced `/help`, and each inline marker (a spoken clip, an image, a
+        music clip, a video clip) is offered whenever its own switch allows it. Both are QA
+        only: the media persona reply is not fielding a question about the bot, and it is built
+        with none of the generators, so a marker in one is stripped and produces nothing.
+        `allow_research` offers the `<deep-research>` marker where a research thread can be
+        opened. `yt_url`, set only when the router asked to watch a linked YouTube video, swaps
+        the answer turn onto the Gemini Interactions API (which can ingest the video) while
+        reusing the same streamer / footer / memory path.
         """
         toolkit = self.toolkit
-        voice_generator = (
-            toolkit.voice_generator if allow_voice and self.config.inline_voice_enabled else None
-        )
-        image_generator = (
-            toolkit.image_generator if allow_image and self.config.inline_image_enabled else None
-        )
-        music_generator = (
-            toolkit.music_generator if allow_music and self.config.music_available else None
-        )
-        video_generator = (
-            toolkit.video_generator if allow_video and self.config.video_available else None
-        )
+        voice_generator = toolkit.voice_generator if self.config.inline_voice_enabled else None
+        image_generator = toolkit.image_generator if self.config.inline_image_enabled else None
+        music_generator = toolkit.music_generator if self.config.music_available else None
+        video_generator = toolkit.video_generator if self.config.video_available else None
         # Only advertise an inline marker when its renderer is actually active; with it disabled
         # the streamer would strip the block and produce nothing, silently dropping the request
         # from the reply, so a disabled deployment must not be told about it.
@@ -370,9 +351,7 @@ class AnswerTurn(BaseModel):
         # primary context rather than getting buried up near history. The feature reference
         # leads: it is the one block that is byte-identical on every reply, so the front is
         # where it costs the least against a prefix cache.
-        answer_input: ResponseInputParam = (
-            [render_capabilities_block()] if describe_capabilities else []
-        )
+        answer_input: ResponseInputParam = [render_capabilities_block()]
         answer_input.extend(context.hist_messages)
         answer_input.extend(
             block
@@ -395,9 +374,9 @@ class AnswerTurn(BaseModel):
         # memory / preview are shared.
         use_interactions = (
             yt_url is not None
-            and "gemini" in slow_model.name
+            and slow_model.is_gemini
             and self.config.youtube_video_enabled
-            and bool(self.config.gemini_api_key.strip())
+            and self.config.gemini_key_configured
         )
         backend = "interactions" if use_interactions else "responses"
         if yt_url is not None and not use_interactions:
@@ -408,7 +387,7 @@ class AnswerTurn(BaseModel):
                 "gen_reply youtube watch declined; answering on the responses backend",
                 message_id=self.message.id,
                 reason="model"
-                if "gemini" not in slow_model.name
+                if not slow_model.is_gemini
                 else "kill-switch"
                 if not self.config.youtube_video_enabled
                 else "no-gemini-key",
@@ -421,7 +400,7 @@ class AnswerTurn(BaseModel):
             # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
-            await self.surface.mark(emoji="<:youtube:1517546722535018596>", bot_user=self.bot.user)
+            await self.surface.mark(emoji=YOUTUBE_EMOJI, bot_user=self.toolkit.bot.user)
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
@@ -449,7 +428,7 @@ class AnswerTurn(BaseModel):
             reference=len(context.reference_messages),
             link_blocks=len(context.link_blocks),
             media_parts=count_media_parts(answer_input=answer_input),
-            capabilities=describe_capabilities,
+            capabilities=True,
             server_memory=context.server_memory_block is not None,
             user_memory=context.memory_block is not None,
             tone=context.tone_block is not None,
@@ -485,7 +464,7 @@ class AnswerTurn(BaseModel):
                         steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
                         effort=slow_model.effort,
                     )
-                return await self.client.responses.create(
+                return await self.toolkit.openai_client.responses.create(
                     model=slow_model.name,
                     instructions=build_runtime_instructions(
                         system_prompt=system_prompt,
@@ -508,7 +487,7 @@ class AnswerTurn(BaseModel):
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
         if research_offered and streamer.research_brief:
             await maybe_launch_research(
-                bot=self.bot,
+                bot=self.toolkit.bot,
                 message=self.message,
                 anchor=streamer.reply,
                 brief=streamer.research_brief,

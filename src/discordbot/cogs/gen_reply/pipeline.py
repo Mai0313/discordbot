@@ -2,21 +2,19 @@
 
 `ReplyPipeline` owns the order the phases run in and nothing else: it starts the speculative
 builds, waits on the one call every dispatch depends on, and hands the turn to whichever handler
-the route named. Each phase lives in its own module (`routing`, `context`, `answer`,
-`media_reply`), so what is left here is the sequencing, the shared post-route deadline the link
-builders run against, and the teardown that guarantees no speculative task outlives the turn.
+the route named. Each phase lives in its own module, so what is left here is the sequencing, the
+shared post-route deadline the link builders run against, and the teardown that guarantees no
+speculative task outlives the turn.
 """
 
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 import asyncio
 from collections.abc import Callable
 
-from openai import AsyncOpenAI
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
@@ -40,6 +38,13 @@ from discordbot.cogs.gen_reply.speculation import (
     run_until_deadline,
     await_deadline_bound_task,
     drain_deadline_bound_task,
+)
+from discordbot.cogs.gen_reply.status_marks import (
+    DONE_EMOJI,
+    IMAGE_EMOJI,
+    VIDEO_EMOJI,
+    ANSWER_EMOJI,
+    ROUTING_EMOJI,
 )
 from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
@@ -73,12 +78,6 @@ class ReplyPipeline(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client every phase dispatches on."
-    )
-    bot: SkipValidation[commands.Bot] = Field(
-        ..., description="The Discord bot instance, for its own user and the cross-cog hops."
-    )
     config: SkipValidation[LLMConfig] = Field(
         ..., description="Runtime LLM config, read for the per-feature kill-switches."
     )
@@ -91,7 +90,6 @@ class ReplyPipeline(BaseModel):
     toolkit: ReplyToolkit = Field(
         ..., description="The clients, generators and caches every phase of this turn uses."
     )
-    message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
         ..., description="Where this turn happens: its replies, its history and its guild."
     )
@@ -102,15 +100,17 @@ class ReplyPipeline(BaseModel):
         ..., description="Ordered status-reaction chain on the source message."
     )
 
+    @property
+    def message(self) -> Message:
+        """The message being answered, read off the surface that carries it."""
+        return self.surface.message
+
     def _answer_turn(self) -> AnswerTurn:
         """The streamer both the QA answer and the media persona replies run through."""
         return AnswerTurn(
-            client=self.client,
-            bot=self.bot,
             config=self.config,
             media_delivery=self.media_delivery,
             toolkit=self.toolkit,
-            message=self.message,
             surface=self.surface,
         )
 
@@ -193,9 +193,7 @@ class ReplyPipeline(BaseModel):
                 coro=run_until_deadline(
                     awaitable=link_source.build(
                         url=link_url,
-                        answer_model_is_gemini=(
-                            "gemini" in self.toolkit.runtime_models.slow_model.name
-                        ),
+                        answer_model_is_gemini=self.toolkit.runtime_models.slow_model.is_gemini,
                         gemini_client=self.toolkit.gemini_client_if_configured,
                         allow_media_ingest=link_source.media_ingest_allowed(config=self.config),
                     ),
@@ -235,7 +233,6 @@ class ReplyPipeline(BaseModel):
             config=self.config,
             media_delivery=self.media_delivery,
             toolkit=self.toolkit,
-            message=self.message,
             surface=self.surface,
             answer=self._answer_turn(),
         )
@@ -243,12 +240,7 @@ class ReplyPipeline(BaseModel):
         await handler(user_prompt=self.user_prompt, context_task=context_task)
 
     async def _answer_qa(
-        self,
-        *,
-        route: "RouteClassification",
-        context: ReplyContext,
-        effort: Literal["low", "high"],
-        pipeline_started: float,
+        self, *, route: "RouteClassification", context: ReplyContext, pipeline_started: float
     ) -> None:
         """Streams the QA answer, watching a linked YouTube video when the router asked for one."""
         message = self.message
@@ -274,13 +266,8 @@ class ReplyPipeline(BaseModel):
         await self._answer_turn().stream_answer(
             system_prompt=REPLY_PROMPT,
             context=context,
-            effort=effort,
-            allow_voice=True,
-            allow_image=True,
-            allow_music=True,
-            allow_video=True,
+            effort=route.effort,
             allow_research=can_launch_research(message=message),
-            describe_capabilities=True,
             yt_url=yt_url,
         )
 
@@ -294,19 +281,17 @@ class ReplyPipeline(BaseModel):
         parts_task: asyncio.Task[MessageParts] | None = None
         link_tasks: dict[str, LinkTask] = {}
         link_context_deadline: float | None = None
-        context_builder = ReplyContextBuilder(
-            bot=self.bot, toolkit=self.toolkit, message=message, surface=self.surface
-        )
-        classifier = RouteClassifier(client=self.client, toolkit=self.toolkit, message=message)
+        context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
+        classifier = RouteClassifier(toolkit=self.toolkit, message=message)
         try:
             with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
-                self.reactions.advance(emoji="<:flowchart:1517561877973045349>")
+                self.reactions.advance(emoji=ROUTING_EMOJI)
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route call uses
-                # the text-only renders, so it never waits on the Files API. The QA context
-                # builds speculatively in parallel with the route call since QA is the dominant
-                # route — non-QA routes discard it.
+                # the text-only renders, so it never waits on the Files API. The reply context
+                # builds speculatively in parallel with the route call, and every route consumes
+                # it: IMAGE / VIDEO once their media is on screen.
                 parts_task = asyncio.create_task(coro=context_builder.render_parts())
                 text_reference, text_current = await context_builder.render_parts(text_only=True)
                 recall = context_builder.plan_recall()
@@ -334,16 +319,12 @@ class ReplyPipeline(BaseModel):
                 recall_picks.set_result(
                     route.recall_user_ids if isinstance(route, RecallRouteClassification) else []
                 )
-                reads_links = route.decision == "QA" and bool(route.link_context_sources)
-                if reads_links:
+                route_decision = route.decision
+                pipeline_span.set_attribute(key="route", value=route.decision)
+                if route.decision == "QA" and route.link_context_sources:
                     link_context_deadline = (
                         asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
                     )
-                route_decision = route.decision
-                pipeline_span.set_attribute(key="route", value=route.decision)
-                if reads_links:
-                    if link_context_deadline is None:
-                        raise RuntimeError("Selected link sources have no route deadline")
                     link_tasks = self._start_link_builds(
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
@@ -354,16 +335,14 @@ class ReplyPipeline(BaseModel):
                     # path that ever marks one.
                     for source_name in link_tasks:
                         await self.surface.mark(
-                            emoji=LINK_SOURCE_EMOJIS[source_name], bot_user=self.bot.user
+                            emoji=LINK_SOURCE_EMOJIS[source_name], bot_user=self.toolkit.bot.user
                         )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
                     # in the status emoji and which media handler runs. Intent-gated link
                     # builders never start for these routes.
                     self.reactions.advance(
-                        emoji="<:image:1517559727880667226>"
-                        if route.decision == "IMAGE"
-                        else "<:video:1517560671913377842>"
+                        emoji=IMAGE_EMOJI if route.decision == "IMAGE" else VIDEO_EMOJI
                     )
                     # `parts_task` is left for the finally backstop — prep awaits it via
                     # asyncio.shield, so if the handler discards prep on a generation failure the
@@ -374,7 +353,7 @@ class ReplyPipeline(BaseModel):
                         decision=route.decision, context_task=media_context_task
                     )
                 else:
-                    self.reactions.advance(emoji="<:message:1517560873000898860>")
+                    self.reactions.advance(emoji=ANSWER_EMOJI)
                     context = await prep_task
                     prep_task = None
                     parts_task = None
@@ -390,12 +369,9 @@ class ReplyPipeline(BaseModel):
                         context = context.model_copy(update={"link_blocks": link_blocks})
                     pipeline_span.set_attribute(key="effort", value=route.effort)
                     await self._answer_qa(
-                        route=route,
-                        context=context,
-                        effort=route.effort,
-                        pipeline_started=pipeline_started,
+                        route=route, context=context, pipeline_started=pipeline_started
                     )
-                self.reactions.advance(emoji="<:greencheck:1517565102424068226>")
+                self.reactions.advance(emoji=DONE_EMOJI)
                 # End of the turn on the success path; the failure path is `gen_reply failed`,
                 # which carries the traceback. The console exporter prints no span-end line, so
                 # without this the file holds no total for the turn at all.

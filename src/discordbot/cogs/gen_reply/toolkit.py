@@ -66,26 +66,13 @@ class ReplyToolkit(BaseModel):
 
     @cached_property
     def gemini_client(self) -> genai.Client:
-        """The native Gemini client for every DIRECT-to-Google path.
+        """The native Gemini client for every DIRECT-to-Google path (no proxy).
 
-        DIRECT to Google (no proxy): it serves the runtime paths the LiteLLM proxy cannot.
-
-        - native omni video generation / editing (`interactions.create`, delivery=uri + Files
-          download), for both the VIDEO route and the inline `<generate-video>` marker;
-        - the inline `<generate-music>` Lyria render, also on the Interactions API;
-        - Files API uploads, so a generated clip (and, through
-          `gemini_client_if_configured`, a linked post's media) can be referenced by uri; and
-        - the YouTube-aware QA answer turn that streams through the native Interactions API
-          (the only path that can actually watch a linked video). That last swap only ever
-          fires when the answer model is already Gemini, so the direct credential is always
-          the right one.
-
-        All of them forgo proxy-side cost/usage tracking, like the deep-research direct path.
         An empty key raises at construction, so a caller that is reachable without one must go
         through `gemini_client_if_configured` instead of touching this.
 
         Returns:
-            A Gemini client for native media generation and the Interactions answer turn.
+            A Gemini client bound to this toolkit's key.
         """
         return genai.Client(api_key=self.gemini_api_key)
 
@@ -109,8 +96,7 @@ class ReplyToolkit(BaseModel):
         """The text-to-speech engine for spoken QA replies.
 
         Returns:
-            A generator bound to the proxy client and the TTS deployment; the caller
-            still gates it on `allow_voice` and `config.inline_voice_enabled`.
+            A generator bound to the proxy client and the TTS deployment.
         """
         return VoiceGenerator(
             client=self.openai_client, model_name=self.runtime_models.tts_model.name
@@ -121,9 +107,7 @@ class ReplyToolkit(BaseModel):
         """The image renderer shared by the IMAGE route and the `<generate-image>` marker.
 
         Returns:
-            A generator bound to the proxy client and the image deployment; the route
-            calls `render` (raises) while the inline path calls `generate` (best-effort,
-            gated on `allow_image` and `config.inline_image_enabled`).
+            A generator bound to the proxy client and the image deployment.
         """
         return ImageGenerator(
             client=self.openai_client, image_model=self.runtime_models.image_model
@@ -134,11 +118,7 @@ class ReplyToolkit(BaseModel):
         """The prompt director for the IMAGE and VIDEO routes.
 
         Returns:
-            A director bound to the proxy client and the grounding-capable `fast_model`; each
-            `refine` call is gated by the caller's per-route flag
-            (`config.image_refine_prompt_enabled` / `config.video_refine_prompt_enabled`) and
-            expands the raw request before `render`, best-effort (raw prompt on disable /
-            empty / error).
+            A director bound to the proxy client and the grounding-capable `fast_model`.
         """
         return PromptGenerator(
             client=self.openai_client, prompt_model=self.runtime_models.fast_model
@@ -150,9 +130,7 @@ class ReplyToolkit(BaseModel):
 
         Returns:
             A generator bound to the DIRECT-to-Google Gemini client and the video model
-            (the Interactions API is Gemini-only, not reachable via the proxy); the route
-            calls `render` (raises) while the inline path calls `generate` (best-effort, gated
-            on `allow_video` and `config.video_available`).
+            (the Interactions API is Gemini-only, not reachable via the proxy).
         """
         return VideoGenerator(
             client=self.gemini_client, video_model=self.runtime_models.video_model
@@ -164,8 +142,7 @@ class ReplyToolkit(BaseModel):
 
         Returns:
             A generator bound to the DIRECT-to-Google Gemini client (Lyria runs on the
-            Interactions API, not the proxy) and the music model; the inline path calls
-            `generate` (best-effort, gated on `allow_music` and `config.music_available`).
+            Interactions API, not the proxy) and the music model.
         """
         return MusicGenerator(
             client=self.gemini_client, music_model=self.runtime_models.music_model
@@ -187,7 +164,7 @@ class ReplyToolkit(BaseModel):
             bot=self.bot,
             runtime_models=self.runtime_models,
             attachment_handler=build_attachment_handler(
-                model_name=self.runtime_models.slow_model.name, gemini_api_key=self.gemini_api_key
+                model=self.runtime_models.slow_model, gemini_api_key=self.gemini_api_key
             ),
         )
 

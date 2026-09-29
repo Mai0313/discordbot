@@ -10,7 +10,7 @@ selector picked someone on most turns where nobody was named (#725).
 import time
 from typing import cast
 
-from openai import APIError, AsyncOpenAI
+from openai import APIError
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
@@ -29,11 +29,12 @@ class RouteClassifier(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client the triage call dispatches on."
-    )
     toolkit: ReplyToolkit = Field(
-        ..., description="The reply toolkit's model catalog, which owns the triage model tier."
+        ...,
+        description=(
+            "The reply toolkit: the proxy client the triage call dispatches on, and the model "
+            "catalog that owns the triage tier."
+        ),
     )
     message: SkipValidation[Message] = Field(..., description="The message being classified.")
 
@@ -75,7 +76,7 @@ class RouteClassifier(BaseModel):
         started = time.monotonic()
         try:
             with logfire.span("gen_reply route", message_id=self.message.id):
-                responses = await self.client.responses.parse(
+                responses = await self.toolkit.openai_client.responses.parse(
                     model=triage_model.name,
                     instructions=instructions,
                     input=cast("ResponseInputParam", message_list),

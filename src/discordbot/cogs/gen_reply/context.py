@@ -1,10 +1,11 @@
 """The reply context: what one turn hands the answer model, and how it is built.
 
 `ReplyContext` is the value; `ReplyContextBuilder` is the single speculative build that produces
-it while the route call is still in flight. Everything the builder does only READS — channel
-history and memory files — so a non-QA route can discard it safely, and the IMAGE / VIDEO routes
-consume it after their media is on screen instead. Whose memory the turn may carry is settled
-before the route call (`plan_recall`), since that call is what picks the optional members.
+it while the route call is still in flight. Every route consumes it, the IMAGE / VIDEO routes
+once their media is on screen. Everything the builder does only READS — channel history and
+memory files — so a turn that fails before consuming it can discard it safely. Whose memory the
+turn may carry is settled before the route call (`plan_recall`), since that call is what picks
+the optional members.
 """
 
 import time
@@ -14,9 +15,7 @@ import asyncio
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -52,6 +51,7 @@ from discordbot.typings.context_budgets import (
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
 from discordbot.cogs.gen_reply.references import replied_to_message, source_channel_is_public
+from discordbot.cogs.gen_reply.link_sources import system_block
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -218,21 +218,15 @@ def reference_header(*, ref: Message) -> EasyInputMessageParam:
     plainly. The attachment sentence is the load-bearing half: a Current Message that points at
     something without naming it is pointing here, this message's files included.
     """
-    return EasyInputMessageParam(
-        role="system",
-        content=[
-            ResponseInputTextParam(
-                text=(
-                    f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
-                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
-                    "The user is directly replying to this message; it is the primary context for "
-                    "the Current Message below. When the Current Message points at something "
-                    "without naming it, that something is here, this message's attachments "
-                    "included. ===="
-                ),
-                type="input_text",
-            )
-        ],
+    return system_block(
+        text=(
+            f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
+            f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
+            "The user is directly replying to this message; it is the primary context for "
+            "the Current Message below. When the Current Message points at something "
+            "without naming it, that something is here, this message's attachments "
+            "included. ===="
+        )
     )
 
 
@@ -243,14 +237,8 @@ def current_header(*, message: Message, has_reference: bool) -> EasyInputMessage
     (rendered just above) so the model reads the reply pair as one unit.
     """
     reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
-    return EasyInputMessageParam(
-        role="system",
-        content=[
-            ResponseInputTextParam(
-                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ====",
-                type="input_text",
-            )
-        ],
+    return system_block(
+        text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ===="
     )
 
 
@@ -258,22 +246,19 @@ class ReplyContextBuilder(BaseModel):
     """Builds one turn's `ReplyContext` from Discord history plus stored memory.
 
     Everything here reads and nothing writes, which is what lets the pipeline start the build
-    speculatively alongside the route call and throw it away when the route turns out not to
-    need it.
+    speculatively alongside the route call and throw it away when the turn fails before
+    consuming it.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    bot: SkipValidation[commands.Bot] = Field(
+    toolkit: ReplyToolkit = Field(
         ...,
         description=(
-            "The Discord bot instance, whose user id is excluded from every memory allowlist."
+            "The reply toolkit: the bot, whose user id is excluded from every memory allowlist, "
+            "and the input builder."
         ),
     )
-    toolkit: ReplyToolkit = Field(
-        ..., description="The reply toolkit's clients, model catalog and input builder."
-    )
-    message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
         ...,
         description=(
@@ -281,6 +266,11 @@ class ReplyContextBuilder(BaseModel):
             "compartments are scoped to."
         ),
     )
+
+    @property
+    def message(self) -> Message:
+        """The message being answered, read off the surface that carries it."""
+        return self.surface.message
 
     async def fetch_history(self, *, limit: int) -> list[Message]:
         """Fetches up to `limit` history messages once, trimmed to the char budget.
@@ -330,15 +320,7 @@ class ReplyContextBuilder(BaseModel):
         # out of here also keeps it out of the two other calls this render feeds, neither of which
         # is answering a question: the media persona reply, and the memory review transcript,
         # whose first message is this header verbatim.
-        header = EasyInputMessageParam(
-            role="system",
-            content=[
-                ResponseInputTextParam(
-                    text="==== Chat History: earlier messages in this channel. ====",
-                    type="input_text",
-                )
-            ],
-        )
+        header = system_block(text="==== Chat History: earlier messages in this channel. ====")
         return [header, *processed]
 
     async def render_reference_message(
@@ -426,7 +408,7 @@ class ReplyContextBuilder(BaseModel):
         self, *, server_memory: str, recall_context: RecallContext
     ) -> tuple[list[UserMemory], dict[int, RecallCandidate], int]:
         """Resolves deterministic memories and derives disjoint optional alias candidates."""
-        bot_user = self.bot.user
+        bot_user = self.toolkit.bot.user
         if bot_user is None:
             return [], {}, 0
 
@@ -444,9 +426,7 @@ class ReplyContextBuilder(BaseModel):
         # channel because that grants no new access. Only a public channel may offer absent
         # nickname-table members to the route call.
         if server_memory and self.message.guild is not None:
-            widen_allowlist_with_aliases(
-                allowed=deterministic_allowed, memory=server_memory, include_absent=False
-            )
+            widen_allowlist_with_aliases(allowed=deterministic_allowed, memory=server_memory)
             if source_channel_is_public(message=self.message):
                 # No credit label, because nothing in this channel names these members;
                 # `RecallCandidate` owns what the footer does about that and why no name is
@@ -551,7 +531,8 @@ class ReplyContextBuilder(BaseModel):
         """Builds history, shared parts, server memory, and the memory the turn carries.
 
         Runs speculatively as its own task concurrent with routing: everything here only reads
-        (channel history, memory files), so a non-QA route can discard it safely. `parts_task`
+        (channel history, memory files), so a turn that fails before consuming it can discard it
+        safely. `parts_task`
         carries the answer-path reference/current renders (uploaded files). `recall_picks` is
         the route's optional recall picks, which the pipeline resolves as soon as the route
         returns; it is awaited only after the history and uploads, which almost always outlast

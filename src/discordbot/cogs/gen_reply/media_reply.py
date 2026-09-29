@@ -20,6 +20,8 @@ import time
 import base64
 from typing import TYPE_CHECKING
 import asyncio
+import contextlib
+from collections.abc import AsyncIterator
 
 import logfire
 from nextcord import Message
@@ -75,9 +77,6 @@ class MediaReplyRoutes(BaseModel):
     toolkit: ReplyToolkit = Field(
         ..., description="The generators, clients and model catalog this route renders through."
     )
-    message: SkipValidation[Message] = Field(
-        ..., description="The message that asked for the media."
-    )
     surface: TurnSurface = Field(..., description="Where the delivered media goes.")
     answer: AnswerTurn = Field(
         ...,
@@ -86,15 +85,18 @@ class MediaReplyRoutes(BaseModel):
         ),
     )
 
+    @property
+    def message(self) -> Message:
+        """The message that asked for the media, read off the surface that carries it."""
+        return self.surface.message
+
     async def _deliver(self, *, data: bytes, filename: str) -> Message | None:
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
 
         Returns the delivered media message the persona reply should stream onto, or None when the
-        bytes were too big and hosted as a standalone URL reply instead. On None the caller posts
-        the persona reply on a fresh non-pinging message (via `AnswerTurn.persona_base_reply`) only
-        if it proceeds, so the hosted-URL message is never clobbered and no stray persona-base is
-        left if the persona reply bails. If hosting is unavailable the native attach is attempted
-        anyway, raising on oversize so the route stays on its existing hard-fail error path.
+        bytes were too big and hosted as a standalone URL reply instead, which the persona reply
+        must not overwrite. If hosting is unavailable the native attach is attempted anyway,
+        raising on oversize so the route stays on its existing hard-fail error path.
         """
         item = MediaItem(source=data, filename=filename)
         plan = await self.media_delivery.plan(
@@ -114,6 +116,31 @@ class MediaReplyRoutes(BaseModel):
         # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
         await self.surface.send(content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}")
         return None
+
+    @contextlib.asynccontextmanager
+    async def _delivery_window(
+        self, *, context_task: asyncio.Task[ReplyContext]
+    ) -> AsyncIterator[asyncio.Timeout]:
+        """Bounds a generation by what the surface has left, and drains the context on failure.
+
+        The caller enters the yielded timeout around the generation alone and delivers outside
+        it: cancelling media already uploading is the very outcome the bound exists to prevent.
+        Generation failing IS a real error and stays on the outer error path, but the
+        speculative context must not leak when the route bails before consuming it, so any
+        failure inside drains it first. One handler rather than two, so nothing raised while
+        reporting the window can skip that drain. A failure the expired window caused is
+        re-raised as `WINDOW_EXPIRED_NOTICE`, told apart with `expired()` rather than the
+        exception type: a render's own bound raises the very same `TimeoutError`, and only this
+        one knows the turn has nowhere left to answer.
+        """
+        window = asyncio.timeout(delay=self.surface.delivery_budget_seconds())
+        try:
+            yield window
+        except Exception as exc:
+            await discard_task(task=context_task, label="prep", message_id=self.message.id)
+            if window.expired():
+                raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
+            raise
 
     async def handle_image(
         self, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
@@ -138,10 +165,7 @@ class MediaReplyRoutes(BaseModel):
             model=toolkit.runtime_models.image_model.name,
             has_source_images=replied_to is not None,
         )
-        window = asyncio.timeout(delay=self.surface.delivery_budget_seconds())
-        try:
-            # The bound covers the generation and stops short of `_deliver`: cancelling an image
-            # already uploading is the very outcome it exists to prevent.
+        async with self._delivery_window(context_task=context_task) as window:
             async with window:
                 if replied_to is not None:
                     own_bytes, ref_bytes = await asyncio.gather(
@@ -181,14 +205,6 @@ class MediaReplyRoutes(BaseModel):
                 model=toolkit.runtime_models.image_model.name,
                 elapsed_seconds=time.monotonic() - started,
             )
-        except Exception as exc:
-            # Generation failing IS a real error and stays on the outer error path, but the
-            # speculative context must not leak when we bail before consuming it. One handler
-            # rather than two, so nothing raised while reporting the window can skip that drain.
-            await discard_task(task=context_task, label="prep", message_id=message.id)
-            if window.expired():
-                raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
-            raise
 
         # The image is already delivered, so from here a failure must never surface as an
         # error: the conversational reply is best-effort and leaves the image untouched. The
@@ -196,7 +212,6 @@ class MediaReplyRoutes(BaseModel):
         await self.answer.stream_media_persona_reply(
             reply=reply,
             context_task=context_task,
-            model=toolkit.runtime_models.fast_model,
             system_prompt=IMAGE_REPLY_PROMPT,
             focus_part=ResponseInputImageParam(
                 image_url=convert_base64_to_data_uri(
@@ -206,7 +221,6 @@ class MediaReplyRoutes(BaseModel):
                 type="input_image",
             ),
             media_noun="image",
-            span_name="gen_reply image reply",
         )
 
     async def handle_video(
@@ -232,10 +246,7 @@ class MediaReplyRoutes(BaseModel):
             message_id=message.id,
             model=toolkit.runtime_models.video_model.name,
         )
-        window = asyncio.timeout(delay=self.surface.delivery_budget_seconds())
-        try:
-            # The bound covers the generation and stops short of `_deliver`: cancelling a clip
-            # already uploading is the very outcome it exists to prevent.
+        async with self._delivery_window(context_task=context_task) as window:
             async with window:
                 replied_to = replied_to_message(message=message)
                 source_messages = [message, *([replied_to] if replied_to is not None else [])]
@@ -295,17 +306,6 @@ class MediaReplyRoutes(BaseModel):
                 total_elapsed_seconds=time.monotonic() - started,
                 bytes=len(video_bytes),
             )
-        except Exception as exc:
-            # Generation failing IS a real error and stays on the outer error path, but the
-            # speculative context must not leak when we bail before consuming it. One handler
-            # rather than two, so nothing raised while reporting the window can skip that drain.
-            await discard_task(task=context_task, label="prep", message_id=message.id)
-            # `expired()` rather than the exception type: `render`'s own
-            # VIDEO_RENDER_TIMEOUT_SECONDS raises the very same TimeoutError, and only this one
-            # knows the turn has nowhere left to answer.
-            if window.expired():
-                raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
-            raise
 
         # The video is already delivered, so from here a failure must never surface as an error:
         # the conversational reply is best-effort and leaves the delivered video untouched.
@@ -345,9 +345,7 @@ class MediaReplyRoutes(BaseModel):
         await self.answer.stream_media_persona_reply(
             reply=reply,
             context_task=context_task,
-            model=self.toolkit.runtime_models.fast_model,
             system_prompt=VIDEO_REPLY_PROMPT,
             focus_part=ResponseInputFileParam(type="input_file", file_id=file_uri),
             media_noun="video",
-            span_name="gen_reply video reply",
         )

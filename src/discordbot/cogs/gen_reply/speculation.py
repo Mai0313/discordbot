@@ -1,9 +1,9 @@
 """Lifecycle helpers for the tasks a reply starts before it knows whether it needs them.
 
 A turn speculates: the reply context and the attachment uploads start while the route call is
-still in flight, and a non-QA route then throws most of it away.
-These helpers are how such a task is awaited, bounded or drained without ever orphaning it or
-losing the exception it raised off-route.
+still in flight, and a turn that fails before consuming them has to throw them away. These
+helpers are how such a task is awaited, bounded or drained without ever orphaning it or losing
+the exception it raised off-route.
 """
 
 import asyncio

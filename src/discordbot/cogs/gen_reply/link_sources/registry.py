@@ -159,7 +159,7 @@ def _needs_files_api(config: LLMConfig) -> bool:
     and downscaled before the upload it could no longer feed, so gating at the upload alone would
     still spend that work on the reply's critical path.
     """
-    return config.file_api_enabled and bool(config.gemini_api_key.strip())
+    return config.file_api_enabled and config.gemini_key_configured
 
 
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:

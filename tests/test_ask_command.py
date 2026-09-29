@@ -7,11 +7,11 @@ built over a connection state, on a channel the bot is not a member of. Everythi
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from datetime import datetime, timedelta
 
 import pytest
-from nextcord import Message, ChannelType, PartialMessageable
+from nextcord import Message, Attachment, ChannelType, PartialMessageable
 from nextcord.enums import InteractionContextType
 from nextcord.utils import utcnow
 
@@ -34,6 +34,9 @@ from discordbot.cogs.gen_reply.ask_message import (
 )
 
 from tests.helpers.casting import as_bot, make_media_hosting_config
+
+if TYPE_CHECKING:
+    from nextcord.types.message import Attachment as AttachmentPayload
 
 # A real Discord snowflake, so `Message.created_at` resolves to a real moment rather than 1970.
 ASK_SNOWFLAKE = 1517561877973045349
@@ -131,6 +134,17 @@ async def _echo_prompt(content: str) -> str:
     return content.strip()
 
 
+# One attachment option's resolved payload, as Discord sends it back in `interaction.data`.
+_CAT_PNG: dict[str, Any] = {
+    "id": "9",
+    "filename": "cat.png",
+    "size": 1024,
+    "url": "https://cdn.example/cat.png",
+    "proxy_url": "https://cdn.example/cat.png",
+    "content_type": "image/png",
+}
+
+
 def _interaction(**kwargs: Any) -> Any:  # noqa: ANN401 -- the fake stands in for a generic Interaction
     """Builds the fake invocation, untyped so it can stand in for `Interaction[Bot]`."""
     return _FakeAskInteraction(**kwargs)
@@ -168,20 +182,7 @@ def test_the_synthesized_message_is_the_invocation_itself() -> None:
 def test_an_attached_file_reaches_the_message() -> None:
     """The option's payload is read back out of the interaction, not off the bound object."""
     interaction = _interaction()
-    interaction.data = {
-        "resolved": {
-            "attachments": {
-                "9": {
-                    "id": "9",
-                    "filename": "cat.png",
-                    "size": 1024,
-                    "url": "https://cdn.example/cat.png",
-                    "proxy_url": "https://cdn.example/cat.png",
-                    "content_type": "image/png",
-                }
-            }
-        }
-    }
+    interaction.data = {"resolved": {"attachments": {"9": _CAT_PNG}}}
 
     message = _ask_message(interaction=interaction)
 
@@ -257,9 +258,7 @@ def test_an_ask_turn_reads_memory_scoped_to_where_it_happens(
     interaction = _interaction(guild_id=guild_id, context=context)
     message = _ask_message(interaction=interaction)
     builder = ReplyContextBuilder(
-        bot=interaction.client,
         toolkit=_toolkit(interaction=interaction),
-        message=message,
         surface=TurnSurface.for_interaction(message=message, interaction=interaction),
     )
 
@@ -294,14 +293,11 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     message = _ask_message(interaction=interaction)
     surface = TurnSurface.for_interaction(message=message, interaction=interaction)
     turn = AnswerTurn(
-        client=SimpleNamespace(),
-        bot=interaction.client,
         config=LLMConfig(),
         media_delivery=MediaDeliveryPlanner(
             media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
         ),
         toolkit=_toolkit(interaction=interaction),
-        message=message,
         surface=surface,
     )
 
@@ -531,6 +527,38 @@ async def test_ask_answers_a_blank_question_without_running_a_turn() -> None:
     await cog.ask(interaction, question="   ", attachment=None)
 
     assert [edit["content"] for edit in interaction.edits] == ["?"]
+
+
+async def test_ask_answers_an_attachment_sent_without_a_question() -> None:
+    """A file on its own is something to answer, not an empty prompt.
+
+    The attachment reaches the turn only through the synthesized message, so that message is
+    what the empty-prompt check has to read.
+    """
+    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
+    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
+    toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
+    ran: list[tuple[TurnSurface, str]] = []
+
+    async def _run_turn(*, surface: TurnSurface, user_prompt: str) -> None:
+        """Records the turn the command would have run."""
+        ran.append((surface, user_prompt))
+
+    cog.__dict__["toolkit"] = toolkit
+    cog.__dict__["_run_turn"] = _run_turn
+    interaction = _interaction()
+    interaction.data = {"resolved": {"attachments": {"9": _CAT_PNG}}}
+
+    await cog.ask(
+        interaction,
+        question="   ",
+        attachment=Attachment(data=cast("AttachmentPayload", _CAT_PNG), state=interaction._state),
+    )
+
+    assert interaction.edits == []
+    ((surface, user_prompt),) = ran
+    assert user_prompt == ""
+    assert [attachment.filename for attachment in surface.message.attachments] == ["cat.png"]
 
 
 class _EditableReply:

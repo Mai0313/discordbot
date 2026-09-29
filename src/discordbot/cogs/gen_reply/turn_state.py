@@ -1,9 +1,9 @@
 """The two things a failing turn needs that the frame it fails in cannot see.
 
-Both are `ContextVar`s for the same reason: a pipeline failure surfaces in `on_message`, several
-frames above the code that picked a model or opened a reply, and nextcord dispatches each
-`on_message` as its own task, which copies the context — so a write here can never be read by
-another user's turn.
+Both are `ContextVar`s for the same reason: a turn's failure is caught several frames above the
+code that picked a model or opened a reply, and nextcord runs every event it dispatches, a
+message or an interaction, as its own task, which copies the context — so a write here can never
+be read by another user's turn.
 """
 
 from typing import TYPE_CHECKING
@@ -14,9 +14,9 @@ if TYPE_CHECKING:
 
 
 # The model this turn most recently dispatched on, so `gen_reply failed` can name it: a provider
-# error rarely says which model it refused. Set only where the turn itself dispatches (route,
-# answer, image, video); a generator that swallows its own failure logs its own model and never
-# reaches the reader, and None means the turn failed before any model was asked for anything.
+# error rarely says which model it refused. Set only where the turn itself dispatches; a generator
+# that swallows its own failure logs its own model and never reaches the reader, and None means
+# the turn failed before any model was asked for anything.
 dispatched_model: ContextVar[str | None] = ContextVar("gen_reply_dispatched_model", default=None)
 
 

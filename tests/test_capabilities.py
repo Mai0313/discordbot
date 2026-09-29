@@ -21,8 +21,8 @@ _BARE_COMMAND_RE = re.compile(pattern=r"(?<![\w:/.\-])(/[a-z][\w-]*)")
 _PICKER_GATE_KEYWORD = "default_member_permissions"
 # The two context fields every root command owes, each mapped to the shared tuple that has to be
 # handed to it. Both are checked by the constant's name rather than by reading a literal: a
-# command spelling its own list out would pass a membership check while drifting from the other
-# fifteen, and it is the drift that costs a surface rather than any one list being wrong.
+# command spelling its own list out would pass a membership check while drifting from the
+# others, and it is the drift that costs a surface rather than any one list being wrong.
 _CONTEXT_DECLARATIONS = {
     "integration_types": "INSTALL_CONTEXTS",
     "contexts": "INTERACTION_CONTEXTS",
@@ -75,6 +75,7 @@ _TABLE_CELL_RE = re.compile(pattern=r"(?<!\\)\|")
 # One word of a command path, siblings included. An option (`<url>`, `[member]`) or an
 # argument (`@bot`) is not one, and ends the path.
 _PATH_WORD_RE = re.compile(pattern=r"[\w\\|-]+")
+_COGS_DIR = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -113,7 +114,7 @@ def _declared_name(decorator: ast.Call, callback: str) -> str:
 def _module_command_declarations(module: Path, label: str) -> dict[str, tuple[ast.Call, bool]]:
     """Returns the command paths one cog module declares, each with its decorator and a group flag.
 
-    Group nodes are kept, unlike in `_module_command_paths`: a group cannot be run and so owes
+    Group nodes are kept, unlike in `_slash_command_paths`: a group cannot be run and so owes
     the document no line, but Discord still renders its description in the picker.
     """
     parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
@@ -150,10 +151,22 @@ def _module_command_declarations(module: Path, label: str) -> dict[str, tuple[as
     }
 
 
-def _module_command_paths(module: Path, label: str) -> set[str]:
-    """Returns the command paths one cog module declares that a user can run."""
-    declarations = _module_command_declarations(module=module, label=label)
-    return {path for path, (_, is_group) in declarations.items() if not is_group}
+def _command_declarations() -> dict[str, tuple[ast.Call, bool, str]]:
+    """Returns every command path the cogs declare, with its decorator, group flag and module.
+
+    Recursive on purpose: a cog owns a directory now, so a non-recursive glob would match only
+    `cogs/__init__.py` and silently report that nothing is declared. The walk also refuses to
+    assume commands only ever live in `cog.py`, so a declaration that moves into a helper module
+    is still held to every check here.
+    """
+    declarations: dict[str, tuple[ast.Call, bool, str]] = {}
+    for module in _COGS_DIR.rglob(pattern="*.py"):
+        label = module.relative_to(_COGS_DIR).as_posix()
+        for path, (decorator, is_group) in _module_command_declarations(
+            module=module, label=label
+        ).items():
+            declarations[path] = (decorator, is_group, label)
+    return declarations
 
 
 def _slash_command_paths() -> set[str]:
@@ -162,17 +175,7 @@ def _slash_command_paths() -> set[str]:
     Group nodes are left out: `/credit` cannot be invoked on its own, and every leaf
     under it is required anyway.
     """
-    paths: set[str] = set()
-    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
-    # Recursive on purpose: a cog owns a directory now, so a non-recursive glob would
-    # match only `cogs/__init__.py` and silently report that nothing is runnable. The
-    # walk also refuses to assume commands only ever live in `cog.py`, so a declaration
-    # that moves into a helper module still has to be documented.
-    for module in cogs_dir.rglob(pattern="*.py"):
-        paths |= _module_command_paths(
-            module=module, label=module.relative_to(cogs_dir).as_posix()
-        )
-    return paths
+    return {path for path, (_, is_group, _) in _command_declarations().items() if not is_group}
 
 
 def _group_paths(paths: set[str]) -> set[str]:
@@ -395,17 +398,10 @@ def _picker_descriptions() -> dict[str, list[str]]:
     Localizations sit beside the English one because a member reads whichever matches their
     client language, so a claim is only fixed once all of them carry it.
     """
-    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
-    descriptions: dict[str, list[str]] = {}
-    for module in cogs_dir.rglob(pattern="*.py"):
-        label = module.relative_to(cogs_dir).as_posix()
-        for path, (decorator, _) in _module_command_declarations(
-            module=module, label=label
-        ).items():
-            descriptions[f"/{path}"] = _description_texts(
-                decorator=decorator, label=f"{label} {path}"
-            )
-    return descriptions
+    return {
+        f"/{path}": _description_texts(decorator=decorator, label=f"{label} {path}")
+        for path, (decorator, _, label) in _command_declarations().items()
+    }
 
 
 def _names_an_unqualified_admin(text: str) -> bool:
@@ -418,9 +414,8 @@ def _names_an_unqualified_admin(text: str) -> bool:
 
 def _modules_declaring_a_picker_gate() -> list[str]:
     """Returns the cog modules handing Discord a permission to filter its command picker."""
-    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
     declaring: list[str] = []
-    for module in cogs_dir.rglob(pattern="*.py"):
+    for module in _COGS_DIR.rglob(pattern="*.py"):
         parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
         if any(
             keyword.arg == _PICKER_GATE_KEYWORD
@@ -428,7 +423,7 @@ def _modules_declaring_a_picker_gate() -> list[str]:
             if isinstance(node, ast.Call)
             for keyword in node.keywords
         ):
-            declaring.append(module.relative_to(cogs_dir).as_posix())
+            declaring.append(module.relative_to(_COGS_DIR).as_posix())
     return sorted(declaring)
 
 
@@ -448,20 +443,15 @@ def _undeclared_context_keywords(decorator: ast.Call) -> list[str]:
 
 def _root_commands_missing_a_context() -> dict[str, list[str]]:
     """Returns the root commands not declaring both shared tuples, each with what it is missing."""
-    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
     missing: dict[str, list[str]] = {}
-    for module in cogs_dir.rglob(pattern="*.py"):
-        label = module.relative_to(cogs_dir).as_posix()
-        for path, (decorator, _) in _module_command_declarations(
-            module=module, label=label
-        ).items():
-            # Subcommands are skipped rather than checked: Discord reads both fields off the root
-            # command alone, so a subcommand declaring either one would be inert.
-            if " " in path:
-                continue
-            undeclared = _undeclared_context_keywords(decorator=decorator)
-            if undeclared:
-                missing[f"/{path}"] = undeclared
+    for path, (decorator, _, _) in _command_declarations().items():
+        # Subcommands are skipped rather than checked: Discord reads both fields off the root
+        # command alone, so a subcommand declaring either one would be inert.
+        if " " in path:
+            continue
+        undeclared = _undeclared_context_keywords(decorator=decorator)
+        if undeclared:
+            missing[f"/{path}"] = undeclared
     return missing
 
 

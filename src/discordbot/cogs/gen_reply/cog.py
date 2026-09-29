@@ -34,8 +34,8 @@ from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_RED
-from discordbot.utils.mentions import has_bot_mention
-from discordbot.utils.reactions import ReactionStatusChain, update_reaction
+from discordbot.utils.mentions import is_addressed_to_bot
+from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.llm_errors import extract_friendly_error
@@ -49,6 +49,7 @@ from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, interaction_channel
+from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI
 from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
@@ -81,8 +82,8 @@ def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
     `guild_id` / `guild_name` are None in a DM.
 
     Read off the surface rather than the message so a `/ask` turn in a server is not logged as
-    a DM. `guild_name` still comes from the message and so stays None there: the bot is not a
-    member of that server and does not know what it is called.
+    a DM. `guild_name` still comes from the message and so stays None there, since the
+    synthesized message carries no guild.
     """
     message = surface.message
     guild = message.guild
@@ -275,13 +276,10 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         try:
             await ReplyPipeline(
-                client=self.openai_client,
-                bot=self.bot,
                 config=self.config,
                 media_delivery=self.media_delivery,
                 usage_recorder=self.usage_recorder,
                 toolkit=self.toolkit,
-                message=message,
                 surface=surface,
                 user_prompt=user_prompt,
                 reactions=reactions,
@@ -295,7 +293,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 _exc_info=True,
             )
             try:
-                reactions.advance(emoji="<:redcross:1517565100838355016>")
+                reactions.advance(emoji=FAILED_EMOJI)
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
@@ -314,6 +312,52 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
         finally:
             await reactions.flush()
+
+    async def _start_turn(self, *, surface: TurnSurface, user_prompt: str) -> None:
+        """Runs a turn on the request, or answers `?` when the message asks for nothing.
+
+        Shared by `on_message` and `/ask`. Everything that differs between them is inside the
+        surface: a synthesized `/ask` message carries no stickers and no forwarded snapshot, and
+        its `?` goes out without the ❓ reaction because the surface has nothing to react to.
+
+        Args:
+            surface: Where the turn happens.
+            user_prompt: The mention-stripped text of the message.
+        """
+        message = surface.message
+        has_attachment = bool(message.attachments or message.stickers)
+        # A forward leaves content/attachments/stickers empty and puts the payload in
+        # `message.snapshots`, so it must not be gated out as an empty message here, or the
+        # snapshot text/media render in `input.py` never runs.
+        is_forward = bool(message.snapshots)
+        # A forward puts its request in `message.snapshots`, not content, so merge the forwarded
+        # text into the prompt (after the forwarder's own comment, if any). A guild forward can
+        # only trigger via a `<@bot>` comment, so the comment is usually non-empty: merging (not
+        # just an empty fallback) is what lets an IMAGE/VIDEO route render the forwarded "draw a
+        # cat" even when the trigger comment ("@bot please") survives mention-stripping.
+        if is_forward and (
+            forwarded := self.toolkit.input_builder.forwarded_request_text(message=message)
+        ):
+            user_prompt = f"{user_prompt}\n{forwarded}".strip() if user_prompt else forwarded
+
+        if not user_prompt and not has_attachment and not is_forward:
+            logfire.debug(
+                "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
+            )
+            await surface.mark(emoji="❓", bot_user=self.bot.user)
+            await surface.send(content="?")
+            return
+
+        logfire.info(
+            "gen_reply received",
+            **_message_log_fields(surface=surface),
+            prompt_chars=len(user_prompt),
+            has_attachment=has_attachment,
+            attachment_count=len(message.attachments),
+            sticker_count=len(message.stickers),
+            is_dm=surface.guild_id is None,
+        )
+        await self._run_turn(surface=surface, user_prompt=user_prompt)
 
     @nextcord.slash_command(
         name="ask",
@@ -370,22 +414,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message = build_ask_message(interaction=interaction, question=question, channel=channel)
         surface = TurnSurface.for_interaction(message=message, interaction=interaction)
         user_prompt = await self.toolkit.input_builder.get_user_prompt(content=question)
-        if not user_prompt and attachment is None:
-            logfire.debug(
-                "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
-            )
-            await surface.send(content="?")
-            return
-        logfire.info(
-            "gen_reply received",
-            **_message_log_fields(surface=surface),
-            prompt_chars=len(user_prompt),
-            has_attachment=attachment is not None,
-            attachment_count=len(message.attachments),
-            sticker_count=0,
-            is_dm=surface.guild_id is None,
-        )
-        await self._run_turn(surface=surface, user_prompt=user_prompt)
+        await self._start_turn(surface=surface, user_prompt=user_prompt)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -398,11 +427,7 @@ class ReplyGeneratorCogs(commands.Cog):
         if message.author.bot:
             return
 
-        # Match <@ID> in content, not message.mentions: reply notifications add
-        # the bot to mentions and would trigger on replies to functional bot
-        # posts (e.g. Threads embeds, video downloads).
-        is_dm = message.guild is None
-        if not is_dm and not has_bot_mention(content=message.content, bot_user=self.bot.user):
+        if not is_addressed_to_bot(message=message, bot_user=self.bot.user):
             return
 
         # Skip a (mentioned) message typed inside a research thread the ResearchCogs cog is
@@ -417,39 +442,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return
 
         user_prompt = await self.toolkit.input_builder.get_user_prompt(content=message.content)
-        has_attachment = bool(message.attachments or message.stickers)
-        # A forward leaves content/attachments/stickers empty and puts the payload in
-        # `message.snapshots`, so it must not be gated out as an empty message here, or the
-        # snapshot text/media render in `input.py` never runs.
-        is_forward = bool(message.snapshots)
-        # A forward puts its request in `message.snapshots`, not content, so merge the forwarded
-        # text into the prompt (after the forwarder's own comment, if any). A guild forward can
-        # only trigger via a `<@bot>` comment, so the comment is usually non-empty: merging (not
-        # just an empty fallback) is what lets an IMAGE/VIDEO route render the forwarded "draw a
-        # cat" even when the trigger comment ("@bot please") survives mention-stripping.
-        if is_forward and (
-            forwarded := self.toolkit.input_builder.forwarded_request_text(message=message)
-        ):
-            user_prompt = f"{user_prompt}\n{forwarded}".strip() if user_prompt else forwarded
-
-        if not user_prompt and not has_attachment and not is_forward:
-            logfire.debug(
-                "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
-            )
-            await update_reaction(message=message, bot_user=self.bot.user, emoji="❓")
-            await message.reply(content="?")
-            return
-
-        logfire.info(
-            "gen_reply received",
-            **_message_log_fields(surface=surface),
-            prompt_chars=len(user_prompt),
-            has_attachment=has_attachment,
-            attachment_count=len(message.attachments),
-            sticker_count=len(message.stickers),
-            is_dm=is_dm,
-        )
-        await self._run_turn(surface=surface, user_prompt=user_prompt)
+        await self._start_turn(surface=surface, user_prompt=user_prompt)
 
 
 def setup(bot: commands.Bot) -> None:

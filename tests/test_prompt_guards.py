@@ -1,17 +1,14 @@
 """Guards the one COMMON_PROMPT rule that is a security control rather than a style preference.
 
 `extract_inline_markers` reads the answer model's OWN output, runs regardless of the inline
-kill-switches, and its regexes are blind to backticks and code fences. So any
-`<generate-image>` / `<generate-music>` / `<generate-video>` / `<deep-research>` / `<write-memory>`
-/ `<forget-memory>` / `<write-server-memory>` block the model writes fires for real and is cut out
-of what the user reads, whatever the model wrapped it in. The memory tags are the quiet ones: they
-spend nothing and render nothing, and what they reach outlives the conversation.
-Quoted linked content is attacker-supplied text, and `defuse_markers` rewrites those tags on the
-four DISCUSSION paths only, Threads, Facebook, Instagram and Twitter, each of which hands the
-model thousands of characters written by strangers: a Douyin caption, a Bilibili title, a page
-fetched through `urlContext`, a transcript and an uploaded file all reach the model undefused. The
-prompt rule telling the model never to echo such a tag verbatim is what covers them, so it is the
-load-bearing half of that defence rather than advice.
+kill-switches, and its regexes are blind to backticks and code fences. So any marker block the
+model writes fires for real and is cut out of what the user reads, whatever the model wrapped it
+in. The memory tags are the quiet ones: they spend nothing and render nothing, and what they reach
+outlives the conversation. Quoted linked content is attacker-supplied text, and `defuse_markers`
+rewrites those tags only on the link sources that hand the model strangers' discussion: a Douyin
+caption, a Bilibili title, a page fetched through `urlContext`, a transcript and an uploaded file
+all reach the model undefused. The prompt rule telling the model never to echo such a tag
+verbatim is what covers them, so it is the load-bearing half of that defence rather than advice.
 
 It is pinned here because its absence is invisible to the rest of the suite: every test passed
 while an earlier wording of this same bullet actively licensed the echo ("reproduce it as plain
@@ -57,7 +54,7 @@ def test_the_guard_reaches_the_turn_that_can_receive_quoted_content() -> None:
     """QA is the turn linked-post and fetched content ride on, so it is the one that needs it.
 
     It embeds `COMMON_PROMPT`, which is also what carries the rule onto the native
-    Interactions backend: that path takes the same `_build_runtime_instructions` output as its
+    Interactions backend: that path takes the same `build_runtime_instructions` output as its
     `system_instruction`, so a rule living here needs no second home. A route that grows its
     own system prompt and can be handed external content belongs in this check beside it.
     """

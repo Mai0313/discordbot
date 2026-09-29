@@ -53,6 +53,15 @@ class ModelSettings(BaseModel):
         return Reasoning(effort=self.effort, summary="auto")
 
     @property
+    def is_gemini(self) -> bool:
+        """Whether this is a Gemini model, which is read off its name alone.
+
+        Returns:
+            True when the name contains `gemini`.
+        """
+        return "gemini" in self.name
+
+    @property
     def tools(self) -> list[ToolParam]:
         """Built-in tool payloads for this model's provider.
 
@@ -66,7 +75,7 @@ class ModelSettings(BaseModel):
             receive web_search and web_fetch tools. Grok models receive web_search and
             x_search. Every other model receives the OpenAI web_search tool.
         """
-        if "gemini" in self.name:
+        if self.is_gemini:
             return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
         if "claude" in self.name:
             return cast(

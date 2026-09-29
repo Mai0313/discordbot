@@ -148,6 +148,11 @@ class LLMConfig(BaseSettings):
     )
 
     @property
+    def gemini_key_configured(self) -> bool:
+        """Whether a direct Gemini key is configured; a blank or whitespace-only one is none."""
+        return bool(self.gemini_api_key.strip())
+
+    @property
     def deep_research_available(self) -> bool:
         """Whether deep research can actually run: enabled AND a direct Gemini key is configured.
 
@@ -155,7 +160,7 @@ class LLMConfig(BaseSettings):
         open a thread and then fail, so the QA marker and `/deep_research` are only offered when
         both the kill-switch is on and the key is present.
         """
-        return self.deep_research_enabled and bool(self.gemini_api_key.strip())
+        return self.deep_research_enabled and self.gemini_key_configured
 
     @property
     def music_available(self) -> bool:
@@ -165,7 +170,7 @@ class LLMConfig(BaseSettings):
         Interactions API); without it the render would just fail, so the QA `<generate-music>` marker is
         only advertised when both the kill-switch is on and the key is present.
         """
-        return self.inline_music_enabled and bool(self.gemini_api_key.strip())
+        return self.inline_music_enabled and self.gemini_key_configured
 
     @property
     def video_available(self) -> bool:
@@ -176,7 +181,7 @@ class LLMConfig(BaseSettings):
         just fail, so the QA `<generate-video>` marker is only advertised when both the kill-switch is on
         and the key is present.
         """
-        return self.inline_video_enabled and bool(self.gemini_api_key.strip())
+        return self.inline_video_enabled and self.gemini_key_configured
 
 
 __all__ = ["LLMConfig"]

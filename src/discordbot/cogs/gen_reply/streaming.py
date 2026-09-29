@@ -47,6 +47,12 @@ from discordbot.cogs.gen_reply.generation import (
 )
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import current_answer_streamer
+from discordbot.cogs.gen_reply.status_marks import (
+    IMAGE_EMOJI,
+    VIDEO_EMOJI,
+    VOICE_EMOJI,
+    ANSWER_EMOJI,
+)
 
 # Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
@@ -380,7 +386,7 @@ class ResponseStreamer(BaseModel):
         # the real reply may mention people, the thought process must not.
         tail = escape_mentions(self.reasoning_content[-1500:])
         lines = [line for line in tail.splitlines() if line.strip()]
-        header = "-# <:message:1517560873000898860> Thinking..."
+        header = f"-# {ANSWER_EMOJI} Thinking..."
         budget = REASONING_PREVIEW_MAX_CHARS
         kept: list[str] = []
         for line in reversed(lines[-REASONING_PREVIEW_MAX_LINES:]):
@@ -1011,7 +1017,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message with the bot's `voice` app emoji while the clip synthesizes.
-        await self._turn_surface().mark(emoji="<:voice:1517558121092878376>")
+        await self._turn_surface().mark(emoji=VOICE_EMOJI)
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
@@ -1090,7 +1096,7 @@ class ResponseStreamer(BaseModel):
                 cap=MAX_INLINE_IMAGES,
             )
         # Mark the source message with the bot's `image` app emoji while the images render.
-        await self._turn_surface().mark(emoji="<:image:1517559727880667226>")
+        await self._turn_surface().mark(emoji=IMAGE_EMOJI)
         logfire.info(
             "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
         )
@@ -1177,7 +1183,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message with the bot's `video` app emoji while the clip renders.
-        await self._turn_surface().mark(emoji="<:video:1517560671913377842>")
+        await self._turn_surface().mark(emoji=VIDEO_EMOJI)
         logfire.info("Generating inline video reply", message_id=self.message.id)
         source_images = await source_images_task if source_images_task is not None else []
         video_bytes = await self.video_generator.generate(
