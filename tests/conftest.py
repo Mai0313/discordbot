@@ -210,14 +210,8 @@ def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     visible, which in a git worktree is the parent checkout's file. `model_validate` does not
     save you either: it skips the settings sources only for the keys it is handed, so any
     field a test does not name still comes from the process environment.
-
-    The numbered variables go too. Nothing reads them since the key balancer was reverted,
-    but they stay live in a real deployment's `.env` for the proxy's own pooled media
-    aliases, and isolation should not have to track which spellings could come back.
     """
     monkeypatch.delenv(name="GEMINI_API_KEY", raising=False)
-    for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
-        monkeypatch.delenv(name=name, raising=False)
 
 
 @pytest.fixture(autouse=True)

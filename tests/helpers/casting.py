@@ -59,11 +59,6 @@ def as_discord_bot(fake: object) -> "cli.DiscordBot":
     return cast("cli.DiscordBot", fake)
 
 
-def as_command_context(fake: object) -> "commands.Context[commands.Bot]":
-    """Views a context double as the commands.Context a command handler expects."""
-    return cast("commands.Context[commands.Bot]", fake)
-
-
 def as_avatar_user(fake: object) -> "AvatarUser":
     """Views a fake user double as the AvatarUser protocol ``guild_avatar_url`` expects."""
     return cast("AvatarUser", fake)
