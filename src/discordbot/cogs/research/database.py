@@ -8,15 +8,15 @@ guard (one active research per owner).
 
 The engine is a module-level `AsyncEngine` singleton, exactly like
 `services/economy/database.py`: a per-instance `cached_property` engine would leak
-the connection pool / dialect cache for every interaction. `reply.db` is the
-shared file for reply-side persistence (this table plus the memory pipeline's
-phase-1 inbox in `services/memory/database.py`, which keeps its own engine on the
-same file); it has no money columns, so no `StoredInteger`. Each call opens an `AsyncSession`
-bound to the current `_engine`, so tests can monkeypatch `_engine` per-test.
+the connection pool / dialect cache for every interaction. `reply.db` is shared with
+other reply-side tables; this one has no money columns, so no `StoredInteger`. Each call
+opens an `AsyncSession` bound to the current `_engine`, so tests can monkeypatch `_engine`
+per-test.
 
 This module deliberately avoids `from __future__ import annotations`: SQLAlchemy
-resolves the `Mapped[datetime]` column annotations at class-definition time, and
-postponed evaluation breaks that.
+resolves the `Mapped[datetime]` column annotations when the class is built, and under
+postponed evaluation ruff's TC rules move the annotation-only `datetime` import under
+`TYPE_CHECKING`, where the mapper cannot resolve it and the module fails to import.
 """
 
 from typing import Literal
