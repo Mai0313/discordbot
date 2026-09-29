@@ -1,10 +1,8 @@
 """Shared Discord interaction/message test doubles.
 
-Several cog test modules each grew their own ``FakeInteraction`` / ``FakeUser`` /
-``FakeResponse`` families that drifted apart. These are the unified superset:
-they satisfy the strictest consumer (the cog smoke tests) and expose the extra
-knobs lighter consumers need as optional keyword arguments. Plain classes, not
-pydantic, to match the existing test-double style and carry heterogeneous
+Each double answers what its strictest consumer reads and takes the knobs a lighter consumer
+needs as optional keyword arguments, so a test extends one of these rather than growing its
+own. Plain classes, not pydantic, to match the test-double style and carry heterogeneous
 recorded payloads.
 """
 
@@ -209,16 +207,11 @@ def placeholder_withdrawn(*, message: FakeDiscordMessage) -> bool:
 class FakeGuild:
     """Guild stub that answers the member lookups a real `nextcord.Guild` always answers.
 
-    It used to be a bare namespace carrying only the upload limit and the ids, which is why
-    `utils/avatars.py::guild_avatar_url` grew `hasattr` guards around `get_member` /
-    `fetch_member`: a real Guild has both unconditionally, so the guards only ever protected
-    this double. They are gone, so the double owes the methods instead.
-
-    The bot runs without the members intent, so an uncached member is the ordinary case: this
-    answers None from the cache and a `NotFound` from the fetch, which is the shape
-    `guild_avatar_url` handles by falling back to the global avatar. That is the same URL the
-    guarded version returned, so this buys fidelity rather than coverage — a test wanting the
-    guild-avatar branch still has to hand in a member, as `tests/test_avatar_utils.py` does.
+    A real Guild has `get_member` and `fetch_member` unconditionally, so production calls them
+    unguarded and this double owes both. The bot runs without the members intent, so an
+    uncached member is the ordinary case: this answers None from the cache and a `NotFound`
+    from the fetch, which `guild_avatar_url` handles by falling back to the global avatar. A
+    test wanting the guild-avatar branch hands in a member of its own.
     """
 
     def __init__(

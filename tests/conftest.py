@@ -98,12 +98,11 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.services.memory.database._engine", memory_db_engine)
     monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
     monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
-    # _scope_locks, _staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
+    # _scope_locks, staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
     # and the memory semaphore are loop-local helpers that rebuild on the per-test event
-    # loop, so they need no manual reset. The two in-flight registries used to be reset by
-    # hand here; `LoopLocalRegistry` is what took that over, and an `asyncio.Task` left in
-    # one is unusable on the next loop anyway, so the rebuild is the correctness rule
-    # rather than a test convenience.
+    # loop, so they need no manual reset. An `asyncio.Task` left in a registry is unusable
+    # on the next loop anyway, so the rebuild is the correctness rule rather than a test
+    # convenience.
     return memories_dir
 
 
@@ -211,14 +210,8 @@ def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     visible, which in a git worktree is the parent checkout's file. `model_validate` does not
     save you either: it skips the settings sources only for the keys it is handed, so any
     field a test does not name still comes from the process environment.
-
-    The numbered variables go too. Nothing reads them since the key balancer was reverted,
-    but they stay live in a real deployment's `.env` for the proxy's own pooled media
-    aliases, and isolation should not have to track which spellings could come back.
     """
     monkeypatch.delenv(name="GEMINI_API_KEY", raising=False)
-    for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
-        monkeypatch.delenv(name=name, raising=False)
 
 
 @pytest.fixture(autouse=True)

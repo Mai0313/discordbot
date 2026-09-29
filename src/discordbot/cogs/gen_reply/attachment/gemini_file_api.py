@@ -19,7 +19,7 @@ from pydantic import Field, BaseModel, PrivateAttr
 from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.media import UploadedFile, RenderedAttachment, PendingUploadRepoll
+from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
 from discordbot.cogs.gen_reply.attachment.base import (
@@ -49,6 +49,21 @@ class PendingUpload(BaseModel):
     )
     expires_at: datetime = Field(
         ..., description="Provider-reported expiry; a pending entry past it is discarded."
+    )
+
+
+class PendingUploadRepoll(BaseModel):
+    """What re-polling an in-flight upload concluded.
+
+    Two fields rather than one optional, because "stop, there is nothing yet" and "carry on,
+    there was never anything to adopt" are different answers that both carry no file.
+    """
+
+    handled: bool = Field(
+        ..., description="True to stop here; False to fall through to a fresh upload."
+    )
+    uploaded: UploadedFile | None = Field(
+        default=None, description="The adopted file, or None while it is still processing."
     )
 
 

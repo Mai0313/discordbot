@@ -14,8 +14,8 @@ import logfire
 from discordbot.typings.config import LoggingConfig
 
 dotenv.load_dotenv()
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
-__version__ = version("discordbot")
+_ANSI_ESCAPE = re.compile(pattern=r"\x1b\[[0-9;]*m")
+__version__ = version(distribution_name="discordbot")
 
 
 class _TeeStream:
@@ -73,7 +73,7 @@ def setup_logging() -> None:
     warnings.filterwarnings(
         action="ignore", message=r"Pydantic serializer warnings:", category=UserWarning
     )
-    started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    started_at = datetime.now().strftime(format="%Y-%m-%d_%H-%M-%S")
     log_path = Path(f"./data/logs/{started_at}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = log_path.open(mode="a", encoding="utf-8")

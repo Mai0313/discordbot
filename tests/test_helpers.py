@@ -6,8 +6,6 @@ are pinned here against the real production renderers and database helpers.
 
 from importlib import import_module
 
-import pytest
-import nextcord
 from openai.types.responses import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.cogs.gen_reply.recall import (
@@ -20,7 +18,6 @@ from discordbot.cogs.gen_reply.recall import (
 from discordbot.services.economy.database import adjust_balance
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
-from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
 from tests.helpers.llm_input import (
     LINK_SOURCE_BLOCKS,
     request_index,
@@ -32,7 +29,6 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
     extract_memory_context_block,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeResponse, FakeInteraction
 from tests.helpers.economy_invariants import (
     assert_wallet_consistent,
     assert_daily_casino_stats,
@@ -161,54 +157,6 @@ def test_every_link_source_block_is_known_to_the_helpers() -> None:
             and value.startswith("====")
         }
         assert shipped == set(blocks.separators + blocks.notices), name
-
-
-# --- embeds ------------------------------------------------------------------
-
-
-def test_assert_embed_has_field_returns_field() -> None:
-    """A present field is returned so the caller can check its value."""
-    embed = nextcord.Embed(title="💰 財務總覽")
-    embed.add_field(name="現金", value="100")
-    field = assert_embed_has_field(embed=embed, name="現金")
-    assert field.value == "100"
-
-
-def test_assert_embed_has_field_raises_when_missing() -> None:
-    """A missing field raises with the available names for diagnosis."""
-    embed = nextcord.Embed(title="x")
-    with pytest.raises(AssertionError, match="現金"):
-        assert_embed_has_field(embed=embed, name="現金")
-
-
-def test_assert_embed_title_prefix_checks_marker() -> None:
-    """The title is matched on its leading category marker only."""
-    embed = nextcord.Embed(title="💰 財務總覽")
-    assert_embed_title_prefix(embed=embed, prefix="💰")
-
-
-# --- discord_mocks -----------------------------------------------------------
-
-
-async def test_fake_response_records_defer_and_send() -> None:
-    """The response double records deferral, sends, and done-state."""
-    response = FakeResponse()
-    assert not response.is_done()
-    await response.defer(ephemeral=True)
-    assert response.deferred_ephemeral is True
-    await response.send_message(content="hi", ephemeral=True)
-    assert response.is_done()
-    assert response.sent[0]["content"] == "hi"
-
-
-async def test_fake_interaction_defaults_and_followup() -> None:
-    """The interaction double defaults a user and routes followup sends."""
-    interaction = FakeInteraction(user=FakeUser(user_id=5, name="bob"))
-    assert interaction.user.id == 5
-    message = await interaction.followup.send(content="done")
-    assert interaction.followup.sent[0]["content"] == "done"
-    await message.reply(content="re")
-    assert message.replies[0]["content"] == "re"
 
 
 # --- economy_invariants ------------------------------------------------------

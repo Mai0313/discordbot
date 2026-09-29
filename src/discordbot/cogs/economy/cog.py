@@ -9,12 +9,12 @@ from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     LEADERBOARD_SIZE,
     VIP_PURCHASE_COST,
     VIP_WIN_MULTIPLIER_LABEL,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
+    EconomyConfig,
     LoanLenderType,
     monthly_rate_percent_to_bps,
 )

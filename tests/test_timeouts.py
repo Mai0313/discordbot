@@ -21,8 +21,9 @@ collection drew, and each is named here so the exclusion stays a decision someon
 import ast
 from pathlib import Path
 
-_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "discordbot"
-_TIMEOUTS_MODULE = _PACKAGE / "typings" / "timeouts.py"
+from tests.helpers.source_tree import PACKAGE, python_modules
+
+_TIMEOUTS_MODULE = PACKAGE / "typings" / "timeouts.py"
 
 # Where the bound sits positionally in the `asyncio` helpers that take one. `asyncio.wait` is
 # absent because its `timeout` is keyword-only, which the keyword rule already reads.
@@ -63,11 +64,7 @@ _OUT_OF_SCOPE = _VIEW_IDLE_EXPIRY | _SWEEP_PROTECTION
 
 def _modules() -> list[Path]:
     """Every module under the package except the one the bounds are allowed to live in."""
-    return sorted(
-        path
-        for path in _PACKAGE.rglob("*.py")
-        if "__pycache__" not in path.parts and path != _TIMEOUTS_MODULE
-    )
+    return [path for path in python_modules(root=PACKAGE) if path != _TIMEOUTS_MODULE]
 
 
 def _is_number(node: ast.expr) -> bool:
@@ -170,7 +167,7 @@ def _assignment_offences(node: ast.Assign | ast.AnnAssign) -> list[tuple[int, st
 def _offences_in(module: Path) -> list[str]:
     """Every numeric literal in one module that spells a bound instead of naming one."""
     found: list[str] = []
-    relative = module.relative_to(_PACKAGE.parent)
+    relative = module.relative_to(PACKAGE.parent)
     for node in ast.walk(ast.parse(source=module.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Call):
             offences = _call_offences(node)

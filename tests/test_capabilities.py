@@ -13,6 +13,8 @@ from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
+from tests.helpers.source_tree import PACKAGE, REPO_ROOT, python_modules
+
 _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
 # A slash that follows a word character, `:`, `/`, `.` or `-` belongs to a URL, a file path,
 # `and/or` or `24/7`; anything else in front of one (a space, a `*`, a bracket) means the text
@@ -75,7 +77,7 @@ _TABLE_CELL_RE = re.compile(pattern=r"(?<!\\)\|")
 # One word of a command path, siblings included. An option (`<url>`, `[member]`) or an
 # argument (`@bot`) is not one, and ends the path.
 _PATH_WORD_RE = re.compile(pattern=r"[\w\\|-]+")
-_COGS_DIR = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
+_COGS_DIR = PACKAGE / "cogs"
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -160,7 +162,7 @@ def _command_declarations() -> dict[str, tuple[ast.Call, bool, str]]:
     is still held to every check here.
     """
     declarations: dict[str, tuple[ast.Call, bool, str]] = {}
-    for module in _COGS_DIR.rglob(pattern="*.py"):
+    for module in python_modules(root=_COGS_DIR):
         label = module.relative_to(_COGS_DIR).as_posix()
         for path, (decorator, is_group) in _module_command_declarations(
             module=module, label=label
@@ -244,7 +246,7 @@ def _readme_command_table(readme: str) -> tuple[set[str], set[str]]:
     A row lists its command in the first cell; a command a description mentions, such as
     `/pocat`'s `/balance @bot`, is named without being listed.
     """
-    text = (Path(__file__).resolve().parents[1] / readme).read_text(encoding="utf-8")
+    text = (REPO_ROOT / readme).read_text(encoding="utf-8")
     listed: set[str] = set()
     named: set[str] = set()
     for line in text.splitlines():
@@ -295,14 +297,7 @@ def _account_flag_columns() -> set[str]:
     form is house style two columns above `is_admin`, and a pin a new flag can be added past
     is worse than none.
     """
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "discordbot"
-        / "services"
-        / "economy"
-        / "database.py"
-    )
+    module = PACKAGE / "services" / "economy" / "database.py"
     parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
     accounts = [
         node
@@ -335,9 +330,7 @@ def _admin_adjustment_allows_negative() -> bool:
     A form this cannot read is an assertion failure rather than a default, since defaulting to
     the answer the document wants is how a guard outlives the behavior it guards.
     """
-    module = (
-        Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs" / "economy" / "cog.py"
-    )
+    module = _COGS_DIR / "economy" / "cog.py"
     parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
     calls = [
         node
@@ -415,7 +408,7 @@ def _names_an_unqualified_admin(text: str) -> bool:
 def _modules_declaring_a_picker_gate() -> list[str]:
     """Returns the cog modules handing Discord a permission to filter its command picker."""
     declaring: list[str] = []
-    for module in _COGS_DIR.rglob(pattern="*.py"):
+    for module in python_modules(root=_COGS_DIR):
         parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
         if any(
             keyword.arg == _PICKER_GATE_KEYWORD
@@ -793,8 +786,7 @@ def test_the_tests_workflow_reruns_on_an_edit_to_a_document_this_module_reads() 
     skip #486 took off the branch name, one door over, and its whole failure mode is a check
     that never appears. Each trigger carries its own list, so each list is checked on its own.
     """
-    repo_root = Path(__file__).resolve().parents[1]
-    document = repo_root / "src" / "discordbot" / "cogs" / "gen_reply" / "capabilities.md"
+    document = _COGS_DIR / "gen_reply" / "capabilities.md"
     assert document.is_file(), (
         f"{document} is gone, so the document moved; the re-include in "
         ".github/workflows/test.yml has to move with it"
@@ -802,10 +794,10 @@ def test_the_tests_workflow_reruns_on_an_edit_to_a_document_this_module_reads() 
     assert document.read_text(encoding="utf-8").strip() == CAPABILITIES_DOC, (
         f"{document} is not the document the package loads any more"
     )
-    workflow = (repo_root / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
     filters = _workflow_path_filters(workflow=workflow)
     assert filters, ".github/workflows/test.yml has no `paths:` list this test can read"
-    read_here = (document.relative_to(repo_root).as_posix(), *_READMES)
+    read_here = (document.relative_to(REPO_ROOT).as_posix(), *_READMES)
     missing: set[str] = set()
     for paths in filters:
         # GitHub applies the patterns in order, so a re-include counts only after every exclusion.

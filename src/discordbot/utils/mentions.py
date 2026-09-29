@@ -24,6 +24,18 @@ import re
 from nextcord import Message, ClientUser
 
 
+def bot_mention_pattern(bot_id: int) -> re.Pattern[str]:
+    """The pattern matching a mention of this bot in raw content, in both `<@id>` and `<@!id>`.
+
+    Args:
+        bot_id: The bot's own user id.
+
+    Returns:
+        The compiled pattern.
+    """
+    return re.compile(pattern=rf"<@!?{re.escape(pattern=str(bot_id))}>")
+
+
 def has_bot_mention(*, content: str, bot_user: ClientUser | None) -> bool:
     """Whether the message body explicitly mentions the bot.
 
@@ -40,8 +52,7 @@ def has_bot_mention(*, content: str, bot_user: ClientUser | None) -> bool:
     """
     if bot_user is None:
         return False
-    bot_id = re.escape(str(bot_user.id))
-    return re.search(rf"<@!?{bot_id}>", content) is not None
+    return bot_mention_pattern(bot_id=bot_user.id).search(string=content) is not None
 
 
 def is_addressed_to_bot(*, message: Message, bot_user: ClientUser | None) -> bool:

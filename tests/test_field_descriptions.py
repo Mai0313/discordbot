@@ -19,7 +19,8 @@ import re
 import ast
 from pathlib import Path
 
-_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "discordbot"
+from tests.helpers.source_tree import PACKAGE, REPO_ROOT, python_modules
+
 _MODEL_BASES = frozenset({"BaseModel", "BaseSettings"})
 _ENTRY = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*):\s")
 
@@ -33,9 +34,7 @@ def _classes(*, root: Path) -> list[tuple[Path, ast.ClassDef]]:
     resolves to a model, and nothing here reads a base's fields.
     """
     found: list[tuple[Path, ast.ClassDef]] = []
-    for path in sorted(root.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
+    for path in python_modules(root=root):
         for node in ast.walk(ast.parse(source=path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ClassDef):
                 found.append((path, node))
@@ -105,7 +104,7 @@ def _documented_attributes(node: ast.ClassDef) -> set[str]:
 
 def test_no_field_is_described_twice() -> None:
     """A field with a `Field(description=)` must not also have an `Attributes:` entry."""
-    classes = _classes(root=_PACKAGE)
+    classes = _classes(root=PACKAGE)
     by_name = {node.name: node for _, node in classes}
     scanned: list[str] = []
     offenders: list[str] = []
@@ -115,9 +114,7 @@ def test_no_field_is_described_twice() -> None:
         scanned.append(f"{path.name}::{node.name}")
         duplicated = _documented_attributes(node) & _described_fields(node)
         if duplicated:
-            offenders.append(
-                f"{path.relative_to(_PACKAGE.parents[1])}::{node.name} — {sorted(duplicated)}"
-            )
+            offenders.append(f"{path.relative_to(REPO_ROOT)}::{node.name} — {sorted(duplicated)}")
 
     assert "models.py::RouteClassification" in scanned, "the walk found no models"
     assert not offenders, (

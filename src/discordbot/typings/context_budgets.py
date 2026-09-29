@@ -16,12 +16,12 @@ unbounded. Every clamp of that shape stays beside the write path that applies it
 
 **A rewrite target tells the model what to produce.** `COMPACTION_TARGET_CHARS` is an
 instruction in a prompt, and `COMPACTION_TRIGGER_CHARS` is the switch that turns that
-instruction on. Neither bounds what the request may contain, and `COMPACTION_TRIGGER_CHARS`
-being 30_000 like `MEMORY_INJECTION_MAX_CHARS` below is a coincidence rather than a coupling.
+instruction on. Neither bounds what the request may contain, so a value either shares with a
+budget below is a coincidence rather than a coupling.
 
 **An output cap bounds what comes back.** `MAX_INLINE_IMAGES`, `DISCORD_MESSAGE_LIMIT` and
-`DISCORD_ATTACHMENT_LIMIT` all bound the reply. `MAX_HISTORY_MEDIA_PARTS` here is 10 and
-`DISCORD_ATTACHMENT_LIMIT` is also 10, the same coincidence again.
+`DISCORD_ATTACHMENT_LIMIT` all bound the reply, so a value one shares with a budget here is the
+same coincidence again.
 
 Also absent: provider hard limits nobody here chose (`FILES_API_MAX_BYTES` is Google's 2 GB),
 UI rendering caps (`REASONING_PREVIEW_MAX_CHARS`, `MEMORY_PAGE_MAX_CHARS`), concurrency, and

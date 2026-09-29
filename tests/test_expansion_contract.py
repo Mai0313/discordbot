@@ -55,6 +55,7 @@ from discordbot.utils.expansion_placeholder import (
 from discordbot.services.platforms.instagram import InstagramConversation
 
 from tests.helpers.casting import as_bot, as_message, make_forbidden
+from tests.helpers.source_tree import PACKAGE
 from tests.helpers.link_sources import (
     BOT_USER_ID,
     TWITTER_URL,
@@ -74,7 +75,7 @@ from tests.helpers.discord_mocks import (
     placeholder_withdrawn,
 )
 
-_COGS_DIR = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
+_COGS_DIR = PACKAGE / "cogs"
 
 # Every status mark an expansion may answer with lives in one module, so a literal left in a cog
 # is the drift this file exists to catch: it is what lets one platform quietly answer ⚠️ where the

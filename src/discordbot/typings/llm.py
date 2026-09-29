@@ -1,10 +1,7 @@
 """Runtime LLM configuration: the proxy credentials, the Gemini key, and the kill-switches."""
 
-import dotenv
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
-
-dotenv.load_dotenv()
 
 
 class LLMConfig(BaseSettings):

@@ -104,7 +104,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(tz=UTC)
         return now.weekday() < 5 and 8 <= now.hour < 17
 
     @property
@@ -170,9 +170,8 @@ class RuntimeModelCatalog(BaseModel):
         write, which is both the seam against `fast_model` and why `minimal` is enough.
 
         Returns:
-            Flash-lite at `minimal`, which is this snapshot's own default effort. Confirm any
-            repointed name still lists `minimal` before carrying the effort across (see
-            `ModelSettings.effort`).
+            Settings whose effort is this snapshot's own default. Confirm any repointed name
+            still lists that effort before carrying it across (see `ModelSettings.effort`).
         """
         return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
@@ -183,9 +182,6 @@ class RuntimeModelCatalog(BaseModel):
         A call here decides what to say rather than how briefly to say it, which is the
         thinking `triage_model` does without. Nothing it produces is the deliverable, which is
         what keeps this tier below `slow_model`.
-
-        Returns:
-            Flash at `medium`, one snapshot behind `gemini-3.8-flash`.
         """
         return ModelSettings(name="gemini-3.7-flash", effort="medium")
 
@@ -196,9 +192,6 @@ class RuntimeModelCatalog(BaseModel):
         The NAME is read as well as dispatched — the attachment modality gate, the choice of
         attachment renderer and every link source's media ingest all branch on it — so
         repointing this tier changes what reaches the model, not just how well it reasons.
-
-        Returns:
-            `gemini-3.1-pro-preview` at `high`, on every hour.
         """
         # Pinned to an explicit snapshot and never a `*-latest` alias. This is the one tier whose
         # effort is replaced at runtime by the route's grade, and the YouTube

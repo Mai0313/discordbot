@@ -11,8 +11,8 @@ Discord reads back through the deprecated `dm_permission` boolean, and that flag
 null and `dm_permission` true, a user install worked in servers and in DMs with the bot while
 both private-channel surfaces came up empty, which is exactly the line that boolean can draw.
 
-Tuples rather than lists so one command cannot mutate what the other fifteen declare; nextcord
-takes any iterable and rebuilds its own list per command.
+Tuples rather than lists so one command cannot mutate what every other command declares;
+nextcord takes any iterable and rebuilds its own list per command.
 """
 
 from nextcord import IntegrationType, InteractionContextType

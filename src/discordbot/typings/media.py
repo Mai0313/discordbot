@@ -60,18 +60,3 @@ class RenderedAttachment(BaseModel):
     expires_at: datetime = Field(
         ..., description="When the render stops being valid, which bounds the per-message cache."
     )
-
-
-class PendingUploadRepoll(BaseModel):
-    """What re-polling an in-flight upload concluded.
-
-    Two fields rather than one optional, because "stop, there is nothing yet" and "carry on,
-    there was never anything to adopt" are different answers that both carry no file.
-    """
-
-    handled: bool = Field(
-        ..., description="True to stop here; False to fall through to a fresh upload."
-    )
-    uploaded: UploadedFile | None = Field(
-        default=None, description="The adopted file, or None while it is still processing."
-    )
