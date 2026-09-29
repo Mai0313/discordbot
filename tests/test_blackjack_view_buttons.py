@@ -71,7 +71,6 @@ def _round_with_two_cards(
     round_state.dealer = dealer_cards
     if finished:
         hand.finished = True
-        round_state.finished = True
         round_state.dealer_played = True
         round_state.phase = "settled"
     return round_state
@@ -270,7 +269,6 @@ async def test_settled_phase_removes_every_button() -> None:
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="7", suit="♦")],
     )
     round_state.phase = "settled"
-    round_state.finished = True
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 

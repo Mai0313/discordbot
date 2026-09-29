@@ -498,7 +498,6 @@ class BlackjackRound(BaseModel):
     dealer_played: bool = Field(
         default=False, description="True once the dealer has drawn for all standing players."
     )
-    finished: bool = Field(default=False, description="True once no more player actions remain.")
     phase: RoundPhase = Field(
         default="player_actions", description="Lifecycle phase of the round."
     )
@@ -509,6 +508,11 @@ class BlackjackRound(BaseModel):
         default=False,
         description="True once the dealer's hole-card peek revealed a natural Blackjack.",
     )
+
+    @property
+    def finished(self) -> bool:
+        """Returns True once the round is settled and no more player actions remain."""
+        return self.phase == "settled"
 
     @classmethod
     def from_participants(
@@ -840,7 +844,6 @@ class BlackjackRound(BaseModel):
     def mark_dealer_played(self) -> None:
         """Closes the dealer phase and settles the round."""
         self.dealer_played = True
-        self.finished = True
         self.phase = "settled"
 
     def _find_player(self, user_id: int) -> BlackjackPlayerHand:
@@ -889,7 +892,6 @@ class BlackjackRound(BaseModel):
                 for hand in player.hands:
                     hand.finished = True
             self.phase = "settled"
-            self.finished = True
             self.dealer_played = True
             return
         self.phase = "player_actions"
@@ -917,7 +919,6 @@ class BlackjackRound(BaseModel):
         The dealer has not drawn yet; its draws come afterwards, one
         `draw_dealer_card` at a time, closed by `mark_dealer_played`.
         """
-        self.finished = True
         self.phase = "settled"
 
 

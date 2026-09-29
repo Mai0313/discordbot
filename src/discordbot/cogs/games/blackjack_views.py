@@ -307,7 +307,7 @@ def _player_seat_status_footer(
         return "保險決定中"
     if is_active:
         return f"進行中 · 不操作 {BLACKJACK_ACTION_TIMEOUT_SECONDS} 秒會自動 stand"
-    if round_state.phase == "settled" or round_state.finished:
+    if round_state.finished:
         return "已結算"
     return "待輪到"
 

@@ -1008,7 +1008,6 @@ def _finished_round(bet: int, balance_at_start: int = 100) -> BlackjackRound:
         rng=Random(x=0), participants=[seat(bet=bet, balance_at_start=balance_at_start)]
     )
     round_state.players[0].hands[0].finished = True
-    round_state.finished = True
     round_state.phase = "settled"
     return round_state
 
