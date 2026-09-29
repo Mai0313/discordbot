@@ -129,7 +129,7 @@ def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
     It lives here rather than beside the store's own tests so that a module-local swap there
     cannot satisfy it.
     """
-    assert tmp_path / "game_cleanup.db" == cleanup_module._PENDING_PUBLIC_MESSAGE_DB_PATH
+    assert cleanup_module._engine.url.database == str(tmp_path / "game_cleanup.db")
 
 
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,24 +1,14 @@
 """Tests for the canonical message logging path."""
 
+from typing import Any
 import asyncio
-from pathlib import Path
-from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import Engine, text, create_engine
+from sqlalchemy import text
 
 from discordbot.cogs.log_msg import cog as log_msg
 
-
-@pytest.fixture
-def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Engine]:
-    """Replaces the module-level engine with a per-test SQLite file."""
-    db_path = tmp_path / "messages.db"
-    engine = create_engine(url=f"sqlite:///{db_path}")
-    monkeypatch.setattr(target=log_msg, name="_sql_engine", value=engine)
-    monkeypatch.setattr(target=log_msg, name="_MESSAGES_TABLE_READY_FOR", value=None)
-    yield engine
-    engine.dispose()
+pytestmark = pytest.mark.usefixtures("messages_isolated_db")
 
 
 _SAMPLE_ROW: dict[str, str] = {
@@ -35,53 +25,54 @@ _SAMPLE_ROW: dict[str, str] = {
 }
 
 
-def test_write_row_creates_table_and_inserts(isolated_db: Engine) -> None:
+async def _query(sql: str) -> list[tuple[Any, ...]]:
+    """Reads rows back through the module's own (swapped) engine."""
+    async with log_msg._engine.connect() as conn:
+        result = await conn.execute(statement=text(text=sql))
+        return [tuple(row) for row in result.all()]
+
+
+async def test_write_row_creates_table_and_inserts() -> None:
     """First write creates the canonical messages table, then inserts the row."""
-    log_msg._write_row_sync(row=_SAMPLE_ROW)
-    with isolated_db.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT discord_message_id, source_type, author, author_id, content "
-                'FROM "messages"'
-            )
-        ).all()
-        legacy_tables = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'channel_*'")
-        ).all()
+    await log_msg._write_row(row=_SAMPLE_ROW)
+
+    rows = await _query(
+        sql='SELECT discord_message_id, source_type, author, author_id, content FROM "messages"'
+    )
+    legacy_tables = await _query(
+        sql="SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'channel_*'"
+    )
     assert rows == [("1001", "guild", "alice", "42", "hello world")]
     assert legacy_tables == []
-    assert log_msg._MESSAGES_TABLE_READY_FOR is isolated_db
 
 
-def test_write_row_appends_to_existing_table(isolated_db: Engine) -> None:
+async def test_write_row_appends_to_existing_table() -> None:
     """Subsequent writes with distinct discord_message_ids append fresh rows."""
-    log_msg._write_row_sync(row=_SAMPLE_ROW)
+    await log_msg._write_row(row=_SAMPLE_ROW)
     second_row = {**_SAMPLE_ROW, "discord_message_id": "1002", "content": "second message"}
-    log_msg._write_row_sync(row=second_row)
+    await log_msg._write_row(row=second_row)
 
-    with isolated_db.connect() as conn:
-        rows = conn.execute(text('SELECT content FROM "messages" ORDER BY id')).all()
+    rows = await _query(sql='SELECT content FROM "messages" ORDER BY id')
     assert rows == [("hello world",), ("second message",)]
 
 
-def test_write_row_upserts_on_same_discord_message_id(isolated_db: Engine) -> None:
+async def test_write_row_upserts_on_same_discord_message_id() -> None:
     """Verifies that duplicate discord_message_id writes update one row."""
-    log_msg._write_row_sync(row=_SAMPLE_ROW)
+    await log_msg._write_row(row=_SAMPLE_ROW)
     edited_row = {
         **_SAMPLE_ROW,
         "content": "final streamed content with footer",
         "created_at": "2099-01-01 00:00:00",
     }
-    log_msg._write_row_sync(row=edited_row)
+    await log_msg._write_row(row=edited_row)
 
-    with isolated_db.connect() as conn:
-        rows = conn.execute(text('SELECT content, created_at FROM "messages"')).all()
+    rows = await _query(sql='SELECT content, created_at FROM "messages"')
     assert rows == [("final streamed content with footer", "2026-05-11 12:00:00")]
 
 
-def test_write_row_stores_different_sources_in_one_table(isolated_db: Engine) -> None:
+async def test_write_row_stores_different_sources_in_one_table() -> None:
     """Different channel and DM rows land in one messages table."""
-    log_msg._write_row_sync(row=_SAMPLE_ROW)
+    await log_msg._write_row(row=_SAMPLE_ROW)
     other_row = {
         **_SAMPLE_ROW,
         "discord_message_id": "1002",
@@ -95,21 +86,18 @@ def test_write_row_stores_different_sources_in_one_table(isolated_db: Engine) ->
         "channel_name": "DM_alice_42",
         "content": "from dm",
     }
-    log_msg._write_row_sync(row=other_row)
-    log_msg._write_row_sync(row=dm_row)
+    await log_msg._write_row(row=other_row)
+    await log_msg._write_row(row=dm_row)
 
-    with isolated_db.connect() as conn:
-        rows = conn.execute(
-            text('SELECT source_type, channel_id, content FROM "messages" ORDER BY id')
-        ).all()
-        user_tables = conn.execute(
-            text("""
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND (name GLOB 'channel_*' OR name GLOB 'DM_*')
-            """)
-        ).all()
+    rows = await _query(sql='SELECT source_type, channel_id, content FROM "messages" ORDER BY id')
+    user_tables = await _query(
+        sql="""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND (name GLOB 'channel_*' OR name GLOB 'DM_*')
+        """
+    )
     assert rows == [
         ("guild", "99", "hello world"),
         ("guild", "100", "from another channel"),
@@ -118,14 +106,12 @@ def test_write_row_stores_different_sources_in_one_table(isolated_db: Engine) ->
     assert user_tables == []
 
 
-async def test_write_row_concurrent_inserts_all_land(isolated_db: Engine) -> None:
-    """Verifies that concurrent threaded writes all land in the table."""
+async def test_write_row_concurrent_inserts_all_land() -> None:
+    """Verifies that concurrent writes, the first one's schema bootstrap included, all land."""
     rows = [
         {**_SAMPLE_ROW, "discord_message_id": f"{2000 + i}", "content": f"msg-{i}"}
         for i in range(20)
     ]
-    await asyncio.gather(*[asyncio.to_thread(log_msg._write_row_sync, row=row) for row in rows])
+    await asyncio.gather(*[log_msg._write_row(row=row) for row in rows])
 
-    with isolated_db.connect() as conn:
-        count = conn.execute(text('SELECT COUNT(*) FROM "messages"')).scalar_one()
-    assert count == 20
+    assert await _query(sql='SELECT COUNT(*) FROM "messages"') == [(20,)]

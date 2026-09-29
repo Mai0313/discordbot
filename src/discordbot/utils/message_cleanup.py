@@ -1,32 +1,23 @@
 """Timed cleanup helpers for public Discord messages."""
 
-from typing import Any, Final
+from typing import Final
 import asyncio
-from pathlib import Path
-import threading
 
 import logfire
 from nextcord import Message, NotFound, Forbidden, HTTPException
 from pydantic import Field, BaseModel
-from sqlalchemy import Engine, text, event, create_engine
+from sqlalchemy import MetaData, text
 from nextcord.abc import Messageable
 from nextcord.ext import commands
-from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection, create_async_engine
 
 from discordbot.utils.asyncio_locks import spawn_tracked
-from discordbot.utils.sqlite_config import configure_sqlite_connection
+from discordbot.utils.sqlite_config import SqliteBootstrap
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
 # The scheduled deletions still waiting out their TTL.
 _delete_tasks: set[asyncio.Task[None]] = set()
-_PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/games.db")
-_pending_engine: Engine | None = None
-_pending_engine_path: Path | None = None
-# Every caller reaches the engine from an `asyncio.to_thread` worker. Two that find the path
-# changed at once are the case this exists for: without it the loser disposes the engine the
-# winner just handed out, which is a use-after-dispose rather than a leak — so the `dispose()`
-# has to stay inside the lock. Only the rebuild runs under it, never a query.
-_PENDING_ENGINE_LOCK = threading.Lock()
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 _CREATE_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS pending_game_message (
     message_id INTEGER PRIMARY KEY,
@@ -66,32 +57,19 @@ class PendingPublicMessage(BaseModel):
     user_name: str | None = Field(default=None, description="Triggering user, for cleanup logs.")
 
 
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Sets WAL mode and a tolerant busy timeout for cleanup persistence."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
+async def _create_pending_table(*, conn: AsyncConnection) -> None:
+    """Creates the cleanup table where it does not exist yet.
+
+    A fresh file gets the columns the deployed `games.db` table has; an existing table is never
+    altered. Raw DDL rather than a declared model: `create_all` never alters one either, and the
+    DDL a model compiles to differs from this text, so a model would be a second definition of
+    the table that nothing checks against the first.
+    """
+    await conn.execute(statement=text(text=_CREATE_PENDING_PUBLIC_MESSAGES_SQL))
 
 
-def _pending_db_engine() -> Engine:
-    """Returns the cleanup DB engine for the current DB path."""
-    global _pending_engine, _pending_engine_path  # noqa: PLW0603 -- testable singleton by DB path
-
-    db_path = Path(_PENDING_PUBLIC_MESSAGE_DB_PATH)
-    with _PENDING_ENGINE_LOCK:
-        if _pending_engine is not None and _pending_engine_path == db_path:
-            return _pending_engine
-
-        if _pending_engine is not None:
-            _pending_engine.dispose()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        _pending_engine = create_engine(url=f"sqlite:///{db_path}")
-        event.listen(_pending_engine, "connect", _configure_sqlite)
-        _pending_engine_path = db_path
-        return _pending_engine
-
-
-def _ensure_pending_table(conn: Connection) -> None:
-    """Ensures the cleanup table exists before a read or write."""
-    conn.execute(statement=text(text=_CREATE_PENDING_PUBLIC_MESSAGES_SQL))
+# No declared tables: the one table comes from `_create_pending_table`.
+_database = SqliteBootstrap(metadata=MetaData(), after_create=_create_pending_table)
 
 
 def _message_record(message: Message, user_name: str | None = None) -> PendingPublicMessage | None:
@@ -113,13 +91,12 @@ def _message_record(message: Message, user_name: str | None = None) -> PendingPu
     )
 
 
-def _track_public_message_sync(record: PendingPublicMessage) -> None:
+async def _track_public_message(record: PendingPublicMessage) -> None:
     """Persists a pending cleanup record."""
-    with _pending_db_engine().begin() as conn:
-        _ensure_pending_table(conn=conn)
-        conn.execute(
+    async with _database.open_session(engine=_engine) as session, session.begin():
+        await session.execute(
             statement=text(text=_UPSERT_PENDING_PUBLIC_MESSAGE_SQL),
-            parameters={
+            params={
                 "message_id": record.message_id,
                 "channel_id": record.channel_id,
                 "guild_name": record.guild_name,
@@ -129,22 +106,20 @@ def _track_public_message_sync(record: PendingPublicMessage) -> None:
         )
 
 
-def _forget_public_message_sync(message_id: int) -> None:
+async def _forget_public_message(message_id: int) -> None:
     """Removes a pending cleanup record."""
-    with _pending_db_engine().begin() as conn:
-        _ensure_pending_table(conn=conn)
-        conn.execute(
+    async with _database.open_session(engine=_engine) as session, session.begin():
+        await session.execute(
             statement=text(text=_DELETE_PENDING_PUBLIC_MESSAGE_SQL),
-            parameters={"message_id": message_id},
+            params={"message_id": message_id},
         )
 
 
-def _list_pending_public_messages_sync() -> list[PendingPublicMessage]:
+async def _list_pending_public_messages() -> list[PendingPublicMessage]:
     """Lists all messages still waiting for cleanup."""
-    with _pending_db_engine().begin() as conn:
-        _ensure_pending_table(conn=conn)
-        rows = conn.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL)).mappings()
-        return [PendingPublicMessage.model_validate(obj=dict(row)) for row in rows]
+    async with _database.open_session(engine=_engine) as session:
+        result = await session.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL))
+        return [PendingPublicMessage.model_validate(obj=dict(row)) for row in result.mappings()]
 
 
 async def track_public_message(
@@ -164,9 +139,9 @@ async def track_public_message(
     if record is None:
         return None
     try:
-        await asyncio.to_thread(_track_public_message_sync, record=record)
-    # Stays broad: a narrowed handler would let a RuntimeError from a closing executor escape
-    # into a fire-and-forget task and skip the in-process deletion entirely.
+        await _track_public_message(record=record)
+    # Stays broad: anything escaping here would end the fire-and-forget task before the
+    # in-process deletion ran.
     except Exception as exc:
         logfire.warn(
             "Failed to track pending public response",
@@ -181,7 +156,7 @@ async def track_public_message(
 async def forget_public_message(message_id: int) -> None:
     """Deletes a public message cleanup record."""
     try:
-        await asyncio.to_thread(_forget_public_message_sync, message_id=message_id)
+        await _forget_public_message(message_id=message_id)
     # Stays broad for the same reason as tracking; the stale row self-heals on the next
     # delete_tracked_public_messages sweep via its NotFound branch.
     except Exception as exc:
@@ -196,7 +171,7 @@ async def forget_public_message(message_id: int) -> None:
 async def list_pending_public_messages() -> list[PendingPublicMessage]:
     """Returns public messages left over from a previous process."""
     try:
-        return await asyncio.to_thread(_list_pending_public_messages_sync)
+        return await _list_pending_public_messages()
     # Unlike a single lost bookkeeping row, an empty list disables the whole restart sweep for
     # this process, so every stale message stays on screen.
     except Exception as exc:
