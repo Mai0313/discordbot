@@ -378,7 +378,7 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._fail_run(thread=thread, owner_id=owner_id, exc=exc, status=status)
+            await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
             return
         try:
             await self._finish(
@@ -392,18 +392,36 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._fail_run(thread=thread, owner_id=owner_id, exc=exc, status=status)
+            await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
 
     async def _fail_run(
-        self, *, thread: "Thread", owner_id: int, exc: Exception, status: Message | None
+        self, *, thread: "Thread", owner_id: int, status: Message | None, failure: Exception | str
     ) -> None:
-        """Tells the owner a run died, finalizes its status message, and frees the owner's slot."""
-        await self._post_failure(thread=thread, owner_id=owner_id, exc=exc)
+        """Tells the owner a run ended without a report, finalizes its status, and releases it.
+
+        `failure` is the exception that ended the run, or the non-completed terminal status the
+        interaction settled with, which also decides the phase recorded.
+        """
+        if isinstance(failure, Exception):
+            await self._post_failure(thread=thread, owner_id=owner_id, exc=failure)
+            phase: db.ResearchPhase = "failed"
+        else:
+            await self._post_failure(
+                thread=thread, owner_id=owner_id, reason=_failure_text(status=failure)
+            )
+            phase = _terminal_phase(status=failure)
         await self._finalize_status(
             status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
         )
-        await db.set_phase(thread_id=thread.id, phase="failed")
-        self._active_threads.discard(thread.id)
+        await self._release(thread_id=thread.id, phase=phase)
+
+    async def _release(self, *, thread_id: int, phase: db.ResearchPhase) -> None:
+        """Ends a run: records its terminal phase and lets QA answer in its thread again.
+
+        The recorded phase is what frees the owner's one-research slot.
+        """
+        await db.set_phase(thread_id=thread_id, phase=phase)
+        self._active_threads.discard(thread_id)
 
     async def _finish(
         self,
@@ -417,18 +435,12 @@ class ResearchCogs(commands.Cog):
         """Delivers a terminal result, records its phase, and releases the thread.
 
         On a completed run the opening status message is spent by `deliver_report`, which edits the
-        report's first chunk into it; any other terminal status finalizes it with a failure line
-        instead.
+        report's first chunk into it; any other terminal status ends the run as a failure.
         """
         if not result.ok:
-            await self._post_failure(
-                thread=thread, owner_id=owner_id, reason=_failure_text(status=result.status)
+            await self._fail_run(
+                thread=thread, owner_id=owner_id, status=status, failure=result.status
             )
-            await self._finalize_status(
-                status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
-            )
-            await db.set_phase(thread_id=thread.id, phase=_terminal_phase(status=result.status))
-            self._active_threads.discard(thread.id)
             return
         footer = _usage_footer(
             agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
@@ -441,8 +453,7 @@ class ResearchCogs(commands.Cog):
             footer=footer,
             media_delivery=self.media_delivery,
         )
-        await db.set_phase(thread_id=thread.id, phase="done")
-        self._active_threads.discard(thread.id)
+        await self._release(thread_id=thread.id, phase="done")
 
     async def _finalize_status(
         self, *, status: Message | None, thread: "Thread", content: str
@@ -566,8 +577,7 @@ class ResearchCogs(commands.Cog):
         # stored; there is nothing to resume. Tell the thread so the owner is not left staring at
         # the old `Researching...` message forever.
         if session.interaction_id is None:
-            await db.set_phase(thread_id=session.thread_id, phase="failed")
-            self._active_threads.discard(session.thread_id)
+            await self._release(thread_id=session.thread_id, phase="failed")
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
         # Give the resumed run the same live reasoning view as a fresh one; a fetch miss leaves
@@ -586,15 +596,13 @@ class ResearchCogs(commands.Cog):
             )
         except Exception:
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
-            await db.set_phase(thread_id=session.thread_id, phase="failed")
-            self._active_threads.discard(session.thread_id)
+            await self._release(thread_id=session.thread_id, phase="failed")
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
         if thread is None:
-            await db.set_phase(
+            await self._release(
                 thread_id=session.thread_id, phase=_terminal_phase(status=result.status)
             )
-            self._active_threads.discard(session.thread_id)
             return
         await self._finish(
             thread=thread,
