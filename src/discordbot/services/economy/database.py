@@ -417,8 +417,8 @@ CENTRAL_BANK_LEDGER_ID: Final[str] = "central_bank"
 _JACKPOT_SEEDS: Final[Mapping[str, int]] = {"dragon_gate": 1_000}
 
 _loan_accept_lock = LoopLocalLock()
-type _TopNCacheKey = tuple[int, int | None, bool]
-type _TopLosersCacheKey = tuple[int, int, bool, datetime]
+type _TopNCacheKey = tuple[int | None, bool]
+type _TopLosersCacheKey = tuple[int, bool, datetime]
 _top_n_cache: dict[_TopNCacheKey, tuple[float, tuple[LeaderboardEntry, ...]]] = {}
 _top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEntry, ...]]] = {}
 
@@ -1862,7 +1862,7 @@ async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[Le
     await _ensure_schema()
     if limit is not None and limit <= 0:
         return []
-    cache_key: _TopNCacheKey = (id(_engine), limit, include_hidden)
+    cache_key: _TopNCacheKey = (limit, include_hidden)
     cached_rows = _cached_leaderboard_rows(cache=_top_n_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
@@ -1906,7 +1906,7 @@ async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[Loss
         return []
     now = _database_now()
     today_midnight = _taipei_midnight(now=now)
-    cache_key: _TopLosersCacheKey = (id(_engine), limit, include_hidden, today_midnight)
+    cache_key: _TopLosersCacheKey = (limit, include_hidden, today_midnight)
     cached_rows = _cached_leaderboard_rows(cache=_top_losers_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
