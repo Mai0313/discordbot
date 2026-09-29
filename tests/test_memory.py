@@ -18,6 +18,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import (
     MemoryOwner,
+    MemoryFlavor,
     MemorySection,
     MemorySharing,
     MemoryCategory,
@@ -38,7 +39,6 @@ from discordbot.cogs.memory.views import (
     memory_footer_text,
 )
 from discordbot.utils.llm_transcript import render_author_identity
-from discordbot.services.memory.facts import MemoryFlavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,

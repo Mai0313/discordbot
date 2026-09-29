@@ -28,10 +28,9 @@ from itertools import groupby
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor, MemorySection
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
-    MemoryFlavor,
     utc_now,
     mint_fact_id,
     node_type_for,

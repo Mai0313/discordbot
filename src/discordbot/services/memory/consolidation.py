@@ -18,10 +18,10 @@ from functools import partial
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryOwner
+from discordbot.typings.memory import MemoryOwner, MemoryFlavor
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.tone import forget_tone, update_tone_note
-from discordbot.services.memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
+from discordbot.services.memory.facts import parse_identity, sections_for_flavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,

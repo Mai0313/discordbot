@@ -19,11 +19,11 @@ from datetime import UTC, datetime
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryOwner
+from discordbot.typings.memory import MemoryOwner, MemoryFlavor
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.tone import rebuild_tone_note
-from discordbot.services.memory.facts import MemoryFlavor, parse_identity
+from discordbot.services.memory.facts import parse_identity
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     clear_raw,

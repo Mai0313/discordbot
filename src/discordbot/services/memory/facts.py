@@ -14,15 +14,18 @@ the two vocabularies meet.
 """
 
 import re
-from typing import Literal
 import hashlib
 from datetime import UTC, datetime
 
 import logfire
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryNodeType
-
-type MemoryFlavor = Literal["user", "server"]
+from discordbot.typings.memory import (
+    MemoryFact,
+    MemoryOwner,
+    MemoryFlavor,
+    MemorySection,
+    MemoryNodeType,
+)
 
 _FENCE = "---"
 # The rendered `<name> [id: <N>]` identity line. It crosses the review job's round-trip

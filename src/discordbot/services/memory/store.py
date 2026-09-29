@@ -38,11 +38,10 @@ from collections.abc import Callable
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
-    MemoryFlavor,
     parse_fact_file,
     render_fact_file,
     render_memory_document,

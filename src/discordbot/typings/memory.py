@@ -21,6 +21,9 @@ from datetime import datetime
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings
 
+# Whose memory a scope holds: one user's, or the bot's own memory of one server.
+type MemoryFlavor = Literal["user", "server"]
+
 type MemoryCategory = Literal[
     "stable_preference", "stable_fact", "interaction_style", "recurring_pattern", "recent_context"
 ]

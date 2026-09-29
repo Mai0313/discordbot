@@ -17,7 +17,7 @@ from functools import partial
 
 import logfire
 
-from discordbot.services.memory.facts import MemoryFlavor
+from discordbot.typings.memory import MemoryFlavor
 from discordbot.services.memory.store import (
     flavor_of,
     read_tone,
