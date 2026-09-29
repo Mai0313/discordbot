@@ -372,12 +372,7 @@ class ResearchCogs(commands.Cog):
         streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
 
         async def _persist(interaction_id: str) -> None:
-            await db.set_interaction(
-                thread_id=thread.id,
-                interaction_id=interaction_id,
-                agent=agent,
-                phase="researching",
-            )
+            await db.set_interaction(thread_id=thread.id, interaction_id=interaction_id)
 
         # The agent run and the delivery are separate steps: both stay broad (a fire-and-forget task
         # has nobody to raise to) but each names what actually failed.

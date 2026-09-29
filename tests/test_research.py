@@ -609,8 +609,6 @@ async def test_session_round_trip(research_isolated_db: None) -> None:
     session = await _only_resumable(thread_id=1)
     assert session is not None
     assert session.owner_id == 99
-    assert session.brief == "研究 X"
-    assert session.phase == "researching"
     assert session.interaction_id is None
     assert await _only_resumable(thread_id=999) is None
 
@@ -627,17 +625,11 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
         brief="b",
         phase="researching",
     )
-    await rdb.set_interaction(
-        thread_id=2,
-        interaction_id="int_abc",
-        agent="antigravity-preview-09-2026",
-        phase="researching",
-    )
+    await rdb.set_interaction(thread_id=2, interaction_id="int_abc")
     session = await _only_resumable(thread_id=2)
     assert session is not None
     assert session.interaction_id == "int_abc"
     assert session.agent == "antigravity-preview-09-2026"
-    assert session.phase == "researching"
     await rdb.set_phase(thread_id=2, phase="done")
     assert await _only_resumable(thread_id=2) is None
     assert await rdb.active_thread_for_owner(owner_id=1) is None
@@ -682,13 +674,6 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
         )
     resumable = await rdb.list_resumable()
     assert {session.thread_id for session in resumable} == {20}
-
-
-def test_cast_phase_defaults_unknown_to_failed() -> None:
-    assert rdb.cast_phase(value="researching") == "researching"
-    assert rdb.cast_phase(value="bogus") == "failed"
-    # A row the removed escalation tiers left in `planning` is no longer a phase this store knows.
-    assert rdb.cast_phase(value="planning") == "failed"
 
 
 async def test_a_legacy_planning_row_no_longer_blocks_its_owner(

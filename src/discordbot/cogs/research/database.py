@@ -19,7 +19,7 @@ resolves the `Mapped[datetime]` column annotations at class-definition time, and
 postponed evaluation breaks that.
 """
 
-from typing import Literal, cast
+from typing import Literal
 from datetime import datetime
 
 from pydantic import Field, BaseModel
@@ -84,9 +84,9 @@ class ResearchSessionRow(Base):
 class PersistentResearchSession(BaseModel):
     """A research session row read back from `reply.db`.
 
-    Only what the resume sweep reads. `channel_id`, `guild_id` and `source_message_id` stay
-    columns (dropping one would break every INSERT against a deployed `reply.db`, which has no
-    migration mechanism) but nothing reads them back, so they are not projected here.
+    Only what the resume sweep reads. Every other column stays in the table (dropping one would
+    break every INSERT against a deployed `reply.db`, which has no migration mechanism) but is not
+    projected here.
     """
 
     thread_id: int = Field(..., description="Discord thread ID; primary key.")
@@ -95,8 +95,6 @@ class PersistentResearchSession(BaseModel):
     interaction_id: str | None = Field(
         ..., description="The running interaction's id; None before it starts."
     )
-    brief: str = Field(..., description="The research brief the session was launched with.")
-    phase: ResearchPhase = Field(..., description="Lifecycle phase of the session.")
 
 
 _database = SqliteBootstrap(metadata=Base.metadata)
@@ -120,16 +118,7 @@ def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:
         owner_id=row.owner_id,
         agent=row.agent,
         interaction_id=row.interaction_id,
-        brief=row.brief,
-        phase=cast_phase(value=row.phase),
     )
-
-
-def cast_phase(value: str) -> ResearchPhase:
-    """Narrows a stored phase string to `ResearchPhase`, defaulting odd values to failed."""
-    if value in ("researching", "done", "failed", "cancelled"):
-        return cast("ResearchPhase", value)
-    return "failed"
 
 
 async def upsert_session(  # noqa: PLR0913 -- one row's columns are all per-call inputs
@@ -180,17 +169,15 @@ async def upsert_session(  # noqa: PLR0913 -- one row's columns are all per-call
         await session.commit()
 
 
-async def set_interaction(
-    *, thread_id: int, interaction_id: str, agent: str, phase: ResearchPhase
-) -> None:
-    """Updates the running interaction id / agent / phase for a thread."""
+async def set_interaction(*, thread_id: int, interaction_id: str) -> None:
+    """Records the running interaction id for a thread, so a restart can re-attach to it."""
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         await session.execute(
             statement=update(ResearchSessionRow)
             .where(ResearchSessionRow.thread_id == thread_id)
-            .values(interaction_id=interaction_id, agent=agent, phase=phase, updated_at=now)
+            .values(interaction_id=interaction_id, updated_at=now)
         )
         await session.commit()
 
