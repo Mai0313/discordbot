@@ -8,6 +8,7 @@ that adopts an upload which finished processing after that bound. Kept separate 
 """
 
 import time
+import asyncio
 from datetime import UTC, datetime, timedelta
 from collections import OrderedDict
 from collections.abc import Callable
@@ -20,7 +21,11 @@ from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.media import UploadedFile, RenderedAttachment
-from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    FILES_API_READ_TIMEOUT_SECONDS,
+    ATTACHMENT_UPLOAD_TIMEOUT_SECONDS,
+    ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS,
+)
 from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
 from discordbot.cogs.gen_reply.attachment.base import (
     UploadKind,
@@ -139,7 +144,8 @@ class GeminiFileUploader(FileUploadRenderer):
             self._pending_uploads.pop(cache_key, None)
             return PendingUploadRepoll(handled=False)
         try:
-            uploaded = await client.aio.files.get(name=pending.name)
+            async with asyncio.timeout(delay=FILES_API_READ_TIMEOUT_SECONDS):
+                uploaded = await client.aio.files.get(name=pending.name)
         except Exception as exc:
             # Broad on purpose: this is a best-effort side-channel, and the caller's renders are
             # gathered without `return_exceptions`, so an escaping error would blank the whole
@@ -268,9 +274,10 @@ class GeminiFileUploader(FileUploadRenderer):
             logfire.error("gemini Files API key missing; dropping attachment", filename=filename)
             return None
         try:
-            uploaded = await upload_file(
-                client=client, source=data, mime_type=content_type, display_name=filename
-            )
+            async with asyncio.timeout(delay=ATTACHMENT_UPLOAD_TIMEOUT_SECONDS):
+                uploaded = await upload_file(
+                    client=client, source=data, mime_type=content_type, display_name=filename
+                )
         except Exception as exc:
             # Broad on purpose: the SDK and its transport raise no single stable type, and this
             # is the best-effort attachment boundary.
@@ -297,6 +304,7 @@ class GeminiFileUploader(FileUploadRenderer):
                 name=file_name,
                 poll_interval_seconds=0.5,
                 timeout_seconds=ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS,
+                read_timeout_seconds=FILES_API_READ_TIMEOUT_SECONDS,
             )
         except Exception as exc:
             # Broad on purpose: the poll is the same best-effort boundary as the upload.
