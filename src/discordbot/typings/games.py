@@ -17,7 +17,6 @@ SettleOutcome = Literal[
     "surrender",
 ]
 BlackjackDealerAction = Literal["hit", "stand"]
-BlackjackDealerStepSource = Literal["auto", "guard"]
 BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
 
@@ -310,38 +309,6 @@ class BlackjackHistoryRecord(BaseModel):
     created_at: datetime = Field(..., description="Asia/Taipei timestamp the round settled at.")
 
 
-class DealerOutcome(BaseModel):
-    """Dealer final-total distribution under H17 over a no-replacement shoe.
-
-    The six probabilities are mutually exclusive and sum to ~1.0. They are
-    estimated from the dealer up-card with a hypothetical hole integrated out
-    over the remaining shoe (and, when the dealer peeked under an Ace/ten
-    up-card, conditioned on no Blackjack), so the bot player can reason about
-    stand-versus-hit without the estimate ever depending on the actual hole.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    bust_probability: float = Field(
-        ..., description="Probability the dealer busts (final total over 21)."
-    )
-    total_17_probability: float = Field(
-        ..., description="Probability the dealer's final total is exactly 17."
-    )
-    total_18_probability: float = Field(
-        ..., description="Probability the dealer's final total is exactly 18."
-    )
-    total_19_probability: float = Field(
-        ..., description="Probability the dealer's final total is exactly 19."
-    )
-    total_20_probability: float = Field(
-        ..., description="Probability the dealer's final total is exactly 20."
-    )
-    total_21_probability: float = Field(
-        ..., description="Probability the dealer's final total is exactly 21."
-    )
-
-
 class ActionEv(BaseModel):
     """Expected value of one Blackjack action, in units of the base hand bet."""
 
@@ -350,43 +317,6 @@ class ActionEv(BaseModel):
     action: BotAction = Field(..., description="The action this expected value is computed for.")
     expected_value: float = Field(
         ..., description="Expected net return in multiples of the base hand bet; higher is better."
-    )
-    is_estimate: bool = Field(
-        default=False,
-        description="True when the value is an approximation rather than exact (split).",
-    )
-    note: str | None = Field(
-        default=None, description="Optional caveat describing why a value is an estimate."
-    )
-
-
-class ActionEvAnalysis(BaseModel):
-    """EV analysis for one bot-player action decision.
-
-    Every NUMBER that reaches this analysis is the hole-unknown (marginalized) one:
-    `dealer_outcome`, `action_evs` and `recommended_expected_value` depend on the
-    up-card and the remaining shoe alone, so no caller can back out the dealer's real
-    hole from them. `recommended_action` is the single exception, selected from the
-    engine's private hole-aware pass — an action, never a value.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    dealer_outcome: DealerOutcome = Field(
-        ...,
-        description="Marginalized dealer final-total distribution; the real hole never enters it.",
-    )
-    action_evs: tuple[ActionEv, ...] = Field(
-        ...,
-        description="Per-allowed-action marginalized expected values, ordered highest to lowest EV.",
-    )
-    recommended_action: BotAction = Field(
-        ...,
-        description="EV-maximizing legal action (split is only recommended past a safety margin).",
-    )
-    recommended_expected_value: float = Field(
-        ...,
-        description="Marginalized expected value of the recommended action, in base-bet units.",
     )
 
 
@@ -397,17 +327,12 @@ class BlackjackDealerStep(BaseModel):
 
     total_before: int = Field(..., description="Dealer hand total before this action.")
     action: BlackjackDealerAction = Field(..., description="Dealer hit or stand action taken.")
-    reason: str = Field(..., description="Rationale recorded for this dealer action.")
-    source: BlackjackDealerStepSource = Field(
-        default="auto", description="Whether the action came from the auto engine or a guard."
-    )
     drawn_card: Card | None = Field(
         default=None, description="Card drawn on a hit, or None for a stand."
     )
     total_after: int | None = Field(
         default=None, description="Dealer hand total after this action, when applicable."
     )
-    forced: bool = Field(default=False, description="True when this step was forced by a guard.")
 
 
 class DragonGatePlayerResult(BaseModel):
@@ -442,10 +367,8 @@ class DragonGatePlayerResult(BaseModel):
 
 __all__ = [
     "ActionEv",
-    "ActionEvAnalysis",
     "BlackjackDealerAction",
     "BlackjackDealerStep",
-    "BlackjackDealerStepSource",
     "BlackjackHandSettlement",
     "BlackjackHistoryHand",
     "BlackjackHistoryInsurance",
@@ -456,7 +379,6 @@ __all__ = [
     "BlackjackPlayerSettlement",
     "BotAction",
     "Card",
-    "DealerOutcome",
     "DragonGatePlayerResult",
     "GameParticipant",
     "GameParticipantIdentity",

@@ -1081,19 +1081,22 @@ async def adjust_balance(
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
 
 
-async def apply_round_settlement(
+async def apply_blackjack_settlement(
     player_id: int,
     player_account_name: str,
     player_delta: int,
     casino_delta: int,
     player_avatar_url: str = "",
 ) -> RoundSettlementResult:
-    """Applies a finished round's net delta and mirrors casino P&L.
+    """Applies a finished Blackjack round's player delta and mirrors casino P&L.
 
     Positive player deltas go through the shared income path. Negative player
     deltas clamp at zero; when a loss cannot be fully collected, the casino
     ledger records less by exactly what was left uncollected, and by nothing
-    else — `player_delta` carries system-funded bonuses the house never paid.
+    else. `player_delta` can carry system-funded bonuses (e.g. five-card 21)
+    that credit the player and count as casino payout but must not move the
+    `/casino` ledger, so the caller passes `casino_delta` explicitly with those
+    bonuses left out.
     The player write and the casino mirror live in the same
     `data/database/economy.db` file and commit as one atomic transaction.
 
@@ -1141,29 +1144,6 @@ async def apply_round_settlement(
             await _rollback_session(session=session)
             raise
     return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
-
-
-async def apply_blackjack_settlement(
-    player_id: int,
-    player_account_name: str,
-    player_delta: int,
-    casino_delta: int,
-    player_avatar_url: str = "",
-) -> RoundSettlementResult:
-    """Applies Blackjack player payout and casino ledger deltas.
-
-    Blackjack can include system-funded bonuses (e.g. five-card 21) that credit
-    the player and count as casino payout but must not move the `/casino`
-    ledger. The caller passes `casino_delta` explicitly so the bonus stays
-    excluded.
-    """
-    return await apply_round_settlement(
-        player_id=player_id,
-        player_account_name=player_account_name,
-        player_avatar_url=player_avatar_url,
-        player_delta=player_delta,
-        casino_delta=casino_delta,
-    )
 
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:

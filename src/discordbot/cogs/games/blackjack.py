@@ -9,12 +9,10 @@ from typing import Final, Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.games import Card, SettleOutcome, GameParticipant
+from discordbot.typings.games import Card, BotAction, SettleOutcome, GameParticipant
 from discordbot.typings.economy import MAX_SINGLE_BET
 
-# A round never rests in `dealer`: `_play_dealer` draws inside one synchronous call, so the
-# phase goes straight from `player_actions` to `settled` and a guard on `dealer` never fires.
-RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
+RoundPhase = Literal["insurance", "player_actions", "settled"]
 
 
 class InsuranceRefusedError(ValueError):
@@ -48,16 +46,15 @@ SHOE_DECK_COUNT = 4
 # Natural Blackjack pays 3:2.
 _BLACKJACK_PAYOUT_NUM: Final[int] = 3
 _BLACKJACK_PAYOUT_DEN: Final[int] = 2
-_CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
-_CARD_SUITS = ("♠", "♥", "♦", "♣")
+CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
+CARD_SUITS = ("♠", "♥", "♦", "♣")
+TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
 
 
 def draw_card(rng: Random) -> Card:
     """Draws one card from a notional infinite shoe (independent rank + suit).
 
-    Production rounds deal from the finite shoe `build_shoe` returns instead,
-    so this helper stays only as `_draw_one_card`'s empty-shoe fallback and as
-    the seam tests monkeypatch for deterministic draws.
+    Nothing is used up, so every card stays equally likely on every draw.
 
     Args:
         rng: Random source used to choose rank and suit.
@@ -65,11 +62,11 @@ def draw_card(rng: Random) -> Card:
     Returns:
         The drawn card.
     """
-    return Card(rank=rng.choice(seq=_CARD_RANKS), suit=rng.choice(seq=_CARD_SUITS))
+    return Card(rank=rng.choice(seq=CARD_RANKS), suit=rng.choice(seq=CARD_SUITS))
 
 
-def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
-    """Returns a shuffled multi-deck shoe (default 4 decks = 208 cards).
+def build_shoe(rng: Random) -> list[Card]:
+    """Returns a shuffled `SHOE_DECK_COUNT`-deck shoe (4 decks = 208 cards).
 
     Cards are popped from index 0 (FIFO); the head of the list is the next
     card. The deck count is sized so a full table taking splits and
@@ -77,9 +74,9 @@ def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
     """
     shoe: list[Card] = [
         Card(rank=rank, suit=suit)
-        for _ in range(deck_count)
-        for suit in _CARD_SUITS
-        for rank in _CARD_RANKS
+        for _ in range(SHOE_DECK_COUNT)
+        for suit in CARD_SUITS
+        for rank in CARD_RANKS
     ]
     rng.shuffle(shoe)
     return shoe
@@ -102,10 +99,10 @@ def hand_value(cards: list[Card]) -> int:
 
 
 def card_blackjack_value(card: Card) -> int:
-    """Returns the Blackjack value used for pair and up-card checks."""
+    """Returns a card's Blackjack value, counting an Ace at its high 11."""
     if card.rank == "A":
         return 11
-    if card.rank in ("J", "Q", "K"):
+    if card.rank in TEN_VALUE_RANKS:
         return 10
     return int(card.rank)
 
@@ -180,18 +177,8 @@ def is_soft_total(cards: list[Card]) -> tuple[bool, int]:
     Returns:
         `(is_soft, total)` where total is the best Blackjack total.
     """
-    raw_total = 0
-    aces = 0
-    for card in cards:
-        if card.rank == "A":
-            aces += 1
-            raw_total += 11
-        elif card.rank in ("J", "Q", "K"):
-            raw_total += 10
-        else:
-            raw_total += int(card.rank)
-    aces_high = aces
-    total = raw_total
+    total = sum(card_blackjack_value(card=card) for card in cards)
+    aces_high = sum(1 for card in cards if card.rank == "A")
     while total > 21 and aces_high > 0:
         total -= 10
         aces_high -= 1
@@ -210,6 +197,15 @@ def is_soft_17(cards: list[Card]) -> bool:
     """
     soft, total = is_soft_total(cards=cards)
     return soft and total == 17
+
+
+def dealer_must_hit(cards: list[Card]) -> bool:
+    """Returns whether the dealer draws on this hand under H17.
+
+    The dealer hits anything below 17 and a soft 17, and stands on a hard 17
+    or better; a bust hand draws nothing more.
+    """
+    return hand_value(cards=cards) < 17 or is_soft_17(cards=cards)
 
 
 def dealer_up_card(dealer: list[Card]) -> Card | None:
@@ -298,43 +294,37 @@ class BlackjackPlayerHand(BaseModel):
         """Returns True once every owned hand has finished."""
         return bool(self.hands) and all(hand.finished for hand in self.hands)
 
+    @property
+    def balance_remaining(self) -> int:
+        """Returns the starting balance left once every hand bet and the insurance are covered.
 
-def committed_wagers(player: BlackjackPlayerHand) -> int:
-    """Returns the total points already committed for one participant.
-
-    Sums every active hand bet plus any insurance side bet, so callers can
-    measure how much of the player's starting balance is still spoken for
-    when validating Double / Split / Insurance affordability.
-
-    Args:
-        player: The player whose committed wagers should be summed.
-
-    Returns:
-        Total committed points across hands and insurance for the player.
-    """
-    return sum(hand.bet for hand in player.hands) + player.insurance_bet
+        This is what a Double, a Split or an insurance side bet has to fit in.
+        """
+        return (
+            self.participant.balance_at_start
+            - sum(hand.bet for hand in self.hands)
+            - self.insurance_bet
+        )
 
 
-def can_double(
-    hand: BlackjackHandState, balance_remaining: int, allow_after_split: bool = False
-) -> bool:
+def can_double(hand: BlackjackHandState, balance_remaining: int) -> bool:
     """Returns whether Double Down is allowed on this hand right now.
 
     Args:
         hand: Hand to inspect.
         balance_remaining: Points still available after current commitments.
-        allow_after_split: Whether the house rule permits Double after Split.
 
     Returns:
         True only when no actions have been taken yet, the hand has exactly
-        two cards, the DAS rule allows it, the doubled stake still fits
-        `MAX_SINGLE_BET`, and the player can still afford the extra wager.
+        two cards and did not come out of a Split (no Double after Split), the
+        doubled stake still fits `MAX_SINGLE_BET`, and the player can still
+        afford the extra wager.
     """
     if hand.finished or hand.surrendered or hand.doubled:
         return False
     if len(hand.cards) != 2 or hand.actions_taken != 0:
         return False
-    if hand.is_split_hand and not allow_after_split:
+    if hand.is_split_hand:
         return False
     # Doubling doubles the hand's stake; keep it within the single-bet cap so it
     # cannot bypass the anti-inflation guardrail that bounds every wager.
@@ -364,26 +354,6 @@ def can_split(hand: BlackjackHandState, balance_remaining: int) -> bool:
     return balance_remaining >= hand.bet
 
 
-def can_insure(player: "BlackjackPlayerHand", balance_remaining: int) -> bool:
-    """Returns whether the player can still place an insurance side bet.
-
-    Args:
-        player: Player container to inspect.
-        balance_remaining: Points still available after current commitments.
-
-    Returns:
-        True only when insurance was offered for this player and they have
-        not yet decided, and the half-bet side wager fits the remaining
-        balance.
-    """
-    if player.insurance_resolved or player.insurance_bet != 0:
-        return False
-    insurance_amount = player.participant.bet // 2
-    if insurance_amount <= 0:
-        return False
-    return balance_remaining >= insurance_amount
-
-
 def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
     """Returns whether Late Surrender is allowed on this hand right now.
 
@@ -402,6 +372,11 @@ def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
     if hand.finished or hand.surrendered or hand.doubled or hand.is_split_hand:
         return False
     return len(hand.cards) == 2 and hand.actions_taken == 0
+
+
+def surrender_loss(bet: int) -> int:
+    """Returns what a Late Surrender forfeits: half the bet, rounded up so a 1-point bet is not free."""
+    return (bet + 1) // 2
 
 
 def _settle_split_twenty_one(
@@ -474,12 +449,12 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
     if not hand.finished:
         raise ValueError("Cannot settle an unfinished Blackjack hand")
     if hand.surrendered:
-        return "surrender", -((hand.base_bet + 1) // 2)
-    if not hand.doubled and is_five_card_twenty_one(cards=hand.cards):
+        return "surrender", -surrender_loss(bet=hand.base_bet)
+    if is_five_card_twenty_one(cards=hand.cards):
         dealer_total = hand_value(cards=dealer)
         delta = 0 if dealer_total == 21 else hand.bet
         return "five_card_twenty_one", delta
-    if not hand.doubled and is_five_card_win(cards=hand.cards):
+    if is_five_card_win(cards=hand.cards):
         return "five_card_win", hand.bet
     if hand.is_split_hand and is_blackjack(cards=hand.cards):
         return _settle_split_twenty_one(hand=hand, dealer=dealer)
@@ -516,11 +491,6 @@ class BlackjackRound(BaseModel):
     dealer_played: bool = Field(
         default=False, description="True once the dealer has drawn for all standing players."
     )
-    finished: bool = Field(default=False, description="True once no more player actions remain.")
-    auto_play_dealer: bool = Field(
-        default=True,
-        description="True when dealer cards are drawn synchronously after player actions finish.",
-    )
     phase: RoundPhase = Field(
         default="player_actions", description="Lifecycle phase of the round."
     )
@@ -532,13 +502,14 @@ class BlackjackRound(BaseModel):
         description="True once the dealer's hole-card peek revealed a natural Blackjack.",
     )
 
+    @property
+    def finished(self) -> bool:
+        """Returns True once the round is settled and no more player actions remain."""
+        return self.phase == "settled"
+
     @classmethod
     def from_participants(
-        cls,
-        rng: Random,
-        participants: list[GameParticipant],
-        auto_play_dealer: bool = True,
-        shoe: list[Card] | None = None,
+        cls, rng: Random, participants: list[GameParticipant], shoe: list[Card] | None = None
     ) -> "BlackjackRound":
         """Builds a round from registered lobby participants.
 
@@ -556,19 +527,15 @@ class BlackjackRound(BaseModel):
             for participant in participants
         ]
         return cls(
-            rng=rng,
-            players=players,
-            auto_play_dealer=auto_play_dealer,
-            shoe=shoe if shoe is not None else build_shoe(rng=rng),
+            rng=rng, players=players, shoe=shoe if shoe is not None else build_shoe(rng=rng)
         )
 
     def _draw_one_card(self) -> Card:
         """Pops the next card from the round's shoe, falling back when empty.
 
         Cards come from the FIFO shoe, so draws are capped by the finite
-        multi-deck shoe instead of independent replacement. Tests that want
-        deterministic draws clear `self.shoe` to force the `draw_card`
-        fallback they monkeypatch.
+        multi-deck shoe instead of independent replacement. Once the shoe is
+        empty the round keeps dealing from `draw_card` rather than raising.
         """
         if self.shoe:
             return self.shoe.pop(0)
@@ -595,23 +562,20 @@ class BlackjackRound(BaseModel):
             self.insurance_offered = True
             return
 
-        ten_value_up = up is not None and up.rank in ("J", "Q", "K", "10")
+        ten_value_up = up is not None and up.rank in TEN_VALUE_RANKS
         self._resolve_peek(dealer_has_blackjack=ten_value_up and is_blackjack(cards=self.dealer))
 
-    def take_insurance(self, user_id: int, amount: int) -> None:
-        """Records an insurance side bet for the player.
+    def take_insurance(self, user_id: int) -> None:
+        """Records the player's insurance side bet, half their original bet rounded down.
 
         Args:
             user_id: Discord user ID placing the insurance.
-            amount: Side-bet amount; must equal `participant.bet // 2`.
 
         Raises:
             InsuranceClosedError: The round is not in the insurance phase, or this
                 seat already decided.
             InsuranceBetTooSmallError: Half the original bet rounds to zero.
             InsuranceBeyondBalanceError: The remaining balance cannot cover it.
-            InsuranceRefusedError: The amount is not half the original bet, which no
-                caller here can produce.
             ValueError: The user is not seated at this table.
         """
         if self.phase != "insurance":
@@ -619,15 +583,12 @@ class BlackjackRound(BaseModel):
         player = self._find_player(user_id=user_id)
         if player.insurance_resolved:
             raise InsuranceClosedError("Insurance already decided")
-        expected = player.participant.bet // 2
-        if expected <= 0:
+        cost = player.participant.bet // 2
+        if cost <= 0:
             raise InsuranceBetTooSmallError("Half of the original bet rounds to zero")
-        if amount != expected:
-            raise InsuranceRefusedError("Insurance amount must equal half of the original bet")
-        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
-        if not can_insure(player=player, balance_remaining=balance_remaining):
+        if player.balance_remaining < cost:
             raise InsuranceBeyondBalanceError("Not enough balance for insurance")
-        player.insurance_bet = amount
+        player.insurance_bet = cost
         player.insurance_resolved = True
         self._maybe_close_insurance_phase()
 
@@ -638,14 +599,15 @@ class BlackjackRound(BaseModel):
             user_id: Discord user ID declining the insurance offer.
 
         Raises:
-            ValueError: The round is not in the insurance phase, the user is
-                not seated at this table, or insurance was already decided.
+            InsuranceClosedError: The round is not in the insurance phase, or this
+                seat already decided.
+            ValueError: The user is not seated at this table.
         """
         if self.phase != "insurance":
-            raise ValueError("Insurance is not currently offered")
+            raise InsuranceClosedError("Insurance is not currently offered")
         player = self._find_player(user_id=user_id)
         if player.insurance_resolved:
-            raise ValueError("Insurance already decided")
+            raise InsuranceClosedError("Insurance already decided")
         player.insurance_resolved = True
         self._maybe_close_insurance_phase()
 
@@ -696,6 +658,27 @@ class BlackjackRound(BaseModel):
             return self.active_hand()
         return hand
 
+    def allowed_actions(self) -> tuple[BotAction, ...]:
+        """Returns what the active sub-hand may do now, in hit, stand, double, split, surrender order.
+
+        Empty when no sub-hand is waiting on an action. Reads the turn through
+        `active_hand`, with the same non-pure-read caveat as `active_player`.
+        """
+        player = self.active_player()
+        hand = self.active_hand()
+        if player is None or hand is None:
+            return ()
+        actions: list[BotAction] = []
+        if not hand.is_split_aces:
+            actions.extend(("hit", "stand"))
+        if can_double(hand=hand, balance_remaining=player.balance_remaining):
+            actions.append("double")
+        if can_split(hand=hand, balance_remaining=player.balance_remaining):
+            actions.append("split")
+        if can_surrender(hand=hand, peeked_blackjack=self.peeked_blackjack):
+            actions.append("surrender")
+        return tuple(actions)
+
     def hit(self, user_id: int) -> Card:
         """Draws one card for the active sub-hand.
 
@@ -745,8 +728,7 @@ class BlackjackRound(BaseModel):
                 is not the active player, or `can_double` rejects the hand.
         """
         player, hand = self._require_active(user_id=user_id)
-        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
-        if not can_double(hand=hand, balance_remaining=balance_remaining):
+        if not can_double(hand=hand, balance_remaining=player.balance_remaining):
             raise ValueError("Cannot double this hand")
         hand.bet *= 2
         hand.doubled = True
@@ -772,8 +754,7 @@ class BlackjackRound(BaseModel):
                 is not the active player, or `can_split` rejects the hand.
         """
         player, hand = self._require_active(user_id=user_id)
-        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
-        if not can_split(hand=hand, balance_remaining=balance_remaining):
+        if not can_split(hand=hand, balance_remaining=player.balance_remaining):
             raise ValueError("Cannot split this hand")
         split_aces = hand.cards[0].rank == "A"
         first_card, second_card = hand.cards[0], hand.cards[1]
@@ -826,13 +807,24 @@ class BlackjackRound(BaseModel):
         """Returns the current best total for the dealer hand."""
         return hand_value(cards=self.dealer)
 
-    def dealer_is_soft_17(self) -> bool:
-        """Returns whether the dealer hand is currently a soft 17."""
-        return is_soft_17(cards=self.dealer)
-
     def needs_dealer_play(self) -> bool:
-        """Returns whether the dealer still needs a draw/stand phase."""
-        return self._needs_dealer_play()
+        """Returns whether the dealer must draw before settlement."""
+        if self.peeked_blackjack:
+            return False
+        for player in self.players:
+            for hand in player.hands:
+                if hand.surrendered:
+                    continue
+                if hand.is_blackjack():
+                    continue
+                if hand.is_bust():
+                    continue
+                if is_five_card_win(cards=hand.cards) and not is_five_card_twenty_one(
+                    cards=hand.cards
+                ):
+                    continue
+                return True
+        return False
 
     def draw_dealer_card(self) -> Card:
         """Draws one card into the dealer hand and returns it."""
@@ -843,7 +835,6 @@ class BlackjackRound(BaseModel):
     def mark_dealer_played(self) -> None:
         """Closes the dealer phase and settles the round."""
         self.dealer_played = True
-        self.finished = True
         self.phase = "settled"
 
     def _find_player(self, user_id: int) -> BlackjackPlayerHand:
@@ -892,7 +883,6 @@ class BlackjackRound(BaseModel):
                 for hand in player.hands:
                     hand.finished = True
             self.phase = "settled"
-            self.finished = True
             self.dealer_played = True
             return
         self.phase = "player_actions"
@@ -915,47 +905,12 @@ class BlackjackRound(BaseModel):
         self._finish_after_players_done()
 
     def _finish_after_players_done(self) -> None:
-        """Finishes the round after all player actions have resolved."""
-        if self.finished:
-            return
-        if self._needs_dealer_play() and self.auto_play_dealer:
-            self._play_dealer()
-        self.finished = True
+        """Finishes the round after all player actions have resolved.
+
+        The dealer has not drawn yet; its draws come afterwards, one
+        `draw_dealer_card` at a time, closed by `mark_dealer_played`.
+        """
         self.phase = "settled"
-
-    def _needs_dealer_play(self) -> bool:
-        """Returns whether the dealer must draw before settlement."""
-        if self.peeked_blackjack:
-            return False
-        if is_blackjack(cards=self.dealer):
-            return False
-        for player in self.players:
-            for hand in player.hands:
-                if hand.surrendered:
-                    continue
-                if hand.is_blackjack():
-                    continue
-                if hand.is_bust():
-                    continue
-                if is_five_card_win(cards=hand.cards) and not is_five_card_twenty_one(
-                    cards=hand.cards
-                ):
-                    continue
-                return True
-        return False
-
-    def _play_dealer(self) -> None:
-        """Draws dealer cards under H17 rules (hits soft 17, stands hard 17+)."""
-        while True:
-            total = hand_value(cards=self.dealer)
-            if total < 17:
-                self.draw_dealer_card()
-                continue
-            if total == 17 and is_soft_17(cards=self.dealer):
-                self.draw_dealer_card()
-                continue
-            break
-        self.mark_dealer_played()
 
 
 def render_hand(cards: list[Card], hide_first: bool = False) -> str:

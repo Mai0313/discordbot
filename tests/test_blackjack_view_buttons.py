@@ -46,7 +46,6 @@ from tests.helpers.games import (
     component_rows,
     attached_button,
     settle_only_seat,
-    longest_hand_the_dealer_must_draw_on,
 )
 from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy import seed_balance
@@ -65,14 +64,13 @@ def _round_with_two_cards(
     a view finalizes or settles.
     """
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[player or seat()], auto_play_dealer=False
+        rng=Random(x=0), participants=[player or seat()]
     )
     hand = round_state.players[0].hands[0]
     hand.cards = player_cards
     round_state.dealer = dealer_cards
     if finished:
         hand.finished = True
-        round_state.finished = True
         round_state.dealer_played = True
         round_state.phase = "settled"
     return round_state
@@ -198,9 +196,7 @@ async def test_player_actions_is_split_hand_removes_double_split_surrender() -> 
 
 async def test_split_aces_subhand_removes_hit_and_stand() -> None:
     """Split Aces removes Hit and Stand with `finished` still False; Split removed the rest."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat()], auto_play_dealer=False
-    )
+    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
     finished_hand = BlackjackHandState(
         cards=[Card(rank="A", suit="♠"), Card(rank="5", suit="♥")],
         bet=100,
@@ -220,7 +216,7 @@ async def test_split_aces_subhand_removes_hit_and_stand() -> None:
 async def test_player_actions_low_balance_removes_double_and_split() -> None:
     """Insufficient balance for the extra wager hides Double and Split affordances."""
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(balance_at_start=150)], auto_play_dealer=False
+        rng=Random(x=0), participants=[seat(balance_at_start=150)]
     )
     round_state.players[0].hands[0].cards = [Card(rank="8", suit="♠"), Card(rank="8", suit="♥")]
     round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
@@ -273,7 +269,6 @@ async def test_settled_phase_removes_every_button() -> None:
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="7", suit="♦")],
     )
     round_state.phase = "settled"
-    round_state.finished = True
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
@@ -421,23 +416,6 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
     assert notices == ["這局已經結束, 等下一局吧"]
 
 
-def test_the_dealer_loop_outlasts_the_longest_hand_the_rules_can_force() -> None:
-    """`MAX_DEALER_DECISION_STEPS` must not stand the dealer below 17.
-
-    `_play_dealer_locked` spends one iteration per drawn card and one more to record the stand
-    or the bust; running out instead appends a `source="guard"` step, which settles the round on
-    whatever total the dealer was holding and shows the players it did that.
-    """
-    longest = longest_hand_the_dealer_must_draw_on()
-
-    assert longest == 12, f"the longest forced hand moved to {longest} cards; re-read the bound"
-    needed = (longest - 2) + 2
-    assert needed <= blackjack_views.MAX_DEALER_DECISION_STEPS, (
-        f"the dealer would stand below 17 on a {longest}-card hand: the loop needs {needed} "
-        f"iterations and has {blackjack_views.MAX_DEALER_DECISION_STEPS}"
-    )
-
-
 async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -484,7 +462,6 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
     round_state.players[0].hands[0].finished = True
-    round_state.phase = "dealer"
     round_state.shoe = [Card(rank="6", suit="♠")]
     view = _make_view(round_state=round_state)
 
@@ -493,14 +470,11 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
     assert round_state.dealer_played is True
     first_step = view._dealer_steps[0]
     assert first_step.action == "hit"
-    assert first_step.source == "auto"
-    assert first_step.forced is True
     assert first_step.total_before == 11
     assert first_step.total_after == 17
     final_step = view._dealer_steps[-1]
     assert final_step.action == "stand"
-    assert final_step.source == "auto"
-    assert final_step.forced is True
+    assert final_step.total_before == 17
 
 
 @pytest.mark.parametrize(
@@ -519,7 +493,6 @@ async def test_play_dealer_stands_on_hard_17_plus(
         dealer_cards=dealer_cards,
     )
     round_state.players[0].hands[0].finished = True
-    round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
     await view._play_dealer_locked()
@@ -528,8 +501,7 @@ async def test_play_dealer_stands_on_hard_17_plus(
     assert round_state.dealer_total() == expected_total
     step = view._dealer_steps[-1]
     assert step.action == "stand"
-    assert step.source == "auto"
-    assert step.forced is True
+    assert step.total_before == expected_total
 
 
 async def test_play_dealer_hits_soft_17() -> None:
@@ -539,7 +511,6 @@ async def test_play_dealer_hits_soft_17() -> None:
         dealer_cards=[Card(rank="A", suit="♣"), Card(rank="6", suit="♦")],
     )
     round_state.players[0].hands[0].finished = True
-    round_state.phase = "dealer"
     round_state.shoe = [Card(rank="3", suit="♠")]
     view = _make_view(round_state=round_state)
 
@@ -548,12 +519,27 @@ async def test_play_dealer_hits_soft_17() -> None:
     assert [str(card) for card in round_state.dealer] == ["A♣", "6♦", "3♠"]
     first_step = view._dealer_steps[0]
     assert first_step.action == "hit"
-    assert first_step.source == "auto"
-    assert "soft 17" in first_step.reason
     assert first_step.total_before == 17
     final_step = view._dealer_steps[-1]
     assert final_step.action == "stand"
-    assert final_step.source == "auto"
+    assert final_step.total_before == 20
+
+
+async def test_play_dealer_records_nothing_after_a_bust() -> None:
+    """A dealer that busts shows the hit that did it and no stand after it."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
+        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    round_state.players[0].hands[0].finished = True
+    round_state.shoe = [Card(rank="K", suit="♠")]
+    view = _make_view(round_state=round_state)
+
+    await view._play_dealer_locked()
+
+    assert round_state.dealer_played is True
+    path = blackjack_views._format_dealer_decision_path(steps=view._dealer_steps)
+    assert path == "規則: 16 hit 抽 K♠ → 26"
 
 
 async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
@@ -647,7 +633,6 @@ async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> No
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[seat(user_id=1, display_name="Bot"), seat(user_id=2, display_name="Bob")],
-        auto_play_dealer=False,
     )
     bot_hand = round_state.players[0].hands[0]
     bot_hand.cards = [Card(rank="10", suit="♠"), Card(rank="6", suit="♥")]
@@ -867,7 +852,7 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: list[obj
     assert "embeds" not in message.edits[0]
     final_embeds = message.edits[1]["embeds"]
     description = cast("str", final_embeds[0].description)
-    assert "規則: 13 hit 抽 5♣ → 18" in description
+    assert "-# 動作: 規則: 13 hit 抽 5♣ → 18；規則: 18 stand" in description.splitlines()
     await view.wait_for_background_tasks()
     assert scheduled_cleanups == [message]
 
@@ -974,7 +959,6 @@ def _alice_done_bob_to_act() -> BlackjackRound:
             seat(user_id=1, display_name="Alice", bet=50, balance_at_start=100),
             seat(user_id=2, display_name="Bob", bet=50, balance_at_start=100),
         ],
-        auto_play_dealer=False,
     )
     alice = round_state.players[0].hands[0]
     alice.cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
@@ -1033,7 +1017,7 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
 async def test_blackjack_view_hit_draws_for_active_split_hand() -> None:
     """A Hit draws for the active split hand, not the already-finished first hand."""
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(bet=50, balance_at_start=100)], auto_play_dealer=False
+        rng=Random(x=0), participants=[seat(bet=50, balance_at_start=100)]
     )
     player = round_state.players[0]
     player.hands = [

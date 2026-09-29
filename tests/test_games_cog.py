@@ -13,7 +13,6 @@ from discordbot.cogs.games import cog as games
 from discordbot.typings.games import GameParticipant
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.typings.economy import JackpotSnapshot
-from discordbot.cogs.games.wagers import parse_wager_amount
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
@@ -118,15 +117,6 @@ async def test_blackjack_history_missing_user_sends_notice() -> None:
     assert isinstance(content, str)
     assert "無法辨識使用者" in content
     assert interaction.followup.sent == []
-
-
-def test_parse_wager_amount_accepts_formatted_text() -> None:
-    """Verifies wager text parsing avoids Discord integer option limits."""
-    assert parse_wager_amount(raw_amount="9,007,199,254,740,993") == 9_007_199_254_740_993
-    assert parse_wager_amount(raw_amount=" 000 ") == 0
-    assert parse_wager_amount(raw_amount=None) is None
-    assert parse_wager_amount(raw_amount="not a number") is None
-    assert parse_wager_amount(raw_amount="-1") is None
 
 
 def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:

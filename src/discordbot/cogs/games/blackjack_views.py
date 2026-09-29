@@ -18,7 +18,6 @@ from discordbot.typings.games import (
     GameParticipant,
     BlackjackDealerStep,
     BlackjackPlayerResult,
-    BlackjackDealerStepSource,
     BlackjackPlayerSettlement,
 )
 from discordbot.typings.colors import IN_PROGRESS_COLOR
@@ -31,21 +30,13 @@ from discordbot.cogs.games.blackjack import (
     BlackjackPlayerHand,
     InsuranceBetTooSmallError,
     InsuranceBeyondBalanceError,
-    can_split,
-    can_double,
     hand_value,
     render_hand,
-    can_surrender,
-    dealer_up_card,
-    committed_wagers,
+    dealer_must_hit,
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs.games.bot_player import (
-    fallback_insurance,
-    build_bot_action_context,
-    build_bot_insurance_context,
-)
+from discordbot.cogs.games.bot_player import choose_bot_action, bot_takes_insurance
 from discordbot.cogs.games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -84,14 +75,6 @@ if TYPE_CHECKING:
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-# Enough iterations for the longest hand H17 can force. `_play_dealer_locked` spends one per
-# drawn card plus one to record the stand or the bust, and the longest hand still required to
-# draw is twelve cards — eleven aces and a five, hard 16 because an eleven-point ace would bust
-# it. Two of those twelve are dealt rather than drawn, so it is ten draws to reach that hand,
-# an eleventh for the draw it is owed, and a twelfth to record what that came to.
-# `tests/test_blackjack_view_buttons.py` searches for the hand rather than trusting the
-# arithmetic, so a rules change re-derives this instead of quietly outgrowing it.
-MAX_DEALER_DECISION_STEPS: Final[int] = 12
 MAX_BOT_TURN_STEPS: Final[int] = 16
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
@@ -120,10 +103,9 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     """Formats the dealer's decision steps into one compact line."""
     if not steps:
         return ""
-    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "防呆"}
     parts: list[str] = []
     for step in steps:
-        part = f"{source_labels[step.source]}: {step.total_before} {step.action}"
+        part = f"規則: {step.total_before} {step.action}"
         if step.drawn_card is not None:
             part += f" 抽 {step.drawn_card}"
             if step.total_after is not None:
@@ -325,7 +307,7 @@ def _player_seat_status_footer(
         return "保險決定中"
     if is_active:
         return f"進行中 · 不操作 {BLACKJACK_ACTION_TIMEOUT_SECONDS} 秒會自動 stand"
-    if round_state.phase == "settled" or round_state.finished:
+    if round_state.finished:
         return "已結算"
     return "待輪到"
 
@@ -559,11 +541,11 @@ class BlackjackLobbyView(BaseGameLobbyView):
         shoe: list[Card] | None = None
         shoe_generation = 0
         if self._shoe_store is not None:
-            shoe, _reshuffled, shoe_generation = self._shoe_store.take_shoe(
+            shoe, shoe_generation = self._shoe_store.take_shoe(
                 channel_id=self._channel_id, rng=self.rng
             )
         round_state = BlackjackRound.from_participants(
-            rng=self.rng, participants=self.participants, auto_play_dealer=False, shoe=shoe
+            rng=self.rng, participants=self.participants, shoe=shoe
         )
         round_state.deal_initial()
         view = BlackjackView(
@@ -626,17 +608,16 @@ class BlackjackView(View):
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
         self._peek_animated = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._action_buttons: dict[str, Button[BlackjackView]] = {
-            "bj:hit": cast('Button["BlackjackView"]', self.hit),
-            "bj:stand": cast('Button["BlackjackView"]', self.stand),
-            "bj:double": cast('Button["BlackjackView"]', self.double),
-            "bj:split": cast('Button["BlackjackView"]', self.split),
-            "bj:surrender": cast('Button["BlackjackView"]', self.surrender),
+        self._action_buttons: dict[BotAction, Button[BlackjackView]] = {
+            "hit": cast('Button["BlackjackView"]', self.hit),
+            "stand": cast('Button["BlackjackView"]', self.stand),
+            "double": cast('Button["BlackjackView"]', self.double),
+            "split": cast('Button["BlackjackView"]', self.split),
+            "surrender": cast('Button["BlackjackView"]', self.surrender),
         }
         self._insurance_buttons: tuple[Button[BlackjackView], Button[BlackjackView]] = (
             cast('Button["BlackjackView"]', self.insure_yes),
@@ -805,11 +786,10 @@ class BlackjackView(View):
         self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
     ) -> bool:
         """Buys half-bet insurance for one seat; False when the round refused it."""
-        player = self._find_player_by_user_id(user_id=user_id)
-        if player is None:
+        if self._find_player_by_user_id(user_id=user_id) is None:
             return False
         try:
-            self.round_state.take_insurance(user_id=user_id, amount=player.participant.bet // 2)
+            self.round_state.take_insurance(user_id=user_id)
         except ValueError as error:
             content = _insurance_refusal_notice(error=error)
             await send_ephemeral_notice(
@@ -963,18 +943,10 @@ class BlackjackView(View):
         if not bot_player.hands:
             return
         user_id = bot_player.participant.user_id
-        dealer_up = dealer_up_card(dealer=self.round_state.dealer)
-        insurance_context = build_bot_insurance_context(
-            dealer_up=dealer_up,
-            shoe=list(self.round_state.shoe),
-            insurance_cost=bot_player.participant.bet // 2,
-        )
-        take_insurance = fallback_insurance(insurance_context=insurance_context)
+        take_insurance = bot_takes_insurance(shoe=self.round_state.shoe)
         try:
             if take_insurance:
-                self.round_state.take_insurance(
-                    user_id=user_id, amount=bot_player.participant.bet // 2
-                )
+                self.round_state.take_insurance(user_id=user_id)
             else:
                 self.round_state.decline_insurance(user_id=user_id)
         except ValueError as exc:
@@ -1009,17 +981,7 @@ class BlackjackView(View):
         hand = self.round_state.active_hand()
         if hand is None:
             return
-        balance_remaining = active.participant.balance_at_start - committed_wagers(player=active)
-        allowed: list[BotAction] = []
-        if not hand.finished and not hand.is_split_aces:
-            allowed.append("hit")
-            allowed.append("stand")
-        if can_double(hand=hand, balance_remaining=balance_remaining):
-            allowed.append("double")
-        if can_split(hand=hand, balance_remaining=balance_remaining):
-            allowed.append("split")
-        if can_surrender(hand=hand, peeked_blackjack=self.round_state.peeked_blackjack):
-            allowed.append("surrender")
+        allowed = self.round_state.allowed_actions()
         if not allowed:
             with contextlib.suppress(ValueError):
                 self.round_state.stand(user_id=active.participant.user_id)
@@ -1029,21 +991,18 @@ class BlackjackView(View):
             else:
                 await self._edit_in_progress_locked(message=message)
             return
-        dealer_up = dealer_up_card(dealer=self.round_state.dealer)
         is_pair_hand = len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed
-        action_context = build_bot_action_context(
+        chosen_action = choose_bot_action(
             hand_cards=list(hand.cards),
             dealer_cards=list(self.round_state.dealer),
-            dealer_up=dealer_up,
             shoe=list(self.round_state.shoe),
-            allowed_actions=tuple(allowed),
+            allowed_actions=allowed,
             is_pair_hand=is_pair_hand,
             bet=hand.bet,
             doubled=hand.doubled,
         )
-        chosen_action = action_context.action_analysis.basic_strategy_action
         applied = self._apply_bot_action(
-            user_id=active.participant.user_id, action=chosen_action, allowed=tuple(allowed)
+            user_id=active.participant.user_id, action=chosen_action, allowed=allowed
         )
         if not applied:
             with contextlib.suppress(ValueError):
@@ -1095,29 +1054,11 @@ class BlackjackView(View):
                 button.disabled = False
                 set_view_item_visible(view=self, item=button, visible=True)
             return
-        if self.round_state.phase != "player_actions":
-            return
 
-        active_player = self.round_state.active_player()
-        active_hand = self.round_state.active_hand()
-        if active_player is None or active_hand is None:
-            return
-
-        balance_remaining = active_player.participant.balance_at_start - committed_wagers(
-            player=active_player
-        )
-        visible: dict[str, bool] = {
-            "bj:hit": not active_hand.finished and not active_hand.is_split_aces,
-            "bj:stand": not active_hand.finished and not active_hand.is_split_aces,
-            "bj:double": can_double(hand=active_hand, balance_remaining=balance_remaining),
-            "bj:split": can_split(hand=active_hand, balance_remaining=balance_remaining),
-            "bj:surrender": can_surrender(
-                hand=active_hand, peeked_blackjack=self.round_state.peeked_blackjack
-            ),
-        }
-        for custom_id, button in self._action_buttons.items():
+        allowed = self.round_state.allowed_actions()
+        for action, button in self._action_buttons.items():
             button.disabled = False
-            set_view_item_visible(view=self, item=button, visible=visible[custom_id])
+            set_view_item_visible(view=self, item=button, visible=action in allowed)
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes the per-seat embeds while holding the round lock."""
@@ -1188,15 +1129,10 @@ class BlackjackView(View):
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
-            participant = player.participant
-            settlement = await settle_blackjack_player(
-                round_state=self.round_state,
-                player=player,
-                player_id=participant.user_id,
-                player_account_name=participant.account_name,
-                player_avatar_url=participant.avatar_url,
+            settlement = await settle_blackjack_player(round_state=self.round_state, player=player)
+            results.append(
+                BlackjackPlayerResult(participant=player.participant, settlement=settlement)
             )
-            results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
         logfire.debug(
             "Blackjack settlement done", results=len(results), channel_id=self._channel_id
         )
@@ -1303,52 +1239,22 @@ class BlackjackView(View):
         if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
             return
 
-        for _step_index in range(MAX_DEALER_DECISION_STEPS):
+        while dealer_must_hit(cards=self.round_state.dealer):
             total_before = self.round_state.dealer_total()
-            if total_before > 21:
-                self.round_state.mark_dealer_played()
-                return
-            soft_17 = self.round_state.dealer_is_soft_17()
-            should_hit = total_before < 17 or (total_before == 17 and soft_17)
-            if not should_hit:
-                self._dealer_steps.append(
-                    BlackjackDealerStep(
-                        total_before=total_before,
-                        action="stand",
-                        reason="規則: 已達 17 點且非 soft 17",
-                        source="auto",
-                        forced=True,
-                    )
-                )
-                self.round_state.mark_dealer_played()
-                return
-            reason = "規則: soft 17 追牌" if soft_17 else "規則: 未滿 17 點"
             drawn_card = self.round_state.draw_dealer_card()
-            total_after = self.round_state.dealer_total()
             self._dealer_steps.append(
                 BlackjackDealerStep(
                     total_before=total_before,
                     action="hit",
-                    reason=reason,
-                    source="auto",
                     drawn_card=drawn_card,
-                    total_after=total_after,
-                    forced=True,
+                    total_after=self.round_state.dealer_total(),
                 )
             )
-        logfire.warn(
-            "Dealer Blackjack play loop reached maximum steps; forcing stand",
-            max_steps=MAX_DEALER_DECISION_STEPS,
-        )
-        self._dealer_steps.append(
-            BlackjackDealerStep(
-                total_before=self.round_state.dealer_total(),
-                action="stand",
-                reason="guard: decision limit",
-                source="guard",
-                forced=True,
+        final_total = self.round_state.dealer_total()
+        if final_total <= 21:
+            self._dealer_steps.append(
+                BlackjackDealerStep(total_before=final_total, action="stand")
             )
-        )
         self.round_state.mark_dealer_played()
 
     async def _record_history_later(

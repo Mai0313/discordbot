@@ -19,8 +19,9 @@ from discordbot.typings.games import (
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.cogs.games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.cogs.games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
+from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs.games.bot_player import kelly_bet, count_adjusted_edge
 from discordbot.utils.message_cleanup import (
@@ -280,7 +281,7 @@ class GamesCogs(commands.Cog):
         """Opens a Blackjack lobby. The owner starts the table from the lobby."""
         if interaction.user is None:
             return
-        wager = parse_wager_amount(raw_amount=bet)
+        wager = parse_decimal_amount(raw=bet)
         if wager is None:
             embed = self._invalid_bet_embed()
             await interaction.response.send_message(

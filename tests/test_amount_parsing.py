@@ -7,6 +7,8 @@ from discordbot.utils.amount_parsing import parse_decimal_amount
     argnames=("raw", "expected"),
     argvalues=[
         ("1,000", 1000),
+        # Past 2**53: a float would lose digits and a Discord integer option cannot carry it.
+        ("9,007,199,254,740,993", 9_007_199_254_740_993),
         (" 42 ", 42),
         ("0", 0),
         ("1,2,3", 123),

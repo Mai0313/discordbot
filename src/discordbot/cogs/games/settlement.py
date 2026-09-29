@@ -3,7 +3,6 @@
 from discordbot.typings.games import (
     Card,
     SettleOutcome,
-    WagerSettlement,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
     BlackjackInsuranceSettlement,
@@ -17,14 +16,10 @@ from discordbot.cogs.games.blackjack import (
     is_blackjack,
     dealer_up_card,
 )
-from discordbot.services.economy.database import (
-    get_vip,
-    apply_round_settlement,
-    apply_blackjack_settlement,
-)
+from discordbot.services.economy.database import get_vip, apply_blackjack_settlement
 
 
-def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early-finish reason keeps the mapping explicit
+def blackjack_player_early_finish_note(
     player: BlackjackPlayerHand, dealer: list[Card], peeked_blackjack: bool
 ) -> str | None:
     """Returns a short explanation for round paths that skipped player actions.
@@ -37,7 +32,6 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
     Returns:
         The explanation text, or `None` when no early-finish path applies.
     """
-    dealer_bj = is_blackjack(cards=dealer)
     if not player.hands:
         return None
     first_hand = player.hands[0]
@@ -50,68 +44,14 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
         return f"{_dealer_peek_note(dealer=dealer)}, 你也起手 Blackjack, 本局直接平手"
     if peeked_blackjack:
         return f"{_dealer_peek_note(dealer=dealer)}, 本局直接結算"
-    if dealer_bj and player_bj:
-        return "雙方起手 Blackjack, 本局直接平手"
     if player_bj:
         return "你起手 Blackjack, 本局直接結算"
-    if dealer_bj:
-        return "莊家起手 Blackjack, 依規則本局直接結算"
     return None
 
 
 def _dealer_peek_note(dealer: list[Card]) -> str:
     """Returns the reason text for dealer Blackjack revealed by a hole-card peek."""
-    up = dealer_up_card(dealer=dealer)
-    if up is None:
-        return "莊家 peek 暗牌確認 Blackjack"
-    return f"莊家明牌 {up}, peek 暗牌確認 Blackjack"
-
-
-async def settle_wager(
-    player_id: int, player_account_name: str, delta: int, player_avatar_url: str = ""
-) -> WagerSettlement:
-    """Applies player net delta and mirrors the result into the casino ledger.
-
-    Deliberately kept with no production caller: the single-hand shape a future
-    one-hand game would want back. Do NOT wire it back under Blackjack, which
-    settles through the multi-hand `settle_blackjack_player` — this one skips the
-    five-card bonus accounting.
-
-    Bets are not deducted when a round starts; unfinished in-memory rounds
-    vanish on bot restart without touching balances.
-
-    The VIP flag is permanent, so reading it outside the settlement transaction is
-    safe — a freshly-bought VIP that races a settlement only misses the bonus on a
-    single in-flight round.
-
-    Args:
-        player_id: Discord user ID for the player account.
-        player_account_name: Account name to store for the player.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
-        delta: Player net point change for the round.
-
-    Returns:
-        Database-backed settlement result after both ledgers are updated.
-    """
-    is_vip = await get_vip(user_id=player_id)
-    effective_delta = apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip)
-    vip_bonus = effective_delta - delta
-    result = await apply_round_settlement(
-        player_id=player_id,
-        player_account_name=player_account_name,
-        player_avatar_url=player_avatar_url,
-        player_delta=effective_delta,
-        casino_delta=-effective_delta,
-    )
-    return WagerSettlement(
-        delta=effective_delta,
-        payout=max(effective_delta, 0),
-        new_balance=result.player_balance,
-        casino_balance=result.casino_balance,
-        base_delta=delta,
-        vip_bonus=vip_bonus,
-        is_vip=is_vip,
-    )
+    return f"莊家明牌 {dealer_up_card(dealer=dealer)}, peek 暗牌確認 Blackjack"
 
 
 def _aggregate_outcome(
@@ -161,12 +101,7 @@ def _insurance_settlement(
 
 
 async def settle_blackjack_player(
-    *,
-    round_state: BlackjackRound,
-    player: BlackjackPlayerHand,
-    player_id: int,
-    player_account_name: str,
-    player_avatar_url: str = "",
+    *, round_state: BlackjackRound, player: BlackjackPlayerHand
 ) -> BlackjackPlayerSettlement:
     """Settles every sub-hand plus insurance side bet for one participant.
 
@@ -176,12 +111,15 @@ async def settle_blackjack_player(
     ledger, and the VIP bonus credited is the larger of the one on the
     dealer-paid win and the one on the five-card 21 bonus — a max, not a sum.
 
+    Bets are not deducted when a round starts, so an unfinished in-memory round
+    vanishes on bot restart without touching balances. The VIP flag is
+    permanent, so reading it outside the settlement transaction is safe: a
+    freshly-bought VIP that races a settlement only misses the bonus on that one
+    in-flight round.
+
     Args:
         round_state: Round providing the dealer cards and peek state.
-        player: Player to settle.
-        player_id: Discord user ID for the player account.
-        player_account_name: Account name to store for the player.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
+        player: Player to settle; its participant names the account written.
 
     Returns:
         Aggregated settlement covering every sub-hand and any insurance bet.
@@ -195,16 +133,17 @@ async def settle_blackjack_player(
         base_delta += insurance.delta
     five_card_bonus = sum(settlement.five_card_bonus for settlement in hand_settlements)
 
-    is_vip = await get_vip(user_id=player_id)
+    participant = player.participant
+    is_vip = await get_vip(user_id=participant.user_id)
     casino_paid_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
     casino_paid_vip_bonus = casino_paid_delta - base_delta
     five_card_vip_delta = apply_vip_blackjack_bonus(delta=five_card_bonus, is_vip=is_vip)
     vip_bonus = max(casino_paid_vip_bonus, five_card_vip_delta - five_card_bonus)
     effective_delta = base_delta + vip_bonus + five_card_bonus
     result = await apply_blackjack_settlement(
-        player_id=player_id,
-        player_account_name=player_account_name,
-        player_avatar_url=player_avatar_url,
+        player_id=participant.user_id,
+        player_account_name=participant.account_name,
+        player_avatar_url=participant.avatar_url,
         player_delta=effective_delta,
         casino_delta=-casino_paid_delta,
     )

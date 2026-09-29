@@ -1,29 +1,21 @@
 """Blackjack expected-value engine for the bot player.
 
 The bot plays off exact multi-step no-replacement probability rather than a
-heuristic strategy table, so this pure module turns the table state into
-decision-grade numbers: the dealer's H17 final-total distribution and the
-expected value of every legal action, measured in multiples of the base hand
-bet.
+heuristic strategy table, so this pure module turns the table state into the
+EV-maximizing legal action: it works out the dealer's H17 final-total
+distribution and the expected value of every legal action, measured in
+multiples of the base hand bet, and returns the winning action alone.
 
-The engine runs two passes. The exact pass knows the dealer hole card and
-drives `recommended_action` only; its own EVs never leave this module, so the
-hole stays the bot's private informational edge. The marginal pass integrates a
-hypothetical hole out over the remaining shoe (the real hole is never added
-back, so every reported number depends only on the up-card and the shoe) and,
-when the dealer has already peeked under an Ace/ten up-card, conditions on "no
-dealer Blackjack". Every NUMBER on the returned `ActionEvAnalysis` comes from
-that marginal pass, so none of them can reveal or reconstruct the real hole;
-`recommended_action` is the single exception, an action rather than a value,
-which is why `compute_action_evs` looks its reported EV back up in the marginal
-table instead of carrying the exact one across. Keep the two-pass split even
-while nothing renders those numbers — it is what makes them safe to render.
+The engine knows the dealer hole card, which is the bot's private
+informational edge. Only the recommended action leaves this module, never an
+EV figure, so that action is the one output that can carry anything about the
+hole.
 
 Everything here is deterministic and order-independent: the shoe is collapsed
 to a 10-bucket value-count multiset (`2..9`, ten-value, ace), so results depend
 only on which cards remain, not their order. The recursions terminate naturally
 (dealer stands at hard 17+, a player hand auto-finishes at five non-bust cards),
-and per-call memoization keeps a single decision well under a millisecond.
+and per-call memoization computes each hand-and-deck state once per decision.
 
 This table's non-standard payouts are modeled directly: a five-card non-bust
 wins immediately, and a five-card 21 also earns a system-funded bonus. The
@@ -35,8 +27,13 @@ from typing import Final
 
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.games import Card, ActionEv, BotAction, DealerOutcome, ActionEvAnalysis
-from discordbot.cogs.games.blackjack import hand_value, is_soft_total
+from discordbot.typings.games import Card, ActionEv, BotAction
+from discordbot.cogs.games.blackjack import (
+    TEN_VALUE_RANKS,
+    hand_value,
+    is_soft_total,
+    surrender_loss,
+)
 
 # Bucket index -> Blackjack draw value. Index 8 is any ten-value card, index 9
 # is an ace counted high (11). Indices 0..7 map ranks 2..9 directly.
@@ -53,51 +50,29 @@ _DealerDist = tuple[float, ...]
 _BUST_INDEX: Final[int] = 5
 _DealerMemo = dict[tuple[int, bool, tuple[int, ...]], _DealerDist]
 _PlayerMemo = dict[tuple[int, bool, int, tuple[int, ...]], float]
-# Marginal dealer distribution keyed by the unseen deck at the node; the
-# up-card and peek flag are fixed per context, so the deck alone is the key.
-_MarginalMemo = dict[tuple[int, ...], _DealerDist]
 
 
 class _EvContext(BaseModel):
     """Fixed per-decision state threaded through the EV recursions.
 
-    `marginalize` selects the dealer model. When False (exact pass) the known
-    two-card dealer total drives the H17 distribution. When True (marginal pass)
-    only the up-card is known and the hole is integrated out over the unseen
-    deck, conditioning on no dealer Blackjack whenever the dealer peeked.
-
     `frozen` blocks rebinding only: the memo dicts below are mutated in place
-    throughout a pass. Validation copies a dict, so a context cannot be handed a
+    throughout a decision. Validation copies a dict, so a context cannot be handed a
     warm memo — it would hold the copy and silently start cold.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    marginalize: bool = Field(
-        ..., description="Selects the marginal (hole integrated out) vs exact dealer model."
-    )
-    dealer_total: int = Field(..., description="Exact-pass dealer two-card total.")
-    dealer_soft: bool = Field(
-        ..., description="Whether the exact-pass dealer total counts an ace as 11."
-    )
-    up_total: int = Field(..., description="Dealer up-card total.")
-    up_soft: bool = Field(..., description="Whether the up-card total counts an ace as 11.")
-    up_bucket: int = Field(..., description="Value bucket index of the dealer up-card.")
-    peek_no_blackjack: bool = Field(
-        ..., description="Whether to condition on no dealer Blackjack after an Ace/ten peek."
-    )
-    dealer_memo: _DealerMemo = Field(..., description="Memo cache for exact dealer distributions.")
+    dealer_total: int = Field(..., description="Dealer two-card total, hole card included.")
+    dealer_soft: bool = Field(..., description="Whether the dealer total counts an ace as 11.")
+    dealer_memo: _DealerMemo = Field(..., description="Memo cache for dealer distributions.")
     player_memo: _PlayerMemo = Field(..., description="Memo cache for optimal player-hand EVs.")
-    marginal_memo: _MarginalMemo = Field(
-        ..., description="Memo cache for marginal dealer distributions by deck."
-    )
 
 
 def _bucket_for_rank(*, rank: str) -> int:
     """Maps a card rank to its value bucket index."""
     if rank == "A":
         return _ACE_BUCKET
-    if rank in ("10", "J", "Q", "K"):
+    if rank in TEN_VALUE_RANKS:
         return _TEN_BUCKET
     return int(rank) - 2
 
@@ -138,13 +113,6 @@ def _decrement(*, shoe: tuple[int, ...], bucket: int) -> tuple[int, ...]:
     mutable = list(shoe)
     mutable[bucket] -= 1
     return tuple(mutable)
-
-
-def _hole_completes_blackjack(*, up_bucket: int, hole_bucket: int) -> bool:
-    """Returns whether an up-card plus this hole would be a natural Blackjack."""
-    return (up_bucket == _ACE_BUCKET and hole_bucket == _TEN_BUCKET) or (
-        up_bucket == _TEN_BUCKET and hole_bucket == _ACE_BUCKET
-    )
 
 
 def _add_value(*, total: int, soft: bool, bucket: int) -> tuple[int, bool]:
@@ -213,66 +181,8 @@ def _dealer_distribution(
     return result
 
 
-def _marginalize_hole(*, ctx: _EvContext, deck: tuple[int, ...], apply_peek: bool) -> _DealerDist:
-    """Integrates the unknown hole out of the dealer distribution over a deck.
-
-    The dealer's first (hole) card is drawn from `deck` and the dealer then
-    plays out H17 from the remaining cards. When `apply_peek` is set, holes that
-    would complete a natural Blackjack are excluded and the rest renormalized,
-    matching the information a player has once an Ace/ten up-card round survives
-    the dealer's peek.
-    """
-    accumulator = [0.0] * 6
-    weight = 0.0
-    for hole_bucket, count in enumerate(deck):
-        if count <= 0:
-            continue
-        if apply_peek and _hole_completes_blackjack(
-            up_bucket=ctx.up_bucket, hole_bucket=hole_bucket
-        ):
-            continue
-        start_total, start_soft = _add_value(
-            total=ctx.up_total, soft=ctx.up_soft, bucket=hole_bucket
-        )
-        child = _dealer_distribution(
-            total=start_total,
-            soft=start_soft,
-            shoe=_decrement(shoe=deck, bucket=hole_bucket),
-            memo=ctx.dealer_memo,
-        )
-        for position in range(6):
-            accumulator[position] += count * child[position]
-        weight += count
-    if weight == 0.0:
-        # Either an empty deck or a deck holding only the Blackjack-completing
-        # rank under peek conditioning (a contradictory state). Fall back to the
-        # up-card alone as a terminal hand so we never divide by zero.
-        if apply_peek:
-            return _marginalize_hole(ctx=ctx, deck=deck, apply_peek=False)
-        return _dealer_distribution(
-            total=ctx.up_total, soft=ctx.up_soft, shoe=deck, memo=ctx.dealer_memo
-        )
-    return tuple(value / weight for value in accumulator)
-
-
-def _dealer_marginal_distribution(*, ctx: _EvContext, deck: tuple[int, ...]) -> _DealerDist:
-    """Memoized marginal dealer distribution from the up-card and unseen deck."""
-    cached = ctx.marginal_memo.get(deck)
-    if cached is not None:
-        return cached
-    result = _marginalize_hole(ctx=ctx, deck=deck, apply_peek=ctx.peek_no_blackjack)
-    ctx.marginal_memo[deck] = result
-    return result
-
-
 def _dealer_dist_for(*, ctx: _EvContext, shoe: tuple[int, ...]) -> _DealerDist:
-    """Resolves the dealer distribution for the current pass and node deck.
-
-    Exact pass: the known two-card dealer total plays out over `shoe`. Marginal
-    pass: `shoe` is the unseen deck and the hole is integrated out of it.
-    """
-    if ctx.marginalize:
-        return _dealer_marginal_distribution(ctx=ctx, deck=shoe)
+    """Returns the dealer's final-total distribution playing out its known hand over `shoe`."""
     return _dealer_distribution(
         total=ctx.dealer_total, soft=ctx.dealer_soft, shoe=shoe, memo=ctx.dealer_memo
     )
@@ -413,26 +323,6 @@ def _split_estimate(*, hand_cards: list[Card], shoe: tuple[int, ...], ctx: _EvCo
     return 2.0 * single
 
 
-def _dist_to_outcome(*, dist: _DealerDist) -> DealerOutcome:
-    """Converts the internal dealer distribution tuple into the public model."""
-    return DealerOutcome(
-        total_17_probability=dist[0],
-        total_18_probability=dist[1],
-        total_19_probability=dist[2],
-        total_20_probability=dist[3],
-        total_21_probability=dist[4],
-        bust_probability=dist[_BUST_INDEX],
-    )
-
-
-def dealer_outcome_distribution(
-    *, dealer_total: int, dealer_soft: bool, shoe: tuple[int, ...]
-) -> DealerOutcome:
-    """Public entry: exact dealer final-total distribution from a known dealer hand."""
-    distribution = _dealer_distribution(total=dealer_total, soft=dealer_soft, shoe=shoe, memo={})
-    return _dist_to_outcome(dist=distribution)
-
-
 def _select_recommended(*, ordered: tuple[ActionEv, ...]) -> ActionEv:
     """Picks the EV-max action, only preferring split past the safety margin."""
     best = ordered[0]
@@ -454,9 +344,9 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
     hand_cards: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
-    bet: int | None,
+    bet: int,
 ) -> list[ActionEv]:
-    """Computes each legal action's EV for one pass over a deck."""
+    """Computes each legal action's EV over a deck."""
     player_total = hand_value(cards=hand_cards)
     player_soft = is_soft_total(cards=hand_cards)[0]
     num_cards = len(hand_cards)
@@ -490,58 +380,43 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
             )
         )
     if "surrender" in allowed_actions:
-        surrender_ev = -0.5 if bet is None else -((bet + 1) // 2) / bet
+        surrender_ev = -surrender_loss(bet=bet) / bet
         evs.append(ActionEv(action="surrender", expected_value=surrender_ev))
     if "split" in allowed_actions:
         evs.append(
             ActionEv(
                 action="split",
                 expected_value=_split_estimate(hand_cards=hand_cards, shoe=deck, ctx=ctx),
-                is_estimate=True,
-                note="估計值: 兩手共用牌堆的獨立性近似",
             )
         )
     return evs
 
 
-def _make_context(*, marginalize: bool, dealer_cards: list[Card], up_card: Card) -> _EvContext:
-    """Builds a fixed per-pass EV context from the dealer's cards and up-card."""
+def _make_context(*, dealer_cards: list[Card]) -> _EvContext:
+    """Builds the fixed per-decision EV context from the dealer's cards."""
     return _EvContext(
-        marginalize=marginalize,
         dealer_total=hand_value(cards=dealer_cards),
         dealer_soft=is_soft_total(cards=dealer_cards)[0],
-        up_total=hand_value(cards=[up_card]),
-        up_soft=is_soft_total(cards=[up_card])[0],
-        up_bucket=_bucket_for_rank(rank=up_card.rank),
-        peek_no_blackjack=_bucket_for_rank(rank=up_card.rank) in (_ACE_BUCKET, _TEN_BUCKET),
         dealer_memo={},
         player_memo={},
-        marginal_memo={},
     )
 
 
-def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring the full decision surface.
+def recommend_action(  # noqa: PLR0913 -- one EV-engine entry point mirroring the full decision surface.
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
-    bet: int | None = None,
-) -> ActionEvAnalysis:
-    """Computes the per-action EV analysis for one bot-player decision.
+    bet: int,
+) -> BotAction:
+    """Returns the EV-maximizing legal action for one bot-player decision.
 
-    EV is expressed in multiples of the base hand bet. Two passes run over H17
-    rules and this table's five-card payouts:
-
-    - Exact pass: knows the hole card and selects `recommended_action`; its EVs
-      are dropped, so the bot's private edge never leaves this function.
-    - Marginal pass: integrates a hypothetical hole out over the remaining shoe
-      (the real hole is never added back) and supplies `dealer_outcome` and
-      every `action_evs` value, so no reported number can reveal the hole.
-
-    `recommended_expected_value` is looked back up in the marginal table, so no
-    exact, hole-aware EV ever reaches a reported field.
+    EV is expressed in multiples of the base hand bet, under H17 rules and this
+    table's five-card payouts, with the dealer playing out its actual cards.
+    A split is only preferred once its estimate clears the best other action by
+    `SPLIT_EV_MARGIN`.
 
     Args:
         hand_cards: The bot's active sub-hand cards.
@@ -549,48 +424,19 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
         shoe: The true remaining undealt shoe.
         allowed_actions: Legal actions for the active hand.
         doubled: Whether the active hand has already doubled.
-        bet: The base hand bet, used to price surrender from its actual rounded
-            half-bet loss (`settle_hand` charges `-((bet + 1) // 2)`). When None
-            the theoretical -0.5 is used.
+        bet: The base hand bet, which prices a surrender at the loss
+            `surrender_loss` settles it for.
 
     Returns:
-        The marginal dealer distribution and per-action EVs, plus the EV-max
-        action selected from the exact (hole-aware) pass.
+        The recommended action, one of `allowed_actions`.
     """
-    shoe_counts = build_shoe_value_counts(shoe=shoe)
-    up_card = dealer_cards[1] if len(dealer_cards) >= 2 else dealer_cards[0]
-
-    exact_ctx = _make_context(marginalize=False, dealer_cards=dealer_cards, up_card=up_card)
-    exact_evs = _evaluate_actions(
-        ctx=exact_ctx,
-        deck=shoe_counts,
+    evs = _evaluate_actions(
+        ctx=_make_context(dealer_cards=dealer_cards),
+        deck=build_shoe_value_counts(shoe=shoe),
         hand_cards=hand_cards,
         allowed_actions=allowed_actions,
         doubled=doubled,
         bet=bet,
     )
-    exact_ordered = tuple(
-        sorted(exact_evs, key=lambda candidate: candidate.expected_value, reverse=True)
-    )
-    recommended = _select_recommended(ordered=exact_ordered)
-
-    marginal_ctx = _make_context(marginalize=True, dealer_cards=dealer_cards, up_card=up_card)
-    marginal_evs = _evaluate_actions(
-        ctx=marginal_ctx,
-        deck=shoe_counts,
-        hand_cards=hand_cards,
-        allowed_actions=allowed_actions,
-        doubled=doubled,
-        bet=bet,
-    )
-    marginal_ordered = tuple(
-        sorted(marginal_evs, key=lambda candidate: candidate.expected_value, reverse=True)
-    )
-    dealer_dist = _dealer_dist_for(ctx=marginal_ctx, shoe=shoe_counts)
-    marginal_by_action = {item.action: item.expected_value for item in marginal_ordered}
-    return ActionEvAnalysis(
-        dealer_outcome=_dist_to_outcome(dist=dealer_dist),
-        action_evs=marginal_ordered,
-        recommended_action=recommended.action,
-        recommended_expected_value=marginal_by_action[recommended.action],
-    )
+    ordered = tuple(sorted(evs, key=lambda candidate: candidate.expected_value, reverse=True))
+    return _select_recommended(ordered=ordered).action

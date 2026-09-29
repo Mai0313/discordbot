@@ -2,14 +2,18 @@
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from discordbot.cogs.games.bot_player import (
     BOT_TABLE_EDGE,
+    BOT_KELLY_FRACTION,
+    BOT_TABLE_VARIANCE,
+    BOT_MAX_BET_FRACTION,
     kelly_bet,
     fallback_action,
-    fallback_insurance,
+    choose_bot_action,
+    bot_takes_insurance,
     count_adjusted_edge,
-    build_bot_action_context,
-    build_bot_insurance_context,
 )
 
 from tests.helpers.games import card
@@ -70,72 +74,22 @@ def test_fallback_action_splits_eights_against_ten() -> None:
     assert action == "split"
 
 
-def test_action_context_exposes_up_card_only_without_hole() -> None:
-    """Action context exposes rank counts and the dealer up-card, never the hole."""
-    context = build_bot_action_context(
-        hand_cards=[card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5")],
-        dealer_cards=[card(rank="K"), card(rank="A")],
-        dealer_up=card(rank="A"),
-        shoe=[card(rank="7"), card(rank="2")],
-        allowed_actions=("hit", "stand"),
-        is_pair_hand=False,
-        bet=100,
-    )
-
-    assert context.dealer.up_card == "A♠"
-    assert context.dealer.up_value == 11
-    assert context.shoe_summary.total_cards == 2
-
-    ev_analysis = context.action_analysis.ev_analysis
-    assert ev_analysis is not None
-    outcome = ev_analysis.dealer_outcome
-    distribution_total = (
-        outcome.bust_probability
-        + outcome.total_17_probability
-        + outcome.total_18_probability
-        + outcome.total_19_probability
-        + outcome.total_20_probability
-        + outcome.total_21_probability
-    )
-    assert abs(distribution_total - 1.0) < 1e-9
+def test_insurance_is_taken_when_the_unseen_shoe_is_ten_rich() -> None:
+    """A shoe more than a third ten-value makes insurance +EV, whatever the hole is."""
+    assert bot_takes_insurance(shoe=[card(rank="10"), card(rank="J"), card(rank="Q")]) is True
 
 
-def test_insurance_context_uses_remaining_shoe_count_not_hole() -> None:
-    """A ten-rich remaining shoe makes insurance +EV without revealing the hole."""
-    context = build_bot_insurance_context(
-        dealer_up=card(rank="A"),
-        shoe=[card(rank="10"), card(rank="J"), card(rank="Q")],
-        insurance_cost=50,
-    )
+def test_insurance_is_declined_unless_the_ten_density_clears_one_third() -> None:
+    """At or under one third ten-value, or with nothing left to count, the bot declines.
 
-    assert context.ten_value_probability > 1 / 3
-    assert context.insurance_recommendation == "take"
-    assert context.insurance_expected_value > 0
-    assert fallback_insurance(insurance_context=context) is True
-    # The shown probability matches the shoe-only counts exactly, so it cannot be
-    # cross-solved for the hole, and no Blackjack verdict is exposed.
-    assert context.ten_value_probability == context.shoe_summary.ten_value_count / (
-        context.shoe_summary.total_cards
-    )
-
-
-def test_insurance_declines_in_a_non_ten_rich_shoe() -> None:
-    """A non-ten-rich shoe declines insurance regardless of the dealer's hole.
-
-    This is the anti-cheat guarantee: `build_bot_insurance_context` is never even
-    given the hole card, so it cannot win insurance on a real dealer Blackjack.
+    The hole card is never an input, so the bot cannot win insurance on a real dealer
+    Blackjack it could not have counted its way to.
     """
-    context = build_bot_insurance_context(
-        dealer_up=card(rank="A"),
-        shoe=[card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5"), card(rank="6")],
-        insurance_cost=50,
-    )
+    low_shoe = [card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5"), card(rank="6")]
 
-    assert context.ten_value_probability < 1 / 3
-    assert context.insurance_recommendation == "decline"
-    assert context.insurance_expected_value < 0
-    assert fallback_insurance(insurance_context=context) is False
-    assert fallback_insurance() is False
+    assert bot_takes_insurance(shoe=low_shoe) is False
+    assert bot_takes_insurance(shoe=[card(rank="10"), card(rank="2"), card(rank="3")]) is False
+    assert bot_takes_insurance(shoe=[]) is False
 
 
 def test_action_uses_ev_recommendation() -> None:
@@ -148,18 +102,16 @@ def test_action_uses_ev_recommendation() -> None:
     hand_cards = [card(rank="10"), card(rank="6")]
     dealer_up = card(rank="10")
     allowed_actions: tuple[BotAction, ...] = ("hit", "stand")
-    action_context = build_bot_action_context(
+    action = choose_bot_action(
         hand_cards=hand_cards,
         dealer_cards=[card(rank="6"), dealer_up],
-        dealer_up=dealer_up,
         shoe=[card(rank="10")] * 20,
         allowed_actions=allowed_actions,
         is_pair_hand=False,
         bet=100,
     )
 
-    assert action_context.action_analysis.ev_analysis is not None
-    assert action_context.action_analysis.basic_strategy_action == "stand"
+    assert action == "stand"
     table_action = fallback_action(
         hand_cards=hand_cards,
         hand_total=16,
@@ -170,13 +122,37 @@ def test_action_uses_ev_recommendation() -> None:
     assert table_action == "hit", "the table must disagree, or this cannot tell the two apart"
 
 
-def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:
-    """A positive edge wagers the clamped half-Kelly fraction, floored at the table minimum."""
-    bet = kelly_bet(
-        balance=100_000, table_minimum=100, edge=0.163, variance=1.334, kelly_fraction=0.5
+def test_action_falls_back_to_the_table_when_the_engine_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing EV engine hands the turn to the up-card table instead of crashing it.
+
+    Hard 16 against an up-card 10 is a hit by the table; reading the 6 in the hole as the
+    up-card would make it a stand.
+    """
+
+    def engine_down(**_kwargs: object) -> None:
+        raise RuntimeError("engine down")
+
+    monkeypatch.setattr("discordbot.cogs.games.bot_player.recommend_action", engine_down)
+
+    action = choose_bot_action(
+        hand_cards=[card(rank="10"), card(rank="6")],
+        dealer_cards=[card(rank="6"), card(rank="10")],
+        shoe=[card(rank="10")] * 20,
+        allowed_actions=("hit", "stand"),
+        is_pair_hand=False,
+        bet=100,
     )
 
-    assert bet == round(0.5 * 0.163 / 1.334 * 100_000)
+    assert action == "hit"
+
+
+def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:
+    """A positive edge wagers the clamped half-Kelly fraction, floored at the table minimum."""
+    bet = kelly_bet(balance=100_000, table_minimum=100, edge=0.163)
+
+    assert bet == round(BOT_KELLY_FRACTION * 0.163 / BOT_TABLE_VARIANCE * 100_000)
     assert 100 <= bet <= 100_000
 
 
@@ -188,9 +164,9 @@ def test_kelly_bet_floors_at_table_minimum_on_non_positive_edge() -> None:
 
 def test_kelly_bet_caps_fraction_and_clamps_to_balance() -> None:
     """The hard fraction cap bounds the wager even when the edge is extreme."""
-    assert kelly_bet(
-        balance=1_000, table_minimum=1, edge=10.0, variance=1.0, max_fraction=0.10
-    ) == (100)
+    assert kelly_bet(balance=1_000, table_minimum=1, edge=10.0) == round(
+        BOT_MAX_BET_FRACTION * 1_000
+    )
     assert kelly_bet(balance=0, table_minimum=100) == 1
     # A short stack stays inside the 10% ceiling instead of going all-in to match.
     assert kelly_bet(balance=50, table_minimum=100, edge=0.0) == 5
