@@ -4,6 +4,7 @@ These never let the real sweep run — it would delete against the env-resolved 
 the startup sweep is stubbed and only the gating decision (start vs no-op) is asserted.
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -40,22 +41,24 @@ def _service(
 async def test_on_ready_starts_loop_and_sweeps_once_when_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With hosting + a cap configured, on_ready spawns one startup sweep and starts the loop."""
+    """With hosting + a cap configured, on_ready starts the loop and exactly one sweep runs."""
     cog = MediaCleanupCogs(bot=as_bot(fake=_FakeBot()))
     cog.media_hosting = _service(serve_dir=tmp_path)
     swept: list[bool] = []
+    first_sweep = asyncio.Event()
 
     async def _fake_sweep() -> None:
         swept.append(True)
+        first_sweep.set()
 
     monkeypatch.setattr(cog, "_sweep", _fake_sweep)
 
     await cog.on_ready()
+    await asyncio.wait_for(fut=first_sweep.wait(), timeout=5)
+    await asyncio.sleep(delay=0.2)  # room for a second startup sweep, were one scheduled
 
     assert cog.cleanup_loop.is_running()
-    assert cog._startup_task is not None
-    await cog._startup_task
-    assert swept == [True]  # exactly one immediate startup sweep
+    assert swept == [True]
     cog.cleanup_loop.cancel()
 
 
@@ -75,7 +78,6 @@ async def test_on_ready_is_inert_when_cleanup_disabled(
     await cog.on_ready()
 
     assert not cog.cleanup_loop.is_running()
-    assert cog._startup_task is None
     assert swept == []
 
 
@@ -86,18 +88,18 @@ async def test_on_ready_starts_once_across_reconnects(
     cog = MediaCleanupCogs(bot=as_bot(fake=_FakeBot()))
     cog.media_hosting = _service(serve_dir=tmp_path)
     sweeps: list[bool] = []
+    first_sweep = asyncio.Event()
 
     async def _fake_sweep() -> None:
         sweeps.append(True)
+        first_sweep.set()
 
     monkeypatch.setattr(cog, "_sweep", _fake_sweep)
 
     await cog.on_ready()
-    first_task = cog._startup_task
     await cog.on_ready()  # a reconnect
+    await asyncio.wait_for(fut=first_sweep.wait(), timeout=5)
+    await asyncio.sleep(delay=0.2)
 
-    assert cog._startup_task is first_task  # not re-spawned
-    if first_task is not None:
-        await first_task
     assert sweeps == [True]
     cog.cleanup_loop.cancel()
