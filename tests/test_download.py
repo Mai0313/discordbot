@@ -1,24 +1,25 @@
 """Tests for the yt-dlp downloader facade."""
 
 from types import TracebackType
-from typing import Any, Self, get_args
+from typing import Any, Self, NoReturn, get_args
 from pathlib import Path
 import threading
 
 import pytest
 from requests.exceptions import RequestException
 
+from discordbot.cogs.video import cog as video
 from discordbot.utils.urls import normalized_host, extract_first_url, host_matches_domain
 from discordbot.typings.video import VideoQuality
 from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
 from discordbot.services.platforms import ytdlp as downloader_module
 from discordbot.services.platforms.ytdlp import VideoDownloader, DownloadStoppedError
 from discordbot.services.platforms.douyin import DOUYIN_URL_RE, DouyinDownloader
-from discordbot.services.platforms.threads import THREADS_URL_RE
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
-from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
-from tests.helpers.casting import as_bot
+from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.discord_mocks import FakeInteraction
 
 
 def _install_youtube_dl_stub(
@@ -403,37 +404,75 @@ def test_normalized_host_reads_a_scheme_less_paste_and_never_raises() -> None:
     assert normalized_host(url="https://[abc/x") == ""
 
 
+# One URL each pattern must match, keyed by the registry's own source names so a new source
+# fails here until it has one.
+_SAMPLE_URLS = {
+    "threads": "https://www.threads.com/@user/post/ABC123",
+    "facebook": "https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/",
+    "instagram": "https://www.instagram.com/p/Dc5eNjYkoZE/",
+    "twitter": "https://x.com/Dbacks/status/1628549742539194368",
+    "douyin": "https://v.douyin.com/tLgj3lCAnds",
+    "bilibili": "https://www.bilibili.com/video/BV1jpK86hEc8",
+}
+
+
 def test_every_url_pattern_shares_the_generic_start_anchor() -> None:
     """A link glued to the end of an ASCII word is not a link to ANY of the scanners.
 
     The site patterns used to carry no start anchor at all, so `xhttps://v.douyin.com/abc` was
     refused by the generic scanner and matched by every site one. CJK in front is not an ASCII
-    word character, so those still match (#492).
+    word character, so those still match (#492). The patterns are read off the registry, plus
+    YouTube's, which gates the answer turn rather than a source.
     """
-    for pattern, url in (
-        (DOUYIN_URL_RE, "https://v.douyin.com/tLgj3lCAnds"),
-        (THREADS_URL_RE, "https://www.threads.com/@user/post/ABC123"),
-        (BILIBILI_URL_RE, "https://www.bilibili.com/video/BV1jpK86hEc8"),
-        (YOUTUBE_URL_RE, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
-    ):
-        assert pattern.search(string=url) is not None
-        assert pattern.search(string=f"x{url}") is None
-        assert pattern.search(string=f"看這個{url}") is not None
+    assert set(_SAMPLE_URLS) == {source.name for source in LINK_CONTEXT_SOURCES}
+    patterns = [(source.url_pattern, _SAMPLE_URLS[source.name]) for source in LINK_CONTEXT_SOURCES]
+    patterns.append((YOUTUBE_URL_RE, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+
+    for pattern, url in patterns:
+        assert pattern.search(string=url) is not None, url
+        assert pattern.search(string=f"x{url}") is None, url
+        assert pattern.search(string=f"看這個{url}") is not None, url
 
 
-def test_download_video_extracts_a_url_from_share_text() -> None:
-    """A share blob pasted into the command still finds its link.
+async def test_download_video_extracts_a_url_from_share_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A share blob pasted into the command reaches the downloader as its bare link.
 
-    Share buttons wrap the URL in copy — Douyin's runs straight into Chinese with no space —
-    so a command that only accepted a bare URL would fail on the most natural thing to paste.
+    Share buttons wrap the URL in copy, so a command that only accepted a bare URL would fail on
+    the most natural thing to paste. Both downloaders are stubbed, so a blob that went through
+    whole would be caught at whichever one it reached.
     """
+    asked: list[str] = []
+
+    class _RefusingDownloader:
+        """Records the URL a download was asked for, then fails it."""
+
+        def __init__(self, *, output_folder: str) -> None:
+            """Accepts the scratch directory the command hands every downloader."""
+            del output_folder
+
+        def download(self, *, url: str, **kwargs: object) -> NoReturn:
+            """Records `url` and ends the command on its failure path."""
+            del kwargs
+            asked.append(url)
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(target=video, name="DouyinDownloader", value=_RefusingDownloader)
+    monkeypatch.setattr(target=video, name="VideoDownloader", value=_RefusingDownloader)
     blob = (
         "8.46 Y@m.QX :9pm UYm:/ 06/01 短片《临时司机》#AI短片# 内容过于真实 "
         "https://v.douyin.com/tLgj3lCAnds 复制此链接，打开Dou音搜索，直接观看视频"
     )
-    assert extract_first_url(text=blob, patterns=(DOUYIN_URL_RE,)) == (
-        "https://v.douyin.com/tLgj3lCAnds"
+
+    await VideoCogs.download_video.callback(
+        VideoCogs(bot=as_bot(fake=object())),
+        as_interaction(fake=FakeInteraction()),
+        url=blob,
+        quality="best",
     )
+
+    assert asked == ["https://v.douyin.com/tLgj3lCAnds"]
 
 
 def test_download_video_leaves_a_bare_url_untouched() -> None:
