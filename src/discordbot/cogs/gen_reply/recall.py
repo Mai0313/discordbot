@@ -2,7 +2,7 @@
 
 Recall is the half that only reads. The write side is the answer model marking notes in
 its own reply (`markers.py`) and `services/memory/` turning them into facts; nothing here
-touches either. Code directly resolves the current author, reply-chain authors, and users
+touches either. Code directly resolves the current author, the author of the message it directly replies to, and users
 explicitly mentioned in the current message. The route call (`routing.py`) only decides
 whether the latest message obliquely refers to an additional member from a public server
 nickname table, naming ids from the candidate block rendered here. Every path
