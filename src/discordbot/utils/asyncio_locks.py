@@ -49,7 +49,7 @@ class LoopLocalSemaphore(BaseModel):
         """Returns the semaphore bound to the current event loop, rebuilding on a loop change."""
         loop = asyncio.get_running_loop()
         if self._semaphore is None or self._loop is not loop:
-            self._semaphore = asyncio.Semaphore(self.capacity_provider())
+            self._semaphore = asyncio.Semaphore(value=self.capacity_provider())
             self._loop = loop
         return self._semaphore
 
