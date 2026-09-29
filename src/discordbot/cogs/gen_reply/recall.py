@@ -204,9 +204,9 @@ def widen_allowlist_with_aliases(*, allowed: dict[int, RecallCandidate], memory:
     label grows: the row is community prose, unbounded in length and free to describe a
     member in joke terms, so the footer credit stays the short Discord label (#463).
 
-    A member present only in the table is never added: that would grant access to an absent
-    member's personal memory, and the nickname table is public content while the personal
-    memory it would unlock is not.
+    It never adds a member the table alone names. Offering those members to the route call,
+    which does open their personal memory, is a separate public-channel-only decision made
+    elsewhere.
     """
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         candidate = allowed.get(user_id)
