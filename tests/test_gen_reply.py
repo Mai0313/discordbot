@@ -172,10 +172,12 @@ from tests.helpers.casting import (
     make_media_hosting_config,
 )
 from tests.helpers.llm_input import (
+    block_index,
     request_index,
     request_input,
     iter_text_blocks,
     extract_tone_block,
+    has_timeout_notice,
     has_link_context_block,
     has_memory_context_block,
     extract_callable_user_ids,
@@ -6472,7 +6474,7 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
 
     answer = request_input(responses=_recorded(cog).responses)
     assert has_link_context_block(request=answer, source="douyin")
-    assert "did not respond in time" in str(answer)
+    assert has_timeout_notice(request=answer, source="douyin")
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -6512,7 +6514,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     await cog.on_message(message=as_message(fake=message))
 
     answer = request_input(responses=_recorded(cog).responses)
-    assert "did not respond in time" in str(answer)
+    assert has_timeout_notice(request=answer, source="douyin")
     assert cancelled == [True]
 
 
@@ -6548,7 +6550,7 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
 
     answer = request_input(responses=_recorded(cog).responses)
     assert has_link_context_block(request=answer, source="douyin")
-    assert "did not respond in time" not in str(answer)
+    assert not has_timeout_notice(request=answer, source="douyin")
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -6582,7 +6584,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         await message_task
 
     answer = request_input(responses=_recorded(cog).responses)
-    assert "did not respond in time" in str(answer)
+    assert has_timeout_notice(request=answer, source="douyin")
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -6711,7 +6713,8 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     await cog.on_message(message=as_message(fake=message))
 
     answer = request_input(responses=_recorded(cog).responses)
-    assert str(answer).count("did not respond in time") == 2
+    assert has_timeout_notice(request=answer, source="threads")
+    assert has_timeout_notice(request=answer, source="douyin")
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -6960,7 +6963,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     # claiming it cannot open the link, and the answer still streams.
     answer = request_input(responses=_recorded(cog).responses)
     assert has_link_context_block(request=answer, source="threads")
-    assert "did not respond in time" in str(answer)
+    assert has_timeout_notice(request=answer, source="threads")
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -7349,7 +7352,7 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
 
     answer = request_input(responses=_recorded(cog).responses)
     assert has_link_context_block(request=answer, source="bilibili")
-    assert "did not respond in time" in str(answer)
+    assert has_timeout_notice(request=answer, source="bilibili")
 
 
 @pytest.mark.parametrize(
@@ -7518,22 +7521,9 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 
     answer = request_input(responses=_recorded(cog).responses)
     blocks = list(iter_text_blocks(request=answer))
-    memory_index = next(
-        index
-        for index, (role, text) in enumerate(blocks)
-        if role == "assistant" and text.startswith("(My long-term memory about participants")
-    )
-    reference_index = next(
-        index
-        for index, (_role, text) in enumerate(blocks)
-        if text.startswith("==== Reference Message")
-    )
-    current_index = next(
-        index
-        for index, (_role, text) in enumerate(blocks)
-        if text.startswith("==== Current Message")
-    )
-    assert memory_index < reference_index < current_index
+    reference_index = block_index(request=answer, kind="reference")
+    current_index = block_index(request=answer, kind="current")
+    assert block_index(request=answer, kind="memory") < reference_index < current_index
     assert "directly replying to this message" in blocks[reference_index][1]
     assert "reply to the Reference Message above" in blocks[current_index][1]
 
@@ -7635,28 +7625,12 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone()
     assert tone is not None
     assert "語氣輕鬆" in tone
     assert "第三人語氣" not in tone
-    blocks = list(iter_text_blocks(request=answer))
-    server_index = next(
-        index
-        for index, (role, text) in enumerate(blocks)
-        if role == "assistant" and text.startswith("(My long-term memory about this server")
+    assert (
+        block_index(request=answer, kind="server_memory")
+        < block_index(request=answer, kind="memory")
+        < block_index(request=answer, kind="tone")
+        < block_index(request=answer, kind="current")
     )
-    memory_index = next(
-        index
-        for index, (role, text) in enumerate(blocks)
-        if role == "assistant" and text.startswith("(My long-term memory about participants")
-    )
-    tone_index = next(
-        index
-        for index, (role, text) in enumerate(blocks)
-        if role == "assistant" and text.startswith("(My note on how this user likes me to sound")
-    )
-    current_index = next(
-        index
-        for index, (_role, text) in enumerate(blocks)
-        if text.startswith("==== Current Message")
-    )
-    assert server_index < memory_index < tone_index < current_index
 
 
 @pytest.mark.usefixtures("no_memory_review")

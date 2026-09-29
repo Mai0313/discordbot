@@ -15,7 +15,8 @@ breaking these extractors.
 """
 
 import re
-from typing import Protocol
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Protocol, cast
 from collections.abc import Mapping, Iterator, Sequence
 
 from pydantic import Field, BaseModel
@@ -27,6 +28,7 @@ from discordbot.cogs.gen_reply.recall import (
     render_callable_users_block,
     render_memory_context_block,
 )
+from discordbot.cogs.gen_reply.context import current_header, reference_header
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
     DOUYIN_TIMEOUT_NOTICE,
@@ -67,6 +69,9 @@ from discordbot.cogs.gen_reply.link_sources.instagram import (
     INSTAGRAM_UNAVAILABLE_NOTICE,
     INSTAGRAM_TEXT_ONLY_SEPARATOR,
 )
+
+if TYPE_CHECKING:
+    from nextcord import Message
 
 
 class RecordedResponses(Protocol):
@@ -109,15 +114,35 @@ _SERVER_HEADER = _header_line(block=render_server_memory_block(memory=""))
 _TONE_HEADER = _header_line(block=render_tone_block(tone=""))
 _CALLABLE_HEADER = _header_line(block=render_callable_users_block(allowed={}))
 
+# The Reference and Current Message separators name their author, so only the text ahead of the
+# name identifies them; a sentinel author marks where that text ends.
+_AUTHOR_SENTINEL = "\x00"
+_SENTINEL_MESSAGE = cast(
+    "Message",
+    SimpleNamespace(
+        author=SimpleNamespace(display_name=_AUTHOR_SENTINEL, name=_AUTHOR_SENTINEL, id=0)
+    ),
+)
+_REFERENCE_HEAD = _header_line(block=reference_header(ref=_SENTINEL_MESSAGE)).split(
+    _AUTHOR_SENTINEL, 1
+)[0]
+_CURRENT_HEAD = _header_line(
+    block=current_header(message=_SENTINEL_MESSAGE, has_reference=False)
+).split(_AUTHOR_SENTINEL, 1)[0]
+
 
 class LinkSourceBlocks(BaseModel):
     """The top-level texts one link source injects into the answer input."""
 
     separators: tuple[str, ...] = Field(
-        ..., description="System separators a fetched post's own block follows."
+        ...,
+        description="System separators a fetched post's own block follows, the attached one first.",
     )
     notices: tuple[str, ...] = Field(
         ..., description="Notices a failed or timed-out read injects instead of the post."
+    )
+    timeout_notice: str = Field(
+        ..., description="The one of `notices` a build that outran the post-route grace injects."
     )
 
 
@@ -131,18 +156,22 @@ LINK_SOURCE_BLOCKS: dict[str, LinkSourceBlocks] = {
             THREADS_TEXT_ONLY_SEPARATOR,
         ),
         notices=(THREADS_UNAVAILABLE_NOTICE, THREADS_TIMEOUT_NOTICE),
+        timeout_notice=THREADS_TIMEOUT_NOTICE,
     ),
     "facebook": LinkSourceBlocks(
         separators=(FACEBOOK_CONTEXT_SEPARATOR, FACEBOOK_TEXT_ONLY_SEPARATOR),
         notices=(FACEBOOK_UNAVAILABLE_NOTICE, FACEBOOK_TIMEOUT_NOTICE),
+        timeout_notice=FACEBOOK_TIMEOUT_NOTICE,
     ),
     "instagram": LinkSourceBlocks(
         separators=(INSTAGRAM_CONTEXT_SEPARATOR, INSTAGRAM_TEXT_ONLY_SEPARATOR),
         notices=(INSTAGRAM_UNAVAILABLE_NOTICE, INSTAGRAM_TIMEOUT_NOTICE),
+        timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,
     ),
     "twitter": LinkSourceBlocks(
         separators=(TWITTER_CONTEXT_SEPARATOR, TWITTER_TEXT_ONLY_SEPARATOR),
         notices=(TWITTER_UNAVAILABLE_NOTICE, TWITTER_TIMEOUT_NOTICE),
+        timeout_notice=TWITTER_TIMEOUT_NOTICE,
     ),
     "douyin": LinkSourceBlocks(
         separators=(DOUYIN_CONTEXT_SEPARATOR, DOUYIN_TEXT_ONLY_SEPARATOR),
@@ -152,6 +181,7 @@ LINK_SOURCE_BLOCKS: dict[str, LinkSourceBlocks] = {
             DOUYIN_UNREADABLE_NOTICE,
             DOUYIN_TIMEOUT_NOTICE,
         ),
+        timeout_notice=DOUYIN_TIMEOUT_NOTICE,
     ),
     "bilibili": LinkSourceBlocks(
         separators=(
@@ -160,6 +190,7 @@ LINK_SOURCE_BLOCKS: dict[str, LinkSourceBlocks] = {
             BILIBILI_TOO_LONG_SEPARATOR,
         ),
         notices=(BILIBILI_UNREADABLE_NOTICE, BILIBILI_TIMEOUT_NOTICE),
+        timeout_notice=BILIBILI_TIMEOUT_NOTICE,
     ),
 }
 
@@ -258,6 +289,46 @@ def has_link_context_block(request: ResponseInputParam | str, source: str) -> bo
     blocks = LINK_SOURCE_BLOCKS[source]
     heads = {_head(text=text) for text in blocks.separators + blocks.notices}
     return any(_head(text=text) in heads for _role, text in iter_text_blocks(request=request))
+
+
+def has_timeout_notice(request: ResponseInputParam | str, source: str) -> bool:
+    """Whether the input carries `source`'s notice that its build outran the grace."""
+    head = _head(text=LINK_SOURCE_BLOCKS[source].timeout_notice)
+    return any(
+        role == "system" and _head(text=text) == head
+        for role, text in iter_text_blocks(request=request)
+    )
+
+
+# Kind -> the role and leading text of the answer-input block it names.
+_BLOCK_HEADS: dict[str, tuple[str, str]] = {
+    "server_memory": ("assistant", _SERVER_HEADER),
+    "memory": ("assistant", _PARTICIPANT_HEADER),
+    "tone": ("assistant", _TONE_HEADER),
+    "reference": ("system", _REFERENCE_HEAD),
+    "current": ("system", _CURRENT_HEAD),
+}
+
+
+def block_index(request: ResponseInputParam | str, kind: str) -> int:
+    """Returns the position of the first block of `kind` among the input's role-bearing items.
+
+    `kind` is a `_BLOCK_HEADS` key, or a link source's registry name for the separator its post
+    opens with. Positions count what `iter_text_blocks` yields, so they compare with each other.
+
+    Raises:
+        AssertionError: No block of that kind is in the input.
+    """
+    if kind in LINK_SOURCE_BLOCKS:
+        role = "system"
+        heads = tuple(_head(text=text) for text in LINK_SOURCE_BLOCKS[kind].separators)
+    else:
+        role, head = _BLOCK_HEADS[kind]
+        heads = (head,)
+    for index, (item_role, text) in enumerate(iter_text_blocks(request=request)):
+        if item_role == role and text.startswith(heads):
+            return index
+    raise AssertionError(f"no {kind} block in the request")
 
 
 def request_index(responses: RecordedResponses) -> int:
