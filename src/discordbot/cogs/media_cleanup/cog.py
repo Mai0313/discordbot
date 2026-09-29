@@ -21,7 +21,7 @@ from discordbot.utils.media_delivery import (
 
 
 class MediaCleanupCogs(commands.Cog):
-    """Runs the hosted-media size/age/temp sweep on a timer plus once at startup.
+    """Runs the hosted-media size/age/temp sweep on a timer whose first run is at startup.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -36,32 +36,24 @@ class MediaCleanupCogs(commands.Cog):
         self.bot = bot
         self.media_hosting = MediaHostingService(config=MediaHostingConfig())
         self._started = False
-        self._startup_task: asyncio.Task[None] | None = None
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Starts the cleanup loop and a one-off startup sweep, once.
+        """Starts the cleanup loop, whose first iteration is the startup sweep, once.
 
         `on_ready` fires on every reconnect, so `_started` guards a single start. When cleanup is
-        disabled neither runs and nothing in the serve dir is touched.
+        disabled the loop never starts and nothing in the serve dir is touched.
         """
         if self._started:
             return
         self._started = True
         if not self.media_hosting.config.cleanup_enabled:
             return
-        self._startup_task = asyncio.create_task(self._sweep())
         self.cleanup_loop.start()
 
     def cog_unload(self) -> None:
-        """Stops the loop and the startup sweep when the cog is torn down.
-
-        The one-off startup sweep is cancelled too: it deletes against the live
-        serve dir, so a reload must not leave it running behind a cog that is gone.
-        """
+        """Stops the loop when the cog is torn down."""
         self.cleanup_loop.cancel()
-        if self._startup_task is not None:
-            self._startup_task.cancel()
 
     @tasks.loop(hours=MEDIA_CLEANUP_INTERVAL_HOURS)
     async def cleanup_loop(self) -> None:
