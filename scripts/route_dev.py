@@ -7,14 +7,13 @@ from pydantic import BaseModel
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings, RouteClassification
+from discordbot.typings.models import RouteClassification, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT
 
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py: the call below is triage_model's.
-TRIAGE_MODEL = ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
+TRIAGE_MODEL = RuntimeModelCatalog().triage_model
 
 
 def _smoke_parse(

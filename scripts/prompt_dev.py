@@ -33,7 +33,7 @@ from google.genai.interactions import (
 )
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
@@ -45,8 +45,7 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py.
-SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+SLOW_MODEL = RuntimeModelCatalog().slow_model
 
 
 def gen_reply(user_prompt: str) -> None:

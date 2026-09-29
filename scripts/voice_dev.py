@@ -3,13 +3,11 @@
 from openai import OpenAI
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import RuntimeModelCatalog
 
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py. Update here when the bot's tts_model
-# swaps, otherwise this script tests a stale model.
-TTS_MODEL = ModelSettings(name="gemini-3.1-flash-tts-preview")
+TTS_MODEL = RuntimeModelCatalog().tts_model
 
 
 def gen_speech(text: str) -> None:

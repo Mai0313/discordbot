@@ -9,16 +9,14 @@ from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
 
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property values in typings/models.py. Update here when the bot's
-# image_model / fast_model swap, otherwise this script tests stale models.
-IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image")
-MEDIA_REPLY_MODEL = ModelSettings(name="gemini-3.7-flash", effort="medium")
+IMAGE_MODEL = RuntimeModelCatalog().image_model
+MEDIA_REPLY_MODEL = RuntimeModelCatalog().fast_model
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:

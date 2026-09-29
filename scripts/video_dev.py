@@ -1,162 +1,75 @@
-"""Local video generation smoke test for the bot video model (omni Interactions API).
+"""Local video generation smoke test: drives the bot's own `VideoGenerator.render`.
 
-Calls `client.interactions.create` directly (no `VideoGenerator` import) so this stays a clean,
-self-contained reference for the omni call shape. Mirrors `VideoGenerator.render` in
-`cogs/gen_reply/generation.py`: three input modes (source-video edit / image references / plain
-text), fixed 16:9, `delivery="uri"`, single `files.download` (the interaction only reports
-`completed` once the file is ready).
+A source video is edited in place; otherwise any images ride as references and omni infers the
+task; otherwise the prompt alone is rendered. The clip is saved to ./generated.mp4.
 """
 
 import time
-import base64
-from typing import Literal, Protocol, cast
+import asyncio
 from pathlib import Path
-from collections.abc import Iterator
+from mimetypes import guess_type
 
 from google import genai
 from rich.console import Console
-from google.genai.types import FileState
-from google.genai.interactions import (
-    VideoContent,
-    TextContentParam,
-    VideoConfigParam,
-    ImageContentParam,
-    InteractionStatus,
-    VideoContentParam,
-    GenerationConfigParam,
-    VideoResponseFormatParam,
-)
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.media import LoadedMedia
+from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
+from discordbot.cogs.gen_reply.generation import VideoGenerator
 
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py. Update here when the bot's video_model swaps,
-# otherwise this script tests a stale model.
-VIDEO_MODEL = ModelSettings(name="gemini-omni-flash-preview")
-MAX_REFERENCE_IMAGES = 3
 
-
-class _VideoInteractionResult(Protocol):
-    """Attributes read off the completed interaction (not `stream=True` here).
-
-    Named locally instead of `google.genai.interactions.Interaction`: that module star-imports
-    the name from both the request union and the response class, so naming it in an
-    annotation/cast risks binding the wrong one (see `VideoGenerator.render`).
-    """
-
-    status: InteractionStatus
-    output_text: str | None
-    output_video: VideoContent | None
-
-
-def _upload_source_video(client: genai.Client, path: str) -> str:
-    """Uploads a source clip to the Files API and returns its ACTIVE uri."""
-    mime = f"video/{Path(path).suffix.lstrip('.') or 'mp4'}"
-    uploaded = client.files.upload(file=path, config={"mime_type": mime})
-    file_name = uploaded.name
-    if file_name is None:
-        raise RuntimeError("Source video upload returned no file name")
-    while uploaded.state == FileState.PROCESSING:
-        console.print("Uploading source video... (PROCESSING)")
-        time.sleep(2)
-        uploaded = client.files.get(name=file_name)
-    if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
-        raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
-    return uploaded.uri
+def _load_media(path: str, fallback_mime: str) -> LoadedMedia:
+    """Reads a local file with the MIME type its extension implies."""
+    return LoadedMedia(
+        data=Path(path).read_bytes(), mime_type=guess_type(url=path)[0] or fallback_mime
+    )
 
 
 def gen_video(
     user_prompt: str, *, image_paths: list[str] | None = None, source_video_path: str | None = None
 ) -> None:
-    """Runs the dev omni video flow and saves the MP4 result to generated.mp4.
-
-    A `source_video_path` is uploaded and edited in place (task=edit); otherwise any
-    `image_paths` ride as subject reference images (task=reference_to_video, up to three);
-    otherwise plain text (task=text_to_video).
+    """Renders one clip through `VideoGenerator.render` and saves it to generated.mp4.
 
     Args:
         user_prompt (str): Prompt (or, in edit mode, the literal edit instruction).
-        image_paths (list[str] | None): Optional local image files used as subject reference images.
+        image_paths (list[str] | None): Optional local reference images; an edit ignores them,
+            since it takes the source clip alone.
         source_video_path (str | None): Optional local video file to edit in place.
-
-    Raises:
-        RuntimeError: The SDK returned an event stream instead of an interaction, or the
-            interaction did not complete with a video.
     """
-    client = genai.Client(api_key=config.gemini_api_key)
-
-    content: list[TextContentParam | ImageContentParam | VideoContentParam] = [
-        TextContentParam(type="text", text=user_prompt)
+    generator = VideoGenerator(
+        client=genai.Client(api_key=config.gemini_api_key),
+        video_model=RuntimeModelCatalog().video_model,
+    )
+    source_video = (
+        None
+        if source_video_path is None
+        else _load_media(path=source_video_path, fallback_mime="video/mp4")
+    )
+    images = [
+        _load_media(path=path, fallback_mime="image/png")
+        for path in (image_paths or [])[:MAX_VIDEO_REFERENCE_IMAGES]
     ]
-    task: Literal["text_to_video", "reference_to_video", "edit"]
-    if source_video_path is not None:
-        video_uri = _upload_source_video(client=client, path=source_video_path)
-        content = [
-            VideoContentParam(type="video", uri=video_uri),
-            TextContentParam(type="text", text=user_prompt),
-        ]
-        # image_paths ride alongside the video only to probe whether omni edit accepts both.
-        for path in (image_paths or [])[:MAX_REFERENCE_IMAGES]:
-            content.append(
-                ImageContentParam(
-                    type="image", data=base64.b64encode(Path(path).read_bytes()).decode()
-                )
-            )
-        task = "edit"
-    elif image_paths:
-        for path in image_paths[:MAX_REFERENCE_IMAGES]:
-            content.append(
-                ImageContentParam(
-                    type="image", data=base64.b64encode(Path(path).read_bytes()).decode()
-                )
-            )
-        task = "reference_to_video"
-    else:
-        task = "text_to_video"
-
-    # omni 400s an aspect_ratio on an edit ("cannot be set in response format for edit task"),
-    # so only text / reference generation pins 16:9; an edit keeps the source clip's ratio.
-    response_format = VideoResponseFormatParam(type="video", delivery="uri")
-    if task != "edit":
-        response_format["aspect_ratio"] = "16:9"
 
     start = time.time()
-    console.print(f"[bold]Submitting omni video job ({task}) to {VIDEO_MODEL.name}...[/bold]")
-    interaction = client.interactions.create(
-        model=VIDEO_MODEL.name,
-        input=content,
-        response_format=response_format,
-        generation_config=GenerationConfigParam(video_config=VideoConfigParam(task=task)),
-    )
-    # No `stream=True`, so this is the interaction rather than an event stream. Narrowed by
-    # excluding the stream instead of naming `google.genai.interactions.Interaction`, which the
-    # checker binds to the request union (see `VideoGenerator.render`).
-    if isinstance(interaction, Iterator):
-        raise RuntimeError("Video generation returned an event stream, not an interaction")
-    result = cast("_VideoInteractionResult", interaction)
-    console.print(f"status={result.status}")
-
-    video = result.output_video
-    if result.status != "completed" or video is None or video.uri is None:
-        raise RuntimeError(
-            f"Video generation failed: status={result.status} note={result.output_text!r}"
+    console.print(f"[bold]Submitting omni video job to {generator.video_model.name}...[/bold]")
+    video_bytes = asyncio.run(
+        main=generator.render(
+            prompt=user_prompt, reference_image_sources=images, source_video=source_video
         )
-
-    console.print("[bold]Downloading video...[/bold]")
-    video_bytes = client.files.download(file=video.uri)
+    )
     output_path = Path("generated.mp4")
     output_path.write_bytes(data=video_bytes)
 
     console.print(f"[green]Saved {len(video_bytes)} bytes to {output_path}[/green]")
-    console.print(f"\n{VIDEO_MODEL.name} ({task}) took {time.time() - start:.2f} seconds")
+    console.print(f"\n{generator.video_model.name} took {time.time() - start:.2f} seconds")
 
 
 if __name__ == "__main__":
     # Text-to-video by default. To exercise the other modes, edit the call:
-    #   gen_video("A cat dancing", image_paths=["cat.png"])            # reference_to_video
-    #   gen_video("make it snowy", source_video_path="clip.mp4")       # edit
-    #   gen_video("add a hat", source_video_path="clip.mp4", image_paths=["hat.png"])  # edit + image probe
+    #   gen_video(user_prompt="A cat dancing", image_paths=["cat.png"])      # images
+    #   gen_video(user_prompt="make it snowy", source_video_path="clip.mp4")  # edit
     gen_video(user_prompt="A cat dancing on a table")

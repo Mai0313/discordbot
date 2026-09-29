@@ -9,18 +9,16 @@ import orjson
 from rich.console import Console
 from agents.result import RunResult
 from google.genai.interactions import (
-    URLContext,
-    GoogleSearch,
     AllowlistParam,
     EnvironmentParam,
     AllowlistEntryParam,
     InteractionSSEEvent,
-    AntigravityAgentConfigParam,
 )
 from agents.models.openai_responses import OpenAIResponsesModel
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.cogs.research.agent import RESEARCH_TOOLS, RESEARCH_AGENT_CONFIG
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
@@ -29,8 +27,7 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# The OpenAI-compatible path takes the proxy's own model aliases, the same ones
-# cogs/gen_reply/cog.py sends.
+# The OpenAI-compatible path takes the proxy's own model aliases.
 AGENT_MODEL = ModelSettings(name="gemini-3.8-flash", effort="minimal")
 
 
@@ -64,27 +61,20 @@ def gen_reply_gemini(user_prompt: str) -> None:
     Args:
         user_prompt (str): User message to send as the single prompt input.
     """
-    client = genai.Client()
+    client = genai.Client(api_key=config.gemini_api_key)
     responses = client.interactions.create(
-        agent="antigravity-preview-09-2026",
+        agent=RuntimeModelCatalog().antigravity_model.name,
         system_instruction=REPLY_PROMPT,
         input=user_prompt,
         environment=EnvironmentParam(
             type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
         ),
         stream=True,
-        tools=[
-            URLContext(type="url_context"),
-            GoogleSearch(search_types=["web_search"], type="google_search"),
-        ],
-        # The config block belongs to the agent being called, so `antigravity` rather than the
-        # `dynamic` this used to send; nothing rejects a mismatched one, which is why it went
-        # unnoticed. `model` and `max_total_tokens` are the knobs to reach for from here.
-        agent_config=AntigravityAgentConfigParam(type="antigravity"),
+        tools=RESEARCH_TOOLS,
+        agent_config=RESEARCH_AGENT_CONFIG,
     )
-    # The SDK's `AgentOption` literal list lags the live API, so an agent it has not been
-    # regenerated for falls to the overload returning `Interaction | Stream`, exactly as the
-    # production path's `str` argument does; cast as `research/agent.py` does.
+    # A `str` agent misses the SDK's `AgentOption` literal overloads, so the call types as
+    # `Interaction | Stream`; `stream=True` makes it the stream.
     responses_list = []
     for response in cast("Iterator[InteractionSSEEvent]", responses):
         if response.event_type == "step.delta":

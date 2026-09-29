@@ -10,7 +10,7 @@ from openai import OpenAI
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py.
-SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="low")
+# The answer turn runs at the route's per-turn grade in place of the tier's effort; this pins `low`.
+SLOW_MODEL = RuntimeModelCatalog().slow_model.model_copy(update={"effort": "low"})
 
 # Both are Literal in the Batch API signature, so they carry the same literal type here.
 BATCH_ENDPOINT: Literal["/v1/responses"] = "/v1/responses"
