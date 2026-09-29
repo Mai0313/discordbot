@@ -236,7 +236,7 @@ class ImageGenerator(BaseModel):
             if image_bytes_list:
                 result = await self.client.images.edit(
                     image=image_bytes_list,
-                    prompt=prompt or "請依照附件內容進行編輯或優化。",
+                    prompt=prompt or "Edit or refine according to the attached content.",
                     model=self.image_model.name,
                     n=1,
                     response_format="b64_json",
@@ -577,7 +577,7 @@ class VideoGenerator(BaseModel):
         carries no video, folding in `status` + `output_text` (omni signals a soft refusal /
         incomplete / budget_exceeded that way; the `Interaction` has no `error` / `rai_*` field).
         """
-        text = prompt or "請依照訊息內容生成一段影片。"
+        text = prompt or "Generate a video from the message content."
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
         # A source-video edit is the one task we still pin: with task omitted, omni infers the mode
         # (image_to_video vs reference_to_video vs text_to_video) from the prompt + input media,

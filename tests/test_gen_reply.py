@@ -5250,6 +5250,24 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     assert _recorded(cog).images.generate_calls == 0
 
 
+async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
+    """With nothing refined, the image edit and the video render still get an English prompt."""
+    cog = _cog()
+
+    await cog.toolkit.image_generator.render(
+        prompt="", end_user_id="user", image_bytes_list=[base64.b64decode(_png_b64())]
+    )
+    await cog.toolkit.video_generator.render(prompt="", reference_image_sources=[])
+
+    assert _recorded(cog).images.edit_prompts == [
+        "Edit or refine according to the attached content."
+    ]
+    create_input = _recorded_video(cog).create_inputs[0]
+    assert [part["text"] for part in create_input if part["type"] == "text"] == [
+        "Generate a video from the message content."
+    ]
+
+
 async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     """The prompt director expands the raw request and the refined prompt reaches images.generate."""
     cog = _cog()
