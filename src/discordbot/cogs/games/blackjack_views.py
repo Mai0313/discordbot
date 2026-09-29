@@ -637,16 +637,7 @@ class BlackjackView(View):
         """Auto-resolves the round when nobody clicked in time."""
         if self.message is None:
             return
-        async with self._round_lock:
-            if self._settled:
-                return
-            if self.round_state.phase == "insurance":
-                self.round_state.decline_insurance_for_all_unresolved()
-                if self.round_state.finished:
-                    await self._finalize_locked(message=self.message)
-                    return
-            self.round_state.stand_all_remaining()
-            await self._finalize_locked(message=self.message)
+        await self.finalize(message=self.message)
 
     async def _run_player_action(
         self, *, interaction: Interaction[commands.Bot], apply: Callable[..., object]
