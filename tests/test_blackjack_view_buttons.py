@@ -26,13 +26,10 @@ from discordbot.typings.games import (
 )
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.cogs.games.blackjack import (
-    SHOE_DECK_COUNT,
     Card,
     BlackjackRound,
     BlackjackHandState,
     BlackjackPlayerHand,
-    hand_value,
-    is_soft_17,
 )
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.presentation import settlement_metadata
@@ -49,6 +46,7 @@ from tests.helpers.games import (
     component_rows,
     attached_button,
     settle_only_seat,
+    longest_hand_the_dealer_must_draw_on,
 )
 from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy import seed_balance
@@ -432,38 +430,8 @@ def test_the_dealer_loop_outlasts_the_longest_hand_the_rules_can_force() -> None
     `_play_dealer_locked` spends one iteration per drawn card and one more to record the stand
     or the bust; running out instead appends a `source="guard"` step, which settles the round on
     whatever total the dealer was holding and shows the players it did that.
-
-    The bound is searched rather than asserted, because it is not the number anyone reaches by
-    hand: eleven aces and a five is hard 16 and twelve cards, where a hand of small cards runs
-    out sooner and a hand of aces stands early on the soft total. A rules change re-derives it.
     """
-    ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
-    per_shoe = 4 * SHOE_DECK_COUNT
-
-    def must_draw(counts: dict[str, int]) -> bool:
-        """`_play_dealer_locked`'s own `should_hit`; change it there and change it here."""
-        cards = [Card(rank=rank, suit="♠") for rank, n in counts.items() for _ in range(n)]
-        total = hand_value(cards=cards)
-        return total < 17 or (total == 17 and is_soft_17(cards=cards))
-
-    longest = 0
-    seen: set[tuple[tuple[str, int], ...]] = set()
-    # A hand is its multiset: `must_draw` cannot read an order, so one ordering settles them all.
-    stack: list[dict[str, int]] = [{}]
-    while stack:
-        counts = stack.pop()
-        key = tuple(sorted(counts.items()))
-        if key in seen:
-            continue
-        seen.add(key)
-        held = sum(counts.values())
-        # The dealer's own first two cards are dealt, not drawn, so they are unconstrained.
-        if held >= 2 and not must_draw(counts=counts):
-            continue
-        longest = max(longest, held)
-        for rank in ranks:
-            if counts.get(rank, 0) < per_shoe:
-                stack.append({**counts, rank: counts.get(rank, 0) + 1})
+    longest = longest_hand_the_dealer_must_draw_on()
 
     assert longest == 12, f"the longest forced hand moved to {longest} cards; re-read the bound"
     needed = (longest - 2) + 2

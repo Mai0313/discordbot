@@ -3,10 +3,14 @@
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
 from random import Random
+from itertools import count
 
 from discordbot.cogs.games.shoe import RESHUFFLE_THRESHOLD_CARDS, BlackjackShoeStore
+from discordbot.typings.economy import MAX_SINGLE_BET
+from discordbot.cogs.games.blackjack import BlackjackRound, can_split, is_five_card_win
+from discordbot.cogs.games.blackjack_views import MAX_BLACKJACK_PLAYERS
 
-from tests.helpers.games import card
+from tests.helpers.games import card, seat, longest_hand_the_dealer_must_draw_on
 
 
 def test_first_take_builds_a_fresh_shoe_without_announcing_a_reshuffle() -> None:
@@ -81,3 +85,34 @@ def test_older_round_does_not_clobber_a_newer_shoe() -> None:
     store.save_shoe(channel_id=5, cards=older, generation=first_generation)
 
     assert store.shoes[5] == newer
+
+
+def test_the_reshuffle_threshold_outlasts_the_longest_round_a_full_table_can_deal() -> None:
+    """A round that starts at the threshold never draws past the end of its shoe.
+
+    Past the end `draw_card` deals from a notional infinite deck, which corrupts the count the
+    bot bets on. The longest round is a full table where every seat splits and takes both
+    hands to the card count at which the rules stand them, while the dealer is forced to the
+    longest hand it must still draw on and then draws the card that hand is owed. Each factor
+    is read off the rules rather than restated, so raising the seat cap re-checks this.
+    """
+    cards_per_hand = next(
+        held for held in count(start=1) if is_five_card_win(cards=[card(rank="2")] * held)
+    )
+    pair_round = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat()], shoe=[card(rank="8")] * 2
+    )
+    pair_round.players[0].hands[0].cards = [card(rank="8"), card(rank="8")]
+    pair_round.split(user_id=1)
+    split_hands = pair_round.players[0].hands
+    assert not any(
+        can_split(hand=hand, balance_remaining=MAX_SINGLE_BET) for hand in split_hands
+    ), "a split hand could split again, so a seat can hold more than two hands"
+    dealer_cards = longest_hand_the_dealer_must_draw_on() + 1
+
+    longest_round = MAX_BLACKJACK_PLAYERS * len(split_hands) * cards_per_hand + dealer_cards
+
+    assert longest_round <= RESHUFFLE_THRESHOLD_CARDS, (
+        f"a full table can deal {longest_round} cards in one round, past the "
+        f"{RESHUFFLE_THRESHOLD_CARDS} a round may start with; raise RESHUFFLE_THRESHOLD_CARDS"
+    )
