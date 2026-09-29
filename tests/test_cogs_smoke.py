@@ -402,8 +402,14 @@ async def test_video_deliver_and_download_branches(
 class _RaiseDownloader:
     """Downloader stub that always fails."""
 
-    def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
-        """Raises a deterministic download failure."""
+    def download(
+        self,
+        url: str,
+        quality: str,
+        dry_run: bool = False,
+        stop_signal: threading.Event | None = None,
+    ) -> DownloadResultStub:
+        """Raises a deterministic download failure, taking the signature the command calls."""
         raise RuntimeError("download failed")
 
 
