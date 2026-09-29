@@ -27,6 +27,7 @@ import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
 from nextcord.iterators import history_iterator
+from google.genai.errors import ClientError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -5543,6 +5544,68 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
     assert _recorded(cog).responses.create_streams == [True]
     # An edit keeps the source clip's ratio, so no aspect_ratio is sent (omni 400s it otherwise).
     assert "aspect_ratio" not in _recorded_video(cog).create_response_formats[0]
+
+
+_SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENIED"}}, None)
+
+
+@pytest.mark.parametrize(
+    ("uploaded", "expected"),
+    [
+        (_SOURCE_UPLOAD_REFUSED, _SOURCE_UPLOAD_REFUSED),
+        (
+            SimpleNamespace(name=None, uri=None, state=FileState.ACTIVE),
+            RuntimeError("Source video upload returned no file name"),
+        ),
+        (
+            SimpleNamespace(name="files/vid", uri=None, state=FileState.PROCESSING),
+            RuntimeError("Source video did not become ACTIVE before the deadline"),
+        ),
+        (
+            SimpleNamespace(name="files/vid", uri=None, state=FileState.FAILED),
+            RuntimeError("Source video upload failed: state=FileState.FAILED"),
+        ),
+    ],
+    ids=["sdk-error", "no-name", "never-active", "failed-state"],
+)
+async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
+    monkeypatch: pytest.MonkeyPatch, uploaded: object, expected: Exception
+) -> None:
+    """An edit whose clip never uploads fails the VIDEO route with that very error, before omni.
+
+    The clip is the deliverable's input, so there is nothing to degrade to: the route's caller
+    gets the SDK's own exception, or the one naming which step of the upload broke, and it is
+    what the user is shown.
+    """
+    cog = _cog()
+
+    async def fake_video_sources(builder: object, message: object) -> list[LoadedMedia]:
+        """Returns a fake raw source clip for the message."""
+        del builder, message
+        return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
+
+    async def upload(*, file: object, config: dict[str, str]) -> object:
+        """Refuses the upload or hands back the file under test."""
+        del file, config
+        if isinstance(uploaded, Exception):
+            raise uploaded
+        return uploaded
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.0)
+    _recorded_video(cog).aio.files.upload = upload
+    message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
+
+    with pytest.raises(type(expected)) as raised:
+        await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
+            user_prompt="make it snowy", context_task=asyncio.create_task(_ready_reply_context())
+        )
+
+    assert type(raised.value) is type(expected)
+    assert str(raised.value) == str(expected)
+    assert _recorded_video(cog).create_inputs == []
 
 
 async def test_download_output_video_retries_until_ready(monkeypatch: pytest.MonkeyPatch) -> None:
