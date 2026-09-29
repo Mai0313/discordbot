@@ -4,7 +4,7 @@ name: Tests
 # what a change is for and nothing about what it touched, so `chore/`, `ci/` and `docs/` branches
 # have all carried Python here (#486). `**` first is what makes this fail safe, since a denylist
 # covers a file type the repository grows later while an allowlist quietly stops running as the tree
-# moves. `capabilities.md` is not prose: it is what `tests/test_capabilities.py` reads.
+# moves. `capabilities.md` and the READMEs are not prose: `tests/test_capabilities.py` reads them.
 on:
   push:
     branches:
@@ -15,6 +15,9 @@ on:
       - "**"
       - "!**/*.md"
       - "src/discordbot/cogs/gen_reply/capabilities.md"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "README.zh-TW.md"
   pull_request:
     branches:
       - main
@@ -24,6 +27,9 @@ on:
       - "**"
       - "!**/*.md"
       - "src/discordbot/cogs/gen_reply/capabilities.md"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "README.zh-TW.md"
 
 permissions: write-all
 

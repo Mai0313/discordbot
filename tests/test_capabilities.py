@@ -257,6 +257,26 @@ def _readme_command_table(readme: str) -> tuple[set[str], set[str]]:
     return listed, named
 
 
+def _workflow_path_filters(workflow: str) -> list[list[str]]:
+    """Returns every `paths:` list in a workflow, in file order.
+
+    Read line by line because the project does not depend on a YAML parser. A list ends at its
+    first line that is not an item, so a reshaped filter reads short and fails, never passes.
+    """
+    filters: list[list[str]] = []
+    current: list[str] | None = None
+    for line in workflow.splitlines():
+        stripped = line.strip()
+        if stripped == "paths:":
+            current = []
+            filters.append(current)
+        elif current is not None and stripped.startswith("- "):
+            current.append(stripped.removeprefix("- ").strip('"'))
+        else:
+            current = None
+    return filters
+
+
 def _account_flag_columns() -> set[str]:
     """Returns the boolean flag columns `UserAccount` declares.
 
@@ -766,15 +786,16 @@ def test_admin_description_check_reads_every_locale_it_has_to() -> None:
     assert not _names_an_unqualified_admin(text="server admin 限定：向本伺服器的借方強制回收")
 
 
-def test_the_tests_workflow_reruns_on_an_edit_to_the_capability_document() -> None:
-    """The CI path filter names this document by literal path, and nothing else ties them.
+def test_the_tests_workflow_reruns_on_an_edit_to_a_document_this_module_reads() -> None:
+    """The CI path filters name these documents by literal path, and nothing else ties them.
 
     `.github/workflows/test.yml` skips the suite on a diff that is nothing but Markdown, and
-    pulls this one file back past that rule because the suite reads it. Nothing derives the
-    path it writes down: `capabilities.py` resolves the document relative to itself, so moving
-    the pair would leave production and every other test green while CI quietly stopped running
-    on a Markdown-only edit to it. That is the wrong-signal skip #486 took off the branch name,
-    one door over, and its whole failure mode is a check that never appears.
+    pulls the capability document and the READMEs back past that rule because the suite reads
+    them. Nothing derives the paths it writes down: `capabilities.py` resolves the document
+    relative to itself, so moving the pair would leave production and every other test green
+    while CI quietly stopped running on a Markdown-only edit to it. That is the wrong-signal
+    skip #486 took off the branch name, one door over, and its whole failure mode is a check
+    that never appears. Each trigger carries its own list, so each list is checked on its own.
     """
     repo_root = Path(__file__).resolve().parents[1]
     document = repo_root / "src" / "discordbot" / "cogs" / "gen_reply" / "capabilities.md"
@@ -786,9 +807,13 @@ def test_the_tests_workflow_reruns_on_an_edit_to_the_capability_document() -> No
         f"{document} is not the document the package loads any more"
     )
     workflow = (repo_root / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
-    assert document.relative_to(repo_root).as_posix() in workflow, (
-        "an edit to the capability document can turn this module red, so "
-        ".github/workflows/test.yml must re-include it past its `!**/*.md` rule"
+    filters = _workflow_path_filters(workflow=workflow)
+    assert filters, ".github/workflows/test.yml has no `paths:` list this test can read"
+    read_here = (document.relative_to(repo_root).as_posix(), *_READMES)
+    missing = sorted({path for paths in filters for path in read_here if path not in paths})
+    assert not missing, (
+        "an edit to these documents can turn this module red, so every `paths:` list in "
+        f".github/workflows/test.yml must re-include them past its `!**/*.md` rule: {missing}"
     )
 
 
