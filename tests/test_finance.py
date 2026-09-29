@@ -19,6 +19,8 @@ from discordbot.typings.economy import (
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CentralBankLoanDecisionView
 from discordbot.services.economy.database import (
+    UserWallet,
+    UserAccount,
     LoanContract,
     LoanProposal,
     transfer,
@@ -301,6 +303,40 @@ async def test_calling_personal_loans_collects_accrued_interest_owed_to_that_len
     remaining = await list_loan_contracts(user_id=1)
     assert [contract.contract_id for contract in remaining] == [from_carol.contract_id]
     assert remaining[0].principal_remaining == 200
+
+
+@pytest.mark.parametrize("collected_by_lender", [False, True])
+async def test_a_loan_payment_keeps_the_lenders_newer_identity(collected_by_lender: bool) -> None:
+    """A repayment or collection never writes the lender's identity from acceptance back."""
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    assert proposal is not None
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id,
+        actor_id=2,
+        actor_name="bob",
+        actor_avatar_url="https://cdn/old.png",
+    )
+    assert accepted is not None
+    await seed_balance(user_id=2, name="robert", amount=1, avatar_url="https://cdn/new.png")
+
+    if collected_by_lender:
+        result = await call_personal_loans(lender_id=2, borrower_id=1, borrower_name="alice")
+    else:
+        result = await repay_personal_loans(
+            borrower_id=1, borrower_name="alice", lender_id=2, amount=100
+        )
+
+    assert result is not None
+    async with open_session() as session:
+        stored = await session.execute(
+            statement=select(UserAccount.name, UserAccount.avatar_url, UserWallet.name)
+            .join(UserWallet, UserWallet.user_id == UserAccount.user_id)
+            .where(UserAccount.user_id == 2)
+        )
+    assert stored.one() == ("robert", "https://cdn/new.png", "robert")
 
 
 async def test_central_bank_loan_approves_against_cap_and_call_clamps_to_balance() -> None:
