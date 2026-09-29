@@ -353,8 +353,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        system_name: str,
-        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
@@ -364,8 +362,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         super().__init__(
             owner=owner,
             rng=rng,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             initial_jackpot=initial_jackpot,

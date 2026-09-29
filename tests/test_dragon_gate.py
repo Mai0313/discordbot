@@ -541,8 +541,6 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        system_name="Dealer",
-        system_avatar_url="",
         prepare_participant=cast("PrepareParticipant", prepare_participant),
         refresh_participants=refresh_participants,
         initial_jackpot=state.jackpot,
@@ -627,8 +625,6 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        system_name="Dealer",
-        system_avatar_url="",
         prepare_participant=cast("PrepareParticipant", prepare_participant),
         refresh_participants=refresh_participants,
         initial_jackpot=100_000,

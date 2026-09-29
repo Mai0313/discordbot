@@ -78,13 +78,7 @@ def _round_with_two_cards(
 
 def _make_view(round_state: BlackjackRound) -> BlackjackView:
     """Builds a BlackjackView for button inspection."""
-    return BlackjackView(
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        system_name="賭場系統",
-        system_avatar_url="",
-    )
+    return BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
 
 
 @pytest.fixture
@@ -311,9 +305,7 @@ async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -
         dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
     )
 
-    embeds = build_in_progress_embeds(
-        round_state=round_state, system_name="賭場系統", system_avatar_url="", force_show_hole=True
-    )
+    embeds = build_in_progress_embeds(round_state=round_state, force_show_hole=True)
     dealer_embed = embeds[0]
 
     assert isinstance(dealer_embed.description, str)
@@ -339,9 +331,7 @@ def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
 
-    embeds = build_in_progress_embeds(
-        round_state=round_state, system_name="賭場系統", system_avatar_url=""
-    )
+    embeds = build_in_progress_embeds(round_state=round_state)
     dealer_embed = embeds[0]
 
     assert isinstance(dealer_embed.description, str)
@@ -358,9 +348,7 @@ def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="8", suit="♣")]
 
-    embeds = build_in_progress_embeds(
-        round_state=round_state, system_name="賭場系統", system_avatar_url=""
-    )
+    embeds = build_in_progress_embeds(round_state=round_state)
     dealer_embed = embeds[0]
 
     assert isinstance(dealer_embed.description, str)
@@ -374,9 +362,7 @@ def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="9", suit="♦")],
     )
-    seat_embeds = build_in_progress_embeds(
-        round_state=round_state, system_name="賭場系統", system_avatar_url=""
-    )
+    seat_embeds = build_in_progress_embeds(round_state=round_state)
 
     payload = blackjack_views.table_edit_kwargs(embeds=seat_embeds, view=None)
 

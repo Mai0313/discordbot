@@ -58,8 +58,6 @@ class BaseGameLobbyView(View):
         self,
         owner: GameParticipant,
         rng: Random,
-        system_name: str,
-        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         timeout: int,
@@ -69,8 +67,6 @@ class BaseGameLobbyView(View):
         super().__init__(timeout=timeout)
         self.owner = owner
         self.rng = rng
-        self.system_name = system_name
-        self.system_avatar_url = system_avatar_url
         self.prepare_participant = prepare_participant
         self.refresh_participants = refresh_participants
         self.message: Message | None = None
@@ -236,8 +232,6 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        system_name: str,
-        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
@@ -249,8 +243,6 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         super().__init__(
             owner=owner,
             rng=rng,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             timeout=timeout,

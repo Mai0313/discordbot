@@ -10,7 +10,6 @@ from nextcord import User, Embed, Guild, Locale, Member, Interaction, SlashOptio
 from nextcord.ext import commands
 
 from discordbot.typings.games import (
-    SystemIdentity,
     GameParticipant,
     GameParticipantIdentity,
     RefreshParticipantsResult,
@@ -31,7 +30,7 @@ from discordbot.utils.message_cleanup import (
 )
 from discordbot.cogs.games.dragon_gate import ANTE
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
-from discordbot.cogs.games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
+from discordbot.cogs.games.presentation import ERROR_COLOR
 from discordbot.services.economy.database import get_account, get_balance
 from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs.games.blackjack_views import (
@@ -65,20 +64,6 @@ class GamesCogs(commands.Cog):
         self.rng = SystemRandom()
         self._startup_cleanup_done = False
         self._blackjack_shoes = BlackjackShoeStore()
-
-    async def _system_identity(self, guild: Guild | None = None) -> SystemIdentity:
-        """Returns the casino system identity that labels the house in game embeds.
-
-        Slash commands only fire after the gateway has connected, so
-        `self.bot.user` is guaranteed non-None at call time. The None branch
-        still exists to keep type narrowing clean and to avoid blowing up the
-        round if Discord briefly returns no client user (e.g. mid-reconnect);
-        it costs only the avatar, since the label does not come from the user.
-        """
-        if self.bot.user is None:
-            return SystemIdentity(system_name=SYSTEM_NARRATOR_NAME, system_avatar_url="")
-        avatar_url = await guild_avatar_url(user=self.bot.user, guild=guild)
-        return SystemIdentity(system_name=SYSTEM_NARRATOR_NAME, system_avatar_url=avatar_url)
 
     async def _bot_blackjack_participant(
         self, *, guild: Guild | None, table_bet: int, channel_id: int
@@ -310,7 +295,6 @@ class GamesCogs(commands.Cog):
 
         table_bet = owner.bet
         channel_id = getattr(interaction, "channel_id", None) or 0
-        system_identity = await self._system_identity(guild=guild)
         bot_participant = await self._bot_blackjack_participant(
             guild=guild, table_bet=table_bet, channel_id=channel_id
         )
@@ -321,8 +305,6 @@ class GamesCogs(commands.Cog):
             owner=owner,
             requested_bet=table_bet,
             rng=self.rng,
-            system_name=system_identity.system_name,
-            system_avatar_url=system_identity.system_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
                 wager=table_bet,
@@ -384,13 +366,10 @@ class GamesCogs(commands.Cog):
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
-        system_identity = await self._system_identity(guild=getattr(interaction, "guild", None))
         initial_jackpot = await fetch_dragon_gate_jackpot_snapshot()
         view = DragonGateLobbyView(
             owner=owner,
             rng=self.rng,
-            system_name=system_identity.system_name,
-            system_avatar_url=system_identity.system_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
                 wager=ANTE,

@@ -55,6 +55,7 @@ from discordbot.cogs.games.presentation import (
     WIN_RESULT_EMOJI,
     BUST_RESULT_EMOJI,
     NATURAL_RESULT_EMOJI,
+    SYSTEM_NARRATOR_NAME,
     LOBBY_PLAYERS_FIELD_EMOJI,
     card_line,
     metadata_line,
@@ -259,11 +260,9 @@ def _dealer_settlement_color(results: list[BlackjackPlayerResult]) -> int:
     return PUSH_COLOR
 
 
-def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + identity + render flags
+def build_dealer_seat_embed(
     *,
     round_state: BlackjackRound,
-    system_name: str,
-    system_avatar_url: str,
     hide_hole: bool,
     dealer_steps: list[BlackjackDealerStep] | None = None,
     is_settled: bool = False,
@@ -292,9 +291,9 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
         description="\n".join(part for part in description_parts if part),
         color=color,
     )
-    # `system_avatar_url` is deliberately not set as a thumbnail: the bot plays at
-    # this table, so its avatar on the dealer seat would collide with its player seat.
-    embed.set_author(name=system_name)
+    # No thumbnail: the bot plays at this table, so its avatar on the dealer seat would
+    # collide with its own player seat.
+    embed.set_author(name=SYSTEM_NARRATOR_NAME)
     embed.set_footer(text="莊家規則: <=16 必補, soft 17 補, hard 17+ 停")
     return embed
 
@@ -404,8 +403,6 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
 def build_in_progress_embeds(
     *,
     round_state: BlackjackRound,
-    system_name: str,
-    system_avatar_url: str,
     dealer_steps: list[BlackjackDealerStep] | None = None,
     force_show_hole: bool = False,
 ) -> list[Embed]:
@@ -413,8 +410,6 @@ def build_in_progress_embeds(
     embeds: list[Embed] = [
         build_dealer_seat_embed(
             round_state=round_state,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             hide_hole=not force_show_hole,
             dealer_steps=dealer_steps,
             is_settled=False,
@@ -448,8 +443,6 @@ def build_final_embeds(
     *,
     round_state: BlackjackRound,
     results: list[BlackjackPlayerResult],
-    system_name: str = "賭場系統",
-    system_avatar_url: str = "",
     dealer_steps: list[BlackjackDealerStep] | None = None,
 ) -> list[Embed]:
     """Builds dealer + per-player seat embeds for the settled table."""
@@ -457,8 +450,6 @@ def build_final_embeds(
     embeds: list[Embed] = [
         build_dealer_seat_embed(
             round_state=round_state,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             hide_hole=False,
             dealer_steps=dealer_steps,
             is_settled=True,
@@ -499,8 +490,6 @@ class BlackjackLobbyView(BaseGameLobbyView):
         owner: GameParticipant,
         requested_bet: int,
         rng: Random,
-        system_name: str,
-        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         bot_user_id: int | None = None,
@@ -508,12 +497,10 @@ class BlackjackLobbyView(BaseGameLobbyView):
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
     ) -> None:
-        """Initializes a Blackjack lobby with wager and system identity."""
+        """Initializes a Blackjack lobby with its table wager."""
         super().__init__(
             owner=owner,
             rng=rng,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS,
@@ -552,8 +539,6 @@ class BlackjackLobbyView(BaseGameLobbyView):
             round_state=round_state,
             starter_id=self.owner.user_id,
             author_name=self.owner.account_name,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
             bot_user_id=self.bot_user_id,
             shoe_store=self._shoe_store,
             channel_id=self._channel_id,
@@ -564,11 +549,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             await view.finalize(message=message)
             return True
         view.sync_buttons()
-        seat_embeds = build_in_progress_embeds(
-            round_state=round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-        )
+        seat_embeds = build_in_progress_embeds(round_state=round_state)
         await edit_message_with_retry(
             message=message,
             kwargs_factory=lambda: table_edit_kwargs(
@@ -587,8 +568,6 @@ class BlackjackView(View):
         round_state: BlackjackRound,
         starter_id: int,
         author_name: str,
-        system_name: str = "賭場系統",
-        system_avatar_url: str = "",
         bot_user_id: int | None = None,
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
@@ -599,8 +578,6 @@ class BlackjackView(View):
         self.round_state = round_state
         self.starter_id = starter_id
         self.author_name = author_name
-        self.system_name = system_name
-        self.system_avatar_url = system_avatar_url
         self.bot_user_id = bot_user_id
         self._shoe_store = shoe_store
         self._channel_id = channel_id
@@ -1064,10 +1041,7 @@ class BlackjackView(View):
         """Refreshes the per-seat embeds while holding the round lock."""
         self.sync_buttons()
         seat_embeds = build_in_progress_embeds(
-            round_state=self.round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
+            round_state=self.round_state, dealer_steps=self._dealer_steps
         )
         await message.edit(**table_edit_kwargs(embeds=seat_embeds, view=self, target=message))
 
@@ -1148,11 +1122,7 @@ class BlackjackView(View):
         )
 
         seat_embeds = build_final_embeds(
-            round_state=self.round_state,
-            results=results,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
+            round_state=self.round_state, results=results, dealer_steps=self._dealer_steps
         )
         self.clear_items()
         try:
@@ -1195,10 +1165,7 @@ class BlackjackView(View):
         """
         self._disable_buttons()
         body_hidden = build_in_progress_embeds(
-            round_state=self.round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
+            round_state=self.round_state, dealer_steps=self._dealer_steps
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
@@ -1208,11 +1175,7 @@ class BlackjackView(View):
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
         reveal_body = build_in_progress_embeds(
-            round_state=self.round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
-            force_show_hole=True,
+            round_state=self.round_state, dealer_steps=self._dealer_steps, force_show_hole=True
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
