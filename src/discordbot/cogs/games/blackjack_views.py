@@ -197,11 +197,11 @@ def build_blackjack_lobby_embed(
     participants: list[GameParticipant],
     requested_bet: int,
     max_players: int,
-    status: str = "等待玩家加入",
+    status: str | None = None,
 ) -> Embed:
     """Builds the lobby embed shown before a Blackjack table starts."""
     embed = Embed(title="♠️ 二十一點 · 開桌準備", color=PUSH_COLOR)
-    if status and status != "等待玩家加入":
+    if status:
         embed.description = status
     embed.add_field(
         name=f"{LOBBY_PLAYERS_FIELD_EMOJI} 桌上玩家 ({len(participants)}/{max_players})",
@@ -510,7 +510,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self._shoe_store = shoe_store
         self._channel_id = channel_id
 
-    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+    def _build_lobby_embed(self, status: str) -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
         return build_blackjack_lobby_embed(
             owner=self.owner,

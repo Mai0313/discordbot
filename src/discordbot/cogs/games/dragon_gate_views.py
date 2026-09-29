@@ -222,11 +222,11 @@ def build_dragon_gate_lobby_embed(
     owner: GameParticipant,
     participants: list[GameParticipant],
     jackpot: int,
-    status: str = "等待玩家加入",
+    status: str | None = None,
 ) -> Embed:
     """Builds the lobby embed shown before a 射龍門 table starts."""
     embed = Embed(title="♦️ 射龍門 · 開桌準備", color=PUSH_COLOR)
-    if status and status != "等待玩家加入":
+    if status:
         embed.description = status
     embed.add_field(
         name=f"{LOBBY_PLAYERS_FIELD_EMOJI} 桌上玩家 ({len(participants)})",
@@ -361,7 +361,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             initial_jackpot_generation=initial_jackpot_generation,
         )
 
-    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+    def _build_lobby_embed(self, status: str) -> Embed:
         """Builds the 射龍門 lobby embed from participants and jackpot state."""
         return build_dragon_gate_lobby_embed(
             owner=self.owner,
