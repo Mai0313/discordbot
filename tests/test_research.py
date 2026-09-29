@@ -18,6 +18,7 @@ from discordbot.cogs.research import streaming as research_streaming
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import ModelPriceEntry
+from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs.research.database import ResearchPhase
+    from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:
@@ -859,6 +861,65 @@ async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.Mo
     ]
 
 
+@pytest.mark.parametrize(
+    ("report_text", "hosted"),
+    [("# Report\nbody", False), ("X" * 1990, False), ("# Report\nbody", True)],
+    ids=["inline", "own_message", "hosted_file"],
+)
+async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
+    tmp_path: Path, report_text: str, hosted: bool
+) -> None:
+    """Every delivered shape renders back as the bot's own history with the footer gone."""
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    planner = _disabled_delivery()
+    if hosted:
+        thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
+        planner = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(
+                config=make_media_hosting_config(
+                    enabled=True, base_url="https://media.test", serve_dir=str(tmp_path)
+                )
+            )
+        )
+    footer = "-# antigravity-preview-09-2026 · ⬆ 1,234 ⬇ 567 · $0.00236800"
+    await deliver_report(
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=as_message(fake=status),  # minimal status-message double
+        owner_id=1,
+        result=_completed_result(report_text=report_text),
+        footer=footer,
+        media_delivery=planner,
+    )
+    posted = [str(write["content"]) for write in [*status.edits, *thread.sends]]
+    assert footer in posted[-1]
+    builder = MessageInputBuilder(
+        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))),
+        runtime_models=RuntimeModelCatalog(),
+        # Rendering a message's text never reaches its attachments.
+        attachment_handler=cast("AttachmentRenderer", SimpleNamespace()),
+    )
+
+    history = [
+        await builder.get_cleaned_content(
+            message=as_message(
+                fake=SimpleNamespace(
+                    content=content,
+                    author=SimpleNamespace(id=999),
+                    embeds=[],
+                    snapshots=[],
+                    is_system=lambda: False,
+                )
+            )
+        )
+        for content in posted
+    ]
+
+    assert not any("⬆" in text for text in history)
+    # Only the footer goes: the report, the owner ping and any hosted link all stay.
+    assert history == [content.replace(f"\n\n{footer}", "").strip() for content in posted]
+
+
 # ----- restart resume sweep -----------------------------------------------------------------
 
 
@@ -1504,7 +1565,7 @@ async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
     report = thread.writes[-1]
     agent_name = cog.runtime_models.antigravity_model.name
     assert report["content"] == (
-        f"# Report\nbody\n\n<@300>\n-# {agent_name} · ⬆ 1,234 ⬇ 567 · $0.00236800"
+        f"# Report\nbody\n\n<@300>\n\n-# {agent_name} · ⬆ 1,234 ⬇ 567 · $0.00236800"
     )
     _assert_pings_only_the_owner(write=report)
 
@@ -1524,7 +1585,7 @@ async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
     await _assert_owner_released(cog=cog, phase="done")
     report = thread.writes[-1]
     assert report["content"] == (
-        "# Report\nbody\n\n<@300>\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
+        "# Report\nbody\n\n<@300>\n\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
     )
     _assert_pings_only_the_owner(write=report)
 
