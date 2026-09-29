@@ -18,7 +18,6 @@ from discordbot.typings.games import (
     GameParticipant,
     BlackjackDealerStep,
     BlackjackPlayerResult,
-    BlackjackDealerStepSource,
     BlackjackPlayerSettlement,
 )
 from discordbot.typings.colors import IN_PROGRESS_COLOR
@@ -37,6 +36,7 @@ from discordbot.cogs.games.blackjack import (
     render_hand,
     can_surrender,
     dealer_up_card,
+    dealer_must_hit,
     committed_wagers,
     is_five_card_win,
     is_five_card_twenty_one,
@@ -84,15 +84,6 @@ if TYPE_CHECKING:
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-# Enough iterations for the longest hand H17 can force. `_play_dealer_locked` spends one per
-# drawn card plus one to record the stand or the bust, and the longest hand still required to
-# draw is twelve cards — eleven aces and a five, hard 16 because an eleven-point ace would bust
-# it. Two of those twelve are dealt rather than drawn, so it is ten draws to reach that hand,
-# an eleventh for the draw it is owed, and a twelfth to record what that came to.
-# `tests/helpers/games.py::longest_hand_the_dealer_must_draw_on` searches for the hand rather
-# than trusting the arithmetic, so a rules change re-derives this instead of quietly
-# outgrowing it.
-MAX_DEALER_DECISION_STEPS: Final[int] = 12
 MAX_BOT_TURN_STEPS: Final[int] = 16
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
@@ -121,10 +112,9 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     """Formats the dealer's decision steps into one compact line."""
     if not steps:
         return ""
-    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "防呆"}
     parts: list[str] = []
     for step in steps:
-        part = f"{source_labels[step.source]}: {step.total_before} {step.action}"
+        part = f"規則: {step.total_before} {step.action}"
         if step.drawn_card is not None:
             part += f" 抽 {step.drawn_card}"
             if step.total_after is not None:
@@ -564,7 +554,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
                 channel_id=self._channel_id, rng=self.rng
             )
         round_state = BlackjackRound.from_participants(
-            rng=self.rng, participants=self.participants, auto_play_dealer=False, shoe=shoe
+            rng=self.rng, participants=self.participants, shoe=shoe
         )
         round_state.deal_initial()
         view = BlackjackView(
@@ -627,7 +617,6 @@ class BlackjackView(View):
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
         self._peek_animated = False
         self._state_revision = 0
@@ -1304,52 +1293,22 @@ class BlackjackView(View):
         if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
             return
 
-        for _step_index in range(MAX_DEALER_DECISION_STEPS):
+        while dealer_must_hit(cards=self.round_state.dealer):
             total_before = self.round_state.dealer_total()
-            if total_before > 21:
-                self.round_state.mark_dealer_played()
-                return
-            soft_17 = self.round_state.dealer_is_soft_17()
-            should_hit = total_before < 17 or (total_before == 17 and soft_17)
-            if not should_hit:
-                self._dealer_steps.append(
-                    BlackjackDealerStep(
-                        total_before=total_before,
-                        action="stand",
-                        reason="規則: 已達 17 點且非 soft 17",
-                        source="auto",
-                        forced=True,
-                    )
-                )
-                self.round_state.mark_dealer_played()
-                return
-            reason = "規則: soft 17 追牌" if soft_17 else "規則: 未滿 17 點"
             drawn_card = self.round_state.draw_dealer_card()
-            total_after = self.round_state.dealer_total()
             self._dealer_steps.append(
                 BlackjackDealerStep(
                     total_before=total_before,
                     action="hit",
-                    reason=reason,
-                    source="auto",
                     drawn_card=drawn_card,
-                    total_after=total_after,
-                    forced=True,
+                    total_after=self.round_state.dealer_total(),
                 )
             )
-        logfire.warn(
-            "Dealer Blackjack play loop reached maximum steps; forcing stand",
-            max_steps=MAX_DEALER_DECISION_STEPS,
-        )
-        self._dealer_steps.append(
-            BlackjackDealerStep(
-                total_before=self.round_state.dealer_total(),
-                action="stand",
-                reason="guard: decision limit",
-                source="guard",
-                forced=True,
+        final_total = self.round_state.dealer_total()
+        if final_total <= 21:
+            self._dealer_steps.append(
+                BlackjackDealerStep(total_before=final_total, action="stand")
             )
-        )
         self.round_state.mark_dealer_played()
 
     async def _record_history_later(

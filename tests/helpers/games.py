@@ -5,7 +5,7 @@ from typing import Any
 from nextcord.ui import View, Button
 
 from discordbot.typings.games import Card, GameParticipant, BlackjackPlayerSettlement
-from discordbot.cogs.games.blackjack import SHOE_DECK_COUNT, BlackjackRound, hand_value, is_soft_17
+from discordbot.cogs.games.blackjack import SHOE_DECK_COUNT, BlackjackRound, dealer_must_hit
 from discordbot.cogs.games.settlement import settle_blackjack_player
 
 
@@ -45,16 +45,14 @@ def longest_hand_the_dealer_must_draw_on() -> int:
     Searched rather than reasoned out, because it is not the number anyone reaches by hand:
     eleven aces and a five is hard 16 and twelve cards, where a hand of small cards runs out
     sooner and a hand of aces stands early on the soft total. A rules change re-derives it.
-    The draw rule is `_play_dealer_locked`'s own `should_hit`; change it there and change it
-    here.
     """
     ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
     per_shoe = 4 * SHOE_DECK_COUNT
 
     def must_draw(counts: dict[str, int]) -> bool:
-        cards = [card(rank=rank) for rank, held in counts.items() for _ in range(held)]
-        total = hand_value(cards=cards)
-        return total < 17 or (total == 17 and is_soft_17(cards=cards))
+        return dealer_must_hit(
+            cards=[card(rank=rank) for rank, held in counts.items() for _ in range(held)]
+        )
 
     longest = 0
     seen: set[tuple[tuple[str, int], ...]] = set()

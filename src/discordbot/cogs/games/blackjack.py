@@ -12,9 +12,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.typings.games import Card, SettleOutcome, GameParticipant
 from discordbot.typings.economy import MAX_SINGLE_BET
 
-# A round never rests in `dealer`: `_play_dealer` draws inside one synchronous call, so the
-# phase goes straight from `player_actions` to `settled` and a guard on `dealer` never fires.
-RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
+RoundPhase = Literal["insurance", "player_actions", "settled"]
 
 
 class InsuranceRefusedError(ValueError):
@@ -209,6 +207,15 @@ def is_soft_17(cards: list[Card]) -> bool:
     """
     soft, total = is_soft_total(cards=cards)
     return soft and total == 17
+
+
+def dealer_must_hit(cards: list[Card]) -> bool:
+    """Returns whether the dealer draws on this hand under H17.
+
+    The dealer hits anything below 17 and a soft 17, and stands on a hard 17
+    or better; a bust hand draws nothing more.
+    """
+    return hand_value(cards=cards) < 17 or is_soft_17(cards=cards)
 
 
 def dealer_up_card(dealer: list[Card]) -> Card | None:
@@ -516,10 +523,6 @@ class BlackjackRound(BaseModel):
         default=False, description="True once the dealer has drawn for all standing players."
     )
     finished: bool = Field(default=False, description="True once no more player actions remain.")
-    auto_play_dealer: bool = Field(
-        default=True,
-        description="True when dealer cards are drawn synchronously after player actions finish.",
-    )
     phase: RoundPhase = Field(
         default="player_actions", description="Lifecycle phase of the round."
     )
@@ -533,11 +536,7 @@ class BlackjackRound(BaseModel):
 
     @classmethod
     def from_participants(
-        cls,
-        rng: Random,
-        participants: list[GameParticipant],
-        auto_play_dealer: bool = True,
-        shoe: list[Card] | None = None,
+        cls, rng: Random, participants: list[GameParticipant], shoe: list[Card] | None = None
     ) -> "BlackjackRound":
         """Builds a round from registered lobby participants.
 
@@ -555,10 +554,7 @@ class BlackjackRound(BaseModel):
             for participant in participants
         ]
         return cls(
-            rng=rng,
-            players=players,
-            auto_play_dealer=auto_play_dealer,
-            shoe=shoe if shoe is not None else build_shoe(rng=rng),
+            rng=rng, players=players, shoe=shoe if shoe is not None else build_shoe(rng=rng)
         )
 
     def _draw_one_card(self) -> Card:
@@ -824,13 +820,26 @@ class BlackjackRound(BaseModel):
         """Returns the current best total for the dealer hand."""
         return hand_value(cards=self.dealer)
 
-    def dealer_is_soft_17(self) -> bool:
-        """Returns whether the dealer hand is currently a soft 17."""
-        return is_soft_17(cards=self.dealer)
-
     def needs_dealer_play(self) -> bool:
-        """Returns whether the dealer still needs a draw/stand phase."""
-        return self._needs_dealer_play()
+        """Returns whether the dealer must draw before settlement."""
+        if self.peeked_blackjack:
+            return False
+        if is_blackjack(cards=self.dealer):
+            return False
+        for player in self.players:
+            for hand in player.hands:
+                if hand.surrendered:
+                    continue
+                if hand.is_blackjack():
+                    continue
+                if hand.is_bust():
+                    continue
+                if is_five_card_win(cards=hand.cards) and not is_five_card_twenty_one(
+                    cards=hand.cards
+                ):
+                    continue
+                return True
+        return False
 
     def draw_dealer_card(self) -> Card:
         """Draws one card into the dealer hand and returns it."""
@@ -913,47 +922,13 @@ class BlackjackRound(BaseModel):
         self._finish_after_players_done()
 
     def _finish_after_players_done(self) -> None:
-        """Finishes the round after all player actions have resolved."""
-        if self.finished:
-            return
-        if self._needs_dealer_play() and self.auto_play_dealer:
-            self._play_dealer()
+        """Finishes the round after all player actions have resolved.
+
+        The dealer has not drawn yet; its draws come afterwards, one
+        `draw_dealer_card` at a time, closed by `mark_dealer_played`.
+        """
         self.finished = True
         self.phase = "settled"
-
-    def _needs_dealer_play(self) -> bool:
-        """Returns whether the dealer must draw before settlement."""
-        if self.peeked_blackjack:
-            return False
-        if is_blackjack(cards=self.dealer):
-            return False
-        for player in self.players:
-            for hand in player.hands:
-                if hand.surrendered:
-                    continue
-                if hand.is_blackjack():
-                    continue
-                if hand.is_bust():
-                    continue
-                if is_five_card_win(cards=hand.cards) and not is_five_card_twenty_one(
-                    cards=hand.cards
-                ):
-                    continue
-                return True
-        return False
-
-    def _play_dealer(self) -> None:
-        """Draws dealer cards under H17 rules (hits soft 17, stands hard 17+)."""
-        while True:
-            total = hand_value(cards=self.dealer)
-            if total < 17:
-                self.draw_dealer_card()
-                continue
-            if total == 17 and is_soft_17(cards=self.dealer):
-                self.draw_dealer_card()
-                continue
-            break
-        self.mark_dealer_played()
 
 
 def render_hand(cards: list[Card], hide_first: bool = False) -> str:

@@ -27,6 +27,7 @@ from discordbot.cogs.games.blackjack import (
     is_blackjack,
     can_surrender,
     is_soft_total,
+    dealer_must_hit,
     is_five_card_win,
     is_five_card_twenty_one,
 )
@@ -327,29 +328,25 @@ def test_settle_unfinished_hand_raises() -> None:
         settle_hand(hand=hand, dealer=[Card(rank="9", suit="♣"), Card(rank="8", suit="♦")])
 
 
-def test_round_dealer_stops_on_hard_17_and_hits_soft_17() -> None:
-    """Under H17 the dealer stops on hard 17 but keeps drawing on soft 17."""
-    hard = BlackjackRound.from_participants(
-        rng=Random(x=12345), participants=[seat(user_id=1, display_name="Alice")]
-    )
-    hard.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
-    hard.dealer = [Card(rank="10", suit="♣"), Card(rank="7", suit="♦")]
-    hard.stand(user_id=1)
-
-    soft = BlackjackRound.from_participants(
-        rng=Random(x=12345), participants=[seat(user_id=1, display_name="Alice")]
-    )
-    soft.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
-    soft.dealer = [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
-    soft.stand(user_id=1)
-
-    assert [str(card) for card in hard.dealer] == ["10♣", "7♦"]
-    assert len(soft.dealer) >= 3, "H17 requires the dealer to draw on soft 17"
-    assert soft.dealer[:2] == [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
+@pytest.mark.parametrize(
+    argnames=("ranks", "must_hit"),
+    argvalues=[
+        (("10", "6"), True),
+        (("A", "6"), True),
+        (("10", "7"), False),
+        (("A", "6", "10"), False),
+        (("10", "8"), False),
+        (("10", "6", "K"), False),
+    ],
+    ids=["hard-16", "soft-17", "hard-17", "hard-17-from-a-demoted-ace", "hard-18", "bust"],
+)
+def test_dealer_must_hit_under_h17(ranks: tuple[str, ...], must_hit: bool) -> None:
+    """The dealer hits below 17 and on a soft 17, and stands on a hard 17 or better."""
+    assert dealer_must_hit(cards=[Card(rank=rank, suit="♠") for rank in ranks]) is must_hit
 
 
-def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
-    """The multiplayer round advances in join order and resolves dealer play once."""
+def test_blackjack_round_advances_players_then_leaves_the_dealer_to_draw() -> None:
+    """The round advances in join order, and settling the players draws no dealer card."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=12345),
         participants=[seat(user_id=1, display_name="Alice"), seat(user_id=2, display_name="Bob")],
@@ -364,34 +361,9 @@ def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
     round_state.stand(user_id=2)
 
     assert round_state.finished is True
-    assert round_state.dealer_played is True
-    assert round_state.dealer_total() >= 17 or is_bust(cards=round_state.dealer)
-
-
-def test_blackjack_round_can_wait_for_async_dealer_play() -> None:
-    """Async dealer mode leaves the dealer hand unchanged after players stand."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=12345),
-        participants=[seat(user_id=1, display_name="Alice"), seat(user_id=2, display_name="Bob")],
-        auto_play_dealer=False,
-    )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
-    round_state.players[1].hands[0].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
-    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-
-    round_state.stand(user_id=1)
-    round_state.stand(user_id=2)
-
-    assert round_state.finished is True
     assert round_state.dealer_played is False
     assert round_state.needs_dealer_play() is True
     assert [str(card) for card in round_state.dealer] == ["5♣", "6♦"]
-
-    round_state.draw_dealer_card()
-    round_state.mark_dealer_played()
-
-    assert round_state.dealer_played is True
-    assert len(round_state.dealer) == 3
 
 
 def test_blackjack_round_rejects_action_from_non_active_player() -> None:
@@ -539,9 +511,7 @@ def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
     """A round whose shoe has run out still deals, from `draw_card` rather than raising."""
     fallback_card = Card(rank="9", suit="♦")
     monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", lambda rng: fallback_card)
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat()], auto_play_dealer=False
-    )
+    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
     round_state.players[0].hands[0].cards = [Card(rank="2", suit="♠"), Card(rank="3", suit="♥")]
     round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
     round_state.shoe = []
@@ -597,9 +567,7 @@ def test_hit_auto_stands_on_fifth_card_twenty_one() -> None:
 def test_split_hand_can_auto_stand_on_fifth_card_twenty_one() -> None:
     """Non-Ace split hands are evaluated independently for five-card 21."""
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0),
-        participants=[seat(user_id=1, display_name="Alice")],
-        auto_play_dealer=False,
+        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
     )
     player = round_state.players[0]
     player.hands = [

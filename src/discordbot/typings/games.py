@@ -17,7 +17,6 @@ SettleOutcome = Literal[
     "surrender",
 ]
 BlackjackDealerAction = Literal["hit", "stand"]
-BlackjackDealerStepSource = Literal["auto", "guard"]
 BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
 
@@ -397,17 +396,12 @@ class BlackjackDealerStep(BaseModel):
 
     total_before: int = Field(..., description="Dealer hand total before this action.")
     action: BlackjackDealerAction = Field(..., description="Dealer hit or stand action taken.")
-    reason: str = Field(..., description="Rationale recorded for this dealer action.")
-    source: BlackjackDealerStepSource = Field(
-        default="auto", description="Whether the action came from the auto engine or a guard."
-    )
     drawn_card: Card | None = Field(
         default=None, description="Card drawn on a hit, or None for a stand."
     )
     total_after: int | None = Field(
         default=None, description="Dealer hand total after this action, when applicable."
     )
-    forced: bool = Field(default=False, description="True when this step was forced by a guard.")
 
 
 class DragonGatePlayerResult(BaseModel):
@@ -445,7 +439,6 @@ __all__ = [
     "ActionEvAnalysis",
     "BlackjackDealerAction",
     "BlackjackDealerStep",
-    "BlackjackDealerStepSource",
     "BlackjackHandSettlement",
     "BlackjackHistoryHand",
     "BlackjackHistoryInsurance",
