@@ -54,21 +54,21 @@ from discordbot.services.platforms.page_json import (
     json_payloads,
 )
 
-# Every host Facebook serves posts on. `fb.watch` and `fb.com` are the short forms its own share
-# sheet emits; the mobile hosts are matched so a pasted one is recognised as a post URL, and
-# `FacebookURL.clean_url` then aims the fetch at `www` where the payload actually is.
+# Every host Facebook serves posts on, so `FacebookURL.clean_url` aims a fetch from any of them at
+# `www`, where the payload actually is. `fb.watch` and `fb.com` are short forms its own share
+# sheet emits; a `fb.watch/<code>` link names no post that `is_facebook_post_url` accepts, so the
+# pattern matches it and the post filter then refuses it.
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com", "fb.watch"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
-# Deliberately host-anchored rather than path-anchored, the shape `services/platforms/douyin.py` uses: a
-# Facebook post is spelled at least six ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`,
-# `/groups/<id>/permalink/<id>`, `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a
-# group feed carrying `?multi_permalinks=`), and a path pattern covering all six would also
-# match the profile and group-home URLs that are not posts at all. `is_facebook_post_url` makes
-# that call on the parsed URL instead, where the query is readable. The tail class mirrors
-# `THREADS_URL_RE`: ASCII URL characters ending on one that a real id or query value ends on,
-# so a link written mid-sentence in Chinese or Japanese is matched without swallowing the
-# terminator.
+# Deliberately host-anchored rather than path-anchored: a Facebook post is spelled at least six
+# ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`, `/groups/<id>/permalink/<id>`,
+# `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a group feed carrying
+# `?multi_permalinks=`), and a path pattern covering all six would also match the profile and
+# group-home URLs that are not posts at all. `is_facebook_post_url` makes
+# that call on the parsed URL instead, where the query is readable. The tail class is ASCII URL
+# characters ending on one that a real id or query value ends on, so a link written mid-sentence
+# in Chinese or Japanese is matched without swallowing the terminator.
 FACEBOOK_URL_RE = re.compile(
     rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com|fb\.watch)/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
@@ -308,8 +308,8 @@ class FacebookDownloader(PlatformDownloader):
     """Reads a public Facebook post out of its page.
 
     Holds no state and writes nothing to disk, so one instance serves every caller; it is a
-    class rather than a function so a test can replace `_fetch_page` the way the Threads tests
-    do, which is the seam that keeps every test off the network.
+    class rather than a function so a test can replace `_fetch_page`, the one seam that touches
+    the network.
     """
 
     def _fetch_page(self, *, url: str) -> FetchedPage:
@@ -450,14 +450,13 @@ class FacebookDownloader(PlatformDownloader):
     def parse_metadata(self, *, url: str) -> FacebookConversation:
         """Reads one public Facebook post and the comments the page preloaded with it.
 
-        Named to match `ThreadsDownloader.parse_metadata` and `InstagramDownloader.parse_metadata`,
-        and meaning the same on all three: parse the post and write nothing to disk. There is no
-        `parse` counterpart here because nothing is downloaded — the images ride out as URLs.
+        Writes nothing to disk, and there is no `parse` counterpart because nothing is
+        downloaded — the images ride out as URLs.
 
         A share link names its post only through the redirect it answers with, so the id is
-        read off where the fetch landed, exactly as `ThreadsDownloader.extract_post_data` does.
-        A redirect to the login wall means the post is not public, which is a normal outcome
-        rather than a failure and comes back as an empty conversation.
+        read off where the fetch landed. A redirect to the login wall means the post is not
+        public, which is a normal outcome rather than a failure and comes back as an empty
+        conversation.
 
         Args:
             url: The Facebook post URL in any accepted form.

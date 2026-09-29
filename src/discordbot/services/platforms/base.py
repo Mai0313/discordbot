@@ -109,8 +109,7 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
 
     Generic in the Output it holds so a platform declares its own model once and the four
     accessors below come back typed. The surface is identical on every platform on purpose: a
-    caller written against one reads the others without learning a second set of rules, which is
-    what lets one function build AI input from any of them.
+    caller written against one reads the others without learning a second set of rules.
 
     A field a platform cannot fill is still carried rather than dropped, so the accessors mean
     the same thing everywhere — `chain` is a list even where a platform serves no ancestors, and

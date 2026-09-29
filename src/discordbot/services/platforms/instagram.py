@@ -62,12 +62,12 @@ from discordbot.services.platforms.page_json import (
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 
-# Host-anchored like the Douyin and Facebook patterns, because the path alone cannot separate a
-# post from a profile: `/p/<code>/`, `/reel/<code>/` and `/tv/<code>/` are posts, `/<user>/` is
-# not, and `/<user>/p/<code>/` (the form Instagram's own `og:url` reports) is.
-# `is_instagram_post_url` makes that call on the parsed path. The tail class mirrors
-# `THREADS_URL_RE`, so a link written straight after Chinese or Japanese text is matched without
-# swallowing the terminator.
+# Host-anchored rather than path-anchored, because the path alone cannot separate a post from a
+# profile: `/p/<code>/`, `/reel/<code>/` and `/tv/<code>/` are posts, `/<user>/` is not, and
+# `/<user>/p/<code>/` (the form Instagram's own `og:url` reports) is.
+# `is_instagram_post_url` makes that call on the parsed path. The tail class is ASCII URL
+# characters ending on one a real shortcode or query value ends on, so a link written straight
+# after Chinese or Japanese text is matched without swallowing the terminator.
 INSTAGRAM_URL_RE = re.compile(
     rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*instagram\.com/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
@@ -301,9 +301,8 @@ class InstagramDownloader(PlatformDownloader):
     def parse_metadata(self, *, url: str) -> InstagramConversation:
         """Reads one public Instagram post and the comments under it.
 
-        Named to match `ThreadsDownloader.parse_metadata` and `FacebookDownloader.parse_metadata`,
-        and meaning the same on all three: parse the post and write nothing to disk. There is no
-        `parse` counterpart here because nothing is downloaded — the images ride out as URLs.
+        Writes nothing to disk, and there is no `parse` counterpart because nothing is
+        downloaded — the images ride out as URLs.
 
         A private account, a deleted post and a login wall are one outcome from outside, and all
         three come back as an empty conversation rather than an error.

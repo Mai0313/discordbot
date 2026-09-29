@@ -51,9 +51,7 @@ from discordbot.services.platforms.file_downloads import (
     stream_to_file,
 )
 
-# Single source of truth for detecting a Douyin URL, kept module level so the expansion cog,
-# gen_reply and `/download_video` all share it, the way `THREADS_URL_RE` is shared by
-# parse_threads and gen_reply. Douyin's own share button emits the link inside a blob of noise
+# Detects a Douyin URL. Douyin's own share button emits the link inside a blob of noise
 # ("7.64 gOX:/ w@f.oD ... https://v.douyin.com/iR2syBRn/ 复制此链接，打开Dou音搜索"), so the
 # match has to survive being surrounded by CJK text: the path is matched as ASCII URL
 # characters only and must END on `[A-Za-z0-9_/-]`, which stops the match at a trailing
@@ -189,11 +187,8 @@ def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError
 class DouyinMetadata(BaseModel):
     """Metadata for a single Douyin post, parsed without downloading anything.
 
-    The `Metadata` half of this package's convention rather than the `Conversation` half, and
-    deliberately so: a Douyin post has no ancestors and the page serves no comments, so building
-    it as a conversation would mean a `chain` of exactly one and a `reply_branches` nothing can
-    ever fill. A field no platform populates is worse than an absent one — the reason
-    `share_count` is not in the shared nine either.
+    A `Metadata` rather than a `Conversation` (`base.py` has the convention): a Douyin post has
+    no ancestors and the page serves no comments.
     """
 
     aweme_id: str = Field(..., description="Douyin's numeric post id.")
@@ -341,9 +336,8 @@ class _DouyinVideoInfo(_DouyinPayload):
 # fetch. Validated rather than raw, so a re-pasted link costs neither the request nor the parse.
 # The TTL is deliberately far shorter than the CDN signature lifetime baked into the
 # image URLs (`x-expires`): serving a cached payload past that point would hand out URLs that
-# 403 on download, which is worse than re-fetching. Bounded like the other long-lived caches in
-# this project (see `cogs/gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
-# full payload per link it has ever seen.
+# 403 on download, which is worse than re-fetching. Bounded so a long-running bot cannot
+# accumulate one full payload per link it has ever seen.
 _PAYLOAD_CACHE: OrderedDict[str, tuple[float, _DouyinVideoInfo]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
 _PAYLOAD_CACHE_MAX_ENTRIES = 128
@@ -355,11 +349,11 @@ _PAYLOAD_CACHE_MAX_ENTRIES = 128
 # a single popular link produces.
 _LINK_ID_CACHE: OrderedDict[str, str] = OrderedDict()
 _LINK_ID_CACHE_MAX_ENTRIES = 512
-# Downloads run in worker threads (the cog dispatches through asyncio.to_thread), so the read,
-# the LRU touch and the insert have to be one step each. Without it a concurrent eviction between
-# the lookup and the `move_to_end` raises KeyError on what was a cache hit. Only dictionary
-# bookkeeping happens under this lock, never a fetch. Shared by both caches above; they are only
-# ever touched for a few dict operations, so a second lock would buy nothing.
+# Downloads run in worker threads, so the read, the LRU touch and the insert have to be one step
+# each. Without it a concurrent eviction between the lookup and the `move_to_end` raises
+# KeyError on what was a cache hit. Only dictionary bookkeeping happens under this lock, never a
+# fetch. Shared by both caches above; they are only ever touched for a few dict operations, so a
+# second lock would buy nothing.
 _PAYLOAD_CACHE_LOCK = threading.Lock()
 
 
@@ -390,10 +384,9 @@ def _remember_link_id(url: str, aweme_id: str) -> None:
 # Three things hold it down, all cheap: the caches above (one fetch per post per window, none
 # at all for a re-pasted link), the per-URL lock below (simultaneous pastes of one link
 # collapse into a single fetch instead of racing past the cache), and this semaphore (a burst
-# of distinct links queues rather than arriving at Douyin all at once). The lock and the
-# semaphore are taken by the two paths a link arrives on unasked — the expansion cog and
-# `gen_reply`'s context builder — while `/download_video` takes neither: somebody typed that
-# command and is waiting on it. Only the caches below it are shared by all three.
+# of distinct links queues rather than arriving at Douyin all at once). A caller reading a link
+# nobody asked it to takes both the lock and the semaphore; a command somebody typed and is
+# waiting on takes neither. The caches above serve every caller.
 DOUYIN_FETCH_CONCURRENCY = 2
 
 douyin_fetch_semaphore = LoopLocalSemaphore(capacity_provider=lambda: DOUYIN_FETCH_CONCURRENCY)

@@ -1,12 +1,9 @@
 """Twitter (x.com) post URL parsing and reading, through the public syndication endpoint.
 
-Shared by `parse_twitter` (which expands a pasted link into embeds) and `gen_reply` (which reads
-the post into answer context), the same split `facebook.py` and `instagram.py` serve.
-
 **The page itself is unreadable, so this module does not fetch it.** Measured 2026-09-10:
 `x.com/<user>/status/<id>` answers a pure SPA shell with no post text and no Open Graph tags at
 all, for a browser User-Agent and for `facebookexternalhit` / `Twitterbot` / `Discordbot` alike.
-The scrape-the-HTML approach the other two take has nothing to scrape here.
+Scraping the HTML for an embedded payload finds nothing here.
 
 What does work logged out is `cdn.syndication.twimg.com/tweet-result`, the endpoint the official
 embed widget calls. It needs an `id`, a `token` of any non-empty value, and any `User-Agent`
@@ -25,7 +22,7 @@ Three things this source cannot do, each of which the callers have to state rath
 Replies are unreachable. The payload carries `conversation_count` and no reply content, and 13
 parameter variants (`replies`, `conversation`, `cursor`, `expansions`, ...) returned byte-identical
 responses. So `TwitterConversation.reply_branches` is permanently empty — the field is carried only
-so the surface means the same as the other three sources.
+so the shared conversation surface means the same here.
 
 The post being replied to arrives embedded, exactly one level deep, and nothing deeper. Walking
 further is one request per hop, which this module deliberately does not spend: `chain` is
@@ -63,17 +60,17 @@ from discordbot.services.platforms.base import (
     PlatformConversation,
 )
 
-# Path-anchored rather than host-anchored, so unlike Facebook, Instagram and Douyin no `url_filter`
-# is needed on top: `/status/<digits>` names a post and nothing else on the site does, so a profile,
-# the home page or a list never matches in the first place. Both hosts are matched because
-# `twitter.com` still 301s to `x.com` rather than being retired, and the mobile hosts are what a
-# phone's share sheet copies. `/i/web/status/<id>` is the form a link with no handle takes.
+# Path-anchored rather than host-anchored, so no post filter is needed on top: `/status/<digits>`
+# names a post and nothing else on the site does, so a profile, the home page or a list never
+# matches in the first place. Both hosts are matched because `twitter.com` still 301s to `x.com`
+# rather than being retired, and the mobile hosts are what a phone's share sheet copies.
+# `/i/web/status/<id>` is the form a link with no handle takes.
 #
 # The username segment is matched but never trusted: x.com serves the same post under ANY handle,
 # including one that does not exist (measured — it 307s to the real author's URL), so only the id
 # is load-bearing and every URL this module republishes is built by `post_url` from the author the
 # payload names. That also drops the `?s=46&t=<token>` tail, which is minted per share and names
-# whoever passed the link on — the same trap `threads.py` documents for `?xmt=`.
+# whoever passed the link on.
 #
 # The optional `/photo/1` or `/video/1` suffix is what x.com's own image lightbox copies. The query
 # tail is matched so `?s=46&t=<token>` is consumed rather than left dangling, and it ends on
@@ -118,8 +115,7 @@ _REQUEST_TOKEN = "a"  # noqa: S105 — a parameter the endpoint requires and nev
 # this is never a downgrade.
 _ORIGINAL_SIZE_QUERY = "?name=orig"
 
-# Twitter's own cap. Four is also what the Facebook and Instagram cards allow, which is coincidence
-# rather than coupling: theirs is a rendered-message bound and this is the platform's own limit.
+# Twitter's own per-post cap: a platform limit, not a bound on anything rendered.
 _MAX_MEDIA_ITEMS = 4
 
 
@@ -182,7 +178,7 @@ class TwitterOutput(PlatformOutput):
 
     And there is deliberately no `retweet_count`. The endpoint publishes one for an embedded parent
     or quoted post and never for the post actually asked for, and a field a platform cannot fill is
-    worse than an absent one — the same rule that keeps `share_count` off Instagram.
+    worse than an absent one.
     """
 
     video_poster_urls: list[str] = Field(
@@ -214,8 +210,8 @@ class TwitterConversation(PlatformConversation[TwitterOutput]):
 
     `reply_branches` is permanently empty and `selected_comment_id` with it, because the endpoint
     serves no reply content at all — only a count, which rides on `target.comment_count`. Both are
-    carried so a caller written against Threads, Facebook or Instagram reads this without learning
-    a second set of rules.
+    carried so a caller written against the shared conversation surface reads this without
+    learning a second set of rules.
     """
 
     @property
@@ -229,14 +225,13 @@ class TwitterConversation(PlatformConversation[TwitterOutput]):
 
 
 class _TwitterPayload(BaseModel):
-    """Base for the syndication payload mirrors, tolerating the nulls the endpoint serves.
+    """Base for the syndication payload mirrors.
 
     Every field below is optional with a default, because the payload omits rather than nulls most
     of what a given post lacks — `photos` is present-but-empty on a video post, `mediaDetails` is
-    absent entirely on a text post, and `parent` only appears on a reply.
+    absent entirely on a text post, and `parent` only appears on a reply. A null is not absorbed:
+    only a field typed to accept None takes one, and anywhere else it fails validation.
     """
-
-    model_config = {"extra": "ignore"}
 
 
 class _User(_TwitterPayload):
@@ -391,7 +386,7 @@ class _TweetResult(_TwitterPayload):
         default="", alias="__typename", description="`Tweet` or `TweetTombstone`"
     )
 
-    model_config = {"extra": "ignore", "populate_by_name": True}
+    model_config = {"populate_by_name": True}
 
 
 def _body_text(*, tweet: _Tweet) -> str:
@@ -483,9 +478,9 @@ def _build_output(*, tweet: _Tweet, include_quoted: bool = True) -> TwitterOutpu
 class TwitterDownloader(PlatformDownloader):
     """Reads a Twitter post through the public syndication endpoint.
 
-    Holds no state and writes nothing to disk, so one instance serves every caller — the Facebook
-    and Instagram shape. There is deliberately no `parse`: nothing here downloads media. The card
-    hands Discord the image and poster URLs to fetch itself, and the clip rides as a link.
+    Holds no state and writes nothing to disk, so one instance serves every caller. There is
+    deliberately no `parse`: nothing here downloads media, and every image, poster and clip comes
+    back as a URL.
     """
 
     timeout: float = Field(
