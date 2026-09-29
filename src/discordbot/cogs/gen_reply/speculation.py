@@ -39,13 +39,15 @@ async def discard_task[TaskResultT](
 
 
 async def await_deadline_bound_task[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], deadline: float, label: str
+    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
 ) -> DeadlineT:
     """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await drain_deadline_bound_task(task=task, deadline=deadline, label=label)
+        await drain_deadline_bound_task(
+            task=task, deadline=deadline, label=label, message_id=message_id
+        )
         raise
 
 

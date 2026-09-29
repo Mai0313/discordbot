@@ -6690,7 +6690,9 @@ async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder(
         coro=run_until_deadline(awaitable=pending_builder(), deadline=deadline)
     )
     resolver_task = asyncio.create_task(
-        coro=await_deadline_bound_task(task=builder_task, deadline=deadline, label="test")
+        coro=await_deadline_bound_task(
+            task=builder_task, deadline=deadline, label="test", message_id=1
+        )
     )
     await asyncio.wait_for(fut=builder_started.wait(), timeout=1)
     resolver_task.cancel()
@@ -6699,6 +6701,56 @@ async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder(
         await resolver_task
     assert builder_cancelled.is_set()
     assert builder_task.done()
+
+
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A builder failing while a cancelled turn drains it is logged with that turn's message id."""
+    cog = _link_cog(sources=["douyin"])
+    builder_started = asyncio.Event()
+    resolving = asyncio.Event()
+    warned: list[dict[str, Any]] = []
+
+    async def failing_builder(**kwargs: object) -> list[EasyInputMessageParam]:
+        """Runs until cancelled, then fails instead of cancelling."""
+        del kwargs
+        builder_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("builder cleanup failed") from None
+        return []
+
+    async def signalling_await(**kwargs: Any) -> list[EasyInputMessageParam]:  # noqa: ANN401 -- forwarded untouched to the real resolver
+        """Marks the turn as waiting on the build, then waits exactly as the pipeline does."""
+        resolving.set()
+        return await await_deadline_bound_task(**kwargs)
+
+    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the fields of the off-route build failure report."""
+        if message == "Speculative reply context build failed off-route":
+            warned.append(kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.speculation.logfire.warn", record_warn)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
+        failing_builder,
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.pipeline.await_deadline_bound_task", signalling_await
+    )
+
+    message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}")
+    message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    await asyncio.wait_for(fut=builder_started.wait(), timeout=1)
+    await asyncio.wait_for(fut=resolving.wait(), timeout=1)
+    message_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await message_task
+    assert [record["message_id"] for record in warned] == [message.id]
 
 
 async def test_run_until_deadline_keeps_result_completed_before_delayed_resume() -> None:

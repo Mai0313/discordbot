@@ -133,7 +133,7 @@ class ReplyPipeline(BaseModel):
         started = time.monotonic()
         try:
             blocks = await await_deadline_bound_task(
-                task=link_task, deadline=deadline, label=source
+                task=link_task, deadline=deadline, label=source, message_id=self.message.id
             )
         except TimeoutError as exc:
             logfire.warn(
