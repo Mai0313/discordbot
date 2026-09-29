@@ -131,7 +131,7 @@ def test_action_falls_back_to_the_table_when_the_engine_fails(
     def engine_down(**_kwargs: object) -> None:
         raise RuntimeError("engine down")
 
-    monkeypatch.setattr("discordbot.cogs.games.bot_player.compute_action_evs", engine_down)
+    monkeypatch.setattr("discordbot.cogs.games.bot_player.recommend_action", engine_down)
 
     action = choose_bot_action(
         hand_cards=[card(rank="10"), card(rank="6")],

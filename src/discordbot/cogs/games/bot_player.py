@@ -10,9 +10,9 @@ from typing import Final
 
 import logfire
 
-from discordbot.typings.games import Card, BotAction, ActionEvAnalysis
+from discordbot.typings.games import Card, BotAction
 from discordbot.cogs.games.blackjack import is_soft_total, dealer_up_card, card_blackjack_value
-from discordbot.cogs.games.blackjack_ev import compute_action_evs
+from discordbot.cogs.games.blackjack_ev import recommend_action
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
 # play, both measured by offline simulation. The edge is large because the EV engine
@@ -156,7 +156,7 @@ def count_adjusted_edge(*, true_count: float) -> float:
     return BOT_TABLE_EDGE + BOT_EDGE_PER_TRUE_COUNT * true_count
 
 
-def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirroring its signature.
+def _safe_recommend_action(  # noqa: PLR0913 -- thin EV-engine wrapper mirroring its signature.
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
@@ -164,10 +164,10 @@ def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirrori
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
     bet: int | None = None,
-) -> ActionEvAnalysis | None:
+) -> BotAction | None:
     """Runs the EV engine, returning None on any failure so a bot turn never crashes."""
     try:
-        return compute_action_evs(
+        return recommend_action(
             hand_cards=hand_cards,
             dealer_cards=dealer_cards,
             shoe=shoe,
@@ -241,7 +241,7 @@ def choose_bot_action(  # noqa: PLR0913 -- the decision reads the hand, the deal
     The EV engine's hole-aware recommendation, or the up-card-only basic-strategy table
     only when the engine is unavailable.
     """
-    ev_analysis = _safe_compute_action_evs(
+    ev_action = _safe_recommend_action(
         hand_cards=hand_cards,
         dealer_cards=dealer_cards,
         shoe=shoe,
@@ -249,8 +249,8 @@ def choose_bot_action(  # noqa: PLR0913 -- the decision reads the hand, the deal
         doubled=doubled,
         bet=bet,
     )
-    if ev_analysis is not None:
-        return ev_analysis.recommended_action
+    if ev_action is not None:
+        return ev_action
     return fallback_action(
         hand_cards=hand_cards,
         hand_total=is_soft_total(cards=hand_cards)[1],
