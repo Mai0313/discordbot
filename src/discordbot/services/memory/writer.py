@@ -324,14 +324,11 @@ class MemoryWriterAI(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Async OpenAI client for the Responses API memory calls."
     )
-    consolidate_model: ModelSettings = Field(
-        ..., description="Model running the phase-2 consolidation call."
-    )
-    evaluate_model: ModelSettings = Field(
+    model: ModelSettings = Field(
         ...,
         description=(
-            "Model reviewing the answer model's memory notes. Required rather than optional: "
-            "it is the only step that authors a raw entry's fields, so omitting it would turn "
+            "Model running every memory call. Required rather than optional: the note review "
+            "is the only step that authors a raw entry's fields, so omitting it would turn "
             "memory writing into a silent no-op."
         ),
     )
@@ -340,10 +337,6 @@ class MemoryWriterAI(BaseModel):
     )
     consolidate_prompt: str = Field(
         default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
-    )
-    compaction_block: str = Field(
-        default=PHASE2_COMPACTION_BLOCK,
-        description="Extra block appended to the consolidation prompt when compacting.",
     )
 
     async def evaluate(
@@ -377,7 +370,7 @@ class MemoryWriterAI(BaseModel):
             else ()
         )
         draft = await self._parse(
-            model=self.evaluate_model,
+            model=self.model,
             instructions=self.evaluator_prompt,
             user_text=(
                 f"{subject}\n\n"
@@ -408,12 +401,12 @@ class MemoryWriterAI(BaseModel):
             blocks.append(_tagged(tag="existing_tone", body=request.existing_tone))
             blocks.append(_tagged(tag="tone_evidence", body=request.tone_evidence))
         instructions = (
-            self.consolidate_prompt + self.compaction_block
+            self.consolidate_prompt + PHASE2_COMPACTION_BLOCK
             if request.compact
             else self.consolidate_prompt
         )
         result = await self._parse(
-            model=self.consolidate_model,
+            model=self.model,
             instructions=instructions,
             user_text="\n\n".join(blocks),
             text_format=ConsolidatedMemory,
@@ -438,7 +431,7 @@ class MemoryWriterAI(BaseModel):
         land in the note. None means the LLM path failed.
         """
         return await self._parse(
-            model=self.consolidate_model,
+            model=self.model,
             instructions=TONE_FORGET_PROMPT,
             user_text="\n\n".join([
                 _tagged(tag="forget_requests", body=forgets),

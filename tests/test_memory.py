@@ -240,11 +240,7 @@ class FakeMemoryClient:
 def _writer() -> tuple[MemoryWriterAI, FakeMemoryClient]:
     """Builds a MemoryWriterAI bound to a fake client."""
     fake_client = FakeMemoryClient()
-    writer = MemoryWriterAI(
-        client=cast("AsyncOpenAI", fake_client),
-        evaluate_model=TEST_MEMORY_MODEL,
-        consolidate_model=TEST_MEMORY_MODEL,
-    )
+    writer = MemoryWriterAI(client=cast("AsyncOpenAI", fake_client), model=TEST_MEMORY_MODEL)
     return writer, fake_client
 
 
@@ -694,19 +690,15 @@ async def test_consolidate_compact_appends_compaction_block() -> None:
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
 
-async def test_writer_uses_distinct_models_per_phase() -> None:
-    """Two phases, two model fields, dispatched in order. There is no third phase left."""
-    fake_client = FakeMemoryClient()
-    writer = MemoryWriterAI(
-        client=cast("AsyncOpenAI", fake_client),
-        evaluate_model=ModelSettings(name="evaluate-model", effort="minimal"),
-        consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
-    )
+async def test_every_writer_call_runs_on_its_one_model() -> None:
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("偏好明確")
     await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request())
-    assert fake_client.responses.parse_models == ["evaluate-model", "consolidate-model"]
+    fake_client.responses.output_parsed = ToneForget()
+    await writer.forget_tone(forgets="忘掉", note_lines=("說話簡短",), evidence=())
+    assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name] * 3
 
 
 def test_prompts_cover_recent_context_and_compaction() -> None:

@@ -199,9 +199,7 @@ class ReplyToolkit(BaseModel):
             A writer bound to the proxy client and the memory deployments.
         """
         return MemoryWriterAI(
-            client=self.openai_client,
-            evaluate_model=self.runtime_models.memory_writer_model,
-            consolidate_model=self.runtime_models.memory_writer_model,
+            client=self.openai_client, model=self.runtime_models.memory_writer_model
         )
 
     @cached_property
@@ -209,14 +207,13 @@ class ReplyToolkit(BaseModel):
         """The per-server (bot self) memory writing service.
 
         Returns:
-            A writer sharing the per-user models and client but driving the server-flavor
+            A writer sharing the per-user model and client but driving the server-flavor
             prompts, so the bot builds community-level memory per guild through the same
             engine.
         """
         return MemoryWriterAI(
             client=self.openai_client,
-            evaluate_model=self.runtime_models.memory_writer_model,
-            consolidate_model=self.runtime_models.memory_writer_model,
+            model=self.runtime_models.memory_writer_model,
             evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
             consolidate_prompt=SERVER_PHASE2_PROMPT,
         )

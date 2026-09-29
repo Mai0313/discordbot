@@ -93,13 +93,9 @@ class MemoryCogs(commands.Cog):
         """The cached memory writing service used for regeneration.
 
         Returns:
-            A writer bound to this cog's client and the memory models.
+            A writer bound to this cog's client and the memory model.
         """
-        return MemoryWriterAI(
-            client=self.client,
-            evaluate_model=self.runtime_models.memory_writer_model,
-            consolidate_model=self.runtime_models.memory_writer_model,
-        )
+        return MemoryWriterAI(client=self.client, model=self.runtime_models.memory_writer_model)
 
     @nextcord.slash_command(
         name="memory",
