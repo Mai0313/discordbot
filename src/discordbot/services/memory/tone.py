@@ -17,7 +17,7 @@ from functools import partial
 
 import logfire
 
-from discordbot.typings.memory import MemoryFlavor
+from discordbot.typings.memory import TONE_HEADER, MemoryFlavor
 from discordbot.services.memory.store import (
     flavor_of,
     read_tone,
@@ -34,10 +34,6 @@ from discordbot.services.memory.deltas import (
     tone_evidence_from_raw,
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidationRequest
-
-# The exact header a tone note must lead with; the tier is injected on every reply,
-# so anything else is a rewrite that did not land and must not be written.
-_TONE_HEADER = "## 語氣偏好"
 
 
 async def update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the batch, its stamp, and the LLM handle
@@ -128,7 +124,7 @@ async def forget_tone(
     cutoff = newest_stamp(text=forgets)
     note = read_tone(scope=scope).splitlines()
     note_lines = (
-        tuple(line for line in note[1:] if line.strip()) if note[:1] == [_TONE_HEADER] else ()
+        tuple(line for line in note[1:] if line.strip()) if note[:1] == [TONE_HEADER] else ()
     )
     evidence = [
         observation
@@ -150,7 +146,7 @@ async def forget_tone(
     ]
     if len(kept) < len(note_lines):
         if kept:
-            write_tone(scope=scope, content="\n".join([_TONE_HEADER, *kept]))
+            write_tone(scope=scope, content="\n".join([TONE_HEADER, *kept]))
         else:
             clear_tone(scope=scope)
     doomed = {
@@ -197,4 +193,4 @@ def _write_tone_result(scope: str, tone_markdown: str) -> None:
 
 def _tone_is_well_formed(tone_markdown: str) -> bool:
     """Whether a tone note carries the exact header the injected tier is contracted to."""
-    return tone_markdown.startswith(_TONE_HEADER)
+    return tone_markdown.startswith(TONE_HEADER)

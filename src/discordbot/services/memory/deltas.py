@@ -28,7 +28,13 @@ from itertools import groupby
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor, MemorySection
+from discordbot.typings.memory import (
+    FORGET_REQUEST_CATEGORY,
+    MemoryFact,
+    MemoryOwner,
+    MemoryFlavor,
+    MemorySection,
+)
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
     utc_now,
@@ -45,7 +51,7 @@ from discordbot.services.memory.store import (
     delete_fact,
     guild_compartment,
 )
-from discordbot.services.memory.writer import FORGET_REQUEST_CATEGORY, MemoryFactDelta
+from discordbot.services.memory.writer import MemoryFactDelta
 from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,

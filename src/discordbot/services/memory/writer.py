@@ -13,6 +13,8 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.memory import (
+    TONE_HEADER,
+    FORGET_REQUEST_CATEGORY,
     MemorySection,
     MemorySharing,
     MemoryCategory,
@@ -106,12 +108,6 @@ _NOTES_BLOCK_RE = re.compile(
     r"^\[memory notes \| (?P<kind>remember|forget)\]$(?P<body>(?:\n(?:[ \t]+.*)?)*)",
     flags=re.MULTILINE,
 )
-# The `### <category>` header a forget request carries inside `raw.md`. Deliberately not a
-# `MemoryCategory`: a forget is an instruction to consolidation, not an observation to store, and
-# keeping it out of that vocabulary is what keeps it out of every reader that walks observation
-# fields. `render_forget_requests` has the rest.
-FORGET_REQUEST_CATEGORY = "forget_request"
-
 _REJECTED_EVIDENCE_KINDS = frozenset({
     "casual_mention",
     "hypothetical",
@@ -257,7 +253,7 @@ class ConsolidatedMemory(BaseModel):
     tone_markdown: str = Field(
         default="",
         description=(
-            "Full rewritten per-user tone note starting with `## 語氣偏好`; empty when the "
+            f"Full rewritten per-user tone note starting with `{TONE_HEADER}`; empty when the "
             "corpus carries no tone signal. Only the request carrying `<tone_evidence>` "
             "emits one."
         ),

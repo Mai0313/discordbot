@@ -41,6 +41,7 @@ type MemoryEvidenceKind = Literal[
     "other_user_context",
     "unknown",
 ]
+
 type MemoryConfidence = Literal["low", "medium", "high"]
 type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
 type MemorySharing = Literal["global", "source_only"]
@@ -68,6 +69,16 @@ type MemoryNodeType = Literal["memory", "member_alias"]
 # What one consolidation delta asks for. `create` mints a fresh id, `update` and
 # `delete` name an existing one.
 type MemoryDeltaAction = Literal["create", "update", "delete"]
+
+# The `### <category>` header a forget request carries inside `raw.md`. Deliberately not a
+# `MemoryCategory`: a forget is an instruction to consolidation, not an observation to store, and
+# keeping it out of that vocabulary is what keeps it out of every reader that walks observation
+# fields.
+FORGET_REQUEST_CATEGORY = "forget_request"
+
+# The exact header a tone note must lead with. The tier is injected on every reply, so anything
+# else is a rewrite that did not land and must not be written.
+TONE_HEADER = "## 語氣偏好"
 
 
 class MemoryOwner(BaseModel):
