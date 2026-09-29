@@ -2647,6 +2647,34 @@ async def test_a_clear_during_the_tone_call_keeps_the_batch_out_of_detail(
     assert read_tone(scope=USER_SCOPE) == ""
 
 
+async def test_a_clear_during_a_compartment_call_writes_nothing_back(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clear finishing while a compartment's call is in flight keeps that call's deltas out.
+
+    The clear never waits for `scope_lock`, so the answer arrives after the store is gone;
+    applying it would recreate a fact from the conversation the user just erased.
+    """
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    _stage_raw_observation(
+        summary="全域偏好", key="preference.global", sharing="global", source="guild 222"
+    )
+    writer, fake_client = _writer()
+    cleared: list[bool] = []
+
+    async def clear_mid_call(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Runs the user's clear to completion, then answers the call as if nothing happened."""
+        del body, text_format
+        cleared.append(await pipeline.clear_scope_memory(scope=USER_SCOPE))
+        return _consolidated(summary="清除前的事實", text="清除前的事實")
+
+    fake_client.responses.answer = clear_mid_call
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+
+    assert cleared == [True]
+    assert not (memory_isolated_dir / str(USER_ID)).exists()
+
+
 async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     parse_started = asyncio.Event()
