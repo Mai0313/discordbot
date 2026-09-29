@@ -23,7 +23,6 @@ import nextcord
 from nextcord import (
     Embed,
     Locale,
-    Object,
     Thread,
     Message,
     NotFound,
@@ -55,7 +54,7 @@ from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
-from discordbot.cogs.research.delivery import deliver_report
+from discordbot.cogs.research.delivery import deliver_report, owner_allowed_mentions
 from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
 if TYPE_CHECKING:
@@ -183,10 +182,7 @@ class ResearchCogs(commands.Cog):
         if not self.config.deep_research_available:
             return
         outcome, existing = await self._start_for(
-            owner_id=message.author.id,
-            owner_mention=message.author.mention,
-            brief=brief,
-            anchor=anchor or message,
+            owner_id=message.author.id, brief=brief, anchor=anchor or message
         )
         if outcome == "exists" and existing is not None:
             with contextlib.suppress(Exception):
@@ -259,7 +255,7 @@ class ResearchCogs(commands.Cog):
         try:
             anchor = await interaction.channel.send(
                 content=f"{interaction.user.mention} 要研究:{topic[:200]}",
-                allowed_mentions=_owner_allowed_mentions(owner_id=interaction.user.id),
+                allowed_mentions=owner_allowed_mentions(owner_id=interaction.user.id),
             )
         except Forbidden:
             # The command reached a channel the bot's own identity may not post in; the server's
@@ -272,10 +268,7 @@ class ResearchCogs(commands.Cog):
             await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
             return
         outcome, existing = await self._start_for(
-            owner_id=interaction.user.id,
-            owner_mention=interaction.user.mention,
-            brief=topic,
-            anchor=anchor,
+            owner_id=interaction.user.id, brief=topic, anchor=anchor
         )
         if outcome == "started" and existing is not None:
             await interaction.edit_original_message(content=f"開好了:<#{existing}>")
@@ -293,7 +286,7 @@ class ResearchCogs(commands.Cog):
             await interaction.edit_original_message(content="開研究串失敗了,等等再試一次")
 
     async def _start_for(
-        self, *, owner_id: int, owner_mention: str, brief: str, anchor: "Message"
+        self, *, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims the owner's slot, opens the thread, and spawns the research.
 
@@ -349,21 +342,13 @@ class ResearchCogs(commands.Cog):
         # normal QA pipeline reactions (best-effort).
         with contextlib.suppress(Exception):
             await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
-        self._spawn(
-            self._run_research(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                brief=brief,
-                agent=agent,
-            )
-        )
+        self._spawn(self._run_research(thread=thread, owner_id=owner_id, brief=brief, agent=agent))
         return "started", thread.id
 
     # ----- research runs ------------------------------------------------------------------
 
     async def _run_research(
-        self, *, thread: "Thread", owner_id: int, owner_mention: str, brief: str, agent: str
+        self, *, thread: "Thread", owner_id: int, brief: str, agent: str
     ) -> None:
         """Streams the Antigravity research and delivers the report into the thread."""
         status = await self._safe_send(
@@ -393,22 +378,11 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._fail_run(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                exc=exc,
-                status=status,
-            )
+            await self._fail_run(thread=thread, owner_id=owner_id, exc=exc, status=status)
             return
         try:
             await self._finish(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                result=result,
-                agent=agent,
-                status=status,
+                thread=thread, owner_id=owner_id, result=result, agent=agent, status=status
             )
         except Exception as exc:
             logfire.error(
@@ -418,39 +392,24 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._fail_run(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                exc=exc,
-                status=status,
-            )
+            await self._fail_run(thread=thread, owner_id=owner_id, exc=exc, status=status)
 
     async def _fail_run(
-        self,
-        *,
-        thread: "Thread",
-        owner_id: int,
-        owner_mention: str,
-        exc: Exception,
-        status: Message | None,
+        self, *, thread: "Thread", owner_id: int, exc: Exception, status: Message | None
     ) -> None:
         """Tells the owner a run died, finalizes its status message, and frees the owner's slot."""
-        await self._post_failure(
-            thread=thread, owner_id=owner_id, owner_mention=owner_mention, exc=exc
-        )
+        await self._post_failure(thread=thread, owner_id=owner_id, exc=exc)
         await self._finalize_status(
             status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
         )
         await db.set_phase(thread_id=thread.id, phase="failed")
         self._active_threads.discard(thread.id)
 
-    async def _finish(  # noqa: PLR0913 -- the owner's two handles plus the result's context
+    async def _finish(
         self,
         *,
         thread: "Thread",
         owner_id: int,
-        owner_mention: str,
         result: ResearchResult,
         agent: str,
         status: Message | None,
@@ -463,10 +422,7 @@ class ResearchCogs(commands.Cog):
         """
         if not result.ok:
             await self._post_failure(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                reason=_failure_text(status=result.status),
+                thread=thread, owner_id=owner_id, reason=_failure_text(status=result.status)
             )
             await self._finalize_status(
                 status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
@@ -480,10 +436,9 @@ class ResearchCogs(commands.Cog):
         await deliver_report(
             thread=thread,
             status=status,
-            owner_mention=owner_mention,
+            owner_id=owner_id,
             result=result,
             footer=footer,
-            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
             media_delivery=self.media_delivery,
         )
         await db.set_phase(thread_id=thread.id, phase="done")
@@ -530,7 +485,6 @@ class ResearchCogs(commands.Cog):
         *,
         thread: "Thread",
         owner_id: int,
-        owner_mention: str,
         exc: Exception | None = None,
         reason: str | None = None,
     ) -> None:
@@ -550,9 +504,9 @@ class ResearchCogs(commands.Cog):
             embed.set_footer(text=type(exc).__name__)
         try:
             await thread.send(
-                content=f"{owner_mention} ⚠️",
+                content=f"<@{owner_id}> ⚠️",
                 embed=embed,
-                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+                allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
             )
         except Forbidden:
             logfire.warn("research thread refused the failure notice", thread_id=thread.id)
@@ -608,7 +562,6 @@ class ResearchCogs(commands.Cog):
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
         thread = await self._fetch_thread(thread_id=session.thread_id)
-        owner_mention = f"<@{session.owner_id}>"
         # No interaction id means the row was written but the bot restarted before the run id was
         # stored; there is nothing to resume. Tell the thread so the owner is not left staring at
         # the old `Researching...` message forever.
@@ -646,7 +599,6 @@ class ResearchCogs(commands.Cog):
         await self._finish(
             thread=thread,
             owner_id=session.owner_id,
-            owner_mention=owner_mention,
             result=result,
             agent=session.agent,
             status=status,
@@ -659,7 +611,7 @@ class ResearchCogs(commands.Cog):
         await self._safe_send(
             thread=thread,
             content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
-            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+            allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
         )
 
     async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
@@ -730,16 +682,6 @@ def _failure_text(*, status: str) -> str:
     if status == "cancelled":
         return "研究被取消了"
     return "研究沒有順利完成,等等再試試"
-
-
-def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
-    """Restricts a research message to pinging only its owner.
-
-    The anchor carries the user's topic and the report text is agent-generated, so any
-    `@everyone` / role / other-user mention either contains must not resolve; only the
-    deliberate owner ping is allowed through.
-    """
-    return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
 
 def setup(bot: commands.Bot) -> None:

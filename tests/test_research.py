@@ -23,6 +23,7 @@ from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_mark
 from discordbot.cogs.research.delivery import (
     split_report,
     deliver_report,
+    owner_allowed_mentions,
     split_report_by_sections,
 )
 from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT, ResearchProgressStreamer
@@ -571,7 +572,7 @@ def test_deep_research_available_requires_enabled_and_key() -> None:
 
 
 def test_owner_allowed_mentions_blocks_everyone_and_roles() -> None:
-    mentions = research_cog._owner_allowed_mentions(owner_id=42)
+    mentions = owner_allowed_mentions(owner_id=42)
     assert mentions.everyone is False
     assert mentions.roles is False
     users = mentions.users
@@ -737,16 +738,14 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     status = _FakeStatusMessage()
     thread = _FakeThread()
     footer = "-# antigravity-preview-09-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
-    mentions = AllowedMentions(everyone=False, roles=False, users=[])
     # A report chunk that sits just under the 2000-char message cap; appending the footer inline
     # would overflow, so it must ride its own trailing message.
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
-        owner_mention="<@1>",
+        owner_id=1,
         result=_completed_result(report_text="X" * 1990),
         footer=footer,
-        allowed_mentions=mentions,
         media_delivery=_disabled_delivery(),
     )
     contents = [str(edit["content"]) for edit in status.edits]
@@ -758,7 +757,11 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     assert footer in str(footer_send["content"])
     assert footer_send["files"]
     # Every report message carries the owner-only mention policy so agent text can't mass-ping.
-    assert footer_send["allowed_mentions"] is mentions
+    mentions = cast("AllowedMentions", footer_send["allowed_mentions"])
+    assert mentions.everyone is False
+    assert mentions.roles is False
+    assert isinstance(mentions.users, list)
+    assert [user.id for user in mentions.users] == [1]
     assert status.edits[0]["allowed_mentions"] is mentions
 
 
@@ -768,10 +771,9 @@ async def test_delivery_inlines_footer_for_short_reports() -> None:
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
-        owner_mention="<@1>",
+        owner_id=1,
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=_disabled_delivery(),
     )
     # One message: the opening status edited into report + footer + the research.md attachment.
@@ -796,10 +798,9 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
-        owner_mention="<@1>",
+        owner_id=1,
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=planner,
     )
     # The report .md was hosted (no native attachment); its URL rides the message content.
@@ -822,10 +823,9 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
-        owner_mention="<@1>",
+        owner_id=1,
         result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
         footer="-# footer",
-        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=_disabled_delivery(),
     )
     edit = status.edits[0]
@@ -1147,10 +1147,9 @@ async def test_a_refused_report_is_a_warn_even_on_its_last_message(
     await deliver_report(
         thread=cast("Thread", _RefusingThread()),
         status=None,
-        owner_mention="<@1>",
+        owner_id=1,
         result=_completed_result(report_text="report"),
         footer="-# footer",
-        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=_disabled_delivery(),
     )
 
@@ -1200,10 +1199,9 @@ async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file
     await deliver_report(
         thread=cast("Thread", thread),
         status=as_message(fake=_RefusingStatus()),
-        owner_mention="<@1>",
+        owner_id=1,
         result=_completed_result(report_text="the whole report"),
         footer="-# footer",
-        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=_disabled_delivery(),
     )
 

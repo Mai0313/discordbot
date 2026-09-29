@@ -12,7 +12,7 @@ last chunk, having spent the opening status message on the first.
 from typing import TYPE_CHECKING
 
 import logfire
-from nextcord import File, Message, Forbidden, AllowedMentions
+from nextcord import File, Object, Message, Forbidden, AllowedMentions
 
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
 from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT
@@ -21,6 +21,16 @@ if TYPE_CHECKING:
     from nextcord import Thread
 
     from discordbot.cogs.research.agent import ResearchResult
+
+
+def owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
+    """Restricts a research message to pinging only its owner.
+
+    The anchor carries the user's topic and the report text is agent-generated, so any
+    `@everyone` / role / other-user mention either contains must not resolve; only the
+    deliberate owner ping is allowed through.
+    """
+    return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
 
 def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
@@ -94,10 +104,9 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     *,
     thread: "Thread",
     status: Message | None,
-    owner_mention: str,
+    owner_id: int,
     result: "ResearchResult",
     footer: str,
-    allowed_mentions: AllowedMentions,
     media_delivery: MediaDeliveryPlanner,
 ) -> None:
     """Delivers the report into the thread.
@@ -107,10 +116,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     the owner ping, and the full report as a `research.md` attachment (plus any generated image).
     A report file too big to upload is hosted on the external static server and linked on the last
     chunk instead of being dropped; if hosting is unavailable it degrades to today's silent drop.
-    Every write is best-effort.
-
-    `allowed_mentions` restricts the report body (agent-generated, so it may quote `@everyone` /
-    roles / other users) to ping only the owner; the caller passes an owner-only policy.
+    Every write is best-effort, and every one may ping only the owner (`owner_allowed_mentions`).
     """
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report_by_sections(text=report) or ["(empty report)"]
@@ -136,11 +142,12 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     # cap; otherwise it becomes its own trailing message so a near-limit final chunk never pushes the
     # send over the limit and drops the chunk / attachment.
     hosted_lines = ("\n" + "\n".join(hosted_urls)) if hosted_urls else ""
-    suffix = f"\n\n{owner_mention}\n{footer}{hosted_lines}"
+    suffix = f"\n\n<@{owner_id}>\n{footer}{hosted_lines}"
     if len(chunks[-1]) + len(suffix) <= DISCORD_MESSAGE_LIMIT:
         chunks[-1] = f"{chunks[-1]}{suffix}"
     else:
         chunks.append(suffix.lstrip("\n"))
+    allowed_mentions = owner_allowed_mentions(owner_id=owner_id)
     last = len(chunks) - 1
     for index, chunk in enumerate(chunks):
         is_last = index == last
