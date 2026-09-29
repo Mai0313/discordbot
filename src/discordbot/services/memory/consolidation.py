@@ -38,6 +38,7 @@ from discordbot.services.memory.store import (
     rewrite_evidence,
     count_raw_entries,
     list_compartments,
+    compartment_guild_id,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -555,7 +556,8 @@ def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
         return "cross-server safe memory; readable in every server and DM this user takes part in"
     if compartment == DM_COMPARTMENT:
         return "private memory; readable only in this user's own direct messages with the bot"
-    return f"memory readable only inside Discord server {compartment.removeprefix('g/')}"
+    guild_id = compartment_guild_id(compartment=compartment)
+    return f"memory readable only inside Discord server {guild_id}"
 
 
 def report_injection_size(scope: str, flavor: MemoryFlavor) -> None:

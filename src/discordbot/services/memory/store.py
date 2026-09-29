@@ -103,6 +103,12 @@ def guild_compartment(guild_id: int) -> str:
     return f"{_GUILD_DIR_NAME}/{guild_id}"
 
 
+def compartment_guild_id(compartment: str) -> int | None:
+    """Returns the guild a `guild_compartment` is readable in, or None for any other shape."""
+    parent, _, guild_id = compartment.partition("/")
+    return int(guild_id) if parent == _GUILD_DIR_NAME and guild_id.isdecimal() else None
+
+
 def scope_owner_id(scope: str) -> int:
     """Returns the Discord id a scope belongs to (a user id, or a server id)."""
     return int(scope.rsplit("/", maxsplit=1)[-1])
