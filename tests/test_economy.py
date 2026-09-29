@@ -36,7 +36,9 @@ from discordbot.services.economy.database import (
     UserWallet,
     JackpotPool,
     UserAccount,
+    CasinoLedger,
     CasinoAccount,
+    CentralBankLedger,
     top_n,
     buy_vip,
     get_vip,
@@ -56,6 +58,7 @@ from discordbot.services.economy.database import (
     credit_with_repayment,
     apply_round_settlement,
     get_casino_daily_stats,
+    get_central_bank_status,
     apply_jackpot_settlement,
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
@@ -1308,18 +1311,31 @@ async def test_apply_round_settlement_concurrent_casino_updates_accumulate() -> 
     assert ledger.total_spent == 0
 
 
-async def test_apply_round_settlement_is_atomic() -> None:
-    """Player delta and casino mirror share one transaction and one return."""
+async def test_apply_round_settlement_is_atomic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A casino mirror that fails takes the player's side of the round down with it.
+
+    The player is written first, so only one shared transaction stops that write from
+    committing on its own when the house side raises.
+    """
     await seed_balance(user_id=1, name="alice", amount=100)
 
-    result = await apply_round_settlement(
-        player_id=1, player_account_name="alice", player_delta=40, casino_delta=-40
+    async def failing_casino_mirror(**_kwargs: object) -> int:
+        """Fails the house side after the player side has been written."""
+        raise RuntimeError("forced casino failure")
+
+    monkeypatch.setattr(
+        "discordbot.services.economy.database._apply_casino_ledger_delta_in_session",
+        failing_casino_mirror,
     )
-    assert result.player_balance == 140
-    assert result.casino_balance == -40
-    assert await get_balance(user_id=1) == 140
-    ledger = await get_casino_ledger()
-    assert ledger.balance == -40
+
+    with pytest.raises(expected_exception=RuntimeError, match="forced casino failure"):
+        await apply_round_settlement(
+            player_id=1, player_account_name="alice", player_delta=40, casino_delta=-40
+        )
+
+    await assert_wallet_consistent(user_id=1, expected_balance=100)
+    await assert_casino_ledger_consistent(expected_balance=0)
+    assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
 
 
 async def test_apply_round_settlement_loss_debits_player_and_casino() -> None:
@@ -2314,25 +2330,43 @@ async def test_get_jackpot_pool_replenishes_drained_seed_pool() -> None:
     assert snapshot.generation == 1
 
 
-async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
+async def test_ensure_schema_rerun_keeps_every_seeded_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_ensure_schema seeds the dragon_gate pool exactly once across calls."""
+    """A restart keeps the jackpot pool and both ledgers where play left them.
+
+    Each row is moved off its seed first, since a bootstrap that reset them would otherwise
+    look exactly like one that left them alone.
+    """
     db_path = tmp_path / "seed-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-
     await _ensure_schema()
-    first_balance = await get_jackpot_pool(game_id="dragon_gate")
-    assert first_balance == 1_000
+    async with open_session() as session:
+        await session.execute(
+            statement=update(JackpotPool)
+            .where(JackpotPool.game_id == "dragon_gate")
+            .values(pool_balance=1_234, generation=3)
+        )
+        await session.execute(
+            statement=update(CasinoLedger).values(balance=-55, total_earned=5, total_spent=60)
+        )
+        await session.execute(
+            statement=update(CentralBankLedger).values(balance=77, total_earned=77)
+        )
+        await session.commit()
+    await engine.dispose()
 
-    # Calling again is idempotent: the seed must not pile on top of itself. A second engine on
-    # the same file is what makes the bootstrap actually run again — readiness is tracked by
-    # engine identity — and it is also what a restart against a seeded database looks like.
+    # A second engine on the same file is what makes the bootstrap run again (readiness is
+    # tracked by engine identity), and it is also what a restart looks like.
     restarted = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", restarted)
     await _ensure_schema()
-    assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
 
+    jackpot = await get_jackpot_snapshot(game_id="dragon_gate")
+    ledger = await get_casino_ledger()
+    central_bank = await get_central_bank_status(guild_id=1)
+    assert (jackpot.balance, jackpot.generation) == (1_234, 3)
+    assert (ledger.balance, ledger.total_earned, ledger.total_spent) == (-55, 5, 60)
+    assert central_bank.ledger_balance == 77
     await restarted.dispose()
-    await engine.dispose()
