@@ -19,7 +19,9 @@ from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
+from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
+from discordbot.utils.message_cleanup import delete_tracked_public_messages
 from discordbot.services.economy.database import credit_with_repayment, record_guild_participant
 
 
@@ -49,6 +51,7 @@ class DiscordBot(commands.Bot):
         # boot with ExtensionFailed.
         self._load_cogs_sync()
         self._initial_setup_done = False
+        self._startup_tasks: set[asyncio.Task[None]] = set()
         # Process-local per-user cooldown for the flat message reward, so it
         # cannot be farmed by spamming. Resets on restart by design.
         self._message_reward_at: dict[int, float] = {}
@@ -183,6 +186,14 @@ class DiscordBot(commands.Bot):
             logfire.warn("on_ready fired without a logged-in user; skipping initial setup")
             return
         self._initial_setup_done = True
+        # Every cog that posts an expiring public message records it in one table, so the
+        # process sweeps what a previous one left rather than any one cog. Spawned ahead of the
+        # command sync so a raise there cannot skip it.
+        spawn_tracked(
+            coro=delete_tracked_public_messages(bot=self),
+            tasks=self._startup_tasks,
+            name="delete-stale-public-responses",
+        )
 
         logfire.info(
             "Logged in",

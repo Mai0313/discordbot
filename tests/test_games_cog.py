@@ -378,24 +378,6 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     assert isinstance(other_interaction.response.sent[0]["content"], str)
 
 
-async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies startup cleanup runs once per GamesCogs instance."""
-    bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
-    calls: list[SimpleNamespace] = []
-
-    async def record_cleanup(bot: SimpleNamespace) -> None:
-        """Records the bot passed to startup cleanup."""
-        calls.append(bot)
-
-    monkeypatch.setattr(games, "delete_tracked_public_messages", record_cleanup)
-    cog = GamesCogs(bot=as_bot(fake=bot))
-
-    await cog.on_ready()
-    await cog.on_ready()
-
-    assert calls == [bot]
-
-
 async def test_prepare_participant_insufficient_balance_applies_embed_spacer() -> None:
     """Insufficient-balance lobby join reply carries the shared embed spacer."""
     interaction = FakeInteraction(user=FakeUser(user_id=7))
