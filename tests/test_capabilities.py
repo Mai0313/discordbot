@@ -74,7 +74,7 @@ _READMES = ("README.md", "README.zh-CN.md", "README.zh-TW.md")
 _TABLE_CELL_RE = re.compile(pattern=r"(?<!\\)\|")
 # One word of a command path, siblings included. An option (`<url>`, `[member]`) or an
 # argument (`@bot`) is not one, and ends the path.
-_PATH_WORD_RE = re.compile(pattern=r"[\w\\|]+")
+_PATH_WORD_RE = re.compile(pattern=r"[\w\\|-]+")
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -230,6 +230,7 @@ def _span_command_paths(span: str) -> set[str]:
         if _PATH_WORD_RE.fullmatch(string=word) is None:
             break
         words.append(word)
+    assert words, f"README span `{span}` starts with / but names no command"
     *parents, leaf = words
     return {" ".join([*parents, sibling]) for sibling in leaf.split(sep="\\|")}
 
@@ -260,18 +261,23 @@ def _readme_command_table(readme: str) -> tuple[set[str], set[str]]:
 def _workflow_path_filters(workflow: str) -> list[list[str]]:
     """Returns every `paths:` list in a workflow, in file order.
 
-    Read line by line because the project does not depend on a YAML parser. A list ends at its
-    first line that is not an item, so a reshaped filter reads short and fails, never passes.
+    Read line by line because the project does not depend on a YAML parser, so only the block
+    form is accepted: a `paths:` key carrying anything on its own line fails here. Comment and
+    blank lines inside a list are skipped, an item loses its surrounding quotes, and the list
+    ends at the first other line.
     """
     filters: list[list[str]] = []
     current: list[str] | None = None
     for line in workflow.splitlines():
         stripped = line.strip()
-        if stripped == "paths:":
+        if stripped.startswith("paths:"):
+            assert stripped == "paths:", f"only a block-style `paths:` list can be read: {line}"
             current = []
             filters.append(current)
         elif current is not None and stripped.startswith("- "):
-            current.append(stripped.removeprefix("- ").strip('"'))
+            current.append(stripped.removeprefix("- ").strip("\"'"))
+        elif current is not None and (not stripped or stripped.startswith("#")):
+            continue
         else:
             current = None
     return filters
@@ -810,10 +816,17 @@ def test_the_tests_workflow_reruns_on_an_edit_to_a_document_this_module_reads() 
     filters = _workflow_path_filters(workflow=workflow)
     assert filters, ".github/workflows/test.yml has no `paths:` list this test can read"
     read_here = (document.relative_to(repo_root).as_posix(), *_READMES)
-    missing = sorted({path for paths in filters for path in read_here if path not in paths})
+    missing: set[str] = set()
+    for paths in filters:
+        # GitHub applies the patterns in order, so a re-include counts only after every exclusion.
+        start = max(
+            (index + 1 for index, path in enumerate(paths) if path.startswith("!")), default=0
+        )
+        missing |= {path for path in read_here if path not in paths[start:]}
     assert not missing, (
         "an edit to these documents can turn this module red, so every `paths:` list in "
-        f".github/workflows/test.yml must re-include them past its `!**/*.md` rule: {missing}"
+        ".github/workflows/test.yml must re-include them after its last `!` exclusion: "
+        f"{sorted(missing)}"
     )
 
 
