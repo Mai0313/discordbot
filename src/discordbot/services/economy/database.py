@@ -440,6 +440,16 @@ def invalidate_economy_leaderboard_cache() -> None:
     _top_losers_cache.clear()
 
 
+async def _commit_balance_write(session: AsyncSession) -> None:
+    """Commits a write that moved a balance, then clears the leaderboard caches.
+
+    The clear has to follow the commit: cleared any earlier, a leaderboard read in between
+    caches the rows the write is about to replace, and serves them until the TTL runs out.
+    """
+    await session.commit()
+    invalidate_economy_leaderboard_cache()
+
+
 def _cached_leaderboard_rows[K, R](
     cache: dict[K, tuple[float, tuple[R, ...]]], cache_key: K
 ) -> list[R] | None:
@@ -685,7 +695,6 @@ async def _apply_daily_casino_delta_in_session(
             },
         )
     )
-    invalidate_economy_leaderboard_cache()
 
 
 async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper keeps income writes atomic
@@ -705,7 +714,6 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
         statement=_build_credit_upsert(user_id=user_id, name=name, amount=amount, now=now)
     )
     new_balance = result.scalar_one()
-    invalidate_economy_leaderboard_cache()
     return CreditResult(new_balance=new_balance, credited_amount=amount)
 
 
@@ -782,7 +790,6 @@ async def _try_insert_clamped_positive_delta_in_session(
     inserted_balance = insert_result.scalar_one_or_none()
     if inserted_balance is None:
         return None
-    invalidate_economy_leaderboard_cache()
     return inserted_balance, delta
 
 
@@ -813,8 +820,6 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     )
     if update_result.scalar_one_or_none() is None:
         return None
-    if applied != 0:
-        invalidate_economy_leaderboard_cache()
     return new_balance, applied
 
 
@@ -831,10 +836,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     )
     stmt = _build_signed_delta_upsert(user_id=user_id, name=name, delta=delta, now=now)
     result = await session.execute(statement=stmt)
-    new_balance = result.scalar_one()
-    if delta != 0:
-        invalidate_economy_leaderboard_cache()
-    return new_balance
+    return result.scalar_one()
 
 
 async def _apply_casino_ledger_delta_in_session(
@@ -1055,8 +1057,7 @@ async def credit_with_repayment(
             amount=amount,
             now=now,
         )
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
 
 
@@ -1107,8 +1108,7 @@ async def adjust_balance(
                 delta=delta,
                 now=now,
             )
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
 
 
@@ -1167,11 +1167,10 @@ async def apply_round_settlement(
                 casino_balance = await _apply_casino_ledger_delta_in_session(
                     session=session, delta=casino_delta_to_apply, now=now
                 )
-            await session.commit()
+            await _commit_balance_write(session=session)
         except Exception:
             await _rollback_sessions(session)
             raise
-    invalidate_economy_leaderboard_cache()
     return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
 
 
@@ -1563,9 +1562,10 @@ async def apply_jackpot_settlement_batch(
                     session=session, game_id=game_id, now=now
                 )
 
-            await session.commit()
             if any(delta != 0 for delta in applied_player_deltas.values()):
-                invalidate_economy_leaderboard_cache()
+                await _commit_balance_write(session=session)
+            else:
+                await session.commit()
             return JackpotSettlementBatchResult(
                 player_balances=player_balances,
                 applied_player_deltas=applied_player_deltas,
@@ -1652,8 +1652,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 await session.rollback()
                 continue
 
-            await session.commit()
-            invalidate_economy_leaderboard_cache()
+            await _commit_balance_write(session=session)
             return VipPurchaseResult(new_balance=wallet_row[0], cost=cost)
 
         return None
@@ -1897,8 +1896,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         credit_result = await session.execute(statement=credit_stmt)
         receiver_balance = credit_result.scalar_one()
 
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return TransferResult(
             sender_balance=sender_balance,
             receiver_balance=receiver_balance,
@@ -2572,7 +2570,6 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             )
         )
         borrower_balance = credit_result.scalar_one()
-        invalidate_economy_leaderboard_cache()
         # Prepay MIN_INTEREST_DAYS of interest so borrowers cannot dodge interest
         # by repaying immediately. last_interest_accrued_at points past the
         # prepaid window, so _loan_interest_delta returns 0 until real time
@@ -2602,8 +2599,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             updated_at=now,
         )
         session.add(contract)
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         if proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST and guild_id is not None:
             central_status = await get_central_bank_status(
                 guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
@@ -2673,8 +2669,6 @@ async def _pay_lender_side_in_session(
             user_id=contract.lender_id, name=contract.lender_name, amount=paid, now=now
         )
     )
-    # The borrower debit in the caller already cleared the leaderboard cache for this
-    # transaction, so the lender credit needs no extra invalidation.
     return credit_result.scalar_one()
 
 
@@ -2789,8 +2783,7 @@ async def repay_personal_loans(
         if result is None:
             await session.rollback()
             return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
 
 
@@ -2829,8 +2822,7 @@ async def call_personal_loans(
         if result is None:
             await session.rollback()
             return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
 
 
@@ -2856,8 +2848,7 @@ async def repay_central_bank_loans(
         if result is None:
             await session.rollback()
             return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
 
 
@@ -2903,8 +2894,7 @@ async def call_central_bank_loans(
         if result is None:
             await session.rollback()
             return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
 
 
