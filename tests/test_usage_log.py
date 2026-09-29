@@ -8,7 +8,7 @@ from pathlib import Path
 
 from nextcord import InteractionType
 
-from discordbot.cogs.usage.cog import UsageCogs, setup, command_path
+from discordbot.cogs.usage.cog import UsageCogs, command_path
 from discordbot.utils.timezone import database_now
 from discordbot.utils.usage_log import UsageRecord, UsageRecorder, UsageLogConfig
 
@@ -17,7 +17,6 @@ from tests.helpers.usage_log import usage_records
 
 if TYPE_CHECKING:
     import pytest
-    from nextcord.ext import commands
 
 
 def _recorder(directory: Path, enabled: bool = True) -> UsageRecorder:
@@ -267,16 +266,6 @@ async def test_the_listener_ignores_everything_that_is_not_a_command(tmp_path: P
     await cog.on_interaction(interaction=as_interaction(fake=anonymous))
 
     assert not usage_dir.exists()
-
-
-def test_setup_registers_the_cog() -> None:
-    """The cog loads through the sync `setup` every cog module exposes."""
-    added: list[commands.Cog] = []
-    bot = SimpleNamespace(add_cog=lambda cog, override: added.append(cog))
-
-    setup(bot=as_bot(fake=bot))
-
-    assert isinstance(added[0], UsageCogs)
 
 
 def test_the_recorder_defaults_to_the_data_directory(monkeypatch: pytest.MonkeyPatch) -> None:

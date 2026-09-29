@@ -1,23 +1,38 @@
-"""Guards the application-command registry against being left empty after a gateway READY.
+"""Tests for `cli.DiscordBot`: cog discovery, the command registry, the message reward, error logs.
 
-`ConnectionState.parse_ready` clears that registry every time, and `DiscordBot` overrides the
-one nextcord hook that rebuilds it. What an empty registry costs is not a missing command but a
-deleted one: nextcord's lazy-load path answers an interaction it cannot resolve by deleting
-every command Discord holds, so the failure is silent, global and outlives the process.
+`ConnectionState.parse_ready` clears the application-command registry on every gateway READY,
+and `DiscordBot` overrides the one nextcord hook that rebuilds it. What an empty registry costs
+is not a missing command but a deleted one: nextcord's lazy-load path answers an interaction it
+cannot resolve by deleting every command Discord holds, so the failure is silent, global and
+outlives the process.
 
-`on_connect` is called unbound on a stub rather than on a real bot: constructing one loads every
-cog, and the contract under test is one call in one method.
+Every method is called unbound on a stub rather than on a real bot: constructing one loads every
+cog, and each contract under test lives in one method.
 """
 
 from __future__ import annotations
 
 import ast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 import inspect
+from pathlib import Path
+from functools import partial
+
+from nextcord.errors import ApplicationInvokeError
 
 from discordbot import cli
 from discordbot.cli import DiscordBot
+from discordbot.services.economy.database import CreditResult
 
-from tests.helpers.casting import as_discord_bot
+from tests.helpers.casting import as_message, as_discord_bot
+from tests.helpers.discord_mocks import FakeUser
+
+if TYPE_CHECKING:
+    import pytest
+    from nextcord import Interaction
+    from nextcord.ext import commands
+    from nextcord.errors import ApplicationError
 
 
 class _ConnectStub:
@@ -46,7 +61,7 @@ def _on_ready_calls() -> list[str]:
     """Every attribute call in `DiscordBot.on_ready`, in source order.
 
     Read off the source rather than by driving `on_ready`, which would need a stub for the
-    sync, both `tasks.Loop` starts and `application_info`, to pin one statement's position.
+    sync, the `tasks.Loop` start and `application_info`, to pin one statement's position.
     """
     module = ast.parse(inspect.getsource(cli))
     bot = next(
@@ -76,3 +91,277 @@ def test_the_registered_command_count_is_read_before_the_sync_overwrites_it() ->
     calls = _on_ready_calls()
 
     assert calls.index("_count_registered_commands") < calls.index("sync_all_application_commands")
+
+
+def _reward_bot(**state: object) -> SimpleNamespace:
+    """A bot double carrying everything `on_message`'s reward path reads off a real bot.
+
+    These tests invoke `cli.DiscordBot.on_message` UNBOUND with this namespace as `self`, so the
+    double has to answer every attribute the real method reaches for — the cooldown map, its
+    prune stamp, and the prune helper itself. `on_message` calls that helper as an ordinary
+    `self.` method, so it is bound here rather than being reached through the class.
+    """
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True), _message_reward_at={}, _message_reward_pruned_at=0.0
+    )
+    bot.__dict__.update(state)
+    bot._prune_message_reward_cooldowns = partial(
+        cli.DiscordBot._prune_message_reward_cooldowns, as_discord_bot(fake=bot)
+    )
+    return bot
+
+
+def test_cli_load_cogs_sync_discovers_exactly_the_cog_directories(tmp_path: Path) -> None:
+    """Verifies synchronous cog loading discovers exactly the cog directories."""
+    loaded: list[tuple[list[str], bool]] = []
+
+    def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
+        """Records modules passed to load_extensions."""
+        loaded.append((modules, stop_at_error))
+
+    bot = SimpleNamespace(load_extensions=record_load_extensions)
+    cli.DiscordBot._load_cogs_sync(as_discord_bot(fake=bot))
+    assert loaded[0][1] is True
+    # An exact set, not a membership check: a discovery rule that grew a nested helper
+    # package or lost a cog would still contain any single name you happened to test for.
+    cogs_dir = Path(cli.__file__).resolve().parent / "cogs"
+    expected = {
+        f"discordbot.cogs.{entry.name}.cog"
+        for entry in cogs_dir.iterdir()
+        if entry.is_dir() and (entry / "cog.py").is_file()
+    }
+    assert set(loaded[0][0]) == expected
+    assert "discordbot.cogs.template.cog" in expected
+
+
+async def test_cli_message_reward_pays_a_member_and_never_the_bot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member's message earns the base reward; the bot's own message earns nothing."""
+    rewards: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Records base reward arguments and returns a fake credit result."""
+        rewards.append(kwargs)
+        return CreditResult(new_balance=5_000)
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    bot = _reward_bot()
+    user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+    await cli.DiscordBot.on_message(
+        as_discord_bot(fake=bot), message=as_message(fake=user_message)
+    )
+    assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
+    await cli.DiscordBot.on_message(
+        as_discord_bot(fake=bot),
+        message=as_message(fake=SimpleNamespace(author=bot.user, guild=None)),
+    )
+    assert len(rewards) == 1
+
+
+async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second message within the cooldown earns nothing; a later one earns again."""
+    rewards: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        rewards.append(kwargs)
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    bot = _reward_bot()
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    assert len(rewards) == 1
+
+    # Backdate the last-reward stamp so the cooldown window has elapsed.
+    bot._message_reward_at[1] -= cli.MESSAGE_REWARD_COOLDOWN_SECONDS + 1
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    assert len(rewards) == 2
+
+
+async def test_cli_message_reward_cooldown_prunes_expired_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expired per-user cooldown slots are dropped lazily on later messages."""
+    rewards: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        rewards.append(kwargs)
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
+    bot = _reward_bot(_message_reward_at={1: 900.0, 2: 975.0})
+
+    await cli.DiscordBot.on_message(
+        as_discord_bot(fake=bot),
+        message=as_message(
+            fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False), guild=None)
+        ),
+    )
+
+    assert 1 not in bot._message_reward_at
+    assert bot._message_reward_at[2] == 975.0
+    assert bot._message_reward_at[3] == 1_000.0
+    assert len(rewards) == 1
+
+
+async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed credit must not leave the user on cooldown for the next message."""
+    attempts = 0
+
+    async def flaky_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient DB failure")
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=flaky_reward)
+    bot = _reward_bot()
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    # The first credit failed, so the slot is rolled back and the next message retries.
+    assert 1 not in bot._message_reward_at
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    assert attempts == 2
+    assert bot._message_reward_at.get(1) is not None
+
+
+async def test_message_reward_stores_guild_avatar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Base message rewards pass the guild avatar into the economy DB facade."""
+    captured_avatar_url = ""
+
+    async def fake_credit_with_repayment(
+        user_id: int, name: str, avatar_url: str, amount: int
+    ) -> SimpleNamespace:
+        """Records the avatar URL passed to the DB facade."""
+        nonlocal captured_avatar_url
+        del user_id, name, amount
+        captured_avatar_url = avatar_url
+        return SimpleNamespace(new_balance=0)
+
+    recorded_participation: list[tuple[int, int]] = []
+
+    async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
+        """Records the participation upsert instead of writing to the live economy DB."""
+        recorded_participation.append((guild_id, user_id))
+
+    monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
+    monkeypatch.setattr(cli, "record_guild_participant", fake_record_guild_participant)
+    author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
+    cached_member = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
+    cached_member.__dict__["guild_avatar"] = SimpleNamespace(url="https://cdn.test/server.png")
+    guild = SimpleNamespace(id=100, get_member={cached_member.id: cached_member}.get)
+    message = SimpleNamespace(author=author, guild=guild)
+
+    await cli.DiscordBot.on_message(
+        as_discord_bot(fake=_reward_bot()), message=as_message(fake=message)
+    )
+
+    assert captured_avatar_url == "https://cdn.test/server.png"
+    # The faucet is the only bulk source of central-bank participation, and it rides the
+    # reward rather than every message.
+    assert recorded_participation == [(100, 7)]
+
+
+async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raising slash command reaches `./data/logs` naming the type nextcord wrapped.
+
+    This is the only command-error surface the bot actually has: it registers no prefix
+    commands and never passes `command_prefix`, so nextcord defaults it to `()` and
+    `get_context` can never resolve one — which is why the `on_command_*` pair that used to
+    live here could not fire. nextcord's own default prints to `sys.stderr`, which
+    `_TeeStream` does not tee, so before this the traceback reached no file at all.
+    """
+    logged: list[dict[str, Any]] = []
+
+    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the unhandled-command-error log."""
+        logged.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "error", record_error)
+    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True))
+    interaction = SimpleNamespace(
+        application_command=SimpleNamespace(qualified_name="demo"),
+        guild_id=1,
+        user=FakeUser(user_id=1),
+    )
+    await cli.DiscordBot.on_application_command_error(
+        as_discord_bot(fake=bot),
+        cast("Interaction[commands.Bot]", interaction),
+        cast("ApplicationError", ApplicationInvokeError(ValueError("boom"))),
+    )
+    assert logged[-1]["error_type"] == "ValueError"
+    assert logged[-1]["command"] == "demo"
+    assert logged[-1]["guild_id"] == 1
+
+
+async def test_cli_reports_an_exception_from_any_event_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wider half of the same gap the test above closes.
+
+    `_run_event` funnels every unhandled exception from every event handler and every cog
+    listener into `on_error`, whose default prints to `sys.stderr` — untee'd, so an
+    `on_message` or an expansion cog's `on_ready` sweep that raised left no line at all.
+    """
+    logged: list[dict[str, Any]] = []
+
+    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the unhandled-event log."""
+        logged.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "error", record_error)
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        # Dispatched with the failing handler's own arguments, so the call carries one:
+        # a signature narrowed to the event name alone binds this test but not a real event.
+        await cli.DiscordBot.on_error(
+            as_discord_bot(fake=SimpleNamespace()), "on_message", SimpleNamespace()
+        )
+
+    assert logged[-1]["event_method"] == "on_message"
+    assert isinstance(logged[-1]["_exc_info"], ValueError)
+
+
+async def test_cli_counts_registered_commands_and_survives_a_failed_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero here against a non-zero local count is the wiped-registry signature.
+
+    It is a diagnostic taken on the way into the sync, so a read that fails costs a log
+    field rather than the boot.
+    """
+    warned: list[dict[str, Any]] = []
+
+    def record_warn(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the could-not-read warning."""
+        warned.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "warn", record_warn)
+
+    async def two_registered(**_kwargs: Any) -> list[object]:  # noqa: ANN401 -- nextcord's own signature
+        """Stands in for Discord answering with two registered commands."""
+        return [object(), object()]
+
+    async def refused(**_kwargs: Any) -> list[object]:  # noqa: ANN401 -- nextcord's own signature
+        """Stands in for Discord refusing the read."""
+        raise RuntimeError("refused")
+
+    reading = SimpleNamespace(
+        application_id=7, http=SimpleNamespace(get_global_commands=two_registered)
+    )
+    assert await cli.DiscordBot._count_registered_commands(as_discord_bot(fake=reading)) == 2
+
+    failing = SimpleNamespace(application_id=7, http=SimpleNamespace(get_global_commands=refused))
+    assert await cli.DiscordBot._count_registered_commands(as_discord_bot(fake=failing)) is None
+    assert warned

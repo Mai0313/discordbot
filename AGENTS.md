@@ -33,7 +33,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **A module goes in `services/` only if a second cog needs it, an engine there needs it, or it is that engine's own vocabulary** (single-caller `services/memory/server_prompts.py` sits beside `prompts.py`); else it stays in its one cog directory. A feature with a Discord surface and a shared engine (economy, memory, each link platform) deliberately spans both.
 - **`utils/link_errors.py` and `utils/scratch_dir.py` cannot move to `services/`**: nextcord-heavy `utils/expansion_placeholder.py` imports the first and `utils/` may not import `services/`; the second's path is hardcoded in `tests/test_scratch_dir.py`'s allowlist.
 - **Adding a platform (one file in `services/platforms/`, behind `base.py`) trips deliberate tripwires that fail until the new name is added**: `tests/test_platform_shape.py::test_the_sweep_finds_every_downloader`, `tests/test_link_source_shape.py::test_the_sweep_finds_every_source` for the shared conversation shape, and for a `LINK_CONTEXT_SOURCES` entry `typings/emojis.py::LinkSourceName` plus the per-source test tables `tests/helpers/link_sources.py::SAMPLE_POST_URLS`, `tests/helpers/llm_input.py::LINK_SOURCE_BLOCKS` and `tests/test_gen_reply.py::_LINK_CASES`.
-- **No prefix command or `on_command_*` handler can fire**, since no `command_prefix` is passed; do not add one without a prefix. A raising slash command is logged only by `DiscordBot.on_application_command_error`.
+- **No prefix command or `on_command_*` handler can fire**: no `command_prefix` is passed and `on_message` dispatches nothing, so adding one needs both. A raising slash command is logged only by `DiscordBot.on_application_command_error`.
 
 ## Cog Rules
 

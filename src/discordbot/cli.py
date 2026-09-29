@@ -6,7 +6,6 @@ from time import monotonic
 import asyncio
 import logging
 from pathlib import Path
-import secrets
 import platform
 
 import logfire
@@ -25,11 +24,7 @@ from discordbot.services.economy.database import credit_with_repayment, record_g
 
 
 class DiscordBot(commands.Bot):
-    """Discord bot configured with project-specific intents and cogs.
-
-    Attributes:
-        logger: Logger used by Nextcord state events.
-    """
+    """Discord bot configured with project-specific intents and cogs."""
 
     def __init__(self) -> None:
         """Initialises the Discord bot with specific intents and configuration."""
@@ -37,11 +32,14 @@ class DiscordBot(commands.Bot):
         intents.members = False
         intents.presences = False
         super().__init__(
-            intents=intents, help_command=None, description="A Discord bot made with Nextcord."
+            intents=intents,
+            help_command=None,
+            description="A Discord bot made with Nextcord.",
+            activity=Game("your mama"),
         )
-        self.logger = logging.getLogger("nextcord.state")
-        self.logger.setLevel(logging.WARNING)
-        self.logger.addHandler(LogfireLoggingHandler())
+        state_logger = logging.getLogger("nextcord.state")
+        state_logger.setLevel(logging.WARNING)
+        state_logger.addHandler(LogfireLoggingHandler())
         Path("./data/database").mkdir(parents=True, exist_ok=True)
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
         # Cogs are loaded synchronously so application_commands is populated
@@ -174,7 +172,7 @@ class DiscordBot(commands.Bot):
         """Called when the bot is ready; performs first-time-only setup.
 
         `on_ready` re-fires on every gateway reconnect/resume, so the body
-        is gated on `_initial_setup_done` to keep sync + the task starts
+        is gated on `_initial_setup_done` to keep sync + the task start
         idempotent.
         """
         if self._initial_setup_done:
@@ -207,7 +205,6 @@ class DiscordBot(commands.Bot):
             local_count=len(self.get_application_commands()),
             elapsed_seconds=round(monotonic() - sync_started_at, 3),
         )
-        self.status_task.start()
         self.price_table_task.start()
 
         app_info = await self.application_info()
@@ -219,21 +216,6 @@ class DiscordBot(commands.Bot):
         invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
         logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
         logfire.info("Invite Link", invite_url=invite_url)
-
-    @tasks.loop(minutes=1.0)
-    async def status_task(self) -> None:
-        """Periodically updates the bot's game status."""
-        statuses = ["your mama"]
-        random_status = secrets.choice(statuses)
-        await self.change_presence(activity=Game(random_status))
-        activity = self.activity
-        if activity is not None and activity.name is not None:
-            logfire.debug("Status Changed", new_status=activity.name)
-
-    @status_task.before_loop
-    async def before_status_task(self) -> None:
-        """Ensures the bot is ready before starting the status task."""
-        await self.wait_until_ready()
 
     @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
     async def price_table_task(self) -> None:
@@ -255,10 +237,10 @@ class DiscordBot(commands.Bot):
             logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
 
     async def on_message(self, message: Message) -> None:
-        """Awards the cooldown-gated message reward, then dispatches commands.
+        """Awards the cooldown-gated message reward.
 
-        This is the only faucet that pays an action reward; it is best-effort, so
-        command dispatch runs whether or not the credit lands.
+        This is the only faucet that pays an action reward, and it is best-effort: a failed
+        credit or participation write is logged and swallowed.
 
         Args:
             message: The message that was sent.
@@ -288,8 +270,8 @@ class DiscordBot(commands.Bot):
                     self._message_reward_at.pop(message.author.id, None)
                 else:
                     self._message_reward_at[message.author.id] = last_rewarded_at
-                # Broad on purpose: the reward is best-effort and must never stop
-                # process_commands, so every failure mode (DB, avatar fetch) is swallowed.
+                # Broad on purpose: the reward is best-effort and must never raise out of
+                # the listener, so every failure mode (DB, avatar fetch) is swallowed.
                 logfire.warn(
                     "Failed to award base message points",
                     user_id=message.author.id,
@@ -312,7 +294,7 @@ class DiscordBot(commands.Bot):
                 except Exception as exc:
                     # Broad for the same reason as the reward: missing one guild's
                     # participation row costs that guild a little lending capacity until
-                    # the member speaks again, and must never stop process_commands.
+                    # the member speaks again, and must never raise out of the listener.
                     logfire.warn(
                         "Failed to record economy participation",
                         user_id=message.author.id,
@@ -320,17 +302,16 @@ class DiscordBot(commands.Bot):
                         error_type=type(exc).__name__,
                         _exc_info=exc,
                     )
-        await self.process_commands(message)
 
     async def on_application_command_error(
         self, interaction: Interaction[commands.Bot], exception: ApplicationError
     ) -> None:
         """Records a slash command that raised, which nothing else in this process does.
 
-        `command_prefix` is never passed to `commands.Bot`, nextcord defaults it to `()`, and
-        `get_context`'s `content.startswith(())` is False for every message, so `invoke` never
-        reaches a prefix command and no `on_command_*` handler can fire. Do not add one without
-        also passing a prefix.
+        No prefix command or `on_command_*` handler can fire: `on_message` never calls
+        `process_commands`, and `command_prefix` is never passed to `commands.Bot`, so nextcord
+        defaults it to `()`, which no message's content starts with. Adding one takes both a
+        prefix and that call.
 
         nextcord's own default here prints the traceback to `sys.stderr`, while `./data/logs`
         receives only logfire's console output (`_TeeStream`), so without this override a failing slash
