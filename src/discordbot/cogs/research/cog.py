@@ -2,8 +2,9 @@
 
 A user asks for deep research (the QA answer model emits a `<deep-research>` marker, handed
 here by `gen_reply`, or they run `/deep_research`). The bot opens a thread, runs the
-`antigravity-preview-09-2026` agent, and posts the cited report there, pinging the user. That
-one report is the whole feature: there is no tier to upgrade into and no button under it.
+`RuntimeModelCatalog.antigravity_model` agent, and posts the cited report there, pinging the
+user. That one report is the whole feature: there is no tier to upgrade into and no button under
+it.
 
 Everything talks DIRECT to Google (`gemini_api_key`, no proxy), like every Interactions API path
 in this project (see `agent.py`). Sessions persist in `reply.db` so a restart resumes an
@@ -23,7 +24,6 @@ import nextcord
 from nextcord import (
     Embed,
     Locale,
-    Object,
     Thread,
     Message,
     NotFound,
@@ -55,7 +55,7 @@ from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
-from discordbot.cogs.research.delivery import deliver_report
+from discordbot.cogs.research.delivery import deliver_report, owner_allowed_mentions
 from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
 if TYPE_CHECKING:
@@ -74,6 +74,11 @@ DINO_EMOJI = "<:dino:1517560319281594570>"
 # How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
 # a word each of them spells for itself.
 type StartOutcome = Literal["started", "exists", "unsupported", "forbidden", "error"]
+# What either entry point answers for a `forbidden` or an `error` launch.
+FORBIDDEN_REPLY = "我在這個頻道的權限不夠,開不了研究串"
+ERROR_REPLY = "開研究串失敗了,等等再試一次"
+# The opening status line a fresh or a resumed run posts before its live view takes over.
+RESEARCHING_STATUS = f"-# Researching... ({RESEARCH_LABEL})"
 
 
 def _fallback_thread_name(*, brief: str) -> str:
@@ -118,8 +123,7 @@ class ResearchCogs(commands.Cog):
         """The Gemini Interactions client, built lazily on first use.
 
         DIRECT to Google (`gemini_api_key`, no base_url / proxy): a managed agent rides the native
-        Interactions API, which this project always calls direct. Built inline like every other
-        direct-to-Google path (the `create_*_client` factories are gone). `genai.Client` raises
+        Interactions API, which this project always calls direct. `genai.Client` raises
         `ValueError` on a missing key rather than deferring it to the first call (measured), and
         both run loops read this property inside their own try, so that raise still lands as a
         thread failure notice instead of an unhandled background-task error.
@@ -130,9 +134,8 @@ class ResearchCogs(commands.Cog):
     def responses_client(self) -> AsyncOpenAI:
         """The LiteLLM-proxy Responses client for small side calls (the thread-title generator).
 
-        Built inline like every other client here (there is no `utils/llm.py` client factory left);
-        distinct from the direct `interactions_client` since a plain Responses call rides the proxy
-        fine.
+        Distinct from the direct `interactions_client`, since a plain Responses call rides the
+        proxy fine.
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
@@ -183,10 +186,7 @@ class ResearchCogs(commands.Cog):
         if not self.config.deep_research_available:
             return
         outcome, existing = await self._start_for(
-            owner_id=message.author.id,
-            owner_mention=message.author.mention,
-            brief=brief,
-            anchor=anchor or message,
+            owner_id=message.author.id, brief=brief, anchor=anchor or message
         )
         if outcome == "exists" and existing is not None:
             with contextlib.suppress(Exception):
@@ -198,10 +198,10 @@ class ResearchCogs(commands.Cog):
                 )
         elif outcome == "forbidden":
             with contextlib.suppress(Exception):
-                await message.reply(content="我在這個頻道的權限不夠,開不了研究串")
+                await message.reply(content=FORBIDDEN_REPLY)
         elif outcome == "error":
             with contextlib.suppress(Exception):
-                await message.reply(content="開研究串失敗了,等等再試一次")
+                await message.reply(content=ERROR_REPLY)
 
     @nextcord.slash_command(
         name="deep_research",
@@ -248,9 +248,7 @@ class ResearchCogs(commands.Cog):
         # run in is refused before a title call and an anchor ping are spent on it.
         permissions = interaction.channel.permissions_for(interaction.channel.guild.me)
         if not permissions >= RESEARCH_THREAD_PERMISSIONS:
-            await interaction.response.send_message(
-                content="我在這個頻道的權限不夠,開不了研究串", ephemeral=True
-            )
+            await interaction.response.send_message(content=FORBIDDEN_REPLY, ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         # Anchor the thread on a bot message so the same message-based create_thread path is reused.
@@ -259,7 +257,7 @@ class ResearchCogs(commands.Cog):
         try:
             anchor = await interaction.channel.send(
                 content=f"{interaction.user.mention} 要研究:{topic[:200]}",
-                allowed_mentions=_owner_allowed_mentions(owner_id=interaction.user.id),
+                allowed_mentions=owner_allowed_mentions(owner_id=interaction.user.id),
             )
         except Forbidden:
             # The command reached a channel the bot's own identity may not post in; the server's
@@ -269,13 +267,10 @@ class ResearchCogs(commands.Cog):
                 channel_id=interaction.channel.id,
                 owner_id=interaction.user.id,
             )
-            await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
+            await interaction.edit_original_message(content=FORBIDDEN_REPLY)
             return
         outcome, existing = await self._start_for(
-            owner_id=interaction.user.id,
-            owner_mention=interaction.user.mention,
-            brief=topic,
-            anchor=anchor,
+            owner_id=interaction.user.id, brief=topic, anchor=anchor
         )
         if outcome == "started" and existing is not None:
             await interaction.edit_original_message(content=f"開好了:<#{existing}>")
@@ -286,14 +281,14 @@ class ResearchCogs(commands.Cog):
         elif outcome == "forbidden":
             with contextlib.suppress(Exception):
                 await anchor.delete()
-            await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
+            await interaction.edit_original_message(content=FORBIDDEN_REPLY)
         else:
             with contextlib.suppress(Exception):
                 await anchor.delete()
-            await interaction.edit_original_message(content="開研究串失敗了,等等再試一次")
+            await interaction.edit_original_message(content=ERROR_REPLY)
 
     async def _start_for(
-        self, *, owner_id: int, owner_mention: str, brief: str, anchor: "Message"
+        self, *, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims the owner's slot, opens the thread, and spawns the research.
 
@@ -349,35 +344,20 @@ class ResearchCogs(commands.Cog):
         # normal QA pipeline reactions (best-effort).
         with contextlib.suppress(Exception):
             await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
-        self._spawn(
-            self._run_research(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                brief=brief,
-                agent=agent,
-            )
-        )
+        self._spawn(self._run_research(thread=thread, owner_id=owner_id, brief=brief, agent=agent))
         return "started", thread.id
 
     # ----- research runs ------------------------------------------------------------------
 
     async def _run_research(
-        self, *, thread: "Thread", owner_id: int, owner_mention: str, brief: str, agent: str
+        self, *, thread: "Thread", owner_id: int, brief: str, agent: str
     ) -> None:
         """Streams the Antigravity research and delivers the report into the thread."""
-        status = await self._safe_send(
-            thread=thread, content=f"-# Researching... ({RESEARCH_LABEL})"
-        )
+        status = await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
         streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
 
         async def _persist(interaction_id: str) -> None:
-            await db.set_interaction(
-                thread_id=thread.id,
-                interaction_id=interaction_id,
-                agent=agent,
-                phase="researching",
-            )
+            await db.set_interaction(thread_id=thread.id, interaction_id=interaction_id)
 
         # The agent run and the delivery are separate steps: both stay broad (a fire-and-forget task
         # has nobody to raise to) but each names what actually failed.
@@ -398,22 +378,11 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._fail_run(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                exc=exc,
-                status=status,
-            )
+            await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
             return
         try:
             await self._finish(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                result=result,
-                agent=agent,
-                status=status,
+                thread=thread, owner_id=owner_id, result=result, agent=agent, status=status
             )
         except Exception as exc:
             logfire.error(
@@ -423,39 +392,42 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._fail_run(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                exc=exc,
-                status=status,
-            )
+            await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
 
     async def _fail_run(
-        self,
-        *,
-        thread: "Thread",
-        owner_id: int,
-        owner_mention: str,
-        exc: Exception,
-        status: Message | None,
+        self, *, thread: "Thread", owner_id: int, status: Message | None, failure: Exception | str
     ) -> None:
-        """Tells the owner a run died, finalizes its status message, and frees the owner's slot."""
-        await self._post_failure(
-            thread=thread, owner_id=owner_id, owner_mention=owner_mention, exc=exc
-        )
+        """Tells the owner a run ended without a report, finalizes its status, and releases it.
+
+        `failure` is the exception that ended the run, or the non-completed terminal status the
+        interaction settled with, which also decides the phase recorded.
+        """
+        if isinstance(failure, Exception):
+            await self._post_failure(thread=thread, owner_id=owner_id, exc=failure)
+            phase: db.ResearchPhase = "failed"
+        else:
+            await self._post_failure(
+                thread=thread, owner_id=owner_id, reason=_failure_text(status=failure)
+            )
+            phase = _terminal_phase(status=failure)
         await self._finalize_status(
             status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
         )
-        await db.set_phase(thread_id=thread.id, phase="failed")
-        self._active_threads.discard(thread.id)
+        await self._release(thread_id=thread.id, phase=phase)
 
-    async def _finish(  # noqa: PLR0913 -- the owner's two handles plus the result's context
+    async def _release(self, *, thread_id: int, phase: db.ResearchPhase) -> None:
+        """Ends a run: records its terminal phase and lets QA answer in its thread again.
+
+        The recorded phase is what frees the owner's one-research slot.
+        """
+        await db.set_phase(thread_id=thread_id, phase=phase)
+        self._active_threads.discard(thread_id)
+
+    async def _finish(
         self,
         *,
         thread: "Thread",
         owner_id: int,
-        owner_mention: str,
         result: ResearchResult,
         agent: str,
         status: Message | None,
@@ -463,21 +435,12 @@ class ResearchCogs(commands.Cog):
         """Delivers a terminal result, records its phase, and releases the thread.
 
         On a completed run the opening status message is spent by `deliver_report`, which edits the
-        report's first chunk into it; any other terminal status finalizes it with a failure line
-        instead.
+        report's first chunk into it; any other terminal status ends the run as a failure.
         """
         if not result.ok:
-            await self._post_failure(
-                thread=thread,
-                owner_id=owner_id,
-                owner_mention=owner_mention,
-                reason=_failure_text(status=result.status),
+            await self._fail_run(
+                thread=thread, owner_id=owner_id, status=status, failure=result.status
             )
-            await self._finalize_status(
-                status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
-            )
-            await db.set_phase(thread_id=thread.id, phase=_terminal_phase(status=result.status))
-            self._active_threads.discard(thread.id)
             return
         footer = _usage_footer(
             agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
@@ -485,14 +448,12 @@ class ResearchCogs(commands.Cog):
         await deliver_report(
             thread=thread,
             status=status,
-            owner_mention=owner_mention,
+            owner_id=owner_id,
             result=result,
             footer=footer,
-            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
             media_delivery=self.media_delivery,
         )
-        await db.set_phase(thread_id=thread.id, phase="done")
-        self._active_threads.discard(thread.id)
+        await self._release(thread_id=thread.id, phase="done")
 
     async def _finalize_status(
         self, *, status: Message | None, thread: "Thread", content: str
@@ -517,25 +478,18 @@ class ResearchCogs(commands.Cog):
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
-        try:
-            await thread.send(content=content, allowed_mentions=AllowedMentions.none())
-        except Forbidden:
-            logfire.warn("research thread refused the terminal status", thread_id=thread.id)
-        except Exception as exc:
-            # Broad: callers record the terminal phase right after us and cannot handle a raise.
-            logfire.warn(
-                "failed to post terminal research status",
-                thread_id=thread.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+        await self._safe_send(
+            thread=thread,
+            content=content,
+            refused="research thread refused the terminal status",
+            failed="failed to post terminal research status",
+        )
 
     async def _post_failure(
         self,
         *,
         thread: "Thread",
         owner_id: int,
-        owner_mention: str,
         exc: Exception | None = None,
         reason: str | None = None,
     ) -> None:
@@ -553,23 +507,14 @@ class ResearchCogs(commands.Cog):
         )
         if exc is not None:
             embed.set_footer(text=type(exc).__name__)
-        try:
-            await thread.send(
-                content=f"{owner_mention} ⚠️",
-                embed=embed,
-                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
-            )
-        except Forbidden:
-            logfire.warn("research thread refused the failure notice", thread_id=thread.id)
-        except Exception as send_exc:
-            # Broad: every caller runs its cleanup (phase write, slot release) right after us, so
-            # this last user-facing step must never raise.
-            logfire.warn(
-                "failed to post research failure notice",
-                thread_id=thread.id,
-                error_type=type(send_exc).__name__,
-                _exc_info=send_exc,
-            )
+        await self._safe_send(
+            thread=thread,
+            content=f"<@{owner_id}> ⚠️",
+            embed=embed,
+            allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
+            refused="research thread refused the failure notice",
+            failed="failed to post research failure notice",
+        )
 
     # ----- restart resume -----------------------------------------------------------------
 
@@ -613,19 +558,17 @@ class ResearchCogs(commands.Cog):
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
         thread = await self._fetch_thread(thread_id=session.thread_id)
-        owner_mention = f"<@{session.owner_id}>"
         # No interaction id means the row was written but the bot restarted before the run id was
         # stored; there is nothing to resume. Tell the thread so the owner is not left staring at
         # the old `Researching...` message forever.
         if session.interaction_id is None:
-            await db.set_phase(thread_id=session.thread_id, phase="failed")
-            self._active_threads.discard(session.thread_id)
+            await self._release(thread_id=session.thread_id, phase="failed")
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
         # Give the resumed run the same live reasoning view as a fresh one; a fetch miss leaves
         # status None so the streamer's editor no-ops but still drives the stream to a result.
         status = (
-            await self._safe_send(thread=thread, content=f"-# Researching... ({RESEARCH_LABEL})")
+            await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
             if thread is not None
             else None
         )
@@ -638,20 +581,17 @@ class ResearchCogs(commands.Cog):
             )
         except Exception:
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
-            await db.set_phase(thread_id=session.thread_id, phase="failed")
-            self._active_threads.discard(session.thread_id)
+            await self._release(thread_id=session.thread_id, phase="failed")
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
         if thread is None:
-            await db.set_phase(
+            await self._release(
                 thread_id=session.thread_id, phase=_terminal_phase(status=result.status)
             )
-            self._active_threads.discard(session.thread_id)
             return
         await self._finish(
             thread=thread,
             owner_id=session.owner_id,
-            owner_mention=owner_mention,
             result=result,
             agent=session.agent,
             status=status,
@@ -664,7 +604,7 @@ class ResearchCogs(commands.Cog):
         await self._safe_send(
             thread=thread,
             content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
-            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+            allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
         )
 
     async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
@@ -692,28 +632,35 @@ class ResearchCogs(commands.Cog):
 
     # ----- helpers ------------------------------------------------------------------------
 
-    async def _safe_send(
-        self, *, thread: "Thread", content: str, allowed_mentions: "AllowedMentions | None" = None
+    async def _safe_send(  # noqa: PLR0913 -- one thread post plus the two log lines naming it
+        self,
+        *,
+        thread: "Thread",
+        content: str,
+        embed: Embed | None = None,
+        allowed_mentions: "AllowedMentions | None" = None,
+        refused: str = "research thread refused a message",
+        failed: str = "failed to send research thread message",
     ) -> Message | None:
         """Best-effort `thread.send`, returning the message or None on failure.
 
         Mentions default to fully suppressed (`AllowedMentions.none()`); a caller that wants the
         owner pinged passes an owner-only policy, so agent-generated content can never mass-ping.
+        `refused` is logged, with the id alone, when Discord refuses the post, and `failed` with
+        its traceback for any other failure, so each caller's post stays apart in the log.
         """
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
-            return await thread.send(content=content, allowed_mentions=mentions)
+            if embed is None:
+                return await thread.send(content=content, allowed_mentions=mentions)
+            return await thread.send(content=content, embed=embed, allowed_mentions=mentions)
         except Forbidden:
-            logfire.warn("research thread refused a message", thread_id=thread.id)
+            logfire.warn(refused, thread_id=thread.id)
             return None
         except Exception as exc:
-            # Broad: every caller treats a missing message as a degraded outcome, never a failure.
-            logfire.warn(
-                "failed to send research thread message",
-                thread_id=thread.id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+            # Broad: every caller treats a missing message as a degraded outcome, never a failure,
+            # and a failed run's cleanup must still run around this post.
+            logfire.warn(failed, thread_id=thread.id, error_type=type(exc).__name__, _exc_info=exc)
             return None
 
 
@@ -735,16 +682,6 @@ def _failure_text(*, status: str) -> str:
     if status == "cancelled":
         return "研究被取消了"
     return "研究沒有順利完成,等等再試試"
-
-
-def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
-    """Restricts a research message to pinging only its owner.
-
-    The anchor carries the user's topic and the report text is agent-generated, so any
-    `@everyone` / role / other-user mention either contains must not resolve; only the
-    deliberate owner ping is allowed through.
-    """
-    return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
 
 def setup(bot: commands.Bot) -> None:

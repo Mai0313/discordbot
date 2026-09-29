@@ -1,11 +1,11 @@
 """Direct Gemini Interactions call layer for the deep-research cog.
 
-The one research agent (`antigravity-preview-09-2026`) runs through an injected `genai.Client`
-that talks DIRECT to Google (`gemini_api_key`, no proxy): a managed agent rides the native
-Interactions API, which this project always calls direct rather than through the LiteLLM proxy's
-interactions transform. The create uses `background=True` + `store=True` + `stream=True`, so the
-agent's reasoning streams live to the thread (`_StreamDriver` + `ResearchProgressStreamer`) while
-it works.
+The one research agent (`RuntimeModelCatalog.antigravity_model`) runs through an injected
+`genai.Client` that talks DIRECT to Google (`gemini_api_key`, no proxy): a managed agent rides the
+native Interactions API, which this project always calls direct rather than through the LiteLLM
+proxy's interactions transform. The create uses `background=True` + `store=True` + `stream=True`,
+so the agent's reasoning streams live to the thread (`_StreamDriver` + `ResearchProgressStreamer`)
+while it works.
 
 Both call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + terminal extract):
 - `stream_antigravity`: streams the one-shot agent in a remote sandbox environment.
@@ -89,12 +89,9 @@ class _InteractionUsage(Protocol):
 class _ResearchInteraction(Protocol):
     """Structural view of a terminal research interaction, as this module reads it.
 
-    `interactions.get` returns `Interaction | AsyncStream[...]`, and the stream cannot be excluded
-    with `isinstance(x, AsyncIterator)` because genai's `AsyncStream` is only structurally an
-    `AsyncIterator` and so stays in the union; naming the response class instead is its own trap
-    (`google.genai.interactions` star-imports `Interaction` from both the request-union alias and
-    the response module, so which one wins rests on import order). The attributes actually read
-    are declared here and cast to, exactly as `gen_reply/generation.py::_InteractionResult` does.
+    `interactions.get` returns `Interaction | AsyncStream[...]`, so the attributes actually read
+    are declared here and cast to; `gen_reply/generation.py::_InteractionResult` has why neither
+    an `isinstance` check nor the response class narrows it.
 
     `steps` stays the SDK's open `Step` union: its members carry genuinely different payloads, so
     `_extract_image` still probes each one rather than reading a shape this could declare.
@@ -116,19 +113,9 @@ class _ResearchInteraction(Protocol):
     def steps(self) -> "list[Step] | None": ...
 
 
-class _TokenUsage(BaseModel):
-    """The token counts read off one terminal interaction."""
-
-    input_tokens: int = Field(default=0, description="Reported input tokens for the interaction.")
-    output_tokens: int = Field(
-        default=0, description="Reported output tokens for the interaction."
-    )
-
-
 class ResearchResult(BaseModel):
     """The terminal outcome of a research run."""
 
-    interaction_id: str = Field(..., description="The research interaction's id.")
     status: str = Field(
         ..., description="Terminal interaction status (completed / failed / cancelled / ...)."
     )
@@ -176,27 +163,18 @@ def _extract_image(*, interaction: _ResearchInteraction) -> bytes | None:
     return None
 
 
-def _extract_usage(*, interaction: _ResearchInteraction) -> _TokenUsage:
-    """Returns the interaction's token counts, defaulting to zero."""
-    usage = interaction.usage
-    if usage is None:
-        return _TokenUsage()
-    return _TokenUsage(
-        input_tokens=int(usage.total_input_tokens or 0),
-        output_tokens=int(usage.total_output_tokens or 0),
-    )
-
-
 def _to_result(*, interaction: _ResearchInteraction) -> ResearchResult:
-    """Maps a terminal interaction to a `ResearchResult`."""
-    usage = _extract_usage(interaction=interaction)
+    """Maps a terminal interaction to a `ResearchResult`, reading absent token counts as zero."""
     return ResearchResult(
-        interaction_id=str(interaction.id or ""),
         status=str(interaction.status),
         report_text=(interaction.output_text or ""),
         image_bytes=_extract_image(interaction=interaction),
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
+        input_tokens=(
+            int(interaction.usage.total_input_tokens or 0) if interaction.usage is not None else 0
+        ),
+        output_tokens=(
+            int(interaction.usage.total_output_tokens or 0) if interaction.usage is not None else 0
+        ),
     )
 
 
@@ -241,7 +219,7 @@ async def _poll_until_terminal(
 MAX_STREAM_RECONNECTS = 20
 
 # Called with the interaction id the moment `interaction.created` arrives (the stream's first event),
-# so the cog persists the id BEFORE the minutes-long run, exactly as the old create-then-store split did.
+# so the cog persists the id BEFORE the minutes-long run.
 type CreatedCallback = Callable[[str], Awaitable[None]]
 
 
@@ -359,7 +337,6 @@ class _StreamDriver(BaseModel):
 
 async def _drive(
     *,
-    client: genai.Client,
     driver: _StreamDriver,
     streamer: "ResearchProgressStreamer",
     open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
@@ -369,13 +346,12 @@ async def _drive(
 
     The streamed deltas are the live view only; the result is ALWAYS read through
     `_poll_until_terminal` (a terminal non-stream `get(id)`) because `interaction.completed` carries
-    an empty payload on purpose, so the existing `_to_result` extraction is reused unchanged. Routing
-    the terminal read through the poll (not a single `get`) gives it the poll's retry-on-error and
-    waits out any brief `in_progress` visibility lag, so a completed run is never misread as failed;
-    it also transparently finishes a run whose stream died mid-way (the interaction lives server-side
-    via `store=True`). A streaming failure BEFORE any id (the create itself failed) re-raises so the
-    cog hits its normal failure path; once an id exists, streaming errors are swallowed and the poll
-    settles the run.
+    an empty payload on purpose. Routing the terminal read through the poll (not a single `get`)
+    gives it the poll's retry-on-error and waits out any brief `in_progress` visibility lag, so a
+    completed run is never misread as failed; it also transparently finishes a run whose stream
+    died mid-way (the interaction lives server-side via `store=True`). A streaming failure BEFORE
+    any id (the create itself failed) re-raises so the cog hits its normal failure path; once an id
+    exists, streaming errors are swallowed and the poll settles the run.
     """
     try:
         await streamer.stream(
@@ -390,7 +366,7 @@ async def _drive(
             _exc_info=True,
         )
     return await _poll_until_terminal(
-        client=client,
+        client=driver.client,
         interaction_id=driver.interaction_id,
         poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
     )
@@ -427,7 +403,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
 
     logfire.info("research antigravity streaming", agent=agent)
     interaction = await _drive(
-        client=client, driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
+        driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
     )
     return _to_result(interaction=interaction)
 
@@ -443,10 +419,6 @@ async def resume_research_stream(
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
     interaction = await _drive(
-        client=client,
-        driver=driver,
-        streamer=streamer,
-        open_initial=_open,
-        on_created=_noop_created,
+        driver=driver, streamer=streamer, open_initial=_open, on_created=_noop_created
     )
     return _to_result(interaction=interaction)

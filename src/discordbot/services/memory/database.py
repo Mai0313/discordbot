@@ -14,8 +14,9 @@ clear from recreating the erased transcript after it commits.
 `Base`, its own bootstrap and a module-level `AsyncEngine` singleton (a per-instance
 `cached_property` engine would leak the pool / dialect cache): separate metadata is what
 stops one of them creating or marking the other's table. No `from __future__ import
-annotations` — SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition
-time.
+annotations` — SQLAlchemy resolves the `Mapped[datetime]` columns when the class is built,
+and under postponed evaluation ruff's TC rules move the annotation-only `datetime` import
+under `TYPE_CHECKING`, where the mapper cannot resolve it and the module fails to import.
 
 The version / ordering token is a logical INTEGER, not a wall clock. Each process
 reserves one range from `memory_token_clock`, above both the prior watermark and
