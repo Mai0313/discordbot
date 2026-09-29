@@ -212,6 +212,23 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
     )
 
 
+async def test_a_long_parent_under_a_short_post_stays_inside_the_description_limit() -> None:
+    """A lone context card is budgeted more of the message than one description may carry."""
+    parent = twitter_output(text="p" * 5000, url="https://x.com/Dbacks/status/1", image_urls=[])
+    cog, _ = stub_conversation_cog(
+        cog_type=TwitterCogs,
+        outcome=TwitterConversation(chain=[parent, twitter_output(text="hi", image_urls=[])]),
+    )
+    message = _message()
+
+    await cog.on_message(as_message(fake=message))
+    description = expansion_embeds(message=message)[0].description
+
+    assert description is not None
+    assert utf16_length(value=description) <= 4096
+    assert description.endswith("（全文請看原貼文）")
+
+
 async def test_a_post_full_of_emoji_is_clipped_by_the_units_discord_counts() -> None:
     """Discord counts UTF-16 units, so a `len()`-based clip overshoots on non-BMP characters."""
     cog, _ = stub_conversation_cog(

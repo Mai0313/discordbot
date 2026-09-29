@@ -28,7 +28,11 @@ from discordbot.utils.expansion_cog import (
     post_card_embeds,
     context_card_budget,
 )
-from discordbot.utils.discord_embeds import clip_to_utf16_limit
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+    clip_to_utf16_limit,
+)
 from discordbot.services.platforms.twitter import (
     TWITTER_URL_RE,
     TwitterOutput,
@@ -93,7 +97,12 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         image gallery: embeds sharing a URL are merged, and that merging is exactly what turns the
         target's extra images into one gallery.
         """
-        body = clip_to_utf16_limit(text=post.text, limit=max(budget, 0), notice=TRUNCATION_NOTICE)
+        # Beside a short post, a lone context card's share of the message exceeds what one
+        # description may carry.
+        limit = min(
+            max(budget, 0), DISCORD_EMBED_DESCRIPTION_LIMIT - utf16_length(value=f"{header}\n")
+        )
+        body = clip_to_utf16_limit(text=post.text, limit=limit, notice=TRUNCATION_NOTICE)
         embed = Embed(
             description=f"{header}\n{body}" if body else header,
             url=post.url,
