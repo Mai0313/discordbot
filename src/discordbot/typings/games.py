@@ -62,21 +62,6 @@ class GameParticipant(GameParticipantIdentity):
     )
 
 
-class SystemIdentity(BaseModel):
-    """The house label a game view shows, beside the bot's own id and avatar.
-
-    A label, not a speaker: nothing built from this writes a message, and
-    `system_avatar_url` is deliberately resolved and never drawn.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    system_name: str = Field(..., description="House label shown on the casino side of a table.")
-    system_avatar_url: str = Field(
-        default="", description="The bot's guild-aware avatar URL, resolved alongside the label."
-    )
-
-
 class ParticipantPreparationResult(BaseModel):
     """Result of preparing a Discord user for a wagered game seat."""
 
@@ -385,6 +370,5 @@ __all__ = [
     "ParticipantPreparationResult",
     "RefreshParticipantsResult",
     "SettleOutcome",
-    "SystemIdentity",
     "WagerSettlement",
 ]

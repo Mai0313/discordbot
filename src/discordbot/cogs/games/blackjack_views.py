@@ -10,7 +10,6 @@ import contextlib
 import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction
-from nextcord.ui import Item, View, Button
 
 from discordbot.typings.games import (
     Card,
@@ -41,11 +40,11 @@ from discordbot.cogs.games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
 )
-from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.interactions import (
+    GameView,
     table_edit_kwargs,
+    publish_final_table,
     set_view_item_visible,
-    disable_view_components,
     edit_message_with_retry,
 )
 from discordbot.cogs.games.presentation import (
@@ -55,6 +54,7 @@ from discordbot.cogs.games.presentation import (
     WIN_RESULT_EMOJI,
     BUST_RESULT_EMOJI,
     NATURAL_RESULT_EMOJI,
+    SYSTEM_NARRATOR_NAME,
     LOBBY_PLAYERS_FIELD_EMOJI,
     card_line,
     metadata_line,
@@ -62,13 +62,13 @@ from discordbot.cogs.games.presentation import (
     settlement_metadata,
     lobby_participant_line,
 )
-from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
     from collections.abc import Callable, Coroutine
 
+    from nextcord.ui import Button
     from nextcord.ext import commands
 
     from discordbot.cogs.games.shoe import BlackjackShoeStore
@@ -84,8 +84,7 @@ def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
     """H1 heading combining the hand and its total, e.g. `# 10♠  5♥ = 15`."""
     if not cards:
         return ""
-    spaced = render_hand(cards=cards).replace(" ", "  ")
-    return f"# {spaced} = {hand_value(cards=cards)}{suffix}"
+    return f"{card_line(cards_text=render_hand(cards=cards))} = {hand_value(cards=cards)}{suffix}"
 
 
 def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
@@ -197,11 +196,11 @@ def build_blackjack_lobby_embed(
     participants: list[GameParticipant],
     requested_bet: int,
     max_players: int,
-    status: str = "等待玩家加入",
+    status: str | None = None,
 ) -> Embed:
     """Builds the lobby embed shown before a Blackjack table starts."""
     embed = Embed(title="♠️ 二十一點 · 開桌準備", color=PUSH_COLOR)
-    if status and status != "等待玩家加入":
+    if status:
         embed.description = status
     embed.add_field(
         name=f"{LOBBY_PLAYERS_FIELD_EMOJI} 桌上玩家 ({len(participants)}/{max_players})",
@@ -259,11 +258,9 @@ def _dealer_settlement_color(results: list[BlackjackPlayerResult]) -> int:
     return PUSH_COLOR
 
 
-def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + identity + render flags
+def build_dealer_seat_embed(
     *,
     round_state: BlackjackRound,
-    system_name: str,
-    system_avatar_url: str,
     hide_hole: bool,
     dealer_steps: list[BlackjackDealerStep] | None = None,
     is_settled: bool = False,
@@ -292,9 +289,9 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
         description="\n".join(part for part in description_parts if part),
         color=color,
     )
-    # `system_avatar_url` is deliberately not set as a thumbnail: the bot plays at
-    # this table, so its avatar on the dealer seat would collide with its player seat.
-    embed.set_author(name=system_name)
+    # No thumbnail: the bot plays at this table, so its avatar on the dealer seat would
+    # collide with its own player seat.
+    embed.set_author(name=SYSTEM_NARRATOR_NAME)
     embed.set_footer(text="莊家規則: <=16 必補, soft 17 補, hard 17+ 停")
     return embed
 
@@ -404,8 +401,6 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
 def build_in_progress_embeds(
     *,
     round_state: BlackjackRound,
-    system_name: str,
-    system_avatar_url: str,
     dealer_steps: list[BlackjackDealerStep] | None = None,
     force_show_hole: bool = False,
 ) -> list[Embed]:
@@ -413,8 +408,6 @@ def build_in_progress_embeds(
     embeds: list[Embed] = [
         build_dealer_seat_embed(
             round_state=round_state,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             hide_hole=not force_show_hole,
             dealer_steps=dealer_steps,
             is_settled=False,
@@ -448,8 +441,6 @@ def build_final_embeds(
     *,
     round_state: BlackjackRound,
     results: list[BlackjackPlayerResult],
-    system_name: str = "賭場系統",
-    system_avatar_url: str = "",
     dealer_steps: list[BlackjackDealerStep] | None = None,
 ) -> list[Embed]:
     """Builds dealer + per-player seat embeds for the settled table."""
@@ -457,8 +448,6 @@ def build_final_embeds(
     embeds: list[Embed] = [
         build_dealer_seat_embed(
             round_state=round_state,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             hide_hole=False,
             dealer_steps=dealer_steps,
             is_settled=True,
@@ -499,8 +488,6 @@ class BlackjackLobbyView(BaseGameLobbyView):
         owner: GameParticipant,
         requested_bet: int,
         rng: Random,
-        system_name: str,
-        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         bot_user_id: int | None = None,
@@ -508,12 +495,10 @@ class BlackjackLobbyView(BaseGameLobbyView):
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
     ) -> None:
-        """Initializes a Blackjack lobby with wager and system identity."""
+        """Initializes a Blackjack lobby with its table wager."""
         super().__init__(
             owner=owner,
             rng=rng,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS,
@@ -524,7 +509,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self._shoe_store = shoe_store
         self._channel_id = channel_id
 
-    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+    def _build_lobby_embed(self, status: str) -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
         return build_blackjack_lobby_embed(
             owner=self.owner,
@@ -550,10 +535,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         round_state.deal_initial()
         view = BlackjackView(
             round_state=round_state,
-            starter_id=self.owner.user_id,
-            author_name=self.owner.account_name,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
+            owner=self.owner,
             bot_user_id=self.bot_user_id,
             shoe_store=self._shoe_store,
             channel_id=self._channel_id,
@@ -564,11 +546,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             await view.finalize(message=message)
             return True
         view.sync_buttons()
-        seat_embeds = build_in_progress_embeds(
-            round_state=round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-        )
+        seat_embeds = build_in_progress_embeds(round_state=round_state)
         await edit_message_with_retry(
             message=message,
             kwargs_factory=lambda: table_edit_kwargs(
@@ -579,16 +557,16 @@ class BlackjackLobbyView(BaseGameLobbyView):
         return True
 
 
-class BlackjackView(View):
+class BlackjackView(GameView):
     """Hit / Stand / Double / Split / Surrender / Insurance controls."""
+
+    interaction_failure_log = "Blackjack action interaction failed"
+    notice_failure_log = "Failed to send Blackjack action notice"
 
     def __init__(  # noqa: PLR0913 -- view needs table identity and bot/shoe context
         self,
         round_state: BlackjackRound,
-        starter_id: int,
-        author_name: str,
-        system_name: str = "賭場系統",
-        system_avatar_url: str = "",
+        owner: GameParticipant,
         bot_user_id: int | None = None,
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
@@ -597,10 +575,7 @@ class BlackjackView(View):
         """Initializes the active Blackjack table view."""
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
         self.round_state = round_state
-        self.starter_id = starter_id
-        self.author_name = author_name
-        self.system_name = system_name
-        self.system_avatar_url = system_avatar_url
+        self.owner = owner
         self.bot_user_id = bot_user_id
         self._shoe_store = shoe_store
         self._channel_id = channel_id
@@ -628,11 +603,7 @@ class BlackjackView(View):
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
         if self._settled:
-            await send_ephemeral_notice(
-                interaction=interaction,
-                content="這局已經結束, 等下一局吧",
-                log_message="Failed to send Blackjack settled notice",
-            )
+            await self._send_notice(interaction=interaction, content="這局已經結束, 等下一局吧")
             return False
         if interaction.user is None:
             return False
@@ -660,16 +631,7 @@ class BlackjackView(View):
         """Auto-resolves the round when nobody clicked in time."""
         if self.message is None:
             return
-        async with self._round_lock:
-            if self._settled:
-                return
-            if self.round_state.phase == "insurance":
-                self.round_state.decline_insurance_for_all_unresolved()
-                if self.round_state.finished:
-                    await self._finalize_locked(message=self.message)
-                    return
-            self.round_state.stand_all_remaining()
-            await self._finalize_locked(message=self.message)
+        await self.finalize(message=self.message)
 
     async def _run_player_action(
         self, *, interaction: Interaction[commands.Bot], apply: Callable[..., object]
@@ -791,11 +753,8 @@ class BlackjackView(View):
         try:
             self.round_state.take_insurance(user_id=user_id)
         except ValueError as error:
-            content = _insurance_refusal_notice(error=error)
-            await send_ephemeral_notice(
-                interaction=interaction,
-                content=content,
-                log_message="Failed to send Blackjack insurance rejection notice",
+            await self._send_notice(
+                interaction=interaction, content=_insurance_refusal_notice(error=error)
             )
             await self._edit_in_progress_locked(message=message)
             return False
@@ -845,89 +804,60 @@ class BlackjackView(View):
             await self._maybe_play_bot_turn_locked(message=message)
 
     async def _maybe_play_bot_turn_locked(self, message: Message) -> None:
-        """Plays consecutive bot moves until the active seat is non-bot or finished."""
+        """Plays consecutive bot moves until the bot no longer owns the next table decision."""
         if self.bot_user_id is None:
             return
         bot_user_id = self.bot_user_id
         steps = 0
         while not self._settled and not self.round_state.finished:
-            if self._bot_turn_step_limit_reached(steps=steps, bot_user_id=bot_user_id):
+            if steps >= MAX_BOT_TURN_STEPS:
+                logfire.error(
+                    "Bot turn loop exceeded step limit; breaking to prevent hang",
+                    bot_user_id=bot_user_id,
+                    state_revision=self._state_revision,
+                )
+                return
+            bot_seat = self._pending_bot_seat(bot_user_id=bot_user_id)
+            if bot_seat is None:
                 return
             before_revision = self._state_revision
             if self.round_state.phase == "insurance":
-                bot_player = self._find_player_by_user_id(user_id=bot_user_id)
-                if (
-                    bot_player is None
-                    or bot_player.insurance_resolved
-                    or not self.round_state.insurance_offered
-                ):
-                    return
-                await self._dispatch_bot_insurance_locked(message=message, bot_player=bot_player)
-                steps += 1
-                if self._bot_turn_dispatch_stalled(
-                    before_revision=before_revision,
-                    bot_user_id=bot_user_id,
-                    action_label="insurance",
-                ):
-                    return
-                await self._pace_next_bot_turn_if_pending(bot_user_id=bot_user_id)
-                continue
-            active = self.round_state.active_player()
-            if active is None or active.participant.user_id != bot_user_id:
-                return
-            await self._dispatch_bot_action_locked(message=message, active=active)
+                action_label = "insurance"
+                await self._dispatch_bot_insurance_locked(message=message, bot_player=bot_seat)
+            else:
+                action_label = "action"
+                await self._dispatch_bot_action_locked(message=message, active=bot_seat)
             steps += 1
-            if self._bot_turn_dispatch_stalled(
-                before_revision=before_revision, bot_user_id=bot_user_id, action_label="action"
-            ):
+            if self._state_revision == before_revision:
+                logfire.error(
+                    "Bot {action_label} dispatch did not advance state; breaking",
+                    action_label=action_label,
+                    bot_user_id=bot_user_id,
+                    state_revision=self._state_revision,
+                )
                 return
-            await self._pace_next_bot_turn_if_pending(bot_user_id=bot_user_id)
+            if self._pending_bot_seat(bot_user_id=bot_user_id) is not None:
+                await asyncio.sleep(delay=BOT_TURN_EDIT_DELAY_SECONDS)
 
-    def _bot_turn_step_limit_reached(self, *, steps: int, bot_user_id: int) -> bool:
-        """Returns whether the bot loop exceeded its safety step limit."""
-        if steps < MAX_BOT_TURN_STEPS:
-            return False
-        logfire.error(
-            "Bot turn loop exceeded step limit; breaking to prevent hang",
-            bot_user_id=bot_user_id,
-            state_revision=self._state_revision,
-        )
-        return True
-
-    def _bot_turn_dispatch_stalled(
-        self, *, before_revision: int, bot_user_id: int, action_label: str
-    ) -> bool:
-        """Returns whether a bot dispatch failed to advance round state."""
-        if self._state_revision != before_revision:
-            return False
-        logfire.error(
-            "Bot {action_label} dispatch did not advance state; breaking",
-            action_label=action_label,
-            bot_user_id=bot_user_id,
-            state_revision=self._state_revision,
-        )
-        return True
-
-    async def _pace_next_bot_turn_if_pending(self, *, bot_user_id: int) -> None:
-        """Waits briefly before another immediate bot-owned table decision."""
-        if self._bot_turn_pending(bot_user_id=bot_user_id):
-            await asyncio.sleep(delay=BOT_TURN_EDIT_DELAY_SECONDS)
-
-    def _bot_turn_pending(self, *, bot_user_id: int) -> bool:
-        """Returns whether the bot still owns the next immediate table decision."""
+    def _pending_bot_seat(self, *, bot_user_id: int) -> BlackjackPlayerHand | None:
+        """Returns the bot's seat while the bot owns the next immediate table decision."""
         if self._settled or self.round_state.finished:
-            return False
+            return None
         if self.round_state.phase == "insurance":
             bot_player = self._find_player_by_user_id(user_id=bot_user_id)
-            return (
-                bot_player is not None
-                and not bot_player.insurance_resolved
-                and self.round_state.insurance_offered
-            )
+            if (
+                bot_player is None
+                or bot_player.insurance_resolved
+                or not self.round_state.insurance_offered
+            ):
+                return None
+            return bot_player
         if self.round_state.phase != "player_actions":
-            return False
+            return None
         active = self.round_state.active_player()
-        return active is not None and active.participant.user_id == bot_user_id
+        if active is None or active.participant.user_id != bot_user_id:
+            return None
+        return active
 
     def _find_player_by_user_id(self, *, user_id: int) -> BlackjackPlayerHand | None:
         """Returns the player hand container matching a user_id, if any."""
@@ -1064,30 +994,15 @@ class BlackjackView(View):
         """Refreshes the per-seat embeds while holding the round lock."""
         self.sync_buttons()
         seat_embeds = build_in_progress_embeds(
-            round_state=self.round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
+            round_state=self.round_state, dealer_steps=self._dealer_steps
         )
         await message.edit(**table_edit_kwargs(embeds=seat_embeds, view=self, target=message))
-
-    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private action notice to the interacting user."""
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content=content,
-            log_message="Failed to send Blackjack action notice",
-        )
 
     async def _reject_stale_action_locked(
         self, interaction: Interaction[commands.Bot], message: Message
     ) -> None:
         """Sends a private stale-action notice and refreshes the table."""
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content="這個操作已經失效，請看最新牌桌",
-            log_message="Failed to send Blackjack stale action notice",
-        )
+        await self._send_notice(interaction=interaction, content="這個操作已經失效，請看最新牌桌")
         await self._edit_in_progress_locked(message=message)
 
     async def _finalize_locked(self, message: Message) -> None:
@@ -1148,37 +1063,22 @@ class BlackjackView(View):
         )
 
         seat_embeds = build_final_embeds(
-            round_state=self.round_state,
-            results=results,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
+            round_state=self.round_state, results=results, dealer_steps=self._dealer_steps
         )
         self.clear_items()
-        try:
-            await asyncio.wait_for(
-                message.edit(**table_edit_kwargs(embeds=seat_embeds, view=None, target=message)),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
-        except nextcord.NotFound:
-            # Opener deleted the public table before the round finished; nothing to render.
-            logfire.info("Blackjack table message gone before final edit", message_id=message.id)
-        # Broad on purpose: settlement is already committed, so this render must never
-        # raise back into the round and skip the cleanup scheduling below.
-        except Exception as exc:
-            logfire.warn(
-                "Blackjack final table edit failed; settled round never rendered",
-                channel_id=self._channel_id,
-                message_id=message.id,
-                players=len(self.round_state.players),
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-        else:
+        landed = await publish_final_table(
+            message=message,
+            embeds=seat_embeds,
+            user_name=self.owner.account_name,
+            game_name="Blackjack",
+            channel_id=self._channel_id,
+            message_id=message.id,
+            players=len(self.round_state.players),
+        )
+        if landed:
             logfire.debug(
                 "Blackjack final edit done", channel_id=self._channel_id, message_id=message.id
             )
-        schedule_public_message_delete(message=message, user_name=self.author_name)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""
@@ -1195,10 +1095,7 @@ class BlackjackView(View):
         """
         self._disable_buttons()
         body_hidden = build_in_progress_embeds(
-            round_state=self.round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
+            round_state=self.round_state, dealer_steps=self._dealer_steps
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
@@ -1208,11 +1105,7 @@ class BlackjackView(View):
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
         reveal_body = build_in_progress_embeds(
-            round_state=self.round_state,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-            dealer_steps=self._dealer_steps,
-            force_show_hole=True,
+            round_state=self.round_state, dealer_steps=self._dealer_steps, force_show_hole=True
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
@@ -1307,21 +1200,6 @@ class BlackjackView(View):
         """
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))
-
-    def _disable_buttons(self) -> None:
-        """Disables every currently visible action / insurance control."""
-        disable_view_components(children=self.children, component_types=(Button,))
-
-    async def on_error(
-        self, error: Exception, item: Item[BlackjackView], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Logs active-table component failures instead of only printing to stderr."""
-        logfire.error(
-            "Blackjack action interaction failed",
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
 
 
 __all__: list[str] = [

@@ -5,10 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 
-import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
-from nextcord.ui import Item, View, Modal, Button, TextInput, StringSelect
+from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.cogs.games.lobby import (
@@ -16,10 +15,8 @@ from discordbot.cogs.games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
-from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.number_text import compact_amount
 from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -37,7 +34,9 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGatePairChoiceUnavailableError,
 )
 from discordbot.cogs.games.interactions import (
+    GameView,
     table_edit_kwargs,
+    publish_final_table,
     set_view_item_visible,
     edit_message_with_retry,
 )
@@ -54,20 +53,13 @@ from discordbot.cogs.games.presentation import (
     metadata_line,
     lobby_participant_line,
 )
-from discordbot.services.economy.database import (
-    get_balance,
-    get_jackpot_snapshot,
-    apply_jackpot_settlement,
-)
-from discordbot.utils.owned_message_views import send_ephemeral_notice
+from discordbot.services.economy.database import get_balance, apply_jackpot_settlement
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
 
     from nextcord.ext import commands
-
-    from discordbot.typings.economy import JackpotSnapshot
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
@@ -230,11 +222,11 @@ def build_dragon_gate_lobby_embed(
     owner: GameParticipant,
     participants: list[GameParticipant],
     jackpot: int,
-    status: str = "等待玩家加入",
+    status: str | None = None,
 ) -> Embed:
     """Builds the lobby embed shown before a 射龍門 table starts."""
     embed = Embed(title="♦️ 射龍門 · 開桌準備", color=PUSH_COLOR)
-    if status and status != "等待玩家加入":
+    if status:
         embed.description = status
     embed.add_field(
         name=f"{LOBBY_PLAYERS_FIELD_EMOJI} 桌上玩家 ({len(participants)})",
@@ -353,8 +345,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        system_name: str,
-        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
@@ -364,8 +354,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         super().__init__(
             owner=owner,
             rng=rng,
-            system_name=system_name,
-            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             initial_jackpot=initial_jackpot,
@@ -373,7 +361,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             initial_jackpot_generation=initial_jackpot_generation,
         )
 
-    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+    def _build_lobby_embed(self, status: str) -> Embed:
         """Builds the 射龍門 lobby embed from participants and jackpot state."""
         return build_dragon_gate_lobby_embed(
             owner=self.owner,
@@ -404,8 +392,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
 
 
-class DragonGateView(View):
+class DragonGateView(GameView):
     """High / low buttons, bet select, and leave button for an active 射龍門 table."""
+
+    interaction_failure_log = "Dragon Gate action interaction failed"
+    notice_failure_log = "Failed to send Dragon Gate action notice"
 
     def __init__(
         self,
@@ -522,9 +513,7 @@ class DragonGateView(View):
         """Routes a select-menu choice to a fixed bet or custom modal."""
         if choice == "custom":
             if self.round_state.needs_pair_choice():
-                await interaction.response.send_message(
-                    content="同點門柱要先猜大或猜小", ephemeral=True
-                )
+                await self._send_notice(interaction=interaction, content="同點門柱要先猜大或猜小")
                 return
             modal = DragonGateBetModal(
                 view=self,
@@ -545,7 +534,7 @@ class DragonGateView(View):
         """Handles the custom bet modal submission."""
         amount = parse_decimal_amount(raw=raw_amount)
         if amount is None:
-            await interaction.response.send_message(content="下注金額要是整數", ephemeral=True)
+            await self._send_notice(interaction=interaction, content="下注金額要是整數")
             return
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
@@ -847,25 +836,14 @@ class DragonGateView(View):
             embeds.append(history_embed)
         self.clear_items()
         self.stop()
-        try:
-            await asyncio.wait_for(
-                message.edit(**table_edit_kwargs(embeds=embeds, view=None, target=message)),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
-        except nextcord.NotFound:
-            # Opener deleted the public table before the round finished; nothing to render.
-            logfire.info("Dragon Gate table message gone before final edit", message_id=message.id)
-        # Broad on purpose: settlement is already committed, so this render must never
-        # raise back into the round and skip the cleanup scheduling below.
-        except Exception as exc:
-            logfire.warn(
-                "Dragon Gate final table edit failed; settled round never rendered",
-                message_id=message.id,
-                reason=reason,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-        schedule_public_message_delete(message=message, user_name=self.owner.account_name)
+        await publish_final_table(
+            message=message,
+            embeds=embeds,
+            user_name=self.owner.account_name,
+            game_name="Dragon Gate",
+            message_id=message.id,
+            reason=reason,
+        )
 
     def _participant_for(self, user_id: int) -> GameParticipant | None:
         """Returns the participant matching a Discord user ID."""
@@ -906,25 +884,6 @@ class DragonGateView(View):
             content = "這桌已經不能操作了"
         await self._send_notice(interaction=interaction, content=content)
 
-    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private action notice to the interacting user."""
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content=content,
-            log_message="Failed to send Dragon Gate action notice",
-        )
-
-    async def on_error(
-        self, error: Exception, item: Item[DragonGateView], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Logs active-table component failures instead of only printing to stderr."""
-        logfire.error(
-            "Dragon Gate action interaction failed",
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
-
 
 class DragonGateBetModal(Modal):
     """Modal for entering an exact 射龍門 bet amount."""
@@ -947,11 +906,6 @@ class DragonGateBetModal(Modal):
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
 
 
-async def fetch_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
-    """Reads the live 射龍門 jackpot pool balance and generation."""
-    return await get_jackpot_snapshot(game_id=GAME_ID)
-
-
 __all__ = [
     "DRAGON_GATE_ACTION_TIMEOUT_SECONDS",
     "DragonGateBetModal",
@@ -960,5 +914,4 @@ __all__ = [
     "build_dragon_gate_final_embed",
     "build_dragon_gate_in_progress_embed",
     "build_dragon_gate_lobby_embed",
-    "fetch_dragon_gate_jackpot_snapshot",
 ]

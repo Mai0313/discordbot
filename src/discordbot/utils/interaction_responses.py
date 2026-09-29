@@ -1,13 +1,15 @@
 """Shared send/edit helpers for interaction responses.
 
-Each helper pairs one response shape (public followup, loan-request followup, private
+Each embed helper pairs one response shape (public followup, loan-request followup, private
 followup, ephemeral response, edit) with the `embed_spacer_payload` call that keeps embed
-widths aligned. Only the plain public followup schedules its own deletion up front; the
-loan-request one hands that to the view, which schedules it at a terminal state.
+widths aligned; the plain-text ephemeral notice needs none. Only the plain public followup
+schedules its own deletion up front; the loan-request one hands that to the view, which
+schedules it at a terminal state.
 """
 
 from typing import Protocol, cast
 
+import logfire
 from nextcord import File, Embed, Message, Interaction
 from nextcord.ui import View
 from nextcord.ext import commands
@@ -23,20 +25,14 @@ class _MessageOwningView(Protocol):
 
 
 async def send_expiring_followup(
-    interaction: Interaction[commands.Bot],
-    embed: Embed,
-    view: View | None = None,
-    file: File | None = None,
+    interaction: Interaction[commands.Bot], embed: Embed, file: File | None = None
 ) -> None:
     """Sends a public embed as an interaction followup and schedules its deletion."""
     extra_files = [file] if file is not None else None
     spacer = embed_spacer_payload(
         embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
     )
-    if view is not None:
-        message = await interaction.followup.send(embed=embed, view=view, wait=True, **spacer)
-    else:
-        message = await interaction.followup.send(embed=embed, wait=True, **spacer)
+    message = await interaction.followup.send(embed=embed, wait=True, **spacer)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_public_message_delete(message=message, user_name=user_name)
 
@@ -84,3 +80,19 @@ async def edit_response_embed(interaction: Interaction[commands.Bot], embed: Emb
         view=None,
         **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),
     )
+
+
+async def send_ephemeral_notice(
+    interaction: Interaction[commands.Bot], content: str, log_message: str
+) -> None:
+    """Sends an ephemeral interaction notice with response/followup fallback."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content=content, ephemeral=True)
+            return
+        await interaction.response.send_message(content=content, ephemeral=True)
+    # Broad on purpose: the notice is advisory, and every way Discord can refuse it (an expired
+    # token, an already-answered response, a transient HTTP error) must leave the caller's own
+    # flow running, whether that is an interaction check or a button callback.
+    except Exception:
+        logfire.warn(log_message, _exc_info=True)
