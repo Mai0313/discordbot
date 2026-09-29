@@ -9,6 +9,13 @@ from nextcord import File, Embed, Attachment
 
 from discordbot.utils.media_delivery import DISCORD_ATTACHMENT_LIMIT
 
+# Discord's own ceilings on what one message may carry: its `content`, one `embed.description`,
+# and every text field of every embed in it summed. Overshooting any of them makes Discord reject
+# the whole send, not trim it.
+DISCORD_MESSAGE_LIMIT: Final[int] = 2000
+DISCORD_EMBED_DESCRIPTION_LIMIT: Final[int] = 4096
+DISCORD_EMBED_TOTAL_LIMIT: Final[int] = 6000
+
 DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 DEFAULT_EMBED_SPACER_WIDTH: Final[int] = 640
 DEFAULT_EMBED_SPACER_HEIGHT: Final[int] = 1
@@ -18,9 +25,8 @@ _TRANSPARENT_RGBA: Final[tuple[int, int, int, int]] = (0, 0, 0, 0)
 def utf16_length(*, value: str) -> int:
     """Counts UTF-16 code units, the conservative reading of Discord's "characters".
 
-    Discord's docs never define which unit its 4096-per-description and 6000-per-message limits
-    count, so an emoji is priced at the two units it costs on the wire rather than the one
-    `len` sees.
+    Discord's docs never define which unit its embed limits count, so an emoji is priced at the
+    two units it costs on the wire rather than the one `len` sees.
     """
     return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
 

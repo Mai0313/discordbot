@@ -23,7 +23,12 @@ from nextcord.ext import commands
 
 from discordbot.typings.timeouts import TWITTER_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_TOTAL_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+    clip_to_utf16_limit,
+)
 from discordbot.services.platforms.twitter import (
     TWITTER_URL_RE,
     TwitterOutput,
@@ -45,13 +50,9 @@ _CONTEXT_COLOR = 0x65686C
 # nothing here reaches a model, this bounds a rendered message.
 _MAX_IMAGES = 4
 
-# Discord's own ceiling on `embed.description`, and on the text of every embed in one message
-# summed. A card carrying a parent and a quote spends three descriptions against the second one,
-# which is why the context cards are budgeted rather than clipped on their own: overshooting makes
-# Discord reject the WHOLE send, losing the expansion instead of trimming it.
-_EMBED_DESCRIPTION_LIMIT = 4096
-_EMBED_TOTAL_LENGTH_LIMIT = 6000
-
+# A card carrying a parent and a quote spends three descriptions against the message-wide
+# ceiling, which is why the context cards are budgeted rather than clipped on their own.
+#
 # What the post gives up so the two context cards always fit beside it. Every measurement is in
 # UTF-16 units (`utf16_length`), Discord's own; the slack covers what the budget does not measure
 # at all — each context card's author line and header.
@@ -189,9 +190,9 @@ class TwitterCogs(ExpansionCog[TwitterConversation]):
         truncated = _TRUNCATED_NOTICE if post.is_truncated else ""
         # The two notices are reserved BEFORE the body rather than appended after, or a post
         # already at the ceiling carries them past it and Discord rejects the send.
-        limit = _EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint + truncated)
+        limit = DISCORD_EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint + truncated)
         if context_count:
-            limit = min(limit, _EMBED_TOTAL_LENGTH_LIMIT - _CONTEXT_RESERVE * context_count)
+            limit = min(limit, DISCORD_EMBED_TOTAL_LIMIT - _CONTEXT_RESERVE * context_count)
         description = (
             clip_to_utf16_limit(text=post.text, limit=limit, notice=_TRUNCATION_NOTICE)
             + truncated
@@ -227,7 +228,7 @@ class TwitterCogs(ExpansionCog[TwitterConversation]):
             for text in (description, main.footer.text, main.author.name)
             if isinstance(text, str)
         )
-        budget = (_EMBED_TOTAL_LENGTH_LIMIT - spent - _BUDGET_SLACK) // max(context_count, 1)
+        budget = (DISCORD_EMBED_TOTAL_LIMIT - spent - _BUDGET_SLACK) // max(context_count, 1)
         if conversation.parent is not None:
             embeds.insert(
                 0,

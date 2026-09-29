@@ -18,6 +18,7 @@ from discordbot.cogs.research import streaming as research_streaming
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import ModelPriceEntry
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs.research.delivery import (
@@ -26,7 +27,7 @@ from discordbot.cogs.research.delivery import (
     owner_allowed_mentions,
     split_report_by_sections,
 )
-from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT, ResearchProgressStreamer
+from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
 from tests.helpers.casting import (
     as_bot,

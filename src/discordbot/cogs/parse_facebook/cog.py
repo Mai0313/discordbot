@@ -16,7 +16,12 @@ from nextcord.ext import commands
 
 from discordbot.typings.timeouts import FACEBOOK_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_TOTAL_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+    clip_to_utf16_limit,
+)
 from discordbot.services.platforms.facebook import (
     FACEBOOK_URL_RE,
     FacebookOutput,
@@ -37,16 +42,11 @@ _COMMENT_COLOR = 0x65686C
 # `context_budgets` constant: nothing here reaches a model, this bounds a rendered message.
 _MAX_IMAGES = 4
 
-# Discord's own ceiling on `embed.description`. A long post is cut rather than split across a
-# second embed: the whole card is one post, and a reader who wants the tail has the link.
-_EMBED_DESCRIPTION_LIMIT = 4096
-
-# Discord counts every embed's text in one message toward a single ceiling, so the comment card is
-# budgeted against what the post spent rather than clipped on its own: a long post plus a long
-# comment would otherwise sum past it and Discord rejects the WHOLE send, losing the expansion
-# rather than trimming it.
-_EMBED_TOTAL_LENGTH_LIMIT = 6000
-
+# A long post is cut rather than split across a second embed: the whole card is one post, and a
+# reader who wants the tail has the link. The comment card is budgeted against what the post spent
+# rather than clipped on its own, since a long post plus a long comment would otherwise sum past
+# the message-wide ceiling.
+#
 # What the post gives up so a comment card always fits beside it. Every measurement here is in
 # UTF-16 units (`utf16_length`), Discord's own; the slack on top covers what the budget does not
 # measure at all — the comment card's own author line and the blank line under its header.
@@ -207,9 +207,9 @@ class FacebookCogs(ExpansionCog[FacebookConversation]):
             return []
         hint = _VIDEO_HINT.format(url=post.video_urls[0]) if post.video_urls else ""
         comment = conversation.selected_comment
-        post_limit = _EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint)
+        post_limit = DISCORD_EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint)
         if comment is not None:
-            post_limit = min(post_limit, _EMBED_TOTAL_LENGTH_LIMIT - _COMMENT_RESERVE)
+            post_limit = min(post_limit, DISCORD_EMBED_TOTAL_LIMIT - _COMMENT_RESERVE)
         description = (
             clip_to_utf16_limit(text=post.text, limit=post_limit, notice=_TRUNCATION_NOTICE) + hint
         )
@@ -242,7 +242,7 @@ class FacebookCogs(ExpansionCog[FacebookConversation]):
                 self._comment_embed(
                     comment=comment,
                     post_url=post.url,
-                    budget=_EMBED_TOTAL_LENGTH_LIMIT - spent - _BUDGET_SLACK,
+                    budget=DISCORD_EMBED_TOTAL_LIMIT - spent - _BUDGET_SLACK,
                 )
             )
         return embeds

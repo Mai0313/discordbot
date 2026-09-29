@@ -16,7 +16,12 @@ from nextcord.ext import commands
 
 from discordbot.typings.timeouts import INSTAGRAM_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_TOTAL_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+    clip_to_utf16_limit,
+)
 from discordbot.services.platforms.instagram import (
     INSTAGRAM_URL_RE,
     InstagramOutput,
@@ -38,13 +43,9 @@ _COMMENT_COLOR = 0x65686C
 # rendered message.
 _MAX_IMAGES = 4
 
-# Discord's own ceiling on `embed.description`, and its message-wide ceiling across every embed in
-# one send. The second is why the comment is budgeted against what the post spent rather than
-# clipped on its own: clipping the two independently lets their sum reject the whole send with a
-# 400, losing the expansion instead of trimming it.
-_EMBED_DESCRIPTION_LIMIT = 4096
-_EMBED_TOTAL_LENGTH_LIMIT = 6000
-
+# The comment is budgeted against what the post spent rather than clipped on its own: clipping
+# the two independently lets their sum pass the message-wide ceiling.
+#
 # What the post gives up so a comment card always fits beside it. Every measurement here is in
 # UTF-16 units (`utf16_length`), Discord's own; the slack on top covers what the budget does not
 # measure at all — the comment card's own author line and the blank line under its header.
@@ -217,9 +218,9 @@ class InstagramCogs(ExpansionCog[InstagramConversation]):
         # ceiling carries the hint past it and Discord rejects the send.
         hint = _VIDEO_HINT.format(url=post.url) if post.video_urls else ""
         comment = conversation.selected_comment
-        post_limit = _EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint)
+        post_limit = DISCORD_EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint)
         if comment is not None:
-            post_limit = min(post_limit, _EMBED_TOTAL_LENGTH_LIMIT - _COMMENT_RESERVE)
+            post_limit = min(post_limit, DISCORD_EMBED_TOTAL_LIMIT - _COMMENT_RESERVE)
         description = (
             clip_to_utf16_limit(text=post.text, limit=post_limit, notice=_TRUNCATION_NOTICE) + hint
         )
@@ -251,7 +252,7 @@ class InstagramCogs(ExpansionCog[InstagramConversation]):
                 self._comment_embed(
                     comment=comment,
                     post_url=post.url,
-                    budget=_EMBED_TOTAL_LENGTH_LIMIT - spent - _BUDGET_SLACK,
+                    budget=DISCORD_EMBED_TOTAL_LIMIT - spent - _BUDGET_SLACK,
                 )
             )
         return embeds

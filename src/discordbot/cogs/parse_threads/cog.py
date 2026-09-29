@@ -21,7 +21,11 @@ from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.discord_embeds import utf16_length
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_TOTAL_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+)
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -50,8 +54,6 @@ _QUOTED_POST_COLOR = Color.blurple()
 _QUOTED_UNAVAILABLE_HINT = "\n\n🔗 *引用的貼文目前無法瀏覽(可能已刪除或改為私人)*"
 
 _MAX_EMBEDS_PER_MESSAGE = 10
-_EMBED_DESCRIPTION_LIMIT = 4096
-_EMBED_TOTAL_LENGTH_LIMIT = 6000
 
 # Held back from the message-wide budget for the remainder notes, which are appended to the
 # target's footer after selection has already measured it: what a post gave up is not known until
@@ -237,7 +239,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         longest_text = max(
             (utf16_length(value=embed.description or "") for embed in embeds), default=0
         )
-        if longest_text > _EMBED_DESCRIPTION_LIMIT:
+        if longest_text > DISCORD_EMBED_DESCRIPTION_LIMIT:
             logfire.info(
                 "Threads post exceeds the embed description limit; skipping expansion",
                 url=url,
@@ -366,7 +368,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         The target is kept whatever its own text costs; every other post has to fit.
         """
         selected: set[int] = set()
-        text_budget = _EMBED_TOTAL_LENGTH_LIMIT - _REMAINDER_RESERVE
+        text_budget = DISCORD_EMBED_TOTAL_LIMIT - _REMAINDER_RESERVE
         for index in priority:
             is_quoted = index == quoted_index
             main_embed = self._build_post_embeds(
