@@ -84,7 +84,6 @@ from discordbot.services.memory.store import (
     guild_compartment,
 )
 from discordbot.cogs.gen_reply.context import (
-    RecallPlan,
     ReplyContext,
     ReplyContextBuilder,
     reference_header,
@@ -194,7 +193,7 @@ FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import AsyncIterator
+    from collections.abc import Callable, Awaitable, AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -1147,6 +1146,96 @@ async def _run_pipeline(
         user_prompt=message.content,
         reactions=ReactionStatusChain(message=msg, bot_user=cog.bot.user, enabled=False),
     ).run()
+
+
+def _classify_stub(
+    route: RouteClassification | Exception,
+) -> Callable[..., Awaitable[RouteClassification]]:
+    """A `RouteClassifier.classify` that returns `route`, or raises it, after one yield.
+
+    The yield stands in for the real call's network round trip, which is what lets the
+    speculative build start before the route is known.
+    """
+
+    async def classify(self: RouteClassifier, **kwargs: object) -> RouteClassification:
+        """Answers every message with the staged route."""
+        del self, kwargs
+        await asyncio.sleep(0)
+        if isinstance(route, Exception):
+            raise route
+        return route
+
+    return classify
+
+
+def _build_stub(context: ReplyContext) -> Callable[..., Awaitable[ReplyContext]]:
+    """A `ReplyContextBuilder.build` that returns `context` at once, off memory and history."""
+
+    async def build(self: ReplyContextBuilder, **kwargs: object) -> ReplyContext:
+        """Hands back the staged context."""
+        del self, kwargs
+        return context
+
+    return build
+
+
+def _failing_build(
+    *, after: Callable[[], Awaitable[object]]
+) -> Callable[..., Awaitable[ReplyContext]]:
+    """A `ReplyContextBuilder.build` that waits for the route's picks, then `after`, then fails."""
+
+    async def build(
+        self: ReplyContextBuilder, *, recall_picks: asyncio.Future[list[str]], **kwargs: object
+    ) -> ReplyContext:
+        """Fails once the route has resolved and `after` has returned."""
+        del self, kwargs
+        await recall_picks
+        await after()
+        raise RuntimeError("prep exploded")
+
+    return build
+
+
+def _delayed_build(*, seconds: float) -> Callable[..., Awaitable[ReplyContext]]:
+    """The real `ReplyContextBuilder.build`, started `seconds` after the route's picks land."""
+    real_build = ReplyContextBuilder.build
+
+    async def build(
+        self: ReplyContextBuilder,
+        **kwargs: Any,  # noqa: ANN401 -- forwarded untouched to the real build
+    ) -> ReplyContext:
+        """Holds the build back past the picks, then runs it unchanged."""
+        await kwargs["recall_picks"]
+        await asyncio.sleep(seconds)
+        return await real_build(self, **kwargs)
+
+    return build
+
+
+class _CleanupBoundBuilder:
+    """A link builder that, once cancelled, holds its cleanup open until `release` is set."""
+
+    def __init__(self) -> None:
+        """Starts with no cancellation seen and the cleanup unreleased."""
+        self.cleanup_started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancellations = 0
+
+    async def __call__(self, **kwargs: object) -> list[EasyInputMessageParam]:
+        """Sleeps until cancelled, then counts every cancellation its cleanup receives."""
+        del kwargs
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            self.cancellations += 1
+            self.cleanup_started.set()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancellations += 1
+                raise
+            raise
+        return []
 
 
 def _assert_route_offered(*, cog: ReplyGeneratorCogs, candidates: set[int]) -> None:
@@ -5822,32 +5911,8 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=as_message(fake=dm_empty))
     assert dm_empty.replies[0].content == "?"
 
-    async def boom(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> str:
-        """Raises to exercise error handling."""
-        del reference_messages, current_message, recall_candidates, server_memory_block
-        raise RuntimeError("boom")
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: object,
-    ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, recall, recall_picks
-        return ReplyContext()
-
-    monkeypatch.setattr(RouteClassifier, "classify", boom)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
+    monkeypatch.setattr(RouteClassifier, "classify", _classify_stub(route=RuntimeError("boom")))
+    monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=ReplyContext()))
     failed = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=failed))
     assert failed.replies[0].content is None
@@ -5866,36 +5931,14 @@ async def test_a_reply_records_the_route_it_took(
     """One reply turn is one usage record, named after the route that served it."""
     cog = _cog()
 
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Routes every message to QA."""
-        del self, reference_messages, current_message, recall_candidates, server_memory_block
-        return RouteClassification(decision="QA")
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: object,
-    ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, recall, recall_picks
-        return ReplyContext()
-
     async def fake_message_handler(self: object, **kwargs: object) -> None:
         """Stands in for the answer so the turn completes without an LLM call."""
         del kwargs
 
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
+    monkeypatch.setattr(
+        RouteClassifier, "classify", _classify_stub(route=RouteClassification(decision="QA"))
+    )
+    monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=ReplyContext()))
     monkeypatch.setattr(AnswerTurn, "stream_answer", fake_message_handler)
 
     message = FakeMessage(content="<@999> recap", author=FakeAuthor(user_id=7))
@@ -5922,32 +5965,8 @@ async def test_a_failed_reply_records_that_it_never_routed(
     """Someone still talked to the bot, so a failure before the router is still recorded."""
     cog = _cog()
 
-    async def boom(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Fails the way a router outage would."""
-        del self, reference_messages, current_message, recall_candidates, server_memory_block
-        raise RuntimeError("boom")
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: object,
-    ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, recall, recall_picks
-        return ReplyContext()
-
-    monkeypatch.setattr(RouteClassifier, "classify", boom)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
+    monkeypatch.setattr(RouteClassifier, "classify", _classify_stub(route=RuntimeError("boom")))
+    monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=ReplyContext()))
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=7))
     await cog.on_message(message=as_message(fake=message))
@@ -5963,29 +5982,11 @@ async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
     cog = _cog()
     build_cancelled = asyncio.Event()
 
-    async def boom(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Fails the way a router outage would, after yielding as a real request does."""
-        del self, reference_messages, current_message, recall_candidates, server_memory_block
-        await asyncio.sleep(0)
-        raise RuntimeError("boom")
-
     async def waiting_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: asyncio.Future[list[str]],
+        self: object, *, recall_picks: asyncio.Future[list[str]], **kwargs: object
     ) -> ReplyContext:
         """Waits on the picks the way the real build does, and notes being cancelled."""
-        del self, history_limit, parts_task, recall
+        del self, kwargs
         try:
             await recall_picks
         except asyncio.CancelledError:
@@ -5993,7 +5994,7 @@ async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
             raise
         return ReplyContext()
 
-    monkeypatch.setattr(RouteClassifier, "classify", boom)
+    monkeypatch.setattr(RouteClassifier, "classify", _classify_stub(route=RuntimeError("boom")))
     monkeypatch.setattr(ReplyContextBuilder, "build", waiting_prepare)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=7))
@@ -6124,32 +6125,6 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     prepared = ReplyContext()
     received: list[ReplyContext] = []
 
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Routes every message to IMAGE."""
-        del reference_messages, current_message, recall_candidates, server_memory_block
-        # Yield like a real route I/O call so the speculative prep task starts.
-        await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE")
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: object,
-    ) -> ReplyContext:
-        """Returns the prepared context the image handler should consume."""
-        del self, history_limit, parts_task, recall, recall_picks
-        return prepared
-
     async def fake_image_handler(
         self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
@@ -6157,8 +6132,10 @@ async def test_on_message_consumes_speculative_context_on_image_route(
         del self, user_prompt
         received.append(await context_task)
 
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
+    monkeypatch.setattr(
+        RouteClassifier, "classify", _classify_stub(route=RouteClassification(decision="IMAGE"))
+    )
+    monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=prepared))
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
 
     message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
@@ -6435,19 +6412,6 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
         called.append(url)
         return []
 
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Selects Douyin while routing the request to the image handler."""
-        del reference_messages, current_message, recall_candidates, server_memory_block
-        await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
-
     async def fake_image_handler(
         self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
@@ -6459,7 +6423,13 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
+    monkeypatch.setattr(
+        RouteClassifier,
+        "classify",
+        _classify_stub(
+            route=RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
+        ),
+    )
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
 
     message = FakeMessage(
@@ -6516,27 +6486,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.12)
-    prepare = ReplyContextBuilder.build
     cancelled: list[bool] = []
-
-    async def delayed_prepare(
-        self: ReplyContextBuilder,
-        *,
-        history_limit: int,
-        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        recall: RecallPlan,
-        recall_picks: asyncio.Future[list[str]],
-    ) -> ReplyContext:
-        """Keeps preparation running until after the builder has missed its deadline."""
-        await recall_picks
-        await asyncio.sleep(0.18)
-        return await prepare(
-            self,
-            history_limit=history_limit,
-            parts_task=parts_task,
-            recall=recall,
-            recall_picks=recall_picks,
-        )
 
     async def delayed_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
@@ -6550,7 +6500,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
             raise
         return _douyin_block()
 
-    monkeypatch.setattr(ReplyContextBuilder, "build", delayed_prepare)
+    monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.18))
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         delayed_builder,
@@ -6577,26 +6527,6 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.12)
-    prepare = ReplyContextBuilder.build
-
-    async def delayed_prepare(
-        self: ReplyContextBuilder,
-        *,
-        history_limit: int,
-        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        recall: RecallPlan,
-        recall_picks: asyncio.Future[list[str]],
-    ) -> ReplyContext:
-        """Delays resolution beyond the builder deadline without delaying the builder itself."""
-        await recall_picks
-        await asyncio.sleep(0.18)
-        return await prepare(
-            self,
-            history_limit=history_limit,
-            parts_task=parts_task,
-            recall=recall,
-            recall_picks=recall_picks,
-        )
 
     async def immediate_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
@@ -6605,7 +6535,7 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         return _douyin_block()
 
-    monkeypatch.setattr(ReplyContextBuilder, "build", delayed_prepare)
+    monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.18))
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         immediate_builder,
@@ -6632,55 +6562,10 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
-    prepare = ReplyContextBuilder.build
-    cleanup_started = asyncio.Event()
-    cleanup_release = asyncio.Event()
-    second_cancellation = asyncio.Event()
-    cancellation_count = 0
-
-    async def delayed_prepare(
-        self: ReplyContextBuilder,
-        *,
-        history_limit: int,
-        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        recall: RecallPlan,
-        recall_picks: asyncio.Future[list[str]],
-    ) -> ReplyContext:
-        """Lets the builder hit its deadline before the resolver starts awaiting it."""
-        await recall_picks
-        await asyncio.sleep(0.1)
-        return await prepare(
-            self,
-            history_limit=history_limit,
-            parts_task=parts_task,
-            recall=recall,
-            recall_picks=recall_picks,
-        )
-
-    async def cleanup_bound_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Waits for an explicit cleanup release after its first cancellation."""
-        nonlocal cancellation_count
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            cancellation_count += 1
-            cleanup_started.set()
-            try:
-                await cleanup_release.wait()
-            except asyncio.CancelledError:
-                cancellation_count += 1
-                second_cancellation.set()
-                raise
-            raise
-        return _douyin_block()
-
-    monkeypatch.setattr(ReplyContextBuilder, "build", delayed_prepare)
+    builder = _CleanupBoundBuilder()
+    monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.1))
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        cleanup_bound_builder,
+        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
     )
 
     message = FakeMessage(
@@ -6688,13 +6573,12 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     )
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
-        await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+        await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
         await asyncio.sleep(0.12)
-        assert cancellation_count == 1
-        assert not second_cancellation.is_set()
+        assert builder.cancellations == 1
         assert not message_task.done()
     finally:
-        cleanup_release.set()
+        builder.release.set()
         await message_task
 
     answer = request_input(responses=_recorded(cog).responses)
@@ -6712,75 +6596,29 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
     )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
-    prepare = ReplyContextBuilder.build
-    cleanup_started = asyncio.Event()
-    cleanup_release = asyncio.Event()
-    second_cancellation = asyncio.Event()
-    cancellation_count = 0
-
-    async def delayed_prepare(
-        self: ReplyContextBuilder,
-        *,
-        history_limit: int,
-        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        recall: RecallPlan,
-        recall_picks: asyncio.Future[list[str]],
-    ) -> ReplyContext:
-        """Lets the builder reach cleanup before the resolver starts waiting on it."""
-        await recall_picks
-        await asyncio.sleep(0.1)
-        return await prepare(
-            self,
-            history_limit=history_limit,
-            parts_task=parts_task,
-            recall=recall,
-            recall_picks=recall_picks,
-        )
-
-    async def cleanup_bound_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Requires one cleanup release after the deadline cancellation."""
-        nonlocal cancellation_count
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            cancellation_count += 1
-            cleanup_started.set()
-            try:
-                await cleanup_release.wait()
-            except asyncio.CancelledError:
-                cancellation_count += 1
-                second_cancellation.set()
-                raise
-            raise
-        return _douyin_block()
-
-    monkeypatch.setattr(ReplyContextBuilder, "build", delayed_prepare)
+    builder = _CleanupBoundBuilder()
+    monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.1))
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
-        cleanup_bound_builder,
+        "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
     )
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
     )
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
-    await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+    await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
     await asyncio.sleep(0.12)
     message_task.cancel()
     try:
         await asyncio.sleep(0.02)
-        assert cancellation_count == 1
-        assert not second_cancellation.is_set()
+        assert builder.cancellations == 1
         assert not message_task.done()
     finally:
-        cleanup_release.set()
+        builder.release.set()
 
     with pytest.raises(asyncio.CancelledError):
         await message_task
-    assert cancellation_count == 1
+    assert builder.cancellations == 1
 
 
 async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder() -> None:
@@ -7026,19 +6864,6 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
         called.append(url)
         return []
 
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Selects Threads while routing the request to the image handler."""
-        del reference_messages, current_message, recall_candidates, server_memory_block
-        await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE", link_context_sources=["threads"])
-
     async def fake_image_handler(
         self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
@@ -7050,7 +6875,13 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
         "discordbot.cogs.gen_reply.link_sources.registry.build_threads_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
+    monkeypatch.setattr(
+        RouteClassifier,
+        "classify",
+        _classify_stub(
+            route=RouteClassification(decision="IMAGE", link_context_sources=["threads"])
+        ),
+    )
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
 
     message = FakeMessage(
@@ -7330,19 +7161,6 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
         called.append(url)
         return []
 
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Selects Bilibili while routing the request to the image handler."""
-        del reference_messages, current_message, recall_candidates, server_memory_block
-        await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
-
     async def fake_image_handler(
         self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
@@ -7354,7 +7172,13 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         fake_builder,
     )
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
+    monkeypatch.setattr(
+        RouteClassifier,
+        "classify",
+        _classify_stub(
+            route=RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
+        ),
+    )
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
 
     message = FakeMessage(
@@ -7426,39 +7250,21 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
             raise
         return []
 
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Selects Bilibili on QA so its builder starts after routing."""
-        del reference_messages, current_message, recall_candidates, server_memory_block
-        await asyncio.sleep(0)
-        return RouteClassification(decision="QA", link_context_sources=["bilibili"])
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: asyncio.Future[list[str]],
-    ) -> ReplyContext:
-        """Fails after routing and yields once so the selected builder is in flight."""
-        del self, history_limit, parts_task, recall
-        await recall_picks
-        await asyncio.sleep(0)
-        raise RuntimeError("prep exploded")
-
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
         hanging_builder,
     )
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
+    monkeypatch.setattr(
+        RouteClassifier,
+        "classify",
+        _classify_stub(
+            route=RouteClassification(decision="QA", link_context_sources=["bilibili"])
+        ),
+    )
+    # Yields once after the picks, so the selected builder is in flight when the build fails.
+    monkeypatch.setattr(
+        ReplyContextBuilder, "build", _failing_build(after=lambda: asyncio.sleep(0))
+    )
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7477,63 +7283,21 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     cog = _cog()
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
-    cleanup_started = asyncio.Event()
-    cleanup_release = asyncio.Event()
-    second_cancellation = asyncio.Event()
-    cancellation_count = 0
-
-    async def cleanup_bound_builder(
-        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
-    ) -> list[dict[str, object]]:
-        """Waits in cleanup after the deadline sends its first cancellation."""
-        nonlocal cancellation_count
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            cancellation_count += 1
-            cleanup_started.set()
-            try:
-                await cleanup_release.wait()
-            except asyncio.CancelledError:
-                cancellation_count += 1
-                second_cancellation.set()
-                raise
-            raise
-        return []
-
-    async def fake_route(
-        self: object,
-        *,
-        reference_messages: list[object],
-        current_message: list[object],
-        recall_candidates: object,
-        server_memory_block: object,
-    ) -> RouteClassification:
-        """Selects Bilibili so the deadline-owned builder starts."""
-        del self, reference_messages, current_message, recall_candidates, server_memory_block
-        return RouteClassification(decision="QA", link_context_sources=["bilibili"])
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: asyncio.Future[list[str]],
-    ) -> ReplyContext:
-        """Fails while the selected builder still owns its deadline cancellation cleanup."""
-        del self, history_limit, parts_task, recall
-        await recall_picks
-        await cleanup_started.wait()
-        raise RuntimeError("prep exploded")
-
+    builder = _CleanupBoundBuilder()
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages",
-        cleanup_bound_builder,
+        "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages", builder
     )
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
+    monkeypatch.setattr(
+        RouteClassifier,
+        "classify",
+        _classify_stub(
+            route=RouteClassification(decision="QA", link_context_sources=["bilibili"])
+        ),
+    )
+    # Fails while the selected builder still owns its deadline cancellation cleanup.
+    monkeypatch.setattr(
+        ReplyContextBuilder, "build", _failing_build(after=builder.cleanup_started.wait)
+    )
 
     message = FakeMessage(
         content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
@@ -7541,16 +7305,15 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     )
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
-        await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+        await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
         await asyncio.sleep(0.02)
-        assert cancellation_count == 1
-        assert not second_cancellation.is_set()
+        assert builder.cancellations == 1
         assert not message_task.done()
     finally:
-        cleanup_release.set()
+        builder.release.set()
         await message_task
 
-    assert cancellation_count == 1
+    assert builder.cancellations == 1
 
 
 @pytest.mark.usefixtures("quiet_turn")
