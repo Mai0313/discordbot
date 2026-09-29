@@ -16,7 +16,7 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.interactions import disable_view_components
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
-from discordbot.utils.owned_message_views import send_ephemeral_notice
+from discordbot.utils.interaction_responses import send_ephemeral_notice
 
 if TYPE_CHECKING:
     from random import Random

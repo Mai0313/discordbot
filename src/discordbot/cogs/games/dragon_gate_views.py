@@ -59,7 +59,7 @@ from discordbot.services.economy.database import (
     get_jackpot_snapshot,
     apply_jackpot_settlement,
 )
-from discordbot.utils.owned_message_views import send_ephemeral_notice
+from discordbot.utils.interaction_responses import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:

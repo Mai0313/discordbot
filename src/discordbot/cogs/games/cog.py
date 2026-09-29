@@ -32,13 +32,12 @@ from discordbot.cogs.games.dragon_gate import ANTE
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
 from discordbot.services.economy.database import get_account, get_balance
-from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs.games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
     BlackjackLobbyView,
     build_blackjack_lobby_embed,
 )
-from discordbot.utils.interaction_responses import send_expiring_followup
+from discordbot.utils.interaction_responses import send_ephemeral_notice, send_expiring_followup
 from discordbot.cogs.games.dragon_gate_views import (
     DragonGateLobbyView,
     build_dragon_gate_lobby_embed,

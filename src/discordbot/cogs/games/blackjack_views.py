@@ -63,7 +63,7 @@ from discordbot.cogs.games.presentation import (
     settlement_metadata,
     lobby_participant_line,
 )
-from discordbot.utils.owned_message_views import send_ephemeral_notice
+from discordbot.utils.interaction_responses import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:

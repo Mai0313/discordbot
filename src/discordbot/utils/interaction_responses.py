@@ -1,13 +1,15 @@
 """Shared send/edit helpers for interaction responses.
 
-Each helper pairs one response shape (public followup, loan-request followup, private
+Each embed helper pairs one response shape (public followup, loan-request followup, private
 followup, ephemeral response, edit) with the `embed_spacer_payload` call that keeps embed
-widths aligned. Only the plain public followup schedules its own deletion up front; the
-loan-request one hands that to the view, which schedules it at a terminal state.
+widths aligned; the plain-text ephemeral notice needs none. Only the plain public followup
+schedules its own deletion up front; the loan-request one hands that to the view, which
+schedules it at a terminal state.
 """
 
 from typing import Protocol, cast
 
+import logfire
 from nextcord import File, Embed, Message, Interaction
 from nextcord.ui import View
 from nextcord.ext import commands
@@ -84,3 +86,19 @@ async def edit_response_embed(interaction: Interaction[commands.Bot], embed: Emb
         view=None,
         **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),
     )
+
+
+async def send_ephemeral_notice(
+    interaction: Interaction[commands.Bot], content: str, log_message: str
+) -> None:
+    """Sends an ephemeral interaction notice with response/followup fallback."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content=content, ephemeral=True)
+            return
+        await interaction.response.send_message(content=content, ephemeral=True)
+    # Broad on purpose: the notice is advisory, and every way Discord can refuse it (an expired
+    # token, an already-answered response, a transient HTTP error) must leave the caller's own
+    # flow running, whether that is an interaction check or a button callback.
+    except Exception:
+        logfire.warn(log_message, _exc_info=True)
