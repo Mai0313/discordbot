@@ -12,10 +12,11 @@ The upload itself goes DIRECT to Google (never through the proxy) because only t
 client can poll a file to ACTIVE: the proxy's file resource reports a deprecated `uploaded`
 status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answer request.
 
-Distinct from `attachment/gemini_file_api.py`, which owns the same upload for Discord
-attachments plus a pending-upload re-poll keyed on the attachment source (the per-message
-render cache is a third thing again, and lives in `input.py`). A file this module uploads
-has no such later reference to adopt, so it gets a plain bounded wait instead.
+`upload_file` and `poll_while_processing` are the upload and the activation poll every direct
+upload is made of. They decide nothing: each raises the SDK's own error, and what a missing
+resource name, a file still PROCESSING at the bound, or a failure costs is the caller's call.
+`upload_to_files_api` serves the callers with no later reference to re-poll from (linked-post
+media, a generated clip handed to its persona reply), so it bounds the whole transfer and gives up.
 """
 
 import io
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from google import genai
 import logfire
-from google.genai.types import FileState
+from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.llm import LLMConfig
@@ -45,6 +46,57 @@ LINK_MEDIA_UPLOAD_CONCURRENCY = 2
 link_media_upload_semaphore = LoopLocalSemaphore(
     capacity_provider=lambda: LINK_MEDIA_UPLOAD_CONCURRENCY
 )
+
+
+async def upload_file(
+    *, client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
+) -> File:
+    """Starts one Files API upload and returns the file as the upload reported it.
+
+    The file may still be PROCESSING, and its `name` / `uri` may be None: the SDK types both as
+    optional. A path is handed to the SDK untouched so it streams from disk; in-memory bytes get
+    the file-like wrapper the SDK's `str | os.PathLike | io.IOBase` signature requires.
+
+    Raises:
+        Exception: Whatever the SDK or its transport raised, unchanged.
+    """
+    upload_source = io.BytesIO(source) if isinstance(source, bytes) else source
+    return await client.aio.files.upload(
+        file=upload_source, config={"mime_type": mime_type, "display_name": display_name}
+    )
+
+
+async def poll_while_processing(
+    *,
+    client: genai.Client,
+    uploaded: File,
+    name: str,
+    poll_interval_seconds: float,
+    timeout_seconds: float | None,
+) -> File:
+    """Re-reads an uploaded file until it leaves PROCESSING, returning the last state seen.
+
+    The file comes back still PROCESSING only when `timeout_seconds`, counted from this call,
+    elapsed first; None polls for as long as the file processes, for a caller that bounds the
+    whole transfer itself.
+
+    Args:
+        client: The client the file was uploaded with (a file is readable only by that key).
+        uploaded: The file as the upload returned it.
+        name: The file's resource name (`files/<id>`), which the poll reads it back by.
+        poll_interval_seconds: The wait between two reads.
+        timeout_seconds: How long to keep polling, or None for no bound here.
+
+    Raises:
+        Exception: Whatever the SDK or its transport raised, unchanged.
+    """
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    while uploaded.state == FileState.PROCESSING:
+        if deadline is not None and time.monotonic() >= deadline:
+            return uploaded
+        await asyncio.sleep(poll_interval_seconds)
+        uploaded = await client.aio.files.get(name=name)
+    return uploaded
 
 
 async def upload_to_files_api(
@@ -85,9 +137,6 @@ async def upload_to_files_api(
         logfire.info("files api upload skipped by kill-switch", name=display_name)
         return None
     started = time.monotonic()
-    # A path is handed to the SDK untouched so it streams from disk; only in-memory bytes need
-    # the file-like wrapper the SDK's signature requires.
-    upload_source = io.BytesIO(source) if isinstance(source, bytes) else source
     try:
         # The bound covers the transfer as well as the poll, and sits INSIDE the slot on
         # purpose. google-genai disables the transport timeout by default (`timeout=None`), so
@@ -95,16 +144,20 @@ async def upload_to_files_api(
         # let two such uploads wedge both slots for the life of the process, after which every
         # link-media build burns its full budget waiting here and silently degrades to text.
         async with link_media_upload_semaphore.get(), asyncio.timeout(delay=timeout_seconds):
-            uploaded = await client.aio.files.upload(
-                file=upload_source, config={"mime_type": mime_type, "display_name": display_name}
+            uploaded = await upload_file(
+                client=client, source=source, mime_type=mime_type, display_name=display_name
             )
             file_name = uploaded.name
             if file_name is None:
                 logfire.warn("files api upload returned no resource name", name=display_name)
                 return None
-            while uploaded.state == FileState.PROCESSING:
-                await asyncio.sleep(1.0)
-                uploaded = await client.aio.files.get(name=file_name)
+            uploaded = await poll_while_processing(
+                client=client,
+                uploaded=uploaded,
+                name=file_name,
+                poll_interval_seconds=1.0,
+                timeout_seconds=None,
+            )
     except TimeoutError as exc:
         logfire.warn(
             "files api upload did not finish in time",

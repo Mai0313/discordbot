@@ -37,7 +37,6 @@ Keeping them here means a future provider swap (or a move of a render off the pr
 one place.
 """
 
-from io import BytesIO
 import re
 from enum import StrEnum
 import time
@@ -76,6 +75,7 @@ from discordbot.typings.timeouts import (
     PROMPT_REFINE_TIMEOUT_SECONDS,
 )
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
+from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
@@ -707,19 +707,24 @@ class VideoGenerator(BaseModel):
         (`FILES_READY_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
         and can sit in PROCESSING longer than the reply-upload's window.
         """
-        uploaded = await self.client.aio.files.upload(
-            file=BytesIO(source_video.data),
-            config={"mime_type": source_video.mime_type, "display_name": "source.mp4"},
+        uploaded = await upload_file(
+            client=self.client,
+            source=source_video.data,
+            mime_type=source_video.mime_type,
+            display_name="source.mp4",
         )
         file_name = uploaded.name
         if file_name is None:
             raise RuntimeError("Source video upload returned no file name")
-        deadline = time.monotonic() + FILES_READY_TIMEOUT_SECONDS
-        while uploaded.state == FileState.PROCESSING:
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Source video did not become ACTIVE before the deadline")
-            await asyncio.sleep(1.0)
-            uploaded = await self.client.aio.files.get(name=file_name)
+        uploaded = await poll_while_processing(
+            client=self.client,
+            uploaded=uploaded,
+            name=file_name,
+            poll_interval_seconds=1.0,
+            timeout_seconds=FILES_READY_TIMEOUT_SECONDS,
+        )
+        if uploaded.state == FileState.PROCESSING:
+            raise RuntimeError("Source video did not become ACTIVE before the deadline")
         if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
             raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
         return uploaded.uri

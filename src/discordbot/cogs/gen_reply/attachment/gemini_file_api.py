@@ -1,15 +1,13 @@
-"""Gemini Files API attachment renderer: direct-SDK upload, activation poll, re-poll cache.
+"""Gemini Files API attachment renderer: activation bound, pending re-poll cache.
 
-Owns the mechanical side-channel that turns attachment bytes into an ACTIVE Gemini file URI
-referenced as an `input_file` part: the direct-SDK upload, the activation poll, and the
-per-source pending re-poll cache. The dead-source cache and the media semaphore it works
-against are inherited from `base.AttachmentRenderer`. Kept separate from `input.py` so the
-upload state machine does not tangle with source-to-part rendering.
+Turns attachment bytes into an ACTIVE Gemini file URI referenced as an `input_file` part. The
+upload and the activation poll themselves are `files_api.py`'s; this module owns what an
+attachment does with them: the activation bound, and the per-source pending re-poll cache
+that adopts an upload which finished processing after that bound. Kept separate from
+`input.py` so the upload state machine does not tangle with source-to-part rendering.
 """
 
-import io
 import time
-import asyncio
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from collections import OrderedDict
@@ -18,11 +16,12 @@ from google import genai
 import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import Field, BaseModel, PrivateAttr
-from google.genai.types import FileState
+from google.genai.types import File, FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.media import UploadedFile, RenderedAttachment, PendingUploadRepoll
 from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
+from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
 from discordbot.cogs.gen_reply.attachment.base import (
     FileBytesLoader,
     AttachmentRenderer,
@@ -55,6 +54,15 @@ class PendingUpload(BaseModel):
     expires_at: datetime = Field(
         ..., description="Provider-reported expiry; a pending entry past it is discarded."
     )
+
+
+def _expiry_of(*, uploaded: File) -> datetime:
+    """The file's provider-reported expiry, or a conservative 47h when the provider omits it.
+
+    47h sits under the ~48h a Gemini file lives, so a missing field never pins an unbounded
+    cache entry.
+    """
+    return uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
 
 
 class GeminiFileUploader(AttachmentRenderer):
@@ -270,7 +278,6 @@ class GeminiFileUploader(AttachmentRenderer):
         can reuse the handle until it actually expires (Gemini files live ~48h) instead
         of guessing a fixed TTL.
         """
-        poll_interval_seconds = 0.5
         started = time.monotonic()
         logfire.debug(
             "gemini upload start", filename=filename, content_type=content_type, bytes=len(data)
@@ -289,8 +296,8 @@ class GeminiFileUploader(AttachmentRenderer):
             )
             return None
         try:
-            uploaded = await client.aio.files.upload(
-                file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
+            uploaded = await upload_file(
+                client=client, source=data, mime_type=content_type, display_name=filename
             )
         except Exception as exc:
             # Broad on purpose: the SDK and its transport raise no single stable type, and this
@@ -311,34 +318,36 @@ class GeminiFileUploader(AttachmentRenderer):
         if file_name is None:
             logfire.warn("upload returned no resource name; dropping", filename=filename)
             return None
-        deadline = time.monotonic() + ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
-        while uploaded.state == FileState.PROCESSING:
-            if time.monotonic() >= deadline:
-                logfire.warn(
-                    "attachment still processing; will retry on next reference", filename=filename
-                )
-                if uploaded.uri is None:
-                    logfire.warn("pending upload has no uri; dropping", filename=filename)
-                    return None
-                # Hand back the in-flight upload so the caller can re-poll it later
-                # instead of re-uploading the same bytes from scratch.
-                expires_at = uploaded.expiration_time or (
-                    datetime.now(tz=UTC) + timedelta(hours=47)
-                )
-                return PendingUpload(name=file_name, uri=uploaded.uri, expires_at=expires_at)
-            await asyncio.sleep(poll_interval_seconds)
-            try:
-                uploaded = await self.gemini_client.aio.files.get(name=file_name)
-            except Exception as exc:
-                # Broad on purpose: the poll is the same best-effort boundary as the upload.
-                logfire.warn(
-                    "gemini activation poll failed",
-                    filename=filename,
-                    file_name=file_name,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
-                )
+        try:
+            uploaded = await poll_while_processing(
+                client=client,
+                uploaded=uploaded,
+                name=file_name,
+                poll_interval_seconds=0.5,
+                timeout_seconds=ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            # Broad on purpose: the poll is the same best-effort boundary as the upload.
+            logfire.warn(
+                "gemini activation poll failed",
+                filename=filename,
+                file_name=file_name,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return None
+        if uploaded.state == FileState.PROCESSING:
+            logfire.warn(
+                "attachment still processing; will retry on next reference", filename=filename
+            )
+            if uploaded.uri is None:
+                logfire.warn("pending upload has no uri; dropping", filename=filename)
                 return None
+            # Hand back the in-flight upload so the caller can re-poll it later
+            # instead of re-uploading the same bytes from scratch.
+            return PendingUpload(
+                name=file_name, uri=uploaded.uri, expires_at=_expiry_of(uploaded=uploaded)
+            )
         if uploaded.state != FileState.ACTIVE:
             logfire.warn(
                 "attachment failed processing", filename=filename, state=str(uploaded.state)
@@ -348,9 +357,7 @@ class GeminiFileUploader(AttachmentRenderer):
         if file_uri is None:
             logfire.warn("active upload has no uri; dropping", filename=filename)
             return None
-        # Fall back to a conservative 47h (under the ~48h lifetime) if the provider omits
-        # the expiry, so a missing field never pins an unbounded cache entry.
-        expires_at = uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
+        expires_at = _expiry_of(uploaded=uploaded)
         logfire.debug(
             "gemini upload done",
             filename=filename,

@@ -4119,9 +4119,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     async def _no_sleep(delay: float) -> None:
         del delay
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", _no_sleep)
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
         return _fake_uploader(files=files)
@@ -4151,9 +4149,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         clock["now"] += 50.0
         return clock["now"]
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
     stuck = _uploader(FakeGeminiFiles(processing_rounds=99))
     pending = await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4")
     assert isinstance(pending, PendingUpload)
@@ -4178,9 +4174,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     async def _no_sleep(delay: float) -> None:
         del delay
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", _no_sleep)
 
     # Auto-advancing clock: each call jumps well past the 15s activation bound, so the first
     # reference times out to PENDING regardless of how many monotonic() calls the upload path
@@ -4191,9 +4185,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         clock["now"] += 50.0
         return clock["now"]
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
 
     files = FakeGeminiFiles(processing_rounds=99)
     uploader = _fake_uploader(files=files)
