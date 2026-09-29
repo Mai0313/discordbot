@@ -643,15 +643,6 @@ class ThreadsPage(BaseModel):
         description="One list per reply branch under the target, each ordered from the direct reply outward, so an item's index in its branch is its nesting depth",
     )
 
-    @property
-    def target(self) -> Post | None:
-        """The post the URL pointed at.
-
-        Returns:
-            The last chain entry, or None when the page carried no such post.
-        """
-        return self.chain[-1] if self.chain else None
-
 
 class ParsedPage(BaseModel):
     """One fetched page's outcome: what it yielded, and whether it was an answer at all.
@@ -942,18 +933,12 @@ class ThreadsDownloader(PlatformDownloader):
         )
 
     @staticmethod
-    def _determine_extension(media_url: str) -> str:
-        """Determines the file extension from a media URL."""
+    def _is_video(media_url: str) -> bool:
+        """Whether a media URL names a video rather than an image, judged from the URL alone."""
         path_lower = urlparse(media_url).path.lower()
-        if ".jpg" in path_lower or ".jpeg" in path_lower:
-            return "jpg"
-        if ".webp" in path_lower:
-            return "webp"
-        if ".png" in path_lower:
-            return "png"
-        if ".mp4" in path_lower:
-            return "mp4"
-        return "mp4" if "video" in media_url or "mp4" in media_url else "jpg"
+        if any(extension in path_lower for extension in (".jpg", ".jpeg", ".webp", ".png")):
+            return False
+        return ".mp4" in path_lower or "video" in media_url or "mp4" in media_url
 
     def download_media(self, url: str, filename: str) -> Path:
         """Downloads media from the given URL to the output folder.
@@ -1141,11 +1126,10 @@ class ThreadsDownloader(PlatformDownloader):
         video_paths: list[Path] = []
 
         for i, media_url in enumerate(post.media_urls):
-            ext = self._determine_extension(media_url=media_url)
-            if ext == "mp4":
+            if self._is_video(media_url=media_url):
                 video_urls.append(media_url)
                 if download:
-                    filename = f"threads_{post_code}_{i}.{ext}"
+                    filename = f"threads_{post_code}_{i}.mp4"
                     video_paths.append(self.download_media(url=media_url, filename=filename))
             else:
                 image_urls.append(media_url)

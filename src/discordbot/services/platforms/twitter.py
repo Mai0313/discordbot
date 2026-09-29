@@ -218,6 +218,15 @@ class TwitterConversation(PlatformConversation[TwitterOutput]):
     a second set of rules.
     """
 
+    @property
+    def parent(self) -> TwitterOutput | None:
+        """The post the target replies to, or None when it replies to nothing readable.
+
+        The chain's earlier entry. Only ever one: the endpoint embeds a single ancestor and
+        walking further costs a request per hop.
+        """
+        return self.chain[0] if len(self.chain) > 1 else None
+
 
 class _TwitterPayload(BaseModel):
     """Base for the syndication payload mirrors, tolerating the nulls the endpoint serves.

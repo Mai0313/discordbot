@@ -171,8 +171,8 @@ def _render_conversation(
     ingested, so every other section says its own pictures are URLs.
     """
     lines: list[str] = []
-    if len(conversation.chain) > 1:
-        lines.extend(_render_post(post=conversation.chain[0], label="The post it replies to"))
+    if conversation.parent is not None:
+        lines.extend(_render_post(post=conversation.parent, label="The post it replies to"))
         lines.append("")
     lines.extend(
         _render_post(
