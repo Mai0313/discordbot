@@ -17,17 +17,14 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs.games.shoe import BlackjackShoeStore
+from discordbot.cogs.games.lobby import BaseGameLobbyView
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs.games.bot_player import kelly_bet, count_adjusted_edge
-from discordbot.utils.message_cleanup import (
-    track_public_message,
-    delete_tracked_public_messages,
-    schedule_public_message_delete,
-)
+from discordbot.utils.message_cleanup import track_public_message, delete_tracked_public_messages
 from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
@@ -37,7 +34,12 @@ from discordbot.cogs.games.blackjack_views import (
     BlackjackLobbyView,
     build_blackjack_lobby_embed,
 )
-from discordbot.utils.interaction_responses import send_ephemeral_notice, send_expiring_followup
+from discordbot.utils.interaction_responses import (
+    send_ephemeral_notice,
+    send_private_followup,
+    send_expiring_followup,
+    send_ephemeral_response,
+)
 from discordbot.cogs.games.dragon_gate_views import (
     DragonGateLobbyView,
     build_dragon_gate_lobby_embed,
@@ -155,11 +157,8 @@ class GamesCogs(commands.Cog):
             guild=getattr(interaction, "guild", None),
         )
         if result.participant is None:
-            embed = insufficient_embed_builder(result.balance)
-            await interaction.followup.send(
-                embed=embed,
-                ephemeral=True,
-                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+            await send_private_followup(
+                interaction=interaction, embed=insufficient_embed_builder(result.balance)
             )
         return result.participant
 
@@ -225,6 +224,24 @@ class GamesCogs(commands.Cog):
             ),
         )
 
+    @staticmethod
+    async def _open_lobby(
+        interaction: Interaction[commands.Bot], view: BaseGameLobbyView, embed: Embed
+    ) -> None:
+        """Posts a lobby as the interaction's public followup and binds the message to it.
+
+        The message is recorded so a restart still deletes it; while the bot runs, the lobby's
+        timeout or its table's final render schedules that deletion.
+        """
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+        )
+        await track_public_message(message=message, user_name=view.owner.account_name)
+        view.message = message
+
     @nextcord.slash_command(
         name="games",
         description="Game commands.",
@@ -266,12 +283,7 @@ class GamesCogs(commands.Cog):
             return
         wager = parse_decimal_amount(raw=bet)
         if wager is None:
-            embed = self._invalid_bet_embed()
-            await interaction.response.send_message(
-                embed=embed,
-                ephemeral=True,
-                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
-            )
+            await send_ephemeral_response(interaction=interaction, embed=self._invalid_bet_embed())
             return
 
         await interaction.response.defer()
@@ -282,13 +294,10 @@ class GamesCogs(commands.Cog):
         )
         owner = participant_result.participant
         if owner is None:
-            embed = self._insufficient_balance_embed(balance=participant_result.balance)
-            message = await interaction.followup.send(
-                embed=embed,
-                wait=True,
-                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+            await send_expiring_followup(
+                interaction=interaction,
+                embed=self._insufficient_balance_embed(balance=participant_result.balance),
             )
-            schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
         table_bet = owner.bet
@@ -321,14 +330,7 @@ class GamesCogs(commands.Cog):
             requested_bet=table_bet,
             max_players=MAX_BLACKJACK_PLAYERS,
         )
-        message = await interaction.followup.send(
-            embed=embed,
-            view=view,
-            wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
-        )
-        await track_public_message(message=message, user_name=owner.account_name)
-        view.message = message
+        await self._open_lobby(interaction=interaction, view=view, embed=embed)
 
     @games.subcommand(
         name="dragon_gate",
@@ -353,15 +355,12 @@ class GamesCogs(commands.Cog):
         )
         owner = participant_result.participant
         if owner is None:
-            embed = self._dragon_gate_insufficient_balance_embed(
-                balance=participant_result.balance
+            await send_expiring_followup(
+                interaction=interaction,
+                embed=self._dragon_gate_insufficient_balance_embed(
+                    balance=participant_result.balance
+                ),
             )
-            message = await interaction.followup.send(
-                embed=embed,
-                wait=True,
-                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
-            )
-            schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
         initial_jackpot = await get_jackpot_snapshot(game_id=GAME_ID)
@@ -381,14 +380,7 @@ class GamesCogs(commands.Cog):
         embed = build_dragon_gate_lobby_embed(
             owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
         )
-        message = await interaction.followup.send(
-            embed=embed,
-            view=view,
-            wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
-        )
-        await track_public_message(message=message, user_name=owner.account_name)
-        view.message = message
+        await self._open_lobby(interaction=interaction, view=view, embed=embed)
 
     @games.subcommand(
         name="blackjack_history",
