@@ -17,8 +17,8 @@ from discordbot.cogs.gen_reply.link_sources.facebook import (
     FACEBOOK_UNAVAILABLE_NOTICE,
     FACEBOOK_TEXT_ONLY_SEPARATOR,
     build_facebook_context_messages,
-    facebook_timeout_context_messages,
 )
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 from tests.helpers.link_sources import (
     FACEBOOK_URL,
@@ -181,7 +181,9 @@ async def test_a_read_failure_never_raises_into_the_pipeline(
 
 def test_the_timeout_notice_is_a_single_block() -> None:
     """gen_reply injects this when the build outruns the post-route grace."""
-    blocks = facebook_timeout_context_messages()
+    blocks = next(
+        source for source in LINK_CONTEXT_SOURCES if source.name == "facebook"
+    ).timeout_blocks()
 
     assert len(blocks) == 1
     assert block_separator(blocks=blocks) == FACEBOOK_TIMEOUT_NOTICE

@@ -12,8 +12,8 @@ from discordbot.cogs.gen_reply.link_sources.twitter import (
     TWITTER_UNAVAILABLE_NOTICE,
     TWITTER_TEXT_ONLY_SEPARATOR,
     build_twitter_context_messages,
-    twitter_timeout_context_messages,
 )
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 from tests.helpers.link_sources import (
     TWITTER_URL,
@@ -88,7 +88,9 @@ async def test_an_ordinary_post_does_not_claim_to_be_cut(monkeypatch: pytest.Mon
 
 def test_the_timeout_notice_is_a_single_block() -> None:
     """gen_reply injects this when the build outruns the post-route grace."""
-    blocks = twitter_timeout_context_messages()
+    blocks = next(
+        source for source in LINK_CONTEXT_SOURCES if source.name == "twitter"
+    ).timeout_blocks()
 
     assert len(blocks) == 1
     assert block_separator(blocks=blocks) == TWITTER_TIMEOUT_NOTICE

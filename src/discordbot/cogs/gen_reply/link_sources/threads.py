@@ -189,16 +189,6 @@ THREADS_TIMEOUT_NOTICE = (
 )
 
 
-def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Threads parse exceeds gen_reply's post-route grace.
-
-    A timed-out parse otherwise leaves the answer with only the raw URL, which can re-expose
-    the "I cannot open this link" fallback; this keeps a deterministic "could not read it in
-    time" notice instead.
-    """
-    return [system_block(text=THREADS_TIMEOUT_NOTICE)]
-
-
 def _render_post_text(post: ThreadsOutput, label: str) -> str:
     """Renders one post's metadata (author, time, body, engagement, url) as compact text."""
     lines = [f"[{label}] @{post.author_name}".rstrip()]

@@ -37,7 +37,6 @@ from discordbot.services.platforms.twitter import (
 )
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
-    system_block,
     defuse_markers,
     build_post_context,
 )
@@ -104,11 +103,6 @@ TWITTER_SEPARATORS = PostSeparators(
     text_only=TWITTER_TEXT_ONLY_SEPARATOR,
     trailer=TWITTER_CONTEXT_TRAILER,
 )
-
-
-def twitter_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Twitter build exceeds gen_reply's post-route grace."""
-    return [system_block(text=TWITTER_TIMEOUT_NOTICE)]
 
 
 def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -> list[str]:

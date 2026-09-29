@@ -123,11 +123,6 @@ BILIBILI_TIMEOUT_NOTICE = (
 )
 
 
-def bilibili_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Bilibili build exceeds gen_reply's post-route grace."""
-    return [system_block(text=BILIBILI_TIMEOUT_NOTICE)]
-
-
 def _render_video_text(metadata: VideoMetadata, url: str) -> str:
     """Renders the video's title, uploader, duration and description as compact text."""
     lines = [f"[Bilibili video the user linked] {metadata.uploader}".rstrip()]

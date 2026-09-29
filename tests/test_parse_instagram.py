@@ -10,6 +10,7 @@ from discordbot.services.platforms.instagram import (
     InstagramDownloader,
     InstagramConversation,
 )
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 from discordbot.cogs.gen_reply.link_sources.instagram import (
     INSTAGRAM_TIMEOUT_NOTICE,
     INSTAGRAM_CONTEXT_TRAILER,
@@ -17,7 +18,6 @@ from discordbot.cogs.gen_reply.link_sources.instagram import (
     INSTAGRAM_UNAVAILABLE_NOTICE,
     INSTAGRAM_TEXT_ONLY_SEPARATOR,
     build_instagram_context_messages,
-    instagram_timeout_context_messages,
 )
 
 from tests.helpers.link_sources import (
@@ -348,7 +348,9 @@ async def test_a_read_failure_never_raises_into_the_pipeline(
 
 def test_the_timeout_notice_is_a_single_block() -> None:
     """gen_reply injects this when the build outruns the post-route grace."""
-    blocks = instagram_timeout_context_messages()
+    blocks = next(
+        source for source in LINK_CONTEXT_SOURCES if source.name == "instagram"
+    ).timeout_blocks()
 
     assert len(blocks) == 1
     assert block_separator(blocks=blocks) == INSTAGRAM_TIMEOUT_NOTICE

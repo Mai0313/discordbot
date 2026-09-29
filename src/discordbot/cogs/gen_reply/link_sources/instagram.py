@@ -24,7 +24,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS, MAX_INSTAGRAM_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
-    system_block,
     defuse_markers,
     build_post_context,
 )
@@ -93,11 +92,6 @@ INSTAGRAM_SEPARATORS = PostSeparators(
     text_only=INSTAGRAM_TEXT_ONLY_SEPARATOR,
     trailer=INSTAGRAM_CONTEXT_TRAILER,
 )
-
-
-def instagram_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Instagram build exceeds gen_reply's post-route grace."""
-    return [system_block(text=INSTAGRAM_TIMEOUT_NOTICE)]
 
 
 def _render_conversation(

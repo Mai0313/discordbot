@@ -294,11 +294,22 @@ class LinkContextSource(BaseModel):
     build: SkipValidation[LinkContextBuilder] = Field(
         ..., description="Adapter starting the context build with the normalized keyword set."
     )
-    on_timeout: SkipValidation[Callable[[], list[EasyInputMessageParam]]] = Field(
+    timeout_notice: str = Field(
         ...,
-        description="Deterministic notice blocks for a build that outruns the post-route grace.",
+        description=(
+            "Deterministic notice injected for a build that outruns the post-route grace, so a "
+            "slow fetch does not leave the model with only the raw URL."
+        ),
     )
     media_ingest_allowed: SkipValidation[MediaIngestPredicate] = Field(
         ...,
         description="Kill-switch predicate for media ingestion; a switchless source returns True.",
     )
+
+    def timeout_blocks(self) -> list[EasyInputMessageParam]:
+        """The blocks injected in place of a build that outran the post-route grace.
+
+        Returns:
+            The timeout notice as a single system block.
+        """
+        return [system_block(text=self.timeout_notice)]

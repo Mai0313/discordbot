@@ -110,11 +110,6 @@ DOUYIN_TIMEOUT_NOTICE = (
 )
 
 
-def douyin_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Douyin build exceeds gen_reply's post-route grace."""
-    return [system_block(text=DOUYIN_TIMEOUT_NOTICE)]
-
-
 def _render_post_text(post: DouyinMetadata, url: str) -> str:
     """Renders the post's caption, author and source link as compact text."""
     lines = [f"[Douyin post the user linked] @{post.author_name}".rstrip()]

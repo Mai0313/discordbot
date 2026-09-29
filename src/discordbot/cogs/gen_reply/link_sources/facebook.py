@@ -23,7 +23,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.context_budgets import MAX_FACEBOOK_COMMENTS, MAX_FACEBOOK_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
-    system_block,
     defuse_markers,
     build_post_context,
 )
@@ -96,11 +95,6 @@ FACEBOOK_SEPARATORS = PostSeparators(
     text_only=FACEBOOK_TEXT_ONLY_SEPARATOR,
     trailer=FACEBOOK_CONTEXT_TRAILER,
 )
-
-
-def facebook_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Facebook build exceeds gen_reply's post-route grace."""
-    return [system_block(text=FACEBOOK_TIMEOUT_NOTICE)]
 
 
 def _render_conversation(
