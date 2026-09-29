@@ -5929,6 +5929,17 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert deleted.channel.sent[0].embed is not None
 
 
+async def test_an_empty_mention_is_marked_as_well_as_answered() -> None:
+    """A mention with nothing else in it gets ❓ on the message beside its `?` reply."""
+    cog = _cog()
+    message = FakeMessage(content="<@999>", author=FakeAuthor(user_id=1))
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.added_reactions == ["❓"]
+    assert [reply.content for reply in message.replies] == ["?"]
+
+
 async def test_a_reply_records_the_route_it_took(
     monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
