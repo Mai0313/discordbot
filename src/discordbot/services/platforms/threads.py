@@ -39,7 +39,7 @@ from discordbot.services.platforms.base import (
     PlatformDownloader,
     PlatformConversation,
 )
-from discordbot.services.platforms.page_json import FetchedPage, fetch_page
+from discordbot.services.platforms.page_json import FetchedPage, walk, fetch_page
 from discordbot.services.platforms.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
@@ -801,41 +801,26 @@ class ThreadsDownloader(PlatformDownloader):
         )
 
     @staticmethod
-    def _find_media_nodes(
-        obj: dict[str, Any] | list[Any] | str | float | None,
-    ) -> list[dict[str, Any]]:
-        """Recursively collects every `media` node, in document order.
+    def _collect_fragments(data: dict[str, Any] | list[Any], post_code: str) -> list[Post]:
+        """Builds a Post for every `media` node in one parsed SJS payload, in page order.
 
         The page splits one post across several of them: the post's own fields arrive on one,
         the thread above it on another and the replies below it on a third, each in its own
         script tag and in no fixed order. Collecting them all and joining them afterwards is
         what `_thread_around` needs; stopping at the first would find only whichever fragment
         happened to come first.
-        """
-        results: list[dict[str, Any]] = []
-        if isinstance(obj, dict):
-            media = obj.get("media")
-            if isinstance(media, dict):
-                results.append(media)
-            for value in obj.values():
-                results.extend(ThreadsDownloader._find_media_nodes(obj=value))
-        elif isinstance(obj, list):
-            for item in obj:
-                results.extend(ThreadsDownloader._find_media_nodes(obj=item))
-        return results
-
-    @staticmethod
-    def _collect_fragments(data: dict[str, Any] | list[Any], post_code: str) -> list[Post]:
-        """Builds a Post for every media node in one parsed SJS payload, in page order.
 
         Each node is validated on its own so a single malformed fragment costs only that
         fragment; validating them together would let one unexpected payload discard the target
         too.
         """
         fragments: list[Post] = []
-        for node in ThreadsDownloader._find_media_nodes(obj=data):
+        for node in walk(node=data):
+            media = node.get("media")
+            if not isinstance(media, dict):
+                continue
             try:
-                fragments.append(Post.model_validate(obj=node))
+                fragments.append(Post.model_validate(obj=media))
             except ValidationError:
                 logfire.warn(
                     "Threads payload no longer matches the parser schema; skipping one fragment",
