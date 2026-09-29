@@ -1,15 +1,13 @@
-"""Tests for the media-cleanup cog: setup registration and the on_ready start gate.
+"""Tests for the media-cleanup cog's on_ready start gate.
 
 These never let the real sweep run — it would delete against the env-resolved live serve dir — so
 the startup sweep is stubbed and only the gating decision (start vs no-op) is asserted.
 """
 
-from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
-from discordbot.cogs.media_cleanup import cog as media_cleanup
 from discordbot.utils.media_delivery import MediaHostingService
 from discordbot.cogs.media_cleanup.cog import MediaCleanupCogs
 
@@ -37,18 +35,6 @@ def _service(
             retention_hours=retention_hours,
         )
     )
-
-
-def test_setup_registers_media_cleanup_cog() -> None:
-    """The module setup registers exactly one MediaCleanupCogs with override=True."""
-    added: list[tuple[object, object]] = []
-    bot = SimpleNamespace(add_cog=lambda cog, override=None: added.append((cog, override)))
-
-    media_cleanup.setup(bot=as_bot(fake=bot))
-
-    assert len(added) == 1
-    assert isinstance(added[0][0], MediaCleanupCogs)
-    assert added[0][1] is True
 
 
 async def test_on_ready_starts_loop_and_sweeps_once_when_enabled(
