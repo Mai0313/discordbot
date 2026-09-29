@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from functools import partial
 
+from nextcord import User, Member
+
 from discordbot import cli
 from discordbot.utils.avatars import guild_avatar_url
 
@@ -14,20 +16,11 @@ from tests.helpers.casting import (
     as_discord_bot,
     make_not_found,
 )
+from tests.helpers.discord_mocks import FakeUser
 
 if TYPE_CHECKING:
     import pytest
-
-
-class FakeUser:
-    """Minimal user-like object with a global avatar."""
-
-    def __init__(self, user_id: int = 1, avatar_url: str = "https://cdn.test/global.png") -> None:
-        """Initializes a fake user identity."""
-        self.id = user_id
-        self.name = "tester"
-        self.display_avatar = SimpleNamespace(url=avatar_url)
-        self.bot = False
+    from nextcord.types.user import User as UserPayload
 
 
 class FakeMember(FakeUser):
@@ -73,6 +66,51 @@ class FakeGuild:
         if self.fetched_member is not None and self.fetched_member.id == user_id:
             return self.fetched_member
         raise make_not_found(message="member not found")
+
+
+class _MemberState:
+    """The slice of `nextcord.ConnectionState` that constructing a `Member` reads."""
+
+    def store_user(self, data: "UserPayload") -> User:
+        """Builds the member's user the way the real state does on a cache miss."""
+        return User(state=self, data=data)  # ty: ignore[invalid-argument-type] -- the state slice a user reads
+
+
+def _discord_member(user_id: int, guild: FakeGuild, guild_avatar: str) -> Member:
+    """Builds a real `nextcord.Member`, since `guild_avatar_url` checks for one by type."""
+    return Member(
+        data={
+            "user": {
+                "id": str(user_id),
+                "username": "tester",
+                "discriminator": "0",
+                "avatar": None,
+            },
+            "roles": [],
+            "joined_at": "2020-01-01T00:00:00+00:00",
+            "deaf": "false",
+            "mute": "false",
+            "flags": 0,
+            "avatar": guild_avatar,
+        },
+        guild=guild,  # ty: ignore[invalid-argument-type] -- only its id is read, for the avatar URL
+        state=_MemberState(),  # ty: ignore[invalid-argument-type] -- the state slice a member reads
+    )
+
+
+async def test_guild_avatar_url_reads_a_member_without_asking_the_guild() -> None:
+    """A Member already carries its own guild avatar, so a stale guild cache is never read."""
+    guild = FakeGuild(
+        cached_member=FakeMember(user_id=7, guild_avatar_url="https://cdn.test/stale.png"),
+        fetched_member=None,
+    )
+    member = _discord_member(user_id=7, guild=guild, guild_avatar="fresh")
+
+    avatar_url = await guild_avatar_url(user=member, guild=as_guild(fake=guild))
+
+    assert (
+        avatar_url == "https://cdn.discordapp.com/guilds/100/users/7/avatars/fresh.png?size=1024"
+    )
 
 
 async def test_guild_avatar_url_prefers_cached_guild_avatar() -> None:
