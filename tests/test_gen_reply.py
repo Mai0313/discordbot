@@ -181,22 +181,12 @@ from tests.helpers.llm_input import (
     request_input,
     iter_text_blocks,
     extract_tone_block,
-    has_douyin_context_block,
+    has_link_context_block,
     has_memory_context_block,
     extract_callable_user_ids,
-    has_threads_context_block,
-    has_twitter_context_block,
+    extract_link_context_block,
     extract_user_memory_blocks,
-    has_bilibili_context_block,
-    has_facebook_context_block,
     extract_server_memory_block,
-    has_instagram_context_block,
-    extract_douyin_context_block,
-    extract_threads_context_block,
-    extract_twitter_context_block,
-    extract_bilibili_context_block,
-    extract_facebook_context_block,
-    extract_instagram_context_block,
 )
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
@@ -208,7 +198,7 @@ FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import Callable, AsyncIterator
+    from collections.abc import AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -6556,49 +6546,35 @@ def _link_config() -> LLMConfig:
 @pytest.mark.parametrize(
     "case",
     [
-        (
-            "threads",
-            "build_threads_context_messages",
-            "https://www.threads.com/@a/post/ABC123",
-            has_threads_context_block,
-        ),
+        ("threads", "build_threads_context_messages", "https://www.threads.com/@a/post/ABC123"),
         (
             "facebook",
             "build_facebook_context_messages",
             "https://www.facebook.com/groups/123/posts/456/",
-            has_facebook_context_block,
         ),
         (
             "instagram",
             "build_instagram_context_messages",
             "https://www.instagram.com/p/Dc5eNjYkoZE/",
-            has_instagram_context_block,
         ),
-        (
-            "douyin",
-            "build_douyin_context_messages",
-            "https://v.douyin.com/abc123",
-            has_douyin_context_block,
-        ),
+        ("douyin", "build_douyin_context_messages", "https://v.douyin.com/abc123"),
         (
             "bilibili",
             "build_bilibili_context_messages",
             "https://www.bilibili.com/video/BV1jpK86hEc8",
-            has_bilibili_context_block,
         ),
         (
             "twitter",
             "build_twitter_context_messages",
             "https://x.com/Dbacks/status/1628549742539194368",
-            has_twitter_context_block,
         ),
     ],
 )
 async def test_on_message_does_not_start_incidental_link_context(
-    monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str, Callable[..., bool]]
+    monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str]
 ) -> None:
     """An incidental registered link starts no source work and injects no source claim."""
-    source, builder, url, has_context_block = case
+    source, builder, url = case
     cog = _cog()
     route = RouteClassification(decision="QA")
     _recorded(cog).responses.output_parsed = route
@@ -6627,10 +6603,9 @@ async def test_on_message_does_not_start_incidental_link_context(
     message = FakeMessage(content=f"<@999> unrelated question {url}", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
-    assert source not in route.link_context_sources
     assert called == []
-    assert not has_context_block(
-        request=request_input(responses=_recorded(cog).responses, phase="answer")
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source=source
     )
 
 
@@ -6668,9 +6643,9 @@ async def test_on_message_injects_douyin_context_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
-    assert extract_douyin_context_block(request=answer) == "MOCK DOUYIN POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
+    assert extract_link_context_block(request=answer, source="douyin") == "MOCK DOUYIN POST BODY"
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0])
@@ -6720,8 +6695,8 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     await cog.on_message(message=as_message(fake=message))
 
     assert clients == [None]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
 
 
 async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6758,8 +6733,8 @@ async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.Monke
     await cog.on_message(message=as_message(fake=message))
 
     assert calls == []
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert not has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert not has_link_context_block(request=answer, source="douyin")
 
 
 async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6884,8 +6859,8 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
     assert "did not respond in time" in str(answer)
 
 
@@ -6949,7 +6924,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "did not respond in time" in str(answer)
     assert cancelled == [True]
 
@@ -7008,8 +6983,8 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_douyin_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="douyin")
     assert "did not respond in time" not in str(answer)
 
 
@@ -7093,7 +7068,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         cleanup_release.set()
         await message_task
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "did not respond in time" in str(answer)
 
 
@@ -7276,7 +7251,7 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert str(answer).count("did not respond in time") == 2
 
 
@@ -7314,9 +7289,9 @@ async def test_on_message_injects_threads_context_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen_urls == [url]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_threads_context_block(request=answer)
-    assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="threads")
+    assert extract_link_context_block(request=answer, source="threads") == "MOCK THREADS POST BODY"
     # A persistent marker says the post was read, the same one the expansion cog adds.
     assert THREADS_EMOJI in message.added_reactions
 
@@ -7370,25 +7345,19 @@ async def test_on_message_injects_threads_context_from_the_replied_to_message(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen_urls == [_THREADS_POST_URL]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert extract_link_context_block(request=answer, source="threads") == "MOCK THREADS POST BODY"
 
 
 # Per clip source: the gen_reply global its builder is monkeypatched onto, a URL its regex
 # really matches (a short BV id matches nothing, so the assertions would hold either way),
-# the block its fake returns, and the predicate that spots that block in the answer input.
+# and the block its fake returns.
 _CLIP_SOURCE_CASES = {
-    "douyin": (
-        "build_douyin_context_messages",
-        "https://v.douyin.com/abc123",
-        _douyin_block,
-        has_douyin_context_block,
-    ),
+    "douyin": ("build_douyin_context_messages", "https://v.douyin.com/abc123", _douyin_block),
     "bilibili": (
         "build_bilibili_context_messages",
         "https://www.bilibili.com/video/BV1jpK86hEc8",
         _bilibili_block,
-        has_bilibili_context_block,
     ),
 }
 
@@ -7398,7 +7367,7 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """Only the discussion sources widened to it; the clip sources stay on the current message."""
-    builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
+    builder, url, block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
         decision="QA", link_context_sources=["douyin", "bilibili"]
@@ -7429,7 +7398,9 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     await cog.on_message(message=as_message(fake=message))
 
     assert called == []
-    assert not has_block(request=request_input(responses=_recorded(cog).responses, phase="answer"))
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source=name
+    )
 
 
 async def test_on_message_does_not_start_threads_context_on_image_route(
@@ -7515,8 +7486,8 @@ async def test_on_message_skips_threads_context_without_url(
     await cog.on_message(message=as_message(fake=message))
 
     assert called == []
-    assert not has_threads_context_block(
-        request=request_input(responses=_recorded(cog).responses, phase="answer")
+    assert not has_link_context_block(
+        request=request_input(responses=_recorded(cog).responses), source="threads"
     )
 
 
@@ -7557,8 +7528,8 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
 
     # The slow parse is dropped, but a deterministic timeout notice keeps the model from
     # claiming it cannot open the link, and the answer still streams.
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_threads_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="threads")
     assert "did not respond in time" in str(answer)
 
 
@@ -7596,9 +7567,11 @@ async def test_on_message_injects_bilibili_context_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_bilibili_context_block(request=answer)
-    assert extract_bilibili_context_block(request=answer) == "MOCK BILIBILI VIDEO BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="bilibili")
+    assert (
+        extract_link_context_block(request=answer, source="bilibili") == "MOCK BILIBILI VIDEO BODY"
+    )
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
@@ -7610,27 +7583,21 @@ async def test_on_message_injects_bilibili_context_before_current(
 
 _DiscussionSource = Literal["facebook", "instagram", "twitter"]
 
-_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]] = {
+_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str]] = {
     "facebook": (
         "build_facebook_context_messages",
         "https://www.facebook.com/groups/123/posts/456/",
         FACEBOOK_CONTEXT_SEPARATOR,
-        has_facebook_context_block,
-        extract_facebook_context_block,
     ),
     "instagram": (
         "build_instagram_context_messages",
         "https://www.instagram.com/p/Dc5eNjYkoZE/",
         INSTAGRAM_CONTEXT_SEPARATOR,
-        has_instagram_context_block,
-        extract_instagram_context_block,
     ),
     "twitter": (
         "build_twitter_context_messages",
         "https://x.com/Dbacks/status/1628549742539194368",
         TWITTER_CONTEXT_SEPARATOR,
-        has_twitter_context_block,
-        extract_twitter_context_block,
     ),
 }
 
@@ -7644,7 +7611,7 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
     Threads and Douyin already pin this; the three here were wired without it, so a source whose
     registry entry was right but whose block never spliced would have gone unnoticed.
     """
-    builder, url, separator, has_block, extract_block = _DISCUSSION_SOURCE_CASES[name]
+    builder, url, separator = _DISCUSSION_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
         decision="QA", link_context_sources=[name]
@@ -7674,9 +7641,9 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
     await cog.on_message(message=as_message(fake=message))
 
     assert seen == [(url, True)]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_block(request=answer)
-    assert extract_block(request=answer) == "MOCK POST BODY"
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source=name)
+    assert extract_link_context_block(request=answer, source=name) == "MOCK POST BODY"
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(separator.split("\n", 1)[0])
@@ -7720,8 +7687,8 @@ async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.Mo
     await cog.on_message(message=as_message(fake=message))
 
     assert calls == []
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert not has_bilibili_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert not has_link_context_block(request=answer, source="bilibili")
 
 
 async def test_on_message_bilibili_media_ingest_kill_switch(
@@ -8042,8 +8009,8 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert has_bilibili_context_block(request=answer)
+    answer = request_input(responses=_recorded(cog).responses)
+    assert has_link_context_block(request=answer, source="bilibili")
     assert "did not respond in time" in str(answer)
 
 
@@ -8134,7 +8101,7 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     current_index = next(
         index for index, head in enumerate(headers) if head.startswith("==== Current Message")
@@ -8185,9 +8152,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     )
 
     header = str(render_capabilities_block()["content"]).split("\n", 1)[0]
-    blocks = list(
-        iter_text_blocks(request=request_input(responses=_recorded(cog).responses, phase="answer"))
-    )
+    blocks = list(iter_text_blocks(request=request_input(responses=_recorded(cog).responses)))
     carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
     assert carried == ([0] if describe_capabilities else [])
     if describe_capabilities:
@@ -8224,7 +8189,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     blocks = list(iter_text_blocks(request=answer))
     memory_index = next(
         index
@@ -8278,7 +8243,7 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     history_header = next(
         text
         for _role, text in iter_text_blocks(request=answer)
@@ -8347,7 +8312,7 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
 
     await _reply_via_pipeline(cog=cog, message=message, picks=["42"])
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     tone = extract_tone_block(request=answer)
     assert tone is not None
     assert "語氣輕鬆" in tone
@@ -8393,7 +8358,7 @@ async def test_reply_context_always_injects_the_author_tone_block(
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert not has_memory_context_block(request=answer)
     tone = extract_tone_block(request=answer)
     assert tone is not None
@@ -8530,14 +8495,14 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     ]
 
     # Answer keeps the built-in tools and the deterministic author memory.
-    answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
+    answer_idx = request_index(responses=_recorded(cog).responses)
     assert _recorded(cog).responses.create_tools[answer_idx] == list(
         _toolkit(cog=cog).runtime_models.slow_model.tools
     )
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
     )
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "喜歡簡短回覆" in (extract_user_memory_blocks(request=answer).get(1) or "")
     assert 42 not in extract_user_memory_blocks(request=answer)
 
@@ -8616,7 +8581,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
+    answer_idx = request_index(responses=_recorded(cog).responses)
     assert _recorded(cog).responses.create_streams == [True]
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
@@ -9098,7 +9063,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates=expected_candidates)
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     # An allowlisted-but-memoryless user gets a placeholder block, not a leak; the boundary is
     # which ids' real memory reaches the model, so placeholder sections are filtered out.
     injected = {
@@ -9138,7 +9103,7 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert list(extract_user_memory_blocks(request=answer)) == [1, 2, 3]
     assert _recorded(cog).responses.create_streams == [True]
 
@@ -9170,7 +9135,7 @@ async def test_history_only_users_are_not_memory_candidates(
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates=set())
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {1}
 
 
@@ -9216,7 +9181,7 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates=set())
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {1}
 
 
@@ -9252,7 +9217,7 @@ async def test_optional_picks_use_only_the_remaining_memory_budget(
     await _run_pipeline(cog=cog, message=message)
 
     _assert_route_offered(cog=cog, candidates={42, 43})
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {*range(1, 8), 42}
 
 
@@ -9287,7 +9252,7 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
     )
 
     _assert_route_offered(cog=cog, candidates={42})
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert set(extract_user_memory_blocks(request=answer)) == {42}
 
 
@@ -9472,7 +9437,7 @@ async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_p
 
     # The answer request still ran with the deterministic memory only.
     assert (message.replies[0].content or "").startswith("照常回答")
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert "甲" in (extract_user_memory_blocks(request=answer).get(1) or "")
     assert 42 not in extract_user_memory_blocks(request=answer)
 
@@ -9530,7 +9495,7 @@ async def test_handle_message_reply_server_memory_gating(
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    answer = request_input(responses=_recorded(cog).responses)
     assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
 
     server_scope_value = server_scope(server_id=1)
