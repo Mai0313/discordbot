@@ -1,5 +1,7 @@
 """Deterministic bot-player Blackjack decision tests."""
 
+from typing import TYPE_CHECKING
+
 from discordbot.cogs.games.bot_player import (
     BOT_TABLE_EDGE,
     kelly_bet,
@@ -11,6 +13,9 @@ from discordbot.cogs.games.bot_player import (
 )
 
 from tests.helpers.games import card
+
+if TYPE_CHECKING:
+    from discordbot.typings.games import BotAction
 
 
 def test_fallback_action_stands_on_ten_value_pair() -> None:
@@ -65,24 +70,6 @@ def test_fallback_action_splits_eights_against_ten() -> None:
     assert action == "split"
 
 
-def test_fallback_insurance_is_count_based() -> None:
-    """Insurance fallback takes only when the remaining-shoe ten density makes it +EV."""
-    take_context = build_bot_insurance_context(
-        dealer_up=card(rank="A"),
-        shoe=[card(rank="10"), card(rank="J"), card(rank="Q")],
-        insurance_cost=50,
-    )
-    decline_context = build_bot_insurance_context(
-        dealer_up=card(rank="A"),
-        shoe=[card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5"), card(rank="6")],
-        insurance_cost=50,
-    )
-
-    assert fallback_insurance(insurance_context=take_context) is True
-    assert fallback_insurance(insurance_context=decline_context) is False
-    assert fallback_insurance() is False
-
-
 def test_action_context_exposes_up_card_only_without_hole() -> None:
     """Action context exposes rank counts and the dealer up-card, never the hole."""
     context = build_bot_action_context(
@@ -124,6 +111,7 @@ def test_insurance_context_uses_remaining_shoe_count_not_hole() -> None:
     assert context.ten_value_probability > 1 / 3
     assert context.insurance_recommendation == "take"
     assert context.insurance_expected_value > 0
+    assert fallback_insurance(insurance_context=context) is True
     # The shown probability matches the shoe-only counts exactly, so it cannot be
     # cross-solved for the hole, and no Blackjack verdict is exposed.
     assert context.ten_value_probability == context.shoe_summary.ten_value_count / (
@@ -146,22 +134,40 @@ def test_insurance_declines_in_a_non_ten_rich_shoe() -> None:
     assert context.ten_value_probability < 1 / 3
     assert context.insurance_recommendation == "decline"
     assert context.insurance_expected_value < 0
+    assert fallback_insurance(insurance_context=context) is False
+    assert fallback_insurance() is False
 
 
 def test_action_uses_ev_recommendation() -> None:
-    """The played action is the EV engine's hole-aware recommendation."""
+    """The played action is the EV engine's hole-aware recommendation, not the table's.
+
+    Hard 16 against a 10 is a hit by the up-card-only table, but the hole is a 6 and the shoe
+    holds only tens: the dealer's 16 must draw one and bust, so standing wins, and a hit would
+    have busted the bot instead.
+    """
+    hand_cards = [card(rank="10"), card(rank="6")]
+    dealer_up = card(rank="10")
+    allowed_actions: tuple[BotAction, ...] = ("hit", "stand")
     action_context = build_bot_action_context(
-        hand_cards=[card(rank="10"), card(rank="6")],
-        dealer_cards=[card(rank="5"), card(rank="10")],
-        dealer_up=card(rank="10"),
-        shoe=[card(rank="2"), card(rank="3"), card(rank="4")],
-        allowed_actions=("hit", "stand"),
+        hand_cards=hand_cards,
+        dealer_cards=[card(rank="6"), dealer_up],
+        dealer_up=dealer_up,
+        shoe=[card(rank="10")] * 20,
+        allowed_actions=allowed_actions,
         is_pair_hand=False,
         bet=100,
     )
 
     assert action_context.action_analysis.ev_analysis is not None
-    assert action_context.action_analysis.basic_strategy_action == "hit"
+    assert action_context.action_analysis.basic_strategy_action == "stand"
+    table_action = fallback_action(
+        hand_cards=hand_cards,
+        hand_total=16,
+        dealer_up=dealer_up,
+        is_pair_hand=False,
+        allowed_actions=allowed_actions,
+    )
+    assert table_action == "hit", "the table must disagree, or this cannot tell the two apart"
 
 
 def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:

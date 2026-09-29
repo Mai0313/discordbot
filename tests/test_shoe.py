@@ -18,10 +18,10 @@ def test_first_take_builds_a_fresh_shoe_without_announcing_a_reshuffle() -> None
     assert reshuffled is False
 
 
-def test_take_returns_the_stored_shoe_above_the_threshold() -> None:
-    """A healthy stored shoe is handed back unchanged and removed from the store."""
+def test_take_returns_the_stored_shoe_down_to_the_threshold() -> None:
+    """A stored shoe holding exactly the threshold is handed back unchanged and removed."""
     store = BlackjackShoeStore()
-    stored = [card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 5)
+    stored = [card(rank="10")] * RESHUFFLE_THRESHOLD_CARDS
     store.save_shoe(channel_id=7, cards=stored)
 
     shoe, reshuffled, _generation = store.take_shoe(channel_id=7, rng=Random(0))
@@ -43,18 +43,6 @@ def test_take_reshuffles_and_announces_below_the_threshold() -> None:
     assert reshuffled is True
 
 
-def test_save_then_take_round_trips_card_depletion() -> None:
-    """Saving a depleted shoe lets the next round continue from the same cards."""
-    store = BlackjackShoeStore()
-    remaining = [card(rank="A")] * (RESHUFFLE_THRESHOLD_CARDS + 1)
-    store.save_shoe(channel_id=9, cards=remaining)
-
-    shoe, reshuffled, _generation = store.take_shoe(channel_id=9, rng=Random(0))
-
-    assert shoe == remaining
-    assert reshuffled is False
-
-
 def test_true_count_is_neutral_without_a_countable_shoe() -> None:
     """A missing or about-to-reshuffle shoe reads as a neutral count for bet sizing."""
     store = BlackjackShoeStore()
@@ -66,9 +54,9 @@ def test_true_count_is_neutral_without_a_countable_shoe() -> None:
 
 
 def test_true_count_reads_a_countable_stored_shoe() -> None:
-    """A ten-rich stored shoe above the threshold yields a positive true count."""
+    """A ten-rich stored shoe holding exactly the threshold yields a positive true count."""
     store = BlackjackShoeStore()
-    store.save_shoe(channel_id=1, cards=[card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 4))
+    store.save_shoe(channel_id=1, cards=[card(rank="10")] * RESHUFFLE_THRESHOLD_CARDS)
 
     assert store.true_count(channel_id=1) > 0
 

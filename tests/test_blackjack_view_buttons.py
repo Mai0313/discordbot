@@ -1,4 +1,4 @@
-"""Button-state matrix, dealer play, and bot-turn tests for `BlackjackView`.
+"""Tests for the Blackjack table view: its controls, dealer play, bot turns, settling, rendering.
 
 Controls are presence-based, so the button tests assert which custom_ids are
 attached rather than which are disabled. Dealer play is deterministic (H17) and
@@ -7,14 +7,13 @@ the bot's decisions come from the EV engine, so both are asserted exactly.
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
-from types import SimpleNamespace
 from random import Random
 from typing import Any, cast
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import Embed, Interaction
+from nextcord import Interaction
 from nextcord.ui import Button
 
 from discordbot.cogs.games import blackjack_views
@@ -36,6 +35,7 @@ from discordbot.cogs.games.blackjack import (
     is_soft_17,
 )
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
+from discordbot.cogs.games.presentation import settlement_metadata
 from discordbot.services.economy.database import get_balance, get_casino_ledger
 from discordbot.cogs.games.blackjack_views import (
     BlackjackView,
@@ -52,7 +52,7 @@ from tests.helpers.games import (
 )
 from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy import seed_balance
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
 
 
 def _round_with_two_cards(
@@ -329,18 +329,66 @@ async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -
     assert "🂠" not in dealer_embed.description
 
 
+def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
+    """A VIP-boosted win shows the total delta and the VIP bonus inside it."""
+    metadata = settlement_metadata(
+        delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
+    )
+
+    assert metadata == "-# 本局 `+150` · VIP加成 `+50` · 餘額 `1,150`"
+
+
+def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:
+    """The dealer seat embed shows one hidden card marker plus the visible up-card."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat(display_name="Bob")]
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
+
+    embeds = build_in_progress_embeds(
+        round_state=round_state, system_name="賭場系統", system_avatar_url=""
+    )
+    dealer_embed = embeds[0]
+
+    assert isinstance(dealer_embed.description, str)
+    assert "🂠" in dealer_embed.description
+    assert "K♦" in dealer_embed.description
+    assert "8♣" not in dealer_embed.description
+
+
+def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
+    """A one-card dealer fallback should not render as a hidden hole card."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat(display_name="Bob")]
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.dealer = [Card(rank="8", suit="♣")]
+
+    embeds = build_in_progress_embeds(
+        round_state=round_state, system_name="賭場系統", system_avatar_url=""
+    )
+    dealer_embed = embeds[0]
+
+    assert isinstance(dealer_embed.description, str)
+    assert "8♣" in dealer_embed.description
+    assert "🂠" not in dealer_embed.description
+
+
+# Helper predicates ---------------------------------------------------------
+
+
 def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
     """Blackjack table edits attach one transparent spacer and reference it from every embed."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="9", suit="♦")],
     )
-    talk_embed = Embed(description="短句")
     seat_embeds = build_in_progress_embeds(
         round_state=round_state, system_name="賭場系統", system_avatar_url=""
     )
 
-    payload = blackjack_views.table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=None)
+    payload = blackjack_views.table_edit_kwargs(embeds=seat_embeds, view=None)
 
     assert payload["attachments"] == []
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
@@ -625,26 +673,30 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
 
 
 async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The bot plays the EV action deterministically (no LLM involved)."""
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="2", suit="♠"), Card(rank="3", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="10", suit="♦")],
+    """The bot plays the EV engine's hole-aware action where the up-card table would not.
+
+    Hard 16 against a 10 with Surrender on offer is a surrender by the table, but the hole is a
+    6 and the shoe holds only tens, so the dealer's 16 must draw and bust: the bot stands. It
+    sits in the first seat so the stand hands the turn on instead of settling the table.
+    """
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[seat(user_id=1, display_name="Bot"), seat(user_id=2, display_name="Bob")],
+        auto_play_dealer=False,
     )
-    round_state.shoe = [
-        Card(rank="4", suit="♠"),
-        Card(rank="9", suit="♥"),
-        Card(rank="8", suit="♦"),
-        Card(rank="7", suit="♣"),
-        Card(rank="6", suit="♠"),
-        Card(rank="2", suit="♥"),
-    ]
+    bot_hand = round_state.players[0].hands[0]
+    bot_hand.cards = [Card(rank="10", suit="♠"), Card(rank="6", suit="♥")]
+    round_state.players[1].hands[0].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
+    round_state.dealer = [Card(rank="6", suit="♣"), Card(rank="10", suit="♦")]
+    round_state.shoe = [Card(rank="10", suit="♠")] * 20
     view = _make_view(round_state=round_state)
     monkeypatch.setattr(view, "_edit_in_progress_locked", AsyncMock())
 
     await view._dispatch_bot_action_locked(message=MagicMock(), active=round_state.players[0])
 
-    # A stiff hard 5 is always a hit, so the EV engine drives the deterministic action.
-    assert round_state.players[0].hands[0].cards[-1] == Card(rank="4", suit="♠")
+    assert bot_hand.finished is True
+    assert (bot_hand.surrendered, bot_hand.doubled, len(bot_hand.cards)) == (False, False, 2)
+    assert round_state.active_player() is round_state.players[1]
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
@@ -732,55 +784,36 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     assert store.shoes.get(42) is not round_state.shoe
 
 
-async def test_history_persistence_uses_scheduled_dealer_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
+    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: list[object]
 ) -> None:
-    """History persistence uses the dealer cards captured when the task is scheduled."""
+    """The round history records the dealer hand as it stood when the round settled.
+
+    The write runs in a background task after `finalize` returns, so it has to be handed a copy:
+    anything that touches the live round's dealer list afterwards would otherwise reach the row.
+    """
+    await seed_balance(user_id=1, name="alice", amount=100)
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+        player=seat(bet=50, balance_at_start=100),
+        finished=True,
     )
     view = _make_view(round_state=round_state)
-    dealer_cards = list(round_state.dealer)
-    dealer_total = round_state.dealer_total()
-    captured: dict[str, object] = {}
+    recorded: dict[str, object] = {}
 
-    async def fake_record_blackjack_history(**kwargs: object) -> None:
-        captured.update(kwargs)
+    async def record_blackjack_history(**kwargs: object) -> None:
+        recorded.update(kwargs)
 
-    monkeypatch.setattr(blackjack_views, "record_blackjack_history", fake_record_blackjack_history)
+    monkeypatch.setattr(blackjack_views, "record_blackjack_history", record_blackjack_history)
+
+    await view.finalize(message=as_message(fake=FakeDiscordMessage(guild=FakeGuild(guild_id=888))))
     round_state.dealer.append(Card(rank="K", suit="♣"))
-    await view._record_history_later(
-        message=as_message(fake=SimpleNamespace(id=999, guild=SimpleNamespace(id=888))),
-        results=[
-            BlackjackPlayerResult(
-                participant=round_state.players[0].participant,
-                settlement=BlackjackPlayerSettlement(
-                    delta=100,
-                    payout=100,
-                    new_balance=1_100,
-                    casino_balance=0,
-                    base_delta=100,
-                    vip_bonus=0,
-                    is_vip=False,
-                    outcome="win",
-                    hands=[
-                        BlackjackHandSettlement(
-                            cards=round_state.players[0].hands[0].cards,
-                            bet=100,
-                            outcome="win",
-                            delta=100,
-                        )
-                    ],
-                ),
-            )
-        ],
-        dealer_cards=dealer_cards,
-        dealer_total=dealer_total,
-    )
+    await view.wait_for_background_tasks()
 
-    assert captured["dealer_cards"] == [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    assert captured["dealer_total"] == 11
+    assert recorded["dealer_cards"] == [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+    assert recorded["dealer_total"] == 18
+    assert recorded["guild_id"] == 888
 
 
 # Settling a table ---------------------------------------------------------

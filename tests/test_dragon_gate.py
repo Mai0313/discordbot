@@ -43,6 +43,7 @@ from discordbot.cogs.games.dragon_gate_views import (
     build_dragon_gate_history_embed,
     build_dragon_gate_in_progress_embed,
 )
+from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import seat, component_ids, component_rows, attached_button
 from tests.helpers.casting import as_message, as_interaction
@@ -405,29 +406,26 @@ def test_withdraw_rejects_non_participant() -> None:
 
 
 def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
-    """Embed builders produce well-formed lobby / progress / final embeds."""
+    """Each embed carries what a player reads off it: who sits, whose turn, how the table ended."""
     owner = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     lobby = build_dragon_gate_lobby_embed(
         owner=owner, participants=[owner, bob], jackpot=100_000, status="ready"
     )
-    assert isinstance(lobby, Embed)
-    assert isinstance(lobby.title, str)
-    assert lobby.title
-    assert lobby.fields
-    assert all(isinstance(field.value, str) and field.value for field in lobby.fields)
+    seated = "\n".join(field.value or "" for field in lobby.fields)
+    assert "Alice" in seated
+    assert "Bob" in seated
+    assert lobby.description == "ready"
 
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
     )
     progress = build_dragon_gate_in_progress_embed(round_state=round_state, jackpot=110_000)
-    assert isinstance(progress, Embed)
-    assert isinstance(progress.title, str)
-    assert progress.title
     assert isinstance(progress.description, str)
     assert "11萬" in progress.description
+    assert "輪到 Alice" in progress.description
 
-    round_state.place_bet(user_id=1, amount=10_000, jackpot=110_000)
+    assert round_state.place_bet(user_id=1, amount=10_000, jackpot=110_000).outcome == "gate_win"
     results = [
         DragonGatePlayerResult(
             participant=owner,
@@ -439,9 +437,11 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     final = build_dragon_gate_final_embed(
         round_state=round_state, results=results, jackpot=109_900, reason="彩金池清空"
     )
-    assert isinstance(final, Embed)
+    # A lone player's title is their own signed net, and the description says why it ended.
     assert isinstance(final.title, str)
-    assert final.title
+    assert amount_code(amount=10_000, signed=True, compact=True) in final.title
+    assert isinstance(final.description, str)
+    assert "彩金池清空" in final.description
 
 
 async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
@@ -1255,7 +1255,11 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
         outcome="pair_pillar_hit",
         delta=-(10**15),
     )
-    history = [widest_turn] * (DRAGON_GATE_VISIBLE_HISTORY_LINES * 3)
+    # Distinct turn numbers of the same width, so which turns survive the cap can be read back.
+    history = [
+        widest_turn.model_copy(update={"turn_number": 90_000 + index})
+        for index in range(DRAGON_GATE_VISIBLE_HISTORY_LINES * 3)
+    ]
     results = [
         DragonGatePlayerResult(
             participant=participant,
@@ -1286,7 +1290,7 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     # Dropped turns are counted rather than vanishing, and the newest are the ones kept.
     hidden = len(history) - DRAGON_GATE_VISIBLE_HISTORY_LINES
     assert f"(前 {hidden} 手省略)" in embed.description
-    assert (
-        embed.description.count(f"第 {widest_turn.turn_number} 手")
-        == DRAGON_GATE_VISIBLE_HISTORY_LINES
-    )
+    shown = [
+        turn.turn_number for turn in history if f"第 {turn.turn_number} 手" in embed.description
+    ]
+    assert shown == [turn.turn_number for turn in history[hidden:]]

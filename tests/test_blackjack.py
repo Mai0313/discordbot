@@ -31,9 +31,7 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_twenty_one,
 )
 from discordbot.cogs.games.settlement import settle_wager, blackjack_player_early_finish_note
-from discordbot.cogs.games.presentation import settlement_metadata
 from discordbot.services.economy.database import buy_vip, get_casino_ledger
-from discordbot.cogs.games.blackjack_views import build_in_progress_embeds
 
 from tests.helpers.games import seat, settle_only_seat
 from tests.helpers.economy import seed_balance
@@ -168,15 +166,6 @@ def test_settle_player_blackjack_pays_three_to_two() -> None:
     )
     assert outcome == "blackjack"
     assert delta == 150
-
-
-def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
-    """A VIP-boosted win shows the total delta and the VIP bonus inside it."""
-    metadata = settlement_metadata(
-        delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
-    )
-
-    assert metadata == "-# 本局 `+150` · VIP加成 `+50` · 餘額 `1,150`"
 
 
 def test_settle_double_blackjack_is_push() -> None:
@@ -338,18 +327,6 @@ def test_settle_unfinished_hand_raises() -> None:
         settle_hand(hand=hand, dealer=[Card(rank="9", suit="♣"), Card(rank="8", suit="♦")])
 
 
-def test_dealer_keeps_drawing_below_17() -> None:
-    """Dealer must hit until the hand value is ≥ 17 (or it busts)."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=12345), participants=[seat(user_id=1, display_name="Alice")]
-    )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
-    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    round_state.stand(user_id=1)
-    final = round_state.dealer_total()
-    assert final >= 17 or is_bust(cards=round_state.dealer)
-
-
 def test_round_dealer_stops_on_hard_17_and_hits_soft_17() -> None:
     """Under H17 the dealer stops on hard 17 but keeps drawing on soft 17."""
     hard = BlackjackRound.from_participants(
@@ -440,46 +417,6 @@ def test_render_hand_hides_first_card() -> None:
     assert "🂠" in rendered
     assert "A" not in rendered
     assert "K" in rendered
-
-
-def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:
-    """The dealer seat embed shows one hidden card marker plus the visible up-card."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Bob")]
-    )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
-
-    embeds = build_in_progress_embeds(
-        round_state=round_state, system_name="賭場系統", system_avatar_url=""
-    )
-    dealer_embed = embeds[0]
-
-    assert isinstance(dealer_embed.description, str)
-    assert "🂠" in dealer_embed.description
-    assert "K♦" in dealer_embed.description
-    assert "8♣" not in dealer_embed.description
-
-
-def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
-    """A one-card dealer fallback should not render as a hidden hole card."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Bob")]
-    )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    round_state.dealer = [Card(rank="8", suit="♣")]
-
-    embeds = build_in_progress_embeds(
-        round_state=round_state, system_name="賭場系統", system_avatar_url=""
-    )
-    dealer_embed = embeds[0]
-
-    assert isinstance(dealer_embed.description, str)
-    assert "8♣" in dealer_embed.description
-    assert "🂠" not in dealer_embed.description
-
-
-# Helper predicates ---------------------------------------------------------
 
 
 def test_is_pair_same_blackjack_value() -> None:
@@ -591,25 +528,6 @@ def _two_player_round(
     round_state.players[1].hands[0].cards = cards_b
     round_state.dealer = dealer
     return round_state
-
-
-def test_single_player_round_hit_finishes_on_fifth_card_twenty_one() -> None:
-    """A production round hand auto-finishes when the fifth card makes 21."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
-    )
-    round_state.players[0].hands[0].cards = [
-        Card(rank="2", suit="♠"),
-        Card(rank="3", suit="♥"),
-        Card(rank="4", suit="♣"),
-        Card(rank="5", suit="♦"),
-    ]
-    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    round_state.shoe = [Card(rank="7", suit="♠")]
-
-    round_state.hit(user_id=1)
-
-    assert round_state.players[0].hands[0].finished is True
 
 
 def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
@@ -864,7 +782,7 @@ def test_take_insurance_requires_ace_phase() -> None:
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
     )
-    with pytest.raises(expected_exception=ValueError, match="Insurance"):
+    with pytest.raises(expected_exception=InsuranceClosedError):
         round_state.take_insurance(user_id=1, amount=50)
 
 
@@ -877,7 +795,7 @@ def test_take_insurance_requires_uncommitted_balance() -> None:
     round_state.phase = "insurance"
     round_state.insurance_offered = True
 
-    with pytest.raises(expected_exception=ValueError, match="balance"):
+    with pytest.raises(expected_exception=InsuranceBeyondBalanceError):
         round_state.take_insurance(user_id=1, amount=50)
 
     player = round_state.players[0]

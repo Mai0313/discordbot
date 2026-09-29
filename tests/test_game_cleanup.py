@@ -11,6 +11,7 @@ from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
     PendingPublicMessage,
     track_public_message,
+    delete_public_message,
     delete_public_message_after,
     list_pending_public_messages,
     delete_tracked_public_messages,
@@ -318,10 +319,29 @@ async def test_a_transient_http_failure_keeps_its_traceback(
 
 
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
-    """Manual deletion before cleanup should not surface as a task failure."""
+    """A message someone deleted first is cleaned up all the same, restart record included."""
     await delete_public_message_after(
         message=as_message(fake=_AlreadyDeletedMessageStub()), delay=0
     )
+
+    assert await list_pending_public_messages() == []
+
+
+async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
+    """A delete Discord refuses reports failure and leaves the record for the restart sweep."""
+
+    class _UndeletableMessageStub(_AlreadyDeletedMessageStub):
+        async def delete(self) -> None:
+            """Refuses the way Discord refuses a delete the bot lacks the permission for."""
+            raise make_forbidden(message="Missing Permissions")
+
+    message = as_message(fake=_UndeletableMessageStub())
+    await track_public_message(message=message)
+
+    assert await delete_public_message(message=message) is False
+    assert await list_pending_public_messages() == [
+        PendingPublicMessage(channel_id=456, message_id=789)
+    ]
 
 
 async def test_schedule_public_message_delete_uses_default_ttl(
