@@ -5,6 +5,7 @@ from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW, TRANSFER_COLOR
 from discordbot.typings.economy import (
+    LEADERBOARD_SIZE,
     VIP_PURCHASE_COST,
     CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
@@ -43,6 +44,8 @@ REPAY_COLOR = 0x2ECC71
 CENTRAL_BANK_COLOR = 0x1ABC9C
 VIP_COLOR = 0xF1C40F
 ERROR_COLOR = DISCORD_RED
+LEADERBOARD_TITLE = f"🏆 {CURRENCY_NAME} Top {LEADERBOARD_SIZE}"
+LOSS_LEADERBOARD_TITLE = f"💸 今日輸局累計 {CURRENCY_NAME}"
 
 # Embed description hard limit is 4096; the headroom is what lets the credit-status
 # remainder line be strictly additive, so closing the list can never cost a contract.
@@ -260,7 +263,7 @@ def build_balance_embed(
 def build_leaderboard_embed(*, champion: LeaderboardEntry) -> Embed:
     """Builds the public balance leaderboard embed referencing its board image."""
     embed = Embed(
-        title=f"🏆 {CURRENCY_NAME} Top 10",
+        title=LEADERBOARD_TITLE,
         description="### 公開排行榜\n依可用餘額排序。",
         color=LEADERBOARD_COLOR,
     )
@@ -273,7 +276,7 @@ def build_leaderboard_embed(*, champion: LeaderboardEntry) -> Embed:
 def build_loss_leaderboard_embed(*, champion: LossLeaderboardEntry) -> Embed:
     """Builds the public daily loss leaderboard embed referencing its board image."""
     embed = Embed(
-        title=f"💸 今日輸局累計 {CURRENCY_NAME}",
+        title=LOSS_LEADERBOARD_TITLE,
         description="### 今日累計輸排序\n以 gross loss 排名，贏回來不抵扣。",
         color=LOSS_LEADERBOARD_COLOR,
     )

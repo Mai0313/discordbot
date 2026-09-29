@@ -63,6 +63,7 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import (
+    LEADERBOARD_SIZE,
     TRANSFER_TAX_BPS,
     MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
@@ -1840,7 +1841,9 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         )
 
 
-async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[LeaderboardEntry]:
+async def top_n(
+    limit: int | None = LEADERBOARD_SIZE, include_hidden: bool = False
+) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
     Hidden accounts are the only rows dropped (`include_hidden`): the bot ranks
@@ -1884,7 +1887,9 @@ async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[Le
         return list(rows)
 
 
-async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
+async def top_losers(
+    limit: int = LEADERBOARD_SIZE, include_hidden: bool = False
+) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
     The leaderboard reads persisted `casino_account` daily counters. Writes lazily reset stale

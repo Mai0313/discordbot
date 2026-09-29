@@ -14,6 +14,8 @@ MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
 MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 # Minimum interest a borrower owes on a contract regardless of repayment timing.
 MIN_INTEREST_DAYS: Final[int] = 30
+# How many rows each public leaderboard shows.
+LEADERBOARD_SIZE: Final[int] = 10
 
 # Anti-inflation levers; re-measure before changing them.
 # Absolute ceiling on any single casino wager. Invisible to ordinary players; it
@@ -27,6 +29,8 @@ TRANSFER_TAX_BPS: Final[int] = 500
 # VIP perk: 1.2x payout on a winning round.
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
+# The multiplier as command descriptions print it.
+VIP_WIN_MULTIPLIER_LABEL: Final[str] = f"{_VIP_WIN_MULTIPLIER_NUM / _VIP_WIN_MULTIPLIER_DEN:g}x"
 
 # Central-bank levers; re-measure before changing them.
 # How many times their own free equity a borrower may owe the central bank.
@@ -449,6 +453,7 @@ __all__ = [
     "CENTRAL_BANK_BASE_CAPACITY",
     "CENTRAL_BANK_CREDIT_MULTIPLIER",
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
+    "LEADERBOARD_SIZE",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
     "MAX_SINGLE_BET",
@@ -457,6 +462,7 @@ __all__ = [
     "MIN_LOAN_MONTHLY_RATE_BPS",
     "TRANSFER_TAX_BPS",
     "VIP_PURCHASE_COST",
+    "VIP_WIN_MULTIPLIER_LABEL",
     "AccountSnapshot",
     "BalanceAdjustmentResult",
     "CasinoLedgerSnapshot",

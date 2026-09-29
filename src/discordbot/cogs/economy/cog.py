@@ -11,7 +11,9 @@ from nextcord.ext import commands
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
+    LEADERBOARD_SIZE,
     VIP_PURCHASE_COST,
+    VIP_WIN_MULTIPLIER_LABEL,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LoanLenderType,
     monthly_rate_percent_to_bps,
@@ -31,7 +33,9 @@ from discordbot.cogs.economy.boards import (
 from discordbot.cogs.economy.embeds import (
     BORROW_COLOR,
     LEADERBOARD_COLOR,
+    LEADERBOARD_TITLE,
     LOSS_LEADERBOARD_COLOR,
+    LOSS_LEADERBOARD_TITLE,
     LoanParty,
     TransferParticipant,
     build_error_embed,
@@ -327,20 +331,20 @@ class EconomyCogs(commands.Cog):
         description=f"Show the global top {CURRENCY_NAME} holders.",
         name_localizations={Locale.zh_TW: "排行榜", Locale.ja: "リーダーボード"},
         description_localizations={
-            Locale.zh_TW: f"顯示全域 {CURRENCY_NAME}前 10 名",
-            Locale.ja: f"グローバル{CURRENCY_NAME}トップ10を表示します。",
+            Locale.zh_TW: f"顯示全域 {CURRENCY_NAME}前 {LEADERBOARD_SIZE} 名",
+            Locale.ja: f"グローバル{CURRENCY_NAME}トップ{LEADERBOARD_SIZE}を表示します。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
         contexts=INTERACTION_CONTEXTS,
     )
     async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 point holders."""
+        """Replies with the top point holders."""
         await interaction.response.defer()
-        rows = await top_n(limit=10)
+        rows = await top_n(limit=LEADERBOARD_SIZE)
         if not rows:
             embed = build_simple_embed(
-                title=f"🏆 {CURRENCY_NAME} Top 10",
+                title=LEADERBOARD_TITLE,
                 description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
                 color=LEADERBOARD_COLOR,
             )
@@ -361,20 +365,20 @@ class EconomyCogs(commands.Cog):
         description=f"Show today's accumulated {CURRENCY_NAME} casino losses.",
         name_localizations={Locale.zh_TW: "輸錢榜", Locale.ja: "負け額ランキング"},
         description_localizations={
-            Locale.zh_TW: f"顯示今日累計輸掉{CURRENCY_NAME}的前 10 名 (每天 0:00 重置)",
-            Locale.ja: f"本日累計で失った{CURRENCY_NAME}の上位10名 (毎日 0:00 リセット)。",
+            Locale.zh_TW: f"顯示今日累計輸掉{CURRENCY_NAME}的前 {LEADERBOARD_SIZE} 名 (每天 0:00 重置)",
+            Locale.ja: f"本日累計で失った{CURRENCY_NAME}の上位{LEADERBOARD_SIZE}名 (毎日 0:00 リセット)。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
         contexts=INTERACTION_CONTEXTS,
     )
     async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 gross casino losses for the current day."""
+        """Replies with the top gross casino losses for the current day."""
         await interaction.response.defer()
-        rows = await top_losers(limit=10)
+        rows = await top_losers(limit=LEADERBOARD_SIZE)
         if not rows:
             embed = build_simple_embed(
-                title=f"💸 今日輸局累計 {CURRENCY_NAME}",
+                title=LOSS_LEADERBOARD_TITLE,
                 description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
                 color=LOSS_LEADERBOARD_COLOR,
             )
@@ -1168,12 +1172,12 @@ class EconomyCogs(commands.Cog):
         name="vip",
         description=(
             f"Buy permanent VIP for {currency_text(amount=VIP_PURCHASE_COST, compact=True)}: "
-            "1.2x Blackjack wins."
+            f"{VIP_WIN_MULTIPLIER_LABEL} Blackjack wins."
         ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
         description_localizations={
-            Locale.zh_TW: "購買永久 VIP：Blackjack 贏局 1.2x",
-            Locale.ja: "永久 VIP を購入: Blackjack 勝利 1.2x。",
+            Locale.zh_TW: f"購買永久 VIP：Blackjack 贏局 {VIP_WIN_MULTIPLIER_LABEL}",
+            Locale.ja: f"永久 VIP を購入: Blackjack 勝利 {VIP_WIN_MULTIPLIER_LABEL}。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
