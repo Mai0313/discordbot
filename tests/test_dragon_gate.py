@@ -415,6 +415,7 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     seated = "\n".join(field.value or "" for field in lobby.fields)
     assert "Alice" in seated
     assert "Bob" in seated
+    assert amount_code(amount=100_000, compact=True) in [field.value for field in lobby.fields]
     assert lobby.description == "ready"
 
     round_state = DragonGateRound.from_participants(

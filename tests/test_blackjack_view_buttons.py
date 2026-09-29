@@ -373,9 +373,6 @@ def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
     assert "🂠" not in dealer_embed.description
 
 
-# Helper predicates ---------------------------------------------------------
-
-
 def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
     """Blackjack table edits attach one transparent spacer and reference it from every embed."""
     round_state = _round_with_two_cards(

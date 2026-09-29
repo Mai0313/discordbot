@@ -419,6 +419,9 @@ def test_render_hand_hides_first_card() -> None:
     assert "K" in rendered
 
 
+# Helper predicates ---------------------------------------------------------
+
+
 def test_is_pair_same_blackjack_value() -> None:
     """Pair detection treats 10/J/Q/K as splittable 10-value cards."""
     assert is_pair(cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")]) is True
@@ -528,6 +531,23 @@ def _two_player_round(
     round_state.players[1].hands[0].cards = cards_b
     round_state.dealer = dealer
     return round_state
+
+
+def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round whose shoe has run out still deals, from `draw_card` rather than raising."""
+    fallback_card = Card(rank="9", suit="♦")
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", lambda rng: fallback_card)
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat()], auto_play_dealer=False
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="2", suit="♠"), Card(rank="3", suit="♥")]
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+    round_state.shoe = []
+
+    assert round_state.hit(user_id=1) is fallback_card
+    assert round_state.players[0].hands[0].cards[-1] is fallback_card
 
 
 def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
