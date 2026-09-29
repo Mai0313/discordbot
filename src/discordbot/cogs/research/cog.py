@@ -73,6 +73,11 @@ DINO_EMOJI = "<:dino:1517560319281594570>"
 # How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
 # a word each of them spells for itself.
 type StartOutcome = Literal["started", "exists", "unsupported", "forbidden", "error"]
+# What either entry point answers for a `forbidden` or an `error` launch.
+FORBIDDEN_REPLY = "我在這個頻道的權限不夠,開不了研究串"
+ERROR_REPLY = "開研究串失敗了,等等再試一次"
+# The opening status line a fresh or a resumed run posts before its live view takes over.
+RESEARCHING_STATUS = f"-# Researching... ({RESEARCH_LABEL})"
 
 
 def _fallback_thread_name(*, brief: str) -> str:
@@ -194,10 +199,10 @@ class ResearchCogs(commands.Cog):
                 )
         elif outcome == "forbidden":
             with contextlib.suppress(Exception):
-                await message.reply(content="我在這個頻道的權限不夠,開不了研究串")
+                await message.reply(content=FORBIDDEN_REPLY)
         elif outcome == "error":
             with contextlib.suppress(Exception):
-                await message.reply(content="開研究串失敗了,等等再試一次")
+                await message.reply(content=ERROR_REPLY)
 
     @nextcord.slash_command(
         name="deep_research",
@@ -244,9 +249,7 @@ class ResearchCogs(commands.Cog):
         # run in is refused before a title call and an anchor ping are spent on it.
         permissions = interaction.channel.permissions_for(interaction.channel.guild.me)
         if not permissions >= RESEARCH_THREAD_PERMISSIONS:
-            await interaction.response.send_message(
-                content="我在這個頻道的權限不夠,開不了研究串", ephemeral=True
-            )
+            await interaction.response.send_message(content=FORBIDDEN_REPLY, ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         # Anchor the thread on a bot message so the same message-based create_thread path is reused.
@@ -265,7 +268,7 @@ class ResearchCogs(commands.Cog):
                 channel_id=interaction.channel.id,
                 owner_id=interaction.user.id,
             )
-            await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
+            await interaction.edit_original_message(content=FORBIDDEN_REPLY)
             return
         outcome, existing = await self._start_for(
             owner_id=interaction.user.id, brief=topic, anchor=anchor
@@ -279,11 +282,11 @@ class ResearchCogs(commands.Cog):
         elif outcome == "forbidden":
             with contextlib.suppress(Exception):
                 await anchor.delete()
-            await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
+            await interaction.edit_original_message(content=FORBIDDEN_REPLY)
         else:
             with contextlib.suppress(Exception):
                 await anchor.delete()
-            await interaction.edit_original_message(content="開研究串失敗了,等等再試一次")
+            await interaction.edit_original_message(content=ERROR_REPLY)
 
     async def _start_for(
         self, *, owner_id: int, brief: str, anchor: "Message"
@@ -351,9 +354,7 @@ class ResearchCogs(commands.Cog):
         self, *, thread: "Thread", owner_id: int, brief: str, agent: str
     ) -> None:
         """Streams the Antigravity research and delivers the report into the thread."""
-        status = await self._safe_send(
-            thread=thread, content=f"-# Researching... ({RESEARCH_LABEL})"
-        )
+        status = await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
         streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
 
         async def _persist(interaction_id: str) -> None:
@@ -583,7 +584,7 @@ class ResearchCogs(commands.Cog):
         # Give the resumed run the same live reasoning view as a fresh one; a fetch miss leaves
         # status None so the streamer's editor no-ops but still drives the stream to a result.
         status = (
-            await self._safe_send(thread=thread, content=f"-# Researching... ({RESEARCH_LABEL})")
+            await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
             if thread is not None
             else None
         )
