@@ -105,25 +105,17 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
     )
 
 
-def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap) as overridable args.
-    *,
-    balance: int,
-    table_minimum: int,
-    edge: float = BOT_TABLE_EDGE,
-    variance: float = BOT_TABLE_VARIANCE,
-    kelly_fraction: float = BOT_KELLY_FRACTION,
-    max_fraction: float = BOT_MAX_BET_FRACTION,
-) -> int:
+def kelly_bet(*, balance: int, table_minimum: int, edge: float = BOT_TABLE_EDGE) -> int:
     """Returns the fractional-Kelly wager from the per-round edge.
 
     The growth-optimal stake is a fraction of the bankroll set by the edge. With
     a fresh shoe the edge is the constant `BOT_TABLE_EDGE`; with a persistent shoe
     it is `count_adjusted_edge(...)` so the bot spreads its bet by true count.
 
-    `max_fraction` of the bankroll is a hard ceiling, not merely a cap on the Kelly
-    fraction: the owner-chosen table stake floors the bet only up to that ceiling, so
-    a large table stake cannot drag the bot past its risk limit. The bot still sits at
-    any table, but it never wagers more than `max_fraction` of its balance in one
+    `BOT_MAX_BET_FRACTION` of the bankroll is a hard ceiling, not merely a cap on the
+    Kelly fraction: the owner-chosen table stake floors the bet only up to that ceiling,
+    so a large table stake cannot drag the bot past its risk limit. The bot still sits
+    at any table, but it never wagers more than that fraction of its balance in one
     round. A non-positive edge falls back to that capped table floor instead of
     refusing to play.
 
@@ -131,21 +123,18 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
         balance: The bot's spendable balance.
         table_minimum: The table stake the bot matches, up to the bankroll ceiling.
         edge: Per-round expected value in base-bet units.
-        variance: Per-round variance in base-bet units.
-        kelly_fraction: Fraction of full Kelly to apply (0.5 is half-Kelly).
-        max_fraction: Hard ceiling on the bankroll fraction wagered in one round.
 
     Returns:
-        A positive integer wager within `[1, max_fraction * balance]`, never above
-        `balance`. A non-positive balance returns 1, the one case above `balance`.
+        A positive integer wager within `[1, BOT_MAX_BET_FRACTION * balance]`, never
+        above `balance`. A non-positive balance returns 1, the one case above `balance`.
     """
     if balance <= 0:
         return 1
-    ceiling = max(1, min(round(max_fraction * balance), balance))
+    ceiling = max(1, min(round(BOT_MAX_BET_FRACTION * balance), balance))
     floor = max(1, min(table_minimum, ceiling))
-    if edge <= 0 or variance <= 0:
+    if edge <= 0:
         return floor
-    fraction = min(max(kelly_fraction * edge / variance, 0.0), max_fraction)
+    fraction = min(max(BOT_KELLY_FRACTION * edge / BOT_TABLE_VARIANCE, 0.0), BOT_MAX_BET_FRACTION)
     wager = round(fraction * balance)
     return max(floor, min(wager, ceiling))
 

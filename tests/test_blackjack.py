@@ -441,12 +441,11 @@ def test_can_double_rejected_when_balance_low() -> None:
     assert can_double(hand=fresh, balance_remaining=99) is False
 
 
-def test_can_double_after_split_disabled_by_default() -> None:
-    """Double-after-Split is disabled unless the caller explicitly allows it."""
+def test_can_double_is_closed_after_split() -> None:
+    """A hand that came out of a Split cannot Double (no Double after Split)."""
     split_hand = _make_hand(cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")])
     split_hand.is_split_hand = True
     assert can_double(hand=split_hand, balance_remaining=200) is False
-    assert can_double(hand=split_hand, balance_remaining=200, allow_after_split=True) is True
 
 
 def test_can_double_rejected_when_doubling_exceeds_single_bet_cap() -> None:

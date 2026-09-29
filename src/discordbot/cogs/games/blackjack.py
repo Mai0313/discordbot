@@ -65,8 +65,8 @@ def draw_card(rng: Random) -> Card:
     return Card(rank=rng.choice(seq=CARD_RANKS), suit=rng.choice(seq=CARD_SUITS))
 
 
-def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
-    """Returns a shuffled multi-deck shoe (default 4 decks = 208 cards).
+def build_shoe(rng: Random) -> list[Card]:
+    """Returns a shuffled `SHOE_DECK_COUNT`-deck shoe (4 decks = 208 cards).
 
     Cards are popped from index 0 (FIFO); the head of the list is the next
     card. The deck count is sized so a full table taking splits and
@@ -74,7 +74,7 @@ def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
     """
     shoe: list[Card] = [
         Card(rank=rank, suit=suit)
-        for _ in range(deck_count)
+        for _ in range(SHOE_DECK_COUNT)
         for suit in CARD_SUITS
         for rank in CARD_RANKS
     ]
@@ -307,26 +307,24 @@ class BlackjackPlayerHand(BaseModel):
         )
 
 
-def can_double(
-    hand: BlackjackHandState, balance_remaining: int, allow_after_split: bool = False
-) -> bool:
+def can_double(hand: BlackjackHandState, balance_remaining: int) -> bool:
     """Returns whether Double Down is allowed on this hand right now.
 
     Args:
         hand: Hand to inspect.
         balance_remaining: Points still available after current commitments.
-        allow_after_split: Whether the house rule permits Double after Split.
 
     Returns:
         True only when no actions have been taken yet, the hand has exactly
-        two cards, the DAS rule allows it, the doubled stake still fits
-        `MAX_SINGLE_BET`, and the player can still afford the extra wager.
+        two cards and did not come out of a Split (no Double after Split), the
+        doubled stake still fits `MAX_SINGLE_BET`, and the player can still
+        afford the extra wager.
     """
     if hand.finished or hand.surrendered or hand.doubled:
         return False
     if len(hand.cards) != 2 or hand.actions_taken != 0:
         return False
-    if hand.is_split_hand and not allow_after_split:
+    if hand.is_split_hand:
         return False
     # Doubling doubles the hand's stake; keep it within the single-bet cap so it
     # cannot bypass the anti-inflation guardrail that bounds every wager.

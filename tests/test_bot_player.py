@@ -6,6 +6,9 @@ import pytest
 
 from discordbot.cogs.games.bot_player import (
     BOT_TABLE_EDGE,
+    BOT_KELLY_FRACTION,
+    BOT_TABLE_VARIANCE,
+    BOT_MAX_BET_FRACTION,
     kelly_bet,
     fallback_action,
     choose_bot_action,
@@ -147,11 +150,9 @@ def test_action_falls_back_to_the_table_when_the_engine_fails(
 
 def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:
     """A positive edge wagers the clamped half-Kelly fraction, floored at the table minimum."""
-    bet = kelly_bet(
-        balance=100_000, table_minimum=100, edge=0.163, variance=1.334, kelly_fraction=0.5
-    )
+    bet = kelly_bet(balance=100_000, table_minimum=100, edge=0.163)
 
-    assert bet == round(0.5 * 0.163 / 1.334 * 100_000)
+    assert bet == round(BOT_KELLY_FRACTION * 0.163 / BOT_TABLE_VARIANCE * 100_000)
     assert 100 <= bet <= 100_000
 
 
@@ -163,9 +164,9 @@ def test_kelly_bet_floors_at_table_minimum_on_non_positive_edge() -> None:
 
 def test_kelly_bet_caps_fraction_and_clamps_to_balance() -> None:
     """The hard fraction cap bounds the wager even when the edge is extreme."""
-    assert kelly_bet(
-        balance=1_000, table_minimum=1, edge=10.0, variance=1.0, max_fraction=0.10
-    ) == (100)
+    assert kelly_bet(balance=1_000, table_minimum=1, edge=10.0) == round(
+        BOT_MAX_BET_FRACTION * 1_000
+    )
     assert kelly_bet(balance=0, table_minimum=100) == 1
     # A short stack stays inside the 10% ceiling instead of going all-in to match.
     assert kelly_bet(balance=50, table_minimum=100, edge=0.0) == 5
