@@ -167,7 +167,7 @@ def _safe_recommend_action(  # noqa: PLR0913 -- thin EV-engine wrapper mirroring
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
-    bet: int | None = None,
+    bet: int,
 ) -> BotAction | None:
     """Runs the EV engine, returning None on any failure so a bot turn never crashes."""
     try:

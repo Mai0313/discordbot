@@ -35,7 +35,7 @@ def _evs(
     dealer: list[Card],
     allowed: tuple[BotAction, ...],
     shoe: list[Card] | None = None,
-    bet: int | None = None,
+    bet: int = 100,
 ) -> dict[BotAction, float]:
     """Returns the EV per legal action, the numbers `recommend_action` picks its action from."""
     evs = _evaluate_actions(
@@ -97,6 +97,7 @@ def test_standing_beats_hitting_on_hard_twenty() -> None:
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand"),
         doubled=False,
+        bet=100,
     )
     evs = _evs(hand=hand, dealer=dealer, allowed=("hit", "stand"))
 
@@ -117,6 +118,7 @@ def test_recommendation_reads_the_hole_card() -> None:
         shoe=shoe,
         allowed_actions=("hit", "stand", "surrender"),
         doubled=False,
+        bet=100,
     )
     strong = recommend_action(
         hand_cards=[card(rank="10"), card(rank="6")],
@@ -124,6 +126,7 @@ def test_recommendation_reads_the_hole_card() -> None:
         shoe=shoe,
         allowed_actions=("hit", "stand", "surrender"),
         doubled=False,
+        bet=100,
     )
 
     assert weak == "stand"
@@ -162,6 +165,7 @@ def test_five_card_chase_beats_standing_into_a_sure_loss() -> None:
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand"),
         doubled=False,
+        bet=100,
     )
     evs = _evs(hand=hand, dealer=dealer, allowed=("hit", "stand"))
 
@@ -199,6 +203,7 @@ def test_split_can_be_recommended() -> None:
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand", "double", "split"),
         doubled=False,
+        bet=100,
     )
 
     assert action == "split"
@@ -214,6 +219,7 @@ def test_action_evs_only_cover_legal_actions() -> None:
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand"),
         doubled=False,
+        bet=100,
     )
 
     assert set(_evs(hand=hand, dealer=dealer, allowed=("hit", "stand"))) == {"hit", "stand"}
@@ -228,6 +234,7 @@ def test_empty_shoe_does_not_crash() -> None:
         shoe=[],
         allowed_actions=("hit", "stand"),
         doubled=False,
+        bet=100,
     )
 
     assert action in {"hit", "stand"}

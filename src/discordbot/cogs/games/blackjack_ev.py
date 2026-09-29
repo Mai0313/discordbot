@@ -28,7 +28,12 @@ from typing import Final
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, ActionEv, BotAction
-from discordbot.cogs.games.blackjack import TEN_VALUE_RANKS, hand_value, is_soft_total
+from discordbot.cogs.games.blackjack import (
+    TEN_VALUE_RANKS,
+    hand_value,
+    is_soft_total,
+    surrender_loss,
+)
 
 # Bucket index -> Blackjack draw value. Index 8 is any ten-value card, index 9
 # is an ace counted high (11). Indices 0..7 map ranks 2..9 directly.
@@ -339,7 +344,7 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
     hand_cards: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
-    bet: int | None,
+    bet: int,
 ) -> list[ActionEv]:
     """Computes each legal action's EV over a deck."""
     player_total = hand_value(cards=hand_cards)
@@ -375,7 +380,7 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
             )
         )
     if "surrender" in allowed_actions:
-        surrender_ev = -0.5 if bet is None else -((bet + 1) // 2) / bet
+        surrender_ev = -surrender_loss(bet=bet) / bet
         evs.append(ActionEv(action="surrender", expected_value=surrender_ev))
     if "split" in allowed_actions:
         evs.append(
@@ -404,7 +409,7 @@ def recommend_action(  # noqa: PLR0913 -- one EV-engine entry point mirroring th
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
-    bet: int | None = None,
+    bet: int,
 ) -> BotAction:
     """Returns the EV-maximizing legal action for one bot-player decision.
 
@@ -419,9 +424,8 @@ def recommend_action(  # noqa: PLR0913 -- one EV-engine entry point mirroring th
         shoe: The true remaining undealt shoe.
         allowed_actions: Legal actions for the active hand.
         doubled: Whether the active hand has already doubled.
-        bet: The base hand bet, used to price surrender from its actual rounded
-            half-bet loss (`settle_hand` charges `-((bet + 1) // 2)`). When None
-            the theoretical -0.5 is used.
+        bet: The base hand bet, which prices a surrender at the loss
+            `surrender_loss` settles it for.
 
     Returns:
         The recommended action, one of `allowed_actions`.

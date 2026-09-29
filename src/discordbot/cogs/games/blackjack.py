@@ -376,6 +376,11 @@ def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
     return len(hand.cards) == 2 and hand.actions_taken == 0
 
 
+def surrender_loss(bet: int) -> int:
+    """Returns what a Late Surrender forfeits: half the bet, rounded up so a 1-point bet is not free."""
+    return (bet + 1) // 2
+
+
 def _settle_split_twenty_one(
     hand: BlackjackHandState, dealer: list[Card]
 ) -> tuple[SettleOutcome, int]:
@@ -446,7 +451,7 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
     if not hand.finished:
         raise ValueError("Cannot settle an unfinished Blackjack hand")
     if hand.surrendered:
-        return "surrender", -((hand.base_bet + 1) // 2)
+        return "surrender", -surrender_loss(bet=hand.base_bet)
     if not hand.doubled and is_five_card_twenty_one(cards=hand.cards):
         dealer_total = hand_value(cards=dealer)
         delta = 0 if dealer_total == 21 else hand.bet
