@@ -147,19 +147,27 @@ def make_media_hosting_config(
     max_bytes: int | None = None,
     retention_hours: float | None = None,
 ) -> MediaHostingConfig:
-    """Builds a MediaHostingConfig through its env-alias names.
+    """Builds a MediaHostingConfig from these arguments alone, whatever the environment holds.
 
-    ``model_validate`` keeps the alias spelling type-clean (the alias kwargs on
-    ``__init__`` are invisible to a checker without a pydantic plugin) and stays
-    hermetic: unlike ``__init__``, it never merges environment values in.
+    Every field is handed over, a cap left as None taking the model's own default, because
+    ``model_validate`` on a settings class still reads the process environment for any field
+    it is not given. The env-alias names keep the call type-clean: the alias kwargs on
+    ``__init__`` are invisible to a checker without a pydantic plugin.
     """
-    payload: dict[str, object] = {
-        "MEDIA_HOSTING_ENABLED": enabled,
-        "MEDIA_HOSTING_BASE_URL": base_url,
-        "MEDIA_HOSTING_SERVE_DIR": serve_dir,
-    }
-    if max_bytes is not None:
-        payload["MEDIA_HOSTING_MAX_BYTES"] = max_bytes
-    if retention_hours is not None:
-        payload["MEDIA_HOSTING_RETENTION_HOURS"] = retention_hours
-    return MediaHostingConfig.model_validate(payload)
+    return MediaHostingConfig.model_validate(
+        obj={
+            "MEDIA_HOSTING_ENABLED": enabled,
+            "MEDIA_HOSTING_BASE_URL": base_url,
+            "MEDIA_HOSTING_SERVE_DIR": serve_dir,
+            "MEDIA_HOSTING_MAX_BYTES": (
+                MediaHostingConfig.model_fields["max_bytes"].default
+                if max_bytes is None
+                else max_bytes
+            ),
+            "MEDIA_HOSTING_RETENTION_HOURS": (
+                MediaHostingConfig.model_fields["retention_hours"].default
+                if retention_hours is None
+                else retention_hours
+            ),
+        }
+    )
