@@ -786,11 +786,10 @@ class BlackjackView(View):
         self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
     ) -> bool:
         """Buys half-bet insurance for one seat; False when the round refused it."""
-        player = self._find_player_by_user_id(user_id=user_id)
-        if player is None:
+        if self._find_player_by_user_id(user_id=user_id) is None:
             return False
         try:
-            self.round_state.take_insurance(user_id=user_id, amount=player.participant.bet // 2)
+            self.round_state.take_insurance(user_id=user_id)
         except ValueError as error:
             content = _insurance_refusal_notice(error=error)
             await send_ephemeral_notice(
@@ -947,9 +946,7 @@ class BlackjackView(View):
         take_insurance = bot_takes_insurance(shoe=self.round_state.shoe)
         try:
             if take_insurance:
-                self.round_state.take_insurance(
-                    user_id=user_id, amount=bot_player.participant.bet // 2
-                )
+                self.round_state.take_insurance(user_id=user_id)
             else:
                 self.round_state.decline_insurance(user_id=user_id)
         except ValueError as exc:

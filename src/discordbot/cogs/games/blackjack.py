@@ -366,26 +366,6 @@ def can_split(hand: BlackjackHandState, balance_remaining: int) -> bool:
     return balance_remaining >= hand.bet
 
 
-def can_insure(player: "BlackjackPlayerHand", balance_remaining: int) -> bool:
-    """Returns whether the player can still place an insurance side bet.
-
-    Args:
-        player: Player container to inspect.
-        balance_remaining: Points still available after current commitments.
-
-    Returns:
-        True only when insurance was offered for this player and they have
-        not yet decided, and the half-bet side wager fits the remaining
-        balance.
-    """
-    if player.insurance_resolved or player.insurance_bet != 0:
-        return False
-    insurance_amount = player.participant.bet // 2
-    if insurance_amount <= 0:
-        return False
-    return balance_remaining >= insurance_amount
-
-
 def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
     """Returns whether Late Surrender is allowed on this hand right now.
 
@@ -588,20 +568,17 @@ class BlackjackRound(BaseModel):
         ten_value_up = up is not None and up.rank in ("J", "Q", "K", "10")
         self._resolve_peek(dealer_has_blackjack=ten_value_up and is_blackjack(cards=self.dealer))
 
-    def take_insurance(self, user_id: int, amount: int) -> None:
-        """Records an insurance side bet for the player.
+    def take_insurance(self, user_id: int) -> None:
+        """Records the player's insurance side bet, half their original bet rounded down.
 
         Args:
             user_id: Discord user ID placing the insurance.
-            amount: Side-bet amount; must equal `participant.bet // 2`.
 
         Raises:
             InsuranceClosedError: The round is not in the insurance phase, or this
                 seat already decided.
             InsuranceBetTooSmallError: Half the original bet rounds to zero.
             InsuranceBeyondBalanceError: The remaining balance cannot cover it.
-            InsuranceRefusedError: The amount is not half the original bet, which no
-                caller here can produce.
             ValueError: The user is not seated at this table.
         """
         if self.phase != "insurance":
@@ -609,14 +586,12 @@ class BlackjackRound(BaseModel):
         player = self._find_player(user_id=user_id)
         if player.insurance_resolved:
             raise InsuranceClosedError("Insurance already decided")
-        expected = player.participant.bet // 2
-        if expected <= 0:
+        cost = player.participant.bet // 2
+        if cost <= 0:
             raise InsuranceBetTooSmallError("Half of the original bet rounds to zero")
-        if amount != expected:
-            raise InsuranceRefusedError("Insurance amount must equal half of the original bet")
-        if not can_insure(player=player, balance_remaining=player.balance_remaining):
+        if player.balance_remaining < cost:
             raise InsuranceBeyondBalanceError("Not enough balance for insurance")
-        player.insurance_bet = amount
+        player.insurance_bet = cost
         player.insurance_resolved = True
         self._maybe_close_insurance_phase()
 
@@ -627,14 +602,15 @@ class BlackjackRound(BaseModel):
             user_id: Discord user ID declining the insurance offer.
 
         Raises:
-            ValueError: The round is not in the insurance phase, the user is
-                not seated at this table, or insurance was already decided.
+            InsuranceClosedError: The round is not in the insurance phase, or this
+                seat already decided.
+            ValueError: The user is not seated at this table.
         """
         if self.phase != "insurance":
-            raise ValueError("Insurance is not currently offered")
+            raise InsuranceClosedError("Insurance is not currently offered")
         player = self._find_player(user_id=user_id)
         if player.insurance_resolved:
-            raise ValueError("Insurance already decided")
+            raise InsuranceClosedError("Insurance already decided")
         player.insurance_resolved = True
         self._maybe_close_insurance_phase()
 

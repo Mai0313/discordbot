@@ -19,7 +19,6 @@ from discordbot.cogs.games.blackjack import (
     is_pair,
     can_split,
     can_double,
-    can_insure,
     hand_value,
     is_soft_17,
     render_hand,
@@ -786,7 +785,7 @@ def test_take_insurance_requires_ace_phase() -> None:
         rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
     )
     with pytest.raises(expected_exception=InsuranceClosedError):
-        round_state.take_insurance(user_id=1, amount=50)
+        round_state.take_insurance(user_id=1)
 
 
 def test_take_insurance_requires_uncommitted_balance() -> None:
@@ -799,7 +798,7 @@ def test_take_insurance_requires_uncommitted_balance() -> None:
     round_state.insurance_offered = True
 
     with pytest.raises(expected_exception=InsuranceBeyondBalanceError):
-        round_state.take_insurance(user_id=1, amount=50)
+        round_state.take_insurance(user_id=1)
 
     player = round_state.players[0]
     assert player.insurance_bet == 0
@@ -816,9 +815,8 @@ def test_take_insurance_rejects_zero_chip_half_bet() -> None:
     round_state.insurance_offered = True
     player = round_state.players[0]
 
-    assert can_insure(player=player, balance_remaining=9) is False
     with pytest.raises(expected_exception=InsuranceBetTooSmallError):
-        round_state.take_insurance(user_id=1, amount=0)
+        round_state.take_insurance(user_id=1)
 
     assert player.insurance_bet == 0
     assert player.insurance_resolved is False
@@ -842,19 +840,21 @@ def test_each_insurance_refusal_has_its_own_class() -> None:
 
     round_state.phase = "player_actions"
     with pytest.raises(expected_exception=InsuranceClosedError):
-        round_state.take_insurance(user_id=2, amount=50)
+        round_state.take_insurance(user_id=2)
 
     round_state.phase = "insurance"
     with pytest.raises(expected_exception=InsuranceBetTooSmallError):
-        round_state.take_insurance(user_id=1, amount=0)
+        round_state.take_insurance(user_id=1)
 
     # 120 at the table less the 100 already wagered leaves 20, under the 50 insurance costs.
     with pytest.raises(expected_exception=InsuranceBeyondBalanceError):
-        round_state.take_insurance(user_id=2, amount=50)
+        round_state.take_insurance(user_id=2)
 
     round_state.players[1].insurance_resolved = True
     with pytest.raises(expected_exception=InsuranceClosedError):
-        round_state.take_insurance(user_id=2, amount=50)
+        round_state.take_insurance(user_id=2)
+    with pytest.raises(expected_exception=InsuranceClosedError):
+        round_state.decline_insurance(user_id=2)
 
 
 def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
@@ -910,7 +910,7 @@ def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
 
     round_state.deal_initial()
     assert round_state.phase == "insurance"
-    round_state.take_insurance(user_id=1, amount=50)
+    round_state.take_insurance(user_id=1)
 
     assert round_state.peeked_blackjack is True
     assert round_state.phase == "settled"
