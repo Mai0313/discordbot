@@ -38,12 +38,14 @@ CENTRAL_BANK_CREDIT_MULTIPLIER: Final[int] = 2
 CENTRAL_BANK_BASE_CAPACITY: Final[int] = 5_000_000
 
 
+def clamp_loan_rate_bps(monthly_rate_bps: int) -> int:
+    """Clamps a monthly rate in basis points into the range a loan may carry."""
+    return max(MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps))
+
+
 def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
     """Converts a user-facing monthly percent into basis points."""
-    return max(
-        MIN_LOAN_MONTHLY_RATE_BPS,
-        min(MAX_LOAN_MONTHLY_RATE_BPS, round(monthly_rate_percent * 100)),
-    )
+    return clamp_loan_rate_bps(monthly_rate_bps=round(monthly_rate_percent * 100))
 
 
 def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
@@ -499,6 +501,7 @@ __all__ = [
     "VipPurchaseResult",
     "apply_vip_blackjack_bonus",
     "central_bank_credit_ceiling",
+    "clamp_loan_rate_bps",
     "monthly_rate_bps_to_percent",
     "monthly_rate_percent_to_bps",
 ]

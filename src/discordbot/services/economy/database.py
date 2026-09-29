@@ -66,8 +66,6 @@ from discordbot.typings.economy import (
     TRANSFER_TAX_BPS,
     MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
-    MAX_LOAN_MONTHLY_RATE_BPS,
-    MIN_LOAN_MONTHLY_RATE_BPS,
     CENTRAL_BANK_BASE_CAPACITY,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
@@ -95,6 +93,7 @@ from discordbot.typings.economy import (
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
     JackpotSettlementBatchResult,
+    clamp_loan_rate_bps,
     central_bank_credit_ceiling,
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
@@ -2298,6 +2297,43 @@ async def record_guild_participant(guild_id: int, user_id: int) -> None:
         await session.commit()
 
 
+async def _insert_loan_proposal(  # noqa: PLR0913 -- a proposal records both parties and its terms
+    kind: LoanProposalKind,
+    lender_type: LoanLenderType,
+    borrower_id: int,
+    borrower_name: str,
+    borrower_avatar_url: str,
+    lender_id: int | None,
+    lender_name: str,
+    lender_avatar_url: str,
+    amount: int,
+    monthly_rate_bps: int,
+) -> LoanProposalView:
+    """Records a pending proposal the borrower created, its rate clamped into range."""
+    now = _database_now()
+    async with open_session() as session:
+        proposal = LoanProposal(
+            kind=kind,
+            status=LoanProposalStatus.PENDING,
+            lender_type=lender_type,
+            borrower_id=borrower_id,
+            borrower_name=borrower_name or str(borrower_id),
+            borrower_avatar_url=borrower_avatar_url,
+            lender_id=lender_id,
+            lender_name=lender_name,
+            lender_avatar_url=lender_avatar_url,
+            creator_id=borrower_id,
+            amount=amount,
+            monthly_rate_bps=clamp_loan_rate_bps(monthly_rate_bps=monthly_rate_bps),
+            escrow_amount=0,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(proposal)
+        await session.commit()
+        return _loan_proposal_view(proposal=proposal)
+
+
 async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both identities
     borrower_id: int,
     borrower_name: str,
@@ -2312,30 +2348,18 @@ async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both 
     await _ensure_schema()
     if amount <= 0 or borrower_id == lender_id:
         return None
-    now = _database_now()
-    async with open_session() as session:
-        proposal = LoanProposal(
-            kind=LoanProposalKind.PERSONAL_REQUEST,
-            status=LoanProposalStatus.PENDING,
-            lender_type=LoanLenderType.USER,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name or str(borrower_id),
-            borrower_avatar_url=borrower_avatar_url,
-            lender_id=lender_id,
-            lender_name=lender_name or str(lender_id),
-            lender_avatar_url=lender_avatar_url,
-            creator_id=borrower_id,
-            amount=amount,
-            monthly_rate_bps=max(
-                MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps)
-            ),
-            escrow_amount=0,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(proposal)
-        await session.commit()
-        return _loan_proposal_view(proposal=proposal)
+    return await _insert_loan_proposal(
+        kind=LoanProposalKind.PERSONAL_REQUEST,
+        lender_type=LoanLenderType.USER,
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_id=lender_id,
+        lender_name=lender_name or str(lender_id),
+        lender_avatar_url=lender_avatar_url,
+        amount=amount,
+        monthly_rate_bps=monthly_rate_bps,
+    )
 
 
 async def create_central_bank_loan_request(
@@ -2349,30 +2373,18 @@ async def create_central_bank_loan_request(
     await _ensure_schema()
     if amount <= 0:
         return None
-    now = _database_now()
-    async with open_session() as session:
-        proposal = LoanProposal(
-            kind=LoanProposalKind.CENTRAL_BANK_REQUEST,
-            status=LoanProposalStatus.PENDING,
-            lender_type=LoanLenderType.CENTRAL_BANK,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name or str(borrower_id),
-            borrower_avatar_url=borrower_avatar_url,
-            lender_id=None,
-            lender_name="Central Bank",
-            lender_avatar_url="",
-            creator_id=borrower_id,
-            amount=amount,
-            monthly_rate_bps=max(
-                MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps)
-            ),
-            escrow_amount=0,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(proposal)
-        await session.commit()
-        return _loan_proposal_view(proposal=proposal)
+    return await _insert_loan_proposal(
+        kind=LoanProposalKind.CENTRAL_BANK_REQUEST,
+        lender_type=LoanLenderType.CENTRAL_BANK,
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_id=None,
+        lender_name="Central Bank",
+        lender_avatar_url="",
+        amount=amount,
+        monthly_rate_bps=monthly_rate_bps,
+    )
 
 
 async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | None:
