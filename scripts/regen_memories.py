@@ -67,14 +67,12 @@ from discordbot.services.memory.store import (
     read_facts,
     read_owner,
     iter_scopes,
-    read_detail_tail,
-    read_raw_entries,
+    read_evidence,
     list_compartments,
     unaccounted_files,
 )
 from discordbot.services.memory.deltas import partition_raw_entries
 from discordbot.services.memory.writer import MemoryWriterAI
-from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.regeneration import regenerate_scope_memory
 
 if TYPE_CHECKING:
@@ -138,15 +136,9 @@ def _scopes_for_target(target: str) -> list[str]:
 
 def _preview(scope: str) -> dict[str, int]:
     """Returns the per-compartment observation counts a rebuild of this scope would see."""
-    evidence = "\n\n".join(
-        part
-        for part in (
-            read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
-            read_raw_entries(scope=scope),
-        )
-        if part
+    buckets = partition_raw_entries(
+        raw_text=read_evidence(scope=scope), flavor=flavor_of(scope=scope)
     )
-    buckets = partition_raw_entries(raw_text=evidence, flavor=flavor_of(scope=scope))
     return {compartment: text.count("### ") for compartment, text in buckets.items()}
 
 

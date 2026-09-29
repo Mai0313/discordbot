@@ -55,6 +55,7 @@ from discordbot.services.memory.store import (
     server_scope,
     append_detail,
     cleared_since,
+    read_evidence,
     raw_file_bytes,
     append_raw_entry,
     read_detail_tail,
@@ -3436,6 +3437,17 @@ def test_read_detail_tail_window_aligns_to_entry_header(memory_isolated_dir: Pat
     windowed = read_detail_tail(scope=USER_SCOPE, max_chars=len(entry_two) + 4)
     assert windowed.startswith("## 2026-02-01")
     assert "第一筆細節" not in windowed
+
+
+def test_read_evidence_puts_the_detail_tail_ahead_of_raw(memory_isolated_dir: Path) -> None:
+    """The corpus is read as one oldest-first batch, and a missing tier adds no separator."""
+    assert read_evidence(scope=USER_SCOPE) == ""
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 還沒整理的觀察")
+    raw = read_raw_entries(scope=USER_SCOPE)
+    assert read_evidence(scope=USER_SCOPE) == raw
+    append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n已整理的觀察")
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
+    assert read_evidence(scope=USER_SCOPE) == f"{detail}\n\n{raw}"
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,10 @@ from discordbot.services.memory.facts import (
     render_fact_file,
     render_memory_document,
 )
-from discordbot.typings.context_budgets import MEMORY_INJECTION_MAX_CHARS
+from discordbot.typings.context_budgets import (
+    MEMORY_INJECTION_MAX_CHARS,
+    MEMORY_DETAIL_CONTEXT_MAX_CHARS,
+)
 from discordbot.services.memory.constants import (
     RAW_FILE_MAX_BYTES,
     TONE_FILE_MAX_BYTES,
@@ -636,6 +639,19 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
         match = _RAW_ENTRY_HEADER_RE.search(tail)
         text = tail[match.start() :] if match else tail
     return text.strip()
+
+
+def read_evidence(scope: str) -> str:
+    """Returns the scope's evidence corpus, oldest first: the detail tail, then `raw.md`.
+
+    Detail entries are retired raw entries verbatim, under the same `## <ISO timestamp>`
+    headers, so the corpus reads as one raw batch. Empty when neither file holds anything.
+    """
+    parts = (
+        read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
+        read_raw_entries(scope=scope),
+    )
+    return "\n\n".join(part for part in parts if part)
 
 
 def count_raw_entries(scope: str) -> int:

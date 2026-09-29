@@ -32,8 +32,8 @@ from discordbot.services.memory.store import (
     scope_lock,
     append_detail,
     cleared_since,
+    read_evidence,
     scope_owner_id,
-    read_detail_tail,
     read_raw_entries,
     detail_file_bytes,
     list_compartments,
@@ -45,7 +45,6 @@ from discordbot.services.memory.deltas import (
     partition_forget_requests,
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidatedMemory
-from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.inflight import memory_semaphore
 from discordbot.services.memory.constants import MEMORY_REGENERATION_COOLDOWN_SECONDS
 from discordbot.services.memory.git_history import memory_git
@@ -172,11 +171,7 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
         flavor = flavor_of(scope=scope)
         owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
         raw_entries = read_raw_entries(scope=scope)
-        recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-        # Detail entries are retired raw entries verbatim with the same
-        # `## <ISO timestamp>` headers, so the combined corpus (oldest first)
-        # slots into the raw-entries consolidation input unchanged.
-        evidence = "\n\n".join(part for part in (recent_detail, raw_entries) if part)
+        evidence = read_evidence(scope=scope)
         if not evidence:
             return RegenerationReport(result="no_evidence")
         _last_regeneration[scope] = time.monotonic()
@@ -248,14 +243,7 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                 # tone rebuild and the retirement below must not work from the copies read
                 # before it.
                 raw_entries = read_raw_entries(scope=scope)
-                evidence = "\n\n".join(
-                    part
-                    for part in (
-                        read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
-                        raw_entries,
-                    )
-                    if part
-                )
+                evidence = read_evidence(scope=scope)
                 await rebuild_tone_note(
                     scope=scope,
                     flavor=flavor,

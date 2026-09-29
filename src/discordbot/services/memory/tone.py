@@ -24,8 +24,7 @@ from discordbot.services.memory.store import (
     clear_tone,
     write_tone,
     cleared_since,
-    read_detail_tail,
-    read_raw_entries,
+    read_evidence,
     rewrite_evidence,
 )
 from discordbot.services.memory.deltas import (
@@ -35,7 +34,6 @@ from discordbot.services.memory.deltas import (
     tone_evidence_from_raw,
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidationRequest
-from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 
 # The exact header a tone note must lead with; the tier is injected on every reply,
 # so anything else is a rewrite that did not land and must not be written.
@@ -132,12 +130,10 @@ async def forget_tone(
     note_lines = (
         tuple(line for line in note[1:] if line.strip()) if note[:1] == [_TONE_HEADER] else ()
     )
-    corpus = "\n\n".join((
-        read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
-        read_raw_entries(scope=scope),
-    ))
     evidence = [
-        observation for observation in tone_observations(text=corpus) if observation[0] < cutoff
+        observation
+        for observation in tone_observations(text=read_evidence(scope=scope))
+        if observation[0] < cutoff
     ]
     if not note_lines and not evidence:
         return True
