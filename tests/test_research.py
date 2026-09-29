@@ -449,7 +449,6 @@ def test_to_result_extracts_text_image_and_usage() -> None:
         ],
     )
     result = agent._to_result(interaction=interaction)
-    assert result.interaction_id == "int_123"
     assert result.ok is True
     assert result.report_text.startswith("# Report")
     assert result.image_bytes == b"PNGBYTES"
@@ -730,10 +729,7 @@ def _completed_result(
     *, report_text: str, image_bytes: bytes | None = None
 ) -> agent.ResearchResult:
     return agent.ResearchResult(
-        interaction_id="int_1",
-        status="completed",
-        report_text=report_text,
-        image_bytes=image_bytes,
+        status="completed", report_text=report_text, image_bytes=image_bytes
     )
 
 

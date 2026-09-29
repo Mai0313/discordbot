@@ -116,19 +116,9 @@ class _ResearchInteraction(Protocol):
     def steps(self) -> "list[Step] | None": ...
 
 
-class _TokenUsage(BaseModel):
-    """The token counts read off one terminal interaction."""
-
-    input_tokens: int = Field(default=0, description="Reported input tokens for the interaction.")
-    output_tokens: int = Field(
-        default=0, description="Reported output tokens for the interaction."
-    )
-
-
 class ResearchResult(BaseModel):
     """The terminal outcome of a research run."""
 
-    interaction_id: str = Field(..., description="The research interaction's id.")
     status: str = Field(
         ..., description="Terminal interaction status (completed / failed / cancelled / ...)."
     )
@@ -176,27 +166,18 @@ def _extract_image(*, interaction: _ResearchInteraction) -> bytes | None:
     return None
 
 
-def _extract_usage(*, interaction: _ResearchInteraction) -> _TokenUsage:
-    """Returns the interaction's token counts, defaulting to zero."""
-    usage = interaction.usage
-    if usage is None:
-        return _TokenUsage()
-    return _TokenUsage(
-        input_tokens=int(usage.total_input_tokens or 0),
-        output_tokens=int(usage.total_output_tokens or 0),
-    )
-
-
 def _to_result(*, interaction: _ResearchInteraction) -> ResearchResult:
-    """Maps a terminal interaction to a `ResearchResult`."""
-    usage = _extract_usage(interaction=interaction)
+    """Maps a terminal interaction to a `ResearchResult`, reading absent token counts as zero."""
     return ResearchResult(
-        interaction_id=str(interaction.id or ""),
         status=str(interaction.status),
         report_text=(interaction.output_text or ""),
         image_bytes=_extract_image(interaction=interaction),
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
+        input_tokens=(
+            int(interaction.usage.total_input_tokens or 0) if interaction.usage is not None else 0
+        ),
+        output_tokens=(
+            int(interaction.usage.total_output_tokens or 0) if interaction.usage is not None else 0
+        ),
     )
 
 
@@ -359,7 +340,6 @@ class _StreamDriver(BaseModel):
 
 async def _drive(
     *,
-    client: genai.Client,
     driver: _StreamDriver,
     streamer: "ResearchProgressStreamer",
     open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
@@ -390,7 +370,7 @@ async def _drive(
             _exc_info=True,
         )
     return await _poll_until_terminal(
-        client=client,
+        client=driver.client,
         interaction_id=driver.interaction_id,
         poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
     )
@@ -427,7 +407,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
 
     logfire.info("research antigravity streaming", agent=agent)
     interaction = await _drive(
-        client=client, driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
+        driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
     )
     return _to_result(interaction=interaction)
 
@@ -443,10 +423,6 @@ async def resume_research_stream(
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
     interaction = await _drive(
-        client=client,
-        driver=driver,
-        streamer=streamer,
-        open_initial=_open,
-        on_created=_noop_created,
+        driver=driver, streamer=streamer, open_initial=_open, on_created=_noop_created
     )
     return _to_result(interaction=interaction)
