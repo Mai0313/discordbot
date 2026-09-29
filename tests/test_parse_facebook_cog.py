@@ -221,6 +221,23 @@ async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:
     assert total <= 6000
 
 
+async def test_a_long_comment_under_a_short_post_stays_inside_the_description_limit() -> None:
+    """A short post leaves the comment more of the message than one description may carry."""
+    comment = FacebookOutput(comment_id="222", text="y" * 5000, author_name="Commenter")
+    cog, _ = stub_conversation_cog(
+        cog_type=FacebookCogs,
+        outcome=facebook_post(text="hi", comments=[comment], selected_comment_id="222"),
+    )
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    description = expansion_embeds(message=message)[-1].description
+    assert description is not None
+    assert utf16_length(value=description) <= 4096
+    assert description.endswith("（全文請看原貼文）")
+
+
 async def _post_body_length(*, outcome: FacebookConversation) -> int:
     """Expands `outcome` and measures the post's own description, in the units Discord counts."""
     cog, _ = stub_conversation_cog(cog_type=FacebookCogs, outcome=outcome)

@@ -68,8 +68,8 @@ CONTEXT_CARD_COLOR = 0x65686C
 TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
 VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 
-# What a secondary card's budget leaves unmeasured: every card's author line and the line break
-# under its header, plus the header itself on a card that does not take it off its own budget.
+# What a secondary card's budget leaves unmeasured: every card's author line, plus its header and
+# the line break under it on a card that does not take them off its own budget.
 # Every measurement against Discord's limits is in UTF-16 units (`utf16_length`), Discord's own.
 _CONTEXT_CARD_SLACK = 400
 
@@ -646,13 +646,15 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         Its URL is the comment's own, which is what keeps it OUT of the image gallery, since
         Discord merges embeds sharing a URL.
         """
+        header = f"{_COMMENT_HEADER}\n\n"
+        # Beside a short post the message-wide budget exceeds what one description may carry.
         body = clip_to_utf16_limit(
             text=comment.text,
-            limit=budget - utf16_length(value=_COMMENT_HEADER),
+            limit=min(budget, DISCORD_EMBED_DESCRIPTION_LIMIT) - utf16_length(value=header),
             notice=TRUNCATION_NOTICE,
         )
         embed = Embed(
-            description=f"{_COMMENT_HEADER}\n\n{body}",
+            description=f"{header}{body}",
             url=self._comment_url(post_url=post_url, comment=comment),
             color=Color(value=CONTEXT_CARD_COLOR),
             timestamp=comment.taken_at,
