@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from random import Random
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -47,6 +46,7 @@ from discordbot.cogs.games.dragon_gate_views import (
 
 from tests.helpers.games import seat, component_ids, component_rows, attached_button
 from tests.helpers.casting import as_message, as_interaction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -56,18 +56,6 @@ if TYPE_CHECKING:
     from discordbot.cogs.games.lobby import PrepareParticipant
 
 T = TypeVar("T")
-
-
-class MessageStub:
-    """Minimal Discord message stub that records edits."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded edit payloads."""
-        self.edits: list[dict[str, Any]] = []
-
-    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records a message edit payload."""
-        self.edits.append(kwargs)
 
 
 class RetryMessageStub:
@@ -90,64 +78,6 @@ class _TransientEditError(Exception):
     """Fake Discord 5xx error for retry tests."""
 
     status = 503
-
-
-class ResponseStub:
-    """Minimal interaction response stub."""
-
-    def __init__(self) -> None:
-        """Initializes interaction response state records."""
-        self.deferred = False
-        self.sent: list[dict[str, Any]] = []
-        self.modals: list[DragonGateBetModal] = []
-
-    async def defer(self) -> None:
-        """Records that the interaction was deferred."""
-        self.deferred = True
-
-    async def send_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records an ephemeral or public interaction message."""
-        self.sent.append(kwargs)
-
-    def is_done(self) -> bool:
-        """Returns whether the interaction response has already been used."""
-        return self.deferred or bool(self.sent) or bool(self.modals)
-
-    async def send_modal(self, modal: DragonGateBetModal) -> None:
-        """Records a modal launch."""
-        self.modals.append(modal)
-
-
-class FollowupStub:
-    """Minimal interaction followup stub."""
-
-    def __init__(self) -> None:
-        """Initializes recorded followup sends."""
-        self.sent: list[dict[str, Any]] = []
-
-    async def send(self, **kwargs: Any) -> MessageStub:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records followup sends and returns a fake message."""
-        self.sent.append(kwargs)
-        return MessageStub()
-
-
-class InteractionStub:
-    """Minimal interaction stub for view callbacks."""
-
-    def __init__(
-        self, user_id: int = 1, message: MessageStub | None = None, custom_id: str = ""
-    ) -> None:
-        """Initializes a callback interaction with user and component data."""
-        self.user = SimpleNamespace(
-            id=user_id,
-            name=f"user{user_id}",
-            display_name=f"User {user_id}",
-            display_avatar=SimpleNamespace(url=f"https://example.test/{user_id}.png"),
-        )
-        self.message = message
-        self.response = ResponseStub()
-        self.followup = FollowupStub()
-        self.data: dict[str, Any] = {"custom_id": custom_id}
 
 
 _RIGGED_FILLER: tuple[str, ...] = ("2", "♠") * 32
@@ -591,12 +521,12 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     """Lobby buttons mutate participants and only the owner starts the table."""
     owner = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
-    message = MessageStub()
+    message = FakeDiscordMessage()
 
     state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    async def prepare_participant(interaction: InteractionStub) -> GameParticipant | None:
+    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
         """Returns Bob when the join interaction is accepted."""
         assert interaction.user.id == 2
         return bob
@@ -619,22 +549,26 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     view.message = as_message(fake=message)
 
     join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
-    await join_button.callback(as_interaction(fake=InteractionStub(user_id=2, message=message)))
+    await join_button.callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
     assert view.participants == [owner, bob]
     join_embed = message.edits[-1]["embed"]
     assert isinstance(join_embed, Embed)
     assert isinstance(join_embed.description, str)
 
     leave_button = next(child for child in view.children if getattr(child, "label", "") == "離開")
-    await leave_button.callback(as_interaction(fake=InteractionStub(user_id=2, message=message)))
+    await leave_button.callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
     assert view.participants == [owner]
 
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
-    other_interaction = InteractionStub(user_id=2, message=message)
+    other_interaction = FakeInteraction(user=FakeUser(user_id=2), message=message)
     await start_button.callback(as_interaction(fake=other_interaction))
     assert other_interaction.response.sent
 
-    owner_interaction = InteractionStub(user_id=1, message=message)
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
     await start_button.callback(as_interaction(fake=owner_interaction))
     assert isinstance(message.edits[-1]["view"], DragonGateView)
     assert state.calls == [
@@ -655,9 +589,9 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     """If ante settlement rejects a non-owner, the lobby stays startable."""
     owner = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
-    message = MessageStub()
+    message = FakeDiscordMessage()
 
-    async def prepare_participant(interaction: InteractionStub) -> GameParticipant | None:
+    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
         """Returns Bob when the join interaction is accepted."""
         assert interaction.user.id == 2
         return bob
@@ -701,9 +635,13 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     view.message = as_message(fake=message)
 
     join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
-    await join_button.callback(as_interaction(fake=InteractionStub(user_id=2, message=message)))
+    await join_button.callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
-    await start_button.callback(as_interaction(fake=InteractionStub(user_id=1, message=message)))
+    await start_button.callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
+    )
 
     assert view.participants == [owner]
     assert view._started is False
@@ -725,7 +663,7 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -739,7 +677,9 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
 
     choose_higher = attached_button(view=view, custom_id="dg:higher")
     await choose_higher.callback(
-        as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:higher"))
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:higher")
+        )
     )
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == "higher"
@@ -749,7 +689,7 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     await view._handle_bet_choice(
         choice="min",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
 
@@ -770,7 +710,7 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     state = JackpotState(initial_jackpot=100_000, initial_balance=100)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -786,7 +726,7 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     await view._handle_bet_choice(
         choice="max",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
 
@@ -806,7 +746,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     state = JackpotState(initial_jackpot=100_000, initial_balance=15)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -821,7 +761,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     assert view._active_max_bet() == 15
     assert component_ids(view=view) == {"dg:leave"}
 
-    interaction = InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+    interaction = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
     await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=interaction))
     assert state.calls == []
     assert interaction.followup.sent[-1]["content"] == "餘額不足以下注，請先離桌"
@@ -839,7 +779,7 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     state = JackpotState(initial_jackpot=10_000, initial_balance=500_000)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -852,7 +792,7 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     await view._handle_bet_choice(
         choice="max",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
 
@@ -905,7 +845,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         lambda message, delay=180, user_name=None: None,
     )
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -919,7 +859,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
     await view._handle_bet_choice(
         choice="max",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
 
@@ -947,7 +887,7 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     state = JackpotState(initial_jackpot=100_000, initial_balance=30)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -960,7 +900,7 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     await view._handle_bet_choice(
         choice="min",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
 
@@ -997,7 +937,7 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
     state.balances[2] = 100_000
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
@@ -1010,7 +950,7 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
     await view._handle_bet_choice(
         choice="min",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
 
@@ -1040,7 +980,7 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
@@ -1053,14 +993,16 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     await view._handle_bet_choice(
         choice="min",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
     assert round_state.player_delta(user_id=1) == 20
 
     leave_button = attached_button(view=view, custom_id="dg:leave")
     await leave_button.callback(
-        as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
     )
 
     # Bet settled +20 into Alice. Leave refunds 20 back into the pool.
@@ -1086,7 +1028,7 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
     state.balances[1] = 100
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -1098,7 +1040,9 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
 
     # 500 is under the stale 1,000 cache but over the live 100 balance, so it is rejected.
     await view.submit_custom_bet(
-        interaction=as_interaction(fake=InteractionStub(user_id=1, message=message)),
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message)
+        ),
         raw_amount="500",
     )
 
@@ -1120,7 +1064,7 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
@@ -1133,14 +1077,16 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     await view._handle_bet_choice(
         choice="min",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
     assert round_state.player_delta(user_id=1) == -20
 
     leave_button = attached_button(view=view, custom_id="dg:leave")
     await leave_button.callback(
-        as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
     )
 
     # Single bet settled -20; leave path does not append another settlement.
@@ -1166,14 +1112,18 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
 
-    non_active = InteractionStub(user_id=2, message=MessageStub(), custom_id="dg:bet")
+    non_active = FakeInteraction(
+        user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:bet"
+    )
     assert await view.interaction_check(interaction=as_interaction(fake=non_active)) is False
     assert non_active.response.sent
 
-    leave_ok = InteractionStub(user_id=2, message=MessageStub(), custom_id="dg:leave")
+    leave_ok = FakeInteraction(
+        user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:leave"
+    )
     assert await view.interaction_check(interaction=as_interaction(fake=leave_ok)) is True
 
-    invalid = InteractionStub(user_id=1, message=MessageStub())
+    invalid = FakeInteraction(user=FakeUser(user_id=1), message=FakeDiscordMessage())
     await view.submit_custom_bet(
         interaction=as_interaction(fake=invalid), raw_amount="not a number"
     )
@@ -1210,7 +1160,7 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    message = MessageStub()
+    message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
@@ -1223,7 +1173,7 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     await view._handle_bet_choice(
         choice="min",
         interaction=as_interaction(
-            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
     assert round_state.player_delta(user_id=1) == 20

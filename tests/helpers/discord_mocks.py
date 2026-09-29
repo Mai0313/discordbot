@@ -256,10 +256,16 @@ class FakeInteraction:
         channel_id: int = 200,
         locale: str = "zh-TW",
         administrator: bool = False,
+        custom_id: str | None = None,
     ) -> None:
-        """Initializes user, origin, guild upload limit, response, followup, and edit records."""
+        """Initializes user, origin, guild upload limit, response, followup, and edit records.
+
+        `custom_id` names the pressed control for a component interaction, which a view's
+        `interaction_check` reads off `data`; a slash command carries no component payload.
+        """
         self.user = user or FakeUser()
         self.message = message
+        self.data: dict[str, str] | None = {"custom_id": custom_id} if custom_id else None
         # Union rather than `FakeGuild`: a few tests hand in a stricter guild of their own (one
         # whose `fetch_member` asserts it is never reached), and the real attribute is a Guild
         # this package deliberately does not model in full.
