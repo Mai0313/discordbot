@@ -207,22 +207,6 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
     assert "ancestor" in text  # the ancestor still supplies context, just no media
 
 
-async def test_build_caps_media_parts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A large carousel is capped at MAX_THREADS_MEDIA_PARTS media parts."""
-    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 5)]
-    _stub_parse(monkeypatch, [_post(images=images)])
-    _stub_media(monkeypatch, uploads=FakeUploads())
-
-    blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
-    )
-
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
-    assert len(media) == MAX_THREADS_MEDIA_PARTS
-
-
 async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.MonkeyPatch) -> None:
     """Images claim the budget first and videos take what is left, never exceeding the cap.
 
@@ -246,26 +230,6 @@ async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.Mon
     names = [part["filename"] for part in media]
     assert sum(name.endswith(".mp4") for name in names) == 1  # only the leftover slot
     assert sum(name.endswith(".jpg") for name in names) == MAX_THREADS_MEDIA_PARTS - 1
-
-
-async def test_a_full_image_budget_leaves_no_room_for_video(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When images fill the cap the videos are dropped rather than pushing it over."""
-    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
-    _stub_parse(monkeypatch, [_post(images=images, videos=["https://cdn.test/v.mp4"])])
-    uploads = FakeUploads()
-    _stub_media(monkeypatch, uploads=uploads)
-
-    blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
-    )
-
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
-    assert len(media) == MAX_THREADS_MEDIA_PARTS
-    assert all(part["filename"].endswith(".jpg") for part in media)
 
 
 async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1098,7 +1062,9 @@ async def test_a_carousel_past_the_cap_names_the_images_it_left_out(
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    parts = step_dicts(steps=blocks[1]["content"])
+    assert len([part for part in parts if part["type"] == "input_file"]) == MAX_THREADS_MEDIA_PARTS
+    text = parts[0]["text"]
     assert f"{MAX_THREADS_MEDIA_PARTS} item(s) reached you and 5 did not" in text
     assert "Images of the linked post NOT attached (5)" in text
     assert images[MAX_THREADS_MEDIA_PARTS] in text
@@ -1107,7 +1073,10 @@ async def test_a_carousel_past_the_cap_names_the_images_it_left_out(
 async def test_a_video_squeezed_out_by_the_image_budget_is_named(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A full image budget drops every video outright, which the block used to pass over."""
+    """A full image budget drops every video outright rather than pushing past the cap.
+
+    The block has to name what it dropped, which it used to pass over.
+    """
     images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
     _stub_parse(monkeypatch, [_post(images=images, videos=["https://cdn.test/v.mp4"])])
     _stub_media(monkeypatch, uploads=FakeUploads())
@@ -1117,7 +1086,11 @@ async def test_a_video_squeezed_out_by_the_image_budget_is_named(
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    parts = step_dicts(steps=blocks[1]["content"])
+    media = [part for part in parts if part["type"] == "input_file"]
+    assert len(media) == MAX_THREADS_MEDIA_PARTS
+    assert all(part["filename"].endswith(".jpg") for part in media)
+    text = parts[0]["text"]
     assert "Videos of the linked post NOT attached (1), URLs only: https://cdn.test/v.mp4" in text
     assert "Images of the linked post NOT attached" not in text
 

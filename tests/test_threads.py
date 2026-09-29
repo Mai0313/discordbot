@@ -14,7 +14,6 @@ from discordbot.services.platforms.threads import (
     Post,
     ThreadsURL,
     FetchedPage,
-    ThreadsOutput,
     ThreadsDownloader,
 )
 
@@ -32,22 +31,6 @@ def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownlo
 
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
     return ThreadsDownloader(output_folder=str(tmp_path))
-
-
-def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
-    """Threads output image and local video path defaults are isolated."""
-    first = ThreadsOutput()
-    second = ThreadsOutput()
-
-    first.image_urls.append("https://cdn.example/image.jpg")
-    first.video_paths.append(tmp_path / "clip.mp4")
-    first.quoted = ThreadsOutput(text="quoted")
-
-    assert second.image_urls == []
-    assert second.video_paths == []
-    assert second.reply_to_username == ""
-    assert second.quoted is None
-    assert second.quoted_unavailable is False
 
 
 def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field of a post

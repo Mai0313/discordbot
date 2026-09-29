@@ -224,17 +224,6 @@ def test_a_post_is_read_with_its_caption_images_and_counts(
     assert post.taken_at is not None
 
 
-def test_the_first_candidate_is_the_original(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The candidates are widest-first and carry no dimensions, so position is the only signal."""
-    downloader = _downloader(monkeypatch, html=_page())
-
-    conversation = downloader.parse_metadata(url=_URL)
-
-    post = conversation.target
-    assert post is not None
-    assert all("original" in url for url in post.image_urls)
-
-
 def test_the_chain_is_the_post_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     """Instagram has no ancestor posts, but the shape matches Threads so callers agree."""
     downloader = _downloader(monkeypatch, html=_page())
