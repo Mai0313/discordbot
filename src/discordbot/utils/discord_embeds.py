@@ -52,21 +52,15 @@ def clip_to_utf16_limit(*, text: str, limit: int, notice: str) -> str:
     return f"{''.join(kept)}{notice}"
 
 
-def embed_spacer_url(*, filename: str = DEFAULT_EMBED_SPACER_FILENAME) -> str:
+def embed_spacer_url() -> str:
     """Returns the attachment URL for a transparent embed spacer image."""
-    return f"attachment://{filename}"
+    return f"attachment://{DEFAULT_EMBED_SPACER_FILENAME}"
 
 
-def build_embed_spacer_file(
-    *,
-    filename: str = DEFAULT_EMBED_SPACER_FILENAME,
-    width: int = DEFAULT_EMBED_SPACER_WIDTH,
-    height: int = DEFAULT_EMBED_SPACER_HEIGHT,
-) -> File:
+def build_embed_spacer_file() -> File:
     """Builds a fresh transparent PNG upload for one Discord send or edit."""
     return File(
-        fp=BytesIO(initial_bytes=_transparent_png_bytes(width=width, height=height)),
-        filename=filename,
+        fp=BytesIO(initial_bytes=_transparent_png_bytes()), filename=DEFAULT_EMBED_SPACER_FILENAME
     )
 
 
@@ -85,13 +79,6 @@ def _target_allows_file_uploads(*, target: object | None) -> bool:
     if guild is None:
         return True
     member = getattr(target, "me", None) or getattr(guild, "me", None)
-    if member is None:
-        client = getattr(target, "client", None) or getattr(target, "bot", None)
-        user = getattr(client, "user", None)
-        user_id = getattr(user, "id", None)
-        get_member = getattr(guild, "get_member", None)
-        if isinstance(user_id, int) and callable(get_member):
-            member = get_member(user_id)
     permissions_for = getattr(channel, "permissions_for", None)
     if member is None or not callable(permissions_for):
         return True
@@ -99,23 +86,21 @@ def _target_allows_file_uploads(*, target: object | None) -> bool:
     return bool(getattr(permissions, "attach_files", True))
 
 
-def apply_embed_spacer_image(
-    *, embeds: list[Embed], filename: str = DEFAULT_EMBED_SPACER_FILENAME
-) -> list[Embed]:
+def apply_embed_spacer_image(*, embeds: list[Embed]) -> list[Embed]:
     """Sets a transparent spacer only on embeds without an image of their own."""
-    spacer_url = embed_spacer_url(filename=filename)
+    spacer_url = embed_spacer_url()
     for embed in embeds:
         if not _embed_has_real_image(embed=embed, spacer_url=spacer_url):
             embed.set_image(url=spacer_url)
     return embeds
 
 
-def _existing_spacer_attachment(*, target: object | None, filename: str) -> Attachment | None:
+def _existing_spacer_attachment(*, target: object | None) -> Attachment | None:
     """Returns an already-uploaded spacer attachment on the edit target, if present."""
     message = target if hasattr(target, "attachments") else getattr(target, "message", None)
     attachments = getattr(message, "attachments", None) or ()
     for attachment in attachments:
-        if getattr(attachment, "filename", None) == filename:
+        if getattr(attachment, "filename", None) == DEFAULT_EMBED_SPACER_FILENAME:
             return attachment
     return None
 
@@ -126,7 +111,6 @@ def embed_spacer_payload(
     is_edit: bool,
     target: object | None = None,
     extra_files: list[File] | None = None,
-    filename: str = DEFAULT_EMBED_SPACER_FILENAME,
 ) -> dict[str, Any]:
     """Returns the spacer files/attachments increment to merge into a send or edit.
 
@@ -135,20 +119,18 @@ def embed_spacer_payload(
     Discord's per-message edit attachment upload limit (error code 400009) for
     rapidly edited messages.
     """
-    spacer_url = embed_spacer_url(filename=filename)
+    spacer_url = embed_spacer_url()
     files: list[File] = list(extra_files or [])
     retained: list[Attachment] = []
     if any(not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds):
-        existing_spacer = (
-            _existing_spacer_attachment(target=target, filename=filename) if is_edit else None
-        )
+        existing_spacer = _existing_spacer_attachment(target=target) if is_edit else None
         can_upload_spacer = _target_allows_file_uploads(target=target)
         if existing_spacer is not None:
-            apply_embed_spacer_image(embeds=embeds, filename=filename)
+            apply_embed_spacer_image(embeds=embeds)
             retained.append(existing_spacer)
         elif can_upload_spacer and len(files) < DISCORD_ATTACHMENT_LIMIT:
-            apply_embed_spacer_image(embeds=embeds, filename=filename)
-            files.append(build_embed_spacer_file(filename=filename))
+            apply_embed_spacer_image(embeds=embeds)
+            files.append(build_embed_spacer_file())
         else:
             for embed in embeds:
                 if embed.image and embed.image.url == spacer_url:
@@ -162,8 +144,12 @@ def embed_spacer_payload(
 
 
 @cache
-def _transparent_png_bytes(*, width: int, height: int) -> bytes:
-    image = Image.new(mode="RGBA", size=(width, height), color=_TRANSPARENT_RGBA)
+def _transparent_png_bytes() -> bytes:
+    image = Image.new(
+        mode="RGBA",
+        size=(DEFAULT_EMBED_SPACER_WIDTH, DEFAULT_EMBED_SPACER_HEIGHT),
+        color=_TRANSPARENT_RGBA,
+    )
     buffer = BytesIO()
     image.save(fp=buffer, format="PNG", optimize=True)
     return buffer.getvalue()
