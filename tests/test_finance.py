@@ -7,10 +7,12 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import text, select, update
 
+from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
     CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
+    LoanContractView,
     LoanProposalStatus,
     LoanProposalAcceptResult,
 )
@@ -21,20 +23,26 @@ from discordbot.services.economy.database import (
     transfer,
     get_balance,
     open_session,
-    _database_now,
+    get_portfolio,
     adjust_balance,
     get_credit_ceiling,
+    call_personal_loans,
+    list_loan_contracts,
     accept_loan_proposal,
+    cancel_loan_proposal,
+    reject_loan_proposal,
     repay_personal_loans,
     call_central_bank_loans,
     get_central_bank_status,
     record_guild_participant,
+    repay_central_bank_loans,
     create_personal_loan_request,
     reject_expired_loan_proposal,
     create_central_bank_loan_request,
 )
 
 from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
 # The guild every central-bank test lends in. Capacity is per guild now, so a borrower who
@@ -43,15 +51,9 @@ GUILD = 555
 OTHER_GUILD = 777
 
 
-async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds spendable balance through the public adjustment path."""
-    result = await adjust_balance(user_id=user_id, name=name, delta=amount)
-    return result.new_balance
-
-
 async def _join(user_id: int, name: str, amount: int, guild_id: int = GUILD) -> int:
     """Seeds a balance and records the user as taking part in `guild_id`."""
-    balance = await _add_balance(user_id=user_id, name=name, amount=amount)
+    balance = await seed_balance(user_id=user_id, name=name, amount=amount)
     await record_guild_participant(guild_id=guild_id, user_id=user_id)
     return balance
 
@@ -72,7 +74,7 @@ async def _approve(
 
 async def _backdate_contract(contract_id: int, days: int) -> None:
     """Ages a loan contract by `days`, keeping the MIN_INTEREST_DAYS prepaid window aligned."""
-    now = _database_now()
+    now = database_now()
     opened_at = now - timedelta(days=days)
     last_accrued_at = opened_at + timedelta(days=MIN_INTEREST_DAYS)
     async with open_session() as session:
@@ -84,6 +86,23 @@ async def _backdate_contract(contract_id: int, days: int) -> None:
         await session.commit()
 
 
+async def _personal_loan(borrower_id: int, lender_id: int, amount: int) -> LoanContractView:
+    """Opens an accepted personal loan at the default rate and returns its contract."""
+    proposal = await create_personal_loan_request(
+        borrower_id=borrower_id,
+        borrower_name=str(borrower_id),
+        lender_id=lender_id,
+        lender_name=str(lender_id),
+        amount=amount,
+    )
+    assert proposal is not None
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=lender_id, actor_name=str(lender_id)
+    )
+    assert accepted is not None
+    return accepted.contract
+
+
 async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
     """Moves a loan proposal's creation timestamp into the past."""
     async with open_session() as session:
@@ -91,8 +110,8 @@ async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
             statement=update(LoanProposal)
             .where(LoanProposal.id == proposal_id)
             .values(
-                created_at=_database_now() - timedelta(seconds=seconds),
-                updated_at=_database_now() - timedelta(seconds=seconds),
+                created_at=database_now() - timedelta(seconds=seconds),
+                updated_at=database_now() - timedelta(seconds=seconds),
             )
         )
         await session.commit()
@@ -100,7 +119,7 @@ async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
 
 async def test_personal_loan_request_accepts_and_repay_allocates_interest_first() -> None:
     """Accepted personal request debits lender, credits borrower, and repays interest first."""
-    await _add_balance(user_id=2, name="bob", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
 
     proposal = await create_personal_loan_request(
         borrower_id=1,
@@ -136,7 +155,7 @@ async def test_personal_loan_request_accepts_and_repay_allocates_interest_first(
 async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
     """Loan proposal and contract money columns can exceed SQLite's INTEGER range."""
     large_amount = 10**20
-    await _add_balance(user_id=10, name="lender", amount=large_amount)
+    await seed_balance(user_id=10, name="lender", amount=large_amount)
     proposal = await create_personal_loan_request(
         borrower_id=20,
         borrower_name="borrower",
@@ -192,7 +211,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
 
 async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
     """Expired pending requests become rejected and cannot be accepted later."""
-    await _add_balance(user_id=2, name="bob", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
     proposal = await create_personal_loan_request(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
     )
@@ -218,6 +237,69 @@ async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
     assert stored_status == LoanProposalStatus.REJECTED
     assert await get_balance(user_id=1) == 0
     assert await get_balance(user_id=2) == 1_000
+
+
+async def test_only_the_named_lender_can_turn_a_request_down() -> None:
+    """The borrower cannot reject their own request; the lender it names can."""
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    assert proposal is not None
+
+    assert await reject_loan_proposal(proposal_id=proposal.proposal_id, actor_id=1) is None
+    rejected = await reject_loan_proposal(proposal_id=proposal.proposal_id, actor_id=2)
+
+    assert rejected is not None
+    assert rejected.status == LoanProposalStatus.REJECTED
+    assert (
+        await accept_loan_proposal(proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob")
+        is None
+    )
+    assert await get_balance(user_id=2) == 1_000
+
+
+async def test_only_the_borrower_who_asked_can_withdraw_a_request() -> None:
+    """The lender cannot cancel a request made of them; the borrower who made it can."""
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    assert proposal is not None
+
+    assert await cancel_loan_proposal(proposal_id=proposal.proposal_id, actor_id=2) is None
+    canceled = await cancel_loan_proposal(proposal_id=proposal.proposal_id, actor_id=1)
+
+    assert canceled is not None
+    assert canceled.status == LoanProposalStatus.CANCELED
+    assert (
+        await accept_loan_proposal(proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob")
+        is None
+    )
+    assert await get_balance(user_id=2) == 1_000
+
+
+async def test_calling_personal_loans_collects_accrued_interest_owed_to_that_lender_only() -> None:
+    """Calling in everything owed includes interest accrued up to now, and no other lender's loan."""
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    await seed_balance(user_id=3, name="carol", amount=1_000)
+    from_bob = await _personal_loan(borrower_id=1, lender_id=2, amount=500)
+    from_carol = await _personal_loan(borrower_id=1, lender_id=3, amount=200)
+    await _backdate_contract(contract_id=from_bob.contract_id, days=60)
+
+    result = await call_personal_loans(
+        lender_id=2, borrower_id=1, borrower_name="alice", amount=None
+    )
+
+    assert result is not None
+    # 15 prepaid at acceptance, plus 15 accrued over the 30 days past the prepaid window.
+    assert (result.paid_amount, result.interest_paid, result.principal_paid) == (530, 30, 500)
+    assert result.closed_contract_ids == (from_bob.contract_id,)
+    assert await get_balance(user_id=1) == 700 - 530
+    assert await get_balance(user_id=2) == 500 + 530
+    remaining = await list_loan_contracts(user_id=1)
+    assert [contract.contract_id for contract in remaining] == [from_carol.contract_id]
+    assert remaining[0].principal_remaining == 200
 
 
 async def test_central_bank_loan_approves_against_cap_and_call_clamps_to_balance() -> None:
@@ -344,6 +426,50 @@ async def test_forced_collection_without_amount_includes_accrued_interest() -> N
     assert await get_balance(user_id=1) == 985
 
 
+async def test_central_bank_repayment_pays_interest_first_and_the_bank_keeps_it() -> None:
+    """A voluntary repayment settles interest before principal, and only the principal is burned."""
+    await _join(user_id=1, name="alice", amount=1_000)
+    proposal = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
+    )
+    assert proposal is not None
+    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    assert accepted is not None
+
+    result = await repay_central_bank_loans(borrower_id=1, borrower_name="alice", amount=100)
+
+    assert result is not None
+    assert (result.paid_amount, result.interest_paid, result.principal_paid) == (100, 15, 85)
+    assert result.remaining_principal == 415
+    assert result.lender_balance is None
+    assert await get_balance(user_id=1) == 1_400
+    status = await get_central_bank_status(guild_id=GUILD)
+    assert status.outstanding_principal == 415
+    assert status.ledger_balance == 15
+
+
+async def test_portfolio_counts_interest_accrued_since_the_last_write() -> None:
+    """Net worth subtracts the interest accrued up to now, not only what approval prepaid."""
+    await _join(user_id=1, name="alice", amount=1_000)
+    proposal = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
+    )
+    assert proposal is not None
+    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    assert accepted is not None
+    await _backdate_contract(contract_id=accepted.contract.contract_id, days=60)
+
+    portfolio = await get_portfolio(user_id=1)
+
+    # 15 prepaid at approval, plus 15 accrued over the 30 days past the prepaid window.
+    assert (portfolio.balance, portfolio.debt_principal, portfolio.debt_interest) == (
+        1_500,
+        500,
+        30,
+    )
+    assert portfolio.net_worth == 1_500 - 500 - 30
+
+
 async def test_a_borrower_cannot_owe_more_than_their_own_ceiling() -> None:
     """The per-borrower ceiling is what bounds minting, not the guild pool.
 
@@ -422,7 +548,7 @@ async def test_minting_is_bounded_when_each_account_holds_its_own_guild() -> Non
     to be subtracted.
     """
     accounts = (1, 2, 3)
-    await _add_balance(user_id=1, name="1", amount=1_000)
+    await seed_balance(user_id=1, name="1", amount=1_000)
     for user_id in accounts:  # each account takes part in its own guild and no other
         await record_guild_participant(guild_id=user_id, user_id=user_id)
 

@@ -3,18 +3,10 @@
 import pytest
 from scripts import modify_balance as modify_balance_script
 
-from discordbot.typings.economy import AccountSnapshot
-from discordbot.services.economy.database import (
-    BalanceAdjustmentResult,
-    get_account,
-    adjust_balance,
-)
+from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
+from discordbot.services.economy.database import get_account
 
-
-async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds a balance through the manual adjustment API."""
-    result = await adjust_balance(user_id=user_id, name=name, delta=amount)
-    return result.new_balance
+from tests.helpers.economy import seed_balance
 
 
 def test_parse_args_accepts_all_target() -> None:
@@ -27,8 +19,8 @@ def test_parse_args_accepts_all_target() -> None:
 
 async def test_modify_all_balances_updates_existing_accounts_only() -> None:
     """Bulk adjustment updates only accounts already present in the DB."""
-    await _add_balance(user_id=1, name="alice", amount=100)
-    await _add_balance(user_id=2, name="bob", amount=200)
+    await seed_balance(user_id=1, name="alice", amount=100)
+    await seed_balance(user_id=2, name="bob", amount=200)
 
     result = await modify_balance_script.modify_all_balances(delta=50_000)
 
@@ -128,3 +120,30 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
     assert result.applied_delta == -80
     assert result.after == 20
     assert result.created is False
+
+
+@pytest.mark.parametrize(
+    argnames=("start", "delta", "allow_negative", "expected"),
+    argvalues=[
+        (100, 50, False, (100, 50, 150)),
+        (30, -100, False, (30, -30, 0)),
+        (30, -100, True, (30, -100, -70)),
+        (0, 100, False, (0, 100, 100)),
+        (0, -100, False, (0, 0, 0)),
+    ],
+    ids=["credit", "clamped-debit", "allow-negative", "missing-account", "missing-account-debit"],
+)
+async def test_dry_run_projects_the_change_without_writing(
+    start: int, delta: int, allow_negative: bool, expected: tuple[int, int, int]
+) -> None:
+    """A dry run reports `(before, applied_delta, after)` and leaves the account as it was."""
+    await seed_balance(user_id=1, name="alice", amount=start)
+    account = await get_account(user_id=1)
+
+    change = await modify_balance_script.modify_balance(
+        user_id=1, name="", delta=delta, allow_negative=allow_negative, dry_run=True
+    )
+
+    assert (change.before, change.applied_delta, change.after) == expected
+    assert change.dry_run is True
+    assert await get_account(user_id=1) == account
