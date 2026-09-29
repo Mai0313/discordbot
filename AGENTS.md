@@ -164,7 +164,6 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **A round settles in one atomic step after it resolves:** validate or clamp bets up front, then settle through the helpers.
 - **過五關 is a house rule:** a 5+ card non-bust hand auto-stands and wins regardless of dealer total, except a five-card 21 (`blackjack.py::settle_hand`, `settlement.py::settle_blackjack_player`).
 - **The bot joins every Blackjack table as a regular player whenever its wallet is above zero, and settles like any human.**
-- **Raising `MAX_BLACKJACK_PLAYERS` (6, `blackjack_views.py`) means re-deriving `shoe.py::RESHUFFLE_THRESHOLD_CARDS`.** The threshold is sized to six seats' worst-case draw and nothing tests the pair, so an undersized one silently corrupts the count mid-round.
 - **Action buttons are presence-based: an invalid control is removed, not disabled.** Keep the peek a two-stage animation (`_animate_peek_locked`), `self.stop()` before settlement in `_finalize_locked`, and terminal public messages deleted through `utils.message_cleanup` rather than a cog-local loop.
 - **`data/database/games.db` carries two separate engines, `cogs/games/` and `utils/message_cleanup.py`, on purpose.**
 - **Dragon Gate settles against the shared `jackpot_pool` row `game_id="dragon_gate"` through the jackpot helpers, never the casino ledger.**
