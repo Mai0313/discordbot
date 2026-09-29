@@ -226,9 +226,8 @@ async def _regen_one(
     """Rebuilds one scope, prints its outcome, and returns its report row."""
     removed = 0
     async with semaphore:
-        # The script calls the rebuild directly rather than through the reply pipeline,
-        # so it needs its own bound: `inflight.memory_semaphore` is entered inside
-        # `regenerate_scope_memory`, but nothing else here throttles the fan-out.
+        # The batch's own bound (`_CONCURRENCY` has why). The rebuild still takes
+        # `memory_semaphore` inside, so a run reaches whichever of the two is tighter.
         try:
             # Inside the handler because it is not safe either: `read_owner` parses the
             # id out of the scope key, so one non-numeric directory under the store (a

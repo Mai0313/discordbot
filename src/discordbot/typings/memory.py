@@ -10,9 +10,9 @@ A fact's fields split into two ownership zones. The model authors ``summary``,
 ``section``, ``durability`` and the body, and names ``subject_id`` plus the keys a fact
 distils from; everything else is stamped by code — provenance the model cannot copy
 wrong. Stamped is not the same as hidden: ``MemoryFact`` below has what an update or
-delete is handed back and why. ``compartment`` is the exception that proves the
-ownership rule: it is stored only so a hand-edited or half-migrated tree can be
-*detected*, and the containing directory always wins (see ``store.read_facts``).
+delete is handed back and why. ``compartment`` is stamped too, but only so a tree edited
+outside the store can be *detected*: the containing directory always wins
+(``facts.parse_fact_file``).
 """
 
 from typing import Literal

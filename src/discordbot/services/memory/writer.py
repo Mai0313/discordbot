@@ -844,7 +844,7 @@ def _sanitize_observation(
     # The roster half exists because `global` is permanent cross-server reach with no
     # read-time filter behind it, so "他跟女友吵架" — which carries no id token at all —
     # cannot be left entirely to the model's own judgement. Matching the conversation's other
-    # participants literally is the deterministic half; the phase-1.5 evaluator covers whoever
+    # participants literally is the deterministic half; `PHASE1_EVALUATOR_PROMPT` covers whoever
     # is named but absent.
     scanned = f"{observation.summary_zh}\n{observation.evidence_quote}"
     sharing = observation.sharing

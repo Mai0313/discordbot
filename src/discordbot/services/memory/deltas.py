@@ -1,8 +1,8 @@
 """Turning one compartment's consolidation deltas into files, and aging what is left.
 
-Three jobs live here, all pure-plus-store and synchronous so the caller can hold them
-inside the scope lock without an await in between (the `cleared_since` guard depends on
-that):
+Everything here is pure-plus-store and synchronous, so the caller can hold it inside the
+scope lock without an await in between (the `cleared_since` guard depends on that). The
+main jobs:
 
 * **Partitioning.** `raw.md` stays one file per scope — it is staging, never injected,
   and splitting it would multiply job rows and cooldowns by the number of guilds for

@@ -19,10 +19,9 @@ and ``tone.md`` is the short always-read note of how the user wants the bot to s
 
 IO is synchronous, which one fact per file would otherwise make untenable on the reply
 path: ``read_memory_document`` is cached under a per-scope generation counter that
-every write bumps, so a repeat read costs no syscalls at all. The counter is exact
-because every write in this process goes through here under ``scope_lock``; editing the
-tree from outside while the bot runs is not supported (nor is it today, for
-``_cleared_at``).
+every fact write bumps, so a repeat read costs no syscalls at all. The counter is exact
+because every write in this process goes through here; editing the tree from outside
+while the bot runs is not supported.
 """
 
 import os
@@ -690,11 +689,11 @@ def clear_raw(scope: str) -> None:
 
 
 def clear_tone(scope: str) -> None:
-    """Deletes the tone note when a full-evidence rebuild found no tone signal.
+    """Deletes the tone note.
 
-    Or when a forget took its last line. Those are the only two callers: an incremental
-    consolidation's empty tone output merely means "no tone signal in this batch" and must
-    never remove the note.
+    Only for a rebuild that read the whole evidence corpus and found no tone signal, or a
+    forget that took the note's last line: an incremental consolidation's empty tone output
+    merely means "no tone signal in this batch" and must never remove the note.
     """
     _tone_path(scope=scope).unlink(missing_ok=True)
 
