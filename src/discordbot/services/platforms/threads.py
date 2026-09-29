@@ -32,7 +32,6 @@ from discordbot.typings.timeouts import (
 from discordbot.utils.link_errors import (
     LinkRetryableError,
     LinkUnavailableError,
-    link_fetch_error,
     is_retryable_fetch_failure,
 )
 from discordbot.services.platforms.base import (
@@ -40,6 +39,7 @@ from discordbot.services.platforms.base import (
     PlatformDownloader,
     PlatformConversation,
 )
+from discordbot.services.platforms.page_json import FetchedPage, walk, fetch_page
 from discordbot.services.platforms.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
@@ -643,31 +643,6 @@ class ThreadsPage(BaseModel):
         description="One list per reply branch under the target, each ordered from the direct reply outward, so an item's index in its branch is its nesting depth",
     )
 
-    @property
-    def target(self) -> Post | None:
-        """The post the URL pointed at.
-
-        Returns:
-            The last chain entry, or None when the page carried no such post.
-        """
-        return self.chain[-1] if self.chain else None
-
-
-class FetchedPage(BaseModel):
-    """One page as it came back: its HTML, and the URL the request actually ended on.
-
-    `final_url` is what makes a `share/<code>` link readable. That form names its post nowhere
-    else — its code is unrelated to the post's and appears nowhere in the page — so the redirect
-    the fetch already followed is the only thing that names it. Reading it off the response costs
-    nothing, while resolving it separately would spend another round trip on the reply pipeline's
-    critical path.
-    """
-
-    html: str = Field(..., description="The fetched page's HTML body")
-    final_url: str = Field(
-        ..., description="The URL the request ended on, after every redirect it followed"
-    )
-
 
 class ParsedPage(BaseModel):
     """One fetched page's outcome: what it yielded, and whether it was an answer at all.
@@ -813,53 +788,39 @@ class ThreadsDownloader(PlatformDownloader):
     def _fetch_page(self, url: str) -> FetchedPage:
         """Fetches the given URL, returning its HTML and the URL the request ended on.
 
-        Redirects are followed, as they always were, but where they land is now part of the
-        result: a `share/<code>` link names its post only there. See `FetchedPage`.
+        Where it landed is what makes a `share/<code>` link readable. That form names its post
+        nowhere else — its code is unrelated to the post's and appears nowhere in the page — so
+        the redirect the fetch already followed is the only thing that names it. Reading it off
+        the response costs nothing, while resolving it separately would spend another round trip
+        on the reply pipeline's critical path.
         """
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
-        try:
-            response = requests.get(url=url, headers=headers, timeout=THREADS_PAGE_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            return FetchedPage(html=response.text, final_url=response.url)
-        except requests.RequestException as error:
-            raise link_fetch_error(error=error, url=url) from error
+        return fetch_page(
+            url=url,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"},
+            timeout=THREADS_PAGE_TIMEOUT_SECONDS,
+        )
 
     @staticmethod
-    def _find_media_nodes(
-        obj: dict[str, Any] | list[Any] | str | float | None,
-    ) -> list[dict[str, Any]]:
-        """Recursively collects every `media` node, in document order.
+    def _collect_fragments(data: dict[str, Any] | list[Any], post_code: str) -> list[Post]:
+        """Builds a Post for every `media` node in one parsed SJS payload, in page order.
 
         The page splits one post across several of them: the post's own fields arrive on one,
         the thread above it on another and the replies below it on a third, each in its own
         script tag and in no fixed order. Collecting them all and joining them afterwards is
         what `_thread_around` needs; stopping at the first would find only whichever fragment
         happened to come first.
-        """
-        results: list[dict[str, Any]] = []
-        if isinstance(obj, dict):
-            media = obj.get("media")
-            if isinstance(media, dict):
-                results.append(media)
-            for value in obj.values():
-                results.extend(ThreadsDownloader._find_media_nodes(obj=value))
-        elif isinstance(obj, list):
-            for item in obj:
-                results.extend(ThreadsDownloader._find_media_nodes(obj=item))
-        return results
-
-    @staticmethod
-    def _collect_fragments(data: dict[str, Any] | list[Any], post_code: str) -> list[Post]:
-        """Builds a Post for every media node in one parsed SJS payload, in page order.
 
         Each node is validated on its own so a single malformed fragment costs only that
         fragment; validating them together would let one unexpected payload discard the target
         too.
         """
         fragments: list[Post] = []
-        for node in ThreadsDownloader._find_media_nodes(obj=data):
+        for node in walk(node=data):
+            media = node.get("media")
+            if not isinstance(media, dict):
+                continue
             try:
-                fragments.append(Post.model_validate(obj=node))
+                fragments.append(Post.model_validate(obj=media))
             except ValidationError:
                 logfire.warn(
                     "Threads payload no longer matches the parser schema; skipping one fragment",
@@ -957,18 +918,12 @@ class ThreadsDownloader(PlatformDownloader):
         )
 
     @staticmethod
-    def _determine_extension(media_url: str) -> str:
-        """Determines the file extension from a media URL."""
+    def _is_video(media_url: str) -> bool:
+        """Whether a media URL names a video rather than an image, judged from the URL alone."""
         path_lower = urlparse(media_url).path.lower()
-        if ".jpg" in path_lower or ".jpeg" in path_lower:
-            return "jpg"
-        if ".webp" in path_lower:
-            return "webp"
-        if ".png" in path_lower:
-            return "png"
-        if ".mp4" in path_lower:
-            return "mp4"
-        return "mp4" if "video" in media_url or "mp4" in media_url else "jpg"
+        if any(extension in path_lower for extension in (".jpg", ".jpeg", ".webp", ".png")):
+            return False
+        return ".mp4" in path_lower or "video" in media_url or "mp4" in media_url
 
     def download_media(self, url: str, filename: str) -> Path:
         """Downloads media from the given URL to the output folder.
@@ -1156,11 +1111,10 @@ class ThreadsDownloader(PlatformDownloader):
         video_paths: list[Path] = []
 
         for i, media_url in enumerate(post.media_urls):
-            ext = self._determine_extension(media_url=media_url)
-            if ext == "mp4":
+            if self._is_video(media_url=media_url):
                 video_urls.append(media_url)
                 if download:
-                    filename = f"threads_{post_code}_{i}.{ext}"
+                    filename = f"threads_{post_code}_{i}.mp4"
                     video_paths.append(self.download_media(url=media_url, filename=filename))
             else:
                 image_urls.append(media_url)

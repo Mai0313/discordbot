@@ -26,11 +26,7 @@ URLs instead, and `_render_post` says so per post so nothing in the block claims
 attached.
 """
 
-from typing import TYPE_CHECKING
-import asyncio
-
 from google import genai
-import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.context_budgets import MAX_TWITTER_INGEST_IMAGES
@@ -41,14 +37,9 @@ from discordbot.services.platforms.twitter import (
 )
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
-    system_block,
     defuse_markers,
-    post_context_blocks,
+    build_post_context,
 )
-from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
-
-if TYPE_CHECKING:
-    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 # Leads the injected blocks when the post's images really are attached. The wording carries two
 # loads: it tells the model the link is ALREADY fetched below (so it answers about the post rather
@@ -114,11 +105,6 @@ TWITTER_SEPARATORS = PostSeparators(
 )
 
 
-def twitter_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Twitter build exceeds gen_reply's post-route grace."""
-    return [system_block(text=TWITTER_TIMEOUT_NOTICE)]
-
-
 def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -> list[str]:
     """Renders one post — the target, the one it replies to, or the one it quotes — as text.
 
@@ -171,7 +157,9 @@ def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -
     return lines
 
 
-def _render_conversation(*, conversation: TwitterConversation, attached_images: int = 0) -> str:
+def _render_conversation(
+    *, post: TwitterOutput, conversation: TwitterConversation, attached_images: int = 0
+) -> str:
     """Renders the post, whatever it answers, and whatever it quotes, as compact text.
 
     Order is the reading order: the post being replied to first, since it is what the target is
@@ -182,12 +170,9 @@ def _render_conversation(*, conversation: TwitterConversation, attached_images: 
     `attached_images` belongs to the target alone, which is also the only post whose images are
     ingested, so every other section says its own pictures are URLs.
     """
-    post = conversation.target
-    if post is None:
-        return ""
     lines: list[str] = []
-    if len(conversation.chain) > 1:
-        lines.extend(_render_post(post=conversation.chain[0], label="The post it replies to"))
+    if conversation.parent is not None:
+        lines.extend(_render_post(post=conversation.parent, label="The post it replies to"))
         lines.append("")
     lines.extend(
         _render_post(
@@ -207,58 +192,16 @@ async def build_twitter_context_messages(
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
 ) -> list[EasyInputMessageParam]:
-    """Reads a Twitter URL into answer-model input blocks.
-
-    Returns `[separator, user-content]` for a readable post, or a single notice block saying it
-    could not be read. Never raises: every failure degrades to a deterministic notice so the reply
-    pipeline is never broken by it.
-
-    Args:
-        url: The Twitter URL found in the conversation.
-        answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the image upload, or None when no key is
-            configured, which reads the post as text just like a non-Gemini answer model.
-        allow_media_ingest: Kill-switch plus key check; when false only the text is read.
-
-    Returns:
-        Input blocks ready to splice into the answer input before the current message.
-    """
-    with logfire.span("gen_reply twitter context"):
-        try:
-            downloader = TwitterDownloader()
-            conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
-        # Broad on purpose: a parse error must degrade to the unavailable notice rather than break
-        # the reply pipeline, which relies on this builder never raising.
-        except Exception as error:
-            logfire.warn(
-                "Twitter post read failed; injecting unavailable notice",
-                url=url,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
-            return [system_block(text=TWITTER_UNAVAILABLE_NOTICE)]
-
-        target = conversation.target
-        if target is None or not target.is_readable:
-            logfire.info(
-                "Twitter post unavailable for context; injecting unavailable notice", url=url
-            )
-            return [system_block(text=TWITTER_UNAVAILABLE_NOTICE)]
-
-        media_parts: list[ResponseInputFileParam] = []
-        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
-            media_parts = await upload_post_images(
-                platform="Twitter",
-                post_url=target.url,
-                image_urls=target.image_urls,
-                cap=MAX_TWITTER_INGEST_IMAGES,
-                gemini_client=gemini_client,
-            )
-
-    text = _render_conversation(conversation=conversation, attached_images=len(media_parts))
-    return post_context_blocks(
-        text=text,
-        media_parts=media_parts,
-        post_carries_media=bool(target.image_urls or target.video_urls),
+    """Reads a Twitter URL into answer-model input blocks; `build_post_context` has the rest."""
+    return await build_post_context(
+        platform="Twitter",
+        url=url,
+        reader=TwitterDownloader,
+        render=_render_conversation,
         separators=TWITTER_SEPARATORS,
+        unavailable_notice=TWITTER_UNAVAILABLE_NOTICE,
+        image_cap=MAX_TWITTER_INGEST_IMAGES,
+        answer_model_is_gemini=answer_model_is_gemini,
+        gemini_client=gemini_client,
+        allow_media_ingest=allow_media_ingest,
     )

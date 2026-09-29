@@ -218,7 +218,7 @@ class ReplyPipeline(BaseModel):
                     source=link_source.name,
                     link_task=link_task,
                     deadline=deadline,
-                    on_timeout=link_source.on_timeout,
+                    on_timeout=link_source.timeout_blocks,
                 )
             )
         return link_blocks

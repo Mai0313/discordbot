@@ -1,15 +1,19 @@
-"""Fetching a linked post's images and uploading them for the answer model to look at.
+"""Fetching a linked post's media and uploading it for the answer model to look at.
 
-Shared by every source whose media is a set of image URLs the page handed over. A source that
-downloads a file of its own does not use this.
-
-Two properties are the whole point. Every item is independent and best-effort, so one expired
-signed CDN url never costs the rest; and the step is bounded here rather than left to the
+`upload_image` is the one-image step. `upload_post_images` runs it over a post's image URLs, and
+two properties are the whole point of that. Every item is independent and best-effort, so one
+expired signed CDN url never costs the rest; and the step is bounded rather than left to the
 caller's grace, so a slow fetch still produces the honest text-only block instead of being
-cancelled with nothing to inject.
+cancelled with nothing to inject. A source that keeps its own per-URL accounting, or downloads
+files of its own beside the images, runs the one-image step itself.
+
+`bounded_media_step` is that bound, and every source's media step runs under it, whether or not
+its media is images.
 """
 
+from typing import Any
 import asyncio
+from collections.abc import Coroutine
 
 from google import genai
 import logfire
@@ -20,28 +24,96 @@ from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 
+async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wording, its fallback value and its bound all vary per source
+    *,
+    step: Coroutine[Any, Any, ResultT],
+    subject: str,
+    fallback: str,
+    degraded: ResultT,
+    url: str,
+    timeout_seconds: float,
+    timeout_fields: dict[str, Any] | None = None,
+) -> ResultT:
+    """Runs a source's media step under its own bound, degrading rather than raising.
+
+    Bounded here rather than left to the caller's grace so a slow fetch still produces the honest
+    text-only block instead of being cancelled with nothing to inject.
+
+    Args:
+        step: The fetch-and-upload work, not yet awaited.
+        subject: What the log lines call the step, e.g. "Douyin media".
+        fallback: What the log lines say the answer falls back to, e.g. "the caption".
+        degraded: What comes back instead when the step times out or fails.
+        url: The post the media belongs to, so a warning can be joined to it.
+        timeout_seconds: The bound.
+        timeout_fields: Extra fields for the warning a timeout logs.
+
+    Returns:
+        The step's own result, or `degraded`.
+    """
+    try:
+        async with asyncio.timeout(delay=timeout_seconds):
+            return await step
+    except TimeoutError:
+        logfire.warn(
+            f"{subject} ingestion exceeded its bound; answering from {fallback}",
+            url=url,
+            timeout_seconds=timeout_seconds,
+            **(timeout_fields or {}),
+            _exc_info=True,
+        )
+        return degraded
+    except Exception as error:
+        # Broad on purpose: this must degrade to the text-only block rather than raise into the
+        # reply pipeline, so the type is recorded as a field instead of by narrowing.
+        logfire.warn(
+            f"{subject} ingestion failed; answering from {fallback}",
+            url=url,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
+        return degraded
+
+
+async def upload_image(
+    *, image_url: str, filename: str, gemini_client: genai.Client
+) -> ResponseInputFileParam | None:
+    """Fetches, downscales and uploads one image, raising whatever the fetch or upload raised.
+
+    `load_image_bytes` downscales to the provider's effective resolution, which matters because
+    these are full-resolution originals. What one lost image costs is the caller's call.
+
+    Args:
+        image_url: The image to fetch.
+        filename: The name the upload carries.
+        gemini_client: Direct-to-Google client the upload goes through.
+
+    Returns:
+        The uploaded part, or None when the upload produced none.
+    """
+    loaded = await load_image_bytes(source=image_url)
+    return await upload_as_input_file(
+        client=gemini_client,
+        source=loaded.data,
+        mime_type=loaded.mime_type,
+        filename=filename,
+        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+    )
+
+
 async def _upload_each(
     *, platform: str, post_url: str, image_urls: list[str], gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the images concurrently, keeping whatever succeeded."""
-
-    async def image_part(index: int, image_url: str) -> ResponseInputFileParam | None:
-        """Fetches, downscales and uploads one image.
-
-        `load_image_bytes` downscales to the provider's effective resolution, which matters
-        because these are full-resolution originals.
-        """
-        loaded = await load_image_bytes(source=image_url)
-        return await upload_as_input_file(
-            client=gemini_client,
-            source=loaded.data,
-            mime_type=loaded.mime_type,
-            filename=f"{platform.lower()}_image_{index}.jpg",
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-        )
-
     results = await asyncio.gather(
-        *(image_part(index, image_url) for index, image_url in enumerate(image_urls)),
+        *(
+            upload_image(
+                image_url=image_url,
+                filename=f"{platform.lower()}_image_{index}.jpg",
+                gemini_client=gemini_client,
+            )
+            for index, image_url in enumerate(image_urls)
+        ),
         return_exceptions=True,
     )
     parts: list[ResponseInputFileParam] = []
@@ -76,32 +148,19 @@ async def upload_post_images(
         the post carries three images beside a separator saying they are attached below is how a
         model ends up describing pictures it was never given.
     """
-    try:
-        async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
-            return await _upload_each(
-                platform=platform,
-                post_url=post_url,
-                image_urls=image_urls[:cap],
-                gemini_client=gemini_client,
-            )
-    except TimeoutError:
-        logfire.warn(
-            f"{platform} image ingestion exceeded its bound; answering from the text",
-            url=post_url,
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            _exc_info=True,
-        )
-        return []
-    except Exception as error:
-        # Broad on purpose: this must degrade to the text-only block rather than raise into the
-        # reply pipeline, so the type is recorded as a field instead of by narrowing.
-        logfire.warn(
-            f"{platform} image ingestion failed; answering from the text",
-            url=post_url,
-            error_type=type(error).__name__,
-            _exc_info=error,
-        )
-        return []
+    return await bounded_media_step(
+        step=_upload_each(
+            platform=platform,
+            post_url=post_url,
+            image_urls=image_urls[:cap],
+            gemini_client=gemini_client,
+        ),
+        subject=f"{platform} image",
+        fallback="the text",
+        degraded=[],
+        url=post_url,
+        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+    )
 
 
 def image_count_line(*, carried: int, attached: int) -> str:

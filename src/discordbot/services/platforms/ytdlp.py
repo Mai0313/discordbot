@@ -39,7 +39,6 @@ class DownloadStoppedError(Exception):
 class DownloadResult(TemporaryDownload):
     """Represents a downloaded video file."""
 
-    title: str = Field(..., description="Video title reported by yt-dlp.")
     filename: Path = Field(..., description="Local path of the downloaded file.")
 
     def unlink(self) -> None:
@@ -50,7 +49,6 @@ class DownloadResult(TemporaryDownload):
 class VideoMetadata(BaseModel):
     """Metadata for a video, read by yt-dlp without downloading any media."""
 
-    video_id: str = Field(default="", description="Site-native video id (e.g. a Bilibili BV id).")
     title: str = Field(default="", description="Video title reported by yt-dlp.")
     uploader: str = Field(default="", description="Uploader / channel display name.")
     description: str = Field(
@@ -151,15 +149,12 @@ class VideoDownloader(PlatformDownloader):
 
         return url
 
-    def get_params(
-        self, quality: VideoQuality, dry_run: bool, url: str | None = None
-    ) -> dict[str, Any]:
+    def get_params(self, quality: VideoQuality, url: str) -> dict[str, Any]:
         """Returns the yt-dlp configuration parameters.
 
         Args:
             quality: The requested quality preset.
-            dry_run: If True, enables simulation mode.
-            url: Optional URL to determine site-specific headers (e.g., bilibili).
+            url: The URL to be read, which decides site-specific headers (e.g., bilibili).
 
         Returns:
             A dictionary of yt-dlp parameters.
@@ -171,11 +166,10 @@ class VideoDownloader(PlatformDownloader):
         # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
         # or `bilibili.com.attacker.com` never gets the bilibili Referer.
         http_headers = self._default_http_headers()
-        host = normalized_host(url=url) if url else ""
-        if host_matches_domain(host=host, domain="bilibili.com"):
+        if host_matches_domain(host=normalized_host(url=url), domain="bilibili.com"):
             http_headers["Referer"] = "https://www.bilibili.com"
 
-        params = {
+        return {
             "format": self.quality_formats[quality],
             "outtmpl": f"{output_path.as_posix()}/%(id)s.%(ext)s",
             "quiet": True,
@@ -197,34 +191,21 @@ class VideoDownloader(PlatformDownloader):
             "extractor_retries": YTDLP_RETRIES,
             "geo_bypass": True,
         }
-        if dry_run:
-            params.update({
-                "simulate": True,
-                "skip_download": True,
-                "quiet": False,
-                "dump_json": True,
-            })
-        return params
 
     def download(
-        self,
-        url: str,
-        quality: VideoQuality = "best",
-        dry_run: bool = False,
-        stop_signal: threading.Event | None = None,
+        self, url: str, quality: VideoQuality = "best", stop_signal: threading.Event | None = None
     ) -> DownloadResult:
         """Downloads a video from the given URL.
 
         Args:
             url: The URL of the video to download.
             quality: The requested quality preset.
-            dry_run: If True, simulates the download.
             stop_signal: Optional event a caller sets to abort the download. This method
                 blocks its thread, so asyncio cancellation cannot stop it; the signal is
                 checked at every yt-dlp progress tick and aborts with DownloadStoppedError.
 
         Returns:
-            A DownloadResult instance containing the title and filename.
+            The downloaded file.
 
         Raises:
             RuntimeError: When yt-dlp returns no metadata for the URL.
@@ -232,7 +213,7 @@ class VideoDownloader(PlatformDownloader):
         # Convert Facebook watch URLs to reel format
         url = self._convert_facebook_url(url)
 
-        params = self.get_params(quality=quality, dry_run=dry_run, url=url)
+        params = self.get_params(quality=quality, url=url)
         if stop_signal is not None:
 
             def _abort_if_stopped(_progress: dict[str, Any]) -> None:
@@ -245,16 +226,13 @@ class VideoDownloader(PlatformDownloader):
             if info is None:
                 msg = f"yt-dlp returned no metadata for {url}"
                 raise RuntimeError(msg)
-            title = info.get("title", "")
-            filename = Path(ydl.prepare_filename(info))
-            return DownloadResult(title=title, filename=filename)
+            return DownloadResult(filename=Path(ydl.prepare_filename(info)))
 
     def parse_metadata(self, *, url: str) -> VideoMetadata:
         """Reads a video's metadata via yt-dlp without downloading any media.
 
-        Deliberately not the `dry_run=True` preset: that branch flips `quiet` off and
-        `dump_json` on, a CLI probe shape that prints the whole info dict to stdout.
-        `extract_info(download=False)` under `simulate` fetches the same metadata silently.
+        `extract_info(download=False)` under `simulate` fetches the metadata silently: `quiet`
+        stays on and nothing asks for the info dict to be dumped to stdout.
 
         Args:
             url: The URL of the video to inspect.
@@ -266,7 +244,7 @@ class VideoDownloader(PlatformDownloader):
             RuntimeError: When yt-dlp returns no metadata for the URL.
         """
         url = self._convert_facebook_url(url)
-        params = self.get_params(quality="best", dry_run=False, url=url)
+        params = self.get_params(quality="best", url=url)
         # `extract_flat` keeps a playlist-shaped page (a channel, a user space, a collection)
         # to ONE request instead of resolving every entry over the network in a probe that is
         # supposed to take seconds.
@@ -289,7 +267,6 @@ class VideoDownloader(PlatformDownloader):
             from_playlist = True
             info = next((entry for entry in entries if entry), info)
         return VideoMetadata(
-            video_id=str(info.get("id") or ""),
             title=str(info.get("title") or ""),
             uploader=str(info.get("uploader") or ""),
             description=str(info.get("description") or ""),

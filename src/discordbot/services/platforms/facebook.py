@@ -26,50 +26,49 @@ therefore holds permalinks for a caller to link to, never something to download.
 """
 
 import re
-import json
 import base64
 from typing import Any
 from functools import cached_property
 from urllib.parse import parse_qs, urlparse, urlunparse
-from collections.abc import Iterator
 
 import logfire
 from pydantic import Field, BaseModel, computed_field
-import requests
 
 from discordbot.utils.urls import URL_START_ANCHOR, host_matches_domain
 from discordbot.typings.timeouts import FACEBOOK_PAGE_TIMEOUT_SECONDS
-from discordbot.utils.link_errors import link_fetch_error
 from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
     PlatformConversation,
+    thread_branches,
 )
 from discordbot.services.platforms.page_json import (
-    JSON_SCRIPT_RE,
     BROWSER_HEADERS,
     JsonValue,
+    FetchedPage,
     walk,
     str_of,
     time_of,
     deep_get,
+    fetch_page,
+    json_payloads,
 )
 
-# Every host Facebook serves posts on. `fb.watch` and `fb.com` are the short forms its own share
-# sheet emits; the mobile hosts are matched so a pasted one is recognised as a post URL, and
-# `FacebookURL.clean_url` then aims the fetch at `www` where the payload actually is.
+# Every host Facebook serves posts on, so `FacebookURL.clean_url` aims a fetch from any of them at
+# `www`, where the payload actually is. `fb.watch` and `fb.com` are short forms its own share
+# sheet emits; a `fb.watch/<code>` link names no post that `is_facebook_post_url` accepts, so the
+# pattern matches it and the post filter then refuses it.
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com", "fb.watch"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
-# Deliberately host-anchored rather than path-anchored, the shape `services/platforms/douyin.py` uses: a
-# Facebook post is spelled at least six ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`,
-# `/groups/<id>/permalink/<id>`, `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a
-# group feed carrying `?multi_permalinks=`), and a path pattern covering all six would also
-# match the profile and group-home URLs that are not posts at all. `is_facebook_post_url` makes
-# that call on the parsed URL instead, where the query is readable. The tail class mirrors
-# `THREADS_URL_RE`: ASCII URL characters ending on one that a real id or query value ends on,
-# so a link written mid-sentence in Chinese or Japanese is matched without swallowing the
-# terminator.
+# Deliberately host-anchored rather than path-anchored: a Facebook post is spelled at least six
+# ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`, `/groups/<id>/permalink/<id>`,
+# `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a group feed carrying
+# `?multi_permalinks=`), and a path pattern covering all six would also match the profile and
+# group-home URLs that are not posts at all. `is_facebook_post_url` makes
+# that call on the parsed URL instead, where the query is readable. The tail class is ASCII URL
+# characters ending on one that a real id or query value ends on, so a link written mid-sentence
+# in Chinese or Japanese is matched without swallowing the terminator.
 FACEBOOK_URL_RE = re.compile(
     rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com|fb\.watch)/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
@@ -94,6 +93,9 @@ _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 # fetch at a URL naming no owner, and the post comes back unreadable. Deliberately NOT in
 # `_POST_ID_PARAMS`: `profile.php?id=<n>` carries the same parameter and is not a post at all.
 _OWNER_ID_PARAMS = ("id",)
+
+# Where a fetch lands when Facebook will not show the post logged out.
+_LOGIN_WALL_PATHS = ("/login", "/checkpoint", "/recover")
 
 
 # A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes both
@@ -198,24 +200,6 @@ class FacebookURL(BaseModel):
     def is_share_link(self) -> bool:
         """Whether the URL is a share form, which names its post only through the redirect."""
         return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
-
-
-class FetchedPage(BaseModel):
-    """One page fetch: its HTML and the URL the request actually ended on.
-
-    Where it landed is part of the result because a share link names its post only there, and
-    because a redirect to a login page is how Facebook says the post is not public.
-    """
-
-    html: str = Field(..., description="The fetched page's HTML body")
-    final_url: str = Field(..., description="The URL the request ended on after redirects")
-
-    @computed_field
-    @cached_property
-    def is_login_wall(self) -> bool:
-        """Whether the fetch was redirected to a login or checkpoint page."""
-        path = urlparse(self.final_url).path.lower()
-        return path.startswith(("/login", "/checkpoint", "/recover"))
 
 
 class FacebookOutput(PlatformOutput):
@@ -324,42 +308,13 @@ class FacebookDownloader(PlatformDownloader):
     """Reads a public Facebook post out of its page.
 
     Holds no state and writes nothing to disk, so one instance serves every caller; it is a
-    class rather than a function so a test can replace `_fetch_page` the way the Threads tests
-    do, which is the seam that keeps every test off the network.
+    class rather than a function so a test can replace `_fetch_page`, the one seam that touches
+    the network.
     """
 
     def _fetch_page(self, *, url: str) -> FetchedPage:
-        """Fetches a page with the browser headers Facebook will only answer in full to.
-
-        Raises:
-            LinkRetryableError: The platform refused the request or never answered.
-            LinkUnavailableError: The platform answered that there is no such page.
-            RuntimeError: The fetch failed in a way HTTP does not classify.
-        """
-        try:
-            response = requests.get(
-                url=url, headers=BROWSER_HEADERS, timeout=FACEBOOK_PAGE_TIMEOUT_SECONDS
-            )
-            response.raise_for_status()
-            return FetchedPage(html=response.text, final_url=response.url)
-        except requests.RequestException as error:
-            raise link_fetch_error(error=error, url=url) from error
-
-    @staticmethod
-    def _json_payloads(*, html: str) -> Iterator[Any]:
-        """Yields every embedded JSON block on the page, skipping the ones that do not parse.
-
-        Skipping rather than failing is what keeps one truncated block, of the roughly sixty a
-        page carries, from costing the post.
-        """
-        for match in JSON_SCRIPT_RE.finditer(string=html):
-            try:
-                yield json.loads(s=match.group(1))
-            except ValueError:
-                # `json.JSONDecodeError` subclasses this, as does the int-string conversion
-                # limit a very large embedded number can trip.
-                logfire.debug("Skipped an unparsable Facebook JSON block", _exc_info=True)
-                continue
+        """Fetches a page with the browser headers Facebook will only answer in full to."""
+        return fetch_page(url=url, headers=BROWSER_HEADERS, timeout=FACEBOOK_PAGE_TIMEOUT_SECONDS)
 
     @staticmethod
     def _find_story(*, payloads: list[Any], post_id: str) -> dict[str, Any] | None:
@@ -470,18 +425,7 @@ class FacebookDownloader(PlatformDownloader):
                     taken_at=time_of(value=node.get("created_time")),
                     comment_id=comment_id,
                 )
-        branches: list[list[FacebookOutput]] = []
-        index: dict[str, list[FacebookOutput]] = {}
-        for comment_id, comment in found.items():
-            parent = parents.get(comment_id)
-            branch = index.get(parent) if parent else None
-            if branch is None:
-                branch = [comment]
-                branches.append(branch)
-            else:
-                branch.append(comment)
-            index[comment_id] = branch
-        return branches
+        return thread_branches(comments=found, parents=parents)
 
     @staticmethod
     def _group_name_of(*, payloads: list[Any], group_id: str) -> str:
@@ -506,14 +450,13 @@ class FacebookDownloader(PlatformDownloader):
     def parse_metadata(self, *, url: str) -> FacebookConversation:
         """Reads one public Facebook post and the comments the page preloaded with it.
 
-        Named to match `ThreadsDownloader.parse_metadata` and `InstagramDownloader.parse_metadata`,
-        and meaning the same on all three: parse the post and write nothing to disk. There is no
-        `parse` counterpart here because nothing is downloaded — the images ride out as URLs.
+        Writes nothing to disk, and there is no `parse` counterpart because nothing is
+        downloaded — the images ride out as URLs.
 
         A share link names its post only through the redirect it answers with, so the id is
-        read off where the fetch landed, exactly as `ThreadsDownloader.extract_post_data` does.
-        A redirect to the login wall means the post is not public, which is a normal outcome
-        rather than a failure and comes back as an empty conversation.
+        read off where the fetch landed. A redirect to the login wall means the post is not
+        public, which is a normal outcome rather than a failure and comes back as an empty
+        conversation.
 
         Args:
             url: The Facebook post URL in any accepted form.
@@ -527,7 +470,7 @@ class FacebookDownloader(PlatformDownloader):
         """
         facebook_url = FacebookURL(raw_url=url)
         fetched = self._fetch_page(url=facebook_url.clean_url)
-        if fetched.is_login_wall:
+        if fetched.landed_on(path_prefixes=_LOGIN_WALL_PATHS):
             logfire.info(
                 "A Facebook post is not public; treating it as unreadable",
                 url=facebook_url.clean_url,
@@ -535,7 +478,7 @@ class FacebookDownloader(PlatformDownloader):
             return FacebookConversation()
         landed = FacebookURL(raw_url=fetched.final_url)
         post_id = facebook_url.post_id or landed.post_id
-        payloads = list(self._json_payloads(html=fetched.html))
+        payloads = list(json_payloads(html=fetched.html, platform="Facebook"))
         story = self._find_story(payloads=payloads, post_id=post_id)
         if story is None:
             logfire.info(

@@ -1,9 +1,10 @@
 """The linked-content sources `gen_reply` reads into answer context, in splice order.
 
 The blocks land in the answer input in `LINK_CONTEXT_SOURCES` order, just before the current
-message. Adding a source is one entry here, its builder module beside this one, and its name in
-`RouteClassification.link_context_sources` (a source the router cannot name is never selected, so
-its builder never starts); the pipeline loops stay untouched.
+message. Adding a source is one entry here, its builder module beside this one, its name in
+`typings/emojis.py::LinkSourceName` (a source the router cannot name is never selected, so its
+builder never starts) with a marker in `LINK_SOURCE_EMOJIS`, and a line in `ROUTE_PROMPT` saying
+when the router should select it; the pipeline loops stay untouched.
 
 Each entry is a thin adapter over its builder function rather than the function itself: an
 adapter body resolves the builder name from THIS module's globals at call time, so a test
@@ -23,28 +24,28 @@ from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 from discordbot.services.platforms.facebook import FACEBOOK_URL_RE, is_facebook_post_url
 from discordbot.services.platforms.instagram import INSTAGRAM_URL_RE, is_instagram_post_url
 from discordbot.cogs.gen_reply.link_sources.douyin import (
+    DOUYIN_TIMEOUT_NOTICE,
     build_douyin_context_messages,
-    douyin_timeout_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.threads import (
+    THREADS_TIMEOUT_NOTICE,
     build_threads_context_messages,
-    threads_timeout_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.twitter import (
+    TWITTER_TIMEOUT_NOTICE,
     build_twitter_context_messages,
-    twitter_timeout_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
+    BILIBILI_TIMEOUT_NOTICE,
     build_bilibili_context_messages,
-    bilibili_timeout_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.facebook import (
+    FACEBOOK_TIMEOUT_NOTICE,
     build_facebook_context_messages,
-    facebook_timeout_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.instagram import (
+    INSTAGRAM_TIMEOUT_NOTICE,
     build_instagram_context_messages,
-    instagram_timeout_context_messages,
 )
 
 
@@ -183,12 +184,12 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="threads",
         url_pattern=THREADS_URL_RE,
-        # The one source that reads a link the user only replied to: what it fetches is the
-        # discussion under the post, which the `parse_threads` expansion deliberately does not
-        # show, so "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
+        # Reads a link the user only replied to: what it fetches is the discussion under the
+        # post, which the `parse_threads` expansion deliberately does not show, so
+        # "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
         search_replied_to_message=True,
         build=_build_threads_link_context,
-        on_timeout=threads_timeout_context_messages,
+        timeout_notice=THREADS_TIMEOUT_NOTICE,
         media_ingest_allowed=_threads_media_ingest_allowed,
     ),
     LinkContextSource(
@@ -202,7 +203,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # bot about someone else's linked post has something to answer from.
         search_replied_to_message=True,
         build=_build_facebook_link_context,
-        on_timeout=facebook_timeout_context_messages,
+        timeout_notice=FACEBOOK_TIMEOUT_NOTICE,
         media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
@@ -215,7 +216,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # which the `parse_instagram` expansion deliberately does not show.
         search_replied_to_message=True,
         build=_build_instagram_link_context,
-        on_timeout=instagram_timeout_context_messages,
+        timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,
         media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
@@ -228,7 +229,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # someone else's link has something new to answer from. Twitter's endpoint serves no
         # replies at all, so a second read of the same link would find exactly what the first did.
         build=_build_twitter_link_context,
-        on_timeout=twitter_timeout_context_messages,
+        timeout_notice=TWITTER_TIMEOUT_NOTICE,
         media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
@@ -238,7 +239,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # so reading it would only spend a rate-limited Douyin request to say so.
         url_filter=is_douyin_post_url,
         build=_build_douyin_link_context,
-        on_timeout=douyin_timeout_context_messages,
+        timeout_notice=DOUYIN_TIMEOUT_NOTICE,
         media_ingest_allowed=_douyin_media_ingest_allowed,
     ),
     LinkContextSource(
@@ -247,7 +248,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # Douyin no url_filter is needed on top.
         url_pattern=BILIBILI_URL_RE,
         build=_build_bilibili_link_context,
-        on_timeout=bilibili_timeout_context_messages,
+        timeout_notice=BILIBILI_TIMEOUT_NOTICE,
         media_ingest_allowed=_bilibili_media_ingest_allowed,
     ),
 )

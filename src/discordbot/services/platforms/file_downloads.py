@@ -1,10 +1,9 @@
 """Shared primitives for pulling a file down over HTTP and cleaning it up afterwards.
 
-`stream_to_file` is the streaming writer both `threads.py` and `douyin.py` sit on; the failure
-POLICY stays at each call site, because it genuinely differs (Douyin retries a stalled CDN
-transfer, Threads wraps the failure in a RuntimeError). `TemporaryDownload` is the delete-on-exit
-context manager their result models share, which differ only in whether one file or a gallery of
-them was written.
+`stream_to_file` writes one remote file and leaves the failure POLICY to its caller, since what
+a failed transfer means (worth retrying, or worth reporting) differs per source.
+`TemporaryDownload` is the delete-on-exit context manager a download result subclasses, each
+deciding which files are its own.
 """
 
 import types

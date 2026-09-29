@@ -183,10 +183,7 @@ class TwitterCogs(ExpansionCog[TwitterConversation]):
         if post is None:
             return []
 
-        # The parent is the chain's earlier entry when there is one. Only ever one: the endpoint
-        # embeds a single ancestor and walking further costs a request per hop.
-        parent = conversation.chain[0] if len(conversation.chain) > 1 else None
-        context_count = bool(parent) + bool(post.quoted)
+        context_count = bool(conversation.parent) + bool(post.quoted)
 
         hint = _VIDEO_HINT.format(url=post.video_urls[0]) if post.video_urls else ""
         truncated = _TRUNCATED_NOTICE if post.is_truncated else ""
@@ -231,9 +228,12 @@ class TwitterCogs(ExpansionCog[TwitterConversation]):
             if isinstance(text, str)
         )
         budget = (_EMBED_TOTAL_LENGTH_LIMIT - spent - _BUDGET_SLACK) // max(context_count, 1)
-        if parent is not None:
+        if conversation.parent is not None:
             embeds.insert(
-                0, self._context_embed(post=parent, header=_PARENT_HEADER, budget=budget)
+                0,
+                self._context_embed(
+                    post=conversation.parent, header=_PARENT_HEADER, budget=budget
+                ),
             )
         if post.quoted is not None:
             embeds.append(

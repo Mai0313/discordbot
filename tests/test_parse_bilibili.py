@@ -35,7 +35,6 @@ def _metadata(
 ) -> VideoMetadata:
     """Builds the parsed metadata the builder renders into its text block."""
     return VideoMetadata(
-        video_id="BV1jpK86hEc8",
         title="一支B站影片",
         uploader="某個UP主",
         description=description,
@@ -67,20 +66,16 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
         return resolved
 
     def fake_download(
-        self: VideoDownloader,
-        url: str,
-        quality: str = "best",
-        dry_run: bool = False,
-        stop_signal: object = None,
+        self: VideoDownloader, url: str, quality: str = "best", stop_signal: object = None
     ) -> DownloadResult:
         """Writes a canned clip into the builder's scratch dir, or raises."""
-        del url, dry_run, stop_signal
+        del url, stop_signal
         recorded["downloads"].append(quality)
         if download_error is not None:
             raise download_error
-        path = Path(self.output_folder) / f"{resolved.video_id or 'clip'}.mp4"
+        path = Path(self.output_folder) / "BV1jpK86hEc8.mp4"
         path.write_bytes(b"x" * file_size)
-        return DownloadResult(title=resolved.title, filename=path)
+        return DownloadResult(filename=path)
 
     monkeypatch.setattr(target=VideoDownloader, name="parse_metadata", value=fake_parse_metadata)
     monkeypatch.setattr(target=VideoDownloader, name="download", value=fake_download)
@@ -352,18 +347,14 @@ async def test_the_media_step_timeout_degrades_to_the_text(
     uploads, _ = _stub_bilibili(monkeypatch)
 
     def slow_download(
-        self: VideoDownloader,
-        url: str,
-        quality: str = "best",
-        dry_run: bool = False,
-        stop_signal: object = None,
+        self: VideoDownloader, url: str, quality: str = "best", stop_signal: object = None
     ) -> DownloadResult:
         """Outlasts the media bound so the internal timeout fires."""
-        del url, quality, dry_run, stop_signal
+        del url, quality, stop_signal
         time.sleep(0.3)
         path = Path(self.output_folder) / "late.mp4"
         path.write_bytes(b"late")
-        return DownloadResult(title="late", filename=path)
+        return DownloadResult(filename=path)
 
     monkeypatch.setattr(target=VideoDownloader, name="download", value=slow_download)
 
@@ -406,11 +397,10 @@ async def test_a_cancelled_build_signals_the_download_to_stop(
         self: VideoDownloader,
         url: str,
         quality: str = "best",
-        dry_run: bool = False,
         stop_signal: threading.Event | None = None,
     ) -> DownloadResult:
         """Runs until the stop signal arrives, recording whether it ever did."""
-        del url, quality, dry_run
+        del url, quality
         started.set()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:

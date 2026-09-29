@@ -24,7 +24,6 @@ route gate. Here the parse is independent, and the media fetch is bounded intern
 this always returns inside the pipeline's post-route grace.
 """
 
-from typing import TYPE_CHECKING
 import asyncio
 from pathlib import Path
 import tempfile
@@ -34,7 +33,6 @@ import logfire
 from pydantic import Field, BaseModel
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
@@ -50,14 +48,12 @@ from discordbot.services.platforms.threads import (
     ThreadsConversation,
 )
 from discordbot.cogs.gen_reply.link_sources import (
+    PostSeparators,
     system_block,
     defuse_markers,
-    link_context_blocks,
+    post_context_blocks,
 )
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
-
-if TYPE_CHECKING:
-    from openai.types.responses.response_input_image_param import ResponseInputImageParam
+from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_image, bounded_media_step
 
 # Closes the quoted block, and is always the LAST part of it (past the attachments on the media
 # path). The guard on the separator opens the data; this one closes it, which matters once the
@@ -191,16 +187,6 @@ THREADS_TIMEOUT_NOTICE = (
     "time, so its content could not be read for this reply. Tell the user this plainly and "
     "suggest they try again; do not invent the post's contents. ===="
 )
-
-
-def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Threads parse exceeds gen_reply's post-route grace.
-
-    A timed-out parse otherwise leaves the answer with only the raw URL, which can re-expose
-    the "I cannot open this link" fallback; this keeps a deterministic "could not read it in
-    time" notice instead.
-    """
-    return [system_block(text=THREADS_TIMEOUT_NOTICE)]
 
 
 def _render_post_text(post: ThreadsOutput, label: str) -> str:
@@ -495,14 +481,33 @@ class IngestedMedia(BaseModel):
         return [group for group in self.groups if group.parts]
 
 
-async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all vary per post
-    *,
-    post: ThreadsOutput,
-    owner: str,
-    budget: int,
-    filename_prefix: str,
-    gemini_client: genai.Client,
-    download_dir: str,
+class MediaPlanEntry(BaseModel):
+    """One post whose media is fetched, and how much of the shared budget it may spend."""
+
+    post: ThreadsOutput = Field(..., description="The post whose media is fetched")
+    owner: str = Field(
+        ...,
+        description="How the block names the post this media belongs to",
+        examples=["the linked post"],
+    )
+    budget: int = Field(
+        ...,
+        description="How many of its items may be fetched; at zero every item is reported missing",
+        examples=[10],
+    )
+    filename_prefix: str = Field(
+        ...,
+        description=(
+            "Keeps this post's items apart from another's, on disk and in the request: clips "
+            "share one scratch dir, so a quoted post reusing the target's names would truncate "
+            "the target's file mid-upload"
+        ),
+        examples=["threads_"],
+    )
+
+
+async def _upload_post_media(
+    *, entry: MediaPlanEntry, gemini_client: genai.Client, download_dir: str
 ) -> PostMedia:
     """Fetches one post's media and uploads it, reporting what arrived and what did not.
 
@@ -511,37 +516,20 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
     `parse_threads` cog draws the same line (it downloads the target's videos only).
 
     Every item is best-effort and independent, so one expired CDN url (Threads signs them)
-    or one slow upload never sinks the rest. Images go through `load_image_bytes`, which
-    also downscales them to the provider's effective resolution — the old raw-URL path
-    handed the model full-size originals. Whatever the budget left out or the fetch lost comes
-    back in the missing lists, so the block can name it instead of quietly claiming it.
-
-    `filename_prefix` keeps two posts' items apart on disk as well as in the request: clips are
-    written to the shared scratch dir before upload, so a quoted post reusing the target's names
-    would truncate the target's file mid-upload.
+    or one slow upload never sinks the rest. Images go through `upload_image`, which also
+    downscales them to the provider's effective resolution — the old raw-URL path handed the
+    model full-size originals. Whatever the budget left out or the fetch lost comes back in the
+    missing lists, so the block can name it instead of quietly claiming it.
     """
-    image_urls = post.image_urls[:budget]
-    remaining = budget - len(image_urls)
-    video_urls = post.video_urls[:remaining] if remaining > 0 else []
-
-    async def image_part(index: int, image_url: str) -> ResponseInputFileParam | None:
-        """Fetches, downscales and uploads one image."""
-        loaded = await load_image_bytes(source=image_url)
-        return await upload_as_input_file(
-            client=gemini_client,
-            source=loaded.data,
-            mime_type=loaded.mime_type,
-            filename=f"{filename_prefix}image_{index}.jpg",
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-        )
+    image_urls = entry.post.image_urls[: entry.budget]
+    remaining = entry.budget - len(image_urls)
+    video_urls = entry.post.video_urls[:remaining] if remaining > 0 else []
 
     async def video_part(index: int, video_url: str) -> ResponseInputFileParam | None:
         """Downloads one clip to the caller's scratch dir and uploads it from disk."""
         downloader = ThreadsDownloader(output_folder=download_dir)
-        filename = f"{filename_prefix}video_{index}.mp4"
+        filename = f"{entry.filename_prefix}video_{index}.mp4"
         path = await asyncio.to_thread(downloader.download_media, url=video_url, filename=filename)
-        if path is None:
-            return None
         try:
             return await upload_as_input_file(
                 client=gemini_client,
@@ -554,7 +542,14 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
             await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
     results = await asyncio.gather(
-        *(image_part(index, image_url) for index, image_url in enumerate(image_urls)),
+        *(
+            upload_image(
+                image_url=image_url,
+                filename=f"{entry.filename_prefix}image_{index}.jpg",
+                gemini_client=gemini_client,
+            )
+            for index, image_url in enumerate(image_urls)
+        ),
         *(video_part(index, video_url) for index, video_url in enumerate(video_urls)),
         return_exceptions=True,
     )
@@ -567,8 +562,8 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
         if isinstance(result, BaseException):
             logfire.warn(
                 "Threads media ingestion failed for one item",
-                url=post.url,
-                owner=owner,
+                url=entry.post.url,
+                owner=entry.owner,
                 error_type=type(result).__name__,
                 _exc_info=result,
             )
@@ -580,16 +575,16 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
         failed = failed_images if offset < len(image_urls) else failed_videos
         failed.append(media_url)
     return PostMedia(
-        owner=owner,
+        owner=entry.owner,
         parts=parts,
         # The budget's leftovers ride alongside the failures: an 11-image carousel, or a video
         # behind ten images, never reaches the model either, and the old code said nothing.
-        missing_image_urls=[*failed_images, *post.image_urls[len(image_urls) :]],
-        missing_video_urls=[*failed_videos, *post.video_urls[len(video_urls) :]],
+        missing_image_urls=[*failed_images, *entry.post.image_urls[len(image_urls) :]],
+        missing_video_urls=[*failed_videos, *entry.post.video_urls[len(video_urls) :]],
     )
 
 
-def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int, str]]:
+def _media_plan(*, target: ThreadsOutput) -> list[MediaPlanEntry]:
     """Decides which posts' media is fetched and how much of the shared budget each may spend.
 
     The target keeps first claim and the post it quotes gets the leftovers, which is what makes
@@ -604,10 +599,10 @@ def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int,
     quoted post's, the one thing this accounting exists to prevent.
 
     Returns:
-        One `(post, owner, budget, filename_prefix)` tuple per post that carries media at all,
-        target first, which is also the order the parts ride in.
+        One entry per post that carries media at all, target first, which is also the order the
+        parts ride in.
     """
-    plan: list[tuple[ThreadsOutput, str, int, str]] = []
+    plan: list[MediaPlanEntry] = []
     budget = MAX_THREADS_MEDIA_PARTS
     for post, owner, prefix in (
         (target, _TARGET_MEDIA_OWNER, "threads_"),
@@ -615,19 +610,18 @@ def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int,
     ):
         if post is None or not (post.image_urls or post.video_urls):
             continue
-        plan.append((post, owner, budget, prefix))
+        plan.append(MediaPlanEntry(post=post, owner=owner, budget=budget, filename_prefix=prefix))
         budget -= min(len(post.image_urls) + len(post.video_urls), budget)
     return plan
 
 
 async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -> IngestedMedia:
-    """Runs the media ingestion under its own bound, degrading to no parts on timeout.
+    """Runs the media ingestion under `bounded_media_step`, degrading to no parts.
 
-    Bounded here rather than left to the caller's grace so a slow fetch still produces the
-    honest text-only block instead of being cancelled with nothing to inject. A degrade returns no
-    groups at all rather than groups reporting everything as missing: with no parts the caller
-    takes its text-only branch, which lists BOTH posts' URLs from the posts themselves, so
-    per-group bookkeeping here would only be a second, unread copy of the same accounting.
+    A degrade returns no groups at all rather than groups reporting everything as missing: with
+    no parts the caller takes its text-only branch, which lists BOTH posts' URLs from the posts
+    themselves, so per-group bookkeeping here would only be a second, unread copy of the same
+    accounting.
 
     The posts run concurrently inside the one bound rather than in sequence: the budget split is
     computed from URL counts before any fetch starts, so nothing downstream waits on the target,
@@ -637,47 +631,38 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
     plan = _media_plan(target=target)
     if not plan:
         return IngestedMedia()
-    try:
-        with scratch_directory(prefix="threads-ai-") as download_dir:
-            async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
-                return IngestedMedia(
-                    groups=list(
-                        await asyncio.gather(
-                            *(
-                                _upload_post_media(
-                                    post=post,
-                                    owner=owner,
-                                    budget=budget,
-                                    filename_prefix=prefix,
-                                    gemini_client=gemini_client,
-                                    download_dir=download_dir,
-                                )
-                                for post, owner, budget, prefix in plan
-                            )
+    return await bounded_media_step(
+        step=_upload_planned_media(plan=plan, gemini_client=gemini_client),
+        subject="Threads media",
+        fallback="text only",
+        degraded=IngestedMedia(),
+        url=target.url,
+        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+        timeout_fields={
+            "posts": len(plan),
+            "image_count": sum(len(entry.post.image_urls) for entry in plan),
+            "video_count": sum(len(entry.post.video_urls) for entry in plan),
+        },
+    )
+
+
+async def _upload_planned_media(
+    *, plan: list[MediaPlanEntry], gemini_client: genai.Client
+) -> IngestedMedia:
+    """Uploads every planned post's media concurrently, their clips sharing one scratch dir."""
+    with scratch_directory(prefix="threads-ai-") as download_dir:
+        return IngestedMedia(
+            groups=list(
+                await asyncio.gather(
+                    *(
+                        _upload_post_media(
+                            entry=entry, gemini_client=gemini_client, download_dir=download_dir
                         )
+                        for entry in plan
                     )
                 )
-    except TimeoutError:
-        logfire.warn(
-            "Threads media ingestion exceeded its bound; answering from text only",
-            url=target.url,
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            posts=len(plan),
-            image_count=sum(len(post.image_urls) for post, _, _, _ in plan),
-            video_count=sum(len(post.video_urls) for post, _, _, _ in plan),
-            _exc_info=True,
+            )
         )
-        return IngestedMedia()
-    # Broad on purpose: this is a best-effort degrade to the text-only block, which must never
-    # break the reply pipeline (`build_threads_context_messages` promises it never raises).
-    except Exception as error:
-        logfire.warn(
-            "Threads media ingestion failed; answering from text only",
-            url=target.url,
-            error_type=type(error).__name__,
-            _exc_info=error,
-        )
-        return IngestedMedia()
 
 
 def _media_url_lines(*, owner: str, image_urls: list[str], video_urls: list[str]) -> list[str]:
@@ -863,6 +848,7 @@ async def build_threads_context_messages(
     if answer_model_is_gemini and gemini_client is not None:
         media = await _ingest_media(target=target, gemini_client=gemini_client)
 
+    url_lines: list[str] = []
     if media.parts:
         # Ownership is stated only once a quote post makes it ambiguous; with a single post the
         # separator's "the post's media" already says whose it is.
@@ -881,42 +867,32 @@ async def build_threads_context_messages(
                         video_urls=group.missing_video_urls,
                     )
                 )
-        # The trailer rides AFTER the attachments, not at the end of the text: the media is the
-        # one part of this block nothing here ever looked inside, so a fence that closed before
-        # it would leave an instruction-shaped screenshot sitting past the end-of-data marker.
-        content: list[
-            ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-        ] = [
-            ResponseInputTextParam(text="\n\n".join(text_sections), type="input_text"),
-            *media.parts,
-            ResponseInputTextParam(text=THREADS_CONTEXT_TRAILER, type="input_text"),
+    else:
+        # No media parts: either the answer model cannot read a Files uri, the posts carry no
+        # media, or every fetch/upload failed. All three supply the URLs as text under a
+        # separator that does NOT claim the media was seen, so the model never describes what it
+        # never got. The quoted post's URLs ride here too, named separately: they are as
+        # unattached as the target's, and a block that listed only the target's would hide half
+        # the post.
+        url_owners = [(target, _TARGET_MEDIA_OWNER)]
+        if target.quoted is not None:
+            url_owners.append((target.quoted, _QUOTED_MEDIA_OWNER))
+        url_lines = [
+            line
+            for post, owner in url_owners
+            for line in _media_url_lines(
+                owner=owner, image_urls=post.image_urls, video_urls=post.video_urls
+            )
         ]
-        return [
-            system_block(
-                text=(
-                    THREADS_PARTIAL_MEDIA_SEPARATOR
-                    if media.has_missing
-                    else THREADS_CONTEXT_SEPARATOR
-                )
+    return post_context_blocks(
+        text="\n\n".join([*text_sections, *url_lines]),
+        media_parts=media.parts,
+        post_carries_media=bool(media.parts or url_lines),
+        separators=PostSeparators(
+            attached=(
+                THREADS_PARTIAL_MEDIA_SEPARATOR if media.has_missing else THREADS_CONTEXT_SEPARATOR
             ),
-            EasyInputMessageParam(role="user", content=content),
-        ]
-
-    # No media parts: either the answer model cannot read a Files uri, the posts carry no
-    # media, or every fetch/upload failed. All three supply the URLs as text under a separator
-    # that does NOT claim the media was seen, so the model never describes what it never got.
-    # The quoted post's URLs ride here too, named separately: they are as unattached as the
-    # target's, and a block that listed only the target's would hide half the post.
-    url_owners = [(target, _TARGET_MEDIA_OWNER)]
-    if target.quoted is not None:
-        url_owners.append((target.quoted, _QUOTED_MEDIA_OWNER))
-    url_lines = [
-        line
-        for post, owner in url_owners
-        for line in _media_url_lines(
-            owner=owner, image_urls=post.image_urls, video_urls=post.video_urls
-        )
-    ]
-    text = "\n\n".join([*text_sections, *url_lines, THREADS_CONTEXT_TRAILER])
-    separator = THREADS_TEXT_ONLY_SEPARATOR if url_lines else THREADS_CONTEXT_SEPARATOR
-    return link_context_blocks(separator=separator, text=text)
+            text_only=THREADS_TEXT_ONLY_SEPARATOR,
+            trailer=THREADS_CONTEXT_TRAILER,
+        ),
+    )

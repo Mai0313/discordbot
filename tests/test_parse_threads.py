@@ -17,6 +17,7 @@ from discordbot.services.platforms.threads import (
     ThreadsConversation,
 )
 from discordbot.cogs.gen_reply.link_sources import threads as threads_builder
+from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.cogs.gen_reply.link_sources.threads import (
     THREADS_CONTEXT_TRAILER,
     THREADS_QUOTED_POST_LEAD,
@@ -108,7 +109,8 @@ def _stub_media(
         path.write_bytes(b"clip-bytes")
         return path
 
-    monkeypatch.setattr(threads_builder, "load_image_bytes", fake_load_image_bytes)
+    monkeypatch.setattr(image_ingest, "load_image_bytes", fake_load_image_bytes)
+    monkeypatch.setattr(image_ingest, "upload_as_input_file", uploads)
     monkeypatch.setattr(threads_builder, "upload_as_input_file", uploads)
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
@@ -792,7 +794,7 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
         await asyncio.sleep(delay=5)
         raise AssertionError("the bound should have fired first")
 
-    monkeypatch.setattr(threads_builder, "load_image_bytes", never_returns)
+    monkeypatch.setattr(image_ingest, "load_image_bytes", never_returns)
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()

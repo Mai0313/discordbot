@@ -44,6 +44,7 @@ from discordbot.services.platforms.ytdlp import (
 )
 from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
 from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
+from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
 
 # Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
 # Same rationale as the Douyin builder's: the model samples frames at its own media
@@ -122,11 +123,6 @@ BILIBILI_TIMEOUT_NOTICE = (
 )
 
 
-def bilibili_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Bilibili build exceeds gen_reply's post-route grace."""
-    return [system_block(text=BILIBILI_TIMEOUT_NOTICE)]
-
-
 def _render_video_text(metadata: VideoMetadata, url: str) -> str:
     """Renders the video's title, uploader, duration and description as compact text."""
     lines = [f"[Bilibili video the user linked] {metadata.uploader}".rstrip()]
@@ -178,35 +174,6 @@ async def _fetch_and_upload(
         )
         # The scratch dir removes the file; `download.unlink` would only duplicate that.
         return [part] if part is not None else []
-
-
-async def _media_parts(*, url: str, gemini_client: genai.Client) -> list[ResponseInputFileParam]:
-    """Runs the media step under its own bound, degrading to no parts rather than raising.
-
-    Bounded here rather than left to the caller's grace so a slow download still produces the
-    honest text-only block instead of being cancelled with nothing to inject.
-    """
-    try:
-        async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
-            return await _fetch_and_upload(url=url, gemini_client=gemini_client)
-    except TimeoutError:
-        logfire.warn(
-            "Bilibili media ingestion exceeded its bound; answering from the text",
-            url=url,
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            _exc_info=True,
-        )
-        return []
-    except Exception as error:
-        # Broad on purpose: this must degrade to the text-only block rather than raise into
-        # the reply pipeline, so the type is recorded as a field instead of by narrowing.
-        logfire.warn(
-            "Bilibili media ingestion failed; answering from the text",
-            url=url,
-            error_type=type(error).__name__,
-            _exc_info=error,
-        )
-        return []
 
 
 async def build_bilibili_context_messages(
@@ -287,7 +254,14 @@ async def build_bilibili_context_messages(
                     is_live=metadata.is_live,
                 )
                 return link_context_blocks(separator=BILIBILI_TOO_LONG_SEPARATOR, text=text)
-            media_parts = await _media_parts(url=url, gemini_client=gemini_client)
+            media_parts = await bounded_media_step(
+                step=_fetch_and_upload(url=url, gemini_client=gemini_client),
+                subject="Bilibili media",
+                fallback="the text",
+                degraded=[],
+                url=url,
+                timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+            )
 
     return link_context_blocks(
         separator=BILIBILI_CONTEXT_SEPARATOR if media_parts else BILIBILI_TEXT_ONLY_SEPARATOR,

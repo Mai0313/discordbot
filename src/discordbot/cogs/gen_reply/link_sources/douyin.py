@@ -41,6 +41,7 @@ from discordbot.services.platforms.douyin import (
     douyin_fetch_semaphore,
 )
 from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
+from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
 
 # Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).
 # Deliberately below what the expansion posts to Discord: the model samples frames at its own
@@ -109,11 +110,6 @@ DOUYIN_TIMEOUT_NOTICE = (
 )
 
 
-def douyin_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Douyin build exceeds gen_reply's post-route grace."""
-    return [system_block(text=DOUYIN_TIMEOUT_NOTICE)]
-
-
 def _render_post_text(post: DouyinMetadata, url: str) -> str:
     """Renders the post's caption, author and source link as compact text."""
     lines = [f"[Douyin post the user linked] @{post.author_name}".rstrip()]
@@ -154,7 +150,11 @@ async def _upload_media(
 async def _fetch_and_upload(
     *, url: str, post: DouyinMetadata, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
-    """Downloads the post's media into a scratch dir and uploads it; [] on any failure.
+    """Downloads the post's media into a scratch dir and uploads it, returning what uploaded.
+
+    An item whose upload raises is dropped with a warning, and one whose upload yields nothing is
+    dropped as well, so the parts can be fewer than the files or none at all; an oversize file
+    yields []. A failed download raises, for the caller's bound to degrade.
 
     The cap handed to `download` is the Files API's own 2 GB ceiling, so an impossible file is
     refused from its `Content-Length` in seconds instead of consuming the whole media budget.
@@ -162,59 +162,29 @@ async def _fetch_and_upload(
     the separate lever and is already turned down — `AI_INGEST_QUALITY` asks Douyin for its
     lowest preset, so the bytes that arrive are not the ones the expansion posts to Discord.
     """
-    with scratch_directory(prefix="douyin-ai-") as download_dir:
-        downloader = DouyinDownloader(output_folder=download_dir)
-        # The Douyin bound covers only the Douyin-facing work. Holding it across the upload
-        # would block unrelated links for minutes while talking to Google, which is not what
-        # it protects against; the upload has its own, separate cap.
-        async with douyin_fetch_semaphore.get():
-            download = await asyncio.to_thread(
-                downloader.download,
-                url=url,
-                post=post,
-                quality=AI_INGEST_QUALITY,
-                max_images=MAX_DOUYIN_INGEST_IMAGES,
-                max_bytes=FILES_API_MAX_BYTES,
-            )
-        # The scratch dir removes the files; `download.unlink` would only duplicate that.
-        return await _upload_media(download=download, gemini_client=gemini_client)
-
-
-async def _media_parts(
-    *, url: str, post: DouyinMetadata, gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
-    """Runs the media step under its own bound, degrading to no parts rather than raising.
-
-    Bounded here rather than left to the caller's grace so a slow download still produces the
-    honest caption-only block instead of being cancelled with nothing to inject.
-    """
     try:
-        async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
-            return await _fetch_and_upload(url=url, post=post, gemini_client=gemini_client)
-    except TimeoutError:
-        logfire.warn(
-            "Douyin media ingestion exceeded its bound; answering from the caption",
-            url=url,
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            _exc_info=True,
-        )
-        return []
+        with scratch_directory(prefix="douyin-ai-") as download_dir:
+            downloader = DouyinDownloader(output_folder=download_dir)
+            # The Douyin bound covers only the Douyin-facing work. Holding it across the upload
+            # would block unrelated links for minutes while talking to Google, which is not what
+            # it protects against; the upload has its own, separate cap.
+            async with douyin_fetch_semaphore.get():
+                download = await asyncio.to_thread(
+                    downloader.download,
+                    url=url,
+                    post=post,
+                    quality=AI_INGEST_QUALITY,
+                    max_images=MAX_DOUYIN_INGEST_IMAGES,
+                    max_bytes=FILES_API_MAX_BYTES,
+                )
+            # The scratch dir removes the files; `download.unlink` would only duplicate that.
+            return await _upload_media(download=download, gemini_client=gemini_client)
     except DouyinTooLargeError:
         logfire.warn(
             "Douyin clip exceeds the Files API ceiling; answering from the caption",
             url=url,
             max_bytes=FILES_API_MAX_BYTES,
             _exc_info=True,
-        )
-        return []
-    except Exception as error:
-        # Broad on purpose: this must degrade to the caption-only block rather than raise into
-        # the reply pipeline, so the type is recorded as a field instead of by narrowing.
-        logfire.warn(
-            "Douyin media ingestion failed; answering from the caption",
-            url=url,
-            error_type=type(error).__name__,
-            _exc_info=error,
         )
         return []
 
@@ -282,7 +252,14 @@ async def build_douyin_context_messages(
 
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
-            media_parts = await _media_parts(url=url, post=post, gemini_client=gemini_client)
+            media_parts = await bounded_media_step(
+                step=_fetch_and_upload(url=url, post=post, gemini_client=gemini_client),
+                subject="Douyin media",
+                fallback="the caption",
+                degraded=[],
+                url=url,
+                timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+            )
 
     return link_context_blocks(
         separator=DOUYIN_CONTEXT_SEPARATOR if media_parts else DOUYIN_TEXT_ONLY_SEPARATOR,

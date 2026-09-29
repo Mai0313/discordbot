@@ -8,6 +8,8 @@ from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
 
+from discordbot.typings.emojis import LinkSourceName
+
 
 class ModelSettings(BaseModel):
     """Model name and reasoning effort that should be used together."""
@@ -249,9 +251,7 @@ class RouteClassification(BaseModel):
             "Consumed only on the QA route to decide whether to watch the video."
         ),
     )
-    link_context_sources: list[
-        Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
-    ] = Field(
+    link_context_sources: list[LinkSourceName] = Field(
         default_factory=list,
         description=(
             "Registered linked-post sources whose actual content the user wants analyzed, "
