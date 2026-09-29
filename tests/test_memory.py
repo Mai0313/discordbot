@@ -4039,9 +4039,12 @@ async def test_consolidate_if_needed_skips_under_threshold(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 5)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 只有一筆")
-    writer, _fake_client = _writer()
+    writer, fake_client = _writer()
+    # A valid answer, so a consolidation that did run would change the store rather than fail.
+    fake_client.responses.output_parsed = _consolidated(text="不該整理")
     await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
     # Below threshold: no consolidation, raw untouched.
+    assert fake_client.responses.parse_models == []
     assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
