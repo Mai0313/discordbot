@@ -21,7 +21,7 @@ import os
 import re
 import time
 import shutil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Unpack, TypedDict
 import asyncio
 import hashlib
 from pathlib import Path
@@ -233,6 +233,17 @@ class _HostedFile(BaseModel):
     path: str = Field(..., description="Path of the file inside the serve directory.")
 
 
+class _HostedSource(TypedDict, total=False):
+    """What a publish names in its refusal's log line: the bytes' size or the file's path.
+
+    A TypedDict so `**`-spreading it into a logfire call keeps statically known keys, none of
+    which collide with logfire's `_tags` / `_exc_info` keyword-only parameters.
+    """
+
+    size_bytes: int
+    path: str
+
+
 class MediaHostingService(BaseModel):
     """Writes oversized media into the served directory and returns its public URL."""
 
@@ -305,6 +316,34 @@ class MediaHostingService(BaseModel):
         os.utime(final)
         return self._public_url(name=name)
 
+    def _destination(
+        self, *, suffix: str, **source: Unpack[_HostedSource]
+    ) -> tuple[Path, str] | None:
+        """The serve dir and normalized suffix a publish writes to, or None when it cannot host.
+
+        Args:
+            suffix: The file suffix the hosted name will carry.
+            **source: What is being hosted, named in the refusal's log line.
+
+        Returns:
+            `(serve_dir, suffix)`, or None when hosting is unavailable, the suffix is refused or
+            the serve dir is missing.
+        """
+        if not self.config.available:
+            return None
+        ext = _normalize_suffix(suffix=suffix)
+        if ext is None:
+            logfire.warn(
+                "Media hosting refused a non-allowlisted suffix; the item will be dropped",
+                suffix=suffix,
+                **source,
+            )
+            return None
+        serve = self._serve_dir()
+        if serve is None:
+            return None
+        return serve, ext
+
     def publish_bytes(self, data: bytes, suffix: str) -> str | None:
         """Hosts bytes under a content-addressed name (dedup); returns the URL or None.
 
@@ -316,19 +355,10 @@ class MediaHostingService(BaseModel):
             The public URL, or None when hosting is unavailable / the serve dir is missing / the
             suffix is refused / the write fails.
         """
-        if not self.config.available:
+        destination = self._destination(suffix=suffix, size_bytes=len(data))
+        if destination is None:
             return None
-        ext = _normalize_suffix(suffix=suffix)
-        if ext is None:
-            logfire.warn(
-                "Media hosting refused a non-allowlisted suffix; the item will be dropped",
-                suffix=suffix,
-                size_bytes=len(data),
-            )
-            return None
-        serve = self._serve_dir()
-        if serve is None:
-            return None
+        serve, ext = destination
         name = f"{_hash_bytes(data)}{ext}"
         hit = self._dedup_hit(serve=serve, name=name)
         if hit is not None:
@@ -353,7 +383,7 @@ class MediaHostingService(BaseModel):
         self.enforce_cap(now=time.time())
         return url
 
-    def publish_path(self, file_path: Path) -> str | None:  # noqa: PLR0911 -- best-effort short-circuit guards
+    def publish_path(self, file_path: Path) -> str | None:
         """Hosts an on-disk file under a content-addressed name (dedup); returns the URL or None.
 
         The file is hashed by a streaming read (never loaded whole into memory), so a multi-GB clip
@@ -366,19 +396,10 @@ class MediaHostingService(BaseModel):
             The public URL, or None when hosting is unavailable / the serve dir is missing / the
             suffix is refused / the move fails.
         """
-        if not self.config.available:
+        destination = self._destination(suffix=file_path.suffix, path=str(file_path))
+        if destination is None:
             return None
-        ext = _normalize_suffix(suffix=file_path.suffix)
-        if ext is None:
-            logfire.warn(
-                "Media hosting refused a non-allowlisted suffix; the item will be dropped",
-                suffix=file_path.suffix,
-                path=str(file_path),
-            )
-            return None
-        serve = self._serve_dir()
-        if serve is None:
-            return None
+        serve, ext = destination
         try:
             name = f"{_hash_file(file_path)}{ext}"
         except OSError as exc:
