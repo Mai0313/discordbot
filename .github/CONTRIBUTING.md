@@ -183,7 +183,7 @@ It runs Ruff formatting and linting, ty type checking, Markdown formatting, Shel
 
 ## Documentation
 
-Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split).
+Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split). `CONTRIBUTING.md` itself is developer-facing and stays in English.
 
 ## Text Formatting
 
