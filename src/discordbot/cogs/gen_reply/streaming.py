@@ -37,6 +37,8 @@ from discordbot.cogs.gen_reply.markers import (
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.generation import (
     VOICE_REPLY_FILENAME,
+    INLINE_IMAGE_FILENAME,
+    INLINE_VIDEO_FILENAME,
     VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
@@ -53,15 +55,6 @@ from discordbot.cogs.gen_reply.status_marks import (
     VOICE_EMOJI,
     ANSWER_EMOJI,
 )
-
-# Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
-# route's `generated.png` so the bot's own generated images render the same in history. Multiple
-# images need distinct names, so they fall back to `generated_<n>.png` (Discord collides on dupes).
-INLINE_IMAGE_FILENAME = "generated.png"
-
-# Filename of the single inline-generated video attached onto a QA reply (one clip per reply, so
-# no numbering); MP4 is what the omni renderer returns and what Discord inline-plays.
-INLINE_VIDEO_FILENAME = "generated.mp4"
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers

@@ -95,6 +95,16 @@ TTS_SPEED = 1.5
 # `filesize_limit` is known, not as a hardcoded byte ceiling here.
 VOICE_REPLY_FILENAME = "reply.wav"
 
+# Filename a generated image is attached under, by the IMAGE route and by a QA reply's
+# `<generate-image>` alike, so the bot's own generated images render the same in history. A reply
+# carrying several falls back to `generated_<n>.png`, since Discord collides on duplicate names.
+INLINE_IMAGE_FILENAME = "generated.png"
+
+# Filename a generated video is attached under, by the VIDEO route and by a QA reply's
+# `<generate-video>` alike (one clip per reply, so no numbering); MP4 is what the omni renderer
+# returns and what Discord inline-plays.
+INLINE_VIDEO_FILENAME = "generated.mp4"
+
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
 # Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
 # (docs: "generates lyrics in the language of your prompt"), so the language is defaulted here too,

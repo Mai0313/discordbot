@@ -44,6 +44,7 @@ from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
+from discordbot.cogs.gen_reply.generation import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import discard_task
@@ -197,7 +198,7 @@ class MediaReplyRoutes(BaseModel):
                 )
             # Send the generated image immediately so the user sees it without waiting on the
             # conversational reply; the reply text streams onto this same message right after.
-            reply = await self._deliver(data=image_bytes, filename="generated.png")
+            reply = await self._deliver(data=image_bytes, filename=INLINE_IMAGE_FILENAME)
             logfire.info(
                 "gen_reply image delivered",
                 message_id=message.id,
@@ -293,7 +294,7 @@ class MediaReplyRoutes(BaseModel):
                     video_bytes = await toolkit.video_generator.render(
                         prompt=refined_prompt, reference_image_sources=images
                     )
-            reply = await self._deliver(data=video_bytes, filename="generated.mp4")
+            reply = await self._deliver(data=video_bytes, filename=INLINE_VIDEO_FILENAME)
             logfire.info(
                 "gen_reply video delivered",
                 message_id=message.id,
@@ -331,7 +332,7 @@ class MediaReplyRoutes(BaseModel):
             client=self.toolkit.gemini_client,
             source=video_bytes,
             mime_type="video/mp4",
-            display_name="generated.mp4",
+            display_name=INLINE_VIDEO_FILENAME,
             timeout_seconds=GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS,
         )
         if file_uri is None:
