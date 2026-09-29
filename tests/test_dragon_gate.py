@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
 from nextcord import Embed
-from nextcord.ui import Button, StringSelect
+from nextcord.ui import StringSelect
 
 from discordbot.cogs.games import interactions as game_interactions
 from discordbot.typings.games import (
@@ -47,6 +47,7 @@ from discordbot.cogs.games.dragon_gate_views import (
     build_dragon_gate_in_progress_embed,
 )
 
+from tests.helpers.games import seat, component_ids, component_rows, attached_button
 from tests.helpers.casting import as_message, as_interaction
 
 if TYPE_CHECKING:
@@ -283,15 +284,8 @@ def _rendered_length(embed: Embed) -> int:
 
 
 def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
-    """Builds a prepared 射龍門 participant for view tests."""
-    return GameParticipant(
-        user_id=user_id,
-        account_name=display_name.lower(),
-        display_name=display_name,
-        bet=ANTE,
-        balance_at_start=balance,
-        is_allin=False,
-    )
+    """Builds a 射龍門 seat, which always stakes the ante."""
+    return seat(user_id=user_id, display_name=display_name, bet=ANTE, balance_at_start=balance)
 
 
 def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) -> None:
@@ -316,34 +310,6 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
         "discordbot.cogs.games.lobby.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
-
-
-def _component_ids(view: DragonGateView) -> set[str]:
-    """Returns custom IDs for currently attached view components."""
-    custom_ids: set[str] = set()
-    for child in view.children:
-        custom_id = getattr(child, "custom_id", None)
-        if isinstance(custom_id, str):
-            custom_ids.add(custom_id)
-    return custom_ids
-
-
-def _component_rows(view: DragonGateView) -> dict[str, int | None]:
-    """Returns rows for currently attached view components."""
-    rows: dict[str, int | None] = {}
-    for child in view.children:
-        custom_id = getattr(child, "custom_id", None)
-        if isinstance(custom_id, str):
-            rows[custom_id] = getattr(child, "row", None)
-    return rows
-
-
-def _attached_button(view: DragonGateView, custom_id: str) -> Button[Any]:
-    """Returns an attached button by custom ID."""
-    for child in view.children:
-        if isinstance(child, Button) and child.custom_id == custom_id:
-            return child
-    raise AssertionError(f"Missing attached button: {custom_id}")
 
 
 def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
@@ -597,8 +563,8 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
         final_balances={1: 1_000_000},
     )
     normal_view.sync_controls()
-    assert _component_ids(view=normal_view) == {"dg:bet", "dg:leave"}
-    assert _component_rows(view=normal_view) == {"dg:leave": 0, "dg:bet": 2}
+    assert component_ids(view=normal_view) == {"dg:bet", "dg:leave"}
+    assert component_rows(view=normal_view) == {"dg:leave": 0, "dg:bet": 2}
     assert _attached_select(view=normal_view, custom_id="dg:bet").disabled is False
 
     pair_round = DragonGateRound.from_participants(
@@ -611,13 +577,13 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
         final_balances={1: 1_000_000},
     )
     pair_view.sync_controls()
-    assert _component_ids(view=pair_view) == {"dg:higher", "dg:lower", "dg:leave"}
-    assert _component_rows(view=pair_view) == {"dg:higher": 1, "dg:lower": 1, "dg:leave": 0}
+    assert component_ids(view=pair_view) == {"dg:higher", "dg:lower", "dg:leave"}
+    assert component_rows(view=pair_view) == {"dg:higher": 1, "dg:lower": 1, "dg:leave": 0}
 
     pair_round.choose_pair_direction(user_id=1, direction="higher")
     pair_view.sync_controls()
-    assert _component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
-    assert _component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
+    assert component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
+    assert component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
     assert _attached_select(view=pair_view, custom_id="dg:bet").disabled is False
 
 
@@ -797,16 +763,16 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     )
     view.message = as_message(fake=message)
     view.sync_controls()
-    assert _component_ids(view=view) == {"dg:higher", "dg:lower", "dg:leave"}
-    assert _attached_button(view=view, custom_id="dg:higher").disabled is False
+    assert component_ids(view=view) == {"dg:higher", "dg:lower", "dg:leave"}
+    assert attached_button(view=view, custom_id="dg:higher").disabled is False
 
-    choose_higher = _attached_button(view=view, custom_id="dg:higher")
+    choose_higher = attached_button(view=view, custom_id="dg:higher")
     await choose_higher.callback(
         as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:higher"))
     )
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == "higher"
-    assert _component_ids(view=view) == {"dg:bet", "dg:leave"}
+    assert component_ids(view=view) == {"dg:bet", "dg:leave"}
     assert _attached_select(view=view, custom_id="dg:bet").disabled is False
 
     await view._handle_bet_choice(
@@ -882,7 +848,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     # Balance 15 is below the 20 minimum, so betting is unavailable instead of
     # being floored back above the player's wallet.
     assert view._active_max_bet() == 15
-    assert _component_ids(view=view) == {"dg:leave"}
+    assert component_ids(view=view) == {"dg:leave"}
 
     interaction = InteractionStub(user_id=1, message=message, custom_id="dg:bet")
     await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=interaction))
@@ -1121,7 +1087,7 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     )
     assert round_state.player_delta(user_id=1) == 20
 
-    leave_button = _attached_button(view=view, custom_id="dg:leave")
+    leave_button = attached_button(view=view, custom_id="dg:leave")
     await leave_button.callback(
         as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
     )
@@ -1201,7 +1167,7 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     )
     assert round_state.player_delta(user_id=1) == -20
 
-    leave_button = _attached_button(view=view, custom_id="dg:leave")
+    leave_button = attached_button(view=view, custom_id="dg:leave")
     await leave_button.callback(
         as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
     )

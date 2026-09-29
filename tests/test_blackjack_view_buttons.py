@@ -37,19 +37,8 @@ from discordbot.cogs.games.blackjack import (
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.blackjack_views import BlackjackView, build_in_progress_embeds
 
+from tests.helpers.games import seat, component_ids, component_rows
 from tests.helpers.casting import as_message
-
-
-def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
-    """Builds a participant with a 1k starting balance for affordability tests."""
-    return GameParticipant(
-        user_id=user_id,
-        account_name=display_name.lower(),
-        display_name=display_name,
-        bet=bet,
-        balance_at_start=1_000,
-        is_allin=False,
-    )
 
 
 def _round_with_two_cards(
@@ -58,7 +47,7 @@ def _round_with_two_cards(
     """Builds a single-player round with deterministic cards and dealer hand."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
-        participants=[_participant(user_id=1, display_name="Alice", bet=bet)],
+        participants=[seat(user_id=1, display_name="Alice", bet=bet)],
         auto_play_dealer=False,
     )
     round_state.players[0].hands[0].cards = player_cards
@@ -87,26 +76,6 @@ def _button_states(view: BlackjackView) -> dict[str, bool]:
     return states
 
 
-def _button_ids(view: BlackjackView) -> set[str]:
-    """Returns the set of button custom_ids currently attached to the view."""
-    ids: set[str] = set()
-    for child in view.children:
-        cid = getattr(child, "custom_id", None)
-        if cid is not None:
-            ids.add(cid)
-    return ids
-
-
-def _button_rows(view: BlackjackView) -> dict[str, int | None]:
-    """Returns `{custom_id: row}` for every button in the view."""
-    rows: dict[str, int | None] = {}
-    for child in view.children:
-        cid = getattr(child, "custom_id", None)
-        if cid is not None:
-            rows[cid] = getattr(child, "row", None)
-    return rows
-
-
 async def test_player_actions_same_rank_pair_enables_every_action_button() -> None:
     """Initial deal with [8, 8] vs dealer up 6 enables all five action buttons."""
     round_state = _round_with_two_cards(
@@ -116,7 +85,7 @@ async def test_player_actions_same_rank_pair_enables_every_action_button() -> No
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert _button_ids(view=view) == {
+    assert component_ids(view=view) == {
         "bj:hit",
         "bj:stand",
         "bj:double",
@@ -124,7 +93,7 @@ async def test_player_actions_same_rank_pair_enables_every_action_button() -> No
         "bj:surrender",
     }
     assert all(disabled is False for disabled in _button_states(view=view).values())
-    assert _button_rows(view=view) == {
+    assert component_rows(view=view) == {
         "bj:hit": 0,
         "bj:stand": 0,
         "bj:double": 1,
@@ -142,7 +111,7 @@ async def test_player_actions_ten_value_pair_shows_split() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert "bj:split" in _button_ids(view=view)
+    assert "bj:split" in component_ids(view=view)
 
 
 async def test_player_actions_ace_ten_hides_split() -> None:
@@ -154,7 +123,7 @@ async def test_player_actions_ace_ten_hides_split() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    ids = _button_ids(view=view)
+    ids = component_ids(view=view)
     assert "bj:hit" in ids
     assert "bj:stand" in ids
     assert "bj:double" in ids
@@ -173,7 +142,7 @@ async def test_player_actions_after_hit_removes_double_split_surrender() -> None
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert _button_ids(view=view) == {"bj:hit", "bj:stand"}
+    assert component_ids(view=view) == {"bj:hit", "bj:stand"}
     assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
@@ -187,7 +156,7 @@ async def test_player_actions_is_split_hand_removes_double_split_surrender() -> 
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert _button_ids(view=view) == {"bj:hit", "bj:stand"}
+    assert component_ids(view=view) == {"bj:hit", "bj:stand"}
     assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
@@ -195,7 +164,7 @@ async def test_split_aces_subhand_removes_hit_and_stand() -> None:
     """Split Aces removes Hit and Stand with `finished` still False; Split removed the rest."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
-        participants=[_participant(user_id=1, display_name="Alice")],
+        participants=[seat(user_id=1, display_name="Alice")],
         auto_play_dealer=False,
     )
     finished_hand = BlackjackHandState(
@@ -211,7 +180,7 @@ async def test_split_aces_subhand_removes_hit_and_stand() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert _button_ids(view=view) == set()
+    assert component_ids(view=view) == set()
 
 
 async def test_player_actions_low_balance_removes_double_and_split() -> None:
@@ -235,7 +204,7 @@ async def test_player_actions_low_balance_removes_double_and_split() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    ids = _button_ids(view=view)
+    ids = component_ids(view=view)
     assert "bj:hit" in ids
     assert "bj:stand" in ids
     assert "bj:double" not in ids
@@ -253,7 +222,7 @@ async def test_player_actions_peeked_blackjack_removes_surrender() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert "bj:surrender" not in _button_ids(view=view)
+    assert "bj:surrender" not in component_ids(view=view)
 
 
 async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> None:
@@ -268,10 +237,10 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
     view.sync_buttons()
 
     states = _button_states(view=view)
-    assert _button_ids(view=view) == {"bj:insure_yes", "bj:insure_no"}
+    assert component_ids(view=view) == {"bj:insure_yes", "bj:insure_no"}
     assert states["bj:insure_yes"] is False
     assert states["bj:insure_no"] is False
-    assert _button_rows(view=view) == {"bj:insure_yes": 1, "bj:insure_no": 1}
+    assert component_rows(view=view) == {"bj:insure_yes": 1, "bj:insure_no": 1}
 
 
 async def test_settled_phase_removes_every_button() -> None:
@@ -285,7 +254,7 @@ async def test_settled_phase_removes_every_button() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert _button_ids(view=view) == set()
+    assert component_ids(view=view) == set()
 
 
 async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None:
@@ -297,7 +266,7 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    ids = _button_ids(view=view)
+    ids = component_ids(view=view)
     assert "bj:insure_yes" not in ids
     assert "bj:insure_no" not in ids
 
@@ -305,7 +274,7 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
     round_state.insurance_offered = True
     view.sync_buttons()
 
-    ids = _button_ids(view=view)
+    ids = component_ids(view=view)
     assert "bj:insure_yes" in ids
     assert "bj:insure_no" in ids
 
@@ -463,9 +432,7 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh(
     assert notices == ["你的下注太小，一半不到 1 點，這局沒有保險可買"]
 
 
-async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
     """Dealer hits ≤16 and stands on a hard 17 under H17 rules."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
@@ -473,13 +440,9 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
     )
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
-    round_state.shoe = []
+    round_state.shoe = [Card(rank="6", suit="♠")]
     view = _make_view(round_state=round_state)
 
-    def _draw_six(rng: Random) -> Card:
-        return Card(rank="6", suit="♠")
-
-    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", _draw_six)
     await view._play_dealer_locked()
 
     assert round_state.dealer_played is True
@@ -524,7 +487,7 @@ async def test_play_dealer_stands_on_hard_17_plus(
     assert step.forced is True
 
 
-async def test_play_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_play_dealer_hits_soft_17() -> None:
     """Dealer hits soft 17 (H17 rule) instead of standing."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
@@ -532,13 +495,9 @@ async def test_play_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None
     )
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
-    round_state.shoe = []
+    round_state.shoe = [Card(rank="3", suit="♠")]
     view = _make_view(round_state=round_state)
 
-    def _draw_three(rng: Random) -> Card:
-        return Card(rank="3", suit="♠")
-
-    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", _draw_three)
     await view._play_dealer_locked()
 
     assert [str(card) for card in round_state.dealer] == ["A♣", "6♦", "3♠"]

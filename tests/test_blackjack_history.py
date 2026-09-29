@@ -21,21 +21,10 @@ from discordbot.cogs.games.database import record_blackjack_history, fetch_recen
 from discordbot.cogs.games.blackjack import hand_value
 from discordbot.cogs.games.history_text import _summarize, build_blackjack_history_embed
 
+from tests.helpers.games import seat
+
 _DEALER_CARDS = [Card(rank="9", suit="♦"), Card(rank="7", suit="♣")]
 _DEALER_TOTAL = 16
-
-
-def _participant(*, user_id: int, name: str, bet: int) -> GameParticipant:
-    """Builds a minimal seated participant for settlement input."""
-    return GameParticipant(
-        user_id=user_id,
-        account_name=name,
-        display_name=name,
-        avatar_url="",
-        bet=bet,
-        balance_at_start=10_000,
-        is_allin=False,
-    )
 
 
 def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
@@ -132,7 +121,7 @@ def test_every_test_gets_its_own_round_history(tmp_path: Path) -> None:
 
 async def test_record_and_fetch_roundtrip() -> None:
     """A settled round persists split hands, insurance, and the dealer hand per player."""
-    human = _participant(user_id=1, name="alice", bet=1_000)
+    human = seat(user_id=1, display_name="alice", bet=1_000, balance_at_start=10_000)
     split_hands = [
         BlackjackHandSettlement(
             cards=[Card(rank="8", suit="♣"), Card(rank="K", suit="♦")],
@@ -158,7 +147,7 @@ async def test_record_and_fetch_roundtrip() -> None:
         insurance=insurance,
         is_vip=True,
     )
-    bot = _participant(user_id=999, name="po-cat", bet=2_000)
+    bot = seat(user_id=999, display_name="po-cat", bet=2_000, balance_at_start=10_000)
     bot_result = _result(
         participant=bot,
         outcome="lose",
@@ -224,7 +213,9 @@ async def test_recent_ordering_and_limit() -> None:
             bot_user_id=None,
             results=[
                 _result(
-                    participant=_participant(user_id=7, name="alice", bet=bet),
+                    participant=seat(
+                        user_id=7, display_name="alice", bet=bet, balance_at_start=10_000
+                    ),
                     outcome="win",
                     delta=bet,
                     hands=[

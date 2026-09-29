@@ -1,6 +1,5 @@
 """Deterministic bot-player Blackjack decision tests."""
 
-from discordbot.typings.games import Card
 from discordbot.cogs.games.bot_player import (
     BOT_TABLE_EDGE,
     kelly_bet,
@@ -11,18 +10,15 @@ from discordbot.cogs.games.bot_player import (
     build_bot_insurance_context,
 )
 
-
-def _card(rank: str) -> Card:
-    """Builds a card with an arbitrary suit for strategy tests."""
-    return Card(rank=rank, suit="♠")
+from tests.helpers.games import card
 
 
 def test_fallback_action_stands_on_ten_value_pair() -> None:
     """10-value pairs should not be split by the fallback table."""
     action = fallback_action(
-        hand_cards=[_card(rank="10"), _card(rank="K")],
+        hand_cards=[card(rank="10"), card(rank="K")],
         hand_total=20,
-        dealer_up=_card(rank="6"),
+        dealer_up=card(rank="6"),
         is_pair_hand=True,
         allowed_actions=("hit", "stand", "split"),
     )
@@ -33,9 +29,9 @@ def test_fallback_action_stands_on_ten_value_pair() -> None:
 def test_fallback_action_doubles_pair_fives_as_hard_ten() -> None:
     """5/5 is played as hard 10 instead of a split pair."""
     action = fallback_action(
-        hand_cards=[_card(rank="5"), _card(rank="5")],
+        hand_cards=[card(rank="5"), card(rank="5")],
         hand_total=10,
-        dealer_up=_card(rank="6"),
+        dealer_up=card(rank="6"),
         is_pair_hand=True,
         allowed_actions=("hit", "stand", "double", "split"),
     )
@@ -46,9 +42,9 @@ def test_fallback_action_doubles_pair_fives_as_hard_ten() -> None:
 def test_fallback_action_surrenders_hard_sixteen_against_ten() -> None:
     """Late surrender takes precedence for hard 16 against dealer 10."""
     action = fallback_action(
-        hand_cards=[_card(rank="10"), _card(rank="6")],
+        hand_cards=[card(rank="10"), card(rank="6")],
         hand_total=16,
-        dealer_up=_card(rank="J"),
+        dealer_up=card(rank="J"),
         is_pair_hand=False,
         allowed_actions=("hit", "stand", "surrender"),
     )
@@ -59,9 +55,9 @@ def test_fallback_action_surrenders_hard_sixteen_against_ten() -> None:
 def test_fallback_action_splits_eights_against_ten() -> None:
     """8/8 remains a split even against a dealer 10."""
     action = fallback_action(
-        hand_cards=[_card(rank="8"), _card(rank="8")],
+        hand_cards=[card(rank="8"), card(rank="8")],
         hand_total=16,
-        dealer_up=_card(rank="10"),
+        dealer_up=card(rank="10"),
         is_pair_hand=True,
         allowed_actions=("hit", "stand", "surrender", "split"),
     )
@@ -72,13 +68,13 @@ def test_fallback_action_splits_eights_against_ten() -> None:
 def test_fallback_insurance_is_count_based() -> None:
     """Insurance fallback takes only when the remaining-shoe ten density makes it +EV."""
     take_context = build_bot_insurance_context(
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
+        dealer_up=card(rank="A"),
+        shoe=[card(rank="10"), card(rank="J"), card(rank="Q")],
         insurance_cost=50,
     )
     decline_context = build_bot_insurance_context(
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5"), _card(rank="6")],
+        dealer_up=card(rank="A"),
+        shoe=[card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5"), card(rank="6")],
         insurance_cost=50,
     )
 
@@ -90,10 +86,10 @@ def test_fallback_insurance_is_count_based() -> None:
 def test_action_context_exposes_up_card_only_without_hole() -> None:
     """Action context exposes rank counts and the dealer up-card, never the hole."""
     context = build_bot_action_context(
-        hand_cards=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5")],
-        dealer_cards=[_card(rank="K"), _card(rank="A")],
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="7"), _card(rank="2")],
+        hand_cards=[card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5")],
+        dealer_cards=[card(rank="K"), card(rank="A")],
+        dealer_up=card(rank="A"),
+        shoe=[card(rank="7"), card(rank="2")],
         allowed_actions=("hit", "stand"),
         is_pair_hand=False,
         bet=100,
@@ -120,8 +116,8 @@ def test_action_context_exposes_up_card_only_without_hole() -> None:
 def test_insurance_context_uses_remaining_shoe_count_not_hole() -> None:
     """A ten-rich remaining shoe makes insurance +EV without revealing the hole."""
     context = build_bot_insurance_context(
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
+        dealer_up=card(rank="A"),
+        shoe=[card(rank="10"), card(rank="J"), card(rank="Q")],
         insurance_cost=50,
     )
 
@@ -142,8 +138,8 @@ def test_insurance_declines_in_a_non_ten_rich_shoe() -> None:
     given the hole card, so it cannot win insurance on a real dealer Blackjack.
     """
     context = build_bot_insurance_context(
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5"), _card(rank="6")],
+        dealer_up=card(rank="A"),
+        shoe=[card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5"), card(rank="6")],
         insurance_cost=50,
     )
 
@@ -155,10 +151,10 @@ def test_insurance_declines_in_a_non_ten_rich_shoe() -> None:
 def test_action_uses_ev_recommendation() -> None:
     """The played action is the EV engine's hole-aware recommendation."""
     action_context = build_bot_action_context(
-        hand_cards=[_card(rank="10"), _card(rank="6")],
-        dealer_cards=[_card(rank="5"), _card(rank="10")],
-        dealer_up=_card(rank="10"),
-        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4")],
+        hand_cards=[card(rank="10"), card(rank="6")],
+        dealer_cards=[card(rank="5"), card(rank="10")],
+        dealer_up=card(rank="10"),
+        shoe=[card(rank="2"), card(rank="3"), card(rank="4")],
         allowed_actions=("hit", "stand"),
         is_pair_hand=False,
         bet=100,

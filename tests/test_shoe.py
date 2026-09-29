@@ -4,13 +4,9 @@
 
 from random import Random
 
-from discordbot.typings.games import Card
 from discordbot.cogs.games.shoe import RESHUFFLE_THRESHOLD_CARDS, BlackjackShoeStore
 
-
-def _card(rank: str) -> Card:
-    """Builds a card with an arbitrary suit for shoe tests."""
-    return Card(rank=rank, suit="♠")
+from tests.helpers.games import card
 
 
 def test_first_take_builds_a_fresh_shoe_without_announcing_a_reshuffle() -> None:
@@ -25,7 +21,7 @@ def test_first_take_builds_a_fresh_shoe_without_announcing_a_reshuffle() -> None
 def test_take_returns_the_stored_shoe_above_the_threshold() -> None:
     """A healthy stored shoe is handed back unchanged and removed from the store."""
     store = BlackjackShoeStore()
-    stored = [_card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 5)
+    stored = [card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 5)
     store.save_shoe(channel_id=7, cards=stored)
 
     shoe, reshuffled, _generation = store.take_shoe(channel_id=7, rng=Random(0))
@@ -39,7 +35,7 @@ def test_take_returns_the_stored_shoe_above_the_threshold() -> None:
 def test_take_reshuffles_and_announces_below_the_threshold() -> None:
     """A worn-down shoe triggers a fresh build flagged as a reshuffle."""
     store = BlackjackShoeStore()
-    store.save_shoe(channel_id=3, cards=[_card(rank="5")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
+    store.save_shoe(channel_id=3, cards=[card(rank="5")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
 
     shoe, reshuffled, _generation = store.take_shoe(channel_id=3, rng=Random(0))
 
@@ -50,7 +46,7 @@ def test_take_reshuffles_and_announces_below_the_threshold() -> None:
 def test_save_then_take_round_trips_card_depletion() -> None:
     """Saving a depleted shoe lets the next round continue from the same cards."""
     store = BlackjackShoeStore()
-    remaining = [_card(rank="A")] * (RESHUFFLE_THRESHOLD_CARDS + 1)
+    remaining = [card(rank="A")] * (RESHUFFLE_THRESHOLD_CARDS + 1)
     store.save_shoe(channel_id=9, cards=remaining)
 
     shoe, reshuffled, _generation = store.take_shoe(channel_id=9, rng=Random(0))
@@ -65,14 +61,14 @@ def test_true_count_is_neutral_without_a_countable_shoe() -> None:
 
     assert store.true_count(channel_id=1) == 0.0
 
-    store.save_shoe(channel_id=1, cards=[_card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
+    store.save_shoe(channel_id=1, cards=[card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
     assert store.true_count(channel_id=1) == 0.0
 
 
 def test_true_count_reads_a_countable_stored_shoe() -> None:
     """A ten-rich stored shoe above the threshold yields a positive true count."""
     store = BlackjackShoeStore()
-    store.save_shoe(channel_id=1, cards=[_card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 4))
+    store.save_shoe(channel_id=1, cards=[card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 4))
 
     assert store.true_count(channel_id=1) > 0
 
@@ -88,8 +84,8 @@ def test_older_round_does_not_clobber_a_newer_shoe() -> None:
     )
     assert second_generation > first_generation
 
-    newer = [_card(rank="K")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
-    older = [_card(rank="2")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
+    newer = [card(rank="K")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
+    older = [card(rank="2")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
 
     # The newer table settles first and persists its shoe.
     store.save_shoe(channel_id=5, cards=newer, generation=second_generation)
