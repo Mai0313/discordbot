@@ -19,6 +19,7 @@ from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.link_sources import SAMPLE_POST_URLS
 from tests.helpers.discord_mocks import FakeInteraction
 
 # What `extract_info` answers for a finished download: the least `download` reads a result from.
@@ -378,18 +379,6 @@ def test_normalized_host_reads_a_scheme_less_paste_and_never_raises() -> None:
     assert normalized_host(url="https://[abc/x") == ""
 
 
-# One URL each pattern must match, keyed by the registry's own source names so a new source
-# fails here until it has one.
-_SAMPLE_URLS = {
-    "threads": "https://www.threads.com/@user/post/ABC123",
-    "facebook": "https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/",
-    "instagram": "https://www.instagram.com/p/Dc5eNjYkoZE/",
-    "twitter": "https://x.com/Dbacks/status/1628549742539194368",
-    "douyin": "https://v.douyin.com/tLgj3lCAnds",
-    "bilibili": "https://www.bilibili.com/video/BV1jpK86hEc8",
-}
-
-
 def test_every_url_pattern_shares_the_generic_start_anchor() -> None:
     """A link glued to the end of an ASCII word is not a link to ANY of the scanners.
 
@@ -398,8 +387,11 @@ def test_every_url_pattern_shares_the_generic_start_anchor() -> None:
     word character, so those still match (#492). The patterns are read off the registry, plus
     YouTube's, which gates the answer turn rather than a source.
     """
-    assert set(_SAMPLE_URLS) == {source.name for source in LINK_CONTEXT_SOURCES}
-    patterns = [(source.url_pattern, _SAMPLE_URLS[source.name]) for source in LINK_CONTEXT_SOURCES]
+    # The shared sample table's one coverage guard: a new source fails here until it has a URL.
+    assert set(SAMPLE_POST_URLS) == {source.name for source in LINK_CONTEXT_SOURCES}
+    patterns = [
+        (source.url_pattern, SAMPLE_POST_URLS[source.name]) for source in LINK_CONTEXT_SOURCES
+    ]
     patterns.append((YOUTUBE_URL_RE, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
 
     for pattern, url in patterns:

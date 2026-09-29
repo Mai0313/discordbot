@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from pathlib import Path
@@ -14,6 +13,7 @@ from discordbot.utils.timezone import database_now
 from discordbot.utils.usage_log import UsageRecord, UsageRecorder, UsageLogConfig
 
 from tests.helpers.casting import as_bot, as_interaction, as_command_interaction_data
+from tests.helpers.usage_log import usage_records
 
 if TYPE_CHECKING:
     import pytest
@@ -32,16 +32,6 @@ def _recorder(directory: Path, enabled: bool = True) -> UsageRecorder:
             "USAGE_LOG_DIR": str(directory),
         })
     )
-
-
-def _lines(directory: Path) -> list[dict[str, Any]]:
-    """Reads every recorded line back, parsed as its own JSON object."""
-    return [
-        json.loads(line)
-        for path in sorted(directory.glob("*.jsonl"))
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 class FakeCommandInteraction:
@@ -77,7 +67,7 @@ async def test_a_record_lands_in_its_own_month_file(tmp_path: Path) -> None:
 
     month_file = usage_dir / f"{database_now():%Y-%m}.jsonl"
     assert [path.name for path in usage_dir.iterdir()] == [month_file.name]
-    (record,) = _lines(directory=usage_dir)
+    (record,) = usage_records(directory=usage_dir)
     # The exact key set is the privacy decision: who and where, and nothing about what
     # they typed. The username rides along so an operator can read the file, but it is a
     # label beside the id rather than a second identifier. Nothing prunes these files.
@@ -104,7 +94,7 @@ async def test_each_use_appends_its_own_line(tmp_path: Path) -> None:
         kind="reply", name="QA", user_id=1, user_name="a", guild_id=None, channel_id=3
     )
 
-    records = _lines(directory=usage_dir)
+    records = usage_records(directory=usage_dir)
     assert [(record["kind"], record["name"]) for record in records] == [
         ("slash", "ping"),
         ("reply", "QA"),
@@ -227,7 +217,7 @@ async def test_the_listener_records_one_invocation(tmp_path: Path) -> None:
         )
     )
 
-    records = _lines(directory=usage_dir)
+    records = usage_records(directory=usage_dir)
     assert [record["name"] for record in records] == ["memory clear", "ping"]
     assert all(record["kind"] == "slash" for record in records)
     assert (records[0]["user_id"], records[0]["user_name"]) == (42, "tester")
