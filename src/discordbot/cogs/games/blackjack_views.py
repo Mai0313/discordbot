@@ -822,89 +822,60 @@ class BlackjackView(View):
             await self._maybe_play_bot_turn_locked(message=message)
 
     async def _maybe_play_bot_turn_locked(self, message: Message) -> None:
-        """Plays consecutive bot moves until the active seat is non-bot or finished."""
+        """Plays consecutive bot moves until the bot no longer owns the next table decision."""
         if self.bot_user_id is None:
             return
         bot_user_id = self.bot_user_id
         steps = 0
         while not self._settled and not self.round_state.finished:
-            if self._bot_turn_step_limit_reached(steps=steps, bot_user_id=bot_user_id):
+            if steps >= MAX_BOT_TURN_STEPS:
+                logfire.error(
+                    "Bot turn loop exceeded step limit; breaking to prevent hang",
+                    bot_user_id=bot_user_id,
+                    state_revision=self._state_revision,
+                )
+                return
+            bot_seat = self._pending_bot_seat(bot_user_id=bot_user_id)
+            if bot_seat is None:
                 return
             before_revision = self._state_revision
             if self.round_state.phase == "insurance":
-                bot_player = self._find_player_by_user_id(user_id=bot_user_id)
-                if (
-                    bot_player is None
-                    or bot_player.insurance_resolved
-                    or not self.round_state.insurance_offered
-                ):
-                    return
-                await self._dispatch_bot_insurance_locked(message=message, bot_player=bot_player)
-                steps += 1
-                if self._bot_turn_dispatch_stalled(
-                    before_revision=before_revision,
-                    bot_user_id=bot_user_id,
-                    action_label="insurance",
-                ):
-                    return
-                await self._pace_next_bot_turn_if_pending(bot_user_id=bot_user_id)
-                continue
-            active = self.round_state.active_player()
-            if active is None or active.participant.user_id != bot_user_id:
-                return
-            await self._dispatch_bot_action_locked(message=message, active=active)
+                action_label = "insurance"
+                await self._dispatch_bot_insurance_locked(message=message, bot_player=bot_seat)
+            else:
+                action_label = "action"
+                await self._dispatch_bot_action_locked(message=message, active=bot_seat)
             steps += 1
-            if self._bot_turn_dispatch_stalled(
-                before_revision=before_revision, bot_user_id=bot_user_id, action_label="action"
-            ):
+            if self._state_revision == before_revision:
+                logfire.error(
+                    "Bot {action_label} dispatch did not advance state; breaking",
+                    action_label=action_label,
+                    bot_user_id=bot_user_id,
+                    state_revision=self._state_revision,
+                )
                 return
-            await self._pace_next_bot_turn_if_pending(bot_user_id=bot_user_id)
+            if self._pending_bot_seat(bot_user_id=bot_user_id) is not None:
+                await asyncio.sleep(delay=BOT_TURN_EDIT_DELAY_SECONDS)
 
-    def _bot_turn_step_limit_reached(self, *, steps: int, bot_user_id: int) -> bool:
-        """Returns whether the bot loop exceeded its safety step limit."""
-        if steps < MAX_BOT_TURN_STEPS:
-            return False
-        logfire.error(
-            "Bot turn loop exceeded step limit; breaking to prevent hang",
-            bot_user_id=bot_user_id,
-            state_revision=self._state_revision,
-        )
-        return True
-
-    def _bot_turn_dispatch_stalled(
-        self, *, before_revision: int, bot_user_id: int, action_label: str
-    ) -> bool:
-        """Returns whether a bot dispatch failed to advance round state."""
-        if self._state_revision != before_revision:
-            return False
-        logfire.error(
-            "Bot {action_label} dispatch did not advance state; breaking",
-            action_label=action_label,
-            bot_user_id=bot_user_id,
-            state_revision=self._state_revision,
-        )
-        return True
-
-    async def _pace_next_bot_turn_if_pending(self, *, bot_user_id: int) -> None:
-        """Waits briefly before another immediate bot-owned table decision."""
-        if self._bot_turn_pending(bot_user_id=bot_user_id):
-            await asyncio.sleep(delay=BOT_TURN_EDIT_DELAY_SECONDS)
-
-    def _bot_turn_pending(self, *, bot_user_id: int) -> bool:
-        """Returns whether the bot still owns the next immediate table decision."""
+    def _pending_bot_seat(self, *, bot_user_id: int) -> BlackjackPlayerHand | None:
+        """Returns the bot's seat while the bot owns the next immediate table decision."""
         if self._settled or self.round_state.finished:
-            return False
+            return None
         if self.round_state.phase == "insurance":
             bot_player = self._find_player_by_user_id(user_id=bot_user_id)
-            return (
-                bot_player is not None
-                and not bot_player.insurance_resolved
-                and self.round_state.insurance_offered
-            )
+            if (
+                bot_player is None
+                or bot_player.insurance_resolved
+                or not self.round_state.insurance_offered
+            ):
+                return None
+            return bot_player
         if self.round_state.phase != "player_actions":
-            return False
+            return None
         active = self.round_state.active_player()
-        return active is not None and active.participant.user_id == bot_user_id
+        if active is None or active.participant.user_id != bot_user_id:
+            return None
+        return active
 
     def _find_player_by_user_id(self, *, user_id: int) -> BlackjackPlayerHand | None:
         """Returns the player hand container matching a user_id, if any."""
