@@ -5016,8 +5016,8 @@ async def test_uploaded_image_without_extension_marks_as_image(
     ]
 
     # Classification is by content_type, not filename, so the marker render needs no upload.
-    rendered = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    rendered = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
     )
     parts = rendered["content"]
     assert isinstance(parts, list)
@@ -5042,8 +5042,8 @@ async def test_text_only_render_names_a_sticker_instead_of_calling_it_an_image(
         )
     ]
 
-    rendered = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    rendered = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
     )
     parts = rendered["content"]
     assert isinstance(parts, list)
@@ -5066,8 +5066,8 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
         FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
     ]
 
-    text_only = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    text_only = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
     )
     full = await cog.toolkit.input_builder.process_single_message(message=as_message(fake=message))
 
@@ -5084,11 +5084,27 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     assert len(text_markers) == len(full_files) == 1
 
 
-async def test_text_only_render_degrades_when_the_modality_gate_raises(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("text_only", "logged"),
+    [
+        (True, "gen_reply failed to render message for routing"),
+        (False, "gen_reply failed to process message"),
+    ],
+    ids=["route", "answer"],
+)
+async def test_a_render_degrades_when_the_modality_gate_raises(
+    monkeypatch: pytest.MonkeyPatch, text_only: bool, logged: str
 ) -> None:
-    """A raising modality gate degrades to empty text, not a pipeline abort."""
+    """A raising modality gate degrades either render to empty text, not a pipeline abort."""
     cog = _cog()
+    warned: list[str] = []
+
+    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records which render reported the failure."""
+        del kwargs
+        warned.append(message)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.input.logfire.warn", record_warn)
 
     def boom(model_name: str) -> set[str]:
         """Stands in for any unexpected failure inside the gate; the lookup itself cannot."""
@@ -5101,11 +5117,12 @@ async def test_text_only_render_degrades_when_the_modality_gate_raises(
         FakeAttachment(filename="pic.png", content_type="image/png", payload=b"x")
     ]
 
-    rendered = await cog.toolkit.input_builder.process_single_message_text_only(
-        message=as_message(fake=message)
+    rendered = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=text_only
     )
 
     assert rendered == EasyInputMessageParam(role="user", content="")
+    assert warned == [logged]
 
 
 # ---- prompt director (PromptGenerator) ----

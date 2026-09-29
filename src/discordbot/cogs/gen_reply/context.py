@@ -298,9 +298,9 @@ class ReplyContextBuilder(BaseModel):
         input_builder = self.toolkit.input_builder
         over_budget = history_media_over_budget(builder=input_builder, hist_messages=hist_messages)
         tasks: list[Awaitable[EasyInputMessageParam]] = [
-            input_builder.process_single_message_text_only(message=m)
-            if m.id in over_budget
-            else input_builder.process_single_message(message=m, allow_dead_cache=True)
+            input_builder.process_single_message(
+                message=m, text_only=m.id in over_budget, allow_dead_cache=True
+            )
             for m in hist_messages
         ]
         started = time.monotonic()
@@ -335,10 +335,9 @@ class ReplyContextBuilder(BaseModel):
         if replied_to is None:
             return []
         input_builder = self.toolkit.input_builder
-        if text_only:
-            processed = await input_builder.process_single_message_text_only(message=replied_to)
-        else:
-            processed = await input_builder.process_single_message(message=replied_to)
+        processed = await input_builder.process_single_message(
+            message=replied_to, text_only=text_only
+        )
         return [reference_header(ref=replied_to), processed]
 
     async def render_current_message(
@@ -350,12 +349,9 @@ class ReplyContextBuilder(BaseModel):
             current_header(message=self.message, has_reference=has_reference)
         ]
         input_builder = self.toolkit.input_builder
-        if text_only:
-            current_msg = await input_builder.process_single_message_text_only(
-                message=self.message
-            )
-        else:
-            current_msg = await input_builder.process_single_message(message=self.message)
+        current_msg = await input_builder.process_single_message(
+            message=self.message, text_only=text_only
+        )
         messages.append(current_msg)
         return messages
 
