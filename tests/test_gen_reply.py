@@ -165,6 +165,7 @@ from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploa
 
 from tests.helpers.casting import (
     as_bot,
+    as_client,
     as_message,
     step_dicts,
     make_forbidden,
@@ -835,15 +836,9 @@ def _png_b64() -> str:
 
 
 def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
-    """A GeminiFileUploader with its lazy Gemini client pre-seeded to a fake.
-
-    `gemini_client` is a cached_property, so seeding `__dict__` bypasses the real
-    factory and the upload path runs against the fake instead; the key it would have
-    built from is therefore never read.
-    """
-    uploader = GeminiFileUploader(api_key="test-key")
-    uploader.__dict__["gemini_client"] = FakeGeminiClient(files=files)
-    return uploader
+    """A GeminiFileUploader whose client is a fake, so the upload path runs against it."""
+    client = as_client(fake=FakeGeminiClient(files=files))
+    return GeminiFileUploader(gemini_client=lambda: client)
 
 
 def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUploader:
@@ -873,7 +868,10 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
-        handler.__dict__["gemini_client"] = FakeGeminiClient()
+        # A fake of its own rather than the toolkit's video fake, whose uploads all answer
+        # with one uri; the keyless toolkit would hand the uploader no client at all.
+        files_client = as_client(fake=FakeGeminiClient())
+        handler.gemini_client = lambda: files_client
     # Seeded into the cached_property's slot, so every path reads this one rather than
     # building a real toolkit against the test deployment's empty credentials.
     cog.__dict__["toolkit"] = toolkit
@@ -4161,8 +4159,9 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         del file, config
         raise RuntimeError("upload failed")
 
-    boom = _uploader(FakeGeminiFiles())
-    monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
+    boom_files = FakeGeminiFiles()
+    boom = _uploader(boom_files)
+    monkeypatch.setattr(boom_files, "upload", _raise)
     assert (
         await boom._upload_or_pend(filename="x.txt", data=b"x", content_type="text/plain") is None
     )
@@ -4340,7 +4339,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
     """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
     assert isinstance(
-        build_attachment_handler(model=ModelSettings(name="gpt-5.1"), gemini_api_key="test-key"),
+        build_attachment_handler(model=ModelSettings(name="gpt-5.1"), gemini_client=lambda: None),
         InlineRenderer,
     )
 
@@ -4348,7 +4347,7 @@ def test_gpt_attachment_handler_path_stays_disabled() -> None:
 def test_grok_attachment_handler_path_stays_disabled() -> None:
     """Grok models still use inline attachments until the xAI uploader branch is enabled."""
     assert isinstance(
-        build_attachment_handler(model=ModelSettings(name="grok-4.5"), gemini_api_key="test-key"),
+        build_attachment_handler(model=ModelSettings(name="grok-4.5"), gemini_client=lambda: None),
         InlineRenderer,
     )
 
@@ -4357,7 +4356,7 @@ def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
     """The Gemini branch uploads to the Files API while the switch is on."""
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_api_key="test-key"
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: None
         ),
         GeminiFileUploader,
     )
@@ -4370,7 +4369,7 @@ def test_the_file_api_kill_switch_inlines_gemini_attachments(
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_api_key="test-key"
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: None
         ),
         InlineRenderer,
     )
@@ -4536,6 +4535,42 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
         is None
     )
     assert logged == ["xAI Files API key missing; dropping attachment"]
+
+
+async def test_gemini_uploader_uploads_through_the_toolkit_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attachments upload with the toolkit's own direct client; a keyless one names the key.
+
+    A file is readable only by the key that uploaded it, so the uploader holds no client of its
+    own: the one the answer's direct paths use is the one it uploads with.
+    """
+    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    keyed = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="test-key")
+    keyed_handler = keyed.input_builder.attachment_handler
+    assert isinstance(keyed_handler, GeminiFileUploader)
+    assert keyed_handler.gemini_client() is keyed.gemini_client
+
+    logged: list[str] = []
+
+    def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the missing-key log."""
+        del kwargs
+        logged.append(message)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.logfire.error", record_error
+    )
+    keyless = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
+    keyless_handler = keyless.input_builder.attachment_handler
+    assert isinstance(keyless_handler, GeminiFileUploader)
+    assert (
+        await keyless_handler._upload_or_pend(
+            filename="x.txt", data=b"x", content_type="text/plain"
+        )
+        is None
+    )
+    assert logged == ["gemini Files API key missing; dropping attachment"]
 
 
 async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:

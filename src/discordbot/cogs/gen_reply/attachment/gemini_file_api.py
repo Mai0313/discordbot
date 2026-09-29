@@ -9,8 +9,8 @@ that adopts an upload which finished processing after that bound. Kept separate 
 
 import time
 from datetime import UTC, datetime, timedelta
-from functools import cached_property
 from collections import OrderedDict
+from collections.abc import Callable
 
 from google import genai
 import logfire
@@ -64,23 +64,21 @@ def _expiry_of(*, uploaded: File) -> datetime:
 class GeminiFileUploader(FileUploadRenderer):
     """Uploads attachments to the Gemini Files API and references them by URI.
 
-    One uploader per Gemini key, because a file is readable only by the project that
-    uploaded it: the `_pending_uploads` re-poll cache below, and the render cache in
-    `input.py` above, both hand back a uri that is worthless to any other key. Sharing one
-    uploader across keys would therefore hand a key-1 uri to a key-2 request, which fails the
-    whole answer rather than dropping the attachment.
+    Uploads through the deployment's own direct client rather than one built from a key of
+    its own, because a file is readable only by the project that uploaded it: a uri uploaded
+    under any other key fails the whole answer rather than dropping the attachment.
 
     Overrides `_resolve_file_upload` whole, for the pending re-poll, so its upload is
     `_upload_or_pend` rather than `_upload_file`: a file still PROCESSING at the activation
     bound comes back as a `PendingUpload` to re-poll later, not as a failure.
     """
 
-    api_key: str = Field(
+    gemini_client: Callable[[], genai.Client | None] = Field(
         ...,
         description=(
-            "The Gemini key this uploader uploads with. Required rather than defaulted, so a "
-            "caller that forgot to say which key fails at construction instead of silently "
-            "uploading to the first one while the answer dispatches on another."
+            "Hands back the deployment's direct Gemini client, or None when no key is "
+            "configured. Read at each upload rather than once, so a keyless deployment builds "
+            "no client and every upload is dropped with the missing key named."
         ),
     )
     # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
@@ -90,22 +88,6 @@ class GeminiFileUploader(FileUploadRenderer):
     _pending_uploads: OrderedDict[int | str, PendingUpload] = PrivateAttr(
         default_factory=OrderedDict
     )
-
-    @cached_property
-    def gemini_client(self) -> genai.Client:
-        """The Gemini client for direct Files API uploads, built lazily on first use.
-
-        The client uploads attachments directly (not through the LiteLLM proxy) so each
-        upload can be polled to an ACTIVE `state` before it is referenced. Built here, not
-        at the cog: this uploader is only constructed on the Gemini answer-model path, so a
-        non-Gemini deployment never builds it. An empty key raises here, and
-        because construction is lazy that surfaces at the upload call, where `_upload_or_pend`
-        catches it and drops the attachment while the text reply still goes out.
-
-        Returns:
-            A Gemini client reused across uploads.
-        """
-        return genai.Client(api_key=self.api_key)
 
     async def render_image(
         self,
@@ -133,13 +115,16 @@ class GeminiFileUploader(FileUploadRenderer):
     async def _repoll_pending_upload(self, cache_key: int | str) -> PendingUploadRepoll:
         """Re-polls a prior pending upload once, without re-downloading the source."""
         pending = self._pending_uploads.get(cache_key)
-        if pending is None:
+        # A pending entry exists only after an upload with a client, so a missing one here
+        # means there is nothing to re-poll.
+        client = self.gemini_client()
+        if pending is None or client is None:
             return PendingUploadRepoll(handled=False)
         if datetime.now(tz=UTC) >= pending.expires_at:
             self._pending_uploads.pop(cache_key, None)
             return PendingUploadRepoll(handled=False)
         try:
-            uploaded = await self.gemini_client.aio.files.get(name=pending.name)
+            uploaded = await client.aio.files.get(name=pending.name)
         except Exception as exc:
             # Broad on purpose: this is a best-effort side-channel, and the caller's renders are
             # gathered without `return_exceptions`, so an escaping error would blank the whole
@@ -263,16 +248,9 @@ class GeminiFileUploader(FileUploadRenderer):
         )
         # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
         # call, so the activation poll counts against the concurrency cap on purpose.
-        try:
-            # Resolved outside the upload call so a missing key is not mistaken for an SDK
-            # rejection: the lazy build raises ValueError when no key resolves at all.
-            client = self.gemini_client
-        except ValueError as exc:
-            logfire.error(
-                "gemini Files API key missing; dropping attachment",
-                filename=filename,
-                _exc_info=exc,
-            )
+        client = self.gemini_client()
+        if client is None:
+            logfire.error("gemini Files API key missing; dropping attachment", filename=filename)
             return None
         try:
             uploaded = await upload_file(

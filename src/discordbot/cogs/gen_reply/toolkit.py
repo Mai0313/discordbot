@@ -158,13 +158,14 @@ class ReplyToolkit(BaseModel):
 
         Returns:
             A builder bound to this bot, the runtime model catalog, and an attachment handler
-            holding the direct Gemini credential.
+            uploading through this toolkit's direct Gemini client.
         """
         return MessageInputBuilder(
             bot=self.bot,
             runtime_models=self.runtime_models,
             attachment_handler=build_attachment_handler(
-                model=self.runtime_models.slow_model, gemini_api_key=self.gemini_api_key
+                model=self.runtime_models.slow_model,
+                gemini_client=lambda: self.gemini_client_if_configured,
             ),
         )
 
