@@ -122,6 +122,9 @@ TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="minimal")
 # list is non-empty, since an empty one short-circuits before any model call.
 _NOTES = ("使用者提到一件值得記住的事",)
 
+# The subject a reply schedules for its author: the target, then where the turn happened.
+_SUBJECT = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}"
+
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
     summary: str,
@@ -242,6 +245,16 @@ def _writer() -> tuple[MemoryWriterAI, FakeMemoryClient]:
         consolidate_model=TEST_MEMORY_MODEL,
     )
     return writer, fake_client
+
+
+async def _evaluate(
+    writer: MemoryWriterAI,
+    notes: tuple[str, ...] = _NOTES,
+    transcript: str = "hi",
+    subject: str = _SUBJECT,
+) -> RawMemoryDraft | None:
+    """Runs the note review for the test user."""
+    return await writer.evaluate(subject=subject, transcript=transcript, notes=notes)
 
 
 _stored_fact = partial(make_fact, owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice (alice)"))
@@ -473,9 +486,7 @@ async def test_evaluate_returns_redacted_draft() -> None:
         "提到 token sk-aaaabbbbccccddddeeee 的事",
         normalized_key="preference.sk-aaaabbbbccccddddeeee",
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="some transcript", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer, transcript="some transcript")
     assert draft is not None
     assert draft.has_signal is True
     assert "sk-aaaabbbbccccddddeeee" not in draft.observations[0].summary_zh
@@ -489,9 +500,7 @@ async def test_evaluate_returns_redacted_draft() -> None:
 async def test_evaluate_no_signal_passthrough() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert draft.has_signal is False
     assert draft.observations == ()
@@ -512,7 +521,7 @@ async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(subject="target_server_id: 1", transcript="hi", notes=_NOTES)
+    draft = await _evaluate(writer=writer, subject="target_server_id: 1")
     assert draft is not None
     assert [obs.normalized_key for obs in draft.observations] == ["vocab.member_alias.42"]
 
@@ -552,9 +561,7 @@ async def test_evaluate_filters_weak_observations() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert draft.has_signal is True
     assert [observation.normalized_key for observation in draft.observations] == [
@@ -589,9 +596,7 @@ async def test_evaluate_accepts_permanent_and_rejects_volatile_durability() -> N
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert [observation.normalized_key for observation in draft.observations] == [
         "fact.gender.male"
@@ -610,9 +615,7 @@ async def test_evaluate_can_refuse_every_note() -> None:
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert draft.has_signal is False
 
@@ -624,7 +627,7 @@ async def test_evaluate_without_notes_calls_no_model() -> None:
     to find out whether there was anything to find.
     """
     writer, fake_client = _writer()
-    draft = await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=())
+    draft = await _evaluate(writer=writer, notes=())
     assert draft is not None
     assert draft.has_signal is False
     assert fake_client.responses.parse_models == []
@@ -634,9 +637,7 @@ async def test_evaluate_hands_the_notes_to_the_model() -> None:
     """The notes are the input the review is about, so they have to reach the request."""
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=("使用者偏好繁體中文",)
-    )
+    await _evaluate(writer=writer, notes=("使用者偏好繁體中文",))
     user_text = fake_client.responses.parse_bodies[0]
     assert "使用者偏好繁體中文" in user_text
     assert "<memory_notes>" in user_text
@@ -648,28 +649,19 @@ async def test_evaluate_returns_none_on_validation_error() -> None:
         RawMemoryDraft.model_validate({})
     except ValidationError as exc:
         fake_client.responses.raises = exc
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_evaluate_returns_none_on_generic_failure() -> None:
     writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("boom")
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_evaluate_returns_none_on_empty_parse() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = None
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_consolidate_marks_every_absent_input_block() -> None:
@@ -729,7 +721,7 @@ async def test_writer_uses_distinct_models_per_phase() -> None:
         consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
-    await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
+    await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_models == ["evaluate-model", "consolidate-model"]
@@ -1002,6 +994,29 @@ def _user_message() -> list[EasyInputMessageParam]:
     return [EasyInputMessageParam(role="user", content=f"Alice (alice) [id: {USER_ID}]: 哈囉")]
 
 
+def _schedule(  # noqa: PLR0913 -- one knob per turn field a test varies
+    writer: MemoryWriterAI,
+    remember_notes: tuple[str, ...] = _NOTES,
+    forget_notes: tuple[str, ...] = (),
+    subject: str = _SUBJECT,
+    full_reply: str = "回覆",
+    report: inflight.MemoryWriteReport | None = None,
+    scope: str = USER_SCOPE,
+) -> None:
+    """Schedules the memory update one reply by the test user asks for."""
+    pipeline.schedule_memory_update(
+        scope=scope,
+        subject=subject,
+        message_list=_user_message(),
+        full_reply=full_reply,
+        writer=writer,
+        identity=IDENTITY,
+        remember_notes=remember_notes,
+        forget_notes=forget_notes,
+        report=report,
+    )
+
+
 async def _wait_for_inflight() -> None:
     """Awaits the scheduled background memory task for the test user."""
     task = inflight._inflight_tasks.get(key=USER_SCOPE)
@@ -1043,15 +1058,7 @@ async def _wait_for_persisted_writes() -> None:
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
@@ -1065,15 +1072,7 @@ async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Pa
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=(),
-    )
+    _schedule(writer=writer, remember_notes=())
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert fake_client.responses.parse_models == []
@@ -1093,16 +1092,7 @@ async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_d
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
     writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("review is down")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=(),
-        forget_notes=("使用者已經不住台中了",),
-    )
+    _schedule(writer=writer, remember_notes=(), forget_notes=("使用者已經不住台中了",))
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "### forget_request" in raw_text
@@ -1191,13 +1181,8 @@ async def test_a_forget_only_call_is_never_told_to_compact(memory_isolated_dir: 
     fake_client.responses.answer = _answers(
         review=_draft("希望被叫阿明", normalized_key="preference.name")
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-        message_list=_user_message(),
-        full_reply="回覆",
+    _schedule(
         writer=writer,
-        identity=IDENTITY,
         remember_notes=("使用者希望被叫阿明",),
         forget_notes=("使用者已經不住台中了",),
     )
@@ -1243,13 +1228,8 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
     fake_client.responses.answer = _answers(
         review=_draft("希望被叫阿明", normalized_key="preference.name")
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-        message_list=_user_message(),
-        full_reply="回覆",
+    _schedule(
         writer=writer,
-        identity=IDENTITY,
         remember_notes=("使用者希望被叫阿明",),
         forget_notes=("使用者已經不住台中了",),
     )
@@ -1915,16 +1895,7 @@ async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_
         """Captures what the pipeline decided to report."""
         reported.append(summary)
 
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-        report=record,
-    )
+    _schedule(writer=writer, report=record)
     await _wait_for_inflight()
     assert len(reported) == 1
     assert reported[0].remembered == ("偏好繁體中文",)
@@ -1967,16 +1938,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         """Captures what the pipeline decided to report."""
         reported.append(summary)
 
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-        report=record,
-    )
+    _schedule(writer=writer, report=record)
     if outcome == "cleared-mid-flight":
         mark_cleared(scope=USER_SCOPE)
     await _wait_for_inflight()
@@ -2005,13 +1967,8 @@ async def test_a_failed_review_still_reports_the_forget_it_already_wrote(
         """Captures what the pipeline decided to report."""
         reported.append(summary)
 
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
+    _schedule(
         writer=writer,
-        identity=IDENTITY,
         remember_notes=("他換了新桌機",),
         forget_notes=("別再提那台舊筆電",),
         report=record,
@@ -2058,16 +2015,7 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
         ("superseded", "他在台北工作"),
         ("newest", "他養了一隻貓"),
     ):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=(note,),
-            report=_recorder(key=key),
-        )
+        _schedule(writer=writer, remember_notes=(note,), report=_recorder(key=key))
     await _drain_scope()
 
     assert [len(reports) for reports in seen.values()] == [1, 1, 1]
@@ -2139,16 +2087,7 @@ async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
         (("他住在台中",), ()),
         ((), ("他已經不住台中了",)),
     ):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=remember,
-            forget_notes=forget,
-        )
+        _schedule(writer=writer, remember_notes=remember, forget_notes=forget)
     await _drain_scope()
 
     staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
@@ -2265,16 +2204,7 @@ async def test_a_correction_lost_to_the_dedupe_is_logged(
     monkeypatch.setattr("discordbot.services.memory.pipeline.logfire.info", record)
     # An ordinary repeat, with no forget beside it, is what the dedupe is for: not logged.
     for forget in ((), ("使用者已經不住台中了",)):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=("使用者住在台南",),
-            forget_notes=forget,
-        )
+        _schedule(writer=writer, remember_notes=("使用者住在台南",), forget_notes=forget)
         await _wait_for_inflight()
 
     assert logged == [{"scope": USER_SCOPE, "user": IDENTITY, "keys": ["fact.city"]}]
@@ -2308,15 +2238,7 @@ async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert raw_file_bytes(scope=USER_SCOPE) == 0
@@ -2346,36 +2268,12 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
     fake_client.responses.answer = slow_answer
     # A two-line subject: the source line must round-trip through the deferred replay.
     subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=99)}"
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=subject,
-        message_list=_user_message(),
-        full_reply="第一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, subject=subject, full_reply="第一")
     await started.wait()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=subject,
-        message_list=_user_message(),
-        full_reply="第二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=subject,
-        message_list=_user_message(),
-        full_reply="第三",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, subject=subject, full_reply="第二")
+    _schedule(writer=writer, subject=subject, full_reply="第三")
     assert inflight._inflight_tasks.get(key=USER_SCOPE) is first_task
     release.set()
     await first_task
@@ -2417,15 +2315,7 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
 
     fake_client.responses.answer = slow_answer
     for note in ("記住 X", "記住 Y", "記住 Z"):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=(note,),
-        )
+        _schedule(writer=writer, remember_notes=(note,))
         if note == "記住 X":
             await started.wait()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
@@ -2466,14 +2356,10 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
 
     fake_client.responses.answer = slow_answer
     for guild, note in ((99, "在 99 說的"), (77, "在 77 說的"), (99, "也在 99 說的")):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
-            message_list=_user_message(),
-            full_reply="回覆",
+        _schedule(
             writer=writer,
-            identity=IDENTITY,
             remember_notes=(note,),
+            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
         )
         if guild == 99 and note == "在 99 說的":
             await started.wait()
@@ -2502,30 +2388,14 @@ async def test_pipeline_consolidates_at_threshold(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="回覆一")
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
     fake_client.responses.answer = _answers(
         review=_draft("第二筆", normalized_key="preference.second"), facts=_consolidated()
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="回覆二")
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     # The fact is stamped with the scheduling identity, not written by the model.
@@ -2553,15 +2423,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
         raise RuntimeError("consolidation down")
 
     fake_client.responses.answer = consolidation_down
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
@@ -2578,15 +2440,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
     writer, fake_client = _writer()
 
     fake_client.responses.answer = _answers(review=_draft("已知資訊"))
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "既有內容" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -2606,15 +2460,7 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
     fake_client.responses.answer = _answers(
         review=_draft("訊號"), facts=_consolidated(text="壓縮後")
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "壓縮後" in _memory_text()
     # The oversized compartment flips consolidation into compaction mode, and the
@@ -2633,15 +2479,7 @@ async def test_pipeline_small_compartment_skips_compaction(
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
     writer, fake_client = _writer()
     fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     # order-contract: the compartment's call follows the note review and precedes the tone call.
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
@@ -2857,15 +2695,7 @@ async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> N
         return _draft("不該被寫入")
 
     fake_client.responses.answer = slow_answer
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await parse_started.wait()
     mark_cleared(scope=USER_SCOPE)
     release.set()
@@ -2876,15 +2706,7 @@ async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> N
 async def test_pipeline_background_failure_is_swallowed(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.raises = MemoryError("unexpected")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert task is not None
     await asyncio.wait([task])
@@ -3580,27 +3402,11 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(memory_isolated_
         await asyncio.sleep(100)
 
     fake_client.responses.answer = hang
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="一")
     await started.wait()
     task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert task is not None
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="二")
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -3627,26 +3433,10 @@ async def test_pipeline_drops_pending_replay_after_clear(memory_isolated_dir: Pa
         return _draft("不該被寫入")
 
     fake_client.responses.answer = first_call_waits
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="一")
     await first_started.wait()
     # Queue a pending replay, then clear before the in-flight task finishes.
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="二")
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
     mark_cleared(scope=USER_SCOPE)
     release.set()
@@ -3695,10 +3485,7 @@ async def test_evaluate_returns_none_on_incomplete_response() -> None:
     fake_client.responses.status = "incomplete"
     # A response that hit the output-token budget must be refused even when the
     # parsed payload looks usable.
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_memory_calls_omit_max_output_tokens() -> None:
@@ -3706,7 +3493,7 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
     # uses the model's own ceiling; only the `incomplete` guard bounds output.
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
+    await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_extra_kwargs == [{}, {}]
@@ -3724,15 +3511,7 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("訊號")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     # Threshold is met but the cooldown has not elapsed: only the phase-1
     # extract call ran and raw stays queued.
@@ -3750,15 +3529,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     )
     writer, fake_client = _writer()
     fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     # The attempt refreshed the per-user cooldown timestamp.
@@ -3775,15 +3546,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
     fake_client.responses.answer = _answers(
         review=_draft("超過位元組門檻的長訊號"), facts=_consolidated(text="爆量合併")
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     # The raw byte burst escape hatch consolidates despite the active cooldown.
     assert "爆量合併" in _memory_text()
@@ -3796,15 +3559,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
     writer, fake_client = _writer()
     fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     # order-contract: the compartment's call follows the note review and precedes the tone call.
     consolidation_input = fake_client.responses.parse_bodies[1]
@@ -3872,14 +3627,10 @@ async def test_memory_semaphore_caps_concurrent_updates(
     fake_client.responses.answer = tracking_answer
     scopes = [user_scope(user_id=USER_ID + offset) for offset in range(3)]
     for offset, scope in enumerate(scopes):
-        pipeline.schedule_memory_update(
-            scope=scope,
-            subject=f"target_user_id: {USER_ID + offset}",
-            message_list=_user_message(),
-            full_reply="回覆",
+        _schedule(
             writer=writer,
-            identity=IDENTITY,
-            remember_notes=_NOTES,
+            subject=f"target_user_id: {USER_ID + offset}\n{subject_source_line(guild_id=42)}",
+            scope=scope,
         )
     tasks = [
         task for scope in scopes if (task := inflight._inflight_tasks.get(key=scope)) is not None
@@ -3923,15 +3674,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     fake_client.responses.answer = _answers(
         review=_draft("清除後的新訊號"), facts=_consolidated(text="全新整理")
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "全新整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -4140,15 +3883,7 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
 ) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -4162,15 +3897,7 @@ async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
     writer, fake_client = _writer()
     # extract() returns None on an LLM error, which must park the row at failed.
     fake_client.responses.raises = RuntimeError("llm down")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -4182,15 +3909,7 @@ async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
 async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -4477,9 +4196,7 @@ async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     sharing_by_key = {
         observation.normalized_key: observation.sharing for observation in draft.observations
@@ -4528,9 +4245,7 @@ async def test_a_named_participant_locks_an_observation_with_no_id_token() -> No
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer, transcript=_ROSTER_TRANSCRIPT)
     assert draft is not None
     assert {
         observation.normalized_key: observation.sharing for observation in draft.observations
@@ -4552,9 +4267,7 @@ async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer, transcript=_ROSTER_TRANSCRIPT)
     assert draft is not None
     assert [observation.sharing for observation in draft.observations] == ["global"]
 
@@ -4605,14 +4318,8 @@ def test_filter_duplicate_observations_legacy_evidence_pairs_with_none() -> None
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    _schedule(
+        writer=writer, subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}"
     )
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
@@ -4627,15 +4334,7 @@ async def test_pipeline_sourceless_subject_renders_without_source_fields(
     # old observation format.
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, subject=f"target_user_id: {USER_ID}")
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "- source:" not in raw_text
@@ -4729,15 +4428,7 @@ async def test_pipeline_consolidation_writes_tone_note(
         facts=_consolidated(),
         tone=_no_change(tone="## 語氣偏好\n* 偏好禮貌"),
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
@@ -4766,15 +4457,7 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
         facts=_no_change(),
         tone=_no_change(tone="## 語氣偏好\n* 偏好簡短"),
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "既有內容" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好簡短"
@@ -4802,15 +4485,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
     fake_client.responses.answer = _answers(
         review=_draft("訊號"), facts=_consolidated(), tone=_no_change(tone=bad_tone)
     )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -5027,15 +4702,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir:
 
     fake_client.responses.answer = first_call_waits
     for reply in ("一", "二"):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}",
-            message_list=_user_message(),
-            full_reply=reply,
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=_NOTES,
-        )
+        _schedule(writer=writer, full_reply=reply)
         await first_started.wait()
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
 
@@ -5097,15 +4764,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
 
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="清除已經回傳",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="清除已經回傳")
     await _wait_for_inflight()
 
     job = await memory_db.get_job(scope=USER_SCOPE)
@@ -5462,15 +5121,7 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("不該被寫入")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     # The task has not run a single step yet; the clear lands first.
     await pipeline.clear_scope_memory(scope=USER_SCOPE)
     await _wait_for_inflight()
