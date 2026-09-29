@@ -12,11 +12,9 @@ from typing import TYPE_CHECKING, Literal
 import asyncio
 from collections.abc import Callable
 
-from openai import AsyncOpenAI
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
@@ -80,12 +78,6 @@ class ReplyPipeline(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client every phase dispatches on."
-    )
-    bot: SkipValidation[commands.Bot] = Field(
-        ..., description="The Discord bot instance, for its own user and the cross-cog hops."
-    )
     config: SkipValidation[LLMConfig] = Field(
         ..., description="Runtime LLM config, read for the per-feature kill-switches."
     )
@@ -98,7 +90,6 @@ class ReplyPipeline(BaseModel):
     toolkit: ReplyToolkit = Field(
         ..., description="The clients, generators and caches every phase of this turn uses."
     )
-    message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
         ..., description="Where this turn happens: its replies, its history and its guild."
     )
@@ -109,15 +100,17 @@ class ReplyPipeline(BaseModel):
         ..., description="Ordered status-reaction chain on the source message."
     )
 
+    @property
+    def message(self) -> Message:
+        """The message being answered, read off the surface that carries it."""
+        return self.surface.message
+
     def _answer_turn(self) -> AnswerTurn:
         """The streamer both the QA answer and the media persona replies run through."""
         return AnswerTurn(
-            client=self.client,
-            bot=self.bot,
             config=self.config,
             media_delivery=self.media_delivery,
             toolkit=self.toolkit,
-            message=self.message,
             surface=self.surface,
         )
 
@@ -240,7 +233,6 @@ class ReplyPipeline(BaseModel):
             config=self.config,
             media_delivery=self.media_delivery,
             toolkit=self.toolkit,
-            message=self.message,
             surface=self.surface,
             answer=self._answer_turn(),
         )
@@ -299,10 +291,8 @@ class ReplyPipeline(BaseModel):
         parts_task: asyncio.Task[MessageParts] | None = None
         link_tasks: dict[str, LinkTask] = {}
         link_context_deadline: float | None = None
-        context_builder = ReplyContextBuilder(
-            bot=self.bot, toolkit=self.toolkit, message=message, surface=self.surface
-        )
-        classifier = RouteClassifier(client=self.client, toolkit=self.toolkit, message=message)
+        context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
+        classifier = RouteClassifier(toolkit=self.toolkit, message=message)
         try:
             with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
@@ -359,7 +349,7 @@ class ReplyPipeline(BaseModel):
                     # path that ever marks one.
                     for source_name in link_tasks:
                         await self.surface.mark(
-                            emoji=LINK_SOURCE_EMOJIS[source_name], bot_user=self.bot.user
+                            emoji=LINK_SOURCE_EMOJIS[source_name], bot_user=self.toolkit.bot.user
                         )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only

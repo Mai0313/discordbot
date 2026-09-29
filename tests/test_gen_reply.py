@@ -947,10 +947,7 @@ def _context_builder(
 ) -> ReplyContextBuilder:
     """The context builder `ReplyPipeline` would build for this message."""
     return ReplyContextBuilder(
-        bot=cog.bot,
-        toolkit=toolkit or cog.toolkit,
-        message=message,
-        surface=TurnSurface.for_message(message=message),
+        toolkit=toolkit or cog.toolkit, surface=TurnSurface.for_message(message=message)
     )
 
 
@@ -958,9 +955,7 @@ def _classifier(
     *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
-    return RouteClassifier(
-        client=cog.openai_client, toolkit=toolkit or cog.toolkit, message=message
-    )
+    return RouteClassifier(toolkit=toolkit or cog.toolkit, message=message)
 
 
 def _answer(
@@ -968,12 +963,9 @@ def _answer(
 ) -> AnswerTurn:
     """The answer turn `ReplyPipeline` would build for this message."""
     return AnswerTurn(
-        client=cog.openai_client,
-        bot=cog.bot,
         config=cog.config,
         media_delivery=cog.media_delivery,
         toolkit=toolkit or cog.toolkit,
-        message=message,
         surface=TurnSurface.for_message(message=message),
     )
 
@@ -990,7 +982,6 @@ def _media_routes(
         config=cog.config,
         media_delivery=cog.media_delivery,
         toolkit=toolkit or cog.toolkit,
-        message=message,
         surface=surface or TurnSurface.for_message(message=message),
         answer=_answer(cog=cog, message=message, toolkit=toolkit),
     )
@@ -1141,13 +1132,10 @@ async def _run_pipeline(
     """
     msg = as_message(fake=message)
     await ReplyPipeline(
-        client=cog.openai_client,
-        bot=cog.bot,
         config=cog.config,
         media_delivery=cog.media_delivery,
         usage_recorder=cog.usage_recorder,
         toolkit=cog.toolkit,
-        message=msg,
         surface=surface or TurnSurface.for_message(message=msg),
         user_prompt=message.content,
         reactions=ReactionStatusChain(message=msg, bot_user=cog.bot.user, enabled=False),

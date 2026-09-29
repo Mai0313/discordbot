@@ -276,13 +276,10 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         try:
             await ReplyPipeline(
-                client=self.openai_client,
-                bot=self.bot,
                 config=self.config,
                 media_delivery=self.media_delivery,
                 usage_recorder=self.usage_recorder,
                 toolkit=self.toolkit,
-                message=message,
                 surface=surface,
                 user_prompt=user_prompt,
                 reactions=reactions,

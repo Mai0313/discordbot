@@ -257,9 +257,7 @@ def test_an_ask_turn_reads_memory_scoped_to_where_it_happens(
     interaction = _interaction(guild_id=guild_id, context=context)
     message = _ask_message(interaction=interaction)
     builder = ReplyContextBuilder(
-        bot=interaction.client,
         toolkit=_toolkit(interaction=interaction),
-        message=message,
         surface=TurnSurface.for_interaction(message=message, interaction=interaction),
     )
 
@@ -294,14 +292,11 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     message = _ask_message(interaction=interaction)
     surface = TurnSurface.for_interaction(message=message, interaction=interaction)
     turn = AnswerTurn(
-        client=SimpleNamespace(),
-        bot=interaction.client,
         config=LLMConfig(),
         media_delivery=MediaDeliveryPlanner(
             media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
         ),
         toolkit=_toolkit(interaction=interaction),
-        message=message,
         surface=surface,
     )
 

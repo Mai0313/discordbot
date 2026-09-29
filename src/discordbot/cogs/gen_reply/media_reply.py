@@ -75,9 +75,6 @@ class MediaReplyRoutes(BaseModel):
     toolkit: ReplyToolkit = Field(
         ..., description="The generators, clients and model catalog this route renders through."
     )
-    message: SkipValidation[Message] = Field(
-        ..., description="The message that asked for the media."
-    )
     surface: TurnSurface = Field(..., description="Where the delivered media goes.")
     answer: AnswerTurn = Field(
         ...,
@@ -85,6 +82,11 @@ class MediaReplyRoutes(BaseModel):
             "Streams the best-effort persona reply about the media once it has been delivered."
         ),
     )
+
+    @property
+    def message(self) -> Message:
+        """The message that asked for the media, read off the surface that carries it."""
+        return self.surface.message
 
     async def _deliver(self, *, data: bytes, filename: str) -> Message | None:
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.

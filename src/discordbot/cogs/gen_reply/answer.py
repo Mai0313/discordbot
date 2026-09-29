@@ -12,11 +12,9 @@ import asyncio
 import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
-from openai import AsyncOpenAI
 import logfire
 from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -160,13 +158,6 @@ class AnswerTurn(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client every answer request dispatches on."
-    )
-    bot: SkipValidation[commands.Bot] = Field(
-        ...,
-        description="The Discord bot instance, for its own user (reactions) and the research hop.",
-    )
     config: SkipValidation[LLMConfig] = Field(
         ..., description="Runtime LLM config, read for the inline-marker kill-switches."
     )
@@ -174,12 +165,16 @@ class AnswerTurn(BaseModel):
         ..., description="Attach-vs-host-vs-drop planner handed to the streamer."
     )
     toolkit: ReplyToolkit = Field(
-        ..., description="The reply toolkit's clients, generators and model catalog."
+        ..., description="The reply toolkit: the bot, its clients, generators and model catalog."
     )
-    message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
         ..., description="Where this turn's replies go, and which guild it is really happening in."
     )
+
+    @property
+    def message(self) -> Message:
+        """The message being answered, read off the surface that carries it."""
+        return self.surface.message
 
     async def stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route
         self,
@@ -252,7 +247,7 @@ class AnswerTurn(BaseModel):
 
                 async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
                     """Issues the persona-reply request; called again per retry attempt."""
-                    return await self.client.responses.create(
+                    return await self.toolkit.openai_client.responses.create(
                         model=model.name,
                         instructions=build_runtime_instructions(
                             system_prompt=system_prompt,
@@ -422,7 +417,7 @@ class AnswerTurn(BaseModel):
             # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
-            await self.surface.mark(emoji=YOUTUBE_EMOJI, bot_user=self.bot.user)
+            await self.surface.mark(emoji=YOUTUBE_EMOJI, bot_user=self.toolkit.bot.user)
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
@@ -486,7 +481,7 @@ class AnswerTurn(BaseModel):
                         steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
                         effort=slow_model.effort,
                     )
-                return await self.client.responses.create(
+                return await self.toolkit.openai_client.responses.create(
                     model=slow_model.name,
                     instructions=build_runtime_instructions(
                         system_prompt=system_prompt,
@@ -509,7 +504,7 @@ class AnswerTurn(BaseModel):
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
         if research_offered and streamer.research_brief:
             await maybe_launch_research(
-                bot=self.bot,
+                bot=self.toolkit.bot,
                 message=self.message,
                 anchor=streamer.reply,
                 brief=streamer.research_brief,

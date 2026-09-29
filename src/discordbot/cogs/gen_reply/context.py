@@ -14,7 +14,6 @@ import asyncio
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
@@ -264,16 +263,13 @@ class ReplyContextBuilder(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    bot: SkipValidation[commands.Bot] = Field(
+    toolkit: ReplyToolkit = Field(
         ...,
         description=(
-            "The Discord bot instance, whose user id is excluded from every memory allowlist."
+            "The reply toolkit: the bot, whose user id is excluded from every memory allowlist, "
+            "and the input builder."
         ),
     )
-    toolkit: ReplyToolkit = Field(
-        ..., description="The reply toolkit's clients, model catalog and input builder."
-    )
-    message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
         ...,
         description=(
@@ -281,6 +277,11 @@ class ReplyContextBuilder(BaseModel):
             "compartments are scoped to."
         ),
     )
+
+    @property
+    def message(self) -> Message:
+        """The message being answered, read off the surface that carries it."""
+        return self.surface.message
 
     async def fetch_history(self, *, limit: int) -> list[Message]:
         """Fetches up to `limit` history messages once, trimmed to the char budget.
@@ -426,7 +427,7 @@ class ReplyContextBuilder(BaseModel):
         self, *, server_memory: str, recall_context: RecallContext
     ) -> tuple[list[UserMemory], dict[int, RecallCandidate], int]:
         """Resolves deterministic memories and derives disjoint optional alias candidates."""
-        bot_user = self.bot.user
+        bot_user = self.toolkit.bot.user
         if bot_user is None:
             return [], {}, 0
 
