@@ -389,6 +389,8 @@ def _settle_split_twenty_one(
         delta = -hand.bet
     elif dealer_total == 21:
         outcome, delta = "push", 0
+    elif is_bust(cards=dealer):
+        outcome, delta = "dealer_bust", hand.bet
     else:
         outcome, delta = "win", hand.bet
     return outcome, delta
