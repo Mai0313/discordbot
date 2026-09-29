@@ -6,6 +6,7 @@ someone a working link is dead. So these pin the mapping status by status rather
 a range check to keep meaning what it meant.
 """
 
+import io
 from typing import Self
 from pathlib import Path
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from discordbot.utils.link_errors import (
 )
 from discordbot.services.platforms import douyin as douyin_module
 from discordbot.services.platforms.douyin import (
+    DouyinError,
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTransferError,
@@ -149,6 +151,38 @@ def test_a_stalled_douyin_read_is_retryable_too(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(DouyinBlockedError):
         downloader.parse_metadata(url="https://www.douyin.com/video/7000000000000000000")
+
+
+@pytest.mark.parametrize(("status", "retryable"), [(429, True), (503, True), (404, False)])
+def test_a_refused_douyin_short_link_is_retryable_only_when_http_says_so(
+    status: int, retryable: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused short-link hop carries no `Location`, which is not the same as no post."""
+
+    class _RefusingSession:
+        """Answers the redirect probe the way Douyin under load does."""
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            return False
+
+        def get(self, url: str, **kwargs: object) -> requests.Response:
+            """Refuses with `status` and no headers at all."""
+            del kwargs
+            response = requests.Response()
+            response.status_code = status
+            response.url = url
+            response.raw = io.BytesIO()
+            return response
+
+    monkeypatch.setattr(target=douyin_module.requests, name="Session", value=_RefusingSession)
+    downloader = DouyinDownloader(output_folder="")
+
+    with pytest.raises(DouyinError) as raised:
+        downloader._resolve_aweme_id(url="https://v.douyin.com/AbCdEf12/")
+    assert isinstance(raised.value, DouyinBlockedError) is retryable
 
 
 def test_a_stalled_douyin_download_is_retryable_too(
