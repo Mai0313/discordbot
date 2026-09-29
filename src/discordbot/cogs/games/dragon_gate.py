@@ -301,10 +301,6 @@ class DragonGateRound(BaseModel):
             raise DragonGateParticipantUnknownError("User is not active at this table")
         self.withdrawn_user_ids.add(user_id)
         delta = self.player_deltas.get(user_id, 0)
-        if not self.active_participants():
-            self.finished = True
-            self.active_turn = None
-            return delta
         if self.active_turn is not None and self.active_turn.participant.user_id == user_id:
             self._advance_to_next_active_turn()
         return delta
@@ -321,8 +317,6 @@ class DragonGateRound(BaseModel):
             if self.participants[self.current_player_index].user_id not in self.withdrawn_user_ids:
                 self._deal_next_turn()
                 return
-        self.finished = True
-        self.active_turn = None
 
     def _deal_next_turn(self) -> None:
         """Deals a new playable gate for the current participant."""
