@@ -541,7 +541,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         shoe: list[Card] | None = None
         shoe_generation = 0
         if self._shoe_store is not None:
-            shoe, _reshuffled, shoe_generation = self._shoe_store.take_shoe(
+            shoe, shoe_generation = self._shoe_store.take_shoe(
                 channel_id=self._channel_id, rng=self.rng
             )
         round_state = BlackjackRound.from_participants(

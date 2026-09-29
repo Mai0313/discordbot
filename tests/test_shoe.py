@@ -13,13 +13,12 @@ from discordbot.cogs.games.blackjack_views import MAX_BLACKJACK_PLAYERS
 from tests.helpers.games import card, seat, longest_hand_the_dealer_must_draw_on
 
 
-def test_first_take_builds_a_fresh_shoe_without_announcing_a_reshuffle() -> None:
-    """A channel with no stored shoe gets a full fresh shoe and no reshuffle flag."""
+def test_first_take_builds_a_fresh_shoe() -> None:
+    """A channel with no stored shoe gets a full fresh shoe."""
     store = BlackjackShoeStore()
-    shoe, reshuffled, _generation = store.take_shoe(channel_id=1, rng=Random(0))
+    shoe, _generation = store.take_shoe(channel_id=1, rng=Random(0))
 
     assert len(shoe) == 208
-    assert reshuffled is False
 
 
 def test_take_returns_the_stored_shoe_down_to_the_threshold() -> None:
@@ -28,23 +27,21 @@ def test_take_returns_the_stored_shoe_down_to_the_threshold() -> None:
     stored = [card(rank="10")] * RESHUFFLE_THRESHOLD_CARDS
     store.save_shoe(channel_id=7, cards=stored)
 
-    shoe, reshuffled, _generation = store.take_shoe(channel_id=7, rng=Random(0))
+    shoe, _generation = store.take_shoe(channel_id=7, rng=Random(0))
 
     assert shoe == stored
-    assert reshuffled is False
     # Taking removes it so a concurrent game cannot share the same list.
     assert 7 not in store.shoes
 
 
-def test_take_reshuffles_and_announces_below_the_threshold() -> None:
-    """A worn-down shoe triggers a fresh build flagged as a reshuffle."""
+def test_take_reshuffles_below_the_threshold() -> None:
+    """A worn-down shoe is replaced by a fresh build."""
     store = BlackjackShoeStore()
     store.save_shoe(channel_id=3, cards=[card(rank="5")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
 
-    shoe, reshuffled, _generation = store.take_shoe(channel_id=3, rng=Random(0))
+    shoe, _generation = store.take_shoe(channel_id=3, rng=Random(0))
 
     assert len(shoe) == 208
-    assert reshuffled is True
 
 
 def test_true_count_is_neutral_without_a_countable_shoe() -> None:
@@ -70,10 +67,8 @@ def test_older_round_does_not_clobber_a_newer_shoe() -> None:
     store = BlackjackShoeStore()
     # Two tables open in the same channel: the first take pops the (empty) channel, the
     # second take starts from a fresh shoe; both carry their own generation token.
-    _first_shoe, _first_reshuffled, first_generation = store.take_shoe(channel_id=5, rng=Random(0))
-    _second_shoe, _second_reshuffled, second_generation = store.take_shoe(
-        channel_id=5, rng=Random(1)
-    )
+    _first_shoe, first_generation = store.take_shoe(channel_id=5, rng=Random(0))
+    _second_shoe, second_generation = store.take_shoe(channel_id=5, rng=Random(1))
     assert second_generation > first_generation
 
     newer = [card(rank="K")] * (RESHUFFLE_THRESHOLD_CARDS + 2)

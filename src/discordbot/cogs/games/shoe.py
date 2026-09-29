@@ -40,27 +40,22 @@ class BlackjackShoeStore(BaseModel):
     _take_generation: dict[int, int] = PrivateAttr(default_factory=dict)
     _saved_generation: dict[int, int] = PrivateAttr(default_factory=dict)
 
-    def take_shoe(self, *, channel_id: int, rng: Random) -> tuple[list[Card], bool, int]:
-        """Returns `(shoe, reshuffled, generation)` for a new round, removing it from the store.
+    def take_shoe(self, *, channel_id: int, rng: Random) -> tuple[list[Card], int]:
+        """Returns `(shoe, generation)` for a new round, removing the shoe from the store.
 
         Rebuilds a fresh shoe when the channel has none or penetration crossed the
         reshuffle threshold. The round deals from this shoe and the caller persists
         depletion by saving the round's remaining shoe with `save_shoe` once it
         settles (the round may deal from a copy, so the returned list itself is not
-        relied on to mutate). The `reshuffled` flag is True only for a genuine
-        penetration cut, not for the first shoe in a channel, so a caller can announce
-        a real reshuffle without announcing the channel's first deal. The `generation`
-        stamps this round; pass it back to `save_shoe` so an older in-flight round
-        cannot overwrite a newer table's shoe.
+        relied on to mutate). The `generation` stamps this round; pass it back to
+        `save_shoe` so an older in-flight round cannot overwrite a newer table's shoe.
         """
         generation = self._take_generation.get(channel_id, 0) + 1
         self._take_generation[channel_id] = generation
         existing = self.shoes.pop(channel_id, None)
-        if existing is None:
-            return build_shoe(rng=rng), False, generation
-        if len(existing) < RESHUFFLE_THRESHOLD_CARDS:
-            return build_shoe(rng=rng), True, generation
-        return existing, False, generation
+        if existing is None or len(existing) < RESHUFFLE_THRESHOLD_CARDS:
+            return build_shoe(rng=rng), generation
+        return existing, generation
 
     def save_shoe(
         self, *, channel_id: int, cards: list[Card], generation: int | None = None
