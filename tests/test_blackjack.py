@@ -1,4 +1,4 @@
-"""Tests for the Blackjack pure-rules module."""
+"""Tests for the Blackjack rules and for settling a finished hand against the ledger."""
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
@@ -6,7 +6,8 @@ from random import Random
 
 import pytest
 
-from discordbot.typings.economy import MAX_SINGLE_BET
+from discordbot.typings.games import BlackjackHandSettlement, BlackjackPlayerSettlement
+from discordbot.typings.economy import MAX_SINGLE_BET, VIP_PURCHASE_COST
 from discordbot.cogs.games.blackjack import (
     Card,
     BlackjackRound,
@@ -29,11 +30,18 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs.games.settlement import blackjack_player_early_finish_note
+from discordbot.cogs.games.settlement import settle_wager, blackjack_player_early_finish_note
 from discordbot.cogs.games.presentation import settlement_metadata
+from discordbot.services.economy.database import buy_vip, get_casino_ledger
 from discordbot.cogs.games.blackjack_views import build_in_progress_embeds
 
-from tests.helpers.games import seat
+from tests.helpers.games import seat, settle_only_seat
+from tests.helpers.economy import seed_balance
+from tests.helpers.economy_invariants import (
+    assert_wallet_consistent,
+    assert_daily_casino_stats,
+    assert_casino_ledger_consistent,
+)
 
 
 def test_hand_value_no_aces() -> None:
@@ -1016,3 +1024,293 @@ def test_from_participants_deals_from_an_injected_shoe() -> None:
         Card(rank="3", suit="♥"),
     ]
     assert round_state.shoe == [Card(rank="5", suit="♠"), Card(rank="6", suit="♥")]
+
+
+# Settlement against the ledger --------------------------------------------
+
+
+def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
+    """Default Blackjack hand settlement lists are isolated per model instance."""
+    first = BlackjackPlayerSettlement(
+        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push"
+    )
+    second = BlackjackPlayerSettlement(
+        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push"
+    )
+
+    first.hands.append(BlackjackHandSettlement(cards=[], bet=10, outcome="push", delta=0))
+
+    assert second.hands == []
+
+
+async def test_settle_wager_updates_player_and_casino() -> None:
+    """Shared wager settlement applies net delta and mirrors casino P&L."""
+    await seed_balance(user_id=1, name="alice", amount=100)
+
+    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=40)
+    assert settlement.payout == 40
+    assert settlement.new_balance == 140
+    assert settlement.casino_balance == -40
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -40
+
+
+async def test_settle_wager_applies_vip_bonus_on_win() -> None:
+    """A VIP player wins 1.2x of the base delta; house mirrors the boosted amount."""
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
+    purchase = await buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=100)
+    assert settlement.delta == 120
+    assert settlement.base_delta == 100
+    assert settlement.vip_bonus == 20
+    assert settlement.is_vip is True
+    assert settlement.casino_balance == -120
+
+
+async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
+    """The VIP perk does not soften losses."""
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 1_000)
+    purchase = await buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=-100)
+    assert settlement.delta == -100
+    assert settlement.base_delta == -100
+    assert settlement.vip_bonus == 0
+    assert settlement.is_vip is True
+    assert settlement.casino_balance == 100
+
+
+def _finished_round(bet: int, balance_at_start: int = 100) -> BlackjackRound:
+    """Builds a one-seat round already marked settled; each test deals its own cards."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat(bet=bet, balance_at_start=balance_at_start)]
+    )
+    round_state.players[0].hands[0].finished = True
+    round_state.finished = True
+    round_state.phase = "settled"
+    return round_state
+
+
+async def test_settle_blackjack_player_updates_player_and_casino() -> None:
+    """Shared Blackjack settlement applies net delta and mirrors casino P&L."""
+    await seed_balance(user_id=1, name="alice", amount=100)
+    round_state = _finished_round(bet=50)
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.delta == 50
+    assert settlement.payout == 50
+    assert settlement.new_balance == 150
+    assert settlement.casino_balance == -50
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -50
+
+
+async def test_settle_blackjack_player_surrender_returns_half_bet() -> None:
+    """Surrender books half the original bet as a loss and mirrors it into the casino ledger."""
+    await seed_balance(user_id=1, name="alice", amount=100)
+    round_state = _finished_round(bet=50)
+    hand = round_state.players[0].hands[0]
+    hand.cards = [Card(rank="10", suit="♠"), Card(rank="6", suit="♥")]
+    hand.surrendered = True
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.outcome == "surrender"
+    assert settlement.delta == -25
+    assert settlement.new_balance == 75
+    assert settlement.casino_balance == 25
+
+
+async def test_settle_blackjack_player_double_doubles_loss_when_dealer_higher() -> None:
+    """Doubled hands lose 2x the original bet on settlement."""
+    await seed_balance(user_id=1, name="alice", amount=200)
+    round_state = _finished_round(bet=50)
+    hand = round_state.players[0].hands[0]
+    hand.cards = [Card(rank="5", suit="♠"), Card(rank="6", suit="♥"), Card(rank="2", suit="♣")]
+    hand.bet = 100
+    hand.doubled = True
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="9", suit="♦")]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.delta == -100
+    assert settlement.new_balance == 100
+
+
+def _split_hands(second: Card) -> list[BlackjackHandState]:
+    """Builds a finished split of eights: an 8-K hand and an 8 with `second`."""
+    return [
+        BlackjackHandState(
+            cards=[Card(rank="8", suit="♠"), Card(rank="K", suit="♥")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+        BlackjackHandState(
+            cards=[Card(rank="8", suit="♣"), second],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+    ]
+
+
+async def test_settle_blackjack_player_split_both_wins_aggregates_delta() -> None:
+    """Split hands aggregate into a single ledger write."""
+    await seed_balance(user_id=1, name="alice", amount=200)
+    round_state = _finished_round(bet=50)
+    round_state.players[0].hands = _split_hands(second=Card(rank="9", suit="♦"))
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="6", suit="♦")]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.delta == 100
+    assert len(settlement.hands) == 2
+    assert settlement.hands[0].outcome == "win"
+    assert settlement.hands[1].outcome == "win"
+    assert settlement.new_balance == 300
+
+
+async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
+    """A split that nets to zero does not trigger the VIP bonus."""
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 200)
+    purchase = await buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    round_state = _finished_round(bet=50)
+    round_state.players[0].hands = _split_hands(second=Card(rank="2", suit="♦"))
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="7", suit="♦")]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    # hand1 win 50, hand2 lose 50 → net 0; VIP perk is suppressed on non-positive.
+    assert settlement.base_delta == 0
+    assert settlement.delta == 0
+    assert settlement.vip_bonus == 0
+
+
+@pytest.mark.parametrize(
+    argnames=("last_card", "dealer", "dealer_21", "is_vip", "expect_outcome"),
+    argvalues=[
+        ("6", [("7", "♣"), ("7", "♦"), ("7", "♥")], True, False, "five_card_win"),
+        ("7", [("10", "♣"), ("9", "♦")], False, False, "five_card_twenty_one"),
+        ("7", [("10", "♣"), ("9", "♦")], False, True, "five_card_twenty_one"),
+        ("7", [("7", "♣"), ("7", "♦"), ("7", "♥")], True, False, "five_card_twenty_one"),
+        ("7", [("7", "♣"), ("7", "♦"), ("7", "♥")], True, True, "five_card_twenty_one"),
+    ],
+    ids=[
+        "non-21-wins-regardless-of-dealer-21",
+        "21-wins-vs-dealer-19",
+        "vip-21-wins-vs-dealer-19",
+        "21-push-vs-dealer-21",
+        "vip-21-push-vs-dealer-21",
+    ],
+)
+async def test_settle_blackjack_player_five_card(
+    last_card: str,
+    dealer: list[tuple[str, str]],
+    dealer_21: bool,
+    is_vip: bool,
+    expect_outcome: str,
+) -> None:
+    """Five-card settlement: a non-21 hand wins regardless of dealer, a 21 follows the comparison.
+
+    Every expected delta is derived from the rules -- the bet, the five-card bonus, and the VIP
+    perk -- rather than hardcoded. The house ledger and daily counters are checked through the
+    invariant helpers, proving the system-funded five-card and VIP-from-bonus payouts never move
+    /casino while the dealer-funded portion does.
+    """
+    bet = 10_000
+    starting = 100_000
+    seed = (VIP_PURCHASE_COST + starting) if is_vip else starting
+    await seed_balance(user_id=1, name="alice", amount=seed)
+    if is_vip:
+        assert await buy_vip(user_id=1, name="alice") is not None
+
+    round_state = _finished_round(bet=bet, balance_at_start=starting)
+    round_state.players[0].hands[0].cards = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+        Card(rank=last_card, suit="♠"),
+    ]
+    round_state.dealer = [Card(rank=rank, suit=suit) for rank, suit in dealer]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    is_21 = last_card == "7"
+    five_card_bonus = bet if is_21 else 0
+    # A five-card non-21 hand always wins; a five-card 21 pushes only against a dealer 21.
+    base_delta = 0 if (is_21 and dealer_21) else bet
+    # VIP perk is max(0.2x dealer-paid win, 0.2x five-card bonus); only the dealer-win share is
+    # charged to the house, the rest is system funded along with the five-card bonus itself.
+    house_vip = (base_delta * 20 // 100) if is_vip else 0
+    vip_bonus = max(base_delta * 20 // 100, five_card_bonus * 20 // 100) if is_vip else 0
+    delta = base_delta + vip_bonus + five_card_bonus
+    casino_balance = -(base_delta + house_vip)
+
+    assert settlement.outcome == expect_outcome
+    assert settlement.hands[0].five_card_twenty_one is is_21
+    assert settlement.hands[0].five_card_bonus == five_card_bonus
+    assert settlement.base_delta == base_delta
+    assert settlement.five_card_bonus == five_card_bonus
+    assert settlement.vip_bonus == vip_bonus
+    assert settlement.delta == delta
+    assert settlement.new_balance == starting + delta
+    assert settlement.casino_balance == casino_balance
+    await assert_casino_ledger_consistent(expected_balance=casino_balance)
+    await assert_daily_casino_stats(user_id=1, loss=0, win=delta, net=delta)
+    await assert_wallet_consistent(user_id=1, expected_balance=starting + delta)
+
+
+async def test_settle_blackjack_player_insurance_won_with_dealer_blackjack() -> None:
+    """Insurance pays 2:1 when peek confirms dealer Blackjack."""
+    await seed_balance(user_id=1, name="alice", amount=300)
+    round_state = _finished_round(bet=100)
+    player = round_state.players[0]
+    player.hands[0].cards = [Card(rank="9", suit="♠"), Card(rank="8", suit="♥")]
+    player.insurance_bet = 50
+    player.insurance_resolved = True
+    round_state.dealer = [Card(rank="K", suit="♣"), Card(rank="A", suit="♦")]
+    round_state.peeked_blackjack = True
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.insurance is not None
+    assert settlement.insurance.won is True
+    assert settlement.insurance.delta == 100
+    assert settlement.base_delta == 0  # -100 main bet + +100 insurance
+    assert settlement.delta == 0
+    assert settlement.outcome == "push"
+
+
+async def test_settle_blackjack_player_insurance_lost_when_no_dealer_blackjack() -> None:
+    """Insurance loses when the peek shows no Blackjack."""
+    await seed_balance(user_id=1, name="alice", amount=300)
+    round_state = _finished_round(bet=100)
+    player = round_state.players[0]
+    player.hands[0].cards = [Card(rank="K", suit="♠"), Card(rank="Q", suit="♥")]
+    player.insurance_bet = 50
+    player.insurance_resolved = True
+    round_state.dealer = [
+        Card(rank="9", suit="♣"),
+        Card(rank="A", suit="♦"),
+        Card(rank="9", suit="♥"),
+    ]
+    round_state.dealer_played = True
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.insurance is not None
+    assert settlement.insurance.won is False
+    assert settlement.insurance.delta == -50
+    # main win 100 - insurance 50 = +50
+    assert settlement.base_delta == 50
+    assert settlement.outcome == "win"
