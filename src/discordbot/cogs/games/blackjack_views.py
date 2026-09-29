@@ -19,7 +19,6 @@ from discordbot.typings.games import (
     BlackjackPlayerResult,
     BlackjackPlayerSettlement,
 )
-from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
@@ -54,6 +53,7 @@ from discordbot.cogs.games.presentation import (
     PUSH_COLOR,
     WIN_RESULT_EMOJI,
     BUST_RESULT_EMOJI,
+    IN_PROGRESS_COLOR,
     NATURAL_RESULT_EMOJI,
     SYSTEM_NARRATOR_NAME,
     LOBBY_PLAYERS_FIELD_EMOJI,

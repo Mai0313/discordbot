@@ -3,13 +3,14 @@
 from typing import Final
 
 from discordbot.typings.games import SettleOutcome
-from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.services.economy.presentation import amount_code
 
 WIN_COLOR = DISCORD_GREEN
 LOSE_COLOR = DISCORD_RED
 PUSH_COLOR = DISCORD_YELLOW
 ERROR_COLOR = DISCORD_RED
+IN_PROGRESS_COLOR = NEUTRAL_BLUE
 
 SYSTEM_NARRATOR_NAME: Final[str] = "賭場系統"
 
