@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
-from discordbot.services.platforms.facebook import FacebookOutput
+from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 
 from tests.helpers.casting import as_message
@@ -219,6 +219,33 @@ async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:
         for embed in expansion_embeds(message=message)
     )
     assert total <= 6000
+
+
+async def _post_body_length(*, outcome: FacebookConversation) -> int:
+    """Expands `outcome` and measures the post's own description, in the units Discord counts."""
+    cog, _ = stub_conversation_cog(cog_type=FacebookCogs, outcome=outcome)
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    return utf16_length(value=expansion_embeds(message=message)[0].description or "")
+
+
+async def test_a_named_comment_takes_its_room_from_the_post() -> None:
+    """A long post gives up part of the message before a named comment is budgeted beside it.
+
+    Measured against the same post with no comment named, which is cut only at the description
+    ceiling: without the reservation the post takes that whole ceiling either way and the comment
+    card gets only what is left over.
+    """
+    comment = FacebookOutput(comment_id="222", text="y" * 4000, author_name="Commenter")
+
+    alone = await _post_body_length(outcome=facebook_post(text="x" * 5000))
+    beside_comment = await _post_body_length(
+        outcome=facebook_post(text="x" * 5000, comments=[comment], selected_comment_id="222")
+    )
+
+    assert beside_comment < alone
 
 
 async def test_the_comment_link_joins_an_existing_query_correctly() -> None:

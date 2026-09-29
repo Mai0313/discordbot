@@ -1,9 +1,5 @@
 """Expands a Douyin post URL into Discord attachments.
 
-Unlike `/download_video`, which serves many platforms where a pasted link often just means "look
-at this page", a Douyin link has no such ambiguity: posting one means "watch this", so it is
-converted without anyone typing a command.
-
 Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener sees
 every message in every channel, so the request-volume bounds in `services/platforms/douyin.py` are
 load-bearing rather than defensive. A blocked request must never be reported as a missing post:
@@ -50,15 +46,14 @@ class DouyinPost(BaseModel):
     """A parsed Douyin post together with the files downloaded for it."""
 
     metadata: DouyinMetadata = Field(
-        ...,
-        description=(
-            "The post's caption and author, parsed before the download so a refused download "
-            "still gets its card."
-        ),
+        ..., description="The post's caption and author, for the card."
     )
     download: DouyinDownload = Field(
         ...,
-        description="The downloaded clip or gallery, unlinked once the expansion is on screen.",
+        description=(
+            "The downloaded clip or gallery, in a scratch directory removed once the expansion "
+            "is on screen."
+        ),
     )
 
 
@@ -104,28 +99,19 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
     async def read(
         self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> DouyinPost:
-        """Parses the post and downloads its media.
+        """Parses the post and downloads its media into a scratch directory of its own.
 
-        A private directory per invocation, because the filenames are derived from the post id:
-        two expansions of the same post in one shared temp dir would write the same paths, letting
-        one truncate the other's file and letting either one's cleanup delete a file the other is
-        still uploading. `scratch_directory` rather than `TemporaryDirectory` because the timeout
-        below leaves a worker writing into it, and removing the directory is the only stop signal
-        that reaches a thread `asyncio.to_thread` cannot cancel.
+        The per-URL lock and the fetch semaphore (`services/platforms/douyin.py` has why) cover
+        only the Douyin-facing work, never the Discord upload that follows.
 
-        Both bounds cover only the Douyin-facing work, never the Discord upload that follows: the
-        per-URL lock collapses simultaneous pastes of one link into a single fetch (the payload
-        cache alone loses that race), and the semaphore keeps a burst of distinct links from
-        arriving at Douyin all at once.
-
-        Parsed before the download so the caption survives a refused download: an oversize post
-        still gets its card instead of a bare warning reaction. The share payload is cached, so
-        this costs no extra request.
+        The post is parsed first because the card needs its caption and author, and the download
+        is handed it rather than parsing it again.
 
         Args:
             message: Unused; nothing here logs.
             url: The post to read.
-            stack: Holds the scratch directory and the downloaded files until delivery is done.
+            stack: Holds the scratch directory, and with it the downloaded files, until delivery
+                is done.
 
         Returns:
             The caption and the downloaded media.
@@ -142,7 +128,6 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
             download = await asyncio.to_thread(
                 downloader.download, url=url, post=metadata, max_images=DISCORD_ATTACHMENT_LIMIT
             )
-        stack.enter_context(download)
         return DouyinPost(metadata=metadata, download=download)
 
     async def build_delivery(

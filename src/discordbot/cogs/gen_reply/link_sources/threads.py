@@ -196,10 +196,7 @@ def _render_post_text(post: ThreadsOutput, label: str) -> str:
         lines.append(f"Posted: {post.taken_at.isoformat(timespec='seconds')}")
     if post.text:
         lines.append(defuse_markers(text=post.text))
-    lines.append(
-        f"❤️ {post.like_count:,} | 💬 {post.comment_count:,} | 🔁 {post.repost_count:,} | "
-        f"🔗 {post.quote_count:,} | ↗️ {post.share_count:,}"
-    )
+    lines.append(post.counters_line())
     if post.url:
         lines.append(post.url)
     return "\n".join(lines)

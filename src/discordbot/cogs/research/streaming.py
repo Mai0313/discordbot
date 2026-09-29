@@ -25,10 +25,10 @@ from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
+
 if TYPE_CHECKING:
     from google.genai.interactions import InteractionSSEEvent
-
-DISCORD_MESSAGE_LIMIT = 2000
 
 
 class ResearchProgressStreamer(BaseModel):

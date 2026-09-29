@@ -8,6 +8,11 @@ a cog supplies the platform: where its URLs are, how to read one, and what the c
 `utils/expansion_placeholder.py` owns the other half of this contract, the parts a resumed
 expansion needs as much as a fresh one does. This module is the cog side.
 
+`ConversationExpansionCog` goes one step further for a platform whose reader fetches a post and
+its discussion in one blocking call and whose card is embeds alone: the read, the refusal of an
+unreadable post and the card's shape are written once, and a cog supplies the parts that are its
+platform's own.
+
 A failure leaves nothing in the channel. The reaction is the whole report, which is what lets
 every step below simply return.
 
@@ -16,17 +21,26 @@ deleting its cog.
 """
 
 import re
-from typing import ClassVar
+from typing import Any, ClassVar, Protocol
+import asyncio
+from datetime import datetime
 import contextlib
+from collections.abc import Callable
 
 import logfire
-from nextcord import File, Embed, Message, NotFound
+from nextcord import File, Color, Embed, Message, NotFound
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
 
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
+from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_TOTAL_LIMIT,
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    utf16_length,
+    clip_to_utf16_limit,
+)
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
@@ -39,6 +53,178 @@ from discordbot.utils.expansion_placeholder import (
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
 )
+
+# What a post card shows before it starts scrolling the channel. A gallery post can carry far
+# more, so the footer says how many were left behind and the embed's own link leads to the rest.
+# Not a `context_budgets` constant: nothing here reaches a model, this bounds a rendered message.
+POST_CARD_MAX_IMAGES = 4
+
+# The rail of every card that is not the linked post itself (a comment it singled out, a post it
+# replies to or quotes), neutral so the one being linked is never confused with its context. The
+# platform's own brand colour belongs to the cog wearing it, and neither is in
+# `typings/colors.py`, which is Discord's own semantic palette.
+CONTEXT_CARD_COLOR = 0x65686C
+
+TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
+VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
+
+# What a secondary card's budget leaves unmeasured: every card's author line and the line break
+# under its header, plus the header itself on a card that does not take it off its own budget.
+# Every measurement against Discord's limits is in UTF-16 units (`utf16_length`), Discord's own.
+_CONTEXT_CARD_SLACK = 400
+
+# What the post gives up so the comment its URL singled out always fits beside it.
+_COMMENT_RESERVE = 2000
+_COMMENT_HEADER = "💬 **指定的留言**"
+
+
+class CardPost(Protocol):
+    """What the shared card reads off one post or comment.
+
+    Spelled structurally because the platforms' own models live under `services/`, which
+    `utils/` may not import.
+    """
+
+    @property
+    def text(self) -> str:
+        """The post or comment body."""
+        ...
+
+    @property
+    def url(self) -> str:
+        """Where it can be read."""
+        ...
+
+    @property
+    def author_name(self) -> str:
+        """The author's handle, empty when the page served none."""
+        ...
+
+    @property
+    def author_icon_url(self) -> str:
+        """The author's profile picture, empty when the page served none."""
+        ...
+
+    @property
+    def image_urls(self) -> list[str]:
+        """Still images, as URLs Discord fetches itself."""
+        ...
+
+    @property
+    def video_urls(self) -> list[str]:
+        """Videos it carries."""
+        ...
+
+    @property
+    def taken_at(self) -> datetime | None:
+        """When it was published."""
+        ...
+
+    @property
+    def is_readable(self) -> bool:
+        """Whether enough came back to be worth showing."""
+        ...
+
+
+class CardConversation[PostT: CardPost](Protocol):
+    """What the shared read and card read off a parsed conversation."""
+
+    @property
+    def target(self) -> PostT | None:
+        """The linked post, None when it could not be read."""
+        ...
+
+    @property
+    def selected_comment(self) -> PostT | None:
+        """The comment the URL singled out, None when it named none."""
+        ...
+
+
+class ConversationReader[ConversationT](Protocol):
+    """A platform reader that fetches and parses a post in one blocking call."""
+
+    def parse_metadata(self, *, url: str) -> ConversationT:
+        """Reads the post at `url`."""
+        ...
+
+
+def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform supplies
+    *,
+    post: CardPost,
+    color: int,
+    author: str,
+    footer: str,
+    images: list[str],
+    suffix: str,
+    reserve: int,
+) -> list[Embed]:
+    """Builds the linked post's own embed plus one bare embed per further image.
+
+    The further images reuse the post's URL, which is what makes Discord merge them into one
+    gallery under the post rather than stacking separate cards. A long body is cut rather than
+    split across a second embed: the whole card is one post, and a reader who wants the tail has
+    the link.
+
+    Args:
+        post: The linked post.
+        color: The platform's own colour for the post's rail.
+        author: The author line, empty for none.
+        footer: The counter line.
+        images: The images to show, the first on the post's own embed.
+        suffix: Text appended after the body. Its length is reserved BEFORE the body is cut
+            rather than appended after, or a body already at the ceiling carries it past and
+            Discord rejects the send.
+        reserve: What the body gives up of the message-wide ceiling so the secondary cards
+            under it always fit, 0 when there are none.
+
+    Returns:
+        The post's embed followed by its gallery.
+    """
+    limit = min(
+        DISCORD_EMBED_DESCRIPTION_LIMIT - utf16_length(value=suffix),
+        DISCORD_EMBED_TOTAL_LIMIT - reserve,
+    )
+    description = (
+        clip_to_utf16_limit(text=post.text, limit=limit, notice=TRUNCATION_NOTICE) + suffix
+    )
+    main = Embed(
+        description=description or None,
+        url=post.url,
+        color=Color(value=color),
+        timestamp=post.taken_at,
+    )
+    if author:
+        main.set_author(name=author, url=post.url, icon_url=post.author_icon_url or None)
+    if images:
+        main.set_image(url=images[0])
+    main.set_footer(text=footer)
+    embeds = [main]
+    for image_url in images[1:]:
+        extra = Embed(url=post.url)
+        extra.set_image(url=image_url)
+        embeds.append(extra)
+    return embeds
+
+
+def context_card_budget(*, card: Embed) -> int:
+    """What the message-wide ceiling leaves the secondary cards once the post's embed is spent.
+
+    Budgeted rather than clipping each card on its own, since cards clipped independently can
+    sum past the ceiling and Discord rejects the WHOLE send, losing the expansion rather than
+    trimming it.
+
+    Args:
+        card: The linked post's own embed.
+
+    Returns:
+        The UTF-16 units left for every secondary card together.
+    """
+    spent = sum(
+        utf16_length(value=text)
+        for text in (card.description, card.footer.text, card.author.name)
+        if isinstance(text, str)
+    )
+    return DISCORD_EMBED_TOTAL_LIMIT - spent - _CONTEXT_CARD_SLACK
 
 
 class ExpansionDelivery(BaseModel):
@@ -355,3 +541,152 @@ class ExpansionCog[ParsedT](commands.Cog):
             emoji=EXPANSION_DONE_EMOJI,
             previous=current_emoji,
         )
+
+
+class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[Any]](
+    ExpansionCog[ConversationT]
+):
+    """Base for a cog whose reader parses a post and its discussion in one blocking call.
+
+    The read, the refusal of an unreadable post and the card are written here. A subclass
+    declares `ExpansionCog`'s attributes plus the three below and `_footer_text`, and
+    `_comment_url` as well when its conversations can carry a selected comment; the remaining
+    hooks have defaults it overrides where its platform differs. The default card is the post,
+    its gallery and the comment its URL singled out; a platform whose card shows other context
+    replaces `_build_embeds` and builds it from `post_card_embeds` and `context_card_budget`.
+    """
+
+    READ_TIMEOUT_SECONDS: ClassVar[float]
+    """The wall-clock bound on one read; `typings/timeouts.py` owns the number."""
+
+    EMBED_COLOR: ClassVar[int]
+    """The platform's own colour, down the post card's left edge."""
+
+    downloader_factory: Callable[[], ConversationReader[ConversationT]]
+    """Builds the reader; the seam a test replaces to keep an expansion off the network."""
+
+    async def read(
+        self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
+    ) -> ConversationT:
+        """Reads the post under `READ_TIMEOUT_SECONDS`, off the event loop since it blocks.
+
+        Args:
+            message: Unused; nothing here logs.
+            url: The post to read.
+            stack: Unused; nothing here outlives the read.
+
+        Returns:
+            The parsed conversation.
+        """
+        del message, stack
+        downloader = self.downloader_factory()
+        async with asyncio.timeout(delay=self.READ_TIMEOUT_SECONDS):
+            return await asyncio.to_thread(downloader.parse_metadata, url=url)
+
+    async def build_delivery(
+        self, *, message: Message, url: str, parsed: ConversationT
+    ) -> ExpansionDelivery | None:
+        """Builds the card, refusing a post with nothing showable in it.
+
+        A post that comes back unreadable is a deleted, private, protected or login-walled one:
+        an ordinary outcome for a link someone pasted rather than a defect.
+
+        Args:
+            message: The message carrying the link.
+            url: The post that was read.
+            parsed: The parsed conversation.
+
+        Returns:
+            The card, or None when there is nothing to show.
+        """
+        target = parsed.target
+        if target is None or not target.is_readable:
+            logfire.info(
+                f"{self.PLATFORM} post is not readable; nothing to expand",
+                url=url,
+                message_id=message.id,
+            )
+            return None
+        return ExpansionDelivery(embeds=self._build_embeds(conversation=parsed))
+
+    def _build_embeds(self, *, conversation: ConversationT) -> list[Embed]:
+        """Builds the whole expansion: the post, its images, and the named comment if any.
+
+        A video post carries a link to it, since nothing here attaches the clip and the card
+        would otherwise have nothing in it.
+        """
+        post: PostT | None = conversation.target
+        if post is None:
+            return []
+        comment: PostT | None = conversation.selected_comment
+        hint = VIDEO_HINT.format(url=self._video_link(post=post)) if post.video_urls else ""
+        shown = post.image_urls[:POST_CARD_MAX_IMAGES]
+        embeds = post_card_embeds(
+            post=post,
+            color=self.EMBED_COLOR,
+            author=self._author_label(post=post),
+            footer=self._footer_text(post=post, shown_images=len(shown)),
+            images=shown,
+            suffix=hint,
+            reserve=_COMMENT_RESERVE if comment is not None else 0,
+        )
+        if comment is not None:
+            embeds.append(
+                self._comment_embed(
+                    comment=comment, post_url=post.url, budget=context_card_budget(card=embeds[0])
+                )
+            )
+        return embeds
+
+    def _comment_embed(self, *, comment: PostT, post_url: str, budget: int) -> Embed:
+        """The card for the one comment the URL singled out.
+
+        Grey rather than the post's colour, and headed by a line saying what it is: without both,
+        a second card under the post reads as a second post rather than as a reply to this one.
+        Its URL is the comment's own, which is what keeps it OUT of the image gallery, since
+        Discord merges embeds sharing a URL.
+        """
+        body = clip_to_utf16_limit(
+            text=comment.text,
+            limit=budget - utf16_length(value=_COMMENT_HEADER),
+            notice=TRUNCATION_NOTICE,
+        )
+        embed = Embed(
+            description=f"{_COMMENT_HEADER}\n\n{body}",
+            url=self._comment_url(post_url=post_url, comment=comment),
+            color=Color(value=CONTEXT_CARD_COLOR),
+            timestamp=comment.taken_at,
+        )
+        author = self._comment_author_label(comment=comment)
+        if author:
+            embed.set_author(name=author, icon_url=comment.author_icon_url or None)
+        return embed
+
+    def _author_label(self, *, post: PostT) -> str:
+        """The post card's author line, empty for none."""
+        return post.author_name
+
+    def _comment_author_label(self, *, comment: PostT) -> str:
+        """The comment card's author line, empty for none."""
+        return comment.author_name
+
+    def _video_link(self, *, post: PostT) -> str:
+        """Where a video post's link points; only its first video gets one."""
+        return post.video_urls[0]
+
+    def _footer_text(self, *, post: PostT, shown_images: int) -> str:
+        """The post card's counter line, given how many of its images the card shows.
+
+        Raises:
+            NotImplementedError: Always; a cog overrides this.
+        """
+        raise NotImplementedError
+
+    def _comment_url(self, *, post_url: str, comment: PostT) -> str:
+        """The comment card's own link, which must differ from the post's.
+
+        Raises:
+            NotImplementedError: Always; a cog whose conversations can carry a selected comment
+                overrides this.
+        """
+        raise NotImplementedError

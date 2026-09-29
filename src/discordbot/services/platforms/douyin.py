@@ -396,31 +396,6 @@ douyin_fetch_semaphore = LoopLocalSemaphore(capacity_provider=lambda: DOUYIN_FET
 douyin_url_locks: KeyedLockManager[str] = KeyedLockManager()
 
 
-def douyin_failure_message(error: Exception) -> str:
-    """Maps a Douyin failure to the message a user should see.
-
-    A bot wall, a missing post, a transfer that never finished and a stall are kept apart on
-    purpose. Reporting any of them as a deleted post is the single worst outcome this feature
-    can produce: it sends someone off to re-check a link that is perfectly fine. Only
-    `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording,
-    and only `DouyinBlockedError` earns the one that says Douyin is refusing requests: a
-    stalled CDN read is retryable too, but blaming a wall sends someone off to wait out
-    something that was never there.
-
-    `DouyinTooLargeError` has no branch of its own: the one caller left is `/download_video`,
-    which arms no `max_bytes`, so nothing on this path can raise it.
-    """
-    if isinstance(error, DouyinUnavailableError):
-        return "-# 這則貼文已被刪除或設為私人"
-    if isinstance(error, DouyinBlockedError):
-        return "-# 抖音暫時擋住了請求，請稍後再試"
-    if isinstance(error, DouyinTransferError):
-        return "-# 這次檔案沒抓完,稍後再試一次"
-    if isinstance(error, TimeoutError):
-        return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
-    return "-# 檔案無法下載"
-
-
 class DouyinDownloader(PlatformDownloader):
     """Downloads Douyin videos and photo posts via the server-rendered share page.
 

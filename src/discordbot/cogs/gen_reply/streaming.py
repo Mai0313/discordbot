@@ -20,7 +20,7 @@ from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
-from discordbot.utils.discord_embeds import embed_spacer_payload
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -60,7 +60,6 @@ from discordbot.cogs.gen_reply.status_marks import (
 # which stops Discord from rendering the actual mention. Strip those wrappers
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
-DISCORD_MESSAGE_LIMIT = 2000
 
 # Spacing between answer-stream attempts. A cadence rather than a bound, which is why it stays
 # here while `ANSWER_STREAM_MAX_ATTEMPTS` lives in `typings/timeouts.py`. Flat rather than

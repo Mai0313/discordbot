@@ -115,7 +115,8 @@ _REQUEST_TOKEN = "a"  # noqa: S105 — a parameter the endpoint requires and nev
 # this is never a downgrade.
 _ORIGINAL_SIZE_QUERY = "?name=orig"
 
-# Twitter's own per-post cap: a platform limit, not a bound on anything rendered.
+# Twitter's own per-post media limit. The reader keeps at most this many items, so every later
+# cap on a Twitter post's media sits at or under it.
 _MAX_MEDIA_ITEMS = 4
 
 

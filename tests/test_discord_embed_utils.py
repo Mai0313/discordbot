@@ -1,8 +1,9 @@
 """Tests for shared Discord embed helpers."""
 
+from io import BytesIO
 from types import SimpleNamespace
 
-from nextcord import Embed
+from nextcord import File, Embed
 
 from discordbot.utils.discord_embeds import (
     DEFAULT_EMBED_SPACER_FILENAME,
@@ -13,6 +14,11 @@ from discordbot.utils.discord_embeds import (
     build_embed_spacer_file,
     apply_embed_spacer_image,
 )
+
+
+def _media_file(*, filename: str) -> File:
+    """Builds a caller's own upload, the kind the spacer has to ride beside."""
+    return File(fp=BytesIO(initial_bytes=b"media"), filename=filename)
 
 
 def _permission_target(*, attach_files: bool) -> SimpleNamespace:
@@ -163,7 +169,7 @@ def test_embed_spacer_payload_real_image_keeps_only_extra_files() -> None:
     """A real-image embed adds no spacer upload but preserves the caller's file."""
     embed = Embed(description="board")
     embed.set_image(url="https://cdn.test/board.png")
-    real_file = build_embed_spacer_file(filename="board.png")
+    real_file = _media_file(filename="board.png")
 
     payload = embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=[real_file])
 
@@ -181,7 +187,7 @@ def test_embed_spacer_payload_is_empty_when_nothing_needed() -> None:
 
 def test_embed_spacer_payload_merges_extra_files_with_spacer() -> None:
     """Mixed embeds keep the real upload first and append a single spacer upload."""
-    real_file = build_embed_spacer_file(filename="video.mp4")
+    real_file = _media_file(filename="video.mp4")
     with_image = Embed(description="image")
     with_image.set_image(url="https://cdn.test/photo.png")
     text_only = Embed(description="text")
@@ -198,7 +204,7 @@ def test_embed_spacer_payload_merges_extra_files_with_spacer() -> None:
 
 def test_embed_spacer_payload_skips_spacer_when_extra_files_fill_discord_limit() -> None:
     """A full file payload keeps the real files and leaves text embeds unmodified."""
-    files = [build_embed_spacer_file(filename=f"video-{index}.mp4") for index in range(10)]
+    files = [_media_file(filename=f"video-{index}.mp4") for index in range(10)]
     embed = Embed(description="video-only post")
 
     payload = embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=files)
@@ -209,7 +215,7 @@ def test_embed_spacer_payload_skips_spacer_when_extra_files_fill_discord_limit()
 
 def test_embed_spacer_payload_removes_stale_spacer_when_file_limit_is_full() -> None:
     """A reused spacer embed drops the missing attachment reference when upload is full."""
-    files = [build_embed_spacer_file(filename=f"video-{index}.mp4") for index in range(10)]
+    files = [_media_file(filename=f"video-{index}.mp4") for index in range(10)]
     embed = Embed(description="video-only post")
     embed.set_image(url=embed_spacer_url())
 

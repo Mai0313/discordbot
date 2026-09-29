@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 import logfire
 from nextcord import File, Object, Message, Forbidden, AllowedMentions
 
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
-from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT
 
 if TYPE_CHECKING:
     from nextcord import Thread

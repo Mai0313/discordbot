@@ -13,6 +13,7 @@ from collections.abc import Callable
 import pytest
 import requests
 
+from discordbot.cogs.video.cog import douyin_failure_message
 from discordbot.utils.link_errors import (
     LinkReadError,
     LinkRetryableError,
@@ -24,7 +25,6 @@ from discordbot.services.platforms.douyin import (
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTransferError,
-    douyin_failure_message,
 )
 from discordbot.services.platforms.threads import ThreadsDownloader
 from discordbot.services.platforms.facebook import FacebookDownloader
