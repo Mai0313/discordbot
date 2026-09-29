@@ -46,15 +46,15 @@ SHOE_DECK_COUNT = 4
 # Natural Blackjack pays 3:2.
 _BLACKJACK_PAYOUT_NUM: Final[int] = 3
 _BLACKJACK_PAYOUT_DEN: Final[int] = 2
-_CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
-_CARD_SUITS = ("♠", "♥", "♦", "♣")
+CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
+CARD_SUITS = ("♠", "♥", "♦", "♣")
+TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
 
 
 def draw_card(rng: Random) -> Card:
     """Draws one card from a notional infinite shoe (independent rank + suit).
 
-    Production rounds deal from the finite shoe `build_shoe` returns instead,
-    so this helper serves only as `_draw_one_card`'s empty-shoe fallback.
+    Nothing is used up, so every card stays equally likely on every draw.
 
     Args:
         rng: Random source used to choose rank and suit.
@@ -62,7 +62,7 @@ def draw_card(rng: Random) -> Card:
     Returns:
         The drawn card.
     """
-    return Card(rank=rng.choice(seq=_CARD_RANKS), suit=rng.choice(seq=_CARD_SUITS))
+    return Card(rank=rng.choice(seq=CARD_RANKS), suit=rng.choice(seq=CARD_SUITS))
 
 
 def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
@@ -75,8 +75,8 @@ def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
     shoe: list[Card] = [
         Card(rank=rank, suit=suit)
         for _ in range(deck_count)
-        for suit in _CARD_SUITS
-        for rank in _CARD_RANKS
+        for suit in CARD_SUITS
+        for rank in CARD_RANKS
     ]
     rng.shuffle(shoe)
     return shoe
@@ -99,10 +99,10 @@ def hand_value(cards: list[Card]) -> int:
 
 
 def card_blackjack_value(card: Card) -> int:
-    """Returns the Blackjack value used for pair and up-card checks."""
+    """Returns a card's Blackjack value, counting an Ace at its high 11."""
     if card.rank == "A":
         return 11
-    if card.rank in ("J", "Q", "K"):
+    if card.rank in TEN_VALUE_RANKS:
         return 10
     return int(card.rank)
 
@@ -177,18 +177,8 @@ def is_soft_total(cards: list[Card]) -> tuple[bool, int]:
     Returns:
         `(is_soft, total)` where total is the best Blackjack total.
     """
-    raw_total = 0
-    aces = 0
-    for card in cards:
-        if card.rank == "A":
-            aces += 1
-            raw_total += 11
-        elif card.rank in ("J", "Q", "K"):
-            raw_total += 10
-        else:
-            raw_total += int(card.rank)
-    aces_high = aces
-    total = raw_total
+    total = sum(card_blackjack_value(card=card) for card in cards)
+    aces_high = sum(1 for card in cards if card.rank == "A")
     while total > 21 and aces_high > 0:
         total -= 10
         aces_high -= 1
@@ -569,7 +559,7 @@ class BlackjackRound(BaseModel):
             self.insurance_offered = True
             return
 
-        ten_value_up = up is not None and up.rank in ("J", "Q", "K", "10")
+        ten_value_up = up is not None and up.rank in TEN_VALUE_RANKS
         self._resolve_peek(dealer_has_blackjack=ten_value_up and is_blackjack(cards=self.dealer))
 
     def take_insurance(self, user_id: int) -> None:

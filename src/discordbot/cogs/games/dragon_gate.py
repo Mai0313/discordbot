@@ -15,14 +15,12 @@ from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, GameParticipant
 from discordbot.typings.economy import MAX_SINGLE_BET
+from discordbot.cogs.games.blackjack import draw_card
 
 DragonGateDirection = Literal["higher", "lower"]
 DragonGateOutcome = Literal[
     "gate_win", "outside_lose", "pillar_hit", "pair_win", "pair_lose", "pair_pillar_hit"
 ]
-
-RANKS: tuple[str, ...] = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
-SUITS: tuple[str, ...] = ("♠", "♥", "♦", "♣")
 
 GAME_ID: Final[str] = "dragon_gate"
 ANTE: Final[int] = 10
@@ -55,11 +53,6 @@ class DragonGateBetRangeError(DragonGateError):
 
 class DragonGateParticipantUnknownError(DragonGateError):
     """Raised when a withdraw or lookup targets a user not at the table."""
-
-
-def draw_card(rng: Random) -> Card:
-    """Draws one card from a notional infinite shoe."""
-    return Card(rank=rng.choice(seq=RANKS), suit=rng.choice(seq=SUITS))
 
 
 def card_value(card: Card) -> int:
@@ -399,6 +392,5 @@ __all__ = [
     "DragonGateTurnError",
     "DragonGateTurnResult",
     "card_value",
-    "draw_card",
     "has_open_gate",
 ]

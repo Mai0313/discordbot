@@ -11,7 +11,12 @@ from typing import Final
 import logfire
 
 from discordbot.typings.games import Card, BotAction
-from discordbot.cogs.games.blackjack import is_soft_total, dealer_up_card, card_blackjack_value
+from discordbot.cogs.games.blackjack import (
+    TEN_VALUE_RANKS,
+    is_soft_total,
+    dealer_up_card,
+    card_blackjack_value,
+)
 from discordbot.cogs.games.blackjack_ev import recommend_action
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
@@ -29,7 +34,6 @@ BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # and well above the standard Hi-Lo ~0.005 because this table's five-card rules amplify
 # a ten-rich shoe; re-measure offline if those rules change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
-_TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
 _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     11: frozenset(range(2, 12)),
     8: frozenset(range(2, 12)),
@@ -268,5 +272,5 @@ def bot_takes_insurance(*, shoe: list[Card]) -> bool:
     and loses the cost otherwise, EV = cost * (3p - 1), so it only turns positive once that
     density clears one third.
     """
-    ten_count = sum(1 for card in shoe if card.rank in _TEN_VALUE_RANKS)
+    ten_count = sum(1 for card in shoe if card.rank in TEN_VALUE_RANKS)
     return bool(shoe) and ten_count / len(shoe) > 1.0 / 3.0

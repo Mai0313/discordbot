@@ -5,7 +5,12 @@ from typing import Any
 from nextcord.ui import View, Button
 
 from discordbot.typings.games import Card, GameParticipant, BlackjackPlayerSettlement
-from discordbot.cogs.games.blackjack import SHOE_DECK_COUNT, BlackjackRound, dealer_must_hit
+from discordbot.cogs.games.blackjack import (
+    CARD_RANKS,
+    SHOE_DECK_COUNT,
+    BlackjackRound,
+    dealer_must_hit,
+)
 from discordbot.cogs.games.settlement import settle_blackjack_player
 
 
@@ -40,7 +45,6 @@ def longest_hand_the_dealer_must_draw_on() -> int:
     eleven aces and a five is hard 16 and twelve cards, where a hand of small cards runs out
     sooner and a hand of aces stands early on the soft total. A rules change re-derives it.
     """
-    ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
     per_shoe = 4 * SHOE_DECK_COUNT
 
     def must_draw(counts: dict[str, int]) -> bool:
@@ -63,7 +67,7 @@ def longest_hand_the_dealer_must_draw_on() -> int:
         if held >= 2 and not must_draw(counts=counts):
             continue
         longest = max(longest, held)
-        for rank in ranks:
+        for rank in CARD_RANKS:
             if counts.get(rank, 0) < per_shoe:
                 stack.append({**counts, rank: counts.get(rank, 0) + 1})
     return longest

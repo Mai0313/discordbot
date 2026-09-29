@@ -28,7 +28,7 @@ from typing import Final
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, ActionEv, BotAction
-from discordbot.cogs.games.blackjack import hand_value, is_soft_total
+from discordbot.cogs.games.blackjack import TEN_VALUE_RANKS, hand_value, is_soft_total
 
 # Bucket index -> Blackjack draw value. Index 8 is any ten-value card, index 9
 # is an ace counted high (11). Indices 0..7 map ranks 2..9 directly.
@@ -67,7 +67,7 @@ def _bucket_for_rank(*, rank: str) -> int:
     """Maps a card rank to its value bucket index."""
     if rank == "A":
         return _ACE_BUCKET
-    if rank in ("10", "J", "Q", "K"):
+    if rank in TEN_VALUE_RANKS:
         return _TEN_BUCKET
     return int(rank) - 2
 
