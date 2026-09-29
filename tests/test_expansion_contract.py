@@ -8,13 +8,15 @@ stops agreeing.
 
 Most of the shell now lives in `utils/expansion_cog.py`, so most of this file asserts that a cog
 did NOT take a piece of it back: not its own status mark, not its own failure classification, not
-its own listener. The one written-down list is `test_every_expansion_cog_is_accounted_for`, which
-fails until a new source is named — that is what stops a source arriving with nobody having read
-this file.
+its own listener. The written-down list of cogs is `test_every_expansion_cog_is_accounted_for`,
+which fails until a new source is named — that is what stops a source arriving with nobody
+having read this file.
 
 The shell's behaviour is run here too, once per cog, through the cog's own read with only its
 downloader staged: when the listener stays quiet, what order the slot and the marks go on in, and
 what a failure leaves behind. A cog's own test file holds what its card does and none of this.
+Staging is the other thing written down per cog, in `_STAGES`, so a new cog also fails those tests
+until it says how its downloader is stood in for.
 
 What deliberately is NOT here: how a post is rendered. A Threads chain, a Facebook comment
 preload and a Douyin clip are different things and their cards should differ.
@@ -261,10 +263,10 @@ def _stage(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
 
 
 def test_every_expansion_cog_is_accounted_for() -> None:
-    """The one written-down list, so a new source cannot arrive unread.
+    """The written-down list of cogs, so a new source cannot arrive unread.
 
-    Everything else here is discovered. This is the tripwire: a new expansion cog fails exactly
-    one test, and the fix is to read this file and add its name.
+    Everything else here is discovered but its staging. This is the tripwire: a new expansion cog
+    fails here, and the fix is to read this file, add its name, and give it an entry in `_STAGES`.
     """
     assert {_cog_id(cog=cog) for cog in _COGS} == {
         "parse_douyin",

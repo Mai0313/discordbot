@@ -2,7 +2,7 @@
 
 The sources converged on purpose: a caller written against one reads the others without
 learning a second set of rules. Nothing else in the suite would notice them drifting
-apart again — every other test exercises one platform, and a fourth source added by copying
+apart again — every other test exercises one platform, and a new source added by copying
 whichever file was opened first passes all of them.
 
 So the classes here are DISCOVERED rather than listed: every `*Conversation` under
