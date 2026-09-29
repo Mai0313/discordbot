@@ -15,10 +15,12 @@ from __future__ import annotations
 import ast
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+import asyncio
 import inspect
 from pathlib import Path
 from functools import partial
 
+import pytest
 from nextcord.errors import ApplicationInvokeError
 
 from discordbot import cli
@@ -29,7 +31,6 @@ from tests.helpers.casting import as_message, as_discord_bot
 from tests.helpers.discord_mocks import FakeUser
 
 if TYPE_CHECKING:
-    import pytest
     from nextcord import Interaction
     from nextcord.ext import commands
     from nextcord.errors import ApplicationError
@@ -60,8 +61,8 @@ async def test_on_connect_rebuilds_the_application_command_registry() -> None:
 def _on_ready_calls() -> list[str]:
     """Every attribute call in `DiscordBot.on_ready`, in source order.
 
-    Read off the source rather than by driving `on_ready`, which would need a stub for the
-    sync, the `tasks.Loop` start and `application_info`, to pin one statement's position.
+    Read off the source, so a statement's position is pinned without stubbing every call
+    `on_ready` makes.
     """
     module = ast.parse(inspect.getsource(cli))
     bot = next(
@@ -86,11 +87,43 @@ def test_the_registered_command_count_is_read_before_the_sync_overwrites_it() ->
     """Reading it after the sync would report the repair rather than the damage.
 
     That ordering is the whole of what the diagnostic is worth, and it is invisible to every
-    other test: nothing in the suite drives `on_ready`, so swapping the two lines runs green.
+    other test: none records the order of the two calls, so swapping the two lines runs green.
     """
     calls = _on_ready_calls()
 
     assert calls.index("_count_registered_commands") < calls.index("sync_all_application_commands")
+
+
+async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sweep is the process's own, so nothing later in the first `on_ready` can cost it."""
+    swept: list[object] = []
+
+    async def record_sweep(bot: object) -> None:
+        """Stands in for the sweep, recording which bot it ran for."""
+        swept.append(bot)
+
+    async def fail_sync() -> None:
+        """Fails the way a Discord outage during the command sync does."""
+        raise RuntimeError("sync failed")
+
+    monkeypatch.setattr(cli, "delete_tracked_public_messages", record_sweep)
+    stub = SimpleNamespace(
+        _initial_setup_done=False,
+        _startup_tasks=set(),
+        user=FakeUser(user_id=999, bot=True),
+        _count_registered_commands=partial(asyncio.sleep, delay=0),
+        sync_all_application_commands=fail_sync,
+    )
+    bot = as_discord_bot(fake=stub)
+
+    with pytest.raises(RuntimeError, match="sync failed"):
+        await DiscordBot.on_ready(bot)
+    await asyncio.gather(*stub._startup_tasks)
+    await DiscordBot.on_ready(bot)
+
+    assert swept == [bot]
 
 
 def _reward_bot(**state: object) -> SimpleNamespace:

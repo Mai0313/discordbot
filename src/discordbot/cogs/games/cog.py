@@ -24,7 +24,7 @@ from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs.games.bot_player import kelly_bet, count_adjusted_edge
-from discordbot.utils.message_cleanup import track_public_message, delete_tracked_public_messages
+from discordbot.utils.message_cleanup import track_public_message
 from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
@@ -62,7 +62,6 @@ class GamesCogs(commands.Cog):
         """Initialises the GamesCogs instance."""
         self.bot = bot
         self.rng = SystemRandom()
-        self._startup_cleanup_done = False
         self._blackjack_shoes = BlackjackShoeStore()
 
     async def _bot_blackjack_participant(
@@ -89,14 +88,6 @@ class GamesCogs(commands.Cog):
         return build_wager_participant(
             identity=identity, balance=balance, wager=decided_bet, mode="clamp"
         )
-
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        """Deletes stale public messages left by a previous bot process."""
-        if self._startup_cleanup_done:
-            return
-        self._startup_cleanup_done = True
-        await delete_tracked_public_messages(bot=self.bot)
 
     @staticmethod
     async def _identity_from_user(

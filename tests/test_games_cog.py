@@ -129,7 +129,7 @@ def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
     It lives here rather than beside the store's own tests so that a module-local swap there
     cannot satisfy it.
     """
-    assert tmp_path / "game_cleanup.db" == cleanup_module._PENDING_PUBLIC_MESSAGE_DB_PATH
+    assert cleanup_module._engine.url.database == str(tmp_path / "game_cleanup.db")
 
 
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -376,24 +376,6 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
 
     assert other_interaction.response.sent
     assert isinstance(other_interaction.response.sent[0]["content"], str)
-
-
-async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies startup cleanup runs once per GamesCogs instance."""
-    bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
-    calls: list[SimpleNamespace] = []
-
-    async def record_cleanup(bot: SimpleNamespace) -> None:
-        """Records the bot passed to startup cleanup."""
-        calls.append(bot)
-
-    monkeypatch.setattr(games, "delete_tracked_public_messages", record_cleanup)
-    cog = GamesCogs(bot=as_bot(fake=bot))
-
-    await cog.on_ready()
-    await cog.on_ready()
-
-    assert calls == [bot]
 
 
 async def test_prepare_participant_insufficient_balance_applies_embed_spacer() -> None:

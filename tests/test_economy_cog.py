@@ -42,7 +42,6 @@ from discordbot.services.economy.database import (
     BalanceAdjustmentResult,
 )
 
-from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
 from tests.helpers.casting import as_bot, as_message, as_interaction
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
@@ -636,14 +635,11 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     balance_embed = interaction.followup.sent[0]["embed"]
     # Assert the financial summary's structure and the facade values it surfaces, not the exact
     # localized title/labels: cash 150, debt principal 30, net worth 115.
-    assert_embed_title_prefix(embed=balance_embed, prefix="💰")
+    assert (balance_embed.title or "").startswith("💰")
     assert "115" in (balance_embed.description or "")
-    cash_value = assert_embed_has_field(embed=balance_embed, name="現金").value
-    assert cash_value is not None
-    assert "150" in cash_value
-    debt_value = assert_embed_has_field(embed=balance_embed, name="債務").value
-    assert debt_value is not None
-    assert "30" in debt_value
+    balance_fields = {field.name: field.value or "" for field in balance_embed.fields}
+    assert "150" in balance_fields["現金"]
+    assert "30" in balance_fields["債務"]
     borrow_embed = interaction.followup.sent[8]["embed"]
     # The footer explains the loan-decision timeout; assert the behavioral 180s, not the copy.
     assert "180" in (borrow_embed.footer.text or "")

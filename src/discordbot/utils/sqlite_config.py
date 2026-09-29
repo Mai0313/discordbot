@@ -1,11 +1,11 @@
 """Shared SQLite connection configuration for the project's DB engines.
 
 Every SQLite engine in the project configures its connections here: the same WAL /
-synchronous / busy_timeout PRAGMA trade-off, plus the integer-aware UDFs on the
-`StoredInteger` engines.
+synchronous / busy_timeout PRAGMA trade-off, plus the integer-aware UDFs `StoredInteger`
+needs.
 
-`SqliteBootstrap` owns the layer above that for the async engines: the connect and
-checkout listeners, the lazy schema creation and the session factory.
+`SqliteBootstrap` owns the layer above that: the connect and checkout listeners, the lazy
+schema creation and the session factory.
 """
 
 from typing import Any, Protocol, runtime_checkable
@@ -24,7 +24,6 @@ from discordbot.utils.stored_integer import configure_sqlite_stored_integer_func
 def configure_sqlite_connection(
     dbapi_connection: Any,  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     enable_foreign_keys: bool = False,
-    register_stored_integer: bool = True,
 ) -> None:
     """Applies the project's standard PRAGMA setup to a new SQLite connection.
 
@@ -36,7 +35,6 @@ def configure_sqlite_connection(
     Args:
         dbapi_connection: The freshly opened DBAPI connection.
         enable_foreign_keys: Whether to turn on `PRAGMA foreign_keys` for the connection.
-        register_stored_integer: Whether to register the integer-aware UDFs used by `StoredInteger`.
     """
     with contextlib.closing(dbapi_connection.cursor()) as cursor:
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -44,8 +42,7 @@ def configure_sqlite_connection(
         cursor.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_SECONDS * 1000)}")
         if enable_foreign_keys:
             cursor.execute("PRAGMA foreign_keys=ON")
-    if register_stored_integer:
-        configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
+    configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
 
 
 @runtime_checkable

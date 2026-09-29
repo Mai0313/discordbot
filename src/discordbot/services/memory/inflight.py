@@ -28,7 +28,12 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.services.memory import database as memory_db
-from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
+from discordbot.utils.asyncio_locks import (
+    KeyedLockManager,
+    LoopLocalRegistry,
+    LoopLocalSemaphore,
+    spawn_tracked,
+)
 from discordbot.services.memory.store import flavor_of, cleared_since
 from discordbot.services.memory.writer import (
     NoteRound,
@@ -144,9 +149,7 @@ async def safe_db_write(coro: Awaitable[None]) -> None:
 
 def _spawn_db(coro: Awaitable[None]) -> None:
     """Runs a detached best-effort DB write, tracked so it is not GC'd mid-flight."""
-    task = asyncio.ensure_future(safe_db_write(coro=coro))
-    _db_tasks.add(task)
-    task.add_done_callback(_db_tasks.discard)
+    spawn_tracked(coro=safe_db_write(coro=coro), tasks=_db_tasks, name="memory-db-write")
 
 
 async def stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capture time

@@ -6,12 +6,17 @@ next loop to reach it raises `is bound to a different event loop`. Every test ca
 a fresh loop, so a primitive held at module level or on a process-wide singleton hits that
 on the second test. Hold one instance per call site; each accessor rebinds to the current
 loop, rebuilding (or clearing) state bound to a stale loop.
+
+`spawn_tracked` starts a fire-and-forget task and holds it until it finishes.
 """
 
+from typing import Any
 import asyncio
+from functools import partial
 from contextlib import asynccontextmanager
-from collections.abc import Callable, AsyncIterator
+from collections.abc import Callable, Coroutine, AsyncIterator
 
+import logfire
 from pydantic import Field, BaseModel, PrivateAttr
 
 
@@ -122,3 +127,39 @@ class KeyedLockManager[K](BaseModel):
             if self._refcounts[key] <= 0:
                 self._refcounts.pop(key, None)
                 self._locks.pop(key, None)
+
+
+def spawn_tracked(
+    *, coro: Coroutine[Any, Any, None], tasks: set[asyncio.Task[None]], name: str
+) -> None:
+    """Runs `coro` as a fire-and-forget task, held in `tasks` until it finishes.
+
+    The event loop keeps only a weak reference to a task, so one nothing else holds can be
+    garbage-collected mid-flight; `tasks` is the strong reference, and a caller that needs the
+    work to have landed can await what it holds. `coro` is expected to report its own failures:
+    one that escapes anyway is logged here, since asyncio would print it only to `sys.stderr`,
+    which `./data/logs` never sees.
+
+    Args:
+        coro: The work to run.
+        tasks: The owner's set of running tasks; the task leaves it when done.
+        name: The task's name, which the failure log carries.
+    """
+    task = asyncio.create_task(coro=coro, name=name)
+    tasks.add(task)
+    task.add_done_callback(partial(_release_tracked, tasks=tasks))
+
+
+def _release_tracked(task: asyncio.Task[None], *, tasks: set[asyncio.Task[None]]) -> None:
+    """Drops a finished task from its owner's set and logs a failure it let escape."""
+    tasks.discard(task)
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logfire.error(
+            "Background task failed",
+            task=task.get_name(),
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )

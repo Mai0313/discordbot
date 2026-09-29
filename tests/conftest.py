@@ -70,6 +70,16 @@ def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def messages_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-test SQLite file for the message log (messages.db)."""
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.cogs.log_msg.cog._engine",
+        db_path=tmp_path / "messages.db",
+    )
+
+
+@pytest.fixture
 def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test memory dir + isolated memory_job DB with reset process-local state."""
     memories_dir = tmp_path / "memories"
@@ -149,9 +159,10 @@ def cleanup_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     would pass green while inserting rows into the live `games.db` — where the next real
     start would try to delete a message named by a test's fake ids.
     """
-    monkeypatch.setattr(
-        "discordbot.utils.message_cleanup._PENDING_PUBLIC_MESSAGE_DB_PATH",
-        tmp_path / "game_cleanup.db",
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.utils.message_cleanup._engine",
+        db_path=tmp_path / "game_cleanup.db",
     )
 
 

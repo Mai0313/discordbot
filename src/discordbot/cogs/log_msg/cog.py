@@ -1,36 +1,26 @@
 """Message logging cog backed by the local SQLite message store."""
 
 import re
-from typing import Any, Final
-import asyncio
+from typing import TYPE_CHECKING, Final
 
 import logfire
 from nextcord import Message, DMChannel
 from pydantic import Field, BaseModel, ConfigDict, computed_field
-from sqlalchemy import Engine, text, event, create_engine
+from sqlalchemy import MetaData, text
 from nextcord.ext import commands
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection, create_async_engine
 
-from discordbot.utils.sqlite_config import configure_sqlite_connection
+from discordbot.utils.asyncio_locks import spawn_tracked
+from discordbot.utils.sqlite_config import SqliteBootstrap
+
+if TYPE_CHECKING:
+    import asyncio
 
 NULL_BYTE_RE = re.compile(pattern=r"\x00")
 
 # Single shared engine, never a per-message `cached_property`: that leaks the
 # connection pool, dialect cache and inspector cache once per Discord message.
-_sql_engine: Engine = create_engine(url="sqlite:///data/database/messages.db")
-
-
-@event.listens_for(_sql_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Applies the project's standard PRAGMA setup to every new connection.
-
-    WAL earns its keep here in particular: this DB is in the gigabyte range,
-    so a concurrent reader (e.g. analytics) blocking against writes would
-    wedge the live logging path.
-    """
-    configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
-
-
-_MESSAGES_TABLE_READY_FOR: Engine | None = None
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/messages.db")
 
 _CREATE_MESSAGES_TABLE_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -100,31 +90,32 @@ ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO UPDATE 
 """
 
 
-def _write_row_sync(row: dict[str, str]) -> None:
-    """Ensures the canonical messages table exists and inserts one row.
+async def _create_messages_table(*, conn: AsyncConnection) -> None:
+    """Creates the messages table and its indexes, each only where it does not exist yet.
 
-    SQLite writes run off the event loop via `asyncio.to_thread`, so several
-    threads can reach the DDL at once. Nothing here excludes them and nothing
-    needs to: every CREATE below is `IF NOT EXISTS`, which is the guard. The
-    readiness marker is only there to skip re-issuing the DDL per row, and it
-    tracks the current engine object so tests can swap `_sql_engine` without
-    leaking readiness from a previous temp DB.
+    A fresh file gets the columns and indexes the deployed `messages.db` has; an existing table
+    is never altered. Raw DDL rather than a declared model: `create_all` never alters one either,
+    the deployed file is in the gigabyte range with legacy NULL-id rows, and the DDL a model
+    compiles to differs from this text, so a model would be a second definition of the table
+    that nothing checks against the first.
+    """
+    await conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
+    for statement in _CREATE_MESSAGES_INDEX_SQL:
+        await conn.execute(statement=text(text=statement))
+
+
+# No declared tables: the one table and its indexes come from `_create_messages_table`.
+_database = SqliteBootstrap(metadata=MetaData(), after_create=_create_messages_table)
+
+
+async def _write_row(row: dict[str, str]) -> None:
+    """Inserts one row, or folds a repeat of the same Discord message into its row.
 
     Args:
         row: Mapping matching the schema declared in `_CREATE_MESSAGES_TABLE_SQL`.
     """
-    global _MESSAGES_TABLE_READY_FOR  # noqa: PLW0603 -- module-level cache by engine identity
-
-    needs_create = _MESSAGES_TABLE_READY_FOR is not _sql_engine
-    with _sql_engine.begin() as conn:
-        if needs_create:
-            conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
-            for statement in _CREATE_MESSAGES_INDEX_SQL:
-                conn.execute(statement=text(text=statement))
-        conn.execute(statement=text(text=_INSERT_MESSAGE_SQL), parameters=row)
-
-    if needs_create:
-        _MESSAGES_TABLE_READY_FOR = _sql_engine
+    async with _database.open_session(engine=_engine) as session, session.begin():
+        await session.execute(statement=text(text=_INSERT_MESSAGE_SQL), params=row)
 
 
 class MessageLogger(BaseModel):
@@ -186,14 +177,7 @@ class MessageLogger(BaseModel):
         return f"{self.message.channel.id}"
 
     async def _save_messages(self) -> None:
-        """Persists the message row off the event loop.
-
-        SQLite I/O is synchronous; running it from the coroutine directly
-        would block the entire event loop while the WAL frame is fsynced.
-        Offloading via `asyncio.to_thread` lets the loop keep ticking while
-        the row lands on disk. SQLite serializes the threads via its
-        file-level write lock plus the connection's `busy_timeout`.
-        """
+        """Persists the message row."""
         attachment_paths = [attachment.url for attachment in self.message.attachments]
         sticker_paths = [sticker.url for sticker in self.message.stickers]
         row: dict[str, str] = {
@@ -208,7 +192,7 @@ class MessageLogger(BaseModel):
             "attachments": ";".join(attachment_paths),
             "stickers": ";".join(sticker_paths),
         }
-        await asyncio.to_thread(_write_row_sync, row=row)
+        await _write_row(row=row)
 
     async def log(self) -> None:
         """Persists the message row.
@@ -220,8 +204,8 @@ class MessageLogger(BaseModel):
         try:
             await self._save_messages()
         except Exception as exc:
-            # Stays broad: this runs as a detached create_task, so anything not caught
-            # here surfaces only as "Task exception was never retrieved".
+            # Stays broad: this runs as a detached task, and this log carries the message's
+            # ids, which the spawner's generic failure line does not.
             logfire.error(
                 "Failed to log message",
                 discord_message_id=self.message.id,
@@ -246,6 +230,7 @@ class LogMessageCog(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
+        self._tasks: set[asyncio.Task[None]] = set()
 
     def _should_log(self, message: Message) -> bool:
         """Returns True for human messages or this bot's own replies.
@@ -267,7 +252,9 @@ class LogMessageCog(commands.Cog):
         """
         if not self._should_log(message=message):
             return
-        asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
+        spawn_tracked(
+            coro=MessageLogger(message=message).log(), tasks=self._tasks, name="log-message"
+        )
 
     @commands.Cog.listener()
     async def on_message_edit(self, _before: Message, after: Message) -> None:
@@ -286,7 +273,9 @@ class LogMessageCog(commands.Cog):
         """
         if not self._should_log(message=after):
             return
-        asyncio.create_task(MessageLogger(message=after).log())  # noqa: RUF006
+        spawn_tracked(
+            coro=MessageLogger(message=after).log(), tasks=self._tasks, name="log-message"
+        )
 
 
 def setup(bot: commands.Bot) -> None:

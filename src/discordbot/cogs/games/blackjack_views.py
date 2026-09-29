@@ -19,10 +19,10 @@ from discordbot.typings.games import (
     BlackjackPlayerResult,
     BlackjackPlayerSettlement,
 )
-from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
+from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.cogs.games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
@@ -53,6 +53,7 @@ from discordbot.cogs.games.presentation import (
     PUSH_COLOR,
     WIN_RESULT_EMOJI,
     BUST_RESULT_EMOJI,
+    IN_PROGRESS_COLOR,
     NATURAL_RESULT_EMOJI,
     SYSTEM_NARRATOR_NAME,
     LOBBY_PLAYERS_FIELD_EMOJI,
@@ -1053,13 +1054,15 @@ class BlackjackView(GameView):
         )
         dealer_cards = list(self.round_state.dealer)
         dealer_total = self.round_state.dealer_total()
-        self._track_background_task(
-            self._record_history_later(
+        spawn_tracked(
+            coro=self._record_history_later(
                 message=message,
                 results=results,
                 dealer_cards=dealer_cards,
                 dealer_total=dealer_total,
-            )
+            ),
+            tasks=self._background_tasks,
+            name="blackjack-round-history",
         )
 
         seat_embeds = build_final_embeds(
@@ -1181,16 +1184,6 @@ class BlackjackView(GameView):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-
-    def _track_background_task(self, coroutine: Coroutine[Any, Any, None]) -> None:
-        """Holds a strong reference to an off-critical-path task until it finishes."""
-        task = asyncio.create_task(coro=coroutine)
-        self._background_tasks.add(task)
-
-        def _discard_task(done_task: asyncio.Task[None]) -> None:
-            self._background_tasks.discard(done_task)
-
-        task.add_done_callback(_discard_task)
 
     async def wait_for_background_tasks(self) -> None:
         """Waits for the round's off-critical-path tasks (round-history persistence).
