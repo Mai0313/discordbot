@@ -504,8 +504,6 @@ fast_shutdown = true
 skip = "pyproject.toml,poetry.lock,notebook/.*,uv.lock"
 count = false
 quiet-level = 3
-# the correct one is Amoeba, but we use pronunciation in Chinese to name it.
-ignore-words-list = ["useable"]
 
 
 # ================== #
