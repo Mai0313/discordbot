@@ -23,17 +23,13 @@ from discordbot.typings.media import UploadedFile, RenderedAttachment, PendingUp
 from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
 from discordbot.cogs.gen_reply.attachment.base import (
+    UploadKind,
     FileBytesLoader,
-    AttachmentRenderer,
+    FileUploadRenderer,
     media_semaphore,
     loggable_cache_key,
 )
-from discordbot.cogs.gen_reply.attachment.loaders import (
-    attachment_mime,
-    load_image_bytes,
-    load_attachment_bytes,
-    resolve_source_filename,
-)
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
 
 
 class PendingUpload(BaseModel):
@@ -65,7 +61,7 @@ def _expiry_of(*, uploaded: File) -> datetime:
     return uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
 
 
-class GeminiFileUploader(AttachmentRenderer):
+class GeminiFileUploader(FileUploadRenderer):
     """Uploads attachments to the Gemini Files API and references them by URI.
 
     One uploader per Gemini key, because a file is readable only by the project that
@@ -73,6 +69,10 @@ class GeminiFileUploader(AttachmentRenderer):
     `input.py` above, both hand back a uri that is worthless to any other key. Sharing one
     uploader across keys would therefore hand a key-1 uri to a key-2 request, which fails the
     whole answer rather than dropping the attachment.
+
+    Overrides `_resolve_file_upload` whole, for the pending re-poll, so its upload is
+    `_upload_or_pend` rather than `_upload_file`: a file still PROCESSING at the activation
+    bound comes back as a `PendingUpload` to re-poll later, not as a failure.
     """
 
     api_key: str = Field(
@@ -99,7 +99,7 @@ class GeminiFileUploader(AttachmentRenderer):
         upload can be polled to an ACTIVE `state` before it is referenced. Built here, not
         at the cog: this uploader is only constructed on the Gemini answer-model path, so a
         non-Gemini deployment never builds it. An empty key raises here, and
-        because construction is lazy that surfaces at the upload call, where `_upload_file`
+        because construction is lazy that surfaces at the upload call, where `_upload_or_pend`
         catches it and drops the attachment while the text reply still goes out.
 
         Returns:
@@ -118,6 +118,7 @@ class GeminiFileUploader(AttachmentRenderer):
             cache_key=cache_key,
             filename=source_name,
             load_data=lambda: load_image_bytes(source=source),
+            kind="image",
             allow_dead_cache=allow_dead_cache,
         )
         if uploaded is None:
@@ -126,30 +127,6 @@ class GeminiFileUploader(AttachmentRenderer):
         # attachment marker is derived from message metadata, not from this part.
         part = ResponseInputFileParam(
             type="input_file", file_id=uploaded.uri, filename=source_name
-        )
-        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
-
-    async def render_file(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> RenderedAttachment | None:
-        mime_type = attachment_mime(attachment=attachment)
-        if not mime_type:
-            logfire.warn(
-                "skipping attachment with unknown MIME type",
-                filename=attachment.filename,
-                url=attachment.url,
-            )
-            return None
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=attachment.filename,
-            load_data=lambda: load_attachment_bytes(attachment=attachment),
-            allow_dead_cache=allow_dead_cache,
-        )
-        if uploaded is None:
-            return None
-        part = ResponseInputFileParam(
-            type="input_file", file_id=uploaded.uri, filename=attachment.filename
         )
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
@@ -200,6 +177,7 @@ class GeminiFileUploader(AttachmentRenderer):
         cache_key: int | str,
         filename: str,
         load_data: "FileBytesLoader",
+        kind: UploadKind,
         allow_dead_cache: bool = False,
     ) -> UploadedFile | None:
         """Returns an ACTIVE file (uri, expiry), re-polling a prior pending upload first.
@@ -215,8 +193,9 @@ class GeminiFileUploader(AttachmentRenderer):
         when a fresh upload is actually needed: adopting a now-ACTIVE pending upload, or
         dropping one still PROCESSING, never re-downloads the source. So a borderline file
         keeps being adopted even after its Discord CDN url has expired and a re-download
-        would fail.
+        would fail. `kind` changes nothing here: Gemini uploads an image like any other file.
         """
+        del kind
         repoll = await self._repoll_pending_upload(cache_key=cache_key)
         if repoll.handled:
             return repoll.uploaded
@@ -243,7 +222,7 @@ class GeminiFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            result = await self._upload_file(
+            result = await self._upload_or_pend(
                 filename=filename, data=loaded.data, content_type=loaded.mime_type
             )
         if isinstance(result, PendingUpload):
@@ -254,7 +233,7 @@ class GeminiFileUploader(AttachmentRenderer):
             return None
         return result
 
-    async def _upload_file(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
+    async def _upload_or_pend(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
         self, filename: str, data: bytes, content_type: str
     ) -> UploadedFile | PendingUpload | None:
         """Uploads bytes to the Gemini Files API, polling to ACTIVE within the bound.

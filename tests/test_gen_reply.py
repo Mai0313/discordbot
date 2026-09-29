@@ -3578,7 +3578,7 @@ async def test_media_semaphore_bounds_media_io_concurrency(
 
     results = await asyncio.gather(*[
         uploader._resolve_file_upload(
-            cache_key=f"k{index}", filename=f"f{index}", load_data=_slow_load
+            cache_key=f"k{index}", filename=f"f{index}", load_data=_slow_load, kind="file"
         )
         for index in range(6)
     ])
@@ -4126,7 +4126,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
 
     # PROCESSING for two polls, then ACTIVE: the file URI and its expiry are returned.
     active = _uploader(FakeGeminiFiles(processing_rounds=2))
-    uploaded = await active._upload_file(
+    uploaded = await active._upload_or_pend(
         filename="doc.pdf", data=b"x", content_type="application/pdf"
     )
     assert uploaded == UploadedFile(
@@ -4136,7 +4136,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     # Terminal non-active state: the file is dropped.
     failed = _uploader(FakeGeminiFiles(final_state=FileState.FAILED))
     assert (
-        await failed._upload_file(filename="bad.pdf", data=b"x", content_type="application/pdf")
+        await failed._upload_or_pend(filename="bad.pdf", data=b"x", content_type="application/pdf")
         is None
     )
 
@@ -4151,7 +4151,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
     stuck = _uploader(FakeGeminiFiles(processing_rounds=99))
-    pending = await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4")
+    pending = await stuck._upload_or_pend(filename="slow.mp4", data=b"x", content_type="video/mp4")
     assert isinstance(pending, PendingUpload)
     assert pending.name == "slow.mp4"
     assert pending.uri == "https://files.test/slow.mp4"
@@ -4163,7 +4163,9 @@ async def test_upload_file_polls_active_and_drops_unready_files(
 
     boom = _uploader(FakeGeminiFiles())
     monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
-    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    assert (
+        await boom._upload_or_pend(filename="x.txt", data=b"x", content_type="text/plain") is None
+    )
 
 
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
@@ -4198,7 +4200,9 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         return LoadedMedia(data=b"x", mime_type="video/mp4")
 
     # First reference times out while still PROCESSING: dropped for now, cached as pending.
-    first = await uploader._resolve_file_upload(cache_key="vid", filename="v.mp4", load_data=_load)
+    first = await uploader._resolve_file_upload(
+        cache_key="vid", filename="v.mp4", load_data=_load, kind="file"
+    )
     assert first is None
     assert "vid" in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]
@@ -4217,7 +4221,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
 
     monkeypatch.setattr(files, "get", _active_get)
     second = await uploader._resolve_file_upload(
-        cache_key="vid", filename="v.mp4", load_data=_load
+        cache_key="vid", filename="v.mp4", load_data=_load, kind="file"
     )
     assert second == UploadedFile(
         uri="https://files.test/v.mp4", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
@@ -4308,7 +4312,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     errored = _fake_openai_uploader(files=FakeOpenAIFiles(status="error"))
     assert (
         await errored._upload_file(
-            filename="bad.txt", data=b"x", content_type="text/plain", purpose="user_data"
+            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4327,7 +4331,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     monkeypatch.setattr(boom.client.files, "create", _raise)
     assert (
         await boom._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", purpose="user_data"
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4457,7 +4461,10 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     """XAI upload errors and id-less responses degrade to a dropped attachment."""
     idless = _fake_grok_uploader(files=FakeXAIFiles(file_id=""))
     assert (
-        await idless._upload_file(filename="bad.txt", data=b"x", content_type="text/plain") is None
+        await idless._upload_file(
+            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
     )
 
     boom = _fake_grok_uploader()
@@ -4469,7 +4476,12 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
         raise RuntimeError("upload failed")
 
     monkeypatch.setattr(boom.xai_client.files, "upload", _raise)
-    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    assert (
+        await boom._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
+    )
 
 
 async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
@@ -4494,7 +4506,10 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
         "discordbot.cogs.gen_reply.attachment.grok_file_api.GROK_FILE_UPLOAD_TIMEOUT_SECONDS", 0.01
     )
     assert (
-        await stalled._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+        await stalled._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
     )
 
 
@@ -4515,7 +4530,10 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     )
     renderer = GrokFileUploader()
     assert (
-        await renderer._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+        await renderer._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+        )
+        is None
     )
     assert logged == ["xAI Files API key missing; dropping attachment"]
 
@@ -4524,7 +4542,7 @@ async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
     """A response without an expiry still bounds the render cache by the requested TTL."""
     renderer = _fake_grok_uploader(files=FakeXAIFiles(expires_at=None))
     uploaded = await renderer._upload_file(
-        filename="notes.txt", data=b"hello", content_type="text/plain"
+        filename="notes.txt", data=b"hello", content_type="text/plain", kind="file"
     )
     assert uploaded is not None
     assert uploaded.expires_at > datetime.now(tz=UTC) + timedelta(days=29)

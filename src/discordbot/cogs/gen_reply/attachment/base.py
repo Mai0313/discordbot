@@ -1,15 +1,17 @@
-"""The attachment renderer strategy interface and its shared rendered-part type."""
+"""The attachment renderer strategy interface, and the Files API upload renderer built on it."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from datetime import UTC, datetime, timedelta
 from collections import OrderedDict
 
 import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import BaseModel, ConfigDict, PrivateAttr
+from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.media import LoadedMedia, RenderedAttachment
+from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
+from discordbot.cogs.gen_reply.attachment.loaders import attachment_mime, load_attachment_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
@@ -17,6 +19,10 @@ if TYPE_CHECKING:
 # Lazily fetches a source's bytes and mime type. Awaited only when an upload is actually needed,
 # so a renderer that can adopt an already-uploaded file never re-downloads the source.
 type FileBytesLoader = Callable[[], Awaitable[LoadedMedia]]
+
+# Which render asked for an upload, for a provider that declares an image upload differently
+# from any other file.
+type UploadKind = Literal["image", "file"]
 
 # A source whose byte fetch fails (typically an expired Discord/Threads CDN url that sits in
 # history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
@@ -145,3 +151,73 @@ class AttachmentRenderer(BaseModel):
                 self._mark_dead(cache_key=cache_key)
             return None
         return loaded
+
+
+class FileUploadRenderer(AttachmentRenderer):
+    """A renderer that uploads each source to a provider's Files API and references its handle.
+
+    A provider supplies `_upload_file`, plus its own `render_image`, since how an uploaded image
+    is referenced differs per provider. The file render and the upload resolution are shared: a
+    history source known dead is skipped, and one media slot spans the download and the upload.
+    A provider with more to decide before uploading overrides `_resolve_file_upload` whole.
+    """
+
+    async def render_file(
+        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
+    ) -> RenderedAttachment | None:
+        mime_type = attachment_mime(attachment=attachment)
+        if not mime_type:
+            logfire.warn(
+                "skipping attachment with unknown MIME type",
+                filename=attachment.filename,
+                url=attachment.url,
+            )
+            return None
+        uploaded = await self._resolve_file_upload(
+            cache_key=cache_key,
+            filename=attachment.filename,
+            load_data=lambda: load_attachment_bytes(attachment=attachment),
+            kind="file",
+            allow_dead_cache=allow_dead_cache,
+        )
+        if uploaded is None:
+            return None
+        part = ResponseInputFileParam(
+            type="input_file", file_id=uploaded.uri, filename=attachment.filename
+        )
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
+
+    async def _resolve_file_upload(
+        self,
+        cache_key: int | str,
+        filename: str,
+        load_data: "FileBytesLoader",
+        kind: UploadKind,
+        allow_dead_cache: bool = False,
+    ) -> UploadedFile | None:
+        """Returns an uploaded file's handle and expiry, or None when the source is dropped.
+
+        One media slot spans the whole download plus upload, so concurrent pipelines cannot
+        launch dozens of CDN downloads at once and buffer all their bytes while they wait for
+        an upload.
+        """
+        if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
+            return None
+        async with media_semaphore.get():
+            loaded = await self._load_source_bytes(
+                cache_key=cache_key,
+                filename=filename,
+                load_data=load_data,
+                allow_dead_cache=allow_dead_cache,
+            )
+            if loaded is None:
+                return None
+            return await self._upload_file(
+                filename=filename, data=loaded.data, content_type=loaded.mime_type, kind=kind
+            )
+
+    async def _upload_file(
+        self, filename: str, data: bytes, content_type: str, kind: UploadKind
+    ) -> UploadedFile | None:
+        """Uploads one source's bytes, returning the handle or None when the upload failed."""
+        raise NotImplementedError
