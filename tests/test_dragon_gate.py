@@ -31,7 +31,7 @@ from discordbot.cogs.games.dragon_gate import (
     card_value,
     has_open_gate,
 )
-from discordbot.cogs.games.interactions import edit_message_with_retry
+from discordbot.cogs.games.interactions import publish_final_table, edit_message_with_retry
 from discordbot.cogs.games.dragon_gate_views import (
     DRAGON_GATE_VISIBLE_PLAYER_LINES,
     DRAGON_GATE_VISIBLE_HISTORY_LINES,
@@ -46,7 +46,7 @@ from discordbot.cogs.games.dragon_gate_views import (
 from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import seat, component_ids, component_rows, attached_button
-from tests.helpers.casting import as_message, as_interaction
+from tests.helpers.casting import as_message, as_interaction, make_not_found
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
@@ -476,6 +476,44 @@ async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
     assert message.edits[0]["files"][0] is payloads[0]
     # order-contract: the successful retry carries the second payload built after that failure.
     assert message.edits[1]["files"][0] is payloads[1]
+
+
+@pytest.mark.parametrize(
+    argnames="failure",
+    argvalues=[make_not_found(), RuntimeError("edit refused")],
+    ids=["message_gone", "edit_refused"],
+)
+async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """Settlement is committed before the final render, so a failed render never raises.
+
+    Raising would also skip the deletion behind it, leaving the table up until a restart sweeps it.
+    """
+    scheduled: list[tuple[object, str | None]] = []
+    monkeypatch.setattr(
+        game_interactions,
+        "schedule_public_message_delete",
+        lambda message, delay=180, user_name=None: scheduled.append((message, user_name)),
+    )
+
+    class _RefusingMessage:
+        id = 7
+
+        async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+            raise failure
+
+    message = _RefusingMessage()
+    landed = await publish_final_table(
+        message=as_message(fake=message),
+        embeds=[Embed(title="settled")],
+        user_name="alice",
+        game_name="Dragon Gate",
+        message_id=message.id,
+    )
+
+    assert landed is False
+    assert scheduled == [(message, "alice")]
 
 
 async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
