@@ -1,8 +1,32 @@
-"""Seeding helpers for tests that start from a known economy state."""
+"""Seeding and read helpers for tests that start from, or check, a known economy state."""
 
-from sqlalchemy import update
+from pydantic import Field, BaseModel, ConfigDict
+from sqlalchemy import select, update
 
-from discordbot.services.economy.database import UserAccount, open_session, adjust_balance
+from discordbot.utils.timezone import as_taipei, database_now
+from discordbot.services.economy.database import (
+    UserAccount,
+    CasinoAccount,
+    open_session,
+    _ensure_schema,
+    adjust_balance,
+    _taipei_midnight,
+    get_jackpot_snapshot,
+)
+
+
+class CasinoDailyStats(BaseModel):
+    """Per-user current-day casino loss/win/net totals.
+
+    All zero when no row exists or the stored counters belong to a previous
+    Taipei day.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    daily_loss: int = Field(..., description="Gross current-day casino loss total.")
+    daily_win: int = Field(..., description="Gross current-day casino win total.")
+    daily_net: int = Field(..., description="Net current-day casino result (win minus loss).")
 
 
 async def seed_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
@@ -29,3 +53,38 @@ async def hide_from_leaderboard(user_id: int) -> None:
             .values(hide_from_leaderboard=True)
         )
         await session.commit()
+
+
+async def get_jackpot_pool(game_id: str) -> int:
+    """Returns a game's jackpot balance, replenishing a drained seeded pool first.
+
+    A game with no pool row reads as 0.
+    """
+    snapshot = await get_jackpot_snapshot(game_id=game_id)
+    return snapshot.balance
+
+
+async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
+    """Returns the current-day casino loss/win/net for one user.
+
+    Returns all-zero when no row exists or when the stored counters are from a
+    previous Taipei day (the next casino settlement will reset them anyway).
+    """
+    await _ensure_schema()
+    today_midnight = _taipei_midnight(now=database_now())
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(
+                CasinoAccount.daily_loss,
+                CasinoAccount.daily_win,
+                CasinoAccount.daily_net,
+                CasinoAccount.day_started_at,
+            ).where(CasinoAccount.user_id == user_id)
+        )
+        row = result.one_or_none()
+    if row is None:
+        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
+    daily_loss, daily_win, daily_net, day_started_at = row
+    if day_started_at is None or as_taipei(dt=day_started_at) != today_midnight:
+        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
+    return CasinoDailyStats(daily_loss=daily_loss, daily_win=daily_win, daily_net=daily_net)

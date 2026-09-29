@@ -2313,7 +2313,6 @@ def _fake_loan_proposal(kind: LoanProposalKind) -> LoanProposalView:
         lender_name="bob",
         amount=100,
         monthly_rate_bps=300,
-        escrow_amount=0,
         created_at=datetime.now(tz=UTC),
     )
 
@@ -2923,7 +2922,7 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records base reward arguments and returns a fake credit result."""
         rewards.append(kwargs)
-        return CreditResult(new_balance=5_000, credited_amount=5_000)
+        return CreditResult(new_balance=5_000)
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     bot = _reward_bot(process_commands=record_processed)
@@ -3071,7 +3070,7 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
         rewards.append(kwargs)
-        return CreditResult(new_balance=10, credited_amount=10)
+        return CreditResult(new_balance=10)
 
     async def noop_process(message: SimpleNamespace) -> None:
         del message
@@ -3098,7 +3097,7 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
         rewards.append(kwargs)
-        return CreditResult(new_balance=10, credited_amount=10)
+        return CreditResult(new_balance=10)
 
     async def noop_process(message: SimpleNamespace) -> None:
         del message
@@ -3131,7 +3130,7 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
         attempts += 1
         if attempts == 1:
             raise RuntimeError("transient DB failure")
-        return CreditResult(new_balance=10, credited_amount=10)
+        return CreditResult(new_balance=10)
 
     async def noop_process(message: SimpleNamespace) -> None:
         del message

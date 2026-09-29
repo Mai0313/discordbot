@@ -169,7 +169,6 @@ class CreditResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     new_balance: int = Field(..., description="User balance after the credit.")
-    credited_amount: int = Field(..., description="Amount that landed in balance.")
 
 
 class BalanceAdjustmentResult(BaseModel):
@@ -283,20 +282,6 @@ class CasinoLedgerSnapshot(BaseModel):
     updated_at: datetime = Field(..., description="Timestamp of the last casino ledger update.")
 
 
-class CasinoDailyStats(BaseModel):
-    """Per-user current-day casino loss/win/net totals.
-
-    All zero when no row exists or the stored counters belong to a previous
-    Taipei day.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    daily_loss: int = Field(..., description="Gross current-day casino loss total.")
-    daily_win: int = Field(..., description="Gross current-day casino win total.")
-    daily_net: int = Field(..., description="Net current-day casino result (win minus loss).")
-
-
 class RoundSettlementResult(BaseModel):
     """Outcome of an atomic player + casino ledger settlement."""
 
@@ -351,9 +336,6 @@ class LoanProposalView(BaseModel):
     lender_name: str = Field(..., description="Display name of the lender.")
     amount: int = Field(..., description="Proposed loan principal amount.")
     monthly_rate_bps: int = Field(..., description="Monthly simple-interest rate in basis points.")
-    escrow_amount: int = Field(
-        ..., description="Amount held in escrow while the proposal is pending."
-    )
     created_at: datetime = Field(..., description="Timestamp the proposal was created.")
 
 
@@ -477,7 +459,6 @@ __all__ = [
     "VIP_PURCHASE_COST",
     "AccountSnapshot",
     "BalanceAdjustmentResult",
-    "CasinoDailyStats",
     "CasinoLedgerSnapshot",
     "CentralBankStatus",
     "CreditResult",

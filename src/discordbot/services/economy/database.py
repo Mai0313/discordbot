@@ -75,7 +75,6 @@ from discordbot.typings.economy import (
     TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
-    CasinoDailyStats,
     LeaderboardEntry,
     LoanContractView,
     LoanProposalKind,
@@ -710,7 +709,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
         statement=_build_credit_upsert(user_id=user_id, name=name, amount=amount, now=now)
     )
     new_balance = result.scalar_one()
-    return CreditResult(new_balance=new_balance, credited_amount=amount)
+    return CreditResult(new_balance=new_balance)
 
 
 async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and delta state
@@ -954,32 +953,6 @@ async def get_casino_ledger() -> CasinoLedgerSnapshot:
     )
 
 
-async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
-    """Returns the current-day casino loss/win/net for one user.
-
-    Returns all-zero when no row exists or when the stored counters are from a
-    previous Taipei day (the next casino settlement will reset them anyway).
-    """
-    await _ensure_schema()
-    today_midnight = _taipei_midnight(now=_database_now())
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(
-                CasinoAccount.daily_loss,
-                CasinoAccount.daily_win,
-                CasinoAccount.daily_net,
-                CasinoAccount.day_started_at,
-            ).where(CasinoAccount.user_id == user_id)
-        )
-        row = result.one_or_none()
-    if row is None:
-        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
-    daily_loss, daily_win, daily_net, day_started_at = row
-    if day_started_at is None or _as_taipei(dt=day_started_at) != today_midnight:
-        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
-    return CasinoDailyStats(daily_loss=daily_loss, daily_win=daily_win, daily_net=daily_net)
-
-
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
@@ -1041,7 +1014,7 @@ async def credit_with_repayment(
     """
     await _ensure_schema()
     if amount <= 0:
-        return CreditResult(new_balance=await get_balance(user_id=user_id), credited_amount=0)
+        return CreditResult(new_balance=await get_balance(user_id=user_id))
     now = _database_now()
     async with open_session() as session:
         result = await _credit_with_repayment_in_session(
@@ -1190,23 +1163,6 @@ async def apply_blackjack_settlement(
         player_delta=player_delta,
         casino_delta=casino_delta,
     )
-
-
-async def get_jackpot_pool(game_id: str) -> int:
-    """Returns the current `pool_balance` for a game's shared jackpot.
-
-    Seeded pools are replenished before returning if an older process left them
-    drained. Returns `0` when the row hasn't been seeded yet so a
-    freshly-introduced game can short-circuit cleanly.
-
-    Args:
-        game_id: Game identifier (e.g. `"dragon_gate"`).
-
-    Returns:
-        The current pool balance in points.
-    """
-    snapshot = await get_jackpot_snapshot(game_id=game_id)
-    return snapshot.balance
 
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
@@ -2002,7 +1958,6 @@ def _loan_proposal_view(proposal: LoanProposal) -> LoanProposalView:
         lender_name=proposal.lender_name,
         amount=proposal.amount,
         monthly_rate_bps=proposal.monthly_rate_bps,
-        escrow_amount=proposal.escrow_amount,
         created_at=proposal.created_at,
     )
 
