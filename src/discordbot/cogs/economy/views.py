@@ -29,6 +29,11 @@ from discordbot.services.economy.database import (
 from discordbot.utils.interaction_responses import edit_response_embed, send_private_followup
 
 
+def central_bank_exclude_user_ids(bot: commands.Bot) -> tuple[int, ...]:
+    """Returns bot-owned account IDs excluded from central-bank capacity."""
+    return (bot.user.id,) if bot.user is not None else ()
+
+
 class LoanDecisionViewBase(View):
     """Shared terminal behavior for public loan-decision views.
 
@@ -49,9 +54,12 @@ class LoanDecisionViewBase(View):
     CANCEL_CLOSED_HEADING: ClassVar[str]
     CANCEL_DENIED_NOTICE: ClassVar[str]
 
-    message: Message | None
-    proposal_id: int
-    creator_id: int
+    def __init__(self, proposal_id: int, creator_id: int) -> None:
+        """Initializes a decision view for one proposal."""
+        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
+        self.proposal_id = proposal_id
+        self.creator_id = creator_id
+        self.message: Message | None = None
 
     def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
         """Schedules the public request message for cleanup after a terminal state."""
@@ -129,12 +137,9 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         allow_self_approval: bool = False,
     ) -> None:
         """Initializes a decision view for one proposal."""
-        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
+        super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.bot = bot
-        self.proposal_id = proposal_id
-        self.creator_id = creator_id
         self.allow_self_approval = allow_self_approval
-        self.message: Message | None = None
 
     async def _send_permission_denied(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies privately when a non-administrator clicks a decision button."""
@@ -153,10 +158,6 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         it is empty, which is what refuses a DM.
         """
         return interaction.permissions.administrator
-
-    def _central_bank_exclude_user_ids(self) -> tuple[int, ...]:
-        """Returns bot-owned account IDs excluded from central-bank capacity."""
-        return (self.bot.user.id,) if self.bot.user is not None else ()
 
     @nextcord.ui.button(
         label="批准",
@@ -186,7 +187,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             actor_avatar_url=banker_avatar_url,
             approver_is_guild_admin=True,
             guild_id=interaction.guild_id,
-            central_bank_exclude_user_ids=self._central_bank_exclude_user_ids(),
+            central_bank_exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
             allow_central_bank_self_approval=self.allow_self_approval,
         )
         if result is None:
@@ -268,11 +269,8 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
         """Initializes a decision view for one personal credit proposal."""
-        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
-        self.proposal_id = proposal_id
+        super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.lender_id = lender_id
-        self.creator_id = creator_id
-        self.message: Message | None = None
 
     async def _send_permission_denied(
         self, interaction: Interaction[commands.Bot], description: str

@@ -18,7 +18,11 @@ from discordbot.typings.economy import (
     monthly_rate_percent_to_bps,
 )
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.cogs.economy.views import (
+    CreditLoanDecisionView,
+    CentralBankLoanDecisionView,
+    central_bank_exclude_user_ids,
+)
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
@@ -1135,9 +1139,9 @@ class EconomyCogs(commands.Cog):
             await record_guild_participant(
                 guild_id=interaction.guild_id, user_id=interaction.user.id
             )
-        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
         status = await get_central_bank_status(
-            guild_id=interaction.guild_id, exclude_user_ids=exclude_user_ids
+            guild_id=interaction.guild_id,
+            exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
         )
         embed = embeds.build_central_bank_status_embed(status=status)
         await send_expiring_followup(interaction=interaction, embed=embed)
