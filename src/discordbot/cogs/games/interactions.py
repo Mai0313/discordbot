@@ -90,8 +90,10 @@ async def edit_message_with_retry(
     """Edits `message`, retrying transient Discord 5xx errors with backoff.
 
     Cloudflare in front of discord.com returns 502/503/504 for a couple of seconds at a time,
-    and a game-start edit that never lands leaves the lobby stopped with antes already charged,
-    so the backoff spends ~1.5s on that window before the error propagates.
+    so the backoff spends ~1.5s on that window before the error propagates. What rides on it is
+    a game start: an edit that never lands leaves the lobby on screen marked started, refusing
+    every press and skipping its timeout cleanup, while the table never appears and a jackpot
+    game's antes stay charged.
 
     The payload is rebuilt per attempt because a failed one has already consumed any upload
     streams it carries.
