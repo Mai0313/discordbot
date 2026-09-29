@@ -6,13 +6,12 @@ fractional-Kelly betting off the channel shoe's Hi-Lo true count, the hole-aware
 EV engine for the action, and a count-based +EV rule for insurance.
 """
 
-from typing import Final, Literal
+from typing import Final
 
 import logfire
-from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, BotAction, ActionEvAnalysis
-from discordbot.cogs.games.blackjack import is_soft_total, card_blackjack_value
+from discordbot.cogs.games.blackjack import is_soft_total, dealer_up_card, card_blackjack_value
 from discordbot.cogs.games.blackjack_ev import compute_action_evs
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
@@ -30,24 +29,7 @@ BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # and well above the standard Hi-Lo ~0.005 because this table's five-card rules amplify
 # a ten-rich shoe; re-measure offline if those rules change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
-_RANK_ORDER: Final[tuple[str, ...]] = (
-    "A",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-    "10",
-    "J",
-    "Q",
-    "K",
-)
 _TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
-_LOW_RANKS: Final[frozenset[str]] = frozenset({"2", "3", "4", "5", "6"})
-_NEUTRAL_RANKS: Final[frozenset[str]] = frozenset({"7", "8", "9"})
 _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     11: frozenset(range(2, 12)),
     8: frozenset(range(2, 12)),
@@ -58,114 +40,6 @@ _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     3: frozenset(range(2, 8)),
     2: frozenset(range(2, 8)),
 }
-
-
-class ShoeSummary(BaseModel):
-    """Rank-level summary of the true remaining Blackjack shoe."""
-
-    model_config = ConfigDict(frozen=True)
-
-    total_cards: int = Field(..., description="Total cards left in the true remaining shoe.")
-    rank_counts: dict[str, int] = Field(
-        ..., description="Remaining count per card rank in stable Blackjack rank order."
-    )
-    ace_count: int = Field(..., description="Number of aces left in the remaining shoe.")
-    ten_value_count: int = Field(
-        ..., description="Number of ten-value cards (10/J/Q/K) left in the remaining shoe."
-    )
-    low_card_count: int = Field(
-        ..., description="Number of low cards (2-6) left in the remaining shoe."
-    )
-    neutral_card_count: int = Field(
-        ..., description="Number of neutral cards (7-9) left in the remaining shoe."
-    )
-    high_card_count: int = Field(
-        ..., description="Number of high cards (aces plus ten-value) left in the remaining shoe."
-    )
-
-
-class DealerKnowledge(BaseModel):
-    """Dealer state exposed to the bot player.
-
-    Only the up-card is shared, exactly what any seated player sees. The hole
-    card, the combined two-card total, and the natural-Blackjack flag are
-    deliberately withheld so nothing carried here can reveal the hole.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    up_card: str = Field(
-        ..., description="The dealer's face-up card, exactly what a seated player sees."
-    )
-    up_value: int = Field(
-        ..., description="Blackjack value of the dealer up-card (ace counts as 11)."
-    )
-
-
-class ActionAnalysis(BaseModel):
-    """Computed reference data for the bot player's action decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    allowed_actions: tuple[BotAction, ...] = Field(
-        ..., description="Actions the bot is legally allowed to take this turn."
-    )
-    basic_strategy_action: BotAction = Field(
-        ..., description="The deterministic hint action the bot would play this turn."
-    )
-    ev_analysis: ActionEvAnalysis | None = Field(
-        default=None,
-        description="Per-action EV analysis from the EV engine, or None when unavailable.",
-    )
-
-
-class BotPlayerActionContext(BaseModel):
-    """Complete computed context for one bot-player action decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    shoe_summary: ShoeSummary = Field(
-        ..., description="Rank-level summary of the true remaining shoe."
-    )
-    dealer: DealerKnowledge = Field(
-        ..., description="Up-card-only dealer state visible to the bot."
-    )
-    action_analysis: ActionAnalysis = Field(
-        ..., description="Computed reference data for the bot's action decision."
-    )
-
-
-class BotPlayerInsuranceContext(BaseModel):
-    """Computed context for one bot-player insurance decision.
-
-    Insurance is priced from the remaining-shoe ten-value density (card
-    counting), not the hole card, so the recommendation never reveals whether
-    the dealer actually has Blackjack.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    shoe_summary: ShoeSummary = Field(
-        ..., description="Rank-level summary of the true remaining shoe."
-    )
-    dealer: DealerKnowledge = Field(
-        ..., description="Up-card-only dealer state visible to the bot."
-    )
-    insurance_cost: int = Field(
-        ..., description="Cost in currency to take the insurance side bet."
-    )
-    ten_value_probability: float = Field(
-        ..., description="Ten-value card fraction of the remaining shoe used to price insurance."
-    )
-    insurance_expected_value: float = Field(
-        ...,
-        description="Expected value in currency of taking insurance at the current shoe density.",
-    )
-    insurance_recommendation: Literal["take", "decline"] = Field(
-        ..., description="Deterministic recommendation from the shoe density."
-    )
-
-
 _HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
     9: frozenset({3, 4, 5, 6}),
     10: frozenset(range(2, 10)),
@@ -224,40 +98,6 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
         hand_total >= 17
         or (13 <= hand_total <= 16 and dealer_value <= 6)
         or (hand_total == 12 and 4 <= dealer_value <= 6)
-    )
-
-
-def _rank_counts(*, cards: list[Card]) -> dict[str, int]:
-    """Counts card ranks in stable Blackjack rank order."""
-    counts = dict.fromkeys(_RANK_ORDER, 0)
-    for card in cards:
-        counts[card.rank] = counts.get(card.rank, 0) + 1
-    return counts
-
-
-def build_shoe_summary(*, shoe: list[Card]) -> ShoeSummary:
-    """Builds rank-count context from the true remaining shoe."""
-    counts = _rank_counts(cards=shoe)
-    ace_count = counts["A"]
-    ten_value_count = sum(counts[rank] for rank in _TEN_VALUE_RANKS)
-    low_card_count = sum(counts[rank] for rank in _LOW_RANKS)
-    neutral_card_count = sum(counts[rank] for rank in _NEUTRAL_RANKS)
-    return ShoeSummary(
-        total_cards=len(shoe),
-        rank_counts=counts,
-        ace_count=ace_count,
-        ten_value_count=ten_value_count,
-        low_card_count=low_card_count,
-        neutral_card_count=neutral_card_count,
-        high_card_count=ace_count + ten_value_count,
-    )
-
-
-def build_dealer_knowledge(*, dealer_up: Card | None) -> DealerKnowledge:
-    """Builds the up-card-only dealer state exposed to the bot player."""
-    return DealerKnowledge(
-        up_card=str(dealer_up) if dealer_up is not None else "unknown",
-        up_value=_dealer_up_value(up_card=dealer_up),
     )
 
 
@@ -386,22 +226,20 @@ def fallback_action(
     return allowed_actions[0]
 
 
-def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the full decision surface.
+def choose_bot_action(  # noqa: PLR0913 -- the decision reads the hand, the dealer, and the shoe.
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
-    dealer_up: Card | None,
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
     is_pair_hand: bool,
     bet: int,
     doubled: bool = False,
-) -> BotPlayerActionContext:
-    """Builds the bot's computed decision context without exposing the future shoe order.
+) -> BotAction:
+    """Returns the action the bot plays on its active hand.
 
-    `basic_strategy_action` is the action the bot plays whatever its name says: the
-    EV engine's hole-aware recommendation, or the basic-strategy table only when the
-    engine is unavailable.
+    The EV engine's hole-aware recommendation, or the up-card-only basic-strategy table
+    only when the engine is unavailable.
     """
     ev_analysis = _safe_compute_action_evs(
         hand_cards=hand_cards,
@@ -412,59 +250,23 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
         bet=bet,
     )
     if ev_analysis is not None:
-        basic_strategy_action = ev_analysis.recommended_action
-    else:
-        basic_strategy_action = fallback_action(
-            hand_cards=hand_cards,
-            hand_total=is_soft_total(cards=hand_cards)[1],
-            dealer_up=dealer_up,
-            is_pair_hand=is_pair_hand,
-            allowed_actions=allowed_actions,
-        )
-    return BotPlayerActionContext(
-        shoe_summary=build_shoe_summary(shoe=shoe),
-        dealer=build_dealer_knowledge(dealer_up=dealer_up),
-        action_analysis=ActionAnalysis(
-            allowed_actions=allowed_actions,
-            basic_strategy_action=basic_strategy_action,
-            ev_analysis=ev_analysis,
-        ),
+        return ev_analysis.recommended_action
+    return fallback_action(
+        hand_cards=hand_cards,
+        hand_total=is_soft_total(cards=hand_cards)[1],
+        dealer_up=dealer_up_card(dealer=dealer_cards),
+        is_pair_hand=is_pair_hand,
+        allowed_actions=allowed_actions,
     )
 
 
-def build_bot_insurance_context(
-    *, dealer_up: Card | None, shoe: list[Card], insurance_cost: int
-) -> BotPlayerInsuranceContext:
-    """Builds insurance context from the remaining-shoe ten density only.
+def bot_takes_insurance(*, shoe: list[Card]) -> bool:
+    """Returns whether the bot buys insurance: only when the unseen shoe makes it +EV.
 
-    The dealer hole card is never passed in, so it cannot reach the decision.
-    Insurance pays only on a ten-value hole, so the remaining shoe's ten-value
-    fraction is the fair probability a counter would use.
+    Priced from the remaining shoe's ten-value density alone; the dealer's hole card is never
+    an input, so it cannot reach the decision. Insurance pays +2x its cost on a ten-value hole
+    and loses the cost otherwise, EV = cost * (3p - 1), so it only turns positive once that
+    density clears one third.
     """
     ten_count = sum(1 for card in shoe if card.rank in _TEN_VALUE_RANKS)
-    total = len(shoe)
-    ten_probability = ten_count / total if total > 0 else 0.0
-    # Take pays +2x cost on a ten hole, loses cost otherwise: EV = cost*(3p - 1),
-    # so it only turns positive once ten-value density clears one third.
-    break_even = 1.0 / 3.0
-    expected_value = insurance_cost * (3.0 * ten_probability - 1.0)
-    recommendation = "take" if ten_probability > break_even else "decline"
-    return BotPlayerInsuranceContext(
-        shoe_summary=build_shoe_summary(shoe=shoe),
-        dealer=build_dealer_knowledge(dealer_up=dealer_up),
-        insurance_cost=insurance_cost,
-        ten_value_probability=ten_probability,
-        insurance_expected_value=expected_value,
-        insurance_recommendation=recommendation,
-    )
-
-
-def fallback_insurance(*, insurance_context: BotPlayerInsuranceContext | None = None) -> bool:
-    """Count-based insurance decision: take only when the unseen deck makes it +EV.
-
-    Despite the name this is the bot's authoritative insurance choice rather than a
-    failure fallback; `build_bot_insurance_context` has already priced the decision.
-    """
-    if insurance_context is None:
-        return False
-    return insurance_context.insurance_recommendation == "take"
+    return bool(shoe) and ten_count / len(shoe) > 1.0 / 3.0

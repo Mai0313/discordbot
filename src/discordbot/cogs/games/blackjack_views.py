@@ -32,16 +32,11 @@ from discordbot.cogs.games.blackjack import (
     InsuranceBeyondBalanceError,
     hand_value,
     render_hand,
-    dealer_up_card,
     dealer_must_hit,
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs.games.bot_player import (
-    fallback_insurance,
-    build_bot_action_context,
-    build_bot_insurance_context,
-)
+from discordbot.cogs.games.bot_player import choose_bot_action, bot_takes_insurance
 from discordbot.cogs.games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -949,13 +944,7 @@ class BlackjackView(View):
         if not bot_player.hands:
             return
         user_id = bot_player.participant.user_id
-        dealer_up = dealer_up_card(dealer=self.round_state.dealer)
-        insurance_context = build_bot_insurance_context(
-            dealer_up=dealer_up,
-            shoe=list(self.round_state.shoe),
-            insurance_cost=bot_player.participant.bet // 2,
-        )
-        take_insurance = fallback_insurance(insurance_context=insurance_context)
+        take_insurance = bot_takes_insurance(shoe=self.round_state.shoe)
         try:
             if take_insurance:
                 self.round_state.take_insurance(
@@ -1005,19 +994,16 @@ class BlackjackView(View):
             else:
                 await self._edit_in_progress_locked(message=message)
             return
-        dealer_up = dealer_up_card(dealer=self.round_state.dealer)
         is_pair_hand = len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed
-        action_context = build_bot_action_context(
+        chosen_action = choose_bot_action(
             hand_cards=list(hand.cards),
             dealer_cards=list(self.round_state.dealer),
-            dealer_up=dealer_up,
             shoe=list(self.round_state.shoe),
             allowed_actions=allowed,
             is_pair_hand=is_pair_hand,
             bet=hand.bet,
             doubled=hand.doubled,
         )
-        chosen_action = action_context.action_analysis.basic_strategy_action
         applied = self._apply_bot_action(
             user_id=active.participant.user_id, action=chosen_action, allowed=allowed
         )
