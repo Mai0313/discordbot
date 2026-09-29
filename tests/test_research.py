@@ -14,6 +14,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.research import cog as research_cog
 from discordbot.cogs.research import agent
 from discordbot.cogs.research import database as rdb
+from discordbot.cogs.research import streaming as research_streaming
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
@@ -340,11 +341,12 @@ async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  
 
 async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
     monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
-    monkeypatch.setattr(agent, "MAX_STREAM_RECONNECTS", 0)
+    monkeypatch.setattr(agent, "MAX_STREAM_RECONNECTS", 2)
+    # More dead streams than the bound allows, so running out of them cannot pass for giving up.
     client = _fake_client(
         streams=[
             _FakeStream([_created_event(event_id="e1")], raise_after=1),
-            _FakeStream([], raise_after=0),
+            *(_FakeStream([], raise_after=0) for _ in range(10)),
         ],
         terminal=_terminal_interaction(),
     )
@@ -363,6 +365,8 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
         streamer=streamer,
         on_created=_persist,
     )
+    # The bound's worth of re-attaches that made no progress, plus the one that gave up.
+    assert len(client.aio.interactions.stream_get_calls) == agent.MAX_STREAM_RECONNECTS + 1
     assert result.ok is True
 
 
@@ -497,16 +501,27 @@ def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
     assert 0 < preview.count("\n-# ") < len(streamer.reasoning[-1500:].splitlines())
 
 
-async def test_streamer_write_snapshot_edits_and_skips_unchanged() -> None:
+async def test_streamer_write_snapshot_edits_and_skips_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The header's elapsed timer is frozen, so a second render of the same reasoning is the
+    # same snapshot however long the first write took.
+    monkeypatch.setattr(
+        target=research_streaming, name="time", value=SimpleNamespace(monotonic=lambda: 100.0)
+    )
     status = _FakeStatusMessage()
-    streamer = ResearchProgressStreamer(status=status, label="Antigravity", reasoning="thinking")
+    streamer = ResearchProgressStreamer(
+        status=status, label="Antigravity", reasoning="thinking", started_at=100.0
+    )
     await streamer._write_preview_snapshot()
     assert len(status.edits) == 1
     assert cast("AllowedMentions", status.edits[0]["allowed_mentions"]).everyone is False
     # A second write of the same rendered snapshot is a no-op, so the editor never spams edits.
-    streamer._displayed = streamer._render_preview()
     await streamer._write_preview_snapshot()
     assert len(status.edits) == 1
+    streamer.reasoning += " more"
+    await streamer._write_preview_snapshot()
+    assert len(status.edits) == 2
 
 
 async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
