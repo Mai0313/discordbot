@@ -1,97 +1,42 @@
 """Tests for the cog that auto-expands Douyin links pasted into a channel."""
 
-import time
 from types import SimpleNamespace
-from typing import Unpack, TypedDict
+from typing import Unpack, NoReturn, TypedDict
 import asyncio
 from pathlib import Path
-import tempfile
+import threading
 
 import pytest
-from nextcord import Message
 
-from discordbot.utils import scratch_dir
-from discordbot.typings.emojis import DOUYIN_EMOJI
 from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.services.platforms.douyin import (
     DouyinError,
-    DouyinDownload,
     DouyinMetadata,
     DouyinBlockedError,
     DouyinUnavailableError,
 )
-from discordbot.utils.expansion_placeholder import EXPANSION_RETRY_LATER_EMOJI
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_DONE_EMOJI,
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+)
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden, make_media_hosting_config
+from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
+from tests.helpers.link_sources import (
+    StubDouyinDownloader,
+    hosting_off_planner,
+    race_every_scratch_teardown,
+)
 from tests.helpers.discord_mocks import (
-    FakeUser,
+    FakeGuild,
     FakeDiscordMessage,
     expansion_payload,
     placeholder_withdrawn,
 )
 
 _URL = "https://v.douyin.com/abc123"
-_GREEN = "<:greencheck:1517565102424068226>"
-_RED = "<:redcross:1517565100838355016>"
-
-
-class _StubDownloader:
-    """Stands in for DouyinDownloader, serving canned metadata and files."""
-
-    def __init__(  # noqa: PLR0913 -- one canned outcome per stage the cog can hit
-        self,
-        output_folder: str,
-        post: DouyinMetadata | None = None,
-        files: list[tuple[str, bytes]] | None = None,
-        parse_error: Exception | None = None,
-        download_error: Exception | None = None,
-        total_images: int = 0,
-    ) -> None:
-        """Records the scratch dir and the canned outcome for each stage."""
-        self.output_folder = output_folder
-        self.post = post or DouyinMetadata(aweme_id="1", title="caption", author_name="somebody")
-        self.files = files if files is not None else [("1.mp4", b"video-bytes")]
-        self.parse_error = parse_error
-        self.download_error = download_error
-        self.total_images = total_images
-        self.download_calls = 0
-        self.received_post: DouyinMetadata | None = None
-
-    def parse_metadata(self, url: str) -> DouyinMetadata:
-        """Returns the canned post, or raises the canned parse failure."""
-        del url
-        if self.parse_error is not None:
-            raise self.parse_error
-        return self.post
-
-    def download(
-        self,
-        url: str,
-        quality: str = "best",
-        max_images: int | None = None,
-        max_bytes: int | None = None,
-        post: DouyinMetadata | None = None,
-    ) -> DouyinDownload:
-        """Writes the canned files into the scratch dir, or raises the canned failure."""
-        del url, quality, max_images, max_bytes
-        self.download_calls += 1
-        self.received_post = post
-        if self.download_error is not None:
-            raise self.download_error
-        written: list[Path] = []
-        for name, payload in self.files:
-            path = Path(self.output_folder) / name
-            path.write_bytes(payload)
-            written.append(path)
-        source = post or self.post
-        return DouyinDownload(
-            title=source.title,
-            is_photo=source.is_photo,
-            filenames=written,
-            total_images=self.total_images,
-        )
 
 
 class _StubOptions(TypedDict, total=False):
@@ -106,19 +51,15 @@ class _StubOptions(TypedDict, total=False):
 
 def _cog(
     bot_id: int = 999, **downloader_kwargs: Unpack[_StubOptions]
-) -> tuple[DouyinCogs, dict[str, _StubDownloader]]:
+) -> tuple[DouyinCogs, dict[str, StubDouyinDownloader]]:
     """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
     cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
-    # Explicitly disabled planner — never the no-arg default, whose config is `available` on a
-    # dev box where .env enables hosting (it would write into the live serve dir).
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
-    )
-    made: dict[str, _StubDownloader] = {}
+    cog.media_delivery = hosting_off_planner()
+    made: dict[str, StubDouyinDownloader] = {}
 
-    def factory(output_folder: str) -> _StubDownloader:
+    def factory(output_folder: str) -> StubDouyinDownloader:
         """Records the stub so a test can assert on what it was asked to do."""
-        stub = _StubDownloader(output_folder=output_folder, **downloader_kwargs)
+        stub = StubDouyinDownloader(output_folder=output_folder, **downloader_kwargs)
         made["stub"] = stub
         return stub
 
@@ -126,24 +67,9 @@ def _cog(
     return cog, made
 
 
-class _DouyinMessage(FakeDiscordMessage):
-    """Adds the author/content/guild fields `DouyinCogs.on_message` reads."""
-
-    def __init__(self, author: FakeUser, content: str, guild: object) -> None:
-        """Builds a message double carrying the fields the cog inspects."""
-        super().__init__()
-        self.author = author
-        self.content = content
-        self.guild = guild
-
-
-def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> _DouyinMessage:
+def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
     """Builds a guild message carrying a Douyin link."""
-    return _DouyinMessage(
-        author=FakeUser(bot=False),
-        content=content,
-        guild=SimpleNamespace(filesize_limit=filesize_limit),
-    )
+    return FakeDiscordMessage(content=content, guild=FakeGuild(filesize_limit=filesize_limit))
 
 
 def _reply_body(*, message: FakeDiscordMessage) -> str:
@@ -165,83 +91,9 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     assert delivered["files"]
     assert delivered["embeds"][0].description == "caption"
     assert delivered["embeds"][0].author.name == "somebody"
-    assert message.reactions[-1] == _GREEN
-    # The read marker rides beside the status chain, which only ever removes its own reaction.
-    assert message.reactions[0] == DOUYIN_EMOJI
-    assert all(emoji != DOUYIN_EMOJI for emoji, _ in message.removed)
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
     # The scratch dir is per invocation and removed with its files once delivery finishes.
     assert not await asyncio.to_thread(Path(made["stub"].output_folder).exists)
-
-
-async def test_the_placeholder_is_posted_before_the_post_is_read() -> None:
-    """The whole point of the placeholder: the reply slot is claimed while the read is ahead.
-
-    Claiming it afterwards would leave the card where it was, several messages below the link
-    someone pasted, so the order is what this pins rather than the message itself.
-    """
-    cog, _ = _cog()
-    message = _message()
-    replies_when_the_read_began: list[int] = []
-    build = cog.__dict__["downloader_factory"]
-
-    def watched_factory(output_folder: str) -> _StubDownloader:
-        """Wraps the stub's read so the test can see the channel as it starts."""
-        stub = build(output_folder=output_folder)
-        read = stub.parse_metadata
-
-        def watched(url: str) -> DouyinMetadata:
-            replies_when_the_read_began.append(len(message.replies))
-            return read(url=url)
-
-        stub.parse_metadata = watched
-        return stub
-
-    cog.__dict__["downloader_factory"] = watched_factory
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert replies_when_the_read_began == [1]
-    assert message.reactions[-1] == _GREEN
-
-
-async def test_a_channel_that_refuses_the_placeholder_is_never_read_from() -> None:
-    """A channel that will not take the placeholder will not take the card either.
-
-    Finding that out before the read is the point: Douyin bans on request volume, so a
-    read-only channel must not cost one fetch per pasted link.
-    """
-    cog, made = _cog()
-    message = _message()
-
-    async def refuse(**kwargs: object) -> FakeDiscordMessage:
-        """Refuses the reply the way a channel without Send Messages does."""
-        del kwargs
-        raise make_forbidden()
-
-    message.reply = refuse  # ty: ignore[invalid-assignment]
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert made == {}  # no downloader was ever built, so Douyin was never contacted
-    assert message.reactions[-1] == _RED
-
-
-async def test_a_message_addressed_to_the_bot_is_left_alone() -> None:
-    """A mention (or a DM) hands the link to gen_reply, so the cog must not fetch anything."""
-    cog, made = _cog()
-
-    mentioned = _message(content=f"<@999> what is this {_URL}")
-    await cog.on_message(message=as_message(fake=mentioned))
-    assert mentioned.reactions == []
-    assert mentioned.replies == []
-
-    direct_message = _message()
-    direct_message.guild = None  # a DM always reaches gen_reply, mention or not
-    await cog.on_message(message=as_message(fake=direct_message))
-    assert direct_message.reactions == []
-    assert direct_message.replies == []
-
-    assert made == {}  # no downloader was ever built, so Douyin was never contacted
 
 
 async def test_a_message_without_a_link_is_ignored() -> None:
@@ -255,24 +107,13 @@ async def test_a_message_without_a_link_is_ignored() -> None:
     assert made == {}
 
 
-async def test_a_bot_author_is_ignored() -> None:
-    """Without this the cog would re-expand its own posts and the other bots' link cards."""
-    cog, made = _cog()
-    message = _message()
-    message.author = FakeUser(bot=True)
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert made == {}
-
-
 async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
     """A WAF block is retryable and the link is fine, so it gets its own reaction.
 
     The reaction is the only thing keeping the two apart now that a failure says nothing in
     the channel, which is what makes ⏱️ load-bearing rather than decorative: ⚠️ means the
     post could not be read, ⏱️ means the request was refused and the same link works later.
-    All five expansion cogs answer with the same five marks, so the reader learns them once.
+    Every expansion cog answers with the same marks, so the reader learns them once.
     """
     cog, _ = _cog(download_error=DouyinBlockedError("bot wall"))
     message = _message()
@@ -290,7 +131,7 @@ async def test_a_deleted_post_is_marked_failed_without_a_message() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
     assert placeholder_withdrawn(message=message)
 
 
@@ -301,25 +142,8 @@ async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
     assert placeholder_withdrawn(message=message)
-
-
-async def test_an_unexpected_failure_marks_the_message() -> None:
-    """A failure outside the fetch must not leave the source silently unmarked."""
-    cog, _ = _cog()
-
-    async def boom(*, message: Message, url: str, current_emoji: str) -> None:
-        """Fails the way a Discord API error would."""
-        del message, url, current_emoji
-        raise RuntimeError("discord exploded")
-
-    cog.__dict__["_expand"] = boom
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == _RED
 
 
 async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
@@ -339,7 +163,7 @@ async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
 
     content = _reply_body(message=message)
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
-    assert message.reactions[-1] == _GREEN
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 async def test_an_unhostable_oversize_clip_is_refused() -> None:
@@ -353,7 +177,7 @@ async def test_an_unhostable_oversize_clip_is_refused() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
     assert placeholder_withdrawn(message=message)
     assert not message.suppressed  # nothing was delivered, so the source keeps its own preview
 
@@ -370,7 +194,7 @@ async def test_a_capped_gallery_reports_what_it_left_out() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert "已省略 9 張圖片" in _reply_body(message=message)
-    assert message.reactions[-1] == _GREEN
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 async def test_the_parsed_post_is_handed_to_the_download() -> None:
@@ -410,6 +234,24 @@ async def test_a_non_post_link_is_left_alone() -> None:
         assert made == {}, content
 
 
+def _stall_every_read(*, cog: DouyinCogs, release: threading.Event) -> None:
+    """Points the cog at a downloader whose every call holds its worker thread until `release`.
+
+    That is how a stalling CDN read holds a thread `asyncio.to_thread` cannot cancel. The wait is
+    bounded so a bound that never fires fails the test on the reaction rather than hanging it.
+    """
+
+    def stall(**kwargs: object) -> NoReturn:
+        """Blocks until released, then fails the read it never finished."""
+        del kwargs
+        release.wait(timeout=5.0)
+        raise AssertionError("should have been abandoned")
+
+    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
+        parse_metadata=stall, download=stall
+    )
+
+
 async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -422,18 +264,12 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
     cog, _ = _cog()
 
-    def never_returns(url: str) -> DouyinMetadata:
-        """Blocks the worker thread the way a stalling CDN read does."""
-        del url
-        time.sleep(1.0)
-        raise AssertionError("should have been abandoned")
-
-    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
-        parse_metadata=never_returns, download=never_returns
-    )
+    release = threading.Event()
+    _stall_every_read(cog=cog, release=release)
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
+    release.set()
 
     assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     assert placeholder_withdrawn(message=message)
@@ -450,34 +286,15 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
     just explained and logs a defect that never happened.
     """
     monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
-    removed: list[str] = []
-
-    class _RacedTemporaryDirectory(tempfile.TemporaryDirectory[str]):
-        """Loses the race the way a file arriving after the scan makes the closing rmdir lose it."""
-
-        def cleanup(self) -> None:
-            """Removes the tree, then raises what an ENOTEMPTY on the last step raises."""
-            removed.append(self.name)
-            super().cleanup()
-            raise OSError("directory not empty")
-
-    monkeypatch.setattr(
-        scratch_dir, "tempfile", SimpleNamespace(TemporaryDirectory=_RacedTemporaryDirectory)
-    )
+    removed = race_every_scratch_teardown(monkeypatch)
     cog, _ = _cog()
 
-    def never_returns(url: str) -> DouyinMetadata:
-        """Blocks the worker thread the way a stalling CDN read does."""
-        del url
-        time.sleep(1.0)
-        raise AssertionError("should have been abandoned")
-
-    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
-        parse_metadata=never_returns, download=never_returns
-    )
+    release = threading.Event()
+    _stall_every_read(cog=cog, release=release)
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
+    release.set()
 
     assert removed  # the teardown really ran and really failed
     assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI

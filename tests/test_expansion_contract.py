@@ -12,35 +12,65 @@ its own listener. The one written-down list is `test_every_expansion_cog_is_acco
 fails until a new source is named — that is what stops a source arriving with nobody having read
 this file.
 
+The shell's behaviour is run here too, once per cog, through the cog's own read with only its
+downloader staged: when the listener stays quiet, what order the slot and the marks go on in, and
+what a failure leaves behind. A cog's own test file holds what its card does and none of this.
+
 What deliberately is NOT here: how a post is rendered. A Threads chain, a Facebook comment
 preload and a Douyin clip are different things and their cards should differ.
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal, cast
 import inspect
 from pathlib import Path
 import importlib
+import contextlib
+from collections.abc import Callable, Iterator
 
 import pytest
+from nextcord import Message
 from nextcord.ext import commands
 
 from discordbot.utils import expansion_placeholder as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.utils.expansion_cog import ExpansionCog
+from discordbot.services.platforms.base import PlatformConversation
+from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
+from discordbot.services.platforms.twitter import TwitterConversation
+from discordbot.services.platforms.facebook import FacebookConversation
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
+    ExpansionPlaceholder,
     expansion_failure_emoji,
     report_expansion_read_failure,
 )
+from discordbot.services.platforms.instagram import InstagramConversation
 
-from tests.helpers.casting import as_bot, as_message
-from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
+from tests.helpers.casting import as_bot, as_message, make_forbidden
+from tests.helpers.link_sources import (
+    BOT_USER_ID,
+    TWITTER_URL,
+    FACEBOOK_URL,
+    INSTAGRAM_URL,
+    StubDouyinDownloader,
+    StubConversationDownloader,
+    twitter_post,
+    facebook_post,
+    instagram_post,
+    hosting_off_planner,
+)
+from tests.helpers.discord_mocks import (
+    FakeUser,
+    FakeGuild,
+    FakeDiscordMessage,
+    placeholder_withdrawn,
+)
 
 _COGS_DIR = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
 
@@ -101,6 +131,133 @@ def _cog_id(cog: type) -> str:
 def _cog_source(cog: type) -> str:
     """Reads a cog module's own source, for the checks that are about what it does not do."""
     return Path(inspect.getsourcefile(cog) or "").read_text(encoding="utf-8")
+
+
+# What a staged read answers with: a post the cog can show, one it reads but cannot show, or an
+# error its downloader raises.
+type _Outcome = Literal["readable", "unreadable"] | Exception
+
+
+class _Staged:
+    """One cog whose downloader answers a staged outcome, and a guild message carrying its link."""
+
+    def __init__(self, *, cog: ExpansionCog[Any], message: FakeDiscordMessage) -> None:
+        """Holds the pair; nothing is served until `serve` installs a downloader factory."""
+        self.cog = cog
+        self.message = message
+        # One entry per read the cog started: how many replies were already posted at that moment.
+        self.reads: list[int] = []
+
+    def serve(self, *, factory: Callable[..., object]) -> None:
+        """Installs `factory` as the cog's per-read downloader seam, recording every read."""
+
+        def recording(**kwargs: object) -> object:
+            """Notes the read starting, then builds the staged downloader."""
+            self.reads.append(len(self.message.replies))
+            return factory(**kwargs)
+
+        self.cog.__dict__["downloader_factory"] = recording
+
+
+def _bot() -> commands.Bot:
+    """A bot whose user a test can mention as `<@BOT_USER_ID>`."""
+    return as_bot(fake=SimpleNamespace(user=FakeUser(user_id=BOT_USER_ID, bot=True)))
+
+
+def _stage_conversation(
+    *,
+    cog: type[ExpansionCog[Any]],
+    outcome: _Outcome,
+    url: str,
+    readable: PlatformConversation[Any],
+    unreadable: PlatformConversation[Any],
+) -> _Staged:
+    """Stages a Facebook, Instagram or Twitter cog, whose unreadable post is an empty one."""
+    staged = _Staged(
+        cog=cog(bot=_bot()), message=FakeDiscordMessage(content=url, guild=FakeGuild())
+    )
+    if isinstance(outcome, Exception):
+        stub = StubConversationDownloader(outcome=outcome)
+    else:
+        stub = StubConversationDownloader(
+            outcome=readable if outcome == "readable" else unreadable
+        )
+    staged.serve(factory=lambda: stub)
+    return staged
+
+
+def _stage_threads(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
+    """Stages the Threads cog, whose unreadable post is a walk that found no chain."""
+    url = "https://www.threads.com/@alice/post/ABC123"
+    instance = cog(bot=_bot())
+    instance.__dict__["media_delivery"] = hosting_off_planner()
+    staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
+    readable = ThreadsConversation(chain=[ThreadsOutput(text="post body", url=url)])
+
+    @contextlib.contextmanager
+    def walk(*, url: str) -> Iterator[ThreadsConversation]:
+        """Enters the way `ThreadsDownloader.parse` does, so the failure lands in the walk."""
+        del url
+        if isinstance(outcome, Exception):
+            raise outcome
+        yield readable if outcome == "readable" else ThreadsConversation()
+
+    staged.serve(factory=lambda output_folder: SimpleNamespace(parse=walk))
+    return staged
+
+
+def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
+    """Stages the Douyin cog.
+
+    Douyin has no empty post: what it reads and then refuses is media nothing can carry, staged
+    here as a clip past a four-byte upload ceiling with hosting off.
+    """
+    instance = cog(bot=_bot())
+    instance.__dict__["media_delivery"] = hosting_off_planner()
+    guild = FakeGuild(filesize_limit=4) if outcome == "unreadable" else FakeGuild()
+    staged = _Staged(
+        cog=instance,
+        message=FakeDiscordMessage(content="https://v.douyin.com/abc123", guild=guild),
+    )
+    error = outcome if isinstance(outcome, Exception) else None
+    staged.serve(
+        factory=lambda output_folder: StubDouyinDownloader(
+            output_folder=output_folder, parse_error=error
+        )
+    )
+    return staged
+
+
+_STAGES: dict[str, Callable[..., _Staged]] = {
+    "parse_douyin": _stage_douyin,
+    "parse_threads": _stage_threads,
+    "parse_facebook": lambda *, cog, outcome: _stage_conversation(
+        cog=cog,
+        outcome=outcome,
+        url=FACEBOOK_URL,
+        readable=facebook_post(),
+        unreadable=FacebookConversation(),
+    ),
+    "parse_instagram": lambda *, cog, outcome: _stage_conversation(
+        cog=cog,
+        outcome=outcome,
+        url=INSTAGRAM_URL,
+        readable=instagram_post(),
+        unreadable=InstagramConversation(),
+    ),
+    "parse_twitter": lambda *, cog, outcome: _stage_conversation(
+        cog=cog,
+        outcome=outcome,
+        url=TWITTER_URL,
+        readable=twitter_post(),
+        unreadable=TwitterConversation(),
+    ),
+}
+
+
+def _stage(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
+    """Stages `cog` through its entry in `_STAGES`, which a new cog needs one of."""
+    return _STAGES[_cog_id(cog=cog)](cog=cog, outcome=outcome)
 
 
 def test_every_expansion_cog_is_accounted_for() -> None:
@@ -222,6 +379,163 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     await instance._mark_failed(message=as_message(fake=message), current_emoji=None)
 
     assert message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """A mention or a DM hands the link to `gen_reply`, and expanding it as well reads it twice."""
+    mentioned = _stage(cog=cog, outcome="readable")
+    mentioned.message.content = f"<@{BOT_USER_ID}> what is this {mentioned.message.content}"
+    direct = _stage(cog=cog, outcome="readable")
+    direct.message.guild = None
+
+    for staged in (mentioned, direct):
+        await staged.cog.on_message(message=as_message(fake=staged.message))
+
+        assert staged.reads == []
+        assert staged.message.reactions == []
+        assert staged.message.replies == []
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_a_bot_author_is_ignored(cog: type[ExpansionCog[Any]]) -> None:
+    """Otherwise the bot's own posts, and other bots' link cards, would be expanded again."""
+    staged = _stage(cog=cog, outcome="readable")
+    staged.message.author = FakeUser(bot=True)
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.reads == []
+    assert staged.message.reactions == []
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_the_reply_slot_is_claimed_before_the_reactions_and_the_read(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """The card is what the reader is waiting for, so nothing queues in front of its slot.
+
+    Both reactions share one per-channel rate-limit bucket that a message send does not, so
+    reacting first only delays the placeholder. Claiming it before the read is what keeps the card
+    directly under the link rather than wherever the channel has got to once the post is read.
+    """
+    staged = _stage(cog=cog, outcome="readable")
+    reactions_when_claimed: list[str] = []
+    claim = staged.message.reply
+
+    async def recording_reply(**kwargs: object) -> object:
+        """Snapshots the reaction row at the moment the slot is claimed."""
+        reactions_when_claimed.extend(staged.message.reactions)
+        return await claim(**cast("Any", kwargs))
+
+    staged.message.reply = recording_reply  # ty: ignore[invalid-assignment]
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert reactions_when_claimed == []
+    assert staged.reads == [1]
+    assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_the_platform_marker_rides_beside_the_status_chain(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """The marker says WHICH link was read, which the status mark alone cannot.
+
+    The chain only ever removes its own reaction, so the marker outlives every step of it.
+    """
+    staged = _stage(cog=cog, outcome="readable")
+    marker = LINK_SOURCE_EMOJIS[cog.SOURCE]
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions == [marker, EXPANSION_WORKING_EMOJI, EXPANSION_DONE_EMOJI]
+    assert all(emoji != marker for emoji, _ in staged.message.removed)
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_a_refused_slot_reads_nothing_and_still_names_the_platform(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """A channel that will not take the placeholder will not take the card either.
+
+    Finding that out before the read costs no request, which matters most on a platform that bans
+    on request volume. The marker still goes on, because a channel granting Add Reactions but not
+    Send Messages is exactly where someone has to work out which of two links died.
+    """
+    staged = _stage(cog=cog, outcome="readable")
+
+    async def refuse(**kwargs: object) -> object:
+        """Answers the way a channel the bot cannot post in does."""
+        del kwargs
+        raise make_forbidden()
+
+    staged.message.reply = refuse  # ty: ignore[invalid-assignment]
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.reads == []
+    assert staged.message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        ("unreadable", EXPANSION_UNREADABLE_EMOJI),
+        (LinkRetryableError("429"), EXPANSION_RETRY_LATER_EMOJI),
+        (RuntimeError("the parser blew up"), EXPANSION_FAILED_EMOJI),
+    ],
+    ids=["unshowable", "refused", "broke"],
+)
+async def test_an_expansion_that_delivers_nothing_leaves_only_its_mark(
+    cog: type[ExpansionCog[Any]], outcome: _Outcome, expected: str
+) -> None:
+    """The reaction is the whole report: the placeholder is taken back and nothing is said.
+
+    Which mark is the point. A deleted or private post is the post's own state and a platform
+    under load is a link that works in a minute, so neither may earn the cross, which says the bot
+    broke: telling someone a working link is dead is the worst outcome this feature has.
+    """
+    staged = _stage(cog=cog, outcome=outcome)
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions == [
+        LINK_SOURCE_EMOJIS[cog.SOURCE],
+        EXPANSION_WORKING_EMOJI,
+        expected,
+    ]
+    assert placeholder_withdrawn(message=staged.message)
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_a_failure_outside_the_read_still_marks_the_message(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """The listener's outer handler is the last line of defence, so nothing escapes unmarked."""
+    staged = _stage(cog=cog, outcome="readable")
+
+    async def explode(
+        *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+    ) -> None:
+        """Fails the way a Discord API error outside the read and the send does."""
+        del message, url, current_emoji, placeholder
+        raise RuntimeError("discord exploded")
+
+    staged.cog.__dict__["_expand"] = explode
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions == [
+        LINK_SOURCE_EMOJIS[cog.SOURCE],
+        EXPANSION_WORKING_EMOJI,
+        EXPANSION_FAILED_EMOJI,
+    ]
+    assert placeholder_withdrawn(message=staged.message)
 
 
 @pytest.mark.parametrize(
