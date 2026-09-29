@@ -194,10 +194,8 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     return allowed
 
 
-def widen_allowlist_with_aliases(
-    *, allowed: dict[int, RecallCandidate], memory: str, include_absent: bool
-) -> None:
-    """Merges the server memory's nickname-table ids and aliases into the allowlist in place.
+def widen_allowlist_with_aliases(*, allowed: dict[int, RecallCandidate], memory: str) -> None:
+    """Merges the server memory's nickname-table aliases into the allowlist's labels in place.
 
     A conversation participant already in the allowlist keeps their label and gains the
     table row as a suffix, so the model sees the Discord names and the community aliases on
@@ -206,10 +204,9 @@ def widen_allowlist_with_aliases(
     label grows: the row is community prose, unbounded in length and free to describe a
     member in joke terms, so the footer credit stays the short Discord label (#463).
 
-    `include_absent` controls whether members present only in the table are added as new
-    callable ids. That does grant access to an absent member's personal memory, so it must
-    stay public-channel only: the nickname table is public content, but the personal memory
-    it would unlock is not, so widening in a private channel would leak it.
+    A member present only in the table is never added: that would grant access to an absent
+    member's personal memory, and the nickname table is public content while the personal
+    memory it would unlock is not.
     """
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         candidate = allowed.get(user_id)
@@ -218,8 +215,6 @@ def widen_allowlist_with_aliases(
                 prompt_label=f"{candidate.prompt_label} | {label}",
                 credit_label=candidate.credit_label,
             )
-        elif include_absent:
-            allowed[user_id] = RecallCandidate(prompt_label=label)
 
 
 def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyInputMessageParam:

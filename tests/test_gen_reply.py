@@ -7866,35 +7866,31 @@ async def test_handle_message_reply_server_memory_gating(
 
 
 def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
-    """A participant keeps their label and gains aliases; absent members are added."""
+    """A participant keeps their label and gains aliases."""
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
     allowed = {123: RecallCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
-    widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=True)
+    widen_allowlist_with_aliases(allowed=allowed, memory=memory)
 
     # The conversation label leads and the table row rides behind it on the same line.
     assert allowed[123].prompt_label.startswith("Mai (mai9999)")
     assert "李董" in allowed[123].prompt_label
     # The footer credit stays the short Discord label; the row never reaches it (#463).
     assert allowed[123].credit_label == "Mai (mai9999)"
-    # A member absent from the conversation is added with the table row as label, and with
-    # no credit at all: the conversation never names them, so the resolver supplies one.
-    assert "阿伯" in allowed[456].prompt_label
-    assert allowed[456].credit_label is None
 
 
-def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
-    """Without include_absent, participants are still enriched but absent members stay out.
+def test_widen_allowlist_with_aliases_skips_absent_members() -> None:
+    """Participants are enriched but absent members stay out.
 
-    A private channel must not gain read access to an absent member's personal memory by
-    naming a public nickname, even though the nickname table itself is public content.
+    Naming a public nickname must not open an absent member's personal memory, even though
+    the nickname table itself is public content.
     """
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
     allowed = {123: RecallCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
-    widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=False)
+    widen_allowlist_with_aliases(allowed=allowed, memory=memory)
 
     # The present participant is still enriched with community aliases.
     assert allowed[123].prompt_label.startswith("Mai (mai9999)")

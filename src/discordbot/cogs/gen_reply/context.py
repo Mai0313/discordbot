@@ -445,9 +445,7 @@ class ReplyContextBuilder(BaseModel):
         # channel because that grants no new access. Only a public channel may offer absent
         # nickname-table members to the route call.
         if server_memory and self.message.guild is not None:
-            widen_allowlist_with_aliases(
-                allowed=deterministic_allowed, memory=server_memory, include_absent=False
-            )
+            widen_allowlist_with_aliases(allowed=deterministic_allowed, memory=server_memory)
             if source_channel_is_public(message=self.message):
                 # No credit label, because nothing in this channel names these members;
                 # `RecallCandidate` owns what the footer does about that and why no name is
