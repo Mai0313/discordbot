@@ -155,29 +155,11 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 ## Long-Term Memory
 
-- Stored memory lives under `data/memories/<scope>/<compartment>/<id>.md`, one file per fact. The compartment directory *is* the privacy boundary: `global/` is readable anywhere, `g/<guild_id>/` only in that guild, `dm/` only in the owner's own direct messages. Reading is a path join, so never add a read-time content filter back on top of it.
-- The model authors a fact's summary, section, durability and body. Everything else in the file header — the id, the compartment, the owner, the dates, the evidence keys — is stamped by code and never shown to it. Keep it that way: the id is also the filename, so letting conversation content reach it would put path traversal one prompt injection away.
-- Consolidation emits deltas against one compartment at a time. Reject a whole batch only for a shape failure or a mass deletion; anything a deterministic check can decide must drop that single delta instead, or a scope's memory freezes permanently on a model output that never changes.
-- `data/memories` keeps its own git history, and the bot never creates it. To enable it on a deployment, run `git -c init.defaultBranch=main init` inside that directory once and commit a baseline. Note that `/memory clear` removes the files but not the commits that already hold them.
-- Rebuilding a store offline is `uv run python -m scripts.regen_memories <target>`, where the target is `all` / `users` / `servers` or a single scope key; `--dry-run` previews it instead. The real run asks for a typed `y` after its warning, and builds no client until it gets one. Stop the bot either way: the script writes from a second process, which the in-process `scope_lock` does not serialize, so a rebuild drops whatever raw entries the bot appended while it ran. `/memory regenerate` is the live-safe way to rebuild one scope. Commit `data/memories` first for a collective target.
+The memory store's invariants live in the [Memory section of AGENTS.md](../AGENTS.md#memory); read it before changing anything that reads or writes `data/memories`.
 
 ## Economy And Games
 
-- `data/database/economy.db`, `data/database/games.db`, and `data/database/messages.db` are separate SQLite databases. Keep `economy.db` user-scoped tables keyed by `user_id` and `name`; bot-wide money state such as jackpot pools and the casino ledger also lives in `economy.db` so settlement stays atomic.
-- Economy helpers use a module-level SQLAlchemy engine so tests can monkeypatch the engine object.
-- 虛擬歡樂豆 balances are cross-server. Do not add `guild_id` to the account model.
-- `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths should pass `guild_avatar_url(...)` with guild context so guild avatars are stored when available, then fall back to the global `display_avatar`. Existing rows are not backfilled; they refresh naturally on later writes.
-- `credit_with_repayment` is the income path for message reward, chat reward, and casino payout. Long-term loans are repaid explicitly through loan helpers; passive income and gifts do not auto-repay debt.
-- Long-term loans live in `loan_proposal` and `loan_contract`. Personal credit requests are borrower-initiated and debit the lender on acceptance, and central-bank loans mint borrower balance on button approval.
-- Central-bank approval is Discord's own administrator permission for the server the request was made in, read off the interaction. `UserAccount.is_central_banker` is dead and read by nothing; the column stays only because the schema is never altered in place.
-- Central-bank lending capacity is computed per guild from the balances of the users in `guild_participant` for that guild, plus a flat base capacity, less the whole bank's outstanding principal. The collateral is per guild; the debt subtracted from it is not, and must not be made so — balances cross servers while debt does not follow them, so a guild charging only its own participants' debt counts money minted elsewhere as collateral nothing is owed against. Record a participant for the caller of a command or the author of a rewarded message, never for the target of a `member:` option.
-- Every central-bank approval is bounded twice, and both bounds are recomputed inside the approval transaction: the guild's capacity, and the borrower's own ceiling from `central_bank_credit_ceiling`. That ceiling counts debt from every lender, not just the bank, so untaxed personal lending cannot be used to reset it.
-- Casino settlement applies one signed result after play. Validate or clamp bets before play, then settle once through the settlement helpers. Player-side casino losses clamp at balance 0; the global casino ledger may still go negative.
-- Casino and jackpot settlements write the player wallet and the house-side rows in one `economy.db` transaction, so they commit or roll back atomically.
-- Daily casino loss leaderboards read persisted `casino_account` counters. Keep those counters tied to player-side casino settlement deltas only.
-- `UserAccount.hide_from_leaderboard` defaults to `False`. Public balance and daily loss leaderboards omit rows where it is set; maintenance code should opt into hidden rows when it needs a true full-account sweep.
-- Blackjack casino ledger and Dragon Gate jackpot pool are separate counterparties. Do not route Dragon Gate through the casino ledger.
-- Interactive game and public economy responses are tracked for restart cleanup and expire after settlement or timeout. Private balance, loan, VIP, and admin-error replies are not tracked.
+The ledger and casino invariants live in the [Economy](../AGENTS.md#economy) and [Games](../AGENTS.md#games) sections of AGENTS.md; read them before changing anything that moves 虛擬歡樂豆.
 
 ## Tests And Quality Gates
 
@@ -201,11 +183,7 @@ It runs Ruff formatting and linting, ty type checking, Markdown formatting, Shel
 
 ## Documentation
 
-- `README.md` is the canonical user-facing README.
-- `README.zh-CN.md` and `README.zh-TW.md` should mirror the English README structure.
-- `CONTRIBUTING.md` is developer-facing and stays in English.
-- `CLAUDE.md` is AI-agent-facing. Keep it dense and project-specific.
-- `docs/` is generated by `make gen-docs`. Do not hand-edit generated docs.
+Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](../AGENTS.md#documentation-split).
 
 ## Text Formatting
 
