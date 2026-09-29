@@ -4,17 +4,9 @@ import pytest
 from scripts import modify_balance as modify_balance_script
 
 from discordbot.typings.economy import AccountSnapshot
-from discordbot.services.economy.database import (
-    BalanceAdjustmentResult,
-    get_account,
-    adjust_balance,
-)
+from discordbot.services.economy.database import BalanceAdjustmentResult, get_account
 
-
-async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds a balance through the manual adjustment API."""
-    result = await adjust_balance(user_id=user_id, name=name, delta=amount)
-    return result.new_balance
+from tests.helpers.economy import seed_balance
 
 
 def test_parse_args_accepts_all_target() -> None:
@@ -27,8 +19,8 @@ def test_parse_args_accepts_all_target() -> None:
 
 async def test_modify_all_balances_updates_existing_accounts_only() -> None:
     """Bulk adjustment updates only accounts already present in the DB."""
-    await _add_balance(user_id=1, name="alice", amount=100)
-    await _add_balance(user_id=2, name="bob", amount=200)
+    await seed_balance(user_id=1, name="alice", amount=100)
+    await seed_balance(user_id=2, name="bob", amount=200)
 
     result = await modify_balance_script.modify_all_balances(delta=50_000)
 

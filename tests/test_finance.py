@@ -35,6 +35,7 @@ from discordbot.services.economy.database import (
 )
 
 from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
 # The guild every central-bank test lends in. Capacity is per guild now, so a borrower who
@@ -43,15 +44,9 @@ GUILD = 555
 OTHER_GUILD = 777
 
 
-async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds spendable balance through the public adjustment path."""
-    result = await adjust_balance(user_id=user_id, name=name, delta=amount)
-    return result.new_balance
-
-
 async def _join(user_id: int, name: str, amount: int, guild_id: int = GUILD) -> int:
     """Seeds a balance and records the user as taking part in `guild_id`."""
-    balance = await _add_balance(user_id=user_id, name=name, amount=amount)
+    balance = await seed_balance(user_id=user_id, name=name, amount=amount)
     await record_guild_participant(guild_id=guild_id, user_id=user_id)
     return balance
 
@@ -100,7 +95,7 @@ async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
 
 async def test_personal_loan_request_accepts_and_repay_allocates_interest_first() -> None:
     """Accepted personal request debits lender, credits borrower, and repays interest first."""
-    await _add_balance(user_id=2, name="bob", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
 
     proposal = await create_personal_loan_request(
         borrower_id=1,
@@ -136,7 +131,7 @@ async def test_personal_loan_request_accepts_and_repay_allocates_interest_first(
 async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
     """Loan proposal and contract money columns can exceed SQLite's INTEGER range."""
     large_amount = 10**20
-    await _add_balance(user_id=10, name="lender", amount=large_amount)
+    await seed_balance(user_id=10, name="lender", amount=large_amount)
     proposal = await create_personal_loan_request(
         borrower_id=20,
         borrower_name="borrower",
@@ -192,7 +187,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
 
 async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
     """Expired pending requests become rejected and cannot be accepted later."""
-    await _add_balance(user_id=2, name="bob", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
     proposal = await create_personal_loan_request(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
     )
@@ -422,7 +417,7 @@ async def test_minting_is_bounded_when_each_account_holds_its_own_guild() -> Non
     to be subtracted.
     """
     accounts = (1, 2, 3)
-    await _add_balance(user_id=1, name="1", amount=1_000)
+    await seed_balance(user_id=1, name="1", amount=1_000)
     for user_id in accounts:  # each account takes part in its own guild and no other
         await record_guild_participant(guild_id=user_id, user_id=user_id)
 

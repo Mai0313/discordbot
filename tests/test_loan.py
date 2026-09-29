@@ -18,12 +18,7 @@ from discordbot.services.economy.database import (
     create_personal_loan_request,
 )
 
-
-async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds a positive balance through the public adjustment path."""
-    result = await adjust_balance(user_id=user_id, name=name, delta=amount)
-    return result.new_balance
-
+from tests.helpers.economy import seed_balance
 
 # VIP blackjack bonus -------------------------------------------------------
 
@@ -57,7 +52,7 @@ async def test_credit_with_repayment_full_credit() -> None:
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
     """Non-positive reward calls do not create phantom income."""
-    await _add_balance(user_id=1, name="alice", amount=50)
+    await seed_balance(user_id=1, name="alice", amount=50)
 
     result = await credit_with_repayment(user_id=1, name="alice", amount=0)
 
@@ -84,7 +79,7 @@ async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
 
 async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
     """Passive income does not auto-repay explicit long-term loan contracts."""
-    await _add_balance(user_id=2, name="bob", amount=1_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
     proposal = await create_personal_loan_request(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
     )
@@ -108,7 +103,7 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
 
 async def test_transfer_updates_sender_and_receiver_totals() -> None:
     """Transfer debits sender the full amount and credits receiver the taxed net."""
-    await _add_balance(user_id=1, name="alice", amount=100)
+    await seed_balance(user_id=1, name="alice", amount=100)
 
     await transfer(sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40)
 
@@ -123,7 +118,7 @@ async def test_transfer_updates_sender_and_receiver_totals() -> None:
 
 async def test_apply_round_settlement_updates_player_and_casino_totals() -> None:
     """Casino settlement stores actual applied deltas in account / ledger totals."""
-    await _add_balance(user_id=1, name="alice", amount=100)
+    await seed_balance(user_id=1, name="alice", amount=100)
 
     await apply_round_settlement(
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
@@ -138,7 +133,7 @@ async def test_apply_round_settlement_updates_player_and_casino_totals() -> None
 
 async def test_adjust_balance_counts_applied_delta_not_requested_delta() -> None:
     """A clamped manual adjustment spends only the applied balance delta."""
-    await _add_balance(user_id=1, name="alice", amount=10)
+    await seed_balance(user_id=1, name="alice", amount=10)
 
     await adjust_balance(user_id=1, name="alice", delta=-1_000)
 
