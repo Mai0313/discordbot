@@ -35,7 +35,6 @@ from discordbot.services.memory.store import (
     write_fact,
     delete_fact,
     iter_scopes,
-    clear_memory,
     server_scope,
     scope_owner_id,
     compartment_dir,
@@ -43,6 +42,7 @@ from discordbot.services.memory.store import (
     list_compartments,
     prune_compartment,
     unaccounted_files,
+    delete_memory_files,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -467,7 +467,7 @@ def test_clear_removes_the_whole_compartment_tree(memory_isolated_dir: Path) -> 
     scope = user_scope(user_id=111)
     for compartment in (GLOBAL_COMPARTMENT, guild_compartment(guild_id=222), DM_COMPARTMENT):
         write_fact(scope=scope, fact=_fact(compartment=compartment))
-    assert clear_memory(scope=scope)
+    assert delete_memory_files(scope=scope)
     assert list_compartments(scope=scope) == []
     assert not (memory_isolated_dir / scope).exists()
 

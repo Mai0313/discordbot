@@ -52,7 +52,6 @@ from discordbot.services.memory.store import (
     write_fact,
     write_tone,
     iter_scopes,
-    clear_memory,
     mark_cleared,
     server_scope,
     append_detail,
@@ -64,6 +63,7 @@ from discordbot.services.memory.store import (
     count_raw_entries,
     guild_compartment,
     list_compartments,
+    delete_memory_files,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -376,21 +376,21 @@ def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
     assert _memory_text() != ""
 
 
-def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path) -> None:
-    """Every tier goes, the emptied scope directory with them, and a repeat clear is a no-op."""
+def test_delete_memory_files_removes_files_and_directory(memory_isolated_dir: Path) -> None:
+    """Every tier goes, the emptied scope directory with them, and a repeat delete is a no-op."""
     write_fact(scope=USER_SCOPE, fact=_stored_fact())
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="1" * 16, compartment=DM_COMPARTMENT))
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00 | x\n舊證據")
-    assert clear_memory(scope=USER_SCOPE) is True
+    assert delete_memory_files(scope=USER_SCOPE) is True
     assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert list_compartments(scope=USER_SCOPE) == []
     assert not (memory_isolated_dir / str(USER_ID)).exists()
-    assert clear_memory(scope=USER_SCOPE) is False
+    assert delete_memory_files(scope=USER_SCOPE) is False
 
 
-def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
+def test_delete_memory_files_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
     """A crash between a tmp write and its rename must not leave the scope unclearable."""
     write_fact(scope=USER_SCOPE, fact=_stored_fact())
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
@@ -399,14 +399,14 @@ def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> 
     (user_dir / GLOBAL_COMPARTMENT / "deadbeefdeadbeef.md.tmp").write_text(
         data="partial", encoding="utf-8"
     )
-    assert clear_memory(scope=USER_SCOPE) is True
+    assert delete_memory_files(scope=USER_SCOPE) is True
     assert not user_dir.exists()
 
 
-def test_clear_user_memory_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
+def test_mark_cleared_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
     started_at = time.monotonic()
     assert cleared_since(scope=USER_SCOPE, started_at=started_at) is False
-    clear_memory(scope=USER_SCOPE)
+    mark_cleared(scope=USER_SCOPE)
     assert cleared_since(scope=USER_SCOPE, started_at=started_at) is True
     later = time.monotonic()
     assert cleared_since(scope=USER_SCOPE, started_at=later) is False
@@ -3820,7 +3820,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         remember_notes=_NOTES,
     )
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
-    clear_memory(scope=USER_SCOPE)
+    mark_cleared(scope=USER_SCOPE)
     release.set()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
@@ -4912,13 +4912,6 @@ def test_write_tone_truncates_past_byte_cap(
     stored = read_tone(scope=USER_SCOPE)
     assert stored.startswith("## 語氣偏好")
     assert len(stored.encode("utf-8")) <= 32
-
-
-def test_clear_memory_removes_tone_note(memory_isolated_dir: Path) -> None:
-    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌")
-    assert clear_memory(scope=USER_SCOPE) is True
-    assert read_tone(scope=USER_SCOPE) == ""
-    assert not (memory_isolated_dir / str(USER_ID)).exists()
 
 
 async def test_pipeline_consolidation_writes_tone_note(
