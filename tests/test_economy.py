@@ -102,19 +102,6 @@ def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
     assert second.hands == []
 
 
-@pytest.fixture(autouse=True)
-def _no_blackjack_history(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keeps the off-critical-path history write out of the real games.db."""
-
-    async def fake_record_blackjack_history(**_kwargs: Any) -> None:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Drops the round instead of persisting it."""
-
-    monkeypatch.setattr(
-        "discordbot.cogs.games.blackjack_views.record_blackjack_history",
-        fake_record_blackjack_history,
-    )
-
-
 class _MessageStub:
     """Minimal message stub that records edit calls."""
 
