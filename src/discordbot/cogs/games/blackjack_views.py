@@ -89,8 +89,9 @@ BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 # draw is twelve cards — eleven aces and a five, hard 16 because an eleven-point ace would bust
 # it. Two of those twelve are dealt rather than drawn, so it is ten draws to reach that hand,
 # an eleventh for the draw it is owed, and a twelfth to record what that came to.
-# `tests/test_blackjack_view_buttons.py` searches for the hand rather than trusting the
-# arithmetic, so a rules change re-derives this instead of quietly outgrowing it.
+# `tests/helpers/games.py::longest_hand_the_dealer_must_draw_on` searches for the hand rather
+# than trusting the arithmetic, so a rules change re-derives this instead of quietly
+# outgrowing it.
 MAX_DEALER_DECISION_STEPS: Final[int] = 12
 MAX_BOT_TURN_STEPS: Final[int] = 16
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6

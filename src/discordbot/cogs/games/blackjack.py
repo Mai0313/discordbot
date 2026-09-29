@@ -56,8 +56,7 @@ def draw_card(rng: Random) -> Card:
     """Draws one card from a notional infinite shoe (independent rank + suit).
 
     Production rounds deal from the finite shoe `build_shoe` returns instead,
-    so this helper stays only as `_draw_one_card`'s empty-shoe fallback and as
-    the seam tests monkeypatch for deterministic draws.
+    so this helper serves only as `_draw_one_card`'s empty-shoe fallback.
 
     Args:
         rng: Random source used to choose rank and suit.
@@ -566,9 +565,8 @@ class BlackjackRound(BaseModel):
         """Pops the next card from the round's shoe, falling back when empty.
 
         Cards come from the FIFO shoe, so draws are capped by the finite
-        multi-deck shoe instead of independent replacement. Tests that want
-        deterministic draws clear `self.shoe` to force the `draw_card`
-        fallback they monkeypatch.
+        multi-deck shoe instead of independent replacement. Once the shoe is
+        empty the round keeps dealing from `draw_card` rather than raising.
         """
         if self.shoe:
             return self.shoe.pop(0)
