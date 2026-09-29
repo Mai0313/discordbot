@@ -7,6 +7,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import text, select, update
 
+from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
     CENTRAL_BANK_BASE_CAPACITY,
@@ -21,7 +22,6 @@ from discordbot.services.economy.database import (
     transfer,
     get_balance,
     open_session,
-    _database_now,
     adjust_balance,
     get_credit_ceiling,
     accept_loan_proposal,
@@ -67,7 +67,7 @@ async def _approve(
 
 async def _backdate_contract(contract_id: int, days: int) -> None:
     """Ages a loan contract by `days`, keeping the MIN_INTEREST_DAYS prepaid window aligned."""
-    now = _database_now()
+    now = database_now()
     opened_at = now - timedelta(days=days)
     last_accrued_at = opened_at + timedelta(days=MIN_INTEREST_DAYS)
     async with open_session() as session:
@@ -86,8 +86,8 @@ async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
             statement=update(LoanProposal)
             .where(LoanProposal.id == proposal_id)
             .values(
-                created_at=_database_now() - timedelta(seconds=seconds),
-                updated_at=_database_now() - timedelta(seconds=seconds),
+                created_at=database_now() - timedelta(seconds=seconds),
+                updated_at=database_now() - timedelta(seconds=seconds),
             )
         )
         await session.commit()

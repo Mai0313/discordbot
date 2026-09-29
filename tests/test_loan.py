@@ -10,11 +10,9 @@ from discordbot.services.economy.database import (
     get_account,
     get_balance,
     adjust_balance,
-    get_casino_ledger,
     list_loan_contracts,
     accept_loan_proposal,
     credit_with_repayment,
-    apply_round_settlement,
     create_personal_loan_request,
 )
 
@@ -114,21 +112,6 @@ async def test_transfer_updates_sender_and_receiver_totals() -> None:
     # 40 transferred, 5% (2) burned; receiver nets 38.
     assert (sender.balance, sender.total_earned, sender.total_spent) == (60, 100, 40)
     assert (receiver.balance, receiver.total_earned, receiver.total_spent) == (38, 38, 0)
-
-
-async def test_apply_round_settlement_updates_player_and_casino_totals() -> None:
-    """Casino settlement stores actual applied deltas in account / ledger totals."""
-    await seed_balance(user_id=1, name="alice", amount=100)
-
-    await apply_round_settlement(
-        player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
-    )
-
-    player = await get_account(user_id=1)
-    ledger = await get_casino_ledger()
-    assert player is not None
-    assert (player.balance, player.total_earned, player.total_spent) == (60, 100, 40)
-    assert (ledger.balance, ledger.total_earned, ledger.total_spent) == (40, 40, 0)
 
 
 async def test_adjust_balance_counts_applied_delta_not_requested_delta() -> None:

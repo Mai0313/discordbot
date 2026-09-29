@@ -17,41 +17,41 @@ from discordbot.typings.games import (
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
-from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.typings.economy import TRANSFER_TAX_BPS
-from discordbot.services.economy import database as economy_database
-from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs.games.settlement import settle_wager, settle_blackjack_player
-from discordbot.services.economy.database import (
+from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei, database_now
+from discordbot.typings.economy import (
+    TRANSFER_TAX_BPS,
     VIP_PURCHASE_COST,
-    UserWallet,
-    JackpotPool,
-    UserAccount,
-    CasinoAccount,
     AccountSnapshot,
     JackpotSnapshot,
     LeaderboardEntry,
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
     JackpotSettlementRequest,
+)
+from discordbot.services.economy import database as economy_database
+from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandState
+from discordbot.utils.stored_integer import stored_int_to_int
+from discordbot.cogs.games.settlement import settle_wager, settle_blackjack_player
+from discordbot.services.economy.database import (
+    UserWallet,
+    JackpotPool,
+    UserAccount,
+    CasinoAccount,
     top_n,
     buy_vip,
     get_vip,
     transfer,
     get_admin,
     set_admin,
-    _as_taipei,
     top_losers,
     get_account,
     get_balance,
     open_session,
-    _database_now,
     _ensure_schema,
     adjust_balance,
     _taipei_midnight,
     get_jackpot_pool,
     get_casino_ledger,
-    _stored_int_to_int,
     get_jackpot_snapshot,
     credit_with_repayment,
     apply_round_settlement,
@@ -231,9 +231,9 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
     if row is None:
         return 0, 0, 0, None
     return (
-        _stored_int_to_int(value=row[0]),
-        _stored_int_to_int(value=row[1]),
-        _stored_int_to_int(value=row[2]),
+        stored_int_to_int(value=row[0]),
+        stored_int_to_int(value=row[1]),
+        stored_int_to_int(value=row[2]),
         row[3],
     )
 
@@ -1323,7 +1323,7 @@ async def test_apply_round_settlement_is_atomic() -> None:
 
 
 async def test_apply_round_settlement_loss_debits_player_and_casino() -> None:
-    """A loss debits the player and credits the casino."""
+    """A loss debits the player and credits the casino, and both sides book it in their totals."""
     await seed_balance(user_id=1, name="alice", amount=100)
 
     result = await apply_round_settlement(
@@ -1332,9 +1332,10 @@ async def test_apply_round_settlement_loss_debits_player_and_casino() -> None:
     assert result.player_balance == 60
     assert result.casino_balance == 40
     account = await get_account(user_id=1)
+    ledger = await get_casino_ledger()
     assert account is not None
-    assert account.total_earned == 100
-    assert account.total_spent == 40
+    assert (account.balance, account.total_earned, account.total_spent) == (60, 100, 40)
+    assert (ledger.balance, ledger.total_earned, ledger.total_spent) == (40, 40, 0)
 
 
 async def test_apply_round_settlement_loss_clamps_player_and_casino_to_available_balance() -> None:
@@ -1413,7 +1414,7 @@ async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
     loss, win, net, day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (300, 500, 200)
     assert day_started_at is not None
-    assert _as_taipei(dt=day_started_at) == _taipei_midnight(now=_database_now())
+    assert as_taipei(dt=day_started_at) == _taipei_midnight(now=database_now())
     stats = await get_casino_daily_stats(user_id=1)
     assert stats.daily_loss == 300
     assert stats.daily_win == 500
@@ -1426,7 +1427,7 @@ async def test_daily_casino_counters_store_large_values_as_text() -> None:
     large_loss = 10**20
 
     async with open_session() as session:
-        now = _database_now()
+        now = database_now()
         await _apply_daily_casino_delta_in_session(
             session=session, user_id=1, name="alice", delta=-large_loss, now=now
         )
