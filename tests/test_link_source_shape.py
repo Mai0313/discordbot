@@ -1,9 +1,8 @@
 """Pins the one shape Threads, Facebook, Instagram and Twitter parse into.
 
 The sources converged on purpose: a caller written against one reads the others without
-learning a second set of rules, which is what lets the link-source builders and the expansion
-cogs share a vocabulary instead of three. Nothing else in the suite would notice them drifting
-apart again — every other test exercises one platform, and a fourth source added by copying
+learning a second set of rules. Nothing else in the suite would notice them drifting
+apart again — every other test exercises one platform, and a new source added by copying
 whichever file was opened first passes all of them.
 
 So the classes here are DISCOVERED rather than listed: every `*Conversation` under
@@ -178,7 +177,7 @@ def test_the_sweep_finds_every_source() -> None:
 
 @pytest.mark.parametrize("name", sorted(_conversation_classes()))
 def test_every_conversation_carries_the_same_surface(name: str) -> None:
-    """One shape across the three, so a caller never has to ask which platform it holds."""
+    """One shape across every source, so a caller never has to ask which platform it holds."""
     cls = _conversation_classes()[name]
 
     assert set(cls.model_fields) == _CONVERSATION_FIELDS
@@ -213,9 +212,9 @@ def test_a_dump_carries_each_comment_once(name: str) -> None:
 def test_target_is_the_last_chain_entry_and_posts_is_everything(name: str) -> None:
     """`target` is the chain's LAST entry, which is the whole reason the field is a list.
 
-    Only Threads ever serves ancestors, so a one-element chain would pin nothing here and leave
-    "the only entry" passing for "the last one". Facebook and Instagram are handed two anyway:
-    the accessor has to mean the same thing everywhere, whatever their pages actually serve.
+    A one-element chain would pin nothing here and leave "the only entry" passing for "the last
+    one". Every source is handed two, including Facebook and Instagram, whose pages never serve an
+    ancestor: the accessor has to mean the same thing everywhere, whatever a page actually serves.
     """
     cls = _conversation_classes()[name]
     conversation, chain, reply = _build(cls=cls, chain_length=2)

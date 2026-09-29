@@ -956,8 +956,8 @@ async def test_cog_reports_a_non_douyin_error_instead_of_hanging(
 ) -> None:
     """A failure that is not a DouyinError must not escape and strand the placeholder.
 
-    The Douyin branch runs before the command's own try block, and the bot registers no
-    application-command error handler, so an escaping exception would leave the user looking at
+    The Douyin branch runs before the command's own try block, and the bot's application-command
+    error handler only logs, so an escaping exception would leave the user looking at
     "正在下載影片..." indefinitely.
     """
     cog, _stub = _install_cog(

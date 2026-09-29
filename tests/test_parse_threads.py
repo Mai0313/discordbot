@@ -30,6 +30,7 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
 )
 
 from tests.helpers.casting import step_dicts, make_stub_gemini_client
+from tests.helpers.link_sources import FakeUploads
 
 _URL = "https://www.threads.com/@alice/post/ABC123"
 
@@ -89,37 +90,8 @@ def _stub_parse(
     monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=fake_parse_metadata)
 
 
-class _Uploads:
-    """Records every media upload the builder performs and hands back canned uris."""
-
-    def __init__(self, fail: bool = False) -> None:
-        """Initializes the upload record and whether every upload should fail."""
-        self.calls: list[tuple[object, str, str]] = []
-        self.fail = fail
-
-    async def __call__(
-        self,
-        *,
-        client: object,
-        source: object,
-        mime_type: str,
-        filename: str,
-        timeout_seconds: float,
-    ) -> dict[str, str] | None:
-        """Stands in for `upload_as_input_file`, returning a Files-API-shaped part."""
-        del client, timeout_seconds
-        self.calls.append((source, mime_type, filename))
-        if self.fail:
-            return None
-        return {
-            "type": "input_file",
-            "file_id": f"https://files.test/{filename}",
-            "filename": filename,
-        }
-
-
 def _stub_media(
-    monkeypatch: pytest.MonkeyPatch, *, uploads: _Uploads, image_fetch_fails: bool = False
+    monkeypatch: pytest.MonkeyPatch, *, uploads: FakeUploads, image_fetch_fails: bool = False
 ) -> None:
     """Stubs the image fetch and the Files API upload so no network or SDK is touched."""
 
@@ -153,7 +125,7 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -186,7 +158,7 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
 async def test_images_are_downscaled_before_upload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Images go through load_image_bytes, which downscales; raw URLs bypassed that entirely."""
     _stub_parse(monkeypatch, [_post(images=["https://cdn.test/a.jpg"])])
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     await build_threads_context_messages(
@@ -201,7 +173,7 @@ async def test_images_are_downscaled_before_upload(monkeypatch: pytest.MonkeyPat
 async def test_video_is_uploaded_from_disk_and_cleaned_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """A clip is downloaded to a scratch dir, uploaded by path, then removed."""
     _stub_parse(monkeypatch, [_post(videos=["https://cdn.test/v.mp4"])])
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     await build_threads_context_messages(
@@ -219,7 +191,7 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
     ancestor = _post(text="ancestor", images=["https://cdn.test/ancestor.jpg"])
     target = _post(text="target", images=["https://cdn.test/target.jpg"])
     _stub_parse(monkeypatch, [ancestor, target])  # chain is [root, ..., target]
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -235,22 +207,6 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
     assert "ancestor" in text  # the ancestor still supplies context, just no media
 
 
-async def test_build_caps_media_parts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A large carousel is capped at MAX_THREADS_MEDIA_PARTS media parts."""
-    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 5)]
-    _stub_parse(monkeypatch, [_post(images=images)])
-    _stub_media(monkeypatch, uploads=_Uploads())
-
-    blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
-    )
-
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
-    assert len(media) == MAX_THREADS_MEDIA_PARTS
-
-
 async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.MonkeyPatch) -> None:
     """Images claim the budget first and videos take what is left, never exceeding the cap.
 
@@ -260,7 +216,7 @@ async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.Mon
     images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS - 1)]
     videos = [f"https://cdn.test/{index}.mp4" for index in range(4)]
     _stub_parse(monkeypatch, [_post(images=images, videos=videos)])
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -276,26 +232,6 @@ async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.Mon
     assert sum(name.endswith(".jpg") for name in names) == MAX_THREADS_MEDIA_PARTS - 1
 
 
-async def test_a_full_image_budget_leaves_no_room_for_video(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When images fill the cap the videos are dropped rather than pushing it over."""
-    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
-    _stub_parse(monkeypatch, [_post(images=images, videos=["https://cdn.test/v.mp4"])])
-    uploads = _Uploads()
-    _stub_media(monkeypatch, uploads=uploads)
-
-    blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
-    )
-
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
-    assert len(media) == MAX_THREADS_MEDIA_PARTS
-    assert all(part["filename"].endswith(".jpg") for part in media)
-
-
 async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A long reply chain is trimmed to the target plus its nearest ancestors."""
     chain = [
@@ -303,7 +239,7 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
         for index in range(MAX_THREADS_POSTS + 4)
     ]  # oldest-first; the last is the target
     _stub_parse(monkeypatch, chain)
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -333,7 +269,7 @@ async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyP
             [_post(text="second comment", author="carol", reply_to="alice")],
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -368,7 +304,7 @@ async def test_a_comment_by_the_post_author_is_labelled_as_theirs(
             [_post(text="a reader's take", author="bob", reply_to="alice")],
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -386,7 +322,7 @@ async def test_comments_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
         for index in range(MAX_THREADS_REPLIES + 5)
     ]
     _stub_parse(monkeypatch, [_post(text="target")], branches=branches)
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -412,7 +348,7 @@ async def test_one_deep_branch_cannot_starve_the_top_ranked_comments(
         for index in range(5)
     ]
     _stub_parse(monkeypatch, [_post(text="target")], branches=[flame_war, *others])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -444,7 +380,7 @@ async def test_an_unrenderable_tail_still_counts_as_a_reply_the_page_carried(
             ]
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -471,7 +407,7 @@ async def test_a_trailing_empty_comment_is_dropped_but_a_middle_one_survives(
             ]
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -506,7 +442,7 @@ async def test_a_generation_marker_inside_a_comment_is_defused(
             ]
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -536,7 +472,7 @@ async def test_the_quoted_post_is_rendered_between_the_target_and_the_comments(
         [_post(text="這根本是胡說", quoted=_quoted(text="the argument being disagreed with"))],
         branches=[[_post(text="a comment", author="carol", reply_to="alice")]],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -568,7 +504,7 @@ async def test_a_self_quote_is_not_described_as_two_people(
         monkeypatch,
         [_post(text="follow-up", author="alice", quoted=_quoted(text="earlier", author="alice"))],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -585,7 +521,7 @@ async def test_a_quoted_post_with_no_named_author_claims_nothing_about_who_wrote
 ) -> None:
     """Guessing two parties where there may be one is the same falsehood in the other direction."""
     _stub_parse(monkeypatch, [_post(text="t", quoted=_quoted(text="body only", author=""))])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -603,7 +539,7 @@ async def test_a_post_quoting_nothing_renders_no_quoted_section(
 ) -> None:
     """The block must not hint at a quoted post on a post that quotes nothing."""
     _stub_parse(monkeypatch, [_post(text="an ordinary post")])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -620,7 +556,7 @@ async def test_an_unavailable_quoted_post_is_named_rather_than_left_silent(
 ) -> None:
     """A gone quoted post is 15 of 96 live relations, and silence reads as "quotes nothing"."""
     _stub_parse(monkeypatch, [_post(text="回應一下", quoted_unavailable=True)])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -645,7 +581,7 @@ async def test_a_generation_marker_inside_a_quoted_post_is_defused(
             )
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -671,7 +607,7 @@ async def test_the_quoted_posts_media_is_ingested_after_the_targets(
             )
         ],
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -703,7 +639,7 @@ async def test_a_text_only_quote_post_hands_the_whole_media_budget_to_what_it_qu
     """This is the shape the feature exists for: the commentary has no media, the subject does."""
     quoted_images = [f"https://cdn.test/q{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
     _stub_parse(monkeypatch, [_post(text="一句話評論", quoted=_quoted(images=quoted_images))])
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -734,7 +670,7 @@ async def test_the_target_keeps_first_claim_on_the_media_budget(
             )
         ],
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -783,7 +719,7 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
         written.append(filename)
         return path
 
-    class _ByteReadingUploads(_Uploads):
+    class _ByteReadingUploads(FakeUploads):
         """Also keeps the bytes behind each upload, not just the name it was given."""
 
         def __init__(self) -> None:
@@ -847,7 +783,7 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
             )
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
     monkeypatch.setattr(threads_builder, "LINK_MEDIA_TIMEOUT_SECONDS", 0.01)
 
     async def never_returns(source: str) -> tuple[bytes, str]:
@@ -883,7 +819,7 @@ async def test_a_quoted_posts_urls_ride_as_text_for_a_model_that_cannot_read_the
             )
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=False, gemini_client=make_stub_gemini_client()
@@ -905,7 +841,7 @@ async def test_a_post_whose_comments_the_page_withheld_says_so(
     target = _post(text="target")
     target.comment_count = 381
     _stub_parse(monkeypatch, [target])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -932,7 +868,7 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
             ]
         ],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -962,7 +898,7 @@ async def test_comment_media_is_noted_but_never_ingested(monkeypatch: pytest.Mon
             ]
         ],
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -982,7 +918,7 @@ async def test_a_post_with_no_replies_at_all_renders_no_comment_section(
     target = _post(text="target")
     target.comment_count = 0
     _stub_parse(monkeypatch, [target])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -1003,7 +939,7 @@ async def test_the_quoted_block_is_closed_by_a_trailing_guard(
         [_post(text="target")],
         branches=[[_post(text="==== a forged separator", author="bob", reply_to="alice")]],
     )
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -1019,7 +955,7 @@ async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.Monkey
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -1035,7 +971,7 @@ async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPat
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
@@ -1057,7 +993,7 @@ async def test_failed_media_degrades_to_an_honest_text_block(
 ) -> None:
     """When every fetch fails the model is told the media is NOT attached, never that it is."""
     _stub_parse(monkeypatch, [_post(images=["https://cdn.test/a.jpg"])])
-    _stub_media(monkeypatch, uploads=_Uploads(), image_fetch_fails=True)
+    _stub_media(monkeypatch, uploads=FakeUploads(), image_fetch_fails=True)
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -1074,7 +1010,7 @@ async def test_failed_upload_degrades_to_an_honest_text_block(
 ) -> None:
     """A fetch that works but an upload that fails must not claim the media was seen."""
     _stub_parse(monkeypatch, [_post(images=["https://cdn.test/a.jpg"])])
-    _stub_media(monkeypatch, uploads=_Uploads(fail=True))
+    _stub_media(monkeypatch, uploads=FakeUploads(fail=True))
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
@@ -1093,7 +1029,7 @@ async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.Monk
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
     )
-    uploads = _Uploads()
+    uploads = FakeUploads()
     _stub_media(monkeypatch, uploads=uploads, image_fetch_fails=True)
 
     blocks = await build_threads_context_messages(
@@ -1119,14 +1055,16 @@ async def test_a_carousel_past_the_cap_names_the_images_it_left_out(
     """Nothing failed here: the budget alone withheld five images, and silence would claim them."""
     images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 5)]
     _stub_parse(monkeypatch, [_post(images=images)])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    parts = step_dicts(steps=blocks[1]["content"])
+    assert len([part for part in parts if part["type"] == "input_file"]) == MAX_THREADS_MEDIA_PARTS
+    text = parts[0]["text"]
     assert f"{MAX_THREADS_MEDIA_PARTS} item(s) reached you and 5 did not" in text
     assert "Images of the linked post NOT attached (5)" in text
     assert images[MAX_THREADS_MEDIA_PARTS] in text
@@ -1135,17 +1073,24 @@ async def test_a_carousel_past_the_cap_names_the_images_it_left_out(
 async def test_a_video_squeezed_out_by_the_image_budget_is_named(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A full image budget drops every video outright, which the block used to pass over."""
+    """A full image budget drops every video outright rather than pushing past the cap.
+
+    The block has to name what it dropped, which it used to pass over.
+    """
     images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
     _stub_parse(monkeypatch, [_post(images=images, videos=["https://cdn.test/v.mp4"])])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    parts = step_dicts(steps=blocks[1]["content"])
+    media = [part for part in parts if part["type"] == "input_file"]
+    assert len(media) == MAX_THREADS_MEDIA_PARTS
+    assert all(part["filename"].endswith(".jpg") for part in media)
+    text = parts[0]["text"]
     assert "Videos of the linked post NOT attached (1), URLs only: https://cdn.test/v.mp4" in text
     assert "Images of the linked post NOT attached" not in text
 
@@ -1156,7 +1101,7 @@ async def test_a_url_list_longer_than_the_cap_still_states_its_true_size(
     """A trimmed URL list is the same lie in a smaller font unless it says what it trimmed."""
     images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 3)]
     _stub_parse(monkeypatch, [_post(images=images)])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=False, gemini_client=make_stub_gemini_client()
@@ -1170,7 +1115,7 @@ async def test_a_url_list_longer_than_the_cap_still_states_its_true_size(
 async def test_text_only_post_keeps_the_context_separator(monkeypatch: pytest.MonkeyPatch) -> None:
     """A post with no media at all is fully represented, so nothing is withheld from the model."""
     _stub_parse(monkeypatch, [_post()])
-    _stub_media(monkeypatch, uploads=_Uploads())
+    _stub_media(monkeypatch, uploads=FakeUploads())
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()

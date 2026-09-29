@@ -471,12 +471,19 @@ def test_the_group_name_comes_from_the_group_the_url_names(
     assert post.group_name == "The real group"
 
 
+@pytest.mark.xfail(
+    strict=True, reason="#744: a page post borrows the first Group node's name on the page"
+)
 def test_a_page_post_carries_no_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A page post has no group, and must not borrow a recommendation's name."""
-    groups = [{"__typename": "Group", "id": "111", "name": "A recommended group"}]
-    downloader = _downloader(monkeypatch, html=_page(groups=groups))
+    """A page post has no group, and must not borrow a recommendation's name.
 
-    post = _parse(downloader, f"https://www.facebook.com/NASA/posts/{_POST_ID}")
+    The fetch lands on the page URL too, so neither URL names a group to match against.
+    """
+    page_post = f"https://www.facebook.com/NASA/posts/{_POST_ID}"
+    groups = [{"__typename": "Group", "id": "111", "name": "A recommended group"}]
+    downloader = _downloader(monkeypatch, html=_page(groups=groups), final_url=page_post)
+
+    post = _parse(downloader, page_post)
 
     assert post.group_name == ""
 

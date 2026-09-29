@@ -4,9 +4,9 @@ The rule is not style. `tempfile.TemporaryDirectory` hands a failed removal to w
 `with` block, and every site that wants one here has already told the user what happened by the
 time the teardown runs, so that exception relabels a delivered file as undelivered, replaces a
 timeout's own report with a generic failure, or discards a result the block had already finished
-computing. #558 collected four sites onto the helper and deliberately left the three link-source
-builders on the plain class; #561 measured what the carve-out cost and moved those too. A rule
-that has already decayed once earns a scan rather than a sentence.
+computing. The link-source builders were once left on the plain class on purpose, and #561
+measured what that carve-out cost. A rule that has already decayed once earns a scan rather than a
+sentence.
 
 The scan is blunt on purpose. Any attribute named `TemporaryDirectory` or `mkdtemp` is an offence
 whatever it is read off, because nothing else here owns those names and a scan that first proved
@@ -54,8 +54,8 @@ def _offences_in(module: Path) -> list[str]:
 def test_a_scratch_directory_is_only_ever_opened_through_the_shared_helper() -> None:
     """A scratch directory whose teardown is not the helper's speaks for work it never did.
 
-    Seven paths here abandon a worker `asyncio.to_thread` cannot cancel, so their removal walks
-    a tree something is still writing into and can raise `ENOTEMPTY`. The helper reports that
+    Every path that opens one abandons a worker `asyncio.to_thread` cannot cancel, so its removal
+    walks a tree something is still writing into and can raise `ENOTEMPTY`. The helper reports that
     instead of raising it; the plain class raises it at a caller who has already answered.
     """
     offences = [offence for module in _modules() for offence in _offences_in(module)]

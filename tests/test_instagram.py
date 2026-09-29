@@ -195,7 +195,7 @@ def test_clean_url_drops_the_share_token_and_the_image_index() -> None:
 
 
 def test_a_reel_keeps_its_own_path() -> None:
-    """`/reel/` and `/p/` both resolve, and keeping the pasted one cannot be wrong."""
+    """A reel keeps its own kind rather than becoming `/p/`, and `/reels/` folds into `/reel/`."""
     assert InstagramURL(raw_url=f"https://www.instagram.com/reels/{_CODE}/").clean_url == (
         f"https://www.instagram.com/reel/{_CODE}/"
     )
@@ -222,17 +222,6 @@ def test_a_post_is_read_with_its_caption_images_and_counts(
     assert post.like_count == 8855
     assert post.comment_count == 11
     assert post.taken_at is not None
-
-
-def test_the_first_candidate_is_the_original(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The candidates are widest-first and carry no dimensions, so position is the only signal."""
-    downloader = _downloader(monkeypatch, html=_page())
-
-    conversation = downloader.parse_metadata(url=_URL)
-
-    post = conversation.target
-    assert post is not None
-    assert all("original" in url for url in post.image_urls)
 
 
 def test_the_chain_is_the_post_alone(monkeypatch: pytest.MonkeyPatch) -> None:

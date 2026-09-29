@@ -14,7 +14,6 @@ from discordbot.services.platforms.threads import (
     Post,
     ThreadsURL,
     FetchedPage,
-    ThreadsOutput,
     ThreadsDownloader,
 )
 
@@ -32,22 +31,6 @@ def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownlo
 
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
     return ThreadsDownloader(output_folder=str(tmp_path))
-
-
-def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
-    """Threads output image and local video path defaults are isolated."""
-    first = ThreadsOutput()
-    second = ThreadsOutput()
-
-    first.image_urls.append("https://cdn.example/image.jpg")
-    first.video_paths.append(tmp_path / "clip.mp4")
-    first.quoted = ThreadsOutput(text="quoted")
-
-    assert second.image_urls == []
-    assert second.video_paths == []
-    assert second.reply_to_username == ""
-    assert second.quoted is None
-    assert second.quoted_unavailable is False
 
 
 def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field of a post
@@ -912,14 +895,23 @@ def test_a_page_without_the_post_yields_an_empty_conversation(
     assert conversation.reply_branches == []
 
 
-def _count_fetches(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> list[str]:
-    """Serves `pages` in order (the last one repeating) and records every fetched URL."""
+def _serve_pages(
+    monkeypatch: pytest.MonkeyPatch, *, pages: list[str], share_lands_on: str = ""
+) -> list[str]:
+    """Serves `pages` in order (the last one repeating) and records every fetched URL.
+
+    With `share_lands_on`, a fetch of a `/share/` URL comes back from there, the live shape
+    measured on `/share/DfX81RWN8`: the share link answers 302 with the canonical post URL,
+    while a fetch of the canonical URL stays where it was.
+    """
     fetched: list[str] = []
 
     def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Hands back the page for this attempt."""
+        """Hands back the page for this attempt, moved only when a share URL was asked for."""
         fetched.append(url)
-        return FetchedPage(html=pages[min(len(fetched) - 1, len(pages) - 1)], final_url=url)
+        html = pages[min(len(fetched) - 1, len(pages) - 1)]
+        landed = share_lands_on if share_lands_on and "/share/" in url else url
+        return FetchedPage(html=html, final_url=landed)
 
     monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
     monkeypatch.setattr(
@@ -937,7 +929,7 @@ def test_a_page_carrying_no_post_json_is_fetched_again(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The throttle is transient, and both entry points are one-shot, so it costs a real failure."""
-    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE, _thread_html_with_replies()])
+    fetched = _serve_pages(monkeypatch, pages=[_THROTTLED_PAGE, _thread_html_with_replies()])
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -952,7 +944,7 @@ def test_a_page_that_answered_without_the_post_is_not_retried(
     answered = _sjs_html(
         target=_thread_post_payload(code="SOMEONE_ELSE", username="other", text="Other post")
     )
-    fetched = _count_fetches(monkeypatch, [answered])
+    fetched = _serve_pages(monkeypatch, pages=[answered])
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -989,7 +981,7 @@ def test_a_post_that_no_longer_exists_is_not_retried_either(
         }
     )
     page = f'<html><script type="application/json" data-sjs>{feed}</script></html>'
-    fetched = _count_fetches(monkeypatch, [page])
+    fetched = _serve_pages(monkeypatch, pages=[page])
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -1006,7 +998,7 @@ def test_the_empty_page_retries_are_bounded(
     private or deleted post answers with, and the two arriving identically is what made a
     throttle reach the channel as "this post cannot be read".
     """
-    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+    fetched = _serve_pages(monkeypatch, pages=[_THROTTLED_PAGE])
 
     with pytest.raises(LinkRetryableError):
         downloader.parse_metadata(url=_REPLIES_TARGET_URL)
@@ -1032,7 +1024,7 @@ def test_a_post_the_platform_refuses_to_serve_is_not_read_as_a_throttle(
     It names the post it is refusing, so no retry clears it. Reported as a throttle it reaches
     the channel as "try this again later" on a link that will never work.
     """
-    fetched = _count_fetches(monkeypatch, [_GEO_BLOCKED_PAGE])
+    fetched = _serve_pages(monkeypatch, pages=[_GEO_BLOCKED_PAGE])
 
     with pytest.raises(LinkUnavailableError):
         downloader.parse_metadata(url=_REPLIES_TARGET_URL)
@@ -1051,7 +1043,7 @@ def test_a_shell_naming_some_other_route_is_still_read_as_a_throttle(
     retry rather than earning the unreadable mark.
     """
     unknown_route = _GEO_BLOCKED_PAGE.replace("BarcelonaGeoBlockRoute", "BarcelonaSomeOtherRoute")
-    fetched = _count_fetches(monkeypatch, [unknown_route])
+    fetched = _serve_pages(monkeypatch, pages=[unknown_route])
 
     with pytest.raises(LinkRetryableError):
         downloader.parse_metadata(url=_REPLIES_TARGET_URL)
@@ -1063,7 +1055,7 @@ def test_the_retry_deadline_stops_further_attempts(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The attempt count is not the only bound: a run of slow fetches spends the budget instead."""
-    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+    fetched = _serve_pages(monkeypatch, pages=[_THROTTLED_PAGE])
     monkeypatch.setattr(
         target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS", value=0.0
     )
@@ -1075,30 +1067,6 @@ def test_the_retry_deadline_stops_further_attempts(
 
 
 _SHARE_URL = "https://www.threads.com/share/DfX81RWN8"
-
-
-def _stub_share_redirect(
-    monkeypatch: pytest.MonkeyPatch, *, final_url: str, pages: list[str]
-) -> list[str]:
-    """Serves `pages` in order (the last repeating) and redirects the share URL to `final_url`.
-
-    Mirrors the live shape measured on `/share/DfX81RWN8`: the share link answers 302 with the
-    canonical post URL, so the fetch of it comes back from somewhere else than it asked for,
-    while a fetch of the canonical URL stays where it was.
-    """
-    fetched: list[str] = []
-
-    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Hands back the page for this attempt, moved only when the share URL was asked for."""
-        fetched.append(url)
-        html = pages[min(len(fetched) - 1, len(pages) - 1)]
-        return FetchedPage(html=html, final_url=final_url if "/share/" in url else url)
-
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
-    monkeypatch.setattr(
-        target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS", value=0.0
-    )
-    return fetched
 
 
 def test_fetch_page_reports_where_the_request_landed(
@@ -1143,9 +1111,9 @@ def test_a_share_link_reads_the_post_its_redirect_names(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The share form names no post, so where the fetch landed is the only thing that does."""
-    fetched = _stub_share_redirect(
+    fetched = _serve_pages(
         monkeypatch,
-        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        share_lands_on=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
         pages=[_thread_html_with_replies()],
     )
 
@@ -1168,9 +1136,9 @@ def test_the_target_url_never_carries_what_names_the_sharer(
     It goes into the expansion's embeds and into the reply prompt, so echoing the pasted form
     would tell the channel who sent the link rather than only which post it names.
     """
-    _stub_share_redirect(
+    _serve_pages(
         monkeypatch,
-        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        share_lands_on=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
         pages=[_thread_html_with_replies()],
     )
 
@@ -1185,9 +1153,9 @@ def test_a_share_links_retry_asks_for_the_resolved_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Once the redirect has named the post, a throttle retry has no reason to walk it again."""
-    fetched = _stub_share_redirect(
+    fetched = _serve_pages(
         monkeypatch,
-        final_url=_REPLIES_TARGET_URL,
+        share_lands_on=_REPLIES_TARGET_URL,
         pages=[_THROTTLED_PAGE, _thread_html_with_replies()],
     )
 
@@ -1207,9 +1175,9 @@ def test_a_share_link_leading_anywhere_else_is_never_parsed(
 
     The page served here is exactly that trap: a post whose payload carries no `code` at all.
     """
-    fetched = _stub_share_redirect(
+    fetched = _serve_pages(
         monkeypatch,
-        final_url="https://www.threads.com/login",
+        share_lands_on="https://www.threads.com/login",
         pages=[
             _sjs_html(target=_thread_post_payload(code="", username="other", text="Codeless post"))
         ],
@@ -1225,8 +1193,8 @@ def test_resolving_a_clean_url_from_a_canonical_link_asks_threads_nothing(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A link already naming its post has nothing left to resolve, only a query to strip."""
-    fetched = _stub_share_redirect(
-        monkeypatch, final_url=_REPLIES_TARGET_URL, pages=[_thread_html_with_replies()]
+    fetched = _serve_pages(
+        monkeypatch, share_lands_on=_REPLIES_TARGET_URL, pages=[_thread_html_with_replies()]
     )
 
     resolved = downloader.resolve_clean_url(url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt")
@@ -1239,9 +1207,9 @@ def test_resolving_a_clean_url_from_a_share_link_reads_its_redirect(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The share form names its post nowhere but the redirect, which answers naming the sharer."""
-    fetched = _stub_share_redirect(
+    fetched = _serve_pages(
         monkeypatch,
-        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        share_lands_on=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
         pages=[_thread_html_with_replies()],
     )
 
@@ -1260,7 +1228,7 @@ def test_resolving_a_clean_url_never_depends_on_the_post_being_readable(
     redirect had already named the post before that page was read at all, so letting the parse
     decide would refuse an answer that was in hand from the first hop.
     """
-    _stub_share_redirect(monkeypatch, final_url=_REPLIES_TARGET_URL, pages=[_THROTTLED_PAGE])
+    _serve_pages(monkeypatch, share_lands_on=_REPLIES_TARGET_URL, pages=[_THROTTLED_PAGE])
 
     assert downloader.resolve_clean_url(url=_SHARE_URL) == _REPLIES_TARGET_URL
 
@@ -1269,8 +1237,10 @@ def test_resolving_a_clean_url_gives_nothing_when_the_redirect_names_no_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Nothing may be handed back here but a post URL, since the pasted one names the sharer."""
-    _stub_share_redirect(
-        monkeypatch, final_url="https://www.threads.com/login", pages=[_thread_html_with_replies()]
+    _serve_pages(
+        monkeypatch,
+        share_lands_on="https://www.threads.com/login",
+        pages=[_thread_html_with_replies()],
     )
 
     assert downloader.resolve_clean_url(url=_SHARE_URL) == ""

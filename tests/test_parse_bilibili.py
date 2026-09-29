@@ -21,6 +21,7 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
 )
 
 from tests.helpers.casting import step_dicts, make_stub_gemini_client
+from tests.helpers.link_sources import FakeUploads
 
 _URL = "https://www.bilibili.com/video/BV1jpK86hEc8"
 
@@ -45,35 +46,6 @@ def _metadata(
     )
 
 
-class _Uploads:
-    """Records every media upload the builder performs and hands back canned uris."""
-
-    def __init__(self, fail: bool = False) -> None:
-        """Initializes the upload record and whether every upload should fail."""
-        self.calls: list[tuple[object, str, str]] = []
-        self.fail = fail
-
-    async def __call__(
-        self,
-        *,
-        client: object,
-        source: object,
-        mime_type: str,
-        filename: str,
-        timeout_seconds: float,
-    ) -> dict[str, str] | None:
-        """Stands in for `upload_as_input_file`, returning a Files-API-shaped part."""
-        del client, timeout_seconds
-        self.calls.append((source, mime_type, filename))
-        if self.fail:
-            return None
-        return {
-            "type": "input_file",
-            "file_id": f"https://files.test/{filename}",
-            "filename": filename,
-        }
-
-
 def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder can hit
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -81,8 +53,8 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
     parse_error: Exception | None = None,
     download_error: Exception | None = None,
     file_size: int = 11,
-    uploads: _Uploads | None = None,
-) -> tuple[_Uploads, dict[str, list[str]]]:
+    uploads: FakeUploads | None = None,
+) -> tuple[FakeUploads, dict[str, list[str]]]:
     """Stubs the downloader and the Files API upload so no network or SDK is touched."""
     resolved = metadata or _metadata()
     recorded: dict[str, list[str]] = {"downloads": []}
@@ -112,7 +84,7 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
 
     monkeypatch.setattr(target=VideoDownloader, name="parse_metadata", value=fake_parse_metadata)
     monkeypatch.setattr(target=VideoDownloader, name="download", value=fake_download)
-    resolved_uploads = uploads or _Uploads()
+    resolved_uploads = uploads or FakeUploads()
     monkeypatch.setattr(bilibili_builder, "upload_as_input_file", resolved_uploads)
     return resolved_uploads, recorded
 
@@ -235,7 +207,7 @@ async def test_an_oversize_file_is_not_uploaded(monkeypatch: pytest.MonkeyPatch)
 
 async def test_a_failed_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """A download that works but an upload that fails must not claim the clip was watched."""
-    _stub_bilibili(monkeypatch, uploads=_Uploads(fail=True))
+    _stub_bilibili(monkeypatch, uploads=FakeUploads(fail=True))
 
     blocks = await _build()
 
@@ -404,7 +376,7 @@ async def test_the_media_step_timeout_degrades_to_the_text(
 async def test_a_raising_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """An upload that raises (the realistic SDK failure) must not claim the clip was watched."""
 
-    class _RaisingUploads(_Uploads):
+    class _RaisingUploads(FakeUploads):
         async def __call__(self, **kwargs: object) -> dict[str, str] | None:
             """Raises the way a genai SDK failure would."""
             del kwargs
@@ -495,7 +467,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    class _SlowUploads(_Uploads):
+    class _SlowUploads(FakeUploads):
         """Stalls the FIRST upload only, so the second link's own upload can finish."""
 
         async def __call__(
