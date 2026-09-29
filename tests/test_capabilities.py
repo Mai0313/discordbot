@@ -1,4 +1,4 @@
-"""Tests for keeping the injected capability reference aligned with what the bot can do."""
+"""Tests for keeping the capability reference and the READMEs aligned with what the bot can do."""
 
 import re
 import ast
@@ -67,6 +67,14 @@ _BUTTON_GATED_REQUESTS: dict[str, str] = {
 # difference between what the command is called and what it does to a member holding less
 # than the amount asked for.
 _COLLECT_TAX_CLAMP_WORDING = "never below zero"
+# The READMEs mirror each other, so each one's command table is held to the full set.
+_READMES = ("README.md", "README.zh-CN.md", "README.zh-TW.md")
+# A table row splits on unescaped pipes only: a command cell writes sibling subcommands as
+# `/group a\|b`, and those pipes belong to the cell.
+_TABLE_CELL_RE = re.compile(pattern=r"(?<!\\)\|")
+# One word of a command path, siblings included. An option (`<url>`, `[member]`) or an
+# argument (`@bot`) is not one, and ends the path.
+_PATH_WORD_RE = re.compile(pattern=r"[\w\\|-]+")
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -213,6 +221,66 @@ def _mentions_command(body: str, command: str) -> bool:
     by prefix, so `/games blackjack_history` never answers for `/games blackjack`.
     """
     return re.search(pattern=rf"/{re.escape(pattern=command)}(?![\w-])", string=body) is not None
+
+
+def _span_command_paths(span: str) -> set[str]:
+    r"""Returns the command paths a README span spells, e.g. `/credit status\|borrow <amount>`."""
+    words: list[str] = []
+    for word in span.removeprefix("/").split(sep=" "):
+        if _PATH_WORD_RE.fullmatch(string=word) is None:
+            break
+        words.append(word)
+    assert words, f"README span `{span}` starts with / but names no command"
+    *parents, leaf = words
+    return {" ".join([*parents, sibling]) for sibling in leaf.split(sep="\\|")}
+
+
+def _readme_command_table(readme: str) -> tuple[set[str], set[str]]:
+    """Returns the commands one README's table lists, and every command the table names.
+
+    A row lists its command in the first cell; a command a description mentions, such as
+    `/pocat`'s `/balance @bot`, is named without being listed.
+    """
+    text = (Path(__file__).resolve().parents[1] / readme).read_text(encoding="utf-8")
+    listed: set[str] = set()
+    named: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        for index, cell in enumerate(_TABLE_CELL_RE.split(string=line)[1:-1]):
+            for span in _CODE_SPAN_RE.findall(string=cell):
+                if not span.startswith("/"):
+                    continue
+                paths = _span_command_paths(span=span)
+                named |= paths
+                if index == 0:
+                    listed |= paths
+    return listed, named
+
+
+def _workflow_path_filters(workflow: str) -> list[list[str]]:
+    """Returns every `paths:` list in a workflow, in file order.
+
+    Read line by line because the project does not depend on a YAML parser, so only the block
+    form is accepted: a `paths:` key carrying anything on its own line fails here. Comment and
+    blank lines inside a list are skipped, an item loses its surrounding quotes, and the list
+    ends at the first other line.
+    """
+    filters: list[list[str]] = []
+    current: list[str] | None = None
+    for line in workflow.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("paths:"):
+            assert stripped == "paths:", f"only a block-style `paths:` list can be read: {line}"
+            current = []
+            filters.append(current)
+        elif current is not None and stripped.startswith("- "):
+            current.append(stripped.removeprefix("- ").strip("\"'"))
+        elif current is not None and (not stripped or stripped.startswith("#")):
+            continue
+        else:
+            current = None
+    return filters
 
 
 def _account_flag_columns() -> set[str]:
@@ -483,6 +551,29 @@ def test_capabilities_doc_writes_every_command_as_a_span_of_its_own() -> None:
     )
 
 
+def test_readme_command_tables_list_every_slash_command() -> None:
+    """A command missing from a README's table is one a reader of that language never meets."""
+    runnable = _slash_command_paths()
+    missing = {
+        readme: sorted(f"/{path}" for path in absent)
+        for readme in _READMES
+        if (absent := runnable - _readme_command_table(readme=readme)[0])
+    }
+    assert not missing, f"README command tables are missing slash commands: {missing}"
+
+
+def test_readme_command_tables_name_no_command_that_cannot_be_run() -> None:
+    """The mirror of the guard above: a renamed or removed command must not leave its row."""
+    runnable = _slash_command_paths()
+    typable = runnable | _group_paths(paths=runnable)
+    stale = {
+        readme: sorted(f"/{path}" for path in unknown)
+        for readme in _READMES
+        if (unknown := _readme_command_table(readme=readme)[1] - typable)
+    }
+    assert not stale, f"README command tables name commands that cannot be run: {stale}"
+
+
 def test_capabilities_doc_accounts_for_every_inline_marker() -> None:
     """An inline marker is a capability with no command, and only this document names it.
 
@@ -701,15 +792,16 @@ def test_admin_description_check_reads_every_locale_it_has_to() -> None:
     assert not _names_an_unqualified_admin(text="server admin 限定：向本伺服器的借方強制回收")
 
 
-def test_the_tests_workflow_reruns_on_an_edit_to_the_capability_document() -> None:
-    """The CI path filter names this document by literal path, and nothing else ties them.
+def test_the_tests_workflow_reruns_on_an_edit_to_a_document_this_module_reads() -> None:
+    """The CI path filters name these documents by literal path, and nothing else ties them.
 
     `.github/workflows/test.yml` skips the suite on a diff that is nothing but Markdown, and
-    pulls this one file back past that rule because the suite reads it. Nothing derives the
-    path it writes down: `capabilities.py` resolves the document relative to itself, so moving
-    the pair would leave production and every other test green while CI quietly stopped running
-    on a Markdown-only edit to it. That is the wrong-signal skip #486 took off the branch name,
-    one door over, and its whole failure mode is a check that never appears.
+    pulls the capability document and the READMEs back past that rule because the suite reads
+    them. Nothing derives the paths it writes down: `capabilities.py` resolves the document
+    relative to itself, so moving the pair would leave production and every other test green
+    while CI quietly stopped running on a Markdown-only edit to it. That is the wrong-signal
+    skip #486 took off the branch name, one door over, and its whole failure mode is a check
+    that never appears. Each trigger carries its own list, so each list is checked on its own.
     """
     repo_root = Path(__file__).resolve().parents[1]
     document = repo_root / "src" / "discordbot" / "cogs" / "gen_reply" / "capabilities.md"
@@ -721,9 +813,20 @@ def test_the_tests_workflow_reruns_on_an_edit_to_the_capability_document() -> No
         f"{document} is not the document the package loads any more"
     )
     workflow = (repo_root / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
-    assert document.relative_to(repo_root).as_posix() in workflow, (
-        "an edit to the capability document can turn this module red, so "
-        ".github/workflows/test.yml must re-include it past its `!**/*.md` rule"
+    filters = _workflow_path_filters(workflow=workflow)
+    assert filters, ".github/workflows/test.yml has no `paths:` list this test can read"
+    read_here = (document.relative_to(repo_root).as_posix(), *_READMES)
+    missing: set[str] = set()
+    for paths in filters:
+        # GitHub applies the patterns in order, so a re-include counts only after every exclusion.
+        start = max(
+            (index + 1 for index, path in enumerate(paths) if path.startswith("!")), default=0
+        )
+        missing |= {path for path in read_here if path not in paths[start:]}
+    assert not missing, (
+        "an edit to these documents can turn this module red, so every `paths:` list in "
+        ".github/workflows/test.yml must re-include them after its last `!` exclusion: "
+        f"{sorted(missing)}"
     )
 
 

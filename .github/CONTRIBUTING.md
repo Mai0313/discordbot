@@ -19,7 +19,7 @@ uv sync --all-groups
 cp .env.example .env
 ```
 
-Fill in the Discord and OpenAI-compatible endpoint values in `.env`. Set `GEMINI_API_KEY` (a Google AI Studio key) to enable the direct-to-Google features: video generation, Gemini Files API attachment uploads, YouTube video answers, and deep research.
+Fill in the Discord and OpenAI-compatible endpoint values in `.env`. Set `GEMINI_API_KEY` (a Google AI Studio key) to enable the direct-to-Google features: video and music generation, Gemini Files API uploads of attachments and linked-post media, YouTube video answers, and deep research.
 
 Run the bot:
 
@@ -46,15 +46,14 @@ make gen-docs
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
 - `src/discordbot/utils/`: generic helpers with no domain state — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
 - `tests/`: pytest suite.
-- `scripts/`: local maintenance and development tools.
+- `scripts/`: local maintenance and development tools. The `*_dev.py` scripts are smoke tests against the live APIs, using the credentials in `.env` the way the bot does, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run one with `uv run python -m scripts.<name>`.
 - `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
-- `tmp/`: temporary media download scratch folder; files are deleted after delivery.
 - `docker/` and `docker-compose.yaml`: container build and runtime setup.
 - `.github/workflows/`: CI, code quality, docs deploy, release, and image publishing workflows.
 
 ## Workflow
 
-- Create a focused branch such as `feature/your-change`, `fix/your-bug`, `docs/your-doc-change`, or `chore/your-maintenance-task`.
+- Create a focused branch such as `feat/your-change`, `fix/your-bug`, `docs/your-doc-change`, or `chore/your-maintenance-task`.
 - Keep PRs scoped. Avoid unrelated refactors.
 - Use Conventional Commits for commit messages and PR titles:
 
@@ -66,7 +65,7 @@ docs: simplify user README
 
 - Add or update tests for behavior changes.
 - Update user-facing docs when commands, configuration, or visible behavior changes.
-- For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` in the same change and keep `tests/test_capabilities.py` passing. That English document is the only description of the bot's features anywhere, injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line.
+- For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` and the command table of all three READMEs in the same change, and keep `tests/test_capabilities.py` passing. That English document is injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line there.
 - Run local checks before opening the PR:
 
 ```bash
@@ -88,7 +87,7 @@ def setup(bot: commands.Bot) -> None:
 
 `async def setup` is not safe here: cogs load inside `DiscordBot()` before any event loop runs, so nextcord's attempt to schedule it raises and boot aborts with `ExtensionFailed`.
 
-- Slash commands need `name_localizations` and `description_localizations` for `en-US`, `zh-TW`, and `ja` where applicable.
+- Slash commands take their English `name` and `description` as the defaults, plus `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja`.
 - A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/test_package_layering.py` enforces this.
 - Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
 - Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`.
@@ -121,7 +120,7 @@ Four things therefore never appear in a comment or docstring:
 
 **A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
-`CLAUDE.md` is an index. When a fact is written in the code, `CLAUDE.md` carries the pointer to it rather than a second copy.
+`AGENTS.md` (which `CLAUDE.md` links to) holds the rules the code at the edit site does not show. When a fact is written in the code, `AGENTS.md` carries the pointer to it rather than a second copy.
 
 ## Logging
 
@@ -140,45 +139,27 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
 - A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
 - `LOG_LEVEL` sets the console and log-file floor, defaulting to `debug` so `./data/logs` holds the full trace.
-- Feature usage is not logged, it is recorded: one JSON line per slash invocation and per AI reply in `./data/usage/<YYYY-MM>.jsonl`, so an occasional stocktake can find the features nobody uses. Those records are outside `./data/logs` on purpose — that file is debug-level, hand-cleaned and gated on `LOG_LEVEL`, so a history kept inside it dies with it. They hold numeric ids only, never names or content, and nothing prunes them. `USAGE_LOG_ENABLED=false` turns recording off.
+- Feature usage is not logged, it is recorded: one JSON line per slash invocation and per AI reply in `./data/usage/<YYYY-MM>.jsonl`, so an occasional stocktake can find the features nobody uses. Those records are outside `./data/logs` on purpose — that file is debug-level, hand-cleaned and gated on `LOG_LEVEL`, so a history kept inside it dies with it. They hold numeric ids plus the Discord username as a label, never message content or command arguments, and nothing prunes them. `USAGE_LOG_ENABLED=false` turns recording off.
 
 ## LLM And Media Paths
 
-- Runtime LLM calls go through `AsyncOpenAI` clients and the OpenAI Responses API.
+- Runtime LLM calls go through `AsyncOpenAI` clients and the OpenAI Responses API, apart from the direct-to-Google paths below.
 - `OPENAI_BASE_URL` usually points at LiteLLM. Provider-specific behavior should be expressed through model names, `ModelSettings`, tools, or `extra_body`.
-- Do not import provider-native SDKs such as `google-genai` or `anthropic` into request paths. Development scripts may use them.
+- Do not import a provider-native SDK such as `anthropic` into a request path. `google-genai` is allowed only on the direct-to-Google paths that [AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#backend-and-invariants) lists. Development scripts may use any of them.
 - Runtime model strings for `./src` live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; update that catalog instead of hardcoding names at call sites.
 - Preserve the reaction-based progress UX for AI replies. The bot should not send intermediate "thinking" messages there.
 - A link expansion is the exception, and it takes video delivery's shape rather than a status message of its own: the cog replies with one subtext line as it starts and edits that same message into the finished card, so the card cannot drift away from the link while the post is being read. A failure deletes it and the reaction is the whole report. That placeholder is persisted, so a restart runs the interrupted expansion again instead of leaving a line that never resolves. It is also claimed before any reaction goes on, since reactions share a per-channel rate-limit bucket that a message send does not.
 - An auto-expansion cog subclasses `ExpansionCog` (`src/discordbot/utils/expansion_cog.py`), which owns the listener, the reply slot, the restart sweep, the failure classification and one reaction vocabulary — ✅ delivered, ⏱️ refused or stalled and worth retrying, ⚠️ nothing showable in what the platform served, ❌ the bot broke. Which one a read failure earns comes off the exception's class (`src/discordbot/utils/link_errors.py`), so no cog decides it. A cog supplies its URL pattern, its constants, a `read` and a `build_delivery`; only the card differs per platform. `tests/test_expansion_contract.py` holds every cog to that and fails until a new source is written into it.
 - An expansion never posts a second message. Anything the card cannot carry is counted inside it — a follow-up reply lands wherever the channel has got to, which is exactly what the placeholder exists to prevent.
-- Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
+- Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL. A lone file too big to upload is posted as its hosted link alone, since a second URL stops Discord rendering the inline player.
 
 ## Long-Term Memory
 
-- Stored memory lives under `data/memories/<scope>/<compartment>/<id>.md`, one file per fact. The compartment directory *is* the privacy boundary: `global/` is readable anywhere, `g/<guild_id>/` only in that guild, `dm/` only in the owner's own direct messages. Reading is a path join, so never add a read-time content filter back on top of it.
-- The model authors a fact's summary, section, durability and body. Everything else in the file header — the id, the compartment, the owner, the dates, the evidence keys — is stamped by code and never shown to it. Keep it that way: the id is also the filename, so letting conversation content reach it would put path traversal one prompt injection away.
-- Consolidation emits deltas against one compartment at a time. Reject a whole batch only for a shape failure or a mass deletion; anything a deterministic check can decide must drop that single delta instead, or a scope's memory freezes permanently on a model output that never changes.
-- `data/memories` keeps its own git history, and the bot never creates it. To enable it on a deployment, run `git -c init.defaultBranch=main init` inside that directory once and commit a baseline. Note that `/memory clear` removes the files but not the commits that already hold them.
-- Rebuilding a store offline is `uv run python -m scripts.regen_memories <target>`, where the target is `all` / `users` / `servers` or a single scope key; `--dry-run` previews it instead. The real run asks for a typed `y` after its warning, and builds no client until it gets one. Stop the bot either way: the script writes from a second process, which the in-process `scope_lock` does not serialize, so a rebuild drops whatever raw entries the bot appended while it ran. `/memory regenerate` is the live-safe way to rebuild one scope. Commit `data/memories` first for a collective target.
+The memory store's invariants live in the [Memory section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#memory); read it before changing anything that reads or writes `data/memories`.
 
 ## Economy And Games
 
-- `data/database/economy.db`, `data/database/games.db`, and `data/database/messages.db` are separate SQLite databases. Keep `economy.db` user-scoped tables keyed by `user_id` and `name`; bot-wide money state such as jackpot pools and the casino ledger also lives in `economy.db` so settlement stays atomic.
-- Economy helpers use a module-level SQLAlchemy engine so tests can monkeypatch the engine object.
-- 虛擬歡樂豆 balances are cross-server. Do not add `guild_id` to the account model.
-- `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths should pass `guild_avatar_url(...)` with guild context so guild avatars are stored when available, then fall back to the global `display_avatar`. Existing rows are not backfilled; they refresh naturally on later writes.
-- `credit_with_repayment` is the income path for message reward, chat reward, and casino payout. Long-term loans are repaid explicitly through loan helpers; passive income and gifts do not auto-repay debt.
-- Long-term loans live in `loan_proposal` and `loan_contract`. Personal credit requests are borrower-initiated and debit the lender on acceptance, and central-bank loans mint borrower balance on button approval.
-- Central-bank approval is Discord's own administrator permission for the server the request was made in, read off the interaction. `UserAccount.is_central_banker` is dead and read by nothing; the column stays only because the schema is never altered in place.
-- Central-bank lending capacity is computed per guild from the balances of the users in `guild_participant` for that guild, plus a flat base capacity, less the whole bank's outstanding principal. The collateral is per guild; the debt subtracted from it is not, and must not be made so — balances cross servers while debt does not follow them, so a guild charging only its own participants' debt counts money minted elsewhere as collateral nothing is owed against. Record a participant for the caller of a command or the author of a rewarded message, never for the target of a `member:` option.
-- Every central-bank approval is bounded twice, and both bounds are recomputed inside the approval transaction: the guild's capacity, and the borrower's own ceiling from `central_bank_credit_ceiling`. That ceiling counts debt from every lender, not just the bank, so untaxed personal lending cannot be used to reset it.
-- Casino settlement applies one signed result after play. Validate or clamp bets before play, then settle once through the settlement helpers. Player-side casino losses clamp at balance 0; the global casino ledger may still go negative.
-- Casino and jackpot settlements write the player wallet and the house-side rows in one `economy.db` transaction, so they commit or roll back atomically.
-- Daily casino loss leaderboards read persisted `casino_account` counters. Keep those counters tied to player-side casino settlement deltas only.
-- `UserAccount.hide_from_leaderboard` defaults to `False`. Public balance and daily loss leaderboards omit rows where it is set; maintenance code should opt into hidden rows when it needs a true full-account sweep.
-- Blackjack casino ledger and Dragon Gate jackpot pool are separate counterparties. Do not route Dragon Gate through the casino ledger.
-- Interactive game and public economy responses are tracked for restart cleanup and expire after settlement or timeout. Private balance, loan, VIP, and admin-error replies are not tracked.
+The ledger and casino invariants live in the [Economy](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#economy) and [Games](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#games) sections of AGENTS.md; read them before changing anything that moves 虛擬歡樂豆.
 
 ## Tests And Quality Gates
 
@@ -188,7 +169,7 @@ The pytest configuration lives in `pyproject.toml`.
 uv run pytest
 ```
 
-Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`. What decides whether they run is the diff, never the branch name: the suite is skipped when every changed file is Markdown, and `src/discordbot/cogs/gen_reply/capabilities.md` does not count as Markdown there because `tests/test_capabilities.py` reads it.
+Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`. What decides whether they run is the diff, never the branch name: the suite is skipped when every changed file is Markdown, and `src/discordbot/cogs/gen_reply/capabilities.md` and the three READMEs do not count as Markdown there because `tests/test_capabilities.py` reads them.
 
 Async tests that record nested test-double calls in a list must compare a stable invariant such as a mapping, set, `Counter`, or sorted value. An exact sequence assertion needs an adjacent `# order-contract: <reason>` explaining the production guarantee. When completion order is the behavior under test, control it with an event or barrier instead of relying on scheduler timing.
 
@@ -202,11 +183,7 @@ It runs Ruff formatting and linting, ty type checking, Markdown formatting, Shel
 
 ## Documentation
 
-- `README.md` is the canonical user-facing README.
-- `README.zh-CN.md` and `README.zh-TW.md` should mirror the English README structure.
-- `CONTRIBUTING.md` is developer-facing and stays in English.
-- `CLAUDE.md` is AI-agent-facing. Keep it dense and project-specific.
-- `docs/` is generated by `make gen-docs`. Do not hand-edit generated docs.
+Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split). `CONTRIBUTING.md` itself is developer-facing and stays in English.
 
 ## Text Formatting
 
@@ -227,4 +204,4 @@ Contributors usually do not need to run release commands locally.
 
 ## License
 
-By contributing, you agree that your contribution is licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contribution is licensed under the [MIT License](https://github.com/Mai0313/discordbot/blob/main/LICENSE).

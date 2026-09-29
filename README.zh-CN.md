@@ -20,7 +20,7 @@
 
 </div>
 
-一个自托管 Discord 机器人，提供 AI 聊天、图片与视频生成、Threads 链接展开、视频下载、虚拟欢乐豆与赌场小游戏。它基于 nextcord 运行，用本地 SQLite 保存 runtime data，并连接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
+一个自托管 Discord 机器人，提供 AI 聊天、图片与视频生成、Threads、Facebook、Instagram、Twitter 与抖音链接展开、视频下载、虚拟欢乐豆与赌场小游戏。它基于 nextcord 运行，用本地 SQLite 保存 runtime data，并连接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
 
 ## 功能展示
 
@@ -97,6 +97,8 @@ flowchart TD
 | 指令                                        | 功能                                                                                          |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `@bot <message>`                            | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                                    |
+| `/ask <question> [attachment]`              | 在机器人看不到对话的地方和 AI 聊天：机器人没加入的服务器、群组 DM，或你和别人的 DM。          |
+| `/deep_research <topic>`                    | 在自己开的讨论串里产出一份附引用的长篇研究报告；只能在机器人所在服务器的普通文字频道使用。    |
 | _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                              |
 | `/clean_threads_url <url>`                  | 私密地把 Threads 分享链接还原成贴文本身的网址，转贴时不会带出分享者。                         |
 | _Facebook URL_                              | 自动展开公开帖子与图片；被 tag 时改为读过帖子再回答。带 `comment_id` 的链接会多显示那则评论。 |
@@ -115,9 +117,11 @@ flowchart TD
 | `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。                |
 | `/games blackjack <bet>`                    | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                       |
 | `/games dragon_gate`                        | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                                |
+| `/games blackjack_history [member] [count]` | 显示某位玩家最近的 Blackjack 牌局：手牌、下注与结果（默认 10 局，最多 50 局）。               |
 | `/casino`                                   | 显示赌场系统累积 P&L (跨服务器)。                                                             |
 | `/pocat`                                    | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                                              |
 | `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。        |
+| `/memory server show`                       | 私密查看机器人对这个服务器社群的记忆；只能在机器人所在的服务器使用。                          |
 | `/ping`                                     | 检查 bot latency。                                                                            |
 
 ## 开发
