@@ -145,7 +145,6 @@ class ExpansionRetry(Protocol):
 
 
 _database = SqliteBootstrap(metadata=Base.metadata)
-_database.install_hooks(engine=_engine)
 
 
 async def _record_pending(
@@ -158,7 +157,6 @@ async def _record_pending(
     expansion stood before it, so a failing write must never take the expansion with it.
     """
     try:
-        await _database.ensure_schema(engine=_engine)
         async with _database.open_session(engine=_engine) as session, session.begin():
             session.add(
                 PendingExpansionRow(
@@ -184,7 +182,6 @@ async def _record_pending(
 async def _forget_pending(*, message_id: int) -> None:
     """Drops the row for a placeholder that is now settled, best effort."""
     try:
-        await _database.ensure_schema(engine=_engine)
         async with _database.open_session(engine=_engine) as session, session.begin():
             await session.execute(
                 delete(PendingExpansionRow).where(PendingExpansionRow.message_id == message_id)
@@ -202,7 +199,6 @@ async def _forget_pending(*, message_id: int) -> None:
 
 async def _load_pending(*, source: str) -> list[PendingExpansion]:
     """Reads one cog's interrupted expansions, oldest first."""
-    await _database.ensure_schema(engine=_engine)
     async with _database.open_session(engine=_engine) as session:
         rows = await session.scalars(
             select(PendingExpansionRow)

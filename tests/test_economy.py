@@ -40,7 +40,6 @@ from discordbot.services.economy.database import (
     get_account,
     get_balance,
     open_session,
-    _ensure_schema,
     adjust_balance,
     _taipei_midnight,
     get_casino_ledger,
@@ -347,12 +346,10 @@ def test_every_test_gets_its_own_ledger(tmp_path: Path) -> None:
 async def test_ensure_schema_bootstraps_current_databases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A clean startup creates only the current economy tables."""
+    """A clean startup's first session creates only the current economy tables."""
     db_path = tmp_path / "current-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-
-    await _ensure_schema()
 
     (
         economy_tables,
@@ -431,7 +428,7 @@ async def test_ensure_schema_serializes_concurrent_first_use(
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
 
-    await asyncio.gather(*(_ensure_schema() for _ in range(20)))
+    await asyncio.gather(*(get_balance(user_id=42) for _ in range(20)))
 
     async with open_session() as session:
         result = await session.execute(
@@ -445,6 +442,23 @@ async def test_ensure_schema_serializes_concurrent_first_use(
         )
         assert result.scalar_one() == 1_000
     await engine.dispose()
+
+
+async def test_a_swapped_engine_gets_its_own_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Readiness follows the engine, so the first session on a swapped-in one bootstraps it.
+
+    The fixture's engine is bootstrapped before the swap, so readiness that ignored which engine
+    it was recorded for would skip the new file's schema and its seed rows.
+    """
+    await seed_balance(user_id=42, name="alice", amount=5)
+    swapped = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'swapped-economy.db'}")
+    monkeypatch.setattr("discordbot.services.economy.database._engine", swapped)
+
+    assert await get_balance(user_id=42) == 0
+    assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
+    await swapped.dispose()
 
 
 async def test_get_balance_unknown_user_returns_zero() -> None:
@@ -1190,7 +1204,7 @@ async def test_top_losers_ignores_manual_adjustments() -> None:
 async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None:
     """Player wins pull points out of the jackpot row in one atomic step."""
     await seed_balance(user_id=1, name="alice", amount=10_000)
-    # _ensure_schema already seeded the dragon_gate pool at 1_000.
+    # The schema bootstrap already seeded the dragon_gate pool at 1_000.
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
 
     settlement = await apply_jackpot_settlement(
@@ -1427,7 +1441,6 @@ async def test_get_jackpot_pool_returns_zero_for_missing_game() -> None:
 
 async def test_get_jackpot_pool_replenishes_drained_seed_pool() -> None:
     """Reading a seeded jackpot replenishes a zero-balance row."""
-    await _ensure_schema()
     async with open_session() as session:
         await session.execute(
             statement=update(JackpotPool)
@@ -1452,7 +1465,6 @@ async def test_ensure_schema_rerun_keeps_every_seeded_row(
     db_path = tmp_path / "seed-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-    await _ensure_schema()
     async with open_session() as session:
         await session.execute(
             statement=update(JackpotPool)
@@ -1472,7 +1484,6 @@ async def test_ensure_schema_rerun_keeps_every_seeded_row(
     # tracked by engine identity), and it is also what a restart looks like.
     restarted = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", restarted)
-    await _ensure_schema()
 
     jackpot = await get_jackpot_snapshot(game_id="dragon_gate")
     ledger = await get_casino_ledger()

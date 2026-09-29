@@ -21,6 +21,7 @@ postponed evaluation ruff's TC rules move the annotation-only `datetime` import 
 
 from typing import Literal
 from datetime import datetime
+from contextlib import AbstractAsyncContextManager
 
 from pydantic import Field, BaseModel
 from sqlalchemy import String, Integer, DateTime, select, update
@@ -98,16 +99,10 @@ class PersistentResearchSession(BaseModel):
 
 
 _database = SqliteBootstrap(metadata=Base.metadata)
-_database.install_hooks(engine=_engine)
 
 
-async def _ensure_schema() -> None:
-    """Bootstraps the `research` table once per engine (loop-local-locked)."""
-    await _database.ensure_schema(engine=_engine)
-
-
-def open_session() -> AsyncSession:
-    """Creates an async session bound to the current reply.db engine."""
+def open_session() -> AbstractAsyncContextManager[AsyncSession]:
+    """Opens an async session on the current reply.db engine, the `research` table ensured."""
     return _database.open_session(engine=_engine)
 
 
@@ -134,7 +129,6 @@ async def upsert_session(  # noqa: PLR0913 -- one row's columns are all per-call
     phase: ResearchPhase,
 ) -> None:
     """Creates or overwrites the session row for a thread."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         stmt = insert(ResearchSessionRow).values(
@@ -171,7 +165,6 @@ async def upsert_session(  # noqa: PLR0913 -- one row's columns are all per-call
 
 async def set_interaction(*, thread_id: int, interaction_id: str) -> None:
     """Records the running interaction id for a thread, so a restart can re-attach to it."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -184,7 +177,6 @@ async def set_interaction(*, thread_id: int, interaction_id: str) -> None:
 
 async def set_phase(*, thread_id: int, phase: ResearchPhase) -> None:
     """Transitions a session to a new lifecycle phase."""
-    await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -197,7 +189,6 @@ async def set_phase(*, thread_id: int, phase: ResearchPhase) -> None:
 
 async def list_resumable() -> list[PersistentResearchSession]:
     """Returns sessions still `researching`, for the restart resume sweep."""
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(ResearchSessionRow).where(ResearchSessionRow.phase == "researching")
@@ -211,7 +202,6 @@ async def active_thread_for_owner(*, owner_id: int) -> int | None:
     The concurrency guard: an owner may only have one `researching` session at a time, so a new
     launch is refused while one is active.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(ResearchSessionRow.thread_id).where(

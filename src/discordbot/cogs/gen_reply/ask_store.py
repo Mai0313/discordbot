@@ -18,6 +18,7 @@ to import.
 """
 
 from datetime import datetime
+from contextlib import AbstractAsyncContextManager
 
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, Index, Integer, DateTime, delete, select
@@ -85,16 +86,10 @@ class AskTurn(BaseModel):
 
 
 _database = SqliteBootstrap(metadata=Base.metadata)
-_database.install_hooks(engine=_engine)
 
 
-async def _ensure_schema() -> None:
-    """Bootstraps the `ask_turn` table once per engine (loop-local-locked)."""
-    await _database.ensure_schema(engine=_engine)
-
-
-def open_session() -> AsyncSession:
-    """Creates an async session bound to the current reply.db engine."""
+def open_session() -> AbstractAsyncContextManager[AsyncSession]:
+    """Opens an async session on the current reply.db engine, the `ask_turn` table ensured."""
     return _database.open_session(engine=_engine)
 
 
@@ -113,7 +108,6 @@ async def load_ask_turns(*, channel_id: int, user_id: int, limit: int) -> list[A
     Returns:
         The stored turns, oldest first.
     """
-    await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             select(AskTurnRow)
@@ -141,7 +135,6 @@ async def record_ask_turn(
         question: The `question` option, verbatim.
         answer: The finalized reply text.
     """
-    await _ensure_schema()
     async with open_session() as session, session.begin():
         session.add(
             AskTurnRow(
