@@ -54,11 +54,7 @@ from discordbot.cogs.games.presentation import (
     metadata_line,
     lobby_participant_line,
 )
-from discordbot.services.economy.database import (
-    get_balance,
-    get_jackpot_snapshot,
-    apply_jackpot_settlement,
-)
+from discordbot.services.economy.database import get_balance, apply_jackpot_settlement
 from discordbot.utils.interaction_responses import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
@@ -66,8 +62,6 @@ if TYPE_CHECKING:
     from random import Random
 
     from nextcord.ext import commands
-
-    from discordbot.typings.economy import JackpotSnapshot
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
@@ -943,11 +937,6 @@ class DragonGateBetModal(Modal):
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
 
 
-async def fetch_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
-    """Reads the live 射龍門 jackpot pool balance and generation."""
-    return await get_jackpot_snapshot(game_id=GAME_ID)
-
-
 __all__ = [
     "DRAGON_GATE_ACTION_TIMEOUT_SECONDS",
     "DragonGateBetModal",
@@ -956,5 +945,4 @@ __all__ = [
     "build_dragon_gate_final_embed",
     "build_dragon_gate_in_progress_embed",
     "build_dragon_gate_lobby_embed",
-    "fetch_dragon_gate_jackpot_snapshot",
 ]

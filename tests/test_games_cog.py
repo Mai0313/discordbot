@@ -57,8 +57,9 @@ async def _wealthy_game_balance(user_id: int) -> int:
     return 1_000_000
 
 
-async def fake_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
+async def fake_dragon_gate_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
     """Returns a stable fake Dragon Gate jackpot snapshot."""
+    del game_id
     return JackpotSnapshot(balance=100_000)
 
 
@@ -147,9 +148,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     )
     assert blackjack_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
-    monkeypatch.setattr(
-        games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
-    )
+    monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
     monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
     dragon_gate_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
@@ -353,9 +352,7 @@ async def test_dragon_gate_rejects_empty_balance_with_spacer(
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies only the Dragon Gate lobby owner can press Start."""
     monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
-    monkeypatch.setattr(
-        games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
-    )
+    monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
 
     cog = _cog()
 

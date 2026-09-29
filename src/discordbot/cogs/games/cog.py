@@ -28,10 +28,10 @@ from discordbot.utils.message_cleanup import (
     delete_tracked_public_messages,
     schedule_public_message_delete,
 )
-from discordbot.cogs.games.dragon_gate import ANTE
+from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
-from discordbot.services.economy.database import get_account, get_balance
+from discordbot.services.economy.database import get_account, get_balance, get_jackpot_snapshot
 from discordbot.cogs.games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
     BlackjackLobbyView,
@@ -41,7 +41,6 @@ from discordbot.utils.interaction_responses import send_ephemeral_notice, send_e
 from discordbot.cogs.games.dragon_gate_views import (
     DragonGateLobbyView,
     build_dragon_gate_lobby_embed,
-    fetch_dragon_gate_jackpot_snapshot,
 )
 from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency
 
@@ -365,7 +364,7 @@ class GamesCogs(commands.Cog):
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
-        initial_jackpot = await fetch_dragon_gate_jackpot_snapshot()
+        initial_jackpot = await get_jackpot_snapshot(game_id=GAME_ID)
         view = DragonGateLobbyView(
             owner=owner,
             rng=self.rng,
