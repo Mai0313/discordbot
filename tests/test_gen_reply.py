@@ -83,7 +83,6 @@ from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     render_callable_users_block,
     widen_allowlist_with_aliases,
-    allowlist_ids_from_server_memory,
 )
 from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
 from discordbot.services.memory.store import (
@@ -1045,7 +1044,7 @@ def _resolved_picks(ids: list[str] | None = None) -> asyncio.Future[list[str]]:
     return picks
 
 
-async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply's signature
+async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors AnswerTurn.stream_answer's inputs
     cog: ReplyGeneratorCogs,
     message: FakeMessage,
     system_prompt: str = "SYS",
@@ -1327,7 +1326,6 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
 
 async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
     """Verifies replies over Discord's content limit continue as a reply chain."""
-    cog = _cog()
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
 
@@ -1362,7 +1360,6 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
 
     chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
     assert all(len(chunk) <= DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
-    assert _recorded(cog).responses.create_models == []
 
 
 @pytest.mark.parametrize("error", [make_invalid_form_body(), make_not_found()])
@@ -1563,11 +1560,11 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
-    streamer.stored_content = streamer.stored_content.replace(
-        streamer._usage_footer,
-        f"\n-# 媒體過大，改用連結\nhttps://media.example/x.mp4{streamer._usage_footer}",
+    await streamer._finalize_media_edit(
+        reply=as_message(fake=message.replies[0]),
+        files=[],
+        hosted_urls=["https://media.example/x.mp4"],
     )
-    await message.replies[0].edit(content=streamer.stored_content)
 
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
@@ -3074,7 +3071,7 @@ def test_find_youtube_url_ignores_url_inside_replied_to_usage_footer(
     """A memory label in the bot's footer cannot choose the next watched video."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.references.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
-    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# <:tag:1517563887573143595> {url} 的記憶"
+    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {url} 的記憶"
     answer = FakeMessage(content=f"這是我的回答{footer}")
     answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
@@ -3096,9 +3093,7 @@ def test_find_youtube_url_keeps_footer_shaped_text_in_the_current_message(
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(
         content=(
-            "<@999> 再說清楚一點"
-            "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
-            f"\n-# <:tag:1517563887573143595> {url} 的記憶"
+            f"<@999> 再說清楚一點\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {url} 的記憶"
         )
     )
 
@@ -3294,10 +3289,7 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer(
     long enough to hold a whole Threads permalink, so the span has to go before the scan.
     """
     monkeypatch.setattr("discordbot.cogs.gen_reply.references.Message", FakeMessage)
-    footer = (
-        "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
-        f"\n-# <:tag:1517563887573143595> {_THREADS_POST_URL} 的記憶"
-    )
+    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {_THREADS_POST_URL} 的記憶"
     answer = FakeMessage(content=f"這是我的回答{footer}")
     answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
@@ -3443,7 +3435,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     # Forwarding the bot's own reply (snapshot has no author) still strips the usage footer.
     forwarded_bot_reply = FakeMessage(author=FakeAuthor(user_id=1))
     forwarded_bot_reply.snapshots = [
-        FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3")
+        FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0")
     ]
     rendered = await builder.get_cleaned_content(message=as_message(fake=forwarded_bot_reply))
     assert "real answer" in rendered
@@ -3452,7 +3444,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     footer_only_forward = FakeMessage(author=FakeAuthor(user_id=1))
     footer_only_forward.snapshots = [
         FakeSnapshot(
-            content="\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
+            content="\n\n-# model · ⬆ 1 ⬇ 2 · $0.0",
             embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")],
         )
     ]
@@ -3876,7 +3868,9 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
 
     assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
     reply = cast("FakeReply", streamer.reply)
-    assert reply.edits[0] == f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/3)"
+    assert reply.edits[0] == (
+        f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
+    )
     # And the notice is transient: the finished answer takes the message back.
     assert (reply.content or "").startswith("done")
 
@@ -3960,7 +3954,7 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
 ) -> None:
     """Pins the wiring, not the helper: the QA answer path must go through the retry.
 
-    Both the helper's own tests and this one would stay green if `_handle_message_reply` were
+    Both the helper's own tests and this one would stay green if `AnswerTurn.stream_answer` were
     quietly put back on a bare `streamer.stream(...)`, except for the second `create` this
     asserts on.
     """
@@ -4152,7 +4146,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     )
 
     bot_message = FakeMessage(
-        content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
+        content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0",
         author=FakeAuthor(bot=True, user_id=999),
     )
     assert (
@@ -4162,7 +4156,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         == "answer"
     )
     assert USAGE_FOOTER_RE.search(string=bot_message.content)
-    bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3"
+    bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0"
     bot_message.embeds = [Embed(url="https://youtu.be/jNQXAC9IVRw")]
     assert (
         await _toolkit(cog=cog).input_builder.get_cleaned_content(
@@ -4856,7 +4850,7 @@ async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
 def test_trim_history_keeps_the_newest_messages_within_the_budget() -> None:
     """The budget drops the oldest context first and never cuts inside a message.
 
-    Ordering is the contract being checked here, not just the count: `_fetch_history` hands
+    Ordering is the contract being checked here, not just the count: history is handed
     over oldest-first and the answer needs the conversation nearest the question, so a trim
     that kept the wrong end would still pass a length assertion.
     """
@@ -4997,7 +4991,7 @@ async def test_render_history_survives_a_message_the_collector_chokes_on(
 ) -> None:
     """An unexpected message shape costs that message its files, never the whole reply.
 
-    The budget walk runs inside `_prepare_reply_context`'s gather, which has no except of its
+    The budget walk runs inside `ReplyContextBuilder.build`'s gather, which has no except of its
     own, so anything raised here would reach `on_message`'s generic error path and lose the
     answer. Both renders already swallow this same collect step for exactly that reason.
     """
@@ -5557,7 +5551,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
 async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> None:
     """IMAGE route, hosting off + oversize: the native attach is attempted and its error propagates.
 
-    With no host available the deliverable cannot degrade to a URL, so `_deliver_generated_media`
+    With no host available the deliverable cannot degrade to a URL, so `MediaReplyRoutes._deliver`
     falls through to the native attach (which Discord 400s on oversize); that error must stay on the
     route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
     """
@@ -5866,18 +5860,9 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
         "expected_capabilities",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
-        ("VIDEO", "_handle_video_reply", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
-        (
-            "QA",
-            "_handle_message_reply",
-            [HISTORY_MESSAGE_LIMIT],
-            [True],
-            [True],
-            [True],
-            [True],
-            [True],
-        ),
+        ("IMAGE", "handle_image", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
+        ("VIDEO", "handle_video", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
+        ("QA", "stream_answer", [HISTORY_MESSAGE_LIMIT], [True], [True], [True], [True], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
@@ -5928,7 +5913,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         del self
         await context_task
         prompts.append(user_prompt)
-        calls.append("_handle_image_reply")
+        calls.append("handle_image")
 
     async def fake_video_handler(
         self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
@@ -5937,7 +5922,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         del self
         await context_task
         prompts.append(user_prompt)
-        calls.append("_handle_video_reply")
+        calls.append("handle_video")
 
     voice_flags: list[bool] = []
     image_flags: list[bool] = []
@@ -5947,7 +5932,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
-    async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors _handle_message_reply's signature
+    async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors AnswerTurn.stream_answer's signature
         self: object,
         *,
         system_prompt: str,
@@ -5963,7 +5948,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     ) -> None:
         """Records slow message handler dispatch."""
         del yt_url, allow_research
-        calls.append("_handle_message_reply")
+        calls.append("stream_answer")
         voice_flags.append(allow_voice)
         image_flags.append(allow_image)
         music_flags.append(allow_music)
@@ -5984,9 +5969,9 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     # Route, effort and recall are one triage call on every route, IMAGE and VIDEO included.
     assert len(_recorded(cog).responses.parse_models) == 1
     assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
-    # QA consumes the speculative context as-is; IMAGE/VIDEO discard it after their media is
-    # on screen. Every route now issues exactly one prep request, so what is asserted is which
-    # request was made, not the order two of them arrived in.
+    # Every route consumes the one speculative context, IMAGE/VIDEO once their media is on
+    # screen, so each issues exactly one prep request and what is asserted is which request was
+    # made, not the order two of them arrived in.
     assert Counter(prep_requests) == Counter(expected_prep)
     # Voice is enabled on QA (the only route that streams a reply here); IMAGE/VIDEO never do.
     assert Counter(voice_flags) == Counter(expected_voice)
@@ -6013,9 +5998,9 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 ) -> None:
     """Cancelling the speculative prep must not cancel the shared upload task.
 
-    IMAGE and VIDEO cancel the speculative prep while their media persona reply still reuses
-    `parts_task`; an unshielded `await parts_task` inside prep would propagate the cancellation
-    and make that reply fail with CancelledError.
+    A media route whose generation fails discards the prep it was handed while the turn still
+    owns `parts_task` and drains it; an unshielded `await parts_task` inside prep would take the
+    upload down with the prep instead.
     """
     cog = _cog()
     release = asyncio.Event()
@@ -8206,7 +8191,7 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
     that competed with the Reference Message's own claim to be the primary context. Behaviour
     rules belong in `instructions`, which outranks anything in `input`, so the rule moved there
     and the separator kept only the naming. This render also feeds the media persona reply and
-    the phase-1 extraction transcript, neither of which is answering a question, which is the
+    the memory review's transcript, neither of which is answering a question, which is the
     second reason the rule cannot live on the block itself.
     """
     cog = _cog()
@@ -8255,7 +8240,7 @@ def test_the_subject_rule_rides_the_developer_prompt_with_its_recap_exception() 
 def test_only_the_replied_to_message_claims_the_current_message_is_about_it() -> None:
     """The one Reference Message block claims the Current Message, and nothing competes with it.
 
-    A reply renders exactly one of these (`_replied_to_message`), so the attachment sentence has
+    A reply renders exactly one of these (`replied_to_message`), so the attachment sentence has
     no sibling. The `An earlier message in the reply thread` wording that used to ride an
     ancestor block went with #593 and must not come back: a second block asserting it is what
     the Current Message is about is the ambiguity this sentence exists to remove.
@@ -8492,7 +8477,7 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     assert "喜歡簡短回覆" in (extract_user_memory_blocks(request=answer).get(1) or "")
     assert 42 not in extract_user_memory_blocks(request=answer)
 
-    # Extraction still receives a memory-free transcript.
+    # The memory review still receives a memory-free transcript.
     scheduled_list = scheduled[0]["message_list"]
     assert isinstance(scheduled_list, list)
     assert "喜歡簡短回覆" not in str(scheduled_list)
@@ -9431,10 +9416,10 @@ async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_p
 def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     """The optional second -# memory line is stripped together with the usage footer."""
     body = "答案內容"
-    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"
+    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 Tester (tester) 的記憶"
     assert USAGE_FOOTER_RE.sub("", f"{body}{double}") == body
-    # Backward compatible: a single-line footer still strips cleanly.
-    single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
+    # A footer with no memory line strips cleanly too.
+    single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
     assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body
 
 
@@ -9506,23 +9491,6 @@ async def test_handle_message_reply_server_memory_gating(
             assert (
                 _toolkit(cog=cog).server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
             )
-
-
-def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
-    """Only ids under the `## 成員稱呼` section are returned, labelled by the table row."""
-    memory = (
-        "## 伺服器輪廓\n社群\n\n"
-        "## 成員稱呼\n"
-        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
-        "* Bob(社群暱稱:阿伯)[id: 456]\n\n"
-        "## 近期脈絡\n* [2026-06-10] 某人 [id: 789] 提到活動\n"
-    )
-    allowed = allowlist_ids_from_server_memory(memory=memory)
-    assert set(allowed) == {123, 456}
-    assert "李董" in allowed[123]
-    assert "[id:" not in allowed[123]
-    # An id outside the nickname section (e.g. in 近期脈絡) is never exposed.
-    assert 789 not in allowed
 
 
 def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
@@ -10118,7 +10086,7 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     assert by_scope[user_job_scope]["token"] == 11
     assert by_scope[server_job_scope]["writer"] is server_sentinel
     # Every over-threshold scope is swept, including the resumed ones: the scope
-    # lock makes the resumed extraction and the consolidation sweep idempotent.
+    # lock makes the resumed review and the consolidation sweep idempotent.
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
 
 
