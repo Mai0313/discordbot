@@ -8,7 +8,7 @@ the bot's decisions come from the EV engine, so both are asserted exactly.
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
 from random import Random
-from typing import Any, cast
+from typing import Any, Literal, cast
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
@@ -576,6 +576,33 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
     assert calls == 1
 
 
+async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> None:
+    """Once the bot's own insurance is settled, the table's decision belongs to the humans.
+
+    The phase stays open until every seat decides, so the bot must not take another turn there:
+    it would be refused by the round and still re-render the table on every retry.
+    """
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[seat(user_id=1, display_name="Bot"), seat(user_id=2, display_name="Bob")],
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.players[1].hands[0].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
+    round_state.dealer = [Card(rank="A", suit="♣"), Card(rank="9", suit="♦")]
+    round_state.phase = "insurance"
+    round_state.insurance_offered = True
+    round_state.players[0].insurance_resolved = True
+    view = _make_view(round_state=round_state)
+    view.bot_user_id = 1
+    message = FakeDiscordMessage()
+
+    await view.maybe_play_bot_turn(message=as_message(fake=message))
+
+    assert message.edits == []
+    assert round_state.phase == "insurance"
+    assert round_state.players[1].insurance_resolved is False
+
+
 async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Consecutive bot-owned decisions wait briefly between message edits."""
     round_state = _round_with_two_cards(
@@ -929,6 +956,79 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     await view.wait_for_background_tasks()
     assert len(message.edits) == 2
     assert message.edits[1]["view"] is None
+    assert scheduled_cleanups == [message]
+
+
+class _HeldEditMessage(FakeDiscordMessage):
+    """Holds its first edit open until the test releases it, like a slow Discord round trip."""
+
+    def __init__(self) -> None:
+        """Initializes the hold and release signals beside the recorded edits."""
+        super().__init__()
+        self.holding = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+        """Blocks the first edit until released, then records it."""
+        if not self.holding.is_set():
+            self.holding.set()
+            await self.release.wait()
+        await super().edit(**kwargs)
+
+
+class _ContendedLock(asyncio.Lock):
+    """Signals the moment a second caller has to wait for it."""
+
+    def __init__(self) -> None:
+        """Initializes the contention signal."""
+        super().__init__()
+        self.contended = asyncio.Event()
+
+    async def acquire(self) -> Literal[True]:
+        """Records contention before waiting for the lock like any caller."""
+        if self.locked():
+            self.contended.set()
+        return await super().acquire()
+
+
+async def test_a_timeout_waits_for_the_action_in_flight(scheduled_cleanups: list[object]) -> None:
+    """A timeout that lands mid-action settles after it, so the settled table is what stays up.
+
+    The Hit is held inside its table edit when the timeout fires. Settling underneath it would
+    let that held edit land last, putting the pre-settlement table and its buttons back over
+    the final one.
+    """
+    await seed_balance(user_id=1, name="alice", amount=100)
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
+        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+        player=seat(bet=50, balance_at_start=100),
+    )
+    round_state.shoe = [Card(rank="5", suit="♣")]
+    message = _HeldEditMessage()
+    view = _make_view(round_state=round_state)
+    view.message = as_message(fake=message)
+    lock = _ContendedLock()
+    view._round_lock = lock
+
+    hit = asyncio.create_task(
+        coro=attached_button(view=view, custom_id="bj:hit").callback(
+            as_interaction(fake=FakeInteraction(message=message))
+        )
+    )
+    await message.holding.wait()
+    timeout = asyncio.create_task(coro=view.on_timeout())
+    contended = asyncio.create_task(coro=lock.contended.wait())
+    await asyncio.wait({timeout, contended}, return_when=asyncio.FIRST_COMPLETED)
+    message.release.set()
+    await asyncio.gather(hit, timeout)
+    contended.cancel()
+    await asyncio.gather(contended, return_exceptions=True)
+    await view.wait_for_background_tasks()
+
+    assert [str(card) for card in round_state.players[0].hands[0].cards] == ["10♠", "2♥", "5♣"]
+    assert await get_balance(user_id=1) == 50
+    assert message.edits[-1]["view"] is None
     assert scheduled_cleanups == [message]
 
 
