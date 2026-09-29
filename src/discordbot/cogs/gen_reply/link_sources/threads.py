@@ -53,7 +53,7 @@ from discordbot.cogs.gen_reply.link_sources import (
     defuse_markers,
     post_context_blocks,
 )
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
+from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_image
 
 # Closes the quoted block, and is always the LAST part of it (past the attachments on the media
 # path). The guard on the separator opens the data; this one closes it, which matters once the
@@ -491,14 +491,33 @@ class IngestedMedia(BaseModel):
         return [group for group in self.groups if group.parts]
 
 
-async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all vary per post
-    *,
-    post: ThreadsOutput,
-    owner: str,
-    budget: int,
-    filename_prefix: str,
-    gemini_client: genai.Client,
-    download_dir: str,
+class MediaPlanEntry(BaseModel):
+    """One post whose media is fetched, and how much of the shared budget it may spend."""
+
+    post: ThreadsOutput = Field(..., description="The post whose media is fetched")
+    owner: str = Field(
+        ...,
+        description="How the block names the post this media belongs to",
+        examples=["the linked post"],
+    )
+    budget: int = Field(
+        ...,
+        description="How many of its items may be fetched; at zero every item is reported missing",
+        examples=[10],
+    )
+    filename_prefix: str = Field(
+        ...,
+        description=(
+            "Keeps this post's items apart from another's, on disk and in the request: clips "
+            "share one scratch dir, so a quoted post reusing the target's names would truncate "
+            "the target's file mid-upload"
+        ),
+        examples=["threads_"],
+    )
+
+
+async def _upload_post_media(
+    *, entry: MediaPlanEntry, gemini_client: genai.Client, download_dir: str
 ) -> PostMedia:
     """Fetches one post's media and uploads it, reporting what arrived and what did not.
 
@@ -507,37 +526,20 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
     `parse_threads` cog draws the same line (it downloads the target's videos only).
 
     Every item is best-effort and independent, so one expired CDN url (Threads signs them)
-    or one slow upload never sinks the rest. Images go through `load_image_bytes`, which
-    also downscales them to the provider's effective resolution — the old raw-URL path
-    handed the model full-size originals. Whatever the budget left out or the fetch lost comes
-    back in the missing lists, so the block can name it instead of quietly claiming it.
-
-    `filename_prefix` keeps two posts' items apart on disk as well as in the request: clips are
-    written to the shared scratch dir before upload, so a quoted post reusing the target's names
-    would truncate the target's file mid-upload.
+    or one slow upload never sinks the rest. Images go through `upload_image`, which also
+    downscales them to the provider's effective resolution — the old raw-URL path handed the
+    model full-size originals. Whatever the budget left out or the fetch lost comes back in the
+    missing lists, so the block can name it instead of quietly claiming it.
     """
-    image_urls = post.image_urls[:budget]
-    remaining = budget - len(image_urls)
-    video_urls = post.video_urls[:remaining] if remaining > 0 else []
-
-    async def image_part(index: int, image_url: str) -> ResponseInputFileParam | None:
-        """Fetches, downscales and uploads one image."""
-        loaded = await load_image_bytes(source=image_url)
-        return await upload_as_input_file(
-            client=gemini_client,
-            source=loaded.data,
-            mime_type=loaded.mime_type,
-            filename=f"{filename_prefix}image_{index}.jpg",
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-        )
+    image_urls = entry.post.image_urls[: entry.budget]
+    remaining = entry.budget - len(image_urls)
+    video_urls = entry.post.video_urls[:remaining] if remaining > 0 else []
 
     async def video_part(index: int, video_url: str) -> ResponseInputFileParam | None:
         """Downloads one clip to the caller's scratch dir and uploads it from disk."""
         downloader = ThreadsDownloader(output_folder=download_dir)
-        filename = f"{filename_prefix}video_{index}.mp4"
+        filename = f"{entry.filename_prefix}video_{index}.mp4"
         path = await asyncio.to_thread(downloader.download_media, url=video_url, filename=filename)
-        if path is None:
-            return None
         try:
             return await upload_as_input_file(
                 client=gemini_client,
@@ -550,7 +552,14 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
             await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
     results = await asyncio.gather(
-        *(image_part(index, image_url) for index, image_url in enumerate(image_urls)),
+        *(
+            upload_image(
+                image_url=image_url,
+                filename=f"{entry.filename_prefix}image_{index}.jpg",
+                gemini_client=gemini_client,
+            )
+            for index, image_url in enumerate(image_urls)
+        ),
         *(video_part(index, video_url) for index, video_url in enumerate(video_urls)),
         return_exceptions=True,
     )
@@ -563,8 +572,8 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
         if isinstance(result, BaseException):
             logfire.warn(
                 "Threads media ingestion failed for one item",
-                url=post.url,
-                owner=owner,
+                url=entry.post.url,
+                owner=entry.owner,
                 error_type=type(result).__name__,
                 _exc_info=result,
             )
@@ -576,16 +585,16 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
         failed = failed_images if offset < len(image_urls) else failed_videos
         failed.append(media_url)
     return PostMedia(
-        owner=owner,
+        owner=entry.owner,
         parts=parts,
         # The budget's leftovers ride alongside the failures: an 11-image carousel, or a video
         # behind ten images, never reaches the model either, and the old code said nothing.
-        missing_image_urls=[*failed_images, *post.image_urls[len(image_urls) :]],
-        missing_video_urls=[*failed_videos, *post.video_urls[len(video_urls) :]],
+        missing_image_urls=[*failed_images, *entry.post.image_urls[len(image_urls) :]],
+        missing_video_urls=[*failed_videos, *entry.post.video_urls[len(video_urls) :]],
     )
 
 
-def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int, str]]:
+def _media_plan(*, target: ThreadsOutput) -> list[MediaPlanEntry]:
     """Decides which posts' media is fetched and how much of the shared budget each may spend.
 
     The target keeps first claim and the post it quotes gets the leftovers, which is what makes
@@ -600,10 +609,10 @@ def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int,
     quoted post's, the one thing this accounting exists to prevent.
 
     Returns:
-        One `(post, owner, budget, filename_prefix)` tuple per post that carries media at all,
-        target first, which is also the order the parts ride in.
+        One entry per post that carries media at all, target first, which is also the order the
+        parts ride in.
     """
-    plan: list[tuple[ThreadsOutput, str, int, str]] = []
+    plan: list[MediaPlanEntry] = []
     budget = MAX_THREADS_MEDIA_PARTS
     for post, owner, prefix in (
         (target, _TARGET_MEDIA_OWNER, "threads_"),
@@ -611,7 +620,7 @@ def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int,
     ):
         if post is None or not (post.image_urls or post.video_urls):
             continue
-        plan.append((post, owner, budget, prefix))
+        plan.append(MediaPlanEntry(post=post, owner=owner, budget=budget, filename_prefix=prefix))
         budget -= min(len(post.image_urls) + len(post.video_urls), budget)
     return plan
 
@@ -641,14 +650,11 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
                         await asyncio.gather(
                             *(
                                 _upload_post_media(
-                                    post=post,
-                                    owner=owner,
-                                    budget=budget,
-                                    filename_prefix=prefix,
+                                    entry=entry,
                                     gemini_client=gemini_client,
                                     download_dir=download_dir,
                                 )
-                                for post, owner, budget, prefix in plan
+                                for entry in plan
                             )
                         )
                     )
@@ -659,8 +665,8 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
             url=target.url,
             timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
             posts=len(plan),
-            image_count=sum(len(post.image_urls) for post, _, _, _ in plan),
-            video_count=sum(len(post.video_urls) for post, _, _, _ in plan),
+            image_count=sum(len(entry.post.image_urls) for entry in plan),
+            video_count=sum(len(entry.post.video_urls) for entry in plan),
             _exc_info=True,
         )
         return IngestedMedia()

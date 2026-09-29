@@ -1,12 +1,11 @@
 """Fetching a linked post's images and uploading them for the answer model to look at.
 
-Shared by every source whose media is a set of image URLs the page handed over. A source that
-downloads a file of its own does not use this.
-
-Two properties are the whole point. Every item is independent and best-effort, so one expired
-signed CDN url never costs the rest; and the step is bounded here rather than left to the
+`upload_image` is the one-image step. `upload_post_images` runs it over a post's image URLs, and
+two properties are the whole point of that. Every item is independent and best-effort, so one
+expired signed CDN url never costs the rest; and the step is bounded here rather than left to the
 caller's grace, so a slow fetch still produces the honest text-only block instead of being
-cancelled with nothing to inject.
+cancelled with nothing to inject. A source that keeps its own per-URL accounting, or downloads
+files of its own beside the images, runs the one-image step itself.
 """
 
 import asyncio
@@ -20,28 +19,45 @@ from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 
+async def upload_image(
+    *, image_url: str, filename: str, gemini_client: genai.Client
+) -> ResponseInputFileParam | None:
+    """Fetches, downscales and uploads one image, raising whatever the fetch or upload raised.
+
+    `load_image_bytes` downscales to the provider's effective resolution, which matters because
+    these are full-resolution originals. What one lost image costs is the caller's call.
+
+    Args:
+        image_url: The image to fetch.
+        filename: The name the upload carries.
+        gemini_client: Direct-to-Google client the upload goes through.
+
+    Returns:
+        The uploaded part, or None when the upload produced none.
+    """
+    loaded = await load_image_bytes(source=image_url)
+    return await upload_as_input_file(
+        client=gemini_client,
+        source=loaded.data,
+        mime_type=loaded.mime_type,
+        filename=filename,
+        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+    )
+
+
 async def _upload_each(
     *, platform: str, post_url: str, image_urls: list[str], gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the images concurrently, keeping whatever succeeded."""
-
-    async def image_part(index: int, image_url: str) -> ResponseInputFileParam | None:
-        """Fetches, downscales and uploads one image.
-
-        `load_image_bytes` downscales to the provider's effective resolution, which matters
-        because these are full-resolution originals.
-        """
-        loaded = await load_image_bytes(source=image_url)
-        return await upload_as_input_file(
-            client=gemini_client,
-            source=loaded.data,
-            mime_type=loaded.mime_type,
-            filename=f"{platform.lower()}_image_{index}.jpg",
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-        )
-
     results = await asyncio.gather(
-        *(image_part(index, image_url) for index, image_url in enumerate(image_urls)),
+        *(
+            upload_image(
+                image_url=image_url,
+                filename=f"{platform.lower()}_image_{index}.jpg",
+                gemini_client=gemini_client,
+            )
+            for index, image_url in enumerate(image_urls)
+        ),
         return_exceptions=True,
     )
     parts: list[ResponseInputFileParam] = []
