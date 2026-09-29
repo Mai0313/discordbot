@@ -1524,3 +1524,97 @@ async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
         "# Report\nbody\n\n<@300>\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
     )
     _assert_pings_only_the_owner(write=report)
+
+
+# What each write of a failing run logs when Discord refuses it, and when it fails otherwise.
+_FAILED_RUN_WRITE_LOGS = {
+    "status": ("research thread refused a message", "failed to send research thread message"),
+    "notice": (
+        "research thread refused the failure notice",
+        "failed to post research failure notice",
+    ),
+    "status edit": (
+        "research thread refused the status edit",
+        "failed to edit research status message",
+    ),
+    "terminal status": (
+        "research thread refused the terminal status",
+        "failed to post terminal research status",
+    ),
+}
+
+
+@pytest.mark.parametrize("refused", [True, False], ids=["refused", "failing"])
+@pytest.mark.parametrize(
+    ("status_posts", "writes"),
+    [
+        (True, ("notice", "status edit", "terminal status")),
+        (False, ("status", "notice", "terminal status")),
+    ],
+    ids=["status_posted", "status_lost"],
+)
+async def test_a_failed_run_on_a_broken_thread_logs_each_write_and_still_ends(
+    research_isolated_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    refused: bool,
+    status_posts: bool,
+    writes: tuple[str, ...],
+) -> None:
+    """A refusal is the server's setting and logs the id alone; any other failure keeps its trace."""
+    error = make_forbidden(message="Missing Access") if refused else make_server_error()
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_failing_client(error=RuntimeError("quota"))
+    )
+
+    await _launch_run(cog=cog, thread=_RunThread(error=error, status_posts=status_posts))
+
+    trace = {} if refused else {"error_type": "HTTPException", "_exc_info": error}
+    assert warns == [
+        (_FAILED_RUN_WRITE_LOGS[write][0 if refused else 1], {"thread_id": _THREAD_ID, **trace})
+        for write in writes
+    ]
+    assert [message for message, _ in errors] == ["research failed"]
+    await _assert_owner_released(cog=cog, phase="failed")
+
+
+async def test_a_refused_report_logs_each_write_without_a_traceback_and_still_ends(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
+
+    await _launch_run(cog=cog, thread=_RunThread(error=make_forbidden(message="Missing Access")))
+
+    where = {"thread_id": _THREAD_ID, "chunk_index": 0}
+    assert warns == [
+        ("research thread refused the report edit", where),
+        ("research thread refused a report message", {**where, "is_last": True}),
+    ]
+    assert errors == []
+    await _assert_owner_released(cog=cog, phase="done")
+
+
+async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_ends(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = make_server_error()
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
+
+    await _launch_run(cog=cog, thread=_RunThread(error=error))
+
+    where = {"thread_id": _THREAD_ID, "chunk_index": 0}
+    trace = {"error_type": "HTTPException", "_exc_info": error}
+    assert warns == [("failed to edit research status into report", {**where, **trace})]
+    # The last message carries the file, ping and footer, so losing it is an error.
+    assert errors == [
+        (
+            "failed to post research report message",
+            {**where, "is_last": True, "has_files": True, **trace},
+        )
+    ]
+    await _assert_owner_released(cog=cog, phase="done")
