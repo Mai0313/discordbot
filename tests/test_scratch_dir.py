@@ -19,8 +19,9 @@ alone — `scripts/` and `tests/` open temp directories whose teardown they do o
 import ast
 from pathlib import Path
 
-_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "discordbot"
-_SCRATCH_MODULE = _PACKAGE / "utils" / "scratch_dir.py"
+from tests.helpers.source_tree import PACKAGE, python_modules
+
+_SCRATCH_MODULE = PACKAGE / "utils" / "scratch_dir.py"
 
 # The two ways of saying "a temp directory whose teardown is mine to write".
 _SCRATCH_FACTORIES = frozenset({"TemporaryDirectory", "mkdtemp"})
@@ -28,17 +29,13 @@ _SCRATCH_FACTORIES = frozenset({"TemporaryDirectory", "mkdtemp"})
 
 def _modules() -> list[Path]:
     """Every module under the package except the one allowed to open a scratch directory."""
-    return sorted(
-        path
-        for path in _PACKAGE.rglob("*.py")
-        if "__pycache__" not in path.parts and path != _SCRATCH_MODULE
-    )
+    return [path for path in python_modules(root=PACKAGE) if path != _SCRATCH_MODULE]
 
 
 def _offences_in(module: Path) -> list[str]:
     """Every scratch-directory factory one module reaches, as `path:line what` strings."""
     found: list[str] = []
-    relative = module.relative_to(_PACKAGE.parent)
+    relative = module.relative_to(PACKAGE.parent)
     for node in ast.walk(ast.parse(source=module.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Attribute) and node.attr in _SCRATCH_FACTORIES:
             found.append(f"{relative}:{node.lineno} .{node.attr}")

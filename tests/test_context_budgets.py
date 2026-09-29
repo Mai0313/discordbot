@@ -12,7 +12,6 @@ live in different modules now, which is the exact decay the collection exists to
 """
 
 import ast
-from pathlib import Path
 
 from discordbot.typings.context_budgets import (
     MEMORY_INJECTION_MAX_CHARS,
@@ -23,6 +22,8 @@ from discordbot.services.memory.constants import (
     DETAIL_FILE_MAX_BYTES,
     DETAIL_FILE_TRIM_TARGET_BYTES,
 )
+
+from tests.helpers.source_tree import PACKAGE
 
 
 def test_the_detail_file_cap_stays_above_the_window_consolidation_reads() -> None:
@@ -52,13 +53,7 @@ def test_the_budgets_module_imports_nothing_from_the_package() -> None:
     This is the stricter property the module actually has: no `discordbot` import at all, so it
     can never become a place where a budget is computed from something that has a runtime.
     """
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "discordbot"
-        / "typings"
-        / "context_budgets.py"
-    )
+    module = PACKAGE / "typings" / "context_budgets.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
     modules = [
         node.module if isinstance(node, ast.ImportFrom) else alias.name

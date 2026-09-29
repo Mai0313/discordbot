@@ -12,8 +12,9 @@ from functools import cache
 
 import pytest
 
-_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "discordbot"
-_COGS = _PACKAGE / "cogs"
+from tests.helpers.source_tree import PACKAGE, python_modules
+
+_COGS = PACKAGE / "cogs"
 
 
 def _relative_import_base(module: Path) -> str:
@@ -25,7 +26,7 @@ def _relative_import_base(module: Path) -> str:
     sibling package — which both hides a real `from ..peer.mod import X` and invents a
     violation out of an ordinary `from .own_mod import X`.
     """
-    return ".".join(module.relative_to(_PACKAGE.parent).with_suffix("").parts[:-1])
+    return ".".join(module.relative_to(PACKAGE.parent).with_suffix("").parts[:-1])
 
 
 def _imported_modules(module: Path) -> set[str]:
@@ -70,11 +71,6 @@ def _imports_in(source: str, parent: str, scope: str = "discordbot.") -> set[str
     return {name for name in found if name.startswith(scope)}
 
 
-def _modules(root: Path) -> list[Path]:
-    """Every Python module under a directory, ignoring bytecode caches."""
-    return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
-
-
 def _cog_of(module: Path) -> str:
     """The cog directory a module under `cogs/` belongs to, empty for `cogs/__init__.py`."""
     relative = module.relative_to(_COGS)
@@ -89,7 +85,7 @@ def test_a_cog_never_imports_a_peer_cog() -> None:
     which is how "where does the economy live" stopped having an answer.
     """
     offenders: list[str] = []
-    for module in _modules(_COGS):
+    for module in python_modules(root=_COGS):
         owner = _cog_of(module)
         if not owner:
             continue
@@ -116,10 +112,10 @@ def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[s
     that a second cog happens to reach into.
     """
     offenders: list[str] = []
-    for module in _modules(_PACKAGE / layer):
+    for module in python_modules(root=PACKAGE / layer):
         for imported in _imported_modules(module):
             if imported.startswith(forbidden):
-                offenders.append(f"{module.relative_to(_PACKAGE).as_posix()} -> {imported}")
+                offenders.append(f"{module.relative_to(PACKAGE).as_posix()} -> {imported}")
     assert not offenders, f"{layer} importing a higher layer: {sorted(offenders)}"
 
 
@@ -131,7 +127,7 @@ def _module_file(name: str) -> Path | None:
     """
     parts = name.split(".")[1:]
     while parts:
-        candidate = _PACKAGE.joinpath(*parts)
+        candidate = PACKAGE.joinpath(*parts)
         if candidate.with_suffix(".py").is_file():
             return candidate.with_suffix(".py")
         if (candidate / "__init__.py").is_file():
@@ -163,8 +159,8 @@ def _reachable_within_package(module: Path) -> dict[Path, str]:
     filter either. A dynamic import is the one edge that stays invisible; that is inherent to
     reading the AST and is not worth machinery.
     """
-    start = module.relative_to(_PACKAGE).as_posix()
-    root = _PACKAGE / "__init__.py"
+    start = module.relative_to(PACKAGE).as_posix()
+    root = PACKAGE / "__init__.py"
     seen = {module: start, root: f"{start} -> __init__.py"}
     queue = [module, root]
     while queue:
@@ -173,7 +169,7 @@ def _reachable_within_package(module: Path) -> dict[Path, str]:
             found = _module_file(name=name)
             if found is None or found in seen:
                 continue
-            seen[found] = f"{seen[current]} -> {found.relative_to(_PACKAGE).as_posix()}"
+            seen[found] = f"{seen[current]} -> {found.relative_to(PACKAGE).as_posix()}"
             queue.append(found)
     return seen
 
@@ -191,14 +187,14 @@ def test_services_never_reaches_discord() -> None:
     Transitive on purpose. A direct-import check is satisfied by moving the offending line one
     module over, which is the same edge wearing a hat.
     """
-    modules = _modules(_PACKAGE / "services")
+    modules = python_modules(root=PACKAGE / "services")
 
     # `rglob` on a directory that is not there yields nothing, so a renamed or mistyped start path
     # would leave this scanning zero modules and passing. The other two discovery sweeps in this
     # change carry the same tripwire for the same reason. Anchored on the package this guard exists
     # for rather than on a module inside it, so nothing here depends on which files that package
     # happens to hold.
-    assert _PACKAGE / "services" / "platforms" / "__init__.py" in modules, "scan found no services"
+    assert PACKAGE / "services" / "platforms" / "__init__.py" in modules, "scan found no services"
 
     offenders: list[str] = []
     for module in modules:
@@ -217,9 +213,9 @@ def test_nothing_inside_the_memory_package_imports_its_entry_point() -> None:
     Nothing else says so: the layer rules above see one `services` module importing another and
     have no opinion, which is how the cluster that used to live in this module got there.
     """
-    memory = _PACKAGE / "services" / "memory"
+    memory = PACKAGE / "services" / "memory"
     entry = "discordbot.services.memory.pipeline"
-    modules = [module for module in _modules(memory) if module.name != "pipeline.py"]
+    modules = [module for module in python_modules(root=memory) if module.name != "pipeline.py"]
 
     assert memory / "consolidation.py" in modules, "scan found no memory modules"
 
