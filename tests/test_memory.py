@@ -105,7 +105,7 @@ from discordbot.services.memory.constants import (
 
 from tests.helpers.memory import make_fact, make_delta
 from tests.helpers.casting import as_bot, as_interaction
-from tests.helpers.discord_mocks import FakeInteraction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -2997,21 +2997,9 @@ async def test_pipeline_background_failure_is_swallowed(
 # ---------------------------------------------------------------------------
 
 
-class ResponseStub:
-    """Records the initial interaction response payload."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.sent: dict[str, object] = {}
-
-    async def send_message(self, **kwargs: object) -> None:
-        """Records the response payload."""
-        self.sent = kwargs
-
-
-def _interaction(user_id: int = USER_ID) -> SimpleNamespace:
-    """Builds a minimal interaction stub for the memory cog."""
-    return SimpleNamespace(user=SimpleNamespace(id=user_id), response=ResponseStub())
+def _interaction() -> FakeInteraction:
+    """Builds an interaction invoked by the test user."""
+    return FakeInteraction(user=FakeUser(user_id=USER_ID))
 
 
 def _memory_cog() -> MemoryCogs:
@@ -3029,8 +3017,8 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     description = embed.description or ""
     assert "愛開玩笑" in description
@@ -3039,7 +3027,7 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     assert description.startswith("# 全部聊天都看得到")
     assert "## 使用者輪廓" in description
     # A memory that fits one embed keeps the original no-view behavior.
-    assert "view" not in interaction.response.sent
+    assert "view" not in interaction.response.sent[-1]
 
 
 async def test_memory_show_separates_a_guild_compartment_from_the_shared_one(
@@ -3054,7 +3042,7 @@ async def test_memory_show_separates_a_guild_compartment_from_the_shared_one(
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     description = embed.description or ""
     assert description.index("# 全部聊天都看得到") < description.index("# 只有伺服器 222 看得到")
@@ -3070,7 +3058,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    sent = interaction.response.sent
+    sent = interaction.response.sent[-1]
     assert sent["ephemeral"] is True
     view = sent["view"]
     assert isinstance(view, MemoryPagesView)
@@ -3087,8 +3075,8 @@ async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> No
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有任何記憶" in (embed.description or "")
 
@@ -3385,40 +3373,6 @@ async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_
     assert "喜歡有禮貌的回覆" not in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
 
 
-class RegenResponseStub(ResponseStub):
-    """Records defer calls in addition to direct responses."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded defer payload."""
-        super().__init__()
-        self.deferred: dict[str, object] | None = None
-
-    async def defer(self, **kwargs: object) -> None:
-        """Records the defer payload."""
-        self.deferred = kwargs
-
-
-class FollowupStub:
-    """Records followup payloads sent after a deferred response."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.sent: dict[str, object] = {}
-
-    async def send(self, **kwargs: object) -> None:
-        """Records the followup payload."""
-        self.sent = kwargs
-
-
-def _regen_interaction(user_id: int = USER_ID) -> SimpleNamespace:
-    """Builds an interaction stub with defer and followup support."""
-    return SimpleNamespace(
-        user=SimpleNamespace(id=user_id, display_name="Alice", name="alice"),
-        response=RegenResponseStub(),
-        followup=FollowupStub(),
-    )
-
-
 @pytest.mark.parametrize(
     argnames=("scheduled", "expected_text"), argvalues=[(True, "已排程"), (False, "正在重建中")]
 )
@@ -3442,15 +3396,15 @@ async def test_memory_regenerate_command_schedules_in_background(
     monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    interaction = _regen_interaction()
+    interaction = _interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # The command replies immediately and never blocks on the rebuild, so it
     # neither defers nor uses a followup.
-    assert interaction.response.deferred is None
-    assert interaction.followup.sent == {}
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.deferred is False
+    assert interaction.followup.sent == []
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert expected_text in (embed.description or "")
     assert calls["scope"] == USER_SCOPE
@@ -3471,15 +3425,15 @@ async def test_memory_regenerate_command_reports_no_evidence(
 
     monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # No raw or detail evidence exists for this scope.
-    interaction = _regen_interaction()
+    interaction = _interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # Without evidence the background task would no-op, so nothing is scheduled
     # and the user is told there is nothing to rebuild yet.
     assert scheduled is False
-    assert interaction.response.deferred is None
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.deferred is False
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有足夠的觀察記錄" in (embed.description or "")
 
@@ -3497,15 +3451,15 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
         return True
 
     monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
-    interaction = _regen_interaction()
+    interaction = _interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # Rejected up front: nothing scheduled, no defer, just the ephemeral notice.
     assert scheduled is False
-    assert interaction.response.deferred is None
-    assert interaction.followup.sent == {}
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.deferred is False
+    assert interaction.followup.sent == []
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "請稍後再試" in (embed.description or "")
 
@@ -3583,18 +3537,6 @@ def test_paginate_on_lines_rejects_non_positive_limit() -> None:
         paginate_on_lines(text="x", limit=0)
 
 
-class EditResponseStub:
-    """Records edit_message payloads from view button callbacks."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.edited: dict[str, object] = {}
-
-    async def edit_message(self, **kwargs: object) -> None:
-        """Records the edit payload."""
-        self.edited = kwargs
-
-
 async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     view = MemoryPagesView(
         pages=["第一頁", "第二頁", "第三頁"],
@@ -3606,10 +3548,10 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     assert prev_button.disabled is True
     assert next_button.disabled is False
 
-    interaction = SimpleNamespace(response=EditResponseStub())
+    interaction = FakeInteraction()
     await next_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 1
-    embed = interaction.response.edited["embed"]
+    embed = interaction.response.edited[-1]["embed"]
     assert isinstance(embed, Embed)
     assert embed.description == "第二頁"
     assert "第 2/3 頁" in (embed.footer.text or "")
@@ -3622,7 +3564,7 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
 
     await prev_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 1
-    edited_embed = interaction.response.edited["embed"]
+    edited_embed = interaction.response.edited[-1]["embed"]
     assert isinstance(edited_embed, Embed)
     assert edited_embed.description == "第二頁"
 
@@ -3636,21 +3578,10 @@ async def test_memory_pages_view_timeout_disables_buttons() -> None:
     # Without a bound origin the timeout is a silent no-op.
     await view.on_timeout()
 
-    class OriginStub:
-        """Records the timeout edit on the original ephemeral response."""
-
-        def __init__(self) -> None:
-            """Initializes the recorded payload."""
-            self.edited: dict[str, object] = {}
-
-        async def edit_original_message(self, **kwargs: object) -> None:
-            """Records the edit payload."""
-            self.edited = kwargs
-
-    origin = OriginStub()
+    origin = FakeInteraction()
     view.bind_origin(interaction=as_interaction(fake=origin))
     await view.on_timeout()
-    assert origin.edited["view"] is view
+    assert origin.edits[-1]["view"] is view
     assert all(child.disabled for child in view.children if isinstance(child, Button))
 
 
@@ -3678,7 +3609,7 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "1 筆" in (embed.description or "")
     assert "整理" in (embed.description or "")
@@ -3694,7 +3625,7 @@ async def test_memory_show_counts_pending_observations_in_the_footer(
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "愛開玩笑" in (embed.description or "")
     assert embed.footer is not None
@@ -3709,7 +3640,7 @@ async def test_memory_show_leads_with_the_tone_note(memory_isolated_dir: Path) -
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert (embed.description or "").startswith("## 語氣偏好")
 
@@ -5707,11 +5638,11 @@ async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_
 
     await MemoryCogs.memory_clear.callback(cog, as_interaction(fake=interaction))
 
-    assert interaction.response.sent["ephemeral"] is True
-    view = interaction.response.sent["view"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    view = interaction.response.sent[-1]["view"]
     assert isinstance(view, MemoryClearConfirmView)
     assert view.scope == USER_SCOPE
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "沒辦法復原" in (embed.description or "")
     # Bound, or an abandoned one-click wipe prompt would never go inert.

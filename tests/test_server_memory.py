@@ -35,6 +35,7 @@ from discordbot.services.memory.server_prompts import (
 
 from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
 from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.discord_mocks import FakeInteraction
 
 BOT_ID = 555
 GUILD_ID = 777
@@ -456,28 +457,10 @@ def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-class ResponseStub:
-    """Records the response payload sent by the cog."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.sent: dict[str, object] = {}
-
-    async def send_message(self, **kwargs: object) -> None:
-        """Records the response payload."""
-        self.sent = kwargs
-
-
 def _server_cog() -> MemoryCogs:
     """Builds a MemoryCogs whose bot exposes a stable user id."""
     bot = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
     return MemoryCogs(bot=as_bot(fake=bot))
-
-
-def _guild_interaction(guild_id: int | None = GUILD_ID) -> SimpleNamespace:
-    """Builds a minimal guild interaction stub for the server memory command."""
-    guild = None if guild_id is None else SimpleNamespace(id=guild_id)
-    return SimpleNamespace(guild=guild, response=ResponseStub())
 
 
 async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
@@ -487,10 +470,10 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
         fact=_fact(fact_id="a" * 16, section="profile", text="大家都很愛玩楓之谷"),
     )
     cog = _server_cog()
-    interaction = _guild_interaction()
+    interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "楓之谷" in (embed.description or "")
 
@@ -498,9 +481,9 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
 async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     """A guild the bot has never consolidated gets a placeholder, not an empty embed."""
     cog = _server_cog()
-    interaction = _guild_interaction()
+    interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有對這個伺服器的記憶" in (embed.description or "")
 
@@ -508,9 +491,9 @@ async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path
 async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     """There is no server scope in a DM, so the command refuses before reading anything."""
     cog = _server_cog()
-    interaction = _guild_interaction(guild_id=None)
+    interaction = FakeInteraction(in_guild=False)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")
     # A DM read must never reach the store, not even to create its directory.
