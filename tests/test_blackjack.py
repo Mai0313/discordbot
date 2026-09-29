@@ -839,6 +839,41 @@ def test_each_insurance_refusal_has_its_own_class() -> None:
         round_state.decline_insurance(user_id=2)
 
 
+def test_an_insurance_bet_counts_against_a_double_or_split() -> None:
+    """The half-bet insurance comes out of what a Double or a Split can still draw on.
+
+    220 at the table covers a second 100 bet only while the 50 insurance is not also owed.
+    """
+
+    def decided(*, take: bool) -> BlackjackRound:
+        round_state = BlackjackRound.from_participants(
+            rng=Random(x=0),
+            participants=[seat(bet=100, balance_at_start=220)],
+            shoe=[
+                Card(rank="8", suit="♠"),
+                Card(rank="8", suit="♥"),  # player
+                Card(rank="5", suit="♣"),  # dealer hole
+                Card(rank="A", suit="♦"),  # dealer up: insurance, then no Blackjack on the peek
+            ],
+        )
+        round_state.deal_initial()
+        if take:
+            round_state.take_insurance(user_id=1)
+        else:
+            round_state.decline_insurance(user_id=1)
+        return round_state
+
+    declined = decided(take=False)
+    insured = decided(take=True)
+
+    assert {"double", "split"} <= set(declined.allowed_actions())
+    assert not {"double", "split"} & set(insured.allowed_actions())
+    with pytest.raises(expected_exception=ValueError, match="double"):
+        insured.double_down(user_id=1)
+    with pytest.raises(expected_exception=ValueError, match="split"):
+        insured.split(user_id=1)
+
+
 def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
     """Dealer up-card A puts the round into the insurance phase."""
     round_state = BlackjackRound.from_participants(
