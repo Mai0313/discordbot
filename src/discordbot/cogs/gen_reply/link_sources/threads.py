@@ -53,7 +53,7 @@ from discordbot.cogs.gen_reply.link_sources import (
     defuse_markers,
     post_context_blocks,
 )
-from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_image
+from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_image, bounded_media_step
 
 # Closes the quoted block, and is always the LAST part of it (past the attachments on the media
 # path). The guard on the separator opens the data; this one closes it, which matters once the
@@ -626,13 +626,12 @@ def _media_plan(*, target: ThreadsOutput) -> list[MediaPlanEntry]:
 
 
 async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -> IngestedMedia:
-    """Runs the media ingestion under its own bound, degrading to no parts on timeout.
+    """Runs the media ingestion under `bounded_media_step`, degrading to no parts.
 
-    Bounded here rather than left to the caller's grace so a slow fetch still produces the
-    honest text-only block instead of being cancelled with nothing to inject. A degrade returns no
-    groups at all rather than groups reporting everything as missing: with no parts the caller
-    takes its text-only branch, which lists BOTH posts' URLs from the posts themselves, so
-    per-group bookkeeping here would only be a second, unread copy of the same accounting.
+    A degrade returns no groups at all rather than groups reporting everything as missing: with
+    no parts the caller takes its text-only branch, which lists BOTH posts' URLs from the posts
+    themselves, so per-group bookkeeping here would only be a second, unread copy of the same
+    accounting.
 
     The posts run concurrently inside the one bound rather than in sequence: the budget split is
     computed from URL counts before any fetch starts, so nothing downstream waits on the target,
@@ -642,44 +641,38 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
     plan = _media_plan(target=target)
     if not plan:
         return IngestedMedia()
-    try:
-        with scratch_directory(prefix="threads-ai-") as download_dir:
-            async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
-                return IngestedMedia(
-                    groups=list(
-                        await asyncio.gather(
-                            *(
-                                _upload_post_media(
-                                    entry=entry,
-                                    gemini_client=gemini_client,
-                                    download_dir=download_dir,
-                                )
-                                for entry in plan
-                            )
+    return await bounded_media_step(
+        step=_upload_planned_media(plan=plan, gemini_client=gemini_client),
+        subject="Threads media",
+        fallback="text only",
+        degraded=IngestedMedia(),
+        url=target.url,
+        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+        timeout_fields={
+            "posts": len(plan),
+            "image_count": sum(len(entry.post.image_urls) for entry in plan),
+            "video_count": sum(len(entry.post.video_urls) for entry in plan),
+        },
+    )
+
+
+async def _upload_planned_media(
+    *, plan: list[MediaPlanEntry], gemini_client: genai.Client
+) -> IngestedMedia:
+    """Uploads every planned post's media concurrently, their clips sharing one scratch dir."""
+    with scratch_directory(prefix="threads-ai-") as download_dir:
+        return IngestedMedia(
+            groups=list(
+                await asyncio.gather(
+                    *(
+                        _upload_post_media(
+                            entry=entry, gemini_client=gemini_client, download_dir=download_dir
                         )
+                        for entry in plan
                     )
                 )
-    except TimeoutError:
-        logfire.warn(
-            "Threads media ingestion exceeded its bound; answering from text only",
-            url=target.url,
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            posts=len(plan),
-            image_count=sum(len(entry.post.image_urls) for entry in plan),
-            video_count=sum(len(entry.post.video_urls) for entry in plan),
-            _exc_info=True,
+            )
         )
-        return IngestedMedia()
-    # Broad on purpose: this is a best-effort degrade to the text-only block, which must never
-    # break the reply pipeline (`build_threads_context_messages` promises it never raises).
-    except Exception as error:
-        logfire.warn(
-            "Threads media ingestion failed; answering from text only",
-            url=target.url,
-            error_type=type(error).__name__,
-            _exc_info=error,
-        )
-        return IngestedMedia()
 
 
 def _media_url_lines(*, owner: str, image_urls: list[str], video_urls: list[str]) -> list[str]:
