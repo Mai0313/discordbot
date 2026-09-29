@@ -23,7 +23,6 @@ from nextcord import User, Member
 from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.utils.llm_transcript import sanitize_identity
@@ -34,6 +33,7 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
+from discordbot.cogs.gen_reply.link_sources import system_block
 
 # Returned for an allowed id that has no stored memory file, so the model still
 # sees an explicit signal. Also lets the usage footer tell "looked up" apart from
@@ -222,9 +222,8 @@ def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyI
     lines = "\n".join(
         f"[id: {user_id}] {candidate.prompt_label}" for user_id, candidate in allowed.items()
     )
-    text = f"==== Additional members eligible for oblique-reference memory lookup ====\n{lines}"
-    return EasyInputMessageParam(
-        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
+    return system_block(
+        text=f"==== Additional members eligible for oblique-reference memory lookup ====\n{lines}"
     )
 
 

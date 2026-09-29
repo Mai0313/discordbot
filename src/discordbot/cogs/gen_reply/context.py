@@ -15,7 +15,6 @@ import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -51,6 +50,7 @@ from discordbot.typings.context_budgets import (
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
 from discordbot.cogs.gen_reply.references import replied_to_message, source_channel_is_public
+from discordbot.cogs.gen_reply.link_sources import system_block
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -217,21 +217,15 @@ def reference_header(*, ref: Message) -> EasyInputMessageParam:
     plainly. The attachment sentence is the load-bearing half: a Current Message that points at
     something without naming it is pointing here, this message's files included.
     """
-    return EasyInputMessageParam(
-        role="system",
-        content=[
-            ResponseInputTextParam(
-                text=(
-                    f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
-                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
-                    "The user is directly replying to this message; it is the primary context for "
-                    "the Current Message below. When the Current Message points at something "
-                    "without naming it, that something is here, this message's attachments "
-                    "included. ===="
-                ),
-                type="input_text",
-            )
-        ],
+    return system_block(
+        text=(
+            f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
+            f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
+            "The user is directly replying to this message; it is the primary context for "
+            "the Current Message below. When the Current Message points at something "
+            "without naming it, that something is here, this message's attachments "
+            "included. ===="
+        )
     )
 
 
@@ -242,14 +236,8 @@ def current_header(*, message: Message, has_reference: bool) -> EasyInputMessage
     (rendered just above) so the model reads the reply pair as one unit.
     """
     reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
-    return EasyInputMessageParam(
-        role="system",
-        content=[
-            ResponseInputTextParam(
-                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ====",
-                type="input_text",
-            )
-        ],
+    return system_block(
+        text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ===="
     )
 
 
@@ -331,15 +319,7 @@ class ReplyContextBuilder(BaseModel):
         # out of here also keeps it out of the two other calls this render feeds, neither of which
         # is answering a question: the media persona reply, and the memory review transcript,
         # whose first message is this header verbatim.
-        header = EasyInputMessageParam(
-            role="system",
-            content=[
-                ResponseInputTextParam(
-                    text="==== Chat History: earlier messages in this channel. ====",
-                    type="input_text",
-                )
-            ],
-        )
+        header = system_block(text="==== Chat History: earlier messages in this channel. ====")
         return [header, *processed]
 
     async def render_reference_message(
