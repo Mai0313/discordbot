@@ -8,22 +8,59 @@ from nextcord import File, Locale, Member, Interaction, SlashOption
 from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
-from discordbot.cogs.economy import embeds
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
+    LEADERBOARD_SIZE,
     VIP_PURCHASE_COST,
+    VIP_WIN_MULTIPLIER_LABEL,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LoanLenderType,
     monthly_rate_percent_to_bps,
 )
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.cogs.economy.views import (
+    CreditLoanDecisionView,
+    CentralBankLoanDecisionView,
+    central_bank_exclude_user_ids,
+)
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
+)
+from discordbot.cogs.economy.embeds import (
+    BORROW_COLOR,
+    LEADERBOARD_COLOR,
+    LEADERBOARD_TITLE,
+    LOSS_LEADERBOARD_COLOR,
+    LOSS_LEADERBOARD_TITLE,
+    LoanParty,
+    TransferParticipant,
+    build_error_embed,
+    build_pocat_embed,
+    build_casino_embed,
+    build_simple_embed,
+    build_balance_embed,
+    build_transfer_embed,
+    build_credit_call_embed,
+    build_leaderboard_embed,
+    build_vip_already_embed,
+    build_vip_success_embed,
+    build_credit_repay_embed,
+    build_credit_status_embed,
+    build_credit_request_embed,
+    build_invalid_amount_embed,
+    build_admin_adjustment_embed,
+    build_loss_leaderboard_embed,
+    build_vip_insufficient_embed,
+    build_central_bank_call_embed,
+    build_central_bank_repay_embed,
+    build_central_bank_status_embed,
+    build_central_bank_ceiling_embed,
+    build_central_bank_request_embed,
+    build_transfer_insufficient_embed,
 )
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.services.economy.database import (
@@ -146,11 +183,11 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Credits points to a member through the manual-adjustment audit path."""
+        """Credits points to a member through a manual balance adjustment."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="退稅失敗")
+                interaction=interaction, embed=build_invalid_amount_embed(title="退稅失敗")
             )
             return
         await self._run_admin_adjustment(
@@ -191,11 +228,11 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Debits points from a member through the manual-adjustment audit path."""
+        """Debits points from a member through a manual balance adjustment."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="收稅失敗")
+                interaction=interaction, embed=build_invalid_amount_embed(title="收稅失敗")
             )
             return
         await self._run_admin_adjustment(
@@ -215,7 +252,7 @@ class EconomyCogs(commands.Cog):
             await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="權限不足",
                     description="### 只有 economy admin 可以執行這個操作",
                     author_name=actor.display_name,
@@ -232,7 +269,7 @@ class EconomyCogs(commands.Cog):
             allow_negative=False,
             avatar_url=member_avatar_url,
         )
-        embed = embeds.build_admin_adjustment_embed(
+        embed = build_admin_adjustment_embed(
             title=title,
             member_mention=member.mention,
             actor_name=actor.display_name,
@@ -280,7 +317,7 @@ class EconomyCogs(commands.Cog):
         portfolio = await get_portfolio(user_id=target.id)
         is_vip = await get_vip(user_id=target.id)
         age_days = (datetime.now(tz=UTC) - target.created_at).days
-        embed = embeds.build_balance_embed(
+        embed = build_balance_embed(
             display_name=target.display_name,
             avatar_url=target_avatar_url,
             portfolio=portfolio,
@@ -294,29 +331,29 @@ class EconomyCogs(commands.Cog):
         description=f"Show the global top {CURRENCY_NAME} holders.",
         name_localizations={Locale.zh_TW: "排行榜", Locale.ja: "リーダーボード"},
         description_localizations={
-            Locale.zh_TW: f"顯示全域 {CURRENCY_NAME}前 10 名",
-            Locale.ja: f"グローバル{CURRENCY_NAME}トップ10を表示します。",
+            Locale.zh_TW: f"顯示全域 {CURRENCY_NAME}前 {LEADERBOARD_SIZE} 名",
+            Locale.ja: f"グローバル{CURRENCY_NAME}トップ{LEADERBOARD_SIZE}を表示します。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
         contexts=INTERACTION_CONTEXTS,
     )
     async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 point holders."""
+        """Replies with the top point holders."""
         await interaction.response.defer()
-        rows = await top_n(limit=10)
+        rows = await top_n(limit=LEADERBOARD_SIZE)
         if not rows:
-            embed = embeds.build_simple_embed(
-                title=f"🏆 {CURRENCY_NAME} Top 10",
+            embed = build_simple_embed(
+                title=LEADERBOARD_TITLE,
                 description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
-                color=embeds.LEADERBOARD_COLOR,
+                color=LEADERBOARD_COLOR,
             )
             await send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         champion = rows[0]
         board = build_balance_leaderboard_board_image(rows=rows)
-        embed = embeds.build_leaderboard_embed(champion=champion)
+        embed = build_leaderboard_embed(champion=champion)
         await send_expiring_followup(
             interaction=interaction,
             embed=embed,
@@ -328,29 +365,29 @@ class EconomyCogs(commands.Cog):
         description=f"Show today's accumulated {CURRENCY_NAME} casino losses.",
         name_localizations={Locale.zh_TW: "輸錢榜", Locale.ja: "負け額ランキング"},
         description_localizations={
-            Locale.zh_TW: f"顯示今日累計輸掉{CURRENCY_NAME}的前 10 名 (每天 0:00 重置)",
-            Locale.ja: f"本日累計で失った{CURRENCY_NAME}の上位10名 (毎日 0:00 リセット)。",
+            Locale.zh_TW: f"顯示今日累計輸掉{CURRENCY_NAME}的前 {LEADERBOARD_SIZE} 名 (每天 0:00 重置)",
+            Locale.ja: f"本日累計で失った{CURRENCY_NAME}の上位{LEADERBOARD_SIZE}名 (毎日 0:00 リセット)。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
         contexts=INTERACTION_CONTEXTS,
     )
     async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 gross casino losses for the current day."""
+        """Replies with the top gross casino losses for the current day."""
         await interaction.response.defer()
-        rows = await top_losers(limit=10)
+        rows = await top_losers(limit=LEADERBOARD_SIZE)
         if not rows:
-            embed = embeds.build_simple_embed(
-                title=f"💸 今日輸局累計 {CURRENCY_NAME}",
+            embed = build_simple_embed(
+                title=LOSS_LEADERBOARD_TITLE,
                 description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
-                color=embeds.LOSS_LEADERBOARD_COLOR,
+                color=LOSS_LEADERBOARD_COLOR,
             )
             await send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         champion = rows[0]
         board = build_loss_leaderboard_board_image(rows=rows)
-        embed = embeds.build_loss_leaderboard_embed(champion=champion)
+        embed = build_loss_leaderboard_embed(champion=champion)
         await send_expiring_followup(
             interaction=interaction,
             embed=embed,
@@ -398,7 +435,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="轉帳失敗")
+                interaction=interaction, embed=build_invalid_amount_embed(title="轉帳失敗")
             )
             return
         await interaction.response.defer()
@@ -412,7 +449,7 @@ class EconomyCogs(commands.Cog):
         if member.id == sender.id:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="轉帳失敗",
                     description="### 不能轉給自己",
                     author_name=sender.display_name,
@@ -435,7 +472,7 @@ class EconomyCogs(commands.Cog):
             balance_now = await get_balance(user_id=sender.id)
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_transfer_insufficient_embed(
+                embed=build_transfer_insufficient_embed(
                     sender_name=sender.display_name,
                     sender_avatar_url=sender_avatar_url,
                     balance_now=balance_now,
@@ -444,15 +481,11 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        embed = embeds.build_transfer_embed(
+        embed = build_transfer_embed(
             amount=parsed_amount,
-            sender=embeds.TransferParticipant(
-                mention=sender.mention, display_name=sender.display_name
-            ),
+            sender=TransferParticipant(mention=sender.mention, display_name=sender.display_name),
             sender_avatar_url=sender_avatar_url,
-            receiver=embeds.TransferParticipant(
-                mention=member.mention, display_name=member.display_name
-            ),
+            receiver=TransferParticipant(mention=member.mention, display_name=member.display_name),
             receiver_avatar_url=receiver_avatar_url,
             result=transfer_result,
         )
@@ -474,7 +507,7 @@ class EconomyCogs(commands.Cog):
         """Shows the casino system's accumulated P&L."""
         await interaction.response.defer()
         snapshot = await get_casino_ledger()
-        embed = embeds.build_casino_embed(snapshot=snapshot)
+        embed = build_casino_embed(snapshot=snapshot)
         await send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -495,9 +528,7 @@ class EconomyCogs(commands.Cog):
         if self.bot.user is None:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
-                    title="❌ 無法查詢", description="目前無法取得機器人身份"
-                ),
+                embed=build_error_embed(title="❌ 無法查詢", description="目前無法取得機器人身份"),
             )
             return
 
@@ -511,7 +542,7 @@ class EconomyCogs(commands.Cog):
             total_earned = account.total_earned
             total_spent = account.total_spent
 
-        embed = embeds.build_pocat_embed(
+        embed = build_pocat_embed(
             name=name,
             # `ClientUser` is not a guild member, so there is no per-guild avatar
             # for `guild_avatar_url` to find here.
@@ -588,7 +619,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="借款失敗")
+                interaction=interaction, embed=build_invalid_amount_embed(title="借款失敗")
             )
             return
         await interaction.response.defer()
@@ -601,7 +632,7 @@ class EconomyCogs(commands.Cog):
         if member.bot:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="借款失敗",
                     description="### 不能向 bot 借款",
                     author_name=user.display_name,
@@ -612,7 +643,7 @@ class EconomyCogs(commands.Cog):
         if member.id == user.id:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="借款失敗",
                     description="### 不能向自己借款",
                     author_name=user.display_name,
@@ -635,7 +666,7 @@ class EconomyCogs(commands.Cog):
         if proposal is None:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="借款失敗",
                     description="### 無法建立借款申請",
                     author_name=user.display_name,
@@ -644,11 +675,11 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        embed = embeds.build_credit_request_embed(
-            borrower=embeds.LoanParty(
+        embed = build_credit_request_embed(
+            borrower=LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
             ),
-            lender=embeds.LoanParty(mention=member.mention, avatar_url=lender_avatar_url),
+            lender=LoanParty(mention=member.mention, avatar_url=lender_avatar_url),
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
@@ -697,7 +728,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="還款失敗")
+                interaction=interaction, embed=build_invalid_amount_embed(title="還款失敗")
             )
             return
         user = interaction.user
@@ -719,7 +750,7 @@ class EconomyCogs(commands.Cog):
         if result is None:
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="還款失敗",
                     description=f"### 沒有可還給 {member.display_name} 的有效個人借款",
                     author_name=user.display_name,
@@ -729,7 +760,7 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        embed = embeds.build_credit_repay_embed(
+        embed = build_credit_repay_embed(
             actor_name=user.display_name,
             actor_avatar_url=user_avatar_url,
             lender_display_name=member.display_name,
@@ -777,7 +808,7 @@ class EconomyCogs(commands.Cog):
         collect = _parse_collect_amount(raw_amount=amount)
         if not collect.is_valid:
             await send_ephemeral_response(
-                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="催收失敗")
+                interaction=interaction, embed=build_invalid_amount_embed(title="催收失敗")
             )
             return
         user = interaction.user
@@ -797,7 +828,7 @@ class EconomyCogs(commands.Cog):
         if result is None:
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="催收失敗",
                     description=f"### {member.display_name} 沒有欠你有效個人借款，或目前無可扣餘額",
                     author_name=user.display_name,
@@ -805,7 +836,7 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        embed = embeds.build_credit_call_embed(
+        embed = build_credit_call_embed(
             actor_name=user.display_name,
             actor_avatar_url=actor_avatar_url,
             borrower_mention=member.mention,
@@ -833,14 +864,12 @@ class EconomyCogs(commands.Cog):
             if contract.lender_type == LoanLenderType.USER
         ]
         if not contracts:
-            embed = embeds.build_simple_embed(
-                title="信貸狀態", description="### 目前沒有有效信貸", color=embeds.BORROW_COLOR
+            embed = build_simple_embed(
+                title="信貸狀態", description="### 目前沒有有效信貸", color=BORROW_COLOR
             )
             await send_private_followup(interaction=interaction, embed=embed)
             return
-        embed = embeds.build_credit_status_embed(
-            contracts=contracts, viewer_id=interaction.user.id
-        )
+        embed = build_credit_status_embed(contracts=contracts, viewer_id=interaction.user.id)
         await send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -899,8 +928,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction,
-                embed=embeds.build_invalid_amount_embed(title="央行借款失敗"),
+                interaction=interaction, embed=build_invalid_amount_embed(title="央行借款失敗")
             )
             return
         # Refused before the proposal exists rather than at the button: outside a guild
@@ -909,7 +937,7 @@ class EconomyCogs(commands.Cog):
         if interaction.guild_id is None:
             await send_ephemeral_response(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="央行借款失敗", description="### 央行借款只能在伺服器裡提出"
                 ),
             )
@@ -925,7 +953,7 @@ class EconomyCogs(commands.Cog):
         if ceiling < parsed_amount:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_central_bank_ceiling_embed(
+                embed=build_central_bank_ceiling_embed(
                     borrower_mention=user.mention, requested=parsed_amount, ceiling=ceiling
                 ),
             )
@@ -940,13 +968,13 @@ class EconomyCogs(commands.Cog):
         if proposal is None:
             await send_expiring_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="央行借款失敗", description="### 無法建立央行借款申請"
                 ),
             )
             return
-        embed = embeds.build_central_bank_request_embed(
-            borrower=embeds.LoanParty(
+        embed = build_central_bank_request_embed(
+            borrower=LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
             ),
             amount=parsed_amount,
@@ -993,8 +1021,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction,
-                embed=embeds.build_invalid_amount_embed(title="央行還款失敗"),
+                interaction=interaction, embed=build_invalid_amount_embed(title="央行還款失敗")
             )
             return
         user = interaction.user
@@ -1013,12 +1040,12 @@ class EconomyCogs(commands.Cog):
         if result is None:
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="央行還款失敗", description="### 沒有有效央行借款，或目前無可扣餘額"
                 ),
             )
             return
-        embed = embeds.build_central_bank_repay_embed(
+        embed = build_central_bank_repay_embed(
             actor_name=user.display_name,
             actor_avatar_url=user_avatar_url,
             user_mention=user.mention,
@@ -1066,15 +1093,14 @@ class EconomyCogs(commands.Cog):
         collect = _parse_collect_amount(raw_amount=amount)
         if not collect.is_valid:
             await send_ephemeral_response(
-                interaction=interaction,
-                embed=embeds.build_invalid_amount_embed(title="央行催收失敗"),
+                interaction=interaction, embed=build_invalid_amount_embed(title="央行催收失敗")
             )
             return
         if interaction.guild_id is None or not interaction.permissions.administrator:
             await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="權限不足", description="### 只有這個伺服器的管理員可以執行央行催收"
                 ),
             )
@@ -1096,13 +1122,13 @@ class EconomyCogs(commands.Cog):
         if result is None:
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="央行催收失敗",
                     description="### 目標不是本伺服器的參與者、沒有有效央行借款，或目前無可扣餘額",
                 ),
             )
             return
-        embed = embeds.build_central_bank_call_embed(
+        embed = build_central_bank_call_embed(
             actor_name=interaction.user.display_name,
             actor_avatar_url=actor_avatar_url,
             borrower_mention=member.mention,
@@ -1125,7 +1151,7 @@ class EconomyCogs(commands.Cog):
         if interaction.guild_id is None:
             await send_ephemeral_response(
                 interaction=interaction,
-                embed=embeds.build_error_embed(
+                embed=build_error_embed(
                     title="央行狀態", description="### 央行額度是每個伺服器各自計算的"
                 ),
             )
@@ -1135,23 +1161,23 @@ class EconomyCogs(commands.Cog):
             await record_guild_participant(
                 guild_id=interaction.guild_id, user_id=interaction.user.id
             )
-        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
         status = await get_central_bank_status(
-            guild_id=interaction.guild_id, exclude_user_ids=exclude_user_ids
+            guild_id=interaction.guild_id,
+            exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
         )
-        embed = embeds.build_central_bank_status_embed(status=status)
+        embed = build_central_bank_status_embed(status=status)
         await send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="vip",
         description=(
             f"Buy permanent VIP for {currency_text(amount=VIP_PURCHASE_COST, compact=True)}: "
-            "1.2x Blackjack wins."
+            f"{VIP_WIN_MULTIPLIER_LABEL} Blackjack wins."
         ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
         description_localizations={
-            Locale.zh_TW: "購買永久 VIP：Blackjack 贏局 1.2x",
-            Locale.ja: "永久 VIP を購入: Blackjack 勝利 1.2x。",
+            Locale.zh_TW: f"購買永久 VIP：Blackjack 贏局 {VIP_WIN_MULTIPLIER_LABEL}",
+            Locale.ja: f"永久 VIP を購入: Blackjack 勝利 {VIP_WIN_MULTIPLIER_LABEL}。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
@@ -1168,7 +1194,7 @@ class EconomyCogs(commands.Cog):
         if already_vip:
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_vip_already_embed(
+                embed=build_vip_already_embed(
                     actor_name=user.display_name, avatar_url=user_avatar_url
                 ),
             )
@@ -1179,7 +1205,7 @@ class EconomyCogs(commands.Cog):
             balance_now = await get_balance(user_id=user.id)
             await send_private_followup(
                 interaction=interaction,
-                embed=embeds.build_vip_insufficient_embed(
+                embed=build_vip_insufficient_embed(
                     actor_name=user.display_name,
                     avatar_url=user_avatar_url,
                     balance_now=balance_now,
@@ -1187,7 +1213,7 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        embed = embeds.build_vip_success_embed(
+        embed = build_vip_success_embed(
             actor_name=user.display_name, avatar_url=user_avatar_url, result=result
         )
         await send_private_followup(interaction=interaction, embed=embed)

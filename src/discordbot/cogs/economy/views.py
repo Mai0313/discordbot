@@ -29,11 +29,16 @@ from discordbot.services.economy.database import (
 from discordbot.utils.interaction_responses import edit_response_embed, send_private_followup
 
 
+def central_bank_exclude_user_ids(bot: commands.Bot) -> tuple[int, ...]:
+    """Returns bot-owned account IDs excluded from central-bank capacity."""
+    return (bot.user.id,) if bot.user is not None else ()
+
+
 class LoanDecisionViewBase(View):
     """Shared terminal behavior for public loan-decision views.
 
-    A subclass declares the wording and color of its own panels below; expiry and the
-    creator-only cancel then behave the same for both.
+    A subclass declares the wording and color of its own panels below, and who may decide
+    its requests; expiry, rejection and the creator-only cancel then behave the same for both.
 
     Every button that writes defers first, then answers by editing the panel or with a private
     followup. The token dies three seconds after the click while a SQLite writer waits out lock
@@ -46,12 +51,27 @@ class LoanDecisionViewBase(View):
     PANEL_COLOR: ClassVar[int]
     TIMEOUT_TITLE: ClassVar[str]
     CANCEL_TITLE: ClassVar[str]
-    CANCEL_CLOSED_HEADING: ClassVar[str]
+    REJECT_TITLE: ClassVar[str]
+    CLOSED_HEADING: ClassVar[str]
     CANCEL_DENIED_NOTICE: ClassVar[str]
+    REJECT_FAILED_NOTICE: ClassVar[str]
+    # Whether passing `_may_decide` means the clicker administers this server.
+    APPROVER_IS_GUILD_ADMIN: ClassVar[bool]
 
-    message: Message | None
-    proposal_id: int
-    creator_id: int
+    def __init__(self, proposal_id: int, creator_id: int) -> None:
+        """Initializes a decision view for one proposal."""
+        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
+        self.proposal_id = proposal_id
+        self.creator_id = creator_id
+        self.message: Message | None = None
+
+    async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
+        """Returns whether the clicking user may approve or reject this request.
+
+        Anyone else is answered with the permission notice before this returns `False`,
+        so the caller must not reply again.
+        """
+        raise NotImplementedError
 
     def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
         """Schedules the public request message for cleanup after a terminal state."""
@@ -104,7 +124,34 @@ class LoanDecisionViewBase(View):
 
         embed = build_simple_embed(
             title=self.CANCEL_TITLE,
-            description=f"{self.CANCEL_CLOSED_HEADING}\n發起者 {interaction.user.mention}",
+            description=f"{self.CLOSED_HEADING}\n發起者 {interaction.user.mention}",
+            color=self.PANEL_COLOR,
+        )
+        self.stop()
+        await edit_response_embed(interaction=interaction, embed=embed)
+        self._schedule_cleanup(interaction=interaction)
+
+    async def _handle_reject(self, interaction: Interaction[commands.Bot]) -> None:
+        """Rejects the request for whoever may decide it, and answers anyone else privately."""
+        if interaction.user is None:
+            return
+        await interaction.response.defer()
+        if not await self._may_decide(interaction=interaction):
+            return
+
+        proposal = await reject_loan_proposal(
+            proposal_id=self.proposal_id,
+            actor_id=interaction.user.id,
+            approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
+        )
+        if proposal is None:
+            embed = build_error_embed(title="拒絕失敗", description=self.REJECT_FAILED_NOTICE)
+            await send_private_followup(interaction=interaction, embed=embed)
+            return
+
+        embed = build_simple_embed(
+            title=self.REJECT_TITLE,
+            description=f"{self.CLOSED_HEADING}\n處理人 {interaction.user.mention}",
             color=self.PANEL_COLOR,
         )
         self.stop()
@@ -118,8 +165,11 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
     PANEL_COLOR = CENTRAL_BANK_COLOR
     TIMEOUT_TITLE = "🏛️ 央行申請已逾時"
     CANCEL_TITLE = "🏛️ 央行申請已取消"
-    CANCEL_CLOSED_HEADING = "### 央行借款申請已關閉"
+    REJECT_TITLE = "🏛️ 央行申請已拒絕"
+    CLOSED_HEADING = "### 央行借款申請已關閉"
     CANCEL_DENIED_NOTICE = "### 只有申請發起者可以取消央行借款申請"
+    REJECT_FAILED_NOTICE = "### 申請不存在、已處理，或你沒有權限拒絕"
+    APPROVER_IS_GUILD_ADMIN = True
 
     def __init__(
         self,
@@ -129,19 +179,23 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         allow_self_approval: bool = False,
     ) -> None:
         """Initializes a decision view for one proposal."""
-        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
+        super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.bot = bot
-        self.proposal_id = proposal_id
-        self.creator_id = creator_id
         self.allow_self_approval = allow_self_approval
-        self.message: Message | None = None
 
-    async def _send_permission_denied(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies privately when a non-administrator clicks a decision button."""
+    async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
+        """Returns whether the clicking user is a server administrator here.
+
+        Anyone else is answered with the permission notice before this returns `False`,
+        so the caller must not reply again.
+        """
+        if self._is_guild_admin(interaction=interaction):
+            return True
         embed = build_error_embed(
             title="權限不足", description="### 只有這個伺服器的管理員可以處理央行借款申請"
         )
         await send_private_followup(interaction=interaction, embed=embed)
+        return False
 
     def _is_guild_admin(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user may decide central-bank proposals here.
@@ -153,10 +207,6 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         it is empty, which is what refuses a DM.
         """
         return interaction.permissions.administrator
-
-    def _central_bank_exclude_user_ids(self) -> tuple[int, ...]:
-        """Returns bot-owned account IDs excluded from central-bank capacity."""
-        return (self.bot.user.id,) if self.bot.user is not None else ()
 
     @nextcord.ui.button(
         label="批准",
@@ -174,8 +224,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         if interaction.user is None:
             return
         await interaction.response.defer()
-        if not self._is_guild_admin(interaction=interaction):
-            await self._send_permission_denied(interaction=interaction)
+        if not await self._may_decide(interaction=interaction):
             return
 
         banker_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
@@ -186,7 +235,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             actor_avatar_url=banker_avatar_url,
             approver_is_guild_admin=True,
             guild_id=interaction.guild_id,
-            central_bank_exclude_user_ids=self._central_bank_exclude_user_ids(),
+            central_bank_exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
             allow_central_bank_self_approval=self.allow_self_approval,
         )
         if result is None:
@@ -213,33 +262,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         interaction: Interaction[commands.Bot],
     ) -> None:
         """Rejects the central-bank request when clicked by a server administrator."""
-        if interaction.user is None:
-            return
-        await interaction.response.defer()
-        if not self._is_guild_admin(interaction=interaction):
-            await self._send_permission_denied(interaction=interaction)
-            return
-
-        proposal = await reject_loan_proposal(
-            proposal_id=self.proposal_id,
-            actor_id=interaction.user.id,
-            approver_is_guild_admin=True,
-        )
-        if proposal is None:
-            embed = build_error_embed(
-                title="拒絕失敗", description="### 申請不存在、已處理，或你沒有權限拒絕"
-            )
-            await send_private_followup(interaction=interaction, embed=embed)
-            return
-
-        embed = build_simple_embed(
-            title="🏛️ 央行申請已拒絕",
-            description=f"### 央行借款申請已關閉\n處理人 {interaction.user.mention}",
-            color=CENTRAL_BANK_COLOR,
-        )
-        self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        await self._handle_reject(interaction=interaction)
 
     @nextcord.ui.button(
         label="取消",
@@ -263,25 +286,18 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     PANEL_COLOR = REPAY_COLOR
     TIMEOUT_TITLE = "信貸申請已逾時"
     CANCEL_TITLE = "信貸申請已取消"
-    CANCEL_CLOSED_HEADING = "### 信貸申請已關閉"
+    REJECT_TITLE = "信貸申請已拒絕"
+    CLOSED_HEADING = "### 信貸申請已關閉"
     CANCEL_DENIED_NOTICE = "### 只有申請發起者可以取消這筆信貸申請"
+    REJECT_FAILED_NOTICE = "### 申請不存在、已處理，或你不是指定貸方"
+    APPROVER_IS_GUILD_ADMIN = False
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
         """Initializes a decision view for one personal credit proposal."""
-        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
-        self.proposal_id = proposal_id
+        super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.lender_id = lender_id
-        self.creator_id = creator_id
-        self.message: Message | None = None
 
-    async def _send_permission_denied(
-        self, interaction: Interaction[commands.Bot], description: str
-    ) -> None:
-        """Replies privately when a user clicks a button they cannot use."""
-        embed = build_error_embed(title="權限不足", description=description)
-        await send_private_followup(interaction=interaction, embed=embed)
-
-    async def _require_lender(self, interaction: Interaction[commands.Bot]) -> bool:
+    async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user is the requested lender.
 
         Someone other than the lender is answered with the permission notice
@@ -291,9 +307,10 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
             return False
         if interaction.user.id == self.lender_id:
             return True
-        await self._send_permission_denied(
-            interaction=interaction, description="### 只有指定貸方可以處理這筆信貸申請"
+        embed = build_error_embed(
+            title="權限不足", description="### 只有指定貸方可以處理這筆信貸申請"
         )
+        await send_private_followup(interaction=interaction, embed=embed)
         return False
 
     @nextcord.ui.button(
@@ -306,7 +323,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         if interaction.user is None:
             return
         await interaction.response.defer()
-        if not await self._require_lender(interaction=interaction):
+        if not await self._may_decide(interaction=interaction):
             return
 
         lender_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
@@ -340,30 +357,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
         """Rejects the personal credit request when clicked by the lender."""
-        if interaction.user is None:
-            return
-        await interaction.response.defer()
-        if not await self._require_lender(interaction=interaction):
-            return
-
-        proposal = await reject_loan_proposal(
-            proposal_id=self.proposal_id, actor_id=interaction.user.id
-        )
-        if proposal is None:
-            embed = build_error_embed(
-                title="拒絕失敗", description="### 申請不存在、已處理，或你不是指定貸方"
-            )
-            await send_private_followup(interaction=interaction, embed=embed)
-            return
-
-        embed = build_simple_embed(
-            title="信貸申請已拒絕",
-            description=f"### 信貸申請已關閉\n處理人 {interaction.user.mention}",
-            color=REPAY_COLOR,
-        )
-        self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        await self._handle_reject(interaction=interaction)
 
     @nextcord.ui.button(
         label="取消", emoji="🚫", style=ButtonStyle.secondary, custom_id="credit:cancel", row=0

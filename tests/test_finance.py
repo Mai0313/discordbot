@@ -17,6 +17,7 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
 )
 from discordbot.cogs.economy.cog import EconomyCogs
+from discordbot.cogs.economy.views import CentralBankLoanDecisionView
 from discordbot.services.economy.database import (
     LoanContract,
     LoanProposal,
@@ -426,6 +427,39 @@ async def test_forced_collection_without_amount_includes_accrued_interest() -> N
     assert await get_balance(user_id=1) == 985
 
 
+async def test_calling_central_bank_loans_collects_accrued_interest_on_every_contract() -> None:
+    """Calling in everything owed sums each contract's interest accrued up to now, so none stays open."""
+    await _join(user_id=1, name="alice", amount=1_000)
+    first = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
+    )
+    second = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=200, monthly_rate_bps=300
+    )
+    assert first is not None
+    assert second is not None
+    from_first = await _approve(proposal_id=first.proposal_id, actor_id=99, name="banker")
+    from_second = await _approve(proposal_id=second.proposal_id, actor_id=99, name="banker")
+    assert from_first is not None
+    assert from_second is not None
+    await _backdate_contract(contract_id=from_first.contract.contract_id, days=60)
+    await _backdate_contract(contract_id=from_second.contract.contract_id, days=60)
+
+    result = await call_central_bank_loans(
+        guild_id=GUILD, borrower_id=1, borrower_name="alice", amount=None
+    )
+
+    assert result is not None
+    # Each owes a month prepaid at approval plus a month accrued past the prepaid window.
+    assert (result.paid_amount, result.interest_paid, result.principal_paid) == (742, 42, 700)
+    assert result.closed_contract_ids == (
+        from_first.contract.contract_id,
+        from_second.contract.contract_id,
+    )
+    assert await get_balance(user_id=1) == 1_700 - 742
+    assert await list_loan_contracts(user_id=1) == []
+
+
 async def test_central_bank_repayment_pays_interest_first_and_the_bank_keeps_it() -> None:
     """A voluntary repayment settles interest before principal, and only the principal is burned."""
     await _join(user_id=1, name="alice", amount=1_000)
@@ -713,6 +747,38 @@ async def test_approval_needs_a_guild_and_an_administrator() -> None:
         )
         is None
     )
+
+
+async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() -> None:
+    """The ledger takes the panel's word that the clicker administers this server.
+
+    Without it no central-bank request could be turned down, since nobody is named to decide one.
+    """
+    await _join(user_id=1, name="alice", amount=1_000)
+    proposal = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=100
+    )
+    assert proposal is not None
+    view = CentralBankLoanDecisionView(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))),
+        proposal_id=proposal.proposal_id,
+        creator_id=1,
+    )
+    reject_button = next(
+        child
+        for child in view.children
+        if getattr(child, "custom_id", "") == "central_bank:reject"
+    )
+    admin = FakeInteraction(
+        user=FakeUser(user_id=99, name="banker"), guild_id=GUILD, administrator=True
+    )
+
+    await reject_button.callback(as_interaction(fake=admin))
+
+    assert admin.followup.sent == []
+    assert admin.edits[0]["embed"].title == "🏛️ 央行申請已拒絕"
+    assert await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker") is None
+    assert await get_balance(user_id=1) == 1_000
 
 
 async def test_a_request_over_the_ceiling_is_refused_before_anyone_is_asked() -> None:

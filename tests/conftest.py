@@ -31,12 +31,15 @@ def economy_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     behind `total_earned - total_spent == balance`, such a write cannot be reconstructed.
     Patching every ledger function a command reaches is no substitute, since nothing checks
     that a test patched them all. NullPool closes each connection on return, so this stays a
-    sync fixture; the schema and its seed rows bootstrap lazily on the first ledger call.
+    sync fixture; the schema and its seed rows bootstrap lazily on the first ledger call. The
+    leaderboard caches are keyed on the query alone, so each test starts them empty too.
     """
     engine = create_async_engine(
         url=f"sqlite+aiosqlite:///{tmp_path / 'economy.db'}", poolclass=NullPool
     )
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.economy.database._top_n_cache", {})
+    monkeypatch.setattr("discordbot.services.economy.database._top_losers_cache", {})
 
 
 @pytest.fixture

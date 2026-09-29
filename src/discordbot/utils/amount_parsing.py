@@ -1,9 +1,8 @@
 """Shared parsing for user-entered decimal amount text.
 
-Money and quantity inputs are string slash options (Discord's integer options cap
-below the economy's balances), so several cogs parsed `"1,000"`-style text with the
-same normalize / isdecimal / int sequence. This is the one normalizer; each caller
-wraps it with its own range rules (positive-only, zero-means-all-in, purchase caps).
+Money and quantity inputs are string slash options, since Discord's integer options
+cap below the economy's balances. This normalizes their `"1,000"`-style text; each
+caller applies its own range rules on top.
 """
 
 

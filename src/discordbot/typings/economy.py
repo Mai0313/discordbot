@@ -14,6 +14,8 @@ MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
 MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 # Minimum interest a borrower owes on a contract regardless of repayment timing.
 MIN_INTEREST_DAYS: Final[int] = 30
+# How many rows each public leaderboard shows.
+LEADERBOARD_SIZE: Final[int] = 10
 
 # Anti-inflation levers; re-measure before changing them.
 # Absolute ceiling on any single casino wager. Invisible to ordinary players; it
@@ -27,6 +29,8 @@ TRANSFER_TAX_BPS: Final[int] = 500
 # VIP perk: 1.2x payout on a winning round.
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
+# The multiplier as command descriptions print it.
+VIP_WIN_MULTIPLIER_LABEL: Final[str] = f"{_VIP_WIN_MULTIPLIER_NUM / _VIP_WIN_MULTIPLIER_DEN:g}x"
 
 # Central-bank levers; re-measure before changing them.
 # How many times their own free equity a borrower may owe the central bank.
@@ -38,12 +42,14 @@ CENTRAL_BANK_CREDIT_MULTIPLIER: Final[int] = 2
 CENTRAL_BANK_BASE_CAPACITY: Final[int] = 5_000_000
 
 
+def clamp_loan_rate_bps(monthly_rate_bps: int) -> int:
+    """Clamps a monthly rate in basis points into the range a loan may carry."""
+    return max(MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps))
+
+
 def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
     """Converts a user-facing monthly percent into basis points."""
-    return max(
-        MIN_LOAN_MONTHLY_RATE_BPS,
-        min(MAX_LOAN_MONTHLY_RATE_BPS, round(monthly_rate_percent * 100)),
-    )
+    return clamp_loan_rate_bps(monthly_rate_bps=round(monthly_rate_percent * 100))
 
 
 def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
@@ -125,7 +131,7 @@ class LoanContractStatus(StrEnum):
 
 
 class AccountSnapshot(BaseModel):
-    """Read-only account totals for maintenance and house-ledger views."""
+    """Read-only totals for one user's account."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -167,7 +173,6 @@ class CreditResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     new_balance: int = Field(..., description="User balance after the credit.")
-    credited_amount: int = Field(..., description="Amount that landed in balance.")
 
 
 class BalanceAdjustmentResult(BaseModel):
@@ -281,20 +286,6 @@ class CasinoLedgerSnapshot(BaseModel):
     updated_at: datetime = Field(..., description="Timestamp of the last casino ledger update.")
 
 
-class CasinoDailyStats(BaseModel):
-    """Per-user current-day casino loss/win/net totals.
-
-    All zero when no row exists or the stored counters belong to a previous
-    Taipei day.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    daily_loss: int = Field(..., description="Gross current-day casino loss total.")
-    daily_win: int = Field(..., description="Gross current-day casino win total.")
-    daily_net: int = Field(..., description="Net current-day casino result (win minus loss).")
-
-
 class RoundSettlementResult(BaseModel):
     """Outcome of an atomic player + casino ledger settlement."""
 
@@ -349,9 +340,6 @@ class LoanProposalView(BaseModel):
     lender_name: str = Field(..., description="Display name of the lender.")
     amount: int = Field(..., description="Proposed loan principal amount.")
     monthly_rate_bps: int = Field(..., description="Monthly simple-interest rate in basis points.")
-    escrow_amount: int = Field(
-        ..., description="Amount held in escrow while the proposal is pending."
-    )
     created_at: datetime = Field(..., description="Timestamp the proposal was created.")
 
 
@@ -465,6 +453,7 @@ __all__ = [
     "CENTRAL_BANK_BASE_CAPACITY",
     "CENTRAL_BANK_CREDIT_MULTIPLIER",
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
+    "LEADERBOARD_SIZE",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
     "MAX_SINGLE_BET",
@@ -473,9 +462,9 @@ __all__ = [
     "MIN_LOAN_MONTHLY_RATE_BPS",
     "TRANSFER_TAX_BPS",
     "VIP_PURCHASE_COST",
+    "VIP_WIN_MULTIPLIER_LABEL",
     "AccountSnapshot",
     "BalanceAdjustmentResult",
-    "CasinoDailyStats",
     "CasinoLedgerSnapshot",
     "CentralBankStatus",
     "CreditResult",
@@ -499,6 +488,7 @@ __all__ = [
     "VipPurchaseResult",
     "apply_vip_blackjack_bonus",
     "central_bank_credit_ceiling",
+    "clamp_loan_rate_bps",
     "monthly_rate_bps_to_percent",
     "monthly_rate_percent_to_bps",
 ]

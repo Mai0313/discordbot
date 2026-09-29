@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right, draw_text_center
-from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
+from discordbot.typings.economy import LEADERBOARD_SIZE, LeaderboardEntry, LossLeaderboardEntry
 from discordbot.utils.number_text import compact_amount
 from discordbot.services.economy.presentation import CURRENCY_NAME
 
@@ -79,7 +79,7 @@ def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> b
     return _build_ranking_board_image(
         spec=_RankingBoardSpec(
             title=f"{CURRENCY_NAME} 排行榜",
-            subtitle="Top 10 public balances",
+            subtitle=f"Top {LEADERBOARD_SIZE} public balances",
             amount_header="餘額",
             accent=_BALANCE_ACCENT,
             rows=tuple(

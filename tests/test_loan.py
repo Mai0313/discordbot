@@ -45,7 +45,6 @@ async def test_credit_with_repayment_full_credit() -> None:
     result = await credit_with_repayment(user_id=1, name="alice", amount=100)
 
     assert result.new_balance == 100
-    assert result.credited_amount == 100
 
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
@@ -55,14 +54,16 @@ async def test_credit_with_repayment_zero_amount_is_noop() -> None:
     result = await credit_with_repayment(user_id=1, name="alice", amount=0)
 
     assert result.new_balance == 50
-    assert result.credited_amount == 0
+    account = await get_account(user_id=1)
+    assert account is not None
+    assert account.total_earned == 50
 
 
 async def test_credit_with_repayment_first_sight_creates_row() -> None:
     """A first reward creates the user account row."""
     result = await credit_with_repayment(user_id=1, name="alice", amount=200)
 
-    assert result.credited_amount == 200
+    assert result.new_balance == 200
     assert await get_balance(user_id=1) == 200
 
 
@@ -91,7 +92,6 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
     contracts = await list_loan_contracts(user_id=1)
 
     assert result.new_balance == 600
-    assert result.credited_amount == 100
     assert len(contracts) == 1
     assert contracts[0].principal_remaining == 500
 

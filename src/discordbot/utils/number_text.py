@@ -20,6 +20,11 @@ def compact_amount(amount: int, signed: bool = False) -> str:
                 formatted = _compact_decimal(value=value)
                 display_suffix = rollover_suffix
             return f"{sign}{formatted}{display_suffix}"
+    return grouped_amount(amount=amount, signed=signed)
+
+
+def grouped_amount(amount: int, signed: bool = False) -> str:
+    """Formats an amount with comma grouping, with a leading `+` on a signed positive one."""
     return f"{amount:+,}" if signed and amount != 0 else f"{amount:,}"
 
 

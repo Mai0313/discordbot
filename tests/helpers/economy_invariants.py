@@ -6,12 +6,10 @@ magic numbers by hand. They return the snapshot so a caller can layer a focused
 exact check (a settlement delta that must equal a computed value) on top.
 """
 
-from discordbot.typings.economy import AccountSnapshot, CasinoDailyStats, CasinoLedgerSnapshot
-from discordbot.services.economy.database import (
-    get_account,
-    get_casino_ledger,
-    get_casino_daily_stats,
-)
+from discordbot.typings.economy import AccountSnapshot, CasinoLedgerSnapshot
+from discordbot.services.economy.database import get_account, get_casino_ledger
+
+from tests.helpers.economy import CasinoDailyStats, get_casino_daily_stats
 
 
 async def assert_wallet_consistent(

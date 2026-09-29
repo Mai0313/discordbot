@@ -95,7 +95,7 @@ def test_a_superseded_board_is_evicted_without_a_write_path() -> None:
 
     A balance change never poisons a cached board: the rows are part of the key, so
     it mints a new entry and abandons the old one. Growth is the only failure mode
-    left, and it is what the ledger's invalidation call used to hold back.
+    left.
     """
     build_balance_leaderboard_board_image(
         rows=(LeaderboardEntry(user_id=1, name="alice", balance=100),)

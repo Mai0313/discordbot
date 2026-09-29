@@ -20,8 +20,8 @@ monkeypatch `_engine` per-test and every subsequent call sees the swap.
 VIP bumps the player's winning payout from games and is permanent once set.
 Admin status gates maintenance-only economy commands and is set out-of-band by a
 direct DB write; `set_admin` exists for that path rather than for a runtime
-caller. Daily casino counters live on `casino_account` so a current-day loss
-ranking needs no audit-log scan.
+caller. Daily casino counters live on `casino_account`, one row per user, which
+the current-day loss ranking reads directly.
 
 Personal loan requests debit the lender on acceptance, and central-bank loans
 mint borrower balance on approval. What bounds that minting is the per-borrower
@@ -36,7 +36,7 @@ player delta and the house-side mirror in one atomic SQLite transaction.
 """
 
 from time import monotonic
-from typing import Any, Final, Literal
+from typing import Any, Final
 import asyncio
 from datetime import datetime, timedelta
 from collections.abc import Mapping, Sequence
@@ -63,11 +63,10 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import (
+    LEADERBOARD_SIZE,
     TRANSFER_TAX_BPS,
     MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
-    MAX_LOAN_MONTHLY_RATE_BPS,
-    MIN_LOAN_MONTHLY_RATE_BPS,
     CENTRAL_BANK_BASE_CAPACITY,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
@@ -77,7 +76,6 @@ from discordbot.typings.economy import (
     TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
-    CasinoDailyStats,
     LeaderboardEntry,
     LoanContractView,
     LoanProposalKind,
@@ -95,19 +93,17 @@ from discordbot.typings.economy import (
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
     JackpotSettlementBatchResult,
+    clamp_loan_rate_bps,
     central_bank_credit_ceiling,
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
-from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. The bound is
 # there to stop a degenerate hot-row livelock, not to ride out contention.
-_VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
-_CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
-_JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
+_CONDITIONAL_WRITE_MAX_RETRIES: Final[int] = 8
 _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/economy.db")
@@ -166,7 +162,7 @@ class UserWallet(Base):
 
     __tablename__ = "user_wallet"
     __table_args__ = (
-        # No query filters on the balance alone — the two that mention it pin the primary
+        # No query filters on the balance alone — any that mentions it pins the primary
         # key as well — and the ranking sort is a computed integer-aware expression this
         # cannot satisfy either. It stays because the schema is never altered in place.
         Index("ix_user_wallet_balance", "balance"),
@@ -191,9 +187,9 @@ class GuildParticipant(Base):
     lending. It cannot be derived instead: the gateway runs without the members
     intent, so the bot cannot enumerate a guild's membership at all.
 
-    A row records the CALLER of an economy command or the author of a rewarded
-    message. It must never record the target of a `member:` option, which would
-    let anyone import a stranger's balance into a pool they administer.
+    A row records the caller of a `/central_bank` command or the author of a
+    rewarded message. It must never record the target of a `member:` option, which
+    would let anyone import a stranger's balance into a pool they administer.
 
     Nothing ever removes a row. Leaving is invisible here — the gateway runs
     without the members intent — so a sweep would have to guess, and guessing
@@ -422,8 +418,8 @@ CENTRAL_BANK_LEDGER_ID: Final[str] = "central_bank"
 _JACKPOT_SEEDS: Final[Mapping[str, int]] = {"dragon_gate": 1_000}
 
 _loan_accept_lock = LoopLocalLock()
-type _TopNCacheKey = tuple[int, int | None, bool]
-type _TopLosersCacheKey = tuple[int, int, bool, datetime]
+type _TopNCacheKey = tuple[int | None, bool]
+type _TopLosersCacheKey = tuple[int, bool, datetime]
 _top_n_cache: dict[_TopNCacheKey, tuple[float, tuple[LeaderboardEntry, ...]]] = {}
 _top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEntry, ...]]] = {}
 
@@ -438,6 +434,16 @@ def invalidate_economy_leaderboard_cache() -> None:
     """
     _top_n_cache.clear()
     _top_losers_cache.clear()
+
+
+async def _commit_balance_write(session: AsyncSession) -> None:
+    """Commits a write that moved a balance, then clears the leaderboard caches.
+
+    The clear has to follow the commit: cleared any earlier, a leaderboard read in between
+    caches the rows the write is about to replace, and serves them until the TTL runs out.
+    """
+    await session.commit()
+    invalidate_economy_leaderboard_cache()
 
 
 def _cached_leaderboard_rows[K, R](
@@ -685,7 +691,6 @@ async def _apply_daily_casino_delta_in_session(
             },
         )
     )
-    invalidate_economy_leaderboard_cache()
 
 
 async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper keeps income writes atomic
@@ -705,8 +710,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
         statement=_build_credit_upsert(user_id=user_id, name=name, amount=amount, now=now)
     )
     new_balance = result.scalar_one()
-    invalidate_economy_leaderboard_cache()
-    return CreditResult(new_balance=new_balance, credited_amount=amount)
+    return CreditResult(new_balance=new_balance)
 
 
 async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and delta state
@@ -725,7 +729,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
         )
         return read_result.scalar_one_or_none() or 0, 0
 
-    for _ in range(_CLAMPED_DELTA_MAX_RETRIES):
+    for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         read_result = await session.execute(
             statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
         )
@@ -782,7 +786,6 @@ async def _try_insert_clamped_positive_delta_in_session(
     inserted_balance = insert_result.scalar_one_or_none()
     if inserted_balance is None:
         return None
-    invalidate_economy_leaderboard_cache()
     return inserted_balance, delta
 
 
@@ -813,8 +816,6 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     )
     if update_result.scalar_one_or_none() is None:
         return None
-    if applied != 0:
-        invalidate_economy_leaderboard_cache()
     return new_balance, applied
 
 
@@ -831,10 +832,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     )
     stmt = _build_signed_delta_upsert(user_id=user_id, name=name, delta=delta, now=now)
     result = await session.execute(statement=stmt)
-    new_balance = result.scalar_one()
-    if delta != 0:
-        invalidate_economy_leaderboard_cache()
-    return new_balance
+    return result.scalar_one()
 
 
 async def _apply_casino_ledger_delta_in_session(
@@ -925,13 +923,12 @@ async def _credit_central_bank_ledger_in_session(
     )
 
 
-async def _rollback_sessions(*sessions: AsyncSession) -> None:
-    """Rolls back sessions without masking the original settlement exception."""
-    for session in sessions:
-        try:
-            await session.rollback()
-        except Exception:
-            logfire.warn("Failed to roll back settlement session", _exc_info=True)
+async def _rollback_session(session: AsyncSession) -> None:
+    """Rolls back a session without masking the original settlement exception."""
+    try:
+        await session.rollback()
+    except Exception:
+        logfire.warn("Failed to roll back settlement session", _exc_info=True)
 
 
 async def get_casino_ledger() -> CasinoLedgerSnapshot:
@@ -957,33 +954,7 @@ async def get_casino_ledger() -> CasinoLedgerSnapshot:
     )
 
 
-async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
-    """Returns the current-day casino loss/win/net for one user.
-
-    Returns all-zero when no row exists or when the stored counters are from a
-    previous Taipei day (the next casino settlement will reset them anyway).
-    """
-    await _ensure_schema()
-    today_midnight = _taipei_midnight(now=_database_now())
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(
-                CasinoAccount.daily_loss,
-                CasinoAccount.daily_win,
-                CasinoAccount.daily_net,
-                CasinoAccount.day_started_at,
-            ).where(CasinoAccount.user_id == user_id)
-        )
-        row = result.one_or_none()
-    if row is None:
-        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
-    daily_loss, daily_win, daily_net, day_started_at = row
-    if day_started_at is None or _as_taipei(dt=day_started_at) != today_midnight:
-        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
-    return CasinoDailyStats(daily_loss=daily_loss, daily_win=daily_win, daily_net=daily_net)
-
-
-async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
+async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and the delta
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
     """Applies a casino or jackpot player delta and returns the balance plus applied delta.
@@ -1044,7 +1015,7 @@ async def credit_with_repayment(
     """
     await _ensure_schema()
     if amount <= 0:
-        return CreditResult(new_balance=await get_balance(user_id=user_id), credited_amount=0)
+        return CreditResult(new_balance=await get_balance(user_id=user_id))
     now = _database_now()
     async with open_session() as session:
         result = await _credit_with_repayment_in_session(
@@ -1055,8 +1026,7 @@ async def credit_with_repayment(
             amount=amount,
             now=now,
         )
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
 
 
@@ -1065,9 +1035,9 @@ async def adjust_balance(
 ) -> BalanceAdjustmentResult:
     """Applies an explicit manual balance adjustment.
 
-    This is the public maintenance API for scripts and admin tooling. It does
-    not touch loan contracts or daily casino counters, so leaderboards and
-    house P&L remain clean.
+    This is the public maintenance API for scripts and admin tooling. It
+    touches neither loan contracts, daily casino counters nor the casino
+    ledger, so the loss leaderboard and house P&L do not move.
 
     Args:
         user_id: Discord user ID whose balance should be adjusted.
@@ -1107,8 +1077,7 @@ async def adjust_balance(
                 delta=delta,
                 now=now,
             )
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
 
 
@@ -1167,11 +1136,10 @@ async def apply_round_settlement(
                 casino_balance = await _apply_casino_ledger_delta_in_session(
                     session=session, delta=casino_delta_to_apply, now=now
                 )
-            await session.commit()
+            await _commit_balance_write(session=session)
         except Exception:
-            await _rollback_sessions(session)
+            await _rollback_session(session=session)
             raise
-    invalidate_economy_leaderboard_cache()
     return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
 
 
@@ -1196,23 +1164,6 @@ async def apply_blackjack_settlement(
         player_delta=player_delta,
         casino_delta=casino_delta,
     )
-
-
-async def get_jackpot_pool(game_id: str) -> int:
-    """Returns the current `pool_balance` for a game's shared jackpot.
-
-    Seeded pools are replenished before returning if an older process left them
-    drained. Returns `0` when the row hasn't been seeded yet so a
-    freshly-introduced game can short-circuit cleanly.
-
-    Args:
-        game_id: Game identifier (e.g. `"dragon_gate"`).
-
-    Returns:
-        The current pool balance in points.
-    """
-    snapshot = await get_jackpot_snapshot(game_id=game_id)
-    return snapshot.balance
 
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
@@ -1342,7 +1293,7 @@ async def _claim_jackpot_payout_in_session(
         )
         return 0, snapshot, False
 
-    for _ in range(_JACKPOT_CLAIM_MAX_RETRIES):
+    for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=now
         )
@@ -1563,9 +1514,10 @@ async def apply_jackpot_settlement_batch(
                     session=session, game_id=game_id, now=now
                 )
 
-            await session.commit()
             if any(delta != 0 for delta in applied_player_deltas.values()):
-                invalidate_economy_leaderboard_cache()
+                await _commit_balance_write(session=session)
+            else:
+                await session.commit()
             return JackpotSettlementBatchResult(
                 player_balances=player_balances,
                 applied_player_deltas=applied_player_deltas,
@@ -1599,7 +1551,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
     cost = VIP_PURCHASE_COST
 
     async with open_session() as session:
-        for _ in range(_VIP_PURCHASE_MAX_RETRIES):
+        for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
             read_result = await session.execute(
                 statement=select(UserWallet.balance, UserAccount.is_vip, UserAccount.name)
                 .select_from(UserAccount)
@@ -1652,8 +1604,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 await session.rollback()
                 continue
 
-            await session.commit()
-            invalidate_economy_leaderboard_cache()
+            await _commit_balance_write(session=session)
             return VipPurchaseResult(new_balance=wallet_row[0], cost=cost)
 
         return None
@@ -1710,15 +1661,19 @@ async def get_admin(user_id: int) -> bool:
         return bool(result.scalar_one_or_none())
 
 
-async def _set_account_flag(
-    user_id: int, name: str, flag: Literal["is_admin"], value: bool, avatar_url: str
-) -> bool:
-    """Grants or revokes one `user_account` permission flag.
+async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
+    """Sets the economy admin flag for a Discord user.
 
     Granting creates the identity row if the user has never touched the economy
     system; no wallet row is created, so the balance still reads 0. Revoking
     updates an existing row only; missing users are left untouched so revoke
     operations do not create empty account rows.
+
+    Args:
+        user_id: Discord user ID to modify.
+        name: Last-seen Discord username to store when available.
+        is_admin: Desired admin flag value.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         `True` when a row was created or updated; `False` when revoking a
@@ -1727,26 +1682,24 @@ async def _set_account_flag(
     await _ensure_schema()
     now = _database_now()
     effective_name = name or str(user_id)
-    values: dict[str, Any] = {flag: value, "updated_at": now}
+    values: dict[str, Any] = {"is_admin": is_admin, "updated_at": now}
     if name:
         values["name"] = effective_name
     if avatar_url:
         values["avatar_url"] = avatar_url
     async with open_session() as session:
-        if value:
-            insert_values: dict[str, Any] = {
-                "user_id": user_id,
-                "name": effective_name,
-                "avatar_url": avatar_url,
-                "updated_at": now,
-                "is_vip": False,
-                "is_admin": False,
-                "is_central_banker": False,
-                flag: True,
-            }
+        if is_admin:
             statement = (
                 insert(UserAccount)
-                .values(**insert_values)
+                .values(
+                    user_id=user_id,
+                    name=effective_name,
+                    avatar_url=avatar_url,
+                    updated_at=now,
+                    is_vip=False,
+                    is_admin=True,
+                    is_central_banker=False,
+                )
                 .on_conflict_do_update(index_elements=["user_id"], set_=values)
                 .returning(UserAccount.user_id)
             )
@@ -1760,24 +1713,6 @@ async def _set_account_flag(
         result = await session.execute(statement=statement)
         await session.commit()
         return result.scalar_one_or_none() is not None
-
-
-async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
-    """Sets the economy admin flag for a Discord user.
-
-    Args:
-        user_id: Discord user ID to modify.
-        name: Last-seen Discord username to store when available.
-        is_admin: Desired admin flag value.
-        avatar_url: Last-seen Discord avatar URL to store when available.
-
-    Returns:
-        `True` when a row was created or updated; `False` when revoking a
-        missing user.
-    """
-    return await _set_account_flag(
-        user_id=user_id, name=name, flag="is_admin", value=is_admin, avatar_url=avatar_url
-    )
 
 
 async def get_account(user_id: int) -> AccountSnapshot | None:
@@ -1897,8 +1832,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         credit_result = await session.execute(statement=credit_stmt)
         receiver_balance = credit_result.scalar_one()
 
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return TransferResult(
             sender_balance=sender_balance,
             receiver_balance=receiver_balance,
@@ -1907,7 +1841,9 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         )
 
 
-async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[LeaderboardEntry]:
+async def top_n(
+    limit: int | None = LEADERBOARD_SIZE, include_hidden: bool = False
+) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
     Hidden accounts are the only rows dropped (`include_hidden`): the bot ranks
@@ -1929,7 +1865,7 @@ async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[Le
     await _ensure_schema()
     if limit is not None and limit <= 0:
         return []
-    cache_key: _TopNCacheKey = (id(_engine), limit, include_hidden)
+    cache_key: _TopNCacheKey = (limit, include_hidden)
     cached_rows = _cached_leaderboard_rows(cache=_top_n_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
@@ -1951,7 +1887,9 @@ async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[Le
         return list(rows)
 
 
-async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
+async def top_losers(
+    limit: int = LEADERBOARD_SIZE, include_hidden: bool = False
+) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
     The leaderboard reads persisted `casino_account` daily counters. Writes lazily reset stale
@@ -1973,7 +1911,7 @@ async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[Loss
         return []
     now = _database_now()
     today_midnight = _taipei_midnight(now=now)
-    cache_key: _TopLosersCacheKey = (id(_engine), limit, include_hidden, today_midnight)
+    cache_key: _TopLosersCacheKey = (limit, include_hidden, today_midnight)
     cached_rows = _cached_leaderboard_rows(cache=_top_losers_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
@@ -1997,7 +1935,7 @@ async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[Loss
         result = await session.execute(statement=stmt)
         rows: list[LossLeaderboardEntry] = []
         for row in result.all():
-            loss_amount = _stored_int_to_int(value=row[3])
+            loss_amount = row[3]
             if loss_amount <= 0:
                 continue
             rows.append(
@@ -2025,7 +1963,6 @@ def _loan_proposal_view(proposal: LoanProposal) -> LoanProposalView:
         lender_name=proposal.lender_name,
         amount=proposal.amount,
         monthly_rate_bps=proposal.monthly_rate_bps,
-        escrow_amount=proposal.escrow_amount,
         created_at=proposal.created_at,
     )
 
@@ -2056,23 +1993,64 @@ def _loan_proposal_is_expired(proposal: LoanProposal, now: datetime) -> bool:
     return elapsed_seconds >= LOAN_PROPOSAL_TIMEOUT_SECONDS
 
 
+async def _decide_pending_proposal_in_session(
+    session: AsyncSession, proposal_id: int, status: LoanProposalStatus, now: datetime
+) -> bool:
+    """Moves a proposal out of pending to `status` inside the caller's session.
+
+    Returns:
+        False when the proposal was no longer pending, because another decision got there
+        first; nothing is written then.
+    """
+    result = await session.execute(
+        statement=update(LoanProposal)
+        .where(LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING)
+        .values(status=status, updated_at=now)
+        .returning(LoanProposal.id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def _reject_expired_loan_proposal_in_session(
     session: AsyncSession, proposal: LoanProposal, now: datetime
 ) -> LoanProposalView | None:
     """Marks an expired pending proposal as rejected inside the caller's session."""
     if not _loan_proposal_is_expired(proposal=proposal, now=now):
         return None
-    status_result = await session.execute(
-        statement=update(LoanProposal)
-        .where(LoanProposal.id == proposal.id, LoanProposal.status == LoanProposalStatus.PENDING)
-        .values(status=LoanProposalStatus.REJECTED, updated_at=now)
-        .returning(LoanProposal.id)
-    )
-    if status_result.scalar_one_or_none() is None:
+    if not await _decide_pending_proposal_in_session(
+        session=session, proposal_id=proposal.id, status=LoanProposalStatus.REJECTED, now=now
+    ):
         return None
     proposal.status = LoanProposalStatus.REJECTED
     proposal.updated_at = now
     return _loan_proposal_view(proposal=proposal)
+
+
+async def _undecided_proposal_in_session(
+    session: AsyncSession, proposal_id: int, now: datetime, creator_id: int | None = None
+) -> LoanProposal | None:
+    """Loads a pending proposal that is still inside its decision window.
+
+    One whose window has passed is rejected and committed here instead. That one reads as
+    None, as does a proposal that is missing, already decided, or (given `creator_id`)
+    created by someone else.
+    """
+    statement = select(LoanProposal).where(
+        LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
+    )
+    if creator_id is not None:
+        statement = statement.where(LoanProposal.creator_id == creator_id)
+    result = await session.execute(statement=statement)
+    proposal = result.scalar_one_or_none()
+    if proposal is None:
+        return None
+    expired = await _reject_expired_loan_proposal_in_session(
+        session=session, proposal=proposal, now=now
+    )
+    if expired is not None:
+        await session.commit()
+        return None
+    return proposal
 
 
 def _loan_interest_delta(
@@ -2259,6 +2237,43 @@ async def record_guild_participant(guild_id: int, user_id: int) -> None:
         await session.commit()
 
 
+async def _insert_loan_proposal(  # noqa: PLR0913 -- a proposal records both parties and its terms
+    kind: LoanProposalKind,
+    lender_type: LoanLenderType,
+    borrower_id: int,
+    borrower_name: str,
+    borrower_avatar_url: str,
+    lender_id: int | None,
+    lender_name: str,
+    lender_avatar_url: str,
+    amount: int,
+    monthly_rate_bps: int,
+) -> LoanProposalView:
+    """Records a pending proposal the borrower created, its rate clamped into range."""
+    now = _database_now()
+    async with open_session() as session:
+        proposal = LoanProposal(
+            kind=kind,
+            status=LoanProposalStatus.PENDING,
+            lender_type=lender_type,
+            borrower_id=borrower_id,
+            borrower_name=borrower_name or str(borrower_id),
+            borrower_avatar_url=borrower_avatar_url,
+            lender_id=lender_id,
+            lender_name=lender_name,
+            lender_avatar_url=lender_avatar_url,
+            creator_id=borrower_id,
+            amount=amount,
+            monthly_rate_bps=clamp_loan_rate_bps(monthly_rate_bps=monthly_rate_bps),
+            escrow_amount=0,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(proposal)
+        await session.commit()
+        return _loan_proposal_view(proposal=proposal)
+
+
 async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both identities
     borrower_id: int,
     borrower_name: str,
@@ -2273,30 +2288,18 @@ async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both 
     await _ensure_schema()
     if amount <= 0 or borrower_id == lender_id:
         return None
-    now = _database_now()
-    async with open_session() as session:
-        proposal = LoanProposal(
-            kind=LoanProposalKind.PERSONAL_REQUEST,
-            status=LoanProposalStatus.PENDING,
-            lender_type=LoanLenderType.USER,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name or str(borrower_id),
-            borrower_avatar_url=borrower_avatar_url,
-            lender_id=lender_id,
-            lender_name=lender_name or str(lender_id),
-            lender_avatar_url=lender_avatar_url,
-            creator_id=borrower_id,
-            amount=amount,
-            monthly_rate_bps=max(
-                MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps)
-            ),
-            escrow_amount=0,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(proposal)
-        await session.commit()
-        return _loan_proposal_view(proposal=proposal)
+    return await _insert_loan_proposal(
+        kind=LoanProposalKind.PERSONAL_REQUEST,
+        lender_type=LoanLenderType.USER,
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_id=lender_id,
+        lender_name=lender_name or str(lender_id),
+        lender_avatar_url=lender_avatar_url,
+        amount=amount,
+        monthly_rate_bps=monthly_rate_bps,
+    )
 
 
 async def create_central_bank_loan_request(
@@ -2310,30 +2313,18 @@ async def create_central_bank_loan_request(
     await _ensure_schema()
     if amount <= 0:
         return None
-    now = _database_now()
-    async with open_session() as session:
-        proposal = LoanProposal(
-            kind=LoanProposalKind.CENTRAL_BANK_REQUEST,
-            status=LoanProposalStatus.PENDING,
-            lender_type=LoanLenderType.CENTRAL_BANK,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name or str(borrower_id),
-            borrower_avatar_url=borrower_avatar_url,
-            lender_id=None,
-            lender_name="Central Bank",
-            lender_avatar_url="",
-            creator_id=borrower_id,
-            amount=amount,
-            monthly_rate_bps=max(
-                MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps)
-            ),
-            escrow_amount=0,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(proposal)
-        await session.commit()
-        return _loan_proposal_view(proposal=proposal)
+    return await _insert_loan_proposal(
+        kind=LoanProposalKind.CENTRAL_BANK_REQUEST,
+        lender_type=LoanLenderType.CENTRAL_BANK,
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_id=None,
+        lender_name="Central Bank",
+        lender_avatar_url="",
+        amount=amount,
+        monthly_rate_bps=monthly_rate_bps,
+    )
 
 
 async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | None:
@@ -2364,31 +2355,14 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=select(LoanProposal).where(
-                LoanProposal.id == proposal_id,
-                LoanProposal.status == LoanProposalStatus.PENDING,
-                LoanProposal.creator_id == actor_id,
-            )
+        proposal = await _undecided_proposal_in_session(
+            session=session, proposal_id=proposal_id, now=now, creator_id=actor_id
         )
-        proposal = result.scalar_one_or_none()
         if proposal is None:
             return None
-        expired = await _reject_expired_loan_proposal_in_session(
-            session=session, proposal=proposal, now=now
-        )
-        if expired is not None:
-            await session.commit()
-            return None
-        status_result = await session.execute(
-            statement=update(LoanProposal)
-            .where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
-            .values(status=LoanProposalStatus.CANCELED, updated_at=now)
-            .returning(LoanProposal.id)
-        )
-        if status_result.scalar_one_or_none() is None:
+        if not await _decide_pending_proposal_in_session(
+            session=session, proposal_id=proposal_id, status=LoanProposalStatus.CANCELED, now=now
+        ):
             await session.rollback()
             return None
         proposal.status = LoanProposalStatus.CANCELED
@@ -2403,19 +2377,10 @@ async def reject_loan_proposal(
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=select(LoanProposal).where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
+        proposal = await _undecided_proposal_in_session(
+            session=session, proposal_id=proposal_id, now=now
         )
-        proposal = result.scalar_one_or_none()
         if proposal is None:
-            return None
-        expired = await _reject_expired_loan_proposal_in_session(
-            session=session, proposal=proposal, now=now
-        )
-        if expired is not None:
-            await session.commit()
             return None
         allowed = False
         if proposal.kind == LoanProposalKind.PERSONAL_REQUEST:
@@ -2424,15 +2389,9 @@ async def reject_loan_proposal(
             allowed = approver_is_guild_admin
         if not allowed:
             return None
-        status_result = await session.execute(
-            statement=update(LoanProposal)
-            .where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
-            .values(status=LoanProposalStatus.REJECTED, updated_at=now)
-            .returning(LoanProposal.id)
-        )
-        if status_result.scalar_one_or_none() is None:
+        if not await _decide_pending_proposal_in_session(
+            session=session, proposal_id=proposal_id, status=LoanProposalStatus.REJECTED, now=now
+        ):
             await session.rollback()
             return None
         proposal.status = LoanProposalStatus.REJECTED
@@ -2480,19 +2439,10 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
     async with open_session() as session:
         # Acquire SQLite's write lock before reading capacity or proposal state.
         await session.execute(statement=text("BEGIN IMMEDIATE"))
-        result = await session.execute(
-            statement=select(LoanProposal).where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
+        proposal = await _undecided_proposal_in_session(
+            session=session, proposal_id=proposal_id, now=now
         )
-        proposal = result.scalar_one_or_none()
         if proposal is None:
-            return None
-        expired = await _reject_expired_loan_proposal_in_session(
-            session=session, proposal=proposal, now=now
-        )
-        if expired is not None:
-            await session.commit()
             return None
 
         lender_balance: int | None = None
@@ -2544,15 +2494,9 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
         else:
             return None
 
-        status_result = await session.execute(
-            statement=update(LoanProposal)
-            .where(
-                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
-            )
-            .values(status=LoanProposalStatus.ACCEPTED, updated_at=now)
-            .returning(LoanProposal.id)
-        )
-        if status_result.scalar_one_or_none() is None:
+        if not await _decide_pending_proposal_in_session(
+            session=session, proposal_id=proposal_id, status=LoanProposalStatus.ACCEPTED, now=now
+        ):
             await session.rollback()
             return None
 
@@ -2572,7 +2516,6 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             )
         )
         borrower_balance = credit_result.scalar_one()
-        invalidate_economy_leaderboard_cache()
         # Prepay MIN_INTEREST_DAYS of interest so borrowers cannot dodge interest
         # by repaying immediately. last_interest_accrued_at points past the
         # prepaid window, so _loan_interest_delta returns 0 until real time
@@ -2602,8 +2545,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             updated_at=now,
         )
         session.add(contract)
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         if proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST and guild_id is not None:
             central_status = await get_central_bank_status(
                 guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
@@ -2673,8 +2615,6 @@ async def _pay_lender_side_in_session(
             user_id=contract.lender_id, name=contract.lender_name, amount=paid, now=now
         )
     )
-    # The borrower debit in the caller already cleared the leaderboard cache for this
-    # transaction, so the lender credit needs no extra invalidation.
     return credit_result.scalar_one()
 
 
@@ -2760,23 +2700,46 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
     )
 
 
-async def repay_personal_loans(
+async def _collect_loan_payment(  # noqa: PLR0913 -- a payment names both sides, the amount and its kind
     borrower_id: int,
     borrower_name: str,
-    lender_id: int,
-    amount: int,
-    borrower_avatar_url: str = "",
+    borrower_avatar_url: str,
+    lender_type: LoanLenderType,
+    lender_id: int | None,
+    amount: int | None,
+    forced: bool,
+    guild_id: int | None = None,
 ) -> LoanPaymentResult | None:
-    """Repays active personal loans from `borrower_id` to `lender_id`."""
+    """Applies one repayment or forced collection across a borrower's contracts and commits it.
+
+    A forced collection accrues interest on every contract before taking anything, and a
+    `None` amount then takes everything owed. A repayment accrues only the contracts its
+    amount reaches. With `guild_id`, a borrower who does not take part in that guild's
+    economy is refused.
+
+    Returns:
+        The committed payment, or None when nothing was paid.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
+        if guild_id is not None and not await _is_guild_participant_in_session(
+            session=session, guild_id=guild_id, user_id=borrower_id
+        ):
+            return None
         contracts = await _loan_contracts_for_payment_in_session(
-            session=session,
-            borrower_id=borrower_id,
-            lender_type=LoanLenderType.USER,
-            lender_id=lender_id,
+            session=session, borrower_id=borrower_id, lender_type=lender_type, lender_id=lender_id
         )
+        if forced:
+            for contract in contracts:
+                await _accrue_contract_interest_in_session(
+                    session=session, contract=contract, now=now
+                )
+        if amount is None:
+            total_owed = sum(
+                contract.principal_remaining + contract.interest_due for contract in contracts
+            )
+            amount = max(total_owed, 1)
         result = await _apply_loan_payment_in_session(
             session=session,
             contracts=contracts,
@@ -2789,9 +2752,27 @@ async def repay_personal_loans(
         if result is None:
             await session.rollback()
             return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
+        await _commit_balance_write(session=session)
         return result
+
+
+async def repay_personal_loans(
+    borrower_id: int,
+    borrower_name: str,
+    lender_id: int,
+    amount: int,
+    borrower_avatar_url: str = "",
+) -> LoanPaymentResult | None:
+    """Repays active personal loans from `borrower_id` to `lender_id`."""
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.USER,
+        lender_id=lender_id,
+        amount=amount,
+        forced=False,
+    )
 
 
 async def call_personal_loans(
@@ -2802,63 +2783,30 @@ async def call_personal_loans(
     borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
     """Forcibly collects active personal loans owed to `lender_id`."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        contracts = await _loan_contracts_for_payment_in_session(
-            session=session,
-            borrower_id=borrower_id,
-            lender_type=LoanLenderType.USER,
-            lender_id=lender_id,
-        )
-        for contract in contracts:
-            await _accrue_contract_interest_in_session(session=session, contract=contract, now=now)
-        total_owed = sum(
-            contract.principal_remaining + contract.interest_due for contract in contracts
-        )
-        payment_amount = amount if amount is not None else max(total_owed, 1)
-        result = await _apply_loan_payment_in_session(
-            session=session,
-            contracts=contracts,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name,
-            borrower_avatar_url=borrower_avatar_url,
-            amount=payment_amount,
-            now=now,
-        )
-        if result is None:
-            await session.rollback()
-            return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
-        return result
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.USER,
+        lender_id=lender_id,
+        amount=amount,
+        forced=True,
+    )
 
 
 async def repay_central_bank_loans(
     borrower_id: int, borrower_name: str, amount: int, borrower_avatar_url: str = ""
 ) -> LoanPaymentResult | None:
     """Repays active central-bank loans for a borrower."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        contracts = await _loan_contracts_for_payment_in_session(
-            session=session, borrower_id=borrower_id, lender_type=LoanLenderType.CENTRAL_BANK
-        )
-        result = await _apply_loan_payment_in_session(
-            session=session,
-            contracts=contracts,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name,
-            borrower_avatar_url=borrower_avatar_url,
-            amount=amount,
-            now=now,
-        )
-        if result is None:
-            await session.rollback()
-            return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
-        return result
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.CENTRAL_BANK,
+        lender_id=None,
+        amount=amount,
+        forced=False,
+    )
 
 
 async def call_central_bank_loans(
@@ -2875,37 +2823,16 @@ async def call_central_bank_loans(
     by creating one, so without this an administrator anywhere could sweep the
     balance of any borrower in the whole economy.
     """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        if not await _is_guild_participant_in_session(
-            session=session, guild_id=guild_id, user_id=borrower_id
-        ):
-            return None
-        contracts = await _loan_contracts_for_payment_in_session(
-            session=session, borrower_id=borrower_id, lender_type=LoanLenderType.CENTRAL_BANK
-        )
-        for contract in contracts:
-            await _accrue_contract_interest_in_session(session=session, contract=contract, now=now)
-        total_owed = sum(
-            contract.principal_remaining + contract.interest_due for contract in contracts
-        )
-        payment_amount = amount if amount is not None else max(total_owed, 1)
-        result = await _apply_loan_payment_in_session(
-            session=session,
-            contracts=contracts,
-            borrower_id=borrower_id,
-            borrower_name=borrower_name,
-            borrower_avatar_url=borrower_avatar_url,
-            amount=payment_amount,
-            now=now,
-        )
-        if result is None:
-            await session.rollback()
-            return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
-        return result
+    return await _collect_loan_payment(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        borrower_avatar_url=borrower_avatar_url,
+        lender_type=LoanLenderType.CENTRAL_BANK,
+        lender_id=None,
+        amount=amount,
+        forced=True,
+        guild_id=guild_id,
+    )
 
 
 async def list_loan_contracts(
