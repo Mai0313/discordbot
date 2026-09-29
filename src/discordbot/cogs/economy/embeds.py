@@ -178,25 +178,9 @@ def build_error_embed(
     return embed
 
 
-def build_simple_embed(  # noqa: PLR0913 -- generic single-section embed exposes each optional slot
-    *,
-    title: str,
-    description: str,
-    color: int,
-    author_name: str | None = None,
-    author_icon_url: str | None = None,
-    thumbnail_url: str | None = None,
-    footer_text: str | None = None,
-) -> Embed:
-    """Builds a single-section embed with optional author, thumbnail, and footer."""
-    embed = Embed(title=title, description=description, color=color)
-    if author_name is not None:
-        embed.set_author(name=author_name, icon_url=author_icon_url)
-    if thumbnail_url is not None:
-        _set_optional_thumbnail(embed=embed, avatar_url=thumbnail_url)
-    if footer_text is not None:
-        embed.set_footer(text=footer_text)
-    return embed
+def build_simple_embed(*, title: str, description: str, color: int) -> Embed:
+    """Builds a single-section embed."""
+    return Embed(title=title, description=description, color=color)
 
 
 def build_invalid_amount_embed(*, title: str) -> Embed:
