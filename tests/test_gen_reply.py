@@ -163,7 +163,6 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
-from tests.test_usage_log import _lines
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -188,6 +187,7 @@ from tests.helpers.llm_input import (
     extract_user_memory_blocks,
     extract_server_memory_block,
 )
+from tests.helpers.usage_log import usage_records
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
 # stays off the live store.
@@ -5949,7 +5949,7 @@ async def test_a_reply_records_the_route_it_took(
     message = FakeMessage(content="<@999> recap", author=FakeAuthor(user_id=7))
     await cog.on_message(message=as_message(fake=message))
 
-    (record,) = _lines(directory=usage_log_isolated_dir)
+    (record,) = usage_records(directory=usage_log_isolated_dir)
     assert (record["kind"], record["name"]) == ("reply", "QA")
     assert record["user_id"] == 7
     assert message.guild is not None
@@ -5961,7 +5961,7 @@ async def test_a_reply_records_the_route_it_took(
     empty.guild = None
     await cog.on_message(message=as_message(fake=empty))
 
-    assert len(_lines(directory=usage_log_isolated_dir)) == 1
+    assert len(usage_records(directory=usage_log_isolated_dir)) == 1
 
 
 async def test_a_failed_reply_records_that_it_never_routed(
@@ -5976,7 +5976,7 @@ async def test_a_failed_reply_records_that_it_never_routed(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=7))
     await cog.on_message(message=as_message(fake=message))
 
-    (record,) = _lines(directory=usage_log_isolated_dir)
+    (record,) = usage_records(directory=usage_log_isolated_dir)
     assert (record["kind"], record["name"]) == ("reply", UNROUTED_REPLY)
 
 
