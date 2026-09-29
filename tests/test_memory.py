@@ -98,6 +98,7 @@ from discordbot.services.memory.prompts import (
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
+from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.constants import (
     COMPACTION_TARGET_CHARS,
     COMPACTION_TRIGGER_CHARS,
@@ -4357,6 +4358,39 @@ async def test_pipeline_dedupes_against_evidence_already_in_detail(
     await _wait_for_inflight()
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
     assert read_raw_entries(scope=USER_SCOPE) == ""
+
+
+async def test_pipeline_dedupe_keeps_a_detail_tail_cut_mid_block_to_itself(
+    memory_isolated_dir: Path,
+) -> None:
+    """A detail window that opens inside a block must not lend its fields to a staged one.
+
+    With no entry header inside the window, the tail starts with fields whose key was cut off.
+    Joined after `raw.md`, its `- source: guild 2` would become the source of the last staged
+    block, so a same-key note from guild 2 would be dropped as already evidenced there.
+    """
+    append_detail(
+        scope=USER_SCOPE,
+        text=(
+            "## 2026-01-01T00:00:00.000000+00:00\n### stable_fact\n- normalized_key: fact.old\n"
+            f"- evidence_quote: {'長' * MEMORY_DETAIL_CONTEXT_MAX_CHARS}\n"
+            "- source: guild 2\n- sharing: source_only\n- summary_zh: 舊"
+        ),
+    )
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_memory_observations(
+            observations=(_observation(summary="住在台中", normalized_key="fact.city"),),
+            source="guild 1",
+        ),
+    )
+    # Holds the consolidation back, so the staged batch stays readable in `raw.md`.
+    consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = _draft("住在台中", normalized_key="fact.city")
+    _schedule(writer=writer, subject=user_subject(user_id=USER_ID, guild_id=2))
+    await _wait_for_inflight()
+    assert read_raw_entries(scope=USER_SCOPE).count("- source: guild 2") == 1
 
 
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
