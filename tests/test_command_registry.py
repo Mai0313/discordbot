@@ -46,7 +46,7 @@ def _on_ready_calls() -> list[str]:
     """Every attribute call in `DiscordBot.on_ready`, in source order.
 
     Read off the source rather than by driving `on_ready`, which would need a stub for the
-    sync, both `tasks.Loop` starts and `application_info`, to pin one statement's position.
+    sync, the `tasks.Loop` start and `application_info`, to pin one statement's position.
     """
     module = ast.parse(inspect.getsource(cli))
     bot = next(
