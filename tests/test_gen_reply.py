@@ -199,6 +199,10 @@ from tests.helpers.llm_input import (
     extract_instagram_context_block,
 )
 
+# A reply always reads memory, with no caller-side switch to turn it off, so every test here
+# stays off the live store.
+pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
+
 TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
@@ -3976,7 +3980,7 @@ async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
 
 
 async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
-    monkeypatch: pytest.MonkeyPatch, memory_isolated_dir: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pins the wiring, not the helper: the QA answer path must go through the retry.
 
@@ -3984,7 +3988,6 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
     quietly put back on a bare `streamer.stream(...)`, except for the second `create` this
     asserts on.
     """
-    del memory_isolated_dir
     _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="hi")
@@ -4100,7 +4103,7 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
 
 
 async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_path(
-    monkeypatch: pytest.MonkeyPatch, memory_isolated_dir: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The IMAGE route's streamer renders onto the delivered image, so it publishes nothing.
 
@@ -4108,7 +4111,6 @@ async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_p
     the picture the user was handed must not be the message that gets an error embed written
     over it.
     """
-    del memory_isolated_dir
     _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
@@ -5068,11 +5070,8 @@ async def test_render_history_degrades_over_budget_attachments_to_markers(
     assert all(part["type"] != "input_text" for part in newest[1:])
 
 
-async def test_gen_reply_routes_and_handlers_without_api(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
-    del memory_isolated_dir
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "QA"
@@ -5151,8 +5150,6 @@ async def test_gen_reply_routes_and_handlers_without_api(
             return "done"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
-    # The reply path now always reads memory, so this test takes `memory_isolated_dir` to
-    # keep it off the live store rather than relying on a caller-side switch.
     await _reply_via_pipeline(cog=cog, message=message, system_prompt="system")
     assert _recorded(cog).responses.create_streams[-1] is True
     assert streamed[-1] is message
@@ -5908,7 +5905,6 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     route: Literal["IMAGE", "VIDEO", "QA"],
     expected_call: str,
@@ -6085,7 +6081,7 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies bot messages, unmentioned guild messages, empty prompts, and errors."""
     cog = _cog()
@@ -6141,7 +6137,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
 
 
 async def test_a_reply_records_the_route_it_took(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
     """One reply turn is one usage record, named after the route that served it."""
     cog = _cog()
@@ -6197,7 +6193,7 @@ async def test_a_reply_records_the_route_it_took(
 
 
 async def test_a_failed_reply_records_that_it_never_routed(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
     """Someone still talked to the bot, so a failure before the router is still recorded."""
     cog = _cog()
@@ -6237,7 +6233,7 @@ async def test_a_failed_reply_records_that_it_never_routed(
 
 
 async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The picks are never resolved when the route raises, so the turn must cancel the build."""
     cog = _cog()
@@ -6408,7 +6404,7 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
 
 
 async def test_on_message_consumes_speculative_context_on_image_route(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The IMAGE route hands its speculative context to the image handler, not discards it."""
     cog = _cog()
@@ -6599,9 +6595,7 @@ def _link_config() -> LLMConfig:
     ],
 )
 async def test_on_message_does_not_start_incidental_link_context(
-    memory_isolated_dir: object,
-    monkeypatch: pytest.MonkeyPatch,
-    case: tuple[str, str, str, Callable[..., bool]],
+    monkeypatch: pytest.MonkeyPatch, case: tuple[str, str, str, Callable[..., bool]]
 ) -> None:
     """An incidental registered link starts no source work and injects no source claim."""
     source, builder, url, has_context_block = case
@@ -6641,7 +6635,7 @@ async def test_on_message_does_not_start_incidental_link_context(
 
 
 async def test_on_message_injects_douyin_context_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A QA message with a Douyin URL injects the read post just before the current message."""
     cog = _cog()
@@ -6687,7 +6681,7 @@ async def test_on_message_injects_douyin_context_before_current(
 
 
 async def test_on_message_reads_a_linked_post_without_a_gemini_key(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A keyless deployment still gets the linked post's text, not a generic failure.
 
@@ -6730,9 +6724,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     assert has_douyin_context_block(request=answer)
 
 
-async def test_on_message_skips_a_non_post_douyin_link(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_message_skips_a_non_post_douyin_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """A profile or live-room link is not a post, so reading it would only waste a request."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -6770,9 +6762,7 @@ async def test_on_message_skips_a_non_post_douyin_link(
     assert not has_douyin_context_block(request=answer)
 
 
-async def test_on_message_douyin_media_ingest_kill_switch(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_message_douyin_media_ingest_kill_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -6861,7 +6851,7 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
 
 
 async def test_on_message_douyin_grace_timeout_injects_notice(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A build slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
@@ -6900,7 +6890,7 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
 
 
 async def test_on_message_link_context_grace_starts_when_route_finishes(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A builder that finishes after the deadline cannot win while preparation is still running."""
     cog = _cog()
@@ -6965,7 +6955,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
 
 
 async def test_on_message_keeps_link_context_finished_before_deadline(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A builder completed before the deadline remains usable after delayed preparation."""
     cog = _cog()
@@ -7024,7 +7014,7 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
 
 
 async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resolver lets a deadline-cancelled builder finish cleanup before injecting its notice."""
     cog = _cog()
@@ -7108,7 +7098,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
 
 
 async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup(  # noqa: PLR0915 -- controls the complete cancellation timeline
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
     cog = _cog()
@@ -7237,7 +7227,7 @@ async def test_run_until_deadline_keeps_result_completed_before_delayed_resume()
 
 
 async def test_on_message_selected_link_contexts_share_one_post_route_grace(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sequential resolution cannot grant every selected builder a fresh timeout."""
     cog = _cog()
@@ -7291,7 +7281,7 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
 
 
 async def test_on_message_injects_threads_context_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
@@ -7340,7 +7330,7 @@ async def test_on_message_injects_threads_context_before_current(
 
 
 async def test_on_message_injects_threads_context_from_the_replied_to_message(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mentioning the bot in a reply to someone else's Threads link still reads that post.
 
@@ -7405,7 +7395,7 @@ _CLIP_SOURCE_CASES = {
 
 @pytest.mark.parametrize("name", list(_CLIP_SOURCE_CASES))
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """Only the discussion sources widened to it; the clip sources stay on the current message."""
     builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
@@ -7493,7 +7483,7 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
 
 
 async def test_on_message_skips_threads_context_without_url(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
@@ -7531,7 +7521,7 @@ async def test_on_message_skips_threads_context_without_url(
 
 
 async def test_on_message_threads_context_grace_timeout_injects_notice(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
@@ -7573,7 +7563,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
 
 
 async def test_on_message_injects_bilibili_context_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A QA message with a Bilibili URL injects the read video just before the current message."""
     cog = _cog()
@@ -7647,7 +7637,7 @@ _DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]
 
 @pytest.mark.parametrize("name", list(_DISCUSSION_SOURCE_CASES))
 async def test_on_message_injects_a_selected_discussion_source_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
+    monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
 ) -> None:
     """The post the router selected reaches the answer input, ahead of the current message.
 
@@ -7696,9 +7686,7 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
     assert separator_index < current_index
 
 
-async def test_on_message_skips_a_non_video_bilibili_link(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_message_skips_a_non_video_bilibili_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """A live-room or space link is not a watchable video, so the build never starts."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -7737,7 +7725,7 @@ async def test_on_message_skips_a_non_video_bilibili_link(
 
 
 async def test_on_message_bilibili_media_ingest_kill_switch(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
@@ -7829,7 +7817,7 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
 
 
 async def test_on_message_bilibili_keyless_disables_media_ingest(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A blank Gemini key turns the ingest flag off even with the kill-switch on.
 
@@ -7872,7 +7860,7 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
 
 
 async def test_on_message_finally_backstop_cancels_link_tasks(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure after QA routing still cancels its selected in-flight link build."""
     cog = _cog()
@@ -7936,7 +7924,7 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
 
 
 async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
     cog = _cog()
@@ -8020,7 +8008,7 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
 
 
 async def test_on_message_bilibili_grace_timeout_injects_notice(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A build slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
@@ -8080,7 +8068,6 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     ],
 )
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     selected_sources: list[
         Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
@@ -8175,7 +8162,7 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
 
 @pytest.mark.parametrize(argnames="describe_capabilities", argvalues=[True, False])
 async def test_handle_message_reply_leads_with_the_capability_reference(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, describe_capabilities: bool
+    monkeypatch: pytest.MonkeyPatch, describe_capabilities: bool
 ) -> None:
     """The feature reference leads the answer input, and only when the route asked for it.
 
@@ -8183,7 +8170,6 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     where it costs the least against a prefix cache. A caller that leaves the flag off must
     get none of it.
     """
-    del memory_isolated_dir
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
@@ -8210,7 +8196,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
 
 
 async def test_handle_message_reply_orders_reference_after_memory_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The answer input puts memory first, then the reference message, then the current message.
 
@@ -8218,7 +8204,6 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     reply pair stays adjacent and reads as the primary context, and the strengthened headers
     spell out the reply relationship.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     monkeypatch.setattr(
@@ -8262,7 +8247,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 
 
 async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The history separator is a label; where the subject may come from is a developer rule.
 
@@ -8273,7 +8258,6 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
     the phase-1 extraction transcript, neither of which is answering a question, which is the
     second reason the rule cannot live on the block itself.
     """
-    del memory_isolated_dir
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
@@ -8336,10 +8320,9 @@ def test_only_the_replied_to_message_claims_the_current_message_is_about_it() ->
 
 
 async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The answer injects server memory, user memory, then the tone note before the current message."""
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -8394,10 +8377,9 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
 
 
 async def test_reply_context_always_injects_the_author_tone_block(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The author's tone note rides every reply, with no selection phase of its own."""
-    del memory_isolated_dir
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
     monkeypatch.setattr(
@@ -8474,7 +8456,7 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
 
 
 async def test_handle_message_reply_answers_with_builtins_and_deterministic_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
@@ -8576,7 +8558,7 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
 
 
 async def test_handle_message_reply_without_stored_memory_keeps_instructions(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
@@ -8643,7 +8625,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 
 
 async def test_memory_markers_route_by_the_message_not_by_the_note(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Whose memory a note lands in is decided from the message, never from the marker body.
 
@@ -8796,9 +8778,8 @@ def test_build_recall_allowlist_escapes_mention_labels() -> None:
     assert "@everyone" not in allowed[1].credit_label
 
 
-def test_recall_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
+def test_recall_user_memories_enforces_allowlist() -> None:
     """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
-    del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=1), text="甲的記憶")
     allowed = {
         1: RecallCandidate(prompt_label="A (a)", credit_label="A (a)"),
@@ -8818,9 +8799,7 @@ def test_recall_user_memories_enforces_allowlist(memory_isolated_dir: object) ->
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
-    memory_isolated_dir: object,
-) -> None:
+def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row() -> None:
     """A member named only by the nickname table is counted, not named and not id-dropped.
 
     The row is community prose the model reads; it can never be the public footer credit
@@ -8830,7 +8809,6 @@ def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
     channel. The bare id that used to fill the gap read as a memory the bot had just
     written rather than as a person it had read, so the count is what the footer gets.
     """
-    del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
 
     memories = recall_user_memories(
@@ -8894,11 +8872,7 @@ _COMPARTMENT_FACTS = {
     ids=["same-guild", "other-guild", "owner-own-dm", "other-owner-in-dm", "group-dm"],
 )
 def test_memory_read_opens_only_the_permitted_compartments(
-    memory_isolated_dir: object,
-    context: RecallContext,
-    compartments: set[str],
-    present: list[str],
-    absent: list[str],
+    context: RecallContext, compartments: set[str], present: list[str], absent: list[str]
 ) -> None:
     """Where a reply happens decides which of an owner's compartments it may open.
 
@@ -8909,7 +8883,6 @@ def test_memory_read_opens_only_the_permitted_compartments(
     `recall_user_memories`, the one call every reply path reads user memory through, so
     a compartment that is not listed is one whose facts never reach the model.
     """
-    del memory_isolated_dir
     for compartment, text in _COMPARTMENT_FACTS.items():
         _seed_fact(scope=user_scope(user_id=1), text=text, compartment=compartment)
 
@@ -8959,9 +8932,8 @@ def test_build_recall_context_by_channel_kind() -> None:
     assert group_context.dm_partner_id is None
 
 
-def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_dir: object) -> None:
+def test_recall_user_memories_fully_locked_reads_as_no_memory() -> None:
     """A memory stored only in another guild resolves to the no-memory signal, uncredited."""
-    del memory_isolated_dir
     _seed_fact(
         scope=user_scope(user_id=1),
         text="他群祕密",
@@ -9073,7 +9045,6 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
     ],
 )
 async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- parametrized columns
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     seeded: dict[int, str],
     server_nick: tuple[int, str, str] | None,
@@ -9090,7 +9061,6 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     are both the pipeline's own. Injection is asserted by id and the offer structurally, never
     by a sentinel substring over a serialized request.
     """
-    del memory_isolated_dir
     cog = _cog()
     for uid, body in seeded.items():
         _seed_fact(scope=user_scope(user_id=uid), text=body)
@@ -9143,10 +9113,9 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
 
 
 async def test_deterministic_memories_are_author_reply_mentions_ordered_and_deduped(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deterministic participants stay author-first and never include the bot twice."""
-    del memory_isolated_dir
     cog = _cog()
     for user_id in (1, 2, 3, 999):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
@@ -9175,10 +9144,9 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
 
 
 async def test_history_only_users_are_not_memory_candidates(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A history author is neither deterministic nor an optional nickname candidate."""
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=2), text="歷史使用者記憶")
@@ -9208,13 +9176,12 @@ async def test_history_only_users_are_not_memory_candidates(
 
 @pytest.mark.parametrize("where", ["private-thread", "group-dm", "dm"])
 async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, where: str
+    monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
     """Outside a public guild channel, an absent nickname-table member is never offered.
 
     The route gets the plain shape, so a pick staged for that member has nowhere to land.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -9254,14 +9221,13 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
 
 
 async def test_optional_picks_use_only_the_remaining_memory_budget(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deterministic users fill seven slots, leaving one optional alias slot.
 
     The route names a deterministic participant first, which must not take that slot: only the
     offered candidates can fill it, in the order the route named them.
     """
-    del memory_isolated_dir
     cog = _cog()
     for user_id in (*range(1, 8), 42, 43):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
@@ -9291,7 +9257,7 @@ async def test_optional_picks_use_only_the_remaining_memory_budget(
 
 
 async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The oblique-reference offer must not be gated on the deterministic lookup finding something.
 
@@ -9300,7 +9266,6 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
     the case it exists for (#663). Nothing downstream needs a non-empty starting list: the
     picked memories build the block from scratch.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=42), text="李董記憶")
     _seed_fact(
@@ -9326,16 +9291,13 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
     assert set(extract_user_memory_blocks(request=answer)) == {42}
 
 
-async def test_an_ask_turn_offers_the_route_no_candidates(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     """`/ask` in a server with a nickname table still gets the plain route shape.
 
     Its synthesized message carries no guild while the surface knows which server it is in, and
     the table is read off the message: the write side can never refresh it from `/ask`, so the
     route there is offered nobody and a pick staged for it has nowhere to land.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -9419,7 +9381,6 @@ async def test_an_ask_turn_offers_the_route_no_candidates(
     ],
 )
 async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametrized columns
-    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     seeded_ids: list[int],
     server_nick: tuple[int, str, str] | None,
@@ -9438,7 +9399,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     their Discord label. The line opens on 讀了 because the write notes share this corner of the
     reply and a reader has to be able to tell them apart at a glance.
     """
-    del memory_isolated_dir
     cog = _cog()
     for uid in seeded_ids:
         _seed_fact(scope=user_scope(user_id=uid), text=f"記憶{uid}")
@@ -9476,10 +9436,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
 
 
 async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_picks(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A triage answer outside its schema loses the optional pick, never the turn."""
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="甲")
     _seed_fact(scope=user_scope(user_id=42), text="不該注入的第三人")
@@ -9537,8 +9496,7 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     ],
     ids=["guild-public", "guild-private", "dm"],
 )
-async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- parametrized columns
-    memory_isolated_dir: object,
+async def test_handle_message_reply_server_memory_gating(
     monkeypatch: pytest.MonkeyPatch,
     has_guild: bool,
     channel_public: bool,
@@ -9551,7 +9509,6 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     guild turn, the per-user write always runs, and the per-server write additionally needs a
     public guild channel.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=server_scope(server_id=1), text="社群風格", section="profile")
     scheduled: list[dict[str, object]] = []
@@ -10071,15 +10028,12 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
 
-async def test_deterministic_memory_lookup_skips_locked_author_memory(
-    memory_isolated_dir: object,
-) -> None:
+async def test_deterministic_memory_lookup_skips_locked_author_memory() -> None:
     """Deterministic lookup injects nothing when memory lives in another guild.
 
     The direct path opens exactly the compartments the optional lookup does, so a
     pick cannot reach a directory the resolver would not have opened.
     """
-    del memory_isolated_dir
     cog = _cog()
     _seed_fact(
         scope=user_scope(user_id=1),
@@ -10141,7 +10095,7 @@ def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
 
 
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
@@ -10217,9 +10171,7 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
 
 
-async def test_on_ready_resume_runs_once(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """on_ready guards the resume so a gateway reconnect does not re-sweep."""
     cog = _cog(bot_user_id=999)
     cog._tasks = set()
