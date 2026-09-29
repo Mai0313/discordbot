@@ -5,6 +5,7 @@ from typing import Any, cast
 import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
+from collections.abc import Callable, Awaitable
 
 import pytest
 from sqlalchemy import text, select, update
@@ -54,14 +55,22 @@ from discordbot.services.economy.database import (
     _taipei_midnight,
     get_jackpot_pool,
     get_casino_ledger,
+    call_personal_loans,
+    accept_loan_proposal,
     get_jackpot_snapshot,
+    repay_personal_loans,
     credit_with_repayment,
     apply_round_settlement,
     get_casino_daily_stats,
+    call_central_bank_loans,
     get_central_bank_status,
     apply_jackpot_settlement,
+    record_guild_participant,
+    repay_central_bank_loans,
+    create_personal_loan_request,
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
+    create_central_bank_loan_request,
     _apply_daily_casino_delta_in_session,
     invalidate_economy_leaderboard_cache,
 )
@@ -749,15 +758,120 @@ async def test_top_n_short_cache_hit_and_manual_invalidation() -> None:
     assert [row.user_id for row in await top_n(limit=1)] == [2]
 
 
-async def test_top_n_write_path_invalidates_cache() -> None:
-    """Balance writes clear cached leaderboard rows."""
-    await seed_balance(user_id=1, name="alice", amount=100)
-    await seed_balance(user_id=2, name="bob", amount=50)
+_LENDING_GUILD = 555
 
-    assert [row.user_id for row in await top_n(limit=1)] == [1]
-    await credit_with_repayment(user_id=2, name="bob", amount=200)
 
-    assert [row.user_id for row in await top_n(limit=1)] == [2]
+async def _ledger_every_write_path_can_touch() -> int:
+    """Seeds what every leaderboard write below needs and returns a pending request's id.
+
+    alice (1) can afford VIP and owes both bob (2) and the central bank; bob has asked
+    alice for a loan she has not answered yet.
+    """
+    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    await record_guild_participant(guild_id=_LENDING_GUILD, user_id=1)
+    personal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
+    )
+    assert personal is not None
+    assert (
+        await accept_loan_proposal(proposal_id=personal.proposal_id, actor_id=2, actor_name="bob")
+        is not None
+    )
+    central = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=100
+    )
+    assert central is not None
+    assert (
+        await accept_loan_proposal(
+            proposal_id=central.proposal_id,
+            actor_id=99,
+            actor_name="banker",
+            approver_is_guild_admin=True,
+            guild_id=_LENDING_GUILD,
+        )
+        is not None
+    )
+    pending = await create_personal_loan_request(
+        borrower_id=2, borrower_name="bob", lender_id=1, lender_name="alice", amount=100
+    )
+    assert pending is not None
+    return pending.proposal_id
+
+
+@pytest.mark.parametrize(
+    argnames="write",
+    argvalues=[
+        pytest.param(
+            lambda _: credit_with_repayment(user_id=2, name="bob", amount=10),
+            id="credit_with_repayment",
+        ),
+        pytest.param(
+            lambda _: adjust_balance(user_id=2, name="bob", delta=10), id="adjust_balance"
+        ),
+        pytest.param(
+            lambda _: apply_round_settlement(
+                player_id=2, player_account_name="bob", player_delta=10, casino_delta=-10
+            ),
+            id="apply_round_settlement",
+        ),
+        pytest.param(
+            lambda _: apply_jackpot_settlement(
+                player_id=2, player_account_name="bob", player_delta=-10, game_id="dragon_gate"
+            ),
+            id="apply_jackpot_settlement",
+        ),
+        pytest.param(lambda _: buy_vip(user_id=1, name="alice"), id="buy_vip"),
+        pytest.param(
+            lambda _: transfer(
+                sender_id=2, sender_name="bob", receiver_id=1, receiver_name="alice", amount=100
+            ),
+            id="transfer",
+        ),
+        pytest.param(
+            lambda proposal_id: accept_loan_proposal(
+                proposal_id=proposal_id, actor_id=1, actor_name="alice"
+            ),
+            id="accept_loan_proposal",
+        ),
+        pytest.param(
+            lambda _: repay_personal_loans(
+                borrower_id=1, borrower_name="alice", lender_id=2, amount=10
+            ),
+            id="repay_personal_loans",
+        ),
+        pytest.param(
+            lambda _: call_personal_loans(
+                lender_id=2, borrower_id=1, borrower_name="alice", amount=10
+            ),
+            id="call_personal_loans",
+        ),
+        pytest.param(
+            lambda _: repay_central_bank_loans(borrower_id=1, borrower_name="alice", amount=10),
+            id="repay_central_bank_loans",
+        ),
+        pytest.param(
+            lambda _: call_central_bank_loans(
+                guild_id=_LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=10
+            ),
+            id="call_central_bank_loans",
+        ),
+    ],
+)
+async def test_every_balance_write_invalidates_the_leaderboard_cache(
+    write: Callable[[int], Awaitable[object]],
+) -> None:
+    """A leaderboard read right after any public balance write shows the write."""
+    pending_proposal_id = await _ledger_every_write_path_can_touch()
+    cached = await top_n(limit=None)
+
+    await write(pending_proposal_id)
+    after = await top_n(limit=None)
+    invalidate_economy_leaderboard_cache()
+
+    assert after == await top_n(limit=None)
+    # Otherwise the write moved no balance and the check above proves nothing.
+    assert after != cached
 
 
 async def test_apply_round_settlement_allows_negative_casino_balance() -> None:
