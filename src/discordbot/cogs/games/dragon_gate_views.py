@@ -17,8 +17,8 @@ from discordbot.cogs.games.lobby import (
     BaseJackpotLobbyView,
 )
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
-from discordbot.cogs.games.wagers import parse_wager_amount
 from discordbot.utils.number_text import compact_amount
+from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
@@ -543,7 +543,7 @@ class DragonGateView(View):
         self, interaction: Interaction[commands.Bot], raw_amount: str | None
     ) -> None:
         """Handles the custom bet modal submission."""
-        amount = parse_wager_amount(raw_amount=raw_amount)
+        amount = parse_decimal_amount(raw=raw_amount)
         if amount is None:
             await interaction.response.send_message(content="下注金額要是整數", ephemeral=True)
             return

@@ -4,17 +4,8 @@ from typing import Literal
 
 from discordbot.typings.games import GameParticipant, GameParticipantIdentity
 from discordbot.typings.economy import MAX_SINGLE_BET
-from discordbot.utils.amount_parsing import parse_decimal_amount
 
 WagerMode = Literal["clamp", "exact"]
-
-
-def parse_wager_amount(raw_amount: str | None) -> int | None:
-    """Parses user-entered wager text; zero parses rather than being rejected.
-
-    What zero means is the caller's rule, never this parser's.
-    """
-    return parse_decimal_amount(raw=raw_amount)
 
 
 def build_wager_participant(
