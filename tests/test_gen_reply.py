@@ -6139,7 +6139,7 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     assert received == [prepared]
 
 
-def _link_config() -> LLMConfig:
+def _link_config(*, gemini_api_key: str) -> LLMConfig:
     """The config fields a QA reply carrying a linked post actually reads."""
     return _config_stub(
         inline_voice_enabled=False,
@@ -6150,7 +6150,7 @@ def _link_config() -> LLMConfig:
         douyin_video_enabled=True,
         bilibili_video_enabled=True,
         file_api_enabled=True,
-        gemini_api_key="key",
+        gemini_api_key=gemini_api_key,
     )
 
 
@@ -6257,14 +6257,21 @@ def _patch_link_builder(
     return builder
 
 
-def _link_cog(*, sources: list[str], decision: str = "QA") -> ReplyGeneratorCogs:
-    """A cog under `_link_config` whose route call picks `decision` and selects `sources`."""
+def _link_cog(
+    *, sources: list[str], decision: str = "QA", gemini_api_key: str = "key"
+) -> ReplyGeneratorCogs:
+    """A cog under `_link_config` whose route call picks `decision` and selects `sources`.
+
+    The config and the toolkit carry the same Gemini key, as they do when the cog builds its
+    toolkit from its own config.
+    """
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification.model_validate({
         "decision": decision,
         "link_context_sources": sources,
     })
-    cog.config = _link_config()
+    cog.config = _link_config(gemini_api_key=gemini_api_key)
+    cog.toolkit.gemini_api_key = gemini_api_key
     return cog
 
 
@@ -6311,6 +6318,7 @@ async def test_on_message_injects_a_selected_link_source_before_current(
 
     (call,) = builder.calls
     assert call["url"] == SAMPLE_POST_URLS[name]
+    assert call["gemini_client"] is cog.toolkit.gemini_client
     assert call.get("allow_media_ingest") is (None if case.media_switch is None else True)
     answer = request_input(responses=_recorded(cog).responses)
     assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
@@ -6331,8 +6339,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     client to upload with.
     """
     case = _LINK_CASES[name]
-    cog = _link_cog(sources=[name])
-    cog.config.gemini_api_key = ""
+    cog = _link_cog(sources=[name], gemini_api_key="")
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
     await cog.on_message(
