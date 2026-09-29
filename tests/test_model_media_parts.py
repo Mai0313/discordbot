@@ -11,9 +11,8 @@ Data URIs are exempt: the bytes are already in hand, so nothing is fetched.
 """
 
 import ast
-from pathlib import Path
 
-_SRC = Path(__file__).resolve().parent.parent / "src"
+from tests.helpers.source_tree import PACKAGE, python_modules
 
 # The helper that turns bytes already in hand into a `data:` URI. An `image_url` built by it is
 # inlined on purpose (the non-Gemini renderer and the generated-media reply paths).
@@ -67,7 +66,7 @@ def _offending_arguments(fields: list[tuple[str, ast.expr]]) -> list[str]:
 def test_no_media_part_is_built_from_a_remote_url() -> None:
     """No media part in src/ carries a remote URL; media reaches the model via the Files API."""
     findings: list[str] = []
-    for path in sorted(_SRC.rglob("*.py")):
+    for path in python_modules(root=PACKAGE):
         tree = ast.parse(source=path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.expr):
@@ -76,7 +75,7 @@ def test_no_media_part_is_built_from_a_remote_url() -> None:
             if fields is None:
                 continue
             findings.extend(
-                f"{path.relative_to(_SRC)}:{node.lineno} passes {argument}"
+                f"{path.relative_to(PACKAGE.parent)}:{node.lineno} passes {argument}"
                 for argument in _offending_arguments(fields=fields)
             )
     assert findings == [], (
