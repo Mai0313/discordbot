@@ -10,6 +10,7 @@ from pydantic import Field, BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
 
+from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.sqlite_config import configure_sqlite_connection
 
 NULL_BYTE_RE = re.compile(pattern=r"\x00")
@@ -220,8 +221,8 @@ class MessageLogger(BaseModel):
         try:
             await self._save_messages()
         except Exception as exc:
-            # Stays broad: this runs as a detached create_task, so anything not caught
-            # here surfaces only as "Task exception was never retrieved".
+            # Stays broad: this runs as a detached task, and this log carries the message's
+            # ids, which the spawner's generic failure line does not.
             logfire.error(
                 "Failed to log message",
                 discord_message_id=self.message.id,
@@ -246,6 +247,7 @@ class LogMessageCog(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
+        self._tasks: set[asyncio.Task[None]] = set()
 
     def _should_log(self, message: Message) -> bool:
         """Returns True for human messages or this bot's own replies.
@@ -267,7 +269,9 @@ class LogMessageCog(commands.Cog):
         """
         if not self._should_log(message=message):
             return
-        asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
+        spawn_tracked(
+            coro=MessageLogger(message=message).log(), tasks=self._tasks, name="log-message"
+        )
 
     @commands.Cog.listener()
     async def on_message_edit(self, _before: Message, after: Message) -> None:
@@ -286,7 +290,9 @@ class LogMessageCog(commands.Cog):
         """
         if not self._should_log(message=after):
             return
-        asyncio.create_task(MessageLogger(message=after).log())  # noqa: RUF006
+        spawn_tracked(
+            coro=MessageLogger(message=after).log(), tasks=self._tasks, name="log-message"
+        )
 
 
 def setup(bot: commands.Bot) -> None:

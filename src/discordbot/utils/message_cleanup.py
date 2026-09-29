@@ -13,9 +13,12 @@ from nextcord.abc import Messageable
 from nextcord.ext import commands
 from sqlalchemy.engine import Connection
 
+from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.sqlite_config import configure_sqlite_connection
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
+# The scheduled deletions still waiting out their TTL.
+_delete_tasks: set[asyncio.Task[None]] = set()
 _PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/games.db")
 _pending_engine: Engine | None = None
 _pending_engine_path: Path | None = None
@@ -307,8 +310,9 @@ async def delete_public_message_after(
 def schedule_public_message_delete(
     message: Message, delay: float = PUBLIC_MESSAGE_TTL_SECONDS, user_name: str | None = None
 ) -> None:
-    """Schedules delayed deletion for a public response."""
-    asyncio.create_task(  # noqa: RUF006 -- fire-and-forget cleanup cannot block commands.
+    """Schedules delayed deletion for a public response, never blocking the command."""
+    spawn_tracked(
         coro=delete_public_message_after(message=message, delay=delay, user_name=user_name),
+        tasks=_delete_tasks,
         name="delete-public-response",
     )

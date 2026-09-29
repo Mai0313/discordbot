@@ -13,8 +13,7 @@ conversation back, running the identical turn over a `TurnSurface` that answers 
 interaction instead of the channel.
 """
 
-from typing import TYPE_CHECKING, Any, TypedDict
-import asyncio
+from typing import TYPE_CHECKING, TypedDict
 from functools import cached_property
 
 from openai import AsyncOpenAI
@@ -39,6 +38,7 @@ from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.llm_errors import extract_friendly_error
+from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
 from discordbot.services.memory.facts import render_owner_identity
@@ -55,7 +55,7 @@ from discordbot.services.memory.consolidation import needs_consolidation, consol
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    import asyncio
 
 
 class _MessageLogFields(TypedDict):
@@ -120,12 +120,6 @@ class ReplyGeneratorCogs(commands.Cog):
         self._tasks: set[asyncio.Task[None]] = set()
         self._resume_started = False
 
-    def _spawn(self, coro: "Coroutine[Any, Any, None]") -> None:
-        """Runs `coro` as a tracked background task so the gateway never blocks on it."""
-        task: asyncio.Task[None] = asyncio.create_task(coro)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
     @cached_property
     def openai_client(self) -> AsyncOpenAI:
         """The cached AsyncOpenAI client for all LiteLLM-proxy Responses / audio / image calls.
@@ -179,7 +173,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # loop happened to enqueue first.
         memory_git.start()
         self._resume_started = True
-        self._spawn(self._resume_memory())
+        spawn_tracked(coro=self._resume_memory(), tasks=self._tasks, name="memory-resume")
 
     async def _resume_memory(self) -> None:
         """Re-enqueues persisted review jobs and consolidates over-threshold scopes.
@@ -221,12 +215,14 @@ class ReplyGeneratorCogs(commands.Cog):
                 if flavor_of(scope=scope) == "server"
                 else self.toolkit.memory_writer
             )
-            self._spawn(
-                consolidate_if_needed(
+            spawn_tracked(
+                coro=consolidate_if_needed(
                     scope=scope,
                     writer=writer,
                     identity=render_owner_identity(owner=read_owner(scope=scope)),
-                )
+                ),
+                tasks=self._tasks,
+                name=f"memory-consolidation-{scope}",
             )
             swept += 1
         if swept:

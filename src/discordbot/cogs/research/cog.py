@@ -13,7 +13,6 @@ the gateway: agent work runs in tracked background tasks.
 """
 
 from typing import TYPE_CHECKING, Literal
-import asyncio
 from functools import cached_property
 import contextlib
 
@@ -51,7 +50,7 @@ from discordbot.cogs.research.agent import (
     stream_antigravity,
     resume_research_stream,
 )
-from discordbot.utils.asyncio_locks import KeyedLockManager
+from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
@@ -59,8 +58,7 @@ from discordbot.cogs.research.delivery import deliver_report, owner_allowed_ment
 from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
 if TYPE_CHECKING:
-    from typing import Any
-    from collections.abc import Coroutine
+    import asyncio
 
 # The agent name shown in the thread's status line and in the streamer's live header. One agent
 # runs every research, so the two must agree on one string rather than each spelling their own.
@@ -142,12 +140,6 @@ class ResearchCogs(commands.Cog):
     def is_research_thread(self, *, channel_id: int) -> bool:
         """Whether a channel id is a research thread the cog is actively driving."""
         return channel_id in self._active_threads
-
-    def _spawn(self, coro: "Coroutine[Any, Any, None]") -> None:
-        """Runs `coro` as a tracked background task so the gateway never blocks on agent work."""
-        task: asyncio.Task[None] = asyncio.create_task(coro)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
     def _system_instruction(self) -> str:
         """The research agent system instruction with today's date appended for recency."""
@@ -344,7 +336,11 @@ class ResearchCogs(commands.Cog):
         # normal QA pipeline reactions (best-effort).
         with contextlib.suppress(Exception):
             await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
-        self._spawn(self._run_research(thread=thread, owner_id=owner_id, brief=brief, agent=agent))
+        spawn_tracked(
+            coro=self._run_research(thread=thread, owner_id=owner_id, brief=brief, agent=agent),
+            tasks=self._tasks,
+            name=f"research-run-{thread.id}",
+        )
         return "started", thread.id
 
     # ----- research runs ------------------------------------------------------------------
@@ -524,7 +520,7 @@ class ResearchCogs(commands.Cog):
         if self._resume_started:
             return
         self._resume_started = True
-        self._spawn(self._resume_all())
+        spawn_tracked(coro=self._resume_all(), tasks=self._tasks, name="research-resume")
 
     async def _resume_all(self) -> None:
         """Resumes every session still `researching` when the process came back up.
@@ -552,7 +548,11 @@ class ResearchCogs(commands.Cog):
             return
         for session in sessions:
             self._active_threads.add(session.thread_id)
-            self._spawn(self._resume_one(session=session))
+            spawn_tracked(
+                coro=self._resume_one(session=session),
+                tasks=self._tasks,
+                name=f"research-resume-{session.thread_id}",
+            )
         logfire.info("resumed in-flight research sessions", count=len(sessions))
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
