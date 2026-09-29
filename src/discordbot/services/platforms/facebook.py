@@ -431,10 +431,11 @@ class FacebookDownloader(PlatformDownloader):
     def _group_name_of(*, payloads: list[Any], group_id: str) -> str:
         """The name of the group the post sits in, empty for a page or profile post.
 
-        Matched on the URL's own group id where there is one, since a group page also serialises
-        the groups it recommends alongside the one being read.
+        Matched on the URL's own group id and never guessed without one, since a page also
+        serialises the groups it recommends alongside the one being read.
         """
-        fallback = ""
+        if not group_id:
+            return ""
         for payload in payloads:
             for node in walk(node=payload):
                 if node.get("__typename") != "Group":
@@ -442,10 +443,9 @@ class FacebookDownloader(PlatformDownloader):
                 name = node.get("name")
                 if not isinstance(name, str) or not name:
                     continue
-                if group_id and str(node.get("id")) == group_id:
+                if str(node.get("id")) == group_id:
                     return name
-                fallback = fallback or name
-        return "" if group_id else fallback
+        return ""
 
     def parse_metadata(self, *, url: str) -> FacebookConversation:
         """Reads one public Facebook post and the comments the page preloaded with it.
