@@ -46,6 +46,7 @@ from discordbot.services.memory.facts import (
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
+    RAW_ENTRY_HEADER_RE,
     read_facts,
     write_fact,
     delete_fact,
@@ -58,8 +59,7 @@ from discordbot.services.memory.constants import (
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
 
-# One raw entry's `## <ISO timestamp>` header, and one observation block inside it.
-_ENTRY_HEADER_RE = re.compile(r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T\S+)\s*$")
+# One observation block's header inside a raw entry.
 _OBSERVATION_HEADER_RE = re.compile(r"^### (?P<category>\S+)")
 # Observation categories that carry how the user wants the bot to SOUND. Everything
 # else is a fact and has no business in the always-injected tone note.
@@ -638,7 +638,7 @@ def _iter_observations(text: str) -> list[tuple[str, str]]:
         current.clear()
 
     for line in text.splitlines():
-        header = _ENTRY_HEADER_RE.match(line)
+        header = RAW_ENTRY_HEADER_RE.match(line)
         if header is not None:
             flush()
             timestamp = header.group("timestamp")

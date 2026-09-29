@@ -1338,6 +1338,22 @@ def test_a_forget_releases_only_older_evidence_its_compartment_holds() -> None:
     assert drop_released_evidence(text=text, released={"g/42": ()}, forgets=forgets) is text
 
 
+def test_a_forget_keeps_a_legacy_identity_header_and_the_stamps_under_it() -> None:
+    """An entry header with a ` | <identity>` suffix, as old detail files still hold, is a header.
+
+    The store splits entries there. Read as a body line of the block before it, the header would
+    leave with that block when a forget released it, and the blocks after it would take its stamp.
+    """
+    city = _observation(summary="住在台中", normalized_key="fact.city", sharing="source_only")
+    job = _observation(summary="在工廠上班", normalized_key="fact.job", sharing="source_only")
+    legacy = _entry("2026-06-05T02:23:02+00:00 | Alice (alice) [id: 1]", job)
+    forget = _forget_entry("2026-09-02T00:00:00+00:00")
+    text = "\n\n".join([_entry("2026-06-05T01:00:00+00:00", city), legacy, forget])
+    forgets = partition_forget_requests(raw_text=text, compartments=("g/42",))
+    dropped = drop_released_evidence(text=text, released={"g/42": ("fact.city",)}, forgets=forgets)
+    assert dropped == f"{legacy}\n\n{forget}"
+
+
 async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
     memory_isolated_dir: Path,
 ) -> None:
