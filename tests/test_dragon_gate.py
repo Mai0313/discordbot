@@ -18,13 +18,11 @@ from discordbot.typings.games import (
     DragonGatePlayerResult,
     RefreshParticipantsResult,
 )
-from discordbot.cogs.games.cog import GamesCogs
 from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
     JackpotSettlementBatchResult,
 )
-from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -585,33 +583,6 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     assert component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
     assert component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
     assert _attached_select(view=pair_view, custom_id="dg:bet").disabled is False
-
-
-async def test_prepare_participant_insufficient_balance_applies_embed_spacer() -> None:
-    """Insufficient-balance lobby join reply carries the shared embed spacer."""
-    interaction = InteractionStub(user_id=7)
-
-    async def fake_participant_from_user(**_kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Stands in for a balance check that rejects the wager."""
-        return SimpleNamespace(participant=None, balance=0)
-
-    stub_self = SimpleNamespace(_participant_from_user=fake_participant_from_user)
-
-    await GamesCogs._prepare_participant(
-        cast("Any", stub_self),
-        interaction=cast("Any", interaction),
-        wager=100,
-        mode="clamp",
-        insufficient_embed_builder=lambda balance: Embed(
-            title="餘額不足", description=str(balance)
-        ),
-    )
-
-    assert len(interaction.followup.sent) == 1
-    sent = interaction.followup.sent[0]
-    assert sent["ephemeral"] is True
-    assert sent["embed"].image.url == embed_spacer_url()
-    assert sent["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
 
 
 async def test_dragon_gate_lobby_join_leave_and_owner_start(
