@@ -152,7 +152,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **Repaid interest is kept in `central_bank_ledger` and lent again, not burned;** it cannot be farmed (measured: a borrow-at-100%-and-repay loop only ever lost the attacker money). Keep `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL` unset or `false` in production.
 - **Admin tweaks go through `adjust_balance(..., allow_negative=...)`, never a casino settlement helper.**
 - **A write that moves a balance commits through `services/economy/database.py::_commit_balance_write`, never clearing the leaderboard caches inside its transaction**: a clear before the commit lets a read in between cache the rows being replaced.
-- **House P&L is the `casino_ledger` row, never the bot's `user_wallet`.** Player wallet and ledger commit in one transaction, and Blackjack settles through `apply_blackjack_settlement`, never `apply_round_settlement` directly.
+- **House P&L is the `casino_ledger` row, never the bot's `user_wallet`.** Player wallet and ledger commit in one transaction, through `apply_blackjack_settlement`.
 - **Shared social, market and settlement events are public embeds with scheduled cleanup; personal state, malformed-amount and permission failures are ephemeral.** A validation failure found after the public defer (`/give`, `/games`) is a public expiring embed.
 - **Exactly one faucet pays an action reward, `cli.py`'s cooldown-gated per-message reward;** other cogs must not add a second (the system-funded mints that settle a loan or a game are not rewards).
 - **`apply_vip_blackjack_bonus` and the loan-rate converters stay in `typings/economy.py`,** so code that only formats or settles a number never imports the ledger's engine module (#610).

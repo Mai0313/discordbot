@@ -49,12 +49,12 @@ from discordbot.services.economy.database import (
     get_jackpot_snapshot,
     repay_personal_loans,
     credit_with_repayment,
-    apply_round_settlement,
     call_central_bank_loans,
     get_central_bank_status,
     apply_jackpot_settlement,
     record_guild_participant,
     repay_central_bank_loans,
+    apply_blackjack_settlement,
     create_personal_loan_request,
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
@@ -415,7 +415,7 @@ async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_funct
         await conn.execute(statement=text(text="SELECT 1"))
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
 
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=5, casino_delta=-5
     )
 
@@ -676,10 +676,10 @@ async def _ledger_every_write_path_can_touch() -> int:
             lambda _: adjust_balance(user_id=2, name="bob", delta=10), id="adjust_balance"
         ),
         pytest.param(
-            lambda _: apply_round_settlement(
+            lambda _: apply_blackjack_settlement(
                 player_id=2, player_account_name="bob", player_delta=10, casino_delta=-10
             ),
-            id="apply_round_settlement",
+            id="apply_blackjack_settlement",
         ),
         pytest.param(
             lambda _: apply_jackpot_settlement(
@@ -740,22 +740,22 @@ async def test_every_balance_write_invalidates_the_leaderboard_cache(
     assert after != cached
 
 
-async def test_apply_round_settlement_allows_negative_casino_balance() -> None:
+async def test_apply_blackjack_settlement_allows_negative_casino_balance() -> None:
     """Casino ledger keeps a true running net even when the casino is down."""
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
     ledger = await get_casino_ledger()
     assert ledger.balance == -500
 
 
-async def test_apply_round_settlement_casino_accumulates_gross_flows() -> None:
+async def test_apply_blackjack_settlement_casino_accumulates_gross_flows() -> None:
     """Wins and losses both accumulate gross totals, not just the net balance."""
     await seed_balance(user_id=1, name="alice", amount=200)
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-200, casino_delta=200
     )
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=2, player_account_name="bob", player_delta=300, casino_delta=-300
     )
     ledger = await get_casino_ledger()
@@ -785,11 +785,11 @@ async def test_add_balance_concurrent_first_sight_does_not_raise() -> None:
     assert await get_balance(user_id=42) == 80
 
 
-async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
+async def test_apply_blackjack_settlement_concurrent_credits_accumulate() -> None:
     """Concurrent positive settlements on the same user must not lose updates."""
     await seed_balance(user_id=42, name="alice", amount=100)
     await asyncio.gather(*[
-        apply_round_settlement(
+        apply_blackjack_settlement(
             player_id=42, player_account_name="alice", player_delta=10, casino_delta=-10
         )
         for _ in range(10)
@@ -797,12 +797,12 @@ async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
     assert await get_balance(user_id=42) == 200
 
 
-async def test_apply_round_settlement_concurrent_casino_updates_accumulate() -> None:
+async def test_apply_blackjack_settlement_concurrent_casino_updates_accumulate() -> None:
     """Verifies that concurrent casino ledger settlements accumulate."""
     for user_id in range(10):
         await seed_balance(user_id=user_id, name=f"player{user_id}", amount=10)
     await asyncio.gather(*[
-        apply_round_settlement(
+        apply_blackjack_settlement(
             player_id=user_id,
             player_account_name=f"player{user_id}",
             player_delta=-10,
@@ -816,7 +816,7 @@ async def test_apply_round_settlement_concurrent_casino_updates_accumulate() -> 
     assert ledger.total_spent == 0
 
 
-async def test_apply_round_settlement_is_atomic(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_apply_blackjack_settlement_is_atomic(monkeypatch: pytest.MonkeyPatch) -> None:
     """A casino mirror that fails takes the player's side of the round down with it.
 
     The player is written first, so only one shared transaction stops that write from
@@ -834,7 +834,7 @@ async def test_apply_round_settlement_is_atomic(monkeypatch: pytest.MonkeyPatch)
     )
 
     with pytest.raises(expected_exception=RuntimeError, match="forced casino failure"):
-        await apply_round_settlement(
+        await apply_blackjack_settlement(
             player_id=1, player_account_name="alice", player_delta=40, casino_delta=-40
         )
 
@@ -843,11 +843,11 @@ async def test_apply_round_settlement_is_atomic(monkeypatch: pytest.MonkeyPatch)
     assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
 
 
-async def test_apply_round_settlement_loss_debits_player_and_casino() -> None:
+async def test_apply_blackjack_settlement_loss_debits_player_and_casino() -> None:
     """A loss debits the player and credits the casino, and both sides book it in their totals."""
     await seed_balance(user_id=1, name="alice", amount=100)
 
-    result = await apply_round_settlement(
+    result = await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
     assert result.player_balance == 60
@@ -859,11 +859,13 @@ async def test_apply_round_settlement_loss_debits_player_and_casino() -> None:
     assert (ledger.balance, ledger.total_earned, ledger.total_spent) == (40, 40, 0)
 
 
-async def test_apply_round_settlement_loss_clamps_player_and_casino_to_available_balance() -> None:
+async def test_apply_blackjack_settlement_loss_clamps_player_and_casino_to_available_balance() -> (
+    None
+):
     """Deferred settlement stops at zero and only credits the casino with actual debit."""
     await seed_balance(user_id=1, name="alice", amount=25)
 
-    result = await apply_round_settlement(
+    result = await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
 
@@ -889,7 +891,7 @@ async def test_a_positive_adjustment_is_never_clamped() -> None:
     assert second.new_balance == 350
 
 
-async def test_apply_round_settlement_books_the_whole_take_when_the_loss_collects() -> None:
+async def test_apply_blackjack_settlement_books_the_whole_take_when_the_loss_collects() -> None:
     """A system-funded bonus rides inside `player_delta` and must not shrink the house's take.
 
     The bonus is already added back into the player's net, so capping the ledger at that net
@@ -897,7 +899,7 @@ async def test_apply_round_settlement_books_the_whole_take_when_the_loss_collect
     """
     await seed_balance(user_id=1, name="alice", amount=500)
 
-    result = await apply_round_settlement(
+    result = await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-50, casino_delta=150
     )
 
@@ -905,7 +907,7 @@ async def test_apply_round_settlement_books_the_whole_take_when_the_loss_collect
     assert result.casino_balance == 150
 
 
-async def test_apply_round_settlement_books_the_bonus_even_when_the_loss_is_short() -> None:
+async def test_apply_blackjack_settlement_books_the_bonus_even_when_the_loss_is_short() -> None:
     """The two rules meet here, and this is the only case where the arithmetic can differ.
 
     The wallet cannot cover the loss AND a system-funded bonus rides in the player's net, so
@@ -913,7 +915,7 @@ async def test_apply_round_settlement_books_the_bonus_even_when_the_loss_is_shor
     """
     await seed_balance(user_id=1, name="alice", amount=20)
 
-    result = await apply_round_settlement(
+    result = await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-50, casino_delta=150
     )
 
@@ -921,14 +923,14 @@ async def test_apply_round_settlement_books_the_bonus_even_when_the_loss_is_shor
     assert result.casino_balance == 120
 
 
-async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
+async def test_apply_blackjack_settlement_updates_daily_casino_counters() -> None:
     """Blackjack-style player settlements persist gross loss, gross win, and net."""
     await seed_balance(user_id=1, name="alice", amount=1_000)
 
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-300, casino_delta=300
     )
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
 
@@ -1025,12 +1027,12 @@ async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
     """Zero deltas and dealer ledger mirrors do not enter player loss counters."""
     await seed_balance(user_id=1, name="alice", amount=100)
 
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=0, casino_delta=0
     )
     assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
 
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
     # The player's own loss lands. The casino's mirrored +40 goes to `casino_ledger`, so it
@@ -1098,16 +1100,16 @@ async def test_top_losers_uses_gross_loss_not_net() -> None:
     await seed_balance(user_id=1, name="alice", amount=1_000)
     await seed_balance(user_id=2, name="bob", amount=1_000)
     await seed_balance(user_id=3, name="carol", amount=1_000)
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-300, casino_delta=300
     )
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=2, player_account_name="bob", player_delta=200, casino_delta=-200
     )
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=3, player_account_name="carol", player_delta=-200, casino_delta=200
     )
     rows = await top_losers(limit=10)
@@ -1121,7 +1123,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
     """The leaderboard sorts from biggest loss to smallest."""
     for user_id, name, loss in [(1, "alice", 100), (2, "bob", 500), (3, "carol", 250)]:
         await seed_balance(user_id=user_id, name=name, amount=loss)
-        await apply_round_settlement(
+        await apply_blackjack_settlement(
             player_id=user_id, player_account_name=name, player_delta=-loss, casino_delta=loss
         )
     rows = await top_losers(limit=10)
@@ -1132,10 +1134,10 @@ async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> N
     """Hidden accounts do not appear on the public daily loss leaderboard."""
     await seed_balance(user_id=1, name="alice", amount=500)
     await seed_balance(user_id=2, name="bob", amount=400)
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=2, player_account_name="bob", player_delta=-400, casino_delta=400
     )
     await hide_from_leaderboard(user_id=1)
@@ -1147,7 +1149,7 @@ async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> N
 async def test_top_losers_can_include_leaderboard_hidden_accounts() -> None:
     """Maintenance callers can include hidden accounts in daily loss queries."""
     await seed_balance(user_id=1, name="alice", amount=500)
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
     await hide_from_leaderboard(user_id=1)
@@ -1159,7 +1161,7 @@ async def test_top_losers_can_include_leaderboard_hidden_accounts() -> None:
 async def test_top_losers_ignores_counters_before_today() -> None:
     """Stale account counters from an older Taipei day do not count."""
     await seed_balance(user_id=1, name="alice", amount=500)
-    await apply_round_settlement(
+    await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
     past = datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=2)

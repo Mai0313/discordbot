@@ -30,7 +30,7 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs.games.settlement import settle_wager, blackjack_player_early_finish_note
+from discordbot.cogs.games.settlement import blackjack_player_early_finish_note
 from discordbot.services.economy.database import buy_vip, get_casino_ledger
 
 from tests.helpers.games import seat, settle_only_seat
@@ -944,44 +944,6 @@ def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
     first.hands.append(BlackjackHandSettlement(cards=[], bet=10, outcome="push", delta=0))
 
     assert second.hands == []
-
-
-async def test_settle_wager_updates_player_and_casino() -> None:
-    """Shared wager settlement applies net delta and mirrors casino P&L."""
-    await seed_balance(user_id=1, name="alice", amount=100)
-
-    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=40)
-    assert settlement.payout == 40
-    assert settlement.new_balance == 140
-    assert settlement.casino_balance == -40
-    ledger = await get_casino_ledger()
-    assert ledger.balance == -40
-
-
-async def test_settle_wager_applies_vip_bonus_on_win() -> None:
-    """A VIP player wins 1.2x of the base delta; house mirrors the boosted amount."""
-    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
-    purchase = await buy_vip(user_id=1, name="alice")
-    assert purchase is not None
-    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=100)
-    assert settlement.delta == 120
-    assert settlement.base_delta == 100
-    assert settlement.vip_bonus == 20
-    assert settlement.is_vip is True
-    assert settlement.casino_balance == -120
-
-
-async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
-    """The VIP perk does not soften losses."""
-    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 1_000)
-    purchase = await buy_vip(user_id=1, name="alice")
-    assert purchase is not None
-    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=-100)
-    assert settlement.delta == -100
-    assert settlement.base_delta == -100
-    assert settlement.vip_bonus == 0
-    assert settlement.is_vip is True
-    assert settlement.casino_balance == 100
 
 
 def _finished_round(bet: int, balance_at_start: int = 100) -> BlackjackRound:

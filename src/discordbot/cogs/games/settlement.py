@@ -3,7 +3,6 @@
 from discordbot.typings.games import (
     Card,
     SettleOutcome,
-    WagerSettlement,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
     BlackjackInsuranceSettlement,
@@ -17,11 +16,7 @@ from discordbot.cogs.games.blackjack import (
     is_blackjack,
     dealer_up_card,
 )
-from discordbot.services.economy.database import (
-    get_vip,
-    apply_round_settlement,
-    apply_blackjack_settlement,
-)
+from discordbot.services.economy.database import get_vip, apply_blackjack_settlement
 
 
 def blackjack_player_early_finish_note(
@@ -57,53 +52,6 @@ def blackjack_player_early_finish_note(
 def _dealer_peek_note(dealer: list[Card]) -> str:
     """Returns the reason text for dealer Blackjack revealed by a hole-card peek."""
     return f"莊家明牌 {dealer_up_card(dealer=dealer)}, peek 暗牌確認 Blackjack"
-
-
-async def settle_wager(
-    player_id: int, player_account_name: str, delta: int, player_avatar_url: str = ""
-) -> WagerSettlement:
-    """Applies player net delta and mirrors the result into the casino ledger.
-
-    Deliberately kept with no production caller: the single-hand shape a future
-    one-hand game would want back. Do NOT wire it back under Blackjack, which
-    settles through the multi-hand `settle_blackjack_player` — this one skips the
-    five-card bonus accounting.
-
-    Bets are not deducted when a round starts; unfinished in-memory rounds
-    vanish on bot restart without touching balances.
-
-    The VIP flag is permanent, so reading it outside the settlement transaction is
-    safe — a freshly-bought VIP that races a settlement only misses the bonus on a
-    single in-flight round.
-
-    Args:
-        player_id: Discord user ID for the player account.
-        player_account_name: Account name to store for the player.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
-        delta: Player net point change for the round.
-
-    Returns:
-        Database-backed settlement result after both ledgers are updated.
-    """
-    is_vip = await get_vip(user_id=player_id)
-    effective_delta = apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip)
-    vip_bonus = effective_delta - delta
-    result = await apply_round_settlement(
-        player_id=player_id,
-        player_account_name=player_account_name,
-        player_avatar_url=player_avatar_url,
-        player_delta=effective_delta,
-        casino_delta=-effective_delta,
-    )
-    return WagerSettlement(
-        delta=effective_delta,
-        payout=max(effective_delta, 0),
-        new_balance=result.player_balance,
-        casino_balance=result.casino_balance,
-        base_delta=delta,
-        vip_bonus=vip_bonus,
-        is_vip=is_vip,
-    )
 
 
 def _aggregate_outcome(
@@ -162,6 +110,12 @@ async def settle_blackjack_player(
     system-funded bonus to the player-side delta without moving the casino
     ledger, and the VIP bonus credited is the larger of the one on the
     dealer-paid win and the one on the five-card 21 bonus — a max, not a sum.
+
+    Bets are not deducted when a round starts, so an unfinished in-memory round
+    vanishes on bot restart without touching balances. The VIP flag is
+    permanent, so reading it outside the settlement transaction is safe: a
+    freshly-bought VIP that races a settlement only misses the bonus on that one
+    in-flight round.
 
     Args:
         round_state: Round providing the dealer cards and peek state.
