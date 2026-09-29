@@ -2,11 +2,8 @@
 
 from typing import Literal
 
-import dotenv
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
-
-dotenv.load_dotenv()
 
 
 class DiscordConfig(BaseSettings):

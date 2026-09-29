@@ -29,7 +29,6 @@ import secrets
 import threading
 import contextlib
 
-import dotenv
 import logfire
 from nextcord import File
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
@@ -37,8 +36,6 @@ from pydantic_settings import BaseSettings
 
 if TYPE_CHECKING:
     from nextcord import Guild
-
-dotenv.load_dotenv()
 
 # Discord's non-Nitro base upload limit, 20 MiB as of 2026-08-13; a guild-less context (DM) has no
 # boost-tier table to consult, so it falls back to this base.
