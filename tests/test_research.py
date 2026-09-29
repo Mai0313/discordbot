@@ -8,14 +8,16 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import File, Permissions, TextChannel, AllowedMentions
+from nextcord import File, Embed, Thread, Permissions, TextChannel, AllowedMentions
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.research import cog as research_cog
 from discordbot.cogs.research import agent
 from discordbot.cogs.research import database as rdb
 from discordbot.cogs.research import streaming as research_streaming
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.asyncio_locks import KeyedLockManager
+from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs.research.delivery import (
@@ -26,10 +28,12 @@ from discordbot.cogs.research.delivery import (
 from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT, ResearchProgressStreamer
 
 from tests.helpers.casting import (
+    as_bot,
     as_client,
     as_message,
     as_interaction,
     make_forbidden,
+    make_not_found,
     make_server_error,
     make_media_hosting_config,
     as_interaction_event_stream,
@@ -37,7 +41,6 @@ from tests.helpers.casting import (
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
-    from nextcord import Thread
     from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs.research.database import ResearchPhase
@@ -231,12 +234,14 @@ def _completed_event(*, event_id: str = "e9") -> SimpleNamespace:
     )
 
 
-def _terminal_interaction() -> SimpleNamespace:
+def _terminal_interaction(
+    *, status: str = "completed", input_tokens: int = 10, output_tokens: int = 5
+) -> SimpleNamespace:
     return SimpleNamespace(
         id="int_9",
-        status="completed",
+        status=status,
         output_text="# Report\nbody",
-        usage=SimpleNamespace(total_input_tokens=10, total_output_tokens=5),
+        usage=SimpleNamespace(total_input_tokens=input_tokens, total_output_tokens=output_tokens),
         steps=[],
     )
 
@@ -868,16 +873,25 @@ def _research_cog(*, enabled: bool) -> research_cog.ResearchCogs:
     return cog
 
 
-async def _seed_researching(*, thread_id: int, owner_id: int) -> None:
-    """Seeds one in-flight row, as a launch that never reached a terminal phase left it."""
+async def _seed_researching(
+    *,
+    thread_id: int,
+    owner_id: int,
+    stored_id: bool = True,
+    agent: str = "antigravity-preview-09-2026",
+) -> None:
+    """Seeds one in-flight row, as a launch that never reached a terminal phase left it.
+
+    `stored_id=False` is a launch that restarted before its interaction id was persisted.
+    """
     await rdb.upsert_session(
         thread_id=thread_id,
         owner_id=owner_id,
         channel_id=1,
         guild_id=1,
         source_message_id=1,
-        agent="antigravity-preview-09-2026",
-        interaction_id=f"int_{thread_id}",
+        agent=agent,
+        interaction_id=f"int_{thread_id}" if stored_id else None,
         brief="b",
         phase="researching",
     )
@@ -956,9 +970,11 @@ class _ResearchInteraction(FakeInteraction):
 
 
 class _Anchor(FakeDiscordMessage):
-    """A message the research thread would hang off, refusing the thread with `error`."""
+    """A message the research thread hangs off, refusing it with `error` or opening `thread`."""
 
-    def __init__(self, *, error: Exception, channel: MagicMock) -> None:
+    def __init__(
+        self, *, channel: MagicMock, error: Exception | None = None, thread: object = None
+    ) -> None:
         """Initializes the identity `_start_for` reads on top of the shared message fake."""
         super().__init__()
         self.id = 10
@@ -966,10 +982,13 @@ class _Anchor(FakeDiscordMessage):
         self.channel = channel
         self.author = FakeUser(user_id=300)
         self.error = error
+        self.thread = thread
 
-    async def create_thread(self, **_kwargs: object) -> None:
-        """Fails the way Discord fails the thread."""
-        raise self.error
+    async def create_thread(self, **_kwargs: object) -> object:
+        """Opens `thread`, or fails the way Discord fails the thread."""
+        if self.error is not None:
+            raise self.error
+        return self.thread
 
 
 def _text_channel(*, permissions: Permissions | None = None) -> MagicMock:
@@ -1211,3 +1230,297 @@ async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file
     assert warns == [
         ("research thread refused the report edit", {"thread_id": 1, "chunk_index": 0})
     ]
+
+
+# ----- run exits ----------------------------------------------------------------------------
+
+# The `_Anchor` author owns every run below, and each run lands in this thread.
+_OWNER_ID = 300
+_THREAD_ID = 50
+
+
+class _RunStatus:
+    """A run's opening status message, whose edits land in its thread's write log."""
+
+    def __init__(self, *, thread: "_RunThread") -> None:
+        """Binds the status to the thread whose write log and failure it shares."""
+        self.thread = thread
+
+    async def edit(self, **kwargs: object) -> None:
+        """Records the edit, or fails it the way its thread fails every later write."""
+        if self.thread.error is not None:
+            raise self.thread.error
+        self.thread.writes.append(kwargs)
+
+
+class _RunThread:
+    """A research thread logging every write of a run in order, status edits included.
+
+    With `error` set, every write fails with it except the opening status post while
+    `status_posts` holds.
+    """
+
+    id = _THREAD_ID
+
+    def __init__(self, *, error: Exception | None = None, status_posts: bool = True) -> None:
+        """Initializes the write log, the guild upload limit, and how writes fail."""
+        self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
+        self.writes: list[dict[str, object]] = []
+        self.error = error
+        self.status_posts = status_posts
+        self.sends = 0
+
+    async def send(self, **kwargs: object) -> _RunStatus:
+        """Records a post and answers with the message it created, as Discord does."""
+        self.sends += 1
+        if self.error is not None and not (self.sends == 1 and self.status_posts):
+            raise self.error
+        self.writes.append(kwargs)
+        return _RunStatus(thread=self)
+
+
+class _ThreadBot:
+    """The bot surface a run reads: its own user, and the thread lookup a resume starts from."""
+
+    user = None
+
+    def __init__(self, *, thread: _RunThread | None) -> None:
+        """Initializes the one thread the cache holds; None is a thread deleted meanwhile."""
+        self.thread = thread
+
+    def get_channel(self, channel_id: int) -> MagicMock | None:
+        """Answers the cache with the thread dressed as the nextcord `Thread` a resume wants."""
+        if self.thread is None or channel_id != self.thread.id:
+            return None
+        channel = MagicMock(spec=Thread)
+        channel.id = self.thread.id
+        channel.guild = self.thread.guild
+        channel.send = self.thread.send
+        return channel
+
+    async def fetch_channel(self, channel_id: int) -> None:
+        """Answers the REST lookup the way Discord does for a deleted thread."""
+        del channel_id
+        raise make_not_found(message="Unknown Channel")
+
+
+def _settling_client(*, status: str) -> SimpleNamespace:
+    """A Gemini client whose research streams to its end and settles with `status`."""
+    return _fake_client(
+        streams=[_FakeStream([_created_event(), _completed_event()])],
+        terminal=_terminal_interaction(status=status, input_tokens=1234, output_tokens=567),
+    )
+
+
+def _failing_client(*, error: Exception) -> SimpleNamespace:
+    """A Gemini client whose research create fails outright."""
+
+    async def create(**_kwargs: object) -> None:
+        raise error
+
+    return SimpleNamespace(aio=SimpleNamespace(interactions=SimpleNamespace(create=create)))
+
+
+def _running_cog(
+    *, monkeypatch: pytest.MonkeyPatch, client: object, thread: _RunThread | None = None
+) -> research_cog.ResearchCogs:
+    """A cog that runs research on `client` end to end and delivers with hosting off.
+
+    `thread` is what a resume finds by id. The agent is priced, so the usage footer's cost is
+    a known number rather than whatever price table the worker holds.
+    """
+    cog = _launching_cog(monkeypatch=monkeypatch)
+    cog.bot = as_bot(fake=_ThreadBot(thread=thread))
+    cog.runtime_models = RuntimeModelCatalog()
+    cog.media_delivery = _disabled_delivery()
+    cog.interactions_client = as_client(fake=client)
+    rates = {
+        cog.runtime_models.antigravity_model.name: ModelPriceEntry(
+            input_cost_per_token=1e-6, output_cost_per_token=2e-6
+        )
+    }
+    monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
+    return cog
+
+
+async def _launch_run(*, cog: research_cog.ResearchCogs, thread: _RunThread) -> None:
+    """Launches a research from a marker and waits out the run it spawned."""
+    anchor = _Anchor(channel=_text_channel(), thread=thread)
+    await cog.launch(message=as_message(fake=anchor), brief="b")
+    await asyncio.gather(*cog._tasks)
+
+
+async def _resume_run(
+    *,
+    cog: research_cog.ResearchCogs,
+    stored_id: bool = True,
+    agent: str = "antigravity-preview-09-2026",
+) -> None:
+    """Resumes the owner's in-flight row after a restart and waits out the run it spawned."""
+    await _seed_researching(
+        thread_id=_THREAD_ID, owner_id=_OWNER_ID, stored_id=stored_id, agent=agent
+    )
+    await cog._resume_all()
+    await asyncio.gather(*cog._tasks)
+
+
+async def _assert_owner_released(*, cog: research_cog.ResearchCogs, phase: str) -> None:
+    """The run's row ended in `phase` and nothing holds its owner's one slot any more."""
+    async with rdb.open_session() as session:
+        row = await session.get(entity=rdb.ResearchSessionRow, ident=_THREAD_ID)
+    assert row is not None
+    assert row.phase == phase
+    assert await rdb.active_thread_for_owner(owner_id=_OWNER_ID) is None
+    assert cog._active_threads == set()
+
+
+def _assert_pings_only_the_owner(*, write: dict[str, object]) -> None:
+    """The write mentions its owner, and its mention policy lets nobody else be pinged."""
+    assert f"<@{_OWNER_ID}>" in str(write["content"])
+    mentions = cast("AllowedMentions", write["allowed_mentions"])
+    assert mentions.everyone is False
+    assert mentions.roles is False
+    assert isinstance(mentions.users, list)
+    assert [user.id for user in mentions.users] == [_OWNER_ID]
+
+
+@pytest.mark.parametrize(
+    ("settles", "phase"),
+    [
+        ("completed", "done"),
+        ("cancelled", "cancelled"),
+        ("budget_exceeded", "failed"),
+        (RuntimeError("quota"), "failed"),
+    ],
+    ids=["completed", "cancelled", "budget_exceeded", "create_fails"],
+)
+async def test_every_exit_of_a_launched_run_records_its_phase_and_frees_the_owner(
+    research_isolated_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    settles: str | Exception,
+    phase: str,
+) -> None:
+    client = (
+        _failing_client(error=settles)
+        if isinstance(settles, Exception)
+        else _settling_client(status=settles)
+    )
+    cog = _running_cog(monkeypatch=monkeypatch, client=client)
+
+    await _launch_run(cog=cog, thread=_RunThread())
+
+    await _assert_owner_released(cog=cog, phase=phase)
+
+
+async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
+    cog.media_delivery = cast(
+        "MediaDeliveryPlanner", SimpleNamespace(plan=AsyncMock(side_effect=OSError("host down")))
+    )
+    thread = _RunThread()
+
+    await _launch_run(cog=cog, thread=thread)
+
+    await _assert_owner_released(cog=cog, phase="failed")
+    assert thread.writes[-1]["content"] == "-# Research failed (Antigravity)"
+
+
+@pytest.mark.parametrize("stored_id", [True, False], ids=["resume_fails", "no_stored_id"])
+async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, stored_id: bool
+) -> None:
+    async def _expired(**_kwargs: object) -> None:
+        raise RuntimeError("interaction expired")
+
+    monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
+    thread = _RunThread()
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
+
+    await _resume_run(cog=cog, stored_id=stored_id)
+
+    await _assert_owner_released(cog=cog, phase="failed")
+    notice = thread.writes[-1]
+    assert notice["content"] == "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次"
+    _assert_pings_only_the_owner(write=notice)
+
+
+async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="cancelled"))
+
+    await _resume_run(cog=cog)
+
+    await _assert_owner_released(cog=cog, phase="cancelled")
+
+
+@pytest.mark.parametrize(
+    ("settles", "reason", "footer"),
+    [(RuntimeError("quota"), "quota", "RuntimeError"), ("cancelled", "研究被取消了", None)],
+    ids=["create_fails", "cancelled"],
+)
+async def test_a_failed_run_tells_only_its_owner_why(
+    research_isolated_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    settles: str | Exception,
+    reason: str,
+    footer: str | None,
+) -> None:
+    client = (
+        _failing_client(error=settles)
+        if isinstance(settles, Exception)
+        else _settling_client(status=settles)
+    )
+    thread = _RunThread()
+
+    await _launch_run(cog=_running_cog(monkeypatch=monkeypatch, client=client), thread=thread)
+
+    assert [write["content"] for write in thread.writes] == [
+        "-# Researching... (Antigravity)",
+        "<@300> ⚠️",
+        "-# Research failed (Antigravity)",
+    ]
+    notice = thread.writes[1]
+    _assert_pings_only_the_owner(write=notice)
+    embed = cast("Embed", notice["embed"])
+    assert embed.description == f"```\n{reason}\n```"
+    assert embed.footer.text == footer
+
+
+async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
+    thread = _RunThread()
+
+    await _launch_run(cog=cog, thread=thread)
+
+    # 1,234 in at $1e-6 plus 567 out at $2e-6: the counts the interaction reported, priced.
+    report = thread.writes[-1]
+    agent_name = cog.runtime_models.antigravity_model.name
+    assert report["content"] == (
+        f"# Report\nbody\n\n<@300>\n-# {agent_name} · ⬆ 1,234 ⬇ 567 · $0.00236800"
+    )
+    _assert_pings_only_the_owner(write=report)
+
+
+async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = _RunThread()
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_settling_client(status="completed"), thread=thread
+    )
+
+    # The row's own agent, not the catalog's: a restart after a repoint still names and prices
+    # the agent the run was launched on, which the patched table leaves unpriced.
+    await _resume_run(cog=cog, agent="antigravity-launched-agent")
+
+    await _assert_owner_released(cog=cog, phase="done")
+    report = thread.writes[-1]
+    assert report["content"] == (
+        "# Report\nbody\n\n<@300>\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
+    )
+    _assert_pings_only_the_owner(write=report)
