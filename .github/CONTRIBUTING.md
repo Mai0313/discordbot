@@ -19,7 +19,7 @@ uv sync --all-groups
 cp .env.example .env
 ```
 
-Fill in the Discord and OpenAI-compatible endpoint values in `.env`. Set `GEMINI_API_KEY` (a Google AI Studio key) to enable the direct-to-Google features: video generation, Gemini Files API attachment uploads, YouTube video answers, and deep research.
+Fill in the Discord and OpenAI-compatible endpoint values in `.env`. Set `GEMINI_API_KEY` (a Google AI Studio key) to enable the direct-to-Google features: video and music generation, Gemini Files API uploads of attachments and linked-post media, YouTube video answers, and deep research.
 
 Run the bot:
 
@@ -46,15 +46,14 @@ make gen-docs
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
 - `src/discordbot/utils/`: generic helpers with no domain state — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
 - `tests/`: pytest suite.
-- `scripts/`: local maintenance and development tools.
+- `scripts/`: local maintenance and development tools. The `*_dev.py` scripts are smoke tests against the live APIs, using the credentials in `.env` the way the bot does, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run one with `uv run python -m scripts.<name>`.
 - `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
-- `tmp/`: temporary media download scratch folder; files are deleted after delivery.
 - `docker/` and `docker-compose.yaml`: container build and runtime setup.
 - `.github/workflows/`: CI, code quality, docs deploy, release, and image publishing workflows.
 
 ## Workflow
 
-- Create a focused branch such as `feature/your-change`, `fix/your-bug`, `docs/your-doc-change`, or `chore/your-maintenance-task`.
+- Create a focused branch such as `feat/your-change`, `fix/your-bug`, `docs/your-doc-change`, or `chore/your-maintenance-task`.
 - Keep PRs scoped. Avoid unrelated refactors.
 - Use Conventional Commits for commit messages and PR titles:
 
@@ -88,7 +87,7 @@ def setup(bot: commands.Bot) -> None:
 
 `async def setup` is not safe here: cogs load inside `DiscordBot()` before any event loop runs, so nextcord's attempt to schedule it raises and boot aborts with `ExtensionFailed`.
 
-- Slash commands need `name_localizations` and `description_localizations` for `en-US`, `zh-TW`, and `ja` where applicable.
+- Slash commands take their English `name` and `description` as the defaults, plus `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja`.
 - A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/test_package_layering.py` enforces this.
 - Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
 - Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`.
@@ -121,7 +120,7 @@ Four things therefore never appear in a comment or docstring:
 
 **A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
-`CLAUDE.md` is an index. When a fact is written in the code, `CLAUDE.md` carries the pointer to it rather than a second copy.
+`AGENTS.md` (which `CLAUDE.md` links to) holds the rules the code at the edit site does not show. When a fact is written in the code, `AGENTS.md` carries the pointer to it rather than a second copy.
 
 ## Logging
 
@@ -140,19 +139,19 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
 - A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
 - `LOG_LEVEL` sets the console and log-file floor, defaulting to `debug` so `./data/logs` holds the full trace.
-- Feature usage is not logged, it is recorded: one JSON line per slash invocation and per AI reply in `./data/usage/<YYYY-MM>.jsonl`, so an occasional stocktake can find the features nobody uses. Those records are outside `./data/logs` on purpose — that file is debug-level, hand-cleaned and gated on `LOG_LEVEL`, so a history kept inside it dies with it. They hold numeric ids only, never names or content, and nothing prunes them. `USAGE_LOG_ENABLED=false` turns recording off.
+- Feature usage is not logged, it is recorded: one JSON line per slash invocation and per AI reply in `./data/usage/<YYYY-MM>.jsonl`, so an occasional stocktake can find the features nobody uses. Those records are outside `./data/logs` on purpose — that file is debug-level, hand-cleaned and gated on `LOG_LEVEL`, so a history kept inside it dies with it. They hold numeric ids plus the Discord username as a label, never message content or command arguments, and nothing prunes them. `USAGE_LOG_ENABLED=false` turns recording off.
 
 ## LLM And Media Paths
 
-- Runtime LLM calls go through `AsyncOpenAI` clients and the OpenAI Responses API.
+- Runtime LLM calls go through `AsyncOpenAI` clients and the OpenAI Responses API, apart from the direct-to-Google paths below.
 - `OPENAI_BASE_URL` usually points at LiteLLM. Provider-specific behavior should be expressed through model names, `ModelSettings`, tools, or `extra_body`.
-- Do not import provider-native SDKs such as `google-genai` or `anthropic` into request paths. Development scripts may use them.
+- Do not import a provider-native SDK such as `anthropic` into a request path. `google-genai` is allowed only on the direct-to-Google paths that [AGENTS.md](../AGENTS.md#backend-and-invariants) lists. Development scripts may use any of them.
 - Runtime model strings for `./src` live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; update that catalog instead of hardcoding names at call sites.
 - Preserve the reaction-based progress UX for AI replies. The bot should not send intermediate "thinking" messages there.
 - A link expansion is the exception, and it takes video delivery's shape rather than a status message of its own: the cog replies with one subtext line as it starts and edits that same message into the finished card, so the card cannot drift away from the link while the post is being read. A failure deletes it and the reaction is the whole report. That placeholder is persisted, so a restart runs the interrupted expansion again instead of leaving a line that never resolves. It is also claimed before any reaction goes on, since reactions share a per-channel rate-limit bucket that a message send does not.
 - An auto-expansion cog subclasses `ExpansionCog` (`src/discordbot/utils/expansion_cog.py`), which owns the listener, the reply slot, the restart sweep, the failure classification and one reaction vocabulary — ✅ delivered, ⏱️ refused or stalled and worth retrying, ⚠️ nothing showable in what the platform served, ❌ the bot broke. Which one a read failure earns comes off the exception's class (`src/discordbot/utils/link_errors.py`), so no cog decides it. A cog supplies its URL pattern, its constants, a `read` and a `build_delivery`; only the card differs per platform. `tests/test_expansion_contract.py` holds every cog to that and fails until a new source is written into it.
 - An expansion never posts a second message. Anything the card cannot carry is counted inside it — a follow-up reply lands wherever the channel has got to, which is exactly what the placeholder exists to prevent.
-- Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
+- Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL. A lone file too big to upload is posted as its hosted link alone, since a second URL stops Discord rendering the inline player.
 
 ## Long-Term Memory
 
@@ -227,4 +226,4 @@ Contributors usually do not need to run release commands locally.
 
 ## License
 
-By contributing, you agree that your contribution is licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contribution is licensed under the [MIT License](../LICENSE).
