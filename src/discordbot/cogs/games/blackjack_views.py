@@ -537,8 +537,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         round_state.deal_initial()
         view = BlackjackView(
             round_state=round_state,
-            starter_id=self.owner.user_id,
-            author_name=self.owner.account_name,
+            owner=self.owner,
             bot_user_id=self.bot_user_id,
             shoe_store=self._shoe_store,
             channel_id=self._channel_id,
@@ -566,8 +565,7 @@ class BlackjackView(View):
     def __init__(  # noqa: PLR0913 -- view needs table identity and bot/shoe context
         self,
         round_state: BlackjackRound,
-        starter_id: int,
-        author_name: str,
+        owner: GameParticipant,
         bot_user_id: int | None = None,
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
@@ -576,8 +574,7 @@ class BlackjackView(View):
         """Initializes the active Blackjack table view."""
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
         self.round_state = round_state
-        self.starter_id = starter_id
-        self.author_name = author_name
+        self.owner = owner
         self.bot_user_id = bot_user_id
         self._shoe_store = shoe_store
         self._channel_id = channel_id
@@ -1110,7 +1107,7 @@ class BlackjackView(View):
             logfire.debug(
                 "Blackjack final edit done", channel_id=self._channel_id, message_id=message.id
             )
-        schedule_public_message_delete(message=message, user_name=self.author_name)
+        schedule_public_message_delete(message=message, user_name=self.owner.account_name)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""

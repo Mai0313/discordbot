@@ -78,7 +78,7 @@ def _round_with_two_cards(
 
 def _make_view(round_state: BlackjackRound) -> BlackjackView:
     """Builds a BlackjackView for button inspection."""
-    return BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
+    return BlackjackView(round_state=round_state, owner=seat())
 
 
 @pytest.fixture
@@ -700,9 +700,7 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
         Card(rank="2", suit="♦"),
         Card(rank="3", suit="♣"),
     ]
-    view = BlackjackView(
-        round_state=round_state, starter_id=1, author_name="alice", shoe_store=store, channel_id=42
-    )
+    view = BlackjackView(round_state=round_state, owner=seat(), shoe_store=store, channel_id=42)
     view.message = MagicMock()
     monkeypatch.setattr(view, "_safe_edit_view_locked", AsyncMock())
 
