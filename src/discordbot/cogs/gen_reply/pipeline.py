@@ -8,7 +8,7 @@ builders run against, and the teardown that guarantees no speculative task outli
 """
 
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 import asyncio
 from collections.abc import Callable
 
@@ -240,12 +240,7 @@ class ReplyPipeline(BaseModel):
         await handler(user_prompt=self.user_prompt, context_task=context_task)
 
     async def _answer_qa(
-        self,
-        *,
-        route: "RouteClassification",
-        context: ReplyContext,
-        effort: Literal["low", "high"],
-        pipeline_started: float,
+        self, *, route: "RouteClassification", context: ReplyContext, pipeline_started: float
     ) -> None:
         """Streams the QA answer, watching a linked YouTube video when the router asked for one."""
         message = self.message
@@ -271,7 +266,7 @@ class ReplyPipeline(BaseModel):
         await self._answer_turn().stream_answer(
             system_prompt=REPLY_PROMPT,
             context=context,
-            effort=effort,
+            effort=route.effort,
             allow_research=can_launch_research(message=message),
             yt_url=yt_url,
         )
@@ -324,16 +319,12 @@ class ReplyPipeline(BaseModel):
                 recall_picks.set_result(
                     route.recall_user_ids if isinstance(route, RecallRouteClassification) else []
                 )
-                reads_links = route.decision == "QA" and bool(route.link_context_sources)
-                if reads_links:
+                route_decision = route.decision
+                pipeline_span.set_attribute(key="route", value=route.decision)
+                if route.decision == "QA" and route.link_context_sources:
                     link_context_deadline = (
                         asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
                     )
-                route_decision = route.decision
-                pipeline_span.set_attribute(key="route", value=route.decision)
-                if reads_links:
-                    if link_context_deadline is None:
-                        raise RuntimeError("Selected link sources have no route deadline")
                     link_tasks = self._start_link_builds(
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
@@ -378,10 +369,7 @@ class ReplyPipeline(BaseModel):
                         context = context.model_copy(update={"link_blocks": link_blocks})
                     pipeline_span.set_attribute(key="effort", value=route.effort)
                     await self._answer_qa(
-                        route=route,
-                        context=context,
-                        effort=route.effort,
-                        pipeline_started=pipeline_started,
+                        route=route, context=context, pipeline_started=pipeline_started
                     )
                 self.reactions.advance(emoji=DONE_EMOJI)
                 # End of the turn on the success path; the failure path is `gen_reply failed`,
