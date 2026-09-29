@@ -28,10 +28,6 @@ from discordbot.cogs.gen_reply.generation import (
     VoiceGenerator,
     PromptGenerator,
 )
-from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE2_PROMPT,
-    SERVER_PHASE1_EVALUATOR_PROMPT,
-)
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 
 
@@ -189,11 +185,8 @@ class ReplyToolkit(BaseModel):
             prompts, so the bot builds community-level memory per guild through the same
             engine.
         """
-        return MemoryWriterAI(
-            client=self.openai_client,
-            model=self.runtime_models.memory_writer_model,
-            evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
-            consolidate_prompt=SERVER_PHASE2_PROMPT,
+        return MemoryWriterAI.for_server(
+            client=self.openai_client, model=self.runtime_models.memory_writer_model
         )
 
 

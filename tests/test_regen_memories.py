@@ -16,8 +16,13 @@ from discordbot.services.memory.store import (
     append_raw_entry,
     read_raw_entries,
 )
+from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 from discordbot.services.memory.regeneration import RegenerationReport
+from discordbot.services.memory.server_prompts import (
+    SERVER_PHASE2_PROMPT,
+    SERVER_PHASE1_EVALUATOR_PROMPT,
+)
 
 if TYPE_CHECKING:
     from discordbot.services.memory.writer import MemoryWriterAI
@@ -114,7 +119,8 @@ async def test_the_offline_fan_out_runs_under_its_own_bound(
     monkeypatch.setattr(regen_script, "regenerate_scope_memory", _rebuild)
 
     await regen_script._rebuild_batch(
-        writer=cast("MemoryWriterAI", None), scopes=regen_script._scopes_for_target(target="all")
+        writers=dict.fromkeys(("user", "server"), cast("MemoryWriterAI", None)),
+        scopes=regen_script._scopes_for_target(target="all"),
     )
 
     assert peak == 2
@@ -183,7 +189,9 @@ async def test_a_batch_run_counts_finished_scopes_and_reports_them_in_store_orde
 
     monkeypatch.setattr(regen_script, "regenerate_scope_memory", _land_in_reverse)
 
-    rows = await regen_script._rebuild_batch(writer=cast("MemoryWriterAI", None), scopes=scopes)
+    rows = await regen_script._rebuild_batch(
+        writers=dict.fromkeys(("user", "server"), cast("MemoryWriterAI", None)), scopes=scopes
+    )
 
     assert [row.scope for row in rows] == scopes
     assert "3/3" in " ".join(capsys.readouterr().out.split())
@@ -217,6 +225,33 @@ async def test_a_run_that_is_not_confirmed_builds_no_client_and_writes_nothing(
     assert read_raw_entries(scope=_USER)
     # A run that stops after the warnings with no word for it reads like a crash.
     assert "nothing was written" in " ".join(capsys.readouterr().out.split())
+
+
+async def test_a_server_scope_rebuilds_under_the_server_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prompts ride on the writer, so a server scope needs the server-flavor one."""
+    _seed(scope=_USER)
+    _seed(scope=_SERVER)
+    prompts: dict[str, tuple[str, str]] = {}
+
+    async def _record(scope: str, writer: object, identity: str) -> object:
+        chosen = cast("MemoryWriterAI", writer)
+        prompts[scope] = (chosen.evaluator_prompt, chosen.consolidate_prompt)
+        return RegenerationReport(result="no_evidence")
+
+    monkeypatch.setattr(regen_script.console, "input", lambda *args, **kwargs: "y")
+    monkeypatch.setattr(regen_script, "AsyncOpenAI", lambda **kwargs: object())
+    monkeypatch.setattr(regen_script, "regenerate_scope_memory", _record)
+
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target="all", dry_run=False
+    )
+
+    assert prompts == {
+        _USER: (PHASE1_EVALUATOR_PROMPT, PHASE2_PROMPT),
+        _SERVER: (SERVER_PHASE1_EVALUATOR_PROMPT, SERVER_PHASE2_PROMPT),
+    }
 
 
 def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
