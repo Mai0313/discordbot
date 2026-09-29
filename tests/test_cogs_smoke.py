@@ -1556,7 +1556,9 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
         captured_accept_kwargs.update(kwargs)
         return await fake_accept_loan_proposal()
 
-    async def fake_reject_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
+    async def fake_reject_for_button(
+        proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
+    ) -> LoanProposalView:
         """Records rejection arguments and returns a fake rejected proposal."""
         captured_reject_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_reject_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
