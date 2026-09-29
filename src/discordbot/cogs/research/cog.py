@@ -77,6 +77,8 @@ FORBIDDEN_REPLY = "我在這個頻道的權限不夠,開不了研究串"
 ERROR_REPLY = "開研究串失敗了,等等再試一次"
 # The opening status line a fresh or a resumed run posts before its live view takes over.
 RESEARCHING_STATUS = f"-# Researching... ({RESEARCH_LABEL})"
+# What that status line ends as when the run it announced ends without a report.
+RESEARCH_FAILED_STATUS = f"-# Research failed ({RESEARCH_LABEL})"
 
 
 def _fallback_thread_name(*, brief: str) -> str:
@@ -406,9 +408,7 @@ class ResearchCogs(commands.Cog):
                 thread=thread, owner_id=owner_id, reason=_failure_text(status=failure)
             )
             phase = _terminal_phase(status=failure)
-        await self._finalize_status(
-            status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
-        )
+        await self._finalize_status(status=status, thread=thread, content=RESEARCH_FAILED_STATUS)
         await self._release(thread_id=thread.id, phase=phase)
 
     async def _release(self, *, thread_id: int, phase: db.ResearchPhase) -> None:
@@ -582,6 +582,10 @@ class ResearchCogs(commands.Cog):
         except Exception:
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
             await self._release(thread_id=session.thread_id, phase="failed")
+            if thread is not None:
+                await self._finalize_status(
+                    status=status, thread=thread, content=RESEARCH_FAILED_STATUS
+                )
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
         if thread is None:

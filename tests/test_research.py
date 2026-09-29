@@ -1449,6 +1449,26 @@ async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them
     _assert_pings_only_the_owner(write=notice)
 
 
+async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _expired(**_kwargs: object) -> None:
+        raise RuntimeError("interaction expired")
+
+    monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
+    thread = _RunThread()
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
+
+    await _resume_run(cog=cog)
+
+    assert [write["content"] for write in thread.writes] == [
+        "-# Researching... (Antigravity)",
+        "-# Research failed (Antigravity)",
+        "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
+    ]
+    assert thread.sends == 2, "the failed line is the resume's own status edited, not a new post"
+
+
 async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
     research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
