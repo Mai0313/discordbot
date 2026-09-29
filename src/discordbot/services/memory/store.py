@@ -678,20 +678,6 @@ def clear_tone(scope: str) -> None:
     _tone_path(scope=scope).unlink(missing_ok=True)
 
 
-def clear_memory(scope: str) -> bool:
-    """Deletes the scope's memory files and flags older in-flight updates to abort.
-
-    A test-only convenience over `mark_cleared` + `delete_memory_files`. The pipeline clear
-    drives those two itself because it owns a wider boundary around its awaited reply.db
-    tombstone, so do not route a production clear back through here.
-
-    Returns:
-        True when at least one memory file existed and was removed.
-    """
-    mark_cleared(scope=scope)
-    return delete_memory_files(scope=scope)
-
-
 def delete_memory_files(scope: str) -> bool:
     """Deletes the scope's memory files without moving its clear boundary.
 

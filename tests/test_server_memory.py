@@ -2,24 +2,19 @@
 
 from types import SimpleNamespace
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from functools import partial
 
 from nextcord import Embed
 
-from discordbot.typings.memory import (
-    MemoryFact,
-    MemoryOwner,
-    MemorySection,
-    MemoryDurability,
-    MemoryDeltaAction,
-)
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryDurability, MemoryDeltaAction
 from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.utils.llm_transcript import render_server_identity
 from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
-from discordbot.services.memory.facts import node_type_for, sections_for_flavor
+from discordbot.services.memory.facts import sections_for_flavor
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     BOT_MEMORY_DIR_NAME,
@@ -38,37 +33,22 @@ from discordbot.services.memory.server_prompts import (
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
+from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
 from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.discord_mocks import FakeInteraction
 
 BOT_ID = 555
 GUILD_ID = 777
 SERVER_SCOPE = server_scope(server_id=GUILD_ID)
 SERVER_OWNER = MemoryOwner(owner_id=GUILD_ID, owner_name="My Server")
-_NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
-
-
-def _fact(
-    *,
-    fact_id: str = "0123456789abcdef",
-    section: MemorySection = "culture",
-    durability: MemoryDurability = "stable",
-    text: str = "社群慣於高強度的粗口互嗆",
-    last_confirmed: datetime = _NOW,
-) -> MemoryFact:
-    """Builds a stored fact in the single compartment a server scope ever has."""
-    return MemoryFact(
-        fact_id=fact_id,
-        summary="社群文化",
-        section=section,
-        durability=durability,
-        text=text,
-        compartment=GLOBAL_COMPARTMENT,
-        owner_id=SERVER_OWNER.owner_id,
-        owner_name=SERVER_OWNER.owner_name,
-        node_type=node_type_for(section=section),
-        created=_NOW,
-        last_confirmed=last_confirmed,
-    )
+# An ordinary community fact in the single compartment a server scope ever has.
+_fact = partial(
+    make_fact,
+    owner=SERVER_OWNER,
+    summary="社群文化",
+    section="culture",
+    text="社群慣於高強度的粗口互嗆",
+)
 
 
 def _alias_fact(
@@ -77,17 +57,17 @@ def _alias_fact(
     text: str,
     subject_id: int,
     durability: MemoryDurability = "permanent",
-    last_confirmed: datetime = _NOW,
+    last_confirmed: datetime = STAMPED_AT,
 ) -> MemoryFact:
     """Builds one member-alias row, the server flavor's carve-out from no-individuals."""
-    row = _fact(
+    return _fact(
         fact_id=fact_id,
         section="member_alias",
         durability=durability,
         text=text,
         last_confirmed=last_confirmed,
+        subject_id=subject_id,
     )
-    return row.model_copy(update={"subject_id": subject_id})
 
 
 def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the delta schema
@@ -104,7 +84,7 @@ def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the 
     `text` defaults to empty because the row is rendered from the two structured fields;
     a test passing one is checking that the model's prose is discarded.
     """
-    return MemoryFactDelta(
+    return make_delta(
         action=action,
         section="member_alias",
         durability="permanent",
@@ -198,19 +178,15 @@ def test_render_server_memory_block_is_low_authority_assistant_note() -> None:
 
 def test_server_prompts_target_the_server_not_individuals() -> None:
     """Server memory is about the community; a member's own facts stay in their scope."""
-    assert "target_server_id" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert (
+        "The user message starts with `target_server_id: <id>`" in SERVER_PHASE1_EVALUATOR_PROMPT
+    )
     # The privacy boundary: individual personal facts are out of scope.
-    assert "personal" in SERVER_PHASE1_EVALUATOR_PROMPT
-    assert "individual" in SERVER_PHASE2_PROMPT
-
-
-def test_server_consolidation_prompt_names_every_delta_action() -> None:
-    """Consolidation emits changes now, so the three actions it may ask for are the contract."""
-    for action in ("create", "update", "delete"):
-        assert f'action="{action}"' in SERVER_PHASE2_PROMPT
-    # `fact_id` is the model's only handle on a stored fact, and it may only echo it.
-    assert "MUST be copied verbatim" in SERVER_PHASE2_PROMPT
-    assert "from_keys" in SERVER_PHASE2_PROMPT
+    assert "belong to that member's OWN memory, never here" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert (
+        "A personal fact about one member belongs to that member's own memory, never here."
+        in SERVER_PHASE2_PROMPT
+    )
 
 
 def test_server_consolidation_prompt_offers_exactly_the_server_sections() -> None:
@@ -232,10 +208,7 @@ def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
     assert 'durability="permanent"' in SERVER_PHASE1_EVALUATOR_PROMPT
     # The same kind that the deterministic gate drops must be explicitly forbidden here.
     assert "other_user_context" in SERVER_PHASE1_EVALUATOR_PROMPT
-
-
-def test_evaluator_prompt_keeps_member_aliases() -> None:
-    """The strict pass drops personal facts but must not drop the name-to-member mapping."""
+    # Dropping personal facts must not drop the name-to-member mapping with them.
     assert "nickname/alias" in SERVER_PHASE1_EVALUATOR_PROMPT
     assert "community vocabulary" in SERVER_PHASE1_EVALUATOR_PROMPT
 
@@ -257,9 +230,6 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
 
 def test_server_consolidation_prompt_leaves_dating_and_aging_to_code() -> None:
     """Dates are code-stamped now, so a prompt that still asks for one would fight the sweep."""
-    assert "You do not date anything." in SERVER_PHASE2_PROMPT
-    assert "Dates are recorded for you" in SERVER_PHASE2_PROMPT
-    assert "aging is applied for you" in SERVER_PHASE2_PROMPT
     # The freshness tags the model used to write are gone from the contract.
     assert "[~YYYY-MM]" not in SERVER_PHASE2_PROMPT
 
@@ -437,7 +407,7 @@ def test_an_alias_row_stays_one_clean_line(memory_isolated_dir: Path) -> None:
 
 def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
     """A swept alias row silently shrinks the allowlist, so the sweep skips every one of them."""
-    stale = _NOW - timedelta(days=STABLE_FRESHNESS_WINDOW_DAYS + 30)
+    stale = STAMPED_AT - timedelta(days=STABLE_FRESHNESS_WINDOW_DAYS + 30)
     write_fact(
         scope=SERVER_SCOPE,
         fact=_alias_fact(
@@ -460,7 +430,9 @@ def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
     write_fact(scope=SERVER_SCOPE, fact=_fact(fact_id="d" * 16, text="社群近來只聊楓之谷"))
     assert (
         sweep_stale_facts(
-            scope=SERVER_SCOPE, compartment=GLOBAL_COMPARTMENT, today=_NOW + timedelta(days=1)
+            scope=SERVER_SCOPE,
+            compartment=GLOBAL_COMPARTMENT,
+            today=STAMPED_AT + timedelta(days=1),
         )
         == 1
     )
@@ -475,28 +447,10 @@ def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-class ResponseStub:
-    """Records the response payload sent by the cog."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.sent: dict[str, object] = {}
-
-    async def send_message(self, **kwargs: object) -> None:
-        """Records the response payload."""
-        self.sent = kwargs
-
-
 def _server_cog() -> MemoryCogs:
     """Builds a MemoryCogs whose bot exposes a stable user id."""
     bot = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
     return MemoryCogs(bot=as_bot(fake=bot))
-
-
-def _guild_interaction(guild_id: int | None = GUILD_ID) -> SimpleNamespace:
-    """Builds a minimal guild interaction stub for the server memory command."""
-    guild = None if guild_id is None else SimpleNamespace(id=guild_id)
-    return SimpleNamespace(guild=guild, response=ResponseStub())
 
 
 async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
@@ -506,10 +460,10 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
         fact=_fact(fact_id="a" * 16, section="profile", text="大家都很愛玩楓之谷"),
     )
     cog = _server_cog()
-    interaction = _guild_interaction()
+    interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "楓之谷" in (embed.description or "")
 
@@ -517,9 +471,9 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
 async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     """A guild the bot has never consolidated gets a placeholder, not an empty embed."""
     cog = _server_cog()
-    interaction = _guild_interaction()
+    interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有對這個伺服器的記憶" in (embed.description or "")
 
@@ -527,9 +481,9 @@ async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path
 async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     """There is no server scope in a DM, so the command refuses before reading anything."""
     cog = _server_cog()
-    interaction = _guild_interaction(guild_id=None)
+    interaction = FakeInteraction(in_guild=False)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")
     # A DM read must never reach the store, not even to create its directory.

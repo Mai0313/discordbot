@@ -3,13 +3,12 @@
 import re
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 import asyncio
 from pathlib import Path
-from datetime import UTC, datetime
+from functools import partial
 import contextlib
 from collections import Counter
-from collections.abc import Callable, Awaitable
 
 import pytest
 from nextcord import Embed, Locale
@@ -18,14 +17,12 @@ from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import (
-    MemoryFact,
     MemoryOwner,
     MemorySection,
     MemorySharing,
     MemoryCategory,
     MemoryConfidence,
     MemoryDurability,
-    MemoryDeltaAction,
     MemoryEvidenceKind,
     MemoryWriteSummary,
 )
@@ -41,7 +38,7 @@ from discordbot.cogs.memory.views import (
     memory_footer_text,
 )
 from discordbot.utils.llm_transcript import render_author_identity
-from discordbot.services.memory.facts import MemoryFlavor, node_type_for
+from discordbot.services.memory.facts import MemoryFlavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -54,7 +51,6 @@ from discordbot.services.memory.store import (
     write_fact,
     write_tone,
     iter_scopes,
-    clear_memory,
     mark_cleared,
     server_scope,
     append_detail,
@@ -66,6 +62,7 @@ from discordbot.services.memory.store import (
     count_raw_entries,
     guild_compartment,
     list_compartments,
+    delete_memory_files,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -79,7 +76,6 @@ from discordbot.services.memory.writer import (
     ToneForget,
     MemoryWriterAI,
     RawMemoryDraft,
-    MemoryFactDelta,
     MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
@@ -106,8 +102,9 @@ from discordbot.services.memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 
+from tests.helpers.memory import make_fact, make_delta
 from tests.helpers.casting import as_bot, as_interaction
-from tests.helpers.discord_mocks import FakeInteraction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -124,6 +121,9 @@ TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="minimal")
 # is irrelevant to these tests (the fake client decides what comes back); what matters is that the
 # list is non-empty, since an empty one short-circuits before any model call.
 _NOTES = ("使用者提到一件值得記住的事",)
+
+# The subject a reply schedules for its author: the target, then where the turn happened.
+_SUBJECT = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}"
 
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
@@ -169,16 +169,29 @@ def _no_signal() -> RawMemoryDraft:
     return RawMemoryDraft(has_signal=False, observations=())
 
 
+class MemoryAnswer(Protocol):
+    """The model a test stages: one parsed output per request body and requested schema."""
+
+    async def __call__(self, body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Returns the call's parsed output; None is a call that produced nothing usable."""
+        ...
+
+
 class FakeMemoryResponses:
-    """Fake Responses API resource recording parse calls for memory tests."""
+    """Fake Responses API resource recording parse calls for memory tests.
+
+    Every call answers with `output_parsed` unless `answer` is set, in which case `answer`
+    decides from the request's user text and the schema it asked for.
+    """
 
     def __init__(self) -> None:
         """Initializes recorded calls and the configured parsed output."""
         self.parse_models: list[str] = []
         self.parse_instructions: list[str] = []
-        self.parse_inputs: list[list[dict[str, str]]] = []
+        self.parse_bodies: list[str] = []
         self.parse_extra_kwargs: list[dict[str, object]] = []
         self.output_parsed: BaseModel | None = None
+        self.answer: MemoryAnswer | None = None
         self.status: str = "completed"
         self.raises: Exception | None = None
 
@@ -199,16 +212,20 @@ class FakeMemoryResponses:
         pass (e.g. a reintroduced `max_output_tokens`) so a test can assert the
         memory path leaves the output budget to the backend.
         """
-        del text_format, reasoning, service_tier, extra_headers
+        del reasoning, service_tier, extra_headers
+        body = input[0]["content"]
         self.parse_models.append(model)
         self.parse_instructions.append(instructions)
-        self.parse_inputs.append(input)
+        self.parse_bodies.append(body)
         self.parse_extra_kwargs.append(unexpected)
         if self.raises is not None:
             raise self.raises
-        return SimpleNamespace(
-            output_parsed=self.output_parsed, status=self.status, incomplete_details=None
+        output = (
+            self.output_parsed
+            if self.answer is None
+            else await self.answer(body=body, text_format=text_format)
         )
+        return SimpleNamespace(output_parsed=output, status=self.status, incomplete_details=None)
 
 
 class FakeMemoryClient:
@@ -230,81 +247,66 @@ def _writer() -> tuple[MemoryWriterAI, FakeMemoryClient]:
     return writer, fake_client
 
 
-def _parsed(output: BaseModel | None) -> SimpleNamespace:
-    """Builds a completed fake parse response envelope."""
-    return SimpleNamespace(output_parsed=output, status="completed", incomplete_details=None)
+async def _evaluate(
+    writer: MemoryWriterAI,
+    notes: tuple[str, ...] = _NOTES,
+    transcript: str = "hi",
+    subject: str = _SUBJECT,
+) -> RawMemoryDraft | None:
+    """Runs the note review for the test user."""
+    return await writer.evaluate(subject=subject, transcript=transcript, notes=notes)
 
 
-_STAMPED_AT = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
-
-
-def _stored_fact(  # noqa: PLR0913 -- test helper mirrors the stored fact's own fields
-    *,
-    fact_id: str = "0" * 16,
-    text: str = "喜歡簡短回覆",
-    summary: str = "回覆長度偏好",
-    section: str = "preference",
-    durability: str = "stable",
-    compartment: str = GLOBAL_COMPARTMENT,
-    keys: tuple[str, ...] = (),
-) -> MemoryFact:
-    """Builds one already-consolidated fact, with the code-stamped fields filled in."""
-    return MemoryFact(
-        fact_id=fact_id,
-        summary=summary,
-        section=cast("MemorySection", section),
-        durability=cast("MemoryDurability", durability),
-        text=text,
-        compartment=compartment,
-        owner_id=USER_ID,
-        owner_name="Alice (alice)",
-        node_type=node_type_for(section=cast("MemorySection", section)),
-        created=_STAMPED_AT,
-        last_confirmed=_STAMPED_AT,
-        keys=keys,
-    )
-
-
-def _delta(  # noqa: PLR0913 -- test helper mirrors the delta schema
-    *,
-    action: str = "create",
-    fact_id: str = "",
-    section: str = "preference",
-    durability: str = "stable",
-    summary: str = "回覆長度偏好",
-    text: str = "喜歡簡短回覆",
-    from_keys: tuple[str, ...] = (),
-    subject_id: str = "",
-) -> MemoryFactDelta:
-    """Builds one consolidation delta with the boilerplate filled in."""
-    return MemoryFactDelta(
-        action=cast("MemoryDeltaAction", action),
-        fact_id=fact_id,
-        section=cast("MemorySection", section),
-        durability=cast("MemoryDurability", durability),
-        summary=summary,
-        text=text,
-        from_keys=from_keys,
-        subject_id=subject_id,
-    )
+_stored_fact = partial(make_fact, owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice (alice)"))
 
 
 def _consolidated(
     *,
     text: str = "合併後",
     summary: str = "整理後的事實",
-    section: str = "preference",
+    section: MemorySection = "preference",
     tone: str = "",
 ) -> ConsolidatedMemory:
     """Builds a one-delta consolidation result, the shape phase-2 now returns."""
     return ConsolidatedMemory(
-        deltas=(_delta(summary=summary, text=text, section=section),), tone_markdown=tone
+        deltas=(make_delta(summary=summary, text=text, section=section),), tone_markdown=tone
     )
 
 
 def _no_change(*, tone: str = "") -> ConsolidatedMemory:
     """Builds a consolidation result that asks for nothing; an empty batch is a valid no-op."""
     return ConsolidatedMemory(deltas=(), tone_markdown=tone)
+
+
+def _answers(
+    review: RawMemoryDraft | None = None,
+    facts: ConsolidatedMemory | None = None,
+    forget: ConsolidatedMemory | None = None,
+    tone: ConsolidatedMemory | None = None,
+) -> MemoryAnswer:
+    """Answers each memory call by what it asks for, never by the order the calls arrive in.
+
+    The note review gets `review`, a forget pass `forget`, the tone-note call (the one shown
+    `<tone_evidence>`) `tone`, any other consolidation `facts`, and a tone forget drops nothing.
+    A role left unset answers with an empty but valid result, so a call the test did not plan
+    for still succeeds rather than falling into the failure path unnoticed.
+    """
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Picks the staged result for one call."""
+        if text_format is RawMemoryDraft:
+            return review if review is not None else _no_signal()
+        if text_format is ToneForget:
+            return ToneForget()
+        if "forget_request" in body:
+            staged = forget
+        elif "<tone_evidence>" in body:
+            staged = tone
+        else:
+            staged = facts
+        return staged if staged is not None else _no_change()
+
+    return answer
 
 
 def _memory_text(scope: str = USER_SCOPE, flavor: MemoryFlavor = "user") -> str:
@@ -369,16 +371,6 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
     assert "慣用繁體中文" in raw_text
 
 
-def test_append_raw_entry_headers_omit_identity(memory_isolated_dir: Path) -> None:
-    # Raw entries flow verbatim into the detail file, so author identity stays
-    # confined to the fact files and the header carries only the timestamp.
-    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短")
-    on_disk = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
-    header = on_disk.splitlines()[0]
-    assert header.startswith("## ")
-    assert IDENTITY not in on_disk
-
-
 def test_render_author_identity_is_single_line_and_sanitized() -> None:
     identity = render_author_identity(
         display_name="Evil\n[id: 999]", username="bad\r\nname", user_id=USER_ID
@@ -398,10 +390,9 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
     assert count_raw_entries(scope=USER_SCOPE) == 1
-    # The evicted entry is preserved in the detail file, without author identity.
+    # The evicted entry is preserved in the detail file.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "first entry" in detail_text
-    assert IDENTITY not in detail_text
 
 
 def test_append_raw_entry_truncates_single_oversized_entry(
@@ -429,21 +420,21 @@ def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
     assert _memory_text() != ""
 
 
-def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path) -> None:
-    """Every tier goes, the emptied scope directory with them, and a repeat clear is a no-op."""
+def test_delete_memory_files_removes_files_and_directory(memory_isolated_dir: Path) -> None:
+    """Every tier goes, the emptied scope directory with them, and a repeat delete is a no-op."""
     write_fact(scope=USER_SCOPE, fact=_stored_fact())
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="1" * 16, compartment=DM_COMPARTMENT))
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00 | x\n舊證據")
-    assert clear_memory(scope=USER_SCOPE) is True
+    assert delete_memory_files(scope=USER_SCOPE) is True
     assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert list_compartments(scope=USER_SCOPE) == []
     assert not (memory_isolated_dir / str(USER_ID)).exists()
-    assert clear_memory(scope=USER_SCOPE) is False
+    assert delete_memory_files(scope=USER_SCOPE) is False
 
 
-def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
+def test_delete_memory_files_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
     """A crash between a tmp write and its rename must not leave the scope unclearable."""
     write_fact(scope=USER_SCOPE, fact=_stored_fact())
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
@@ -452,14 +443,14 @@ def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> 
     (user_dir / GLOBAL_COMPARTMENT / "deadbeefdeadbeef.md.tmp").write_text(
         data="partial", encoding="utf-8"
     )
-    assert clear_memory(scope=USER_SCOPE) is True
+    assert delete_memory_files(scope=USER_SCOPE) is True
     assert not user_dir.exists()
 
 
-def test_clear_user_memory_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
+def test_mark_cleared_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
     started_at = time.monotonic()
     assert cleared_since(scope=USER_SCOPE, started_at=started_at) is False
-    clear_memory(scope=USER_SCOPE)
+    mark_cleared(scope=USER_SCOPE)
     assert cleared_since(scope=USER_SCOPE, started_at=started_at) is True
     later = time.monotonic()
     assert cleared_since(scope=USER_SCOPE, started_at=later) is False
@@ -474,7 +465,7 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# extraction
+# note review and consolidation calls
 # ---------------------------------------------------------------------------
 
 
@@ -484,28 +475,15 @@ async def test_evaluate_returns_redacted_draft() -> None:
         "提到 token sk-aaaabbbbccccddddeeee 的事",
         normalized_key="preference.sk-aaaabbbbccccddddeeee",
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="some transcript", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer, transcript="some transcript")
     assert draft is not None
     assert draft.has_signal is True
     assert "sk-aaaabbbbccccddddeeee" not in draft.observations[0].summary_zh
     assert "[REDACTED_SECRET]" in draft.observations[0].summary_zh
     assert draft.observations[0].normalized_key == "preference.redacted_secret"
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
-    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    user_text = fake_client.responses.parse_bodies[0]
     assert f"target_user_id: {USER_ID}" in user_text
-
-
-async def test_evaluate_no_signal_passthrough() -> None:
-    writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _no_signal()
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
-    assert draft is not None
-    assert draft.has_signal is False
-    assert draft.observations == ()
 
 
 async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
@@ -523,7 +501,7 @@ async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(subject="target_server_id: 1", transcript="hi", notes=_NOTES)
+    draft = await _evaluate(writer=writer, subject="target_server_id: 1")
     assert draft is not None
     assert [obs.normalized_key for obs in draft.observations] == ["vocab.member_alias.42"]
 
@@ -563,9 +541,7 @@ async def test_evaluate_filters_weak_observations() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert draft.has_signal is True
     assert [observation.normalized_key for observation in draft.observations] == [
@@ -600,9 +576,7 @@ async def test_evaluate_accepts_permanent_and_rejects_volatile_durability() -> N
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert [observation.normalized_key for observation in draft.observations] == [
         "fact.gender.male"
@@ -621,11 +595,10 @@ async def test_evaluate_can_refuse_every_note() -> None:
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     assert draft.has_signal is False
+    assert draft.observations == ()
 
 
 async def test_evaluate_without_notes_calls_no_model() -> None:
@@ -635,7 +608,7 @@ async def test_evaluate_without_notes_calls_no_model() -> None:
     to find out whether there was anything to find.
     """
     writer, fake_client = _writer()
-    draft = await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=())
+    draft = await _evaluate(writer=writer, notes=())
     assert draft is not None
     assert draft.has_signal is False
     assert fake_client.responses.parse_models == []
@@ -645,10 +618,8 @@ async def test_evaluate_hands_the_notes_to_the_model() -> None:
     """The notes are the input the review is about, so they have to reach the request."""
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=("使用者偏好繁體中文",)
-    )
-    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    await _evaluate(writer=writer, notes=("使用者偏好繁體中文",))
+    user_text = fake_client.responses.parse_bodies[0]
     assert "使用者偏好繁體中文" in user_text
     assert "<memory_notes>" in user_text
 
@@ -659,28 +630,19 @@ async def test_evaluate_returns_none_on_validation_error() -> None:
         RawMemoryDraft.model_validate({})
     except ValidationError as exc:
         fake_client.responses.raises = exc
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_evaluate_returns_none_on_generic_failure() -> None:
     writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("boom")
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_evaluate_returns_none_on_empty_parse() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = None
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_consolidate_marks_every_absent_input_block() -> None:
@@ -690,7 +652,7 @@ async def test_consolidate_marks_every_absent_input_block() -> None:
     result = await writer.consolidate(request=_consolidation_request())
     assert result is not None
     assert [delta.text for delta in result.deltas] == ["新事實"]
-    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    user_text = fake_client.responses.parse_bodies[0]
     assert user_text.startswith("today: 2026-06-06")
     assert "<existing_facts>\n(empty)\n</existing_facts>" in user_text
     # The empty detail window still renders its labeled block for the prompt.
@@ -717,7 +679,7 @@ async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note()
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request(emit_tone=False))
-    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    user_text = fake_client.responses.parse_bodies[0]
     assert "<existing_tone>" not in user_text
     assert "<tone_evidence>" not in user_text
 
@@ -740,7 +702,7 @@ async def test_writer_uses_distinct_models_per_phase() -> None:
         consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
-    await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
+    await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_models == ["evaluate-model", "consolidate-model"]
@@ -753,26 +715,6 @@ def test_prompts_cover_recent_context_and_compaction() -> None:
     assert "today" in PHASE2_PROMPT
     assert "ttl_days" in PHASE2_PROMPT
     assert str(COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
-
-
-def test_phase2_prompt_states_the_delta_protocol() -> None:
-    """The model's only handle on a stored fact is the id it echoes back, so the prompt says so."""
-    for action in ('action="create"', 'action="update"', 'action="delete"'):
-        assert action in PHASE2_PROMPT
-    # `fact_id` is copied verbatim, never invented, and `from_keys` is what lets the next
-    # batch recognise the same fact when the model rewords its summary.
-    assert "`fact_id` MUST be copied verbatim" in PHASE2_PROMPT
-    assert "`from_keys`" in PHASE2_PROMPT
-
-
-def test_phase2_prompt_tells_the_model_dates_are_stamped_for_it() -> None:
-    """Aging is a deterministic code sweep now, so a model-written date would only fight it."""
-    assert "You do not date anything" in PHASE2_PROMPT
-    assert "Dates are recorded for you" in PHASE2_PROMPT
-    # The three durability tiers still come from the model, since only it knows which
-    # tier an observation belongs to.
-    for durability in ("`permanent`", "`stable`", "`recent`"):
-        assert durability in PHASE2_PROMPT
 
 
 def test_prompts_cover_the_permanent_tier() -> None:
@@ -1013,6 +955,29 @@ def _user_message() -> list[EasyInputMessageParam]:
     return [EasyInputMessageParam(role="user", content=f"Alice (alice) [id: {USER_ID}]: 哈囉")]
 
 
+def _schedule(  # noqa: PLR0913 -- one knob per turn field a test varies
+    writer: MemoryWriterAI,
+    remember_notes: tuple[str, ...] = _NOTES,
+    forget_notes: tuple[str, ...] = (),
+    subject: str = _SUBJECT,
+    full_reply: str = "回覆",
+    report: inflight.MemoryWriteReport | None = None,
+    scope: str = USER_SCOPE,
+) -> None:
+    """Schedules the memory update one reply by the test user asks for."""
+    pipeline.schedule_memory_update(
+        scope=scope,
+        subject=subject,
+        message_list=_user_message(),
+        full_reply=full_reply,
+        writer=writer,
+        identity=IDENTITY,
+        remember_notes=remember_notes,
+        forget_notes=forget_notes,
+        report=report,
+    )
+
+
 async def _wait_for_inflight() -> None:
     """Awaits the scheduled background memory task for the test user."""
     task = inflight._inflight_tasks.get(key=USER_SCOPE)
@@ -1039,7 +1004,7 @@ async def _drain_scope() -> None:
 async def _wait_for_persisted_writes() -> None:
     """Drains the pipeline's detached reply.db writes, for a DEFERRED turn's row.
 
-    An ordinary turn transitions its row from the in-flight extraction task
+    An ordinary turn transitions its row from the in-flight review task
     itself, so awaiting that task is enough. A deferred one stages its row, and
     a cleared one retires it, from a fire-and-forget `_spawn_db` task instead, so
     there `_wait_for_inflight` returning says nothing about the scope's
@@ -1054,15 +1019,7 @@ async def _wait_for_persisted_writes() -> None:
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
@@ -1076,15 +1033,7 @@ async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Pa
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=(),
-    )
+    _schedule(writer=writer, remember_notes=())
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert fake_client.responses.parse_models == []
@@ -1104,16 +1053,7 @@ async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_d
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
     writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("review is down")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=(),
-        forget_notes=("使用者已經不住台中了",),
-    )
+    _schedule(writer=writer, remember_notes=(), forget_notes=("使用者已經不住台中了",))
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "### forget_request" in raw_text
@@ -1143,22 +1083,14 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
         deltas=(
-            MemoryFactDelta(
+            make_delta(
                 action="delete",
                 fact_id="a" * 16,
                 section="fact",
-                durability="stable",
                 summary="住台中",
                 text="使用者住在台中",
             ),
-            MemoryFactDelta(
-                action="create",
-                fact_id="",
-                section="fact",
-                durability="stable",
-                summary="使用者要求忘記住處",
-                text="使用者已經不住台中了",
-            ),
+            make_delta(section="fact", summary="使用者要求忘記住處", text="使用者已經不住台中了"),
         ),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
@@ -1183,7 +1115,7 @@ def test_a_delete_survives_a_section_this_flavor_does_not_allow(memory_isolated_
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(action="delete", fact_id="a" * 16, section="member_alias"),),
+        deltas=(make_delta(action="delete", fact_id="a" * 16, section="member_alias"),),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
         deletes_only=True,
@@ -1193,9 +1125,7 @@ def test_a_delete_survives_a_section_this_flavor_does_not_allow(memory_isolated_
     assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
 
 
-async def test_a_forget_only_call_is_never_told_to_compact(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_forget_only_call_is_never_told_to_compact(memory_isolated_dir: Path) -> None:
     """Compaction asks a `deletes_only` call for a rewrite `apply_deltas` then throws away.
 
     The trigger reads the compartment's own rendered facts, and a forget is copied into every
@@ -1209,33 +1139,19 @@ async def test_a_forget_only_call_is_never_told_to_compact(
         fact=_stored_fact(fact_id="a" * 16, text="住" * (COMPACTION_TRIGGER_CHARS + 1)),
     )
     writer, fake_client = _writer()
-    calls: list[tuple[str, str]] = []
-
-    async def recording_parse(**kwargs: object) -> SimpleNamespace:
-        """Captures each call's instructions alongside the body they were sent with."""
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        calls.append((
-            str(kwargs["instructions"]),
-            str(cast("dict[str, object]", inputs[0])["content"]),
-        ))
-        if kwargs.get("text_format") is RawMemoryDraft:
-            return _parsed(output=_draft("希望被叫阿明", normalized_key="preference.name"))
-        return _parsed(output=_no_change())
-
-    monkeypatch.setattr(fake_client.responses, "parse", recording_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-        message_list=_user_message(),
-        full_reply="回覆",
+    fake_client.responses.answer = _answers(
+        review=_draft("希望被叫阿明", normalized_key="preference.name")
+    )
+    _schedule(
         writer=writer,
-        identity=IDENTITY,
         remember_notes=("使用者希望被叫阿明",),
         forget_notes=("使用者已經不住台中了",),
     )
     await _wait_for_inflight()
 
+    calls = zip(
+        fake_client.responses.parse_instructions, fake_client.responses.parse_bodies, strict=True
+    )
     consolidations = [(prompt, body) for prompt, body in calls if "<raw_entries>" in body]
     forget_prompts = [prompt for prompt, body in consolidations if "forget_request" in body]
     observation_prompts = [
@@ -1261,7 +1177,6 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
     """
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
     writer, fake_client = _writer()
-    requests: list[str] = []
     forget_pass_deltas: list[bool] = []
     real_apply = consolidation.apply_deltas
 
@@ -1270,30 +1185,20 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
         forget_pass_deltas.append(bool(kwargs.get("deletes_only", False)))
         return real_apply(**kwargs)
 
-    async def recording_parse(**kwargs: object) -> SimpleNamespace:
-        """Captures every request body and answers with the schema each phase asked for."""
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        requests.append(str(cast("dict[str, object]", inputs[0])["content"]))
-        if kwargs.get("text_format") is RawMemoryDraft:
-            return _parsed(output=_draft("希望被叫阿明", normalized_key="preference.name"))
-        return _parsed(output=_no_change())
-
     monkeypatch.setattr("discordbot.services.memory.consolidation.apply_deltas", recording_apply)
-    monkeypatch.setattr(fake_client.responses, "parse", recording_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-        message_list=_user_message(),
-        full_reply="回覆",
+    fake_client.responses.answer = _answers(
+        review=_draft("希望被叫阿明", normalized_key="preference.name")
+    )
+    _schedule(
         writer=writer,
-        identity=IDENTITY,
         remember_notes=("使用者希望被叫阿明",),
         forget_notes=("使用者已經不住台中了",),
     )
     await _wait_for_inflight()
 
-    consolidations = [body for body in requests if "<raw_entries>" in body]
+    consolidations = [
+        body for body in fake_client.responses.parse_bodies if "<raw_entries>" in body
+    ]
     forget_calls = [body for body in consolidations if "forget_request" in body]
     observation_calls = [body for body in consolidations if "### stable_preference" in body]
     assert forget_calls, "the forget reached consolidation"
@@ -1342,36 +1247,18 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
         deletes_only_calls.append(bool(kwargs.get("deletes_only", False)))
         return real_apply(**kwargs)
 
-    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
-        """Rebuilds the fact from evidence, then answers the forget pass with a no-op."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        body = str(cast("dict[str, object]", inputs[0])["content"])
-        if "forget_request" in body:
-            return _parsed(output=_no_change())
-        return _parsed(
-            output=ConsolidatedMemory(
-                deltas=(
-                    MemoryFactDelta(
-                        action="create",
-                        section="fact",
-                        durability="stable",
-                        summary="住在台中",
-                        text="使用者住在台中",
-                    ),
-                )
-            )
-        )
-
     # Both, and that is the point: the rebuild writes its own facts through
     # `regeneration.apply_deltas`, while the forget it replays afterwards runs back through
     # the retained fan-out. Patching only the first would leave `deletes_only_calls` at
     # `[False]` and the assertion below looking at the wrong half of the run.
     monkeypatch.setattr("discordbot.services.memory.consolidation.apply_deltas", recording_apply)
     monkeypatch.setattr("discordbot.services.memory.regeneration.apply_deltas", recording_apply)
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    # The rebuild re-creates the fact from evidence; the replayed forget changes nothing.
+    fake_client.responses.answer = _answers(
+        facts=ConsolidatedMemory(
+            deltas=(make_delta(section="fact", summary="住在台中", text="使用者住在台中"),)
+        )
+    )
     report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
@@ -1412,7 +1299,7 @@ def test_a_delete_releases_only_the_keys_no_remaining_fact_carries(
         scope=USER_SCOPE,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(action="delete", fact_id="a" * 16),),
+        deltas=(make_delta(action="delete", fact_id="a" * 16),),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
         deletes_only=True,
@@ -1451,7 +1338,7 @@ def test_a_forget_releases_only_older_evidence_its_compartment_holds() -> None:
 
 
 async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """Deleting the fact is not enough while its evidence stays readable.
 
@@ -1479,23 +1366,10 @@ async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
         encoding="utf-8",
     )
     writer, fake_client = _writer()
-    bodies: list[str] = []
-
-    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
-        """Deletes the city fact on the forget pass and changes nothing anywhere else."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        body = str(cast("dict[str, object]", inputs[0])["content"])
-        bodies.append(body)
-        if "forget_request" in body:
-            return _parsed(
-                output=ConsolidatedMemory(deltas=(_delta(action="delete", fact_id="a" * 16),))
-            )
-        return _parsed(output=_no_change())
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    # The forget pass deletes the city fact; nothing else changes anywhere.
+    fake_client.responses.answer = _answers(
+        forget=ConsolidatedMemory(deltas=(make_delta(action="delete", fact_id="a" * 16),))
+    )
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1505,7 +1379,7 @@ async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
     )
 
     assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
-    observation_calls = [body for body in bodies if "fact.pet" in body]
+    observation_calls = [body for body in fake_client.responses.parse_bodies if "fact.pet" in body]
     assert observation_calls, "the pending observation reached consolidation"
     assert all("fact.city" not in body for body in observation_calls)
     # The rest of the evidence is still handed over as before.
@@ -1544,37 +1418,29 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
         encoding="utf-8",
     )
     writer, fake_client = _writer()
-    bodies: list[str] = []
 
-    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
         """Rebuilds the city fact from evidence, then deletes it on the replayed forget."""
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        body = str(cast("dict[str, object]", inputs[0])["content"])
-        bodies.append(body)
+        del text_format
         if "forget_request" in body:
             rebuilt = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
-            return _parsed(
-                output=ConsolidatedMemory(
-                    deltas=tuple(_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt)
-                )
+            return ConsolidatedMemory(
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt)
             )
         if "<tone_evidence>" in body:
-            return _parsed(output=_no_change())
-        return _parsed(
-            output=ConsolidatedMemory(
-                deltas=(
-                    _delta(
-                        section="fact",
-                        summary="住在台中",
-                        text="使用者住在台中",
-                        from_keys=("fact.city",),
-                    ),
-                )
+            return _no_change()
+        return ConsolidatedMemory(
+            deltas=(
+                make_delta(
+                    section="fact",
+                    summary="住在台中",
+                    text="使用者住在台中",
+                    from_keys=("fact.city",),
+                ),
             )
         )
 
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    fake_client.responses.answer = answer
     report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
@@ -1584,7 +1450,10 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
     detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
     assert "fact.city" not in detail
     assert "### forget_request" in detail
-    assert not any("<tone_evidence>" in body and "住在台中" in body for body in bodies)
+    assert not any(
+        "<tone_evidence>" in body and "住在台中" in body
+        for body in fake_client.responses.parse_bodies
+    )
 
 
 _CITY = _observation(summary="住在台中", normalized_key="fact.city")
@@ -1600,21 +1469,18 @@ _TERSE = _observation(
 _TONE_NOTE = "## 語氣偏好\n- 偏好高強度粗口互嗆\n- 回答要簡潔"
 
 
-def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleNamespace]]:
-    """Builds a fake parse that stores what its raw entries evidence and forgets only the city.
+def _consolidation_stage(calls: list[str]) -> MemoryAnswer:
+    """Builds an answer that stores what its raw entries evidence and forgets only the city.
 
     A forget pass deletes the city fact only when its request says the user moved away.
 
     Each call is recorded as `forget` or `observe` in `calls`, so a test can read the order.
     """
 
-    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
         """Answers the forget pass, the tone call and the observation passes in turn."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        body = str(cast("dict[str, object]", inputs[0])["content"])
+        if text_format is ToneForget:
+            return ToneForget()
         if "forget_request" in body:
             calls.append("forget")
             doomed = [
@@ -1622,36 +1488,30 @@ def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleName
                 for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
                 if fact.summary == _CITY.summary_zh and "不住台中" in body
             ]
-            return _parsed(
-                output=ConsolidatedMemory(
-                    deltas=tuple(_delta(action="delete", fact_id=fact.fact_id) for fact in doomed)
-                )
+            return ConsolidatedMemory(
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in doomed)
             )
         if "<tone_evidence>" in body:
-            return _parsed(output=_no_change())
+            return _no_change()
         calls.append("observe")
         raw_entries = body.split("<raw_entries>")[1].split("</raw_entries>", maxsplit=1)[0]
-        return _parsed(
-            output=ConsolidatedMemory(
-                deltas=tuple(
-                    _delta(
-                        section="fact",
-                        summary=observation.summary_zh,
-                        text=observation.summary_zh,
-                        from_keys=(observation.normalized_key,),
-                    )
-                    for observation in (_CITY, _PET)
-                    if observation.normalized_key in raw_entries
+        return ConsolidatedMemory(
+            deltas=tuple(
+                make_delta(
+                    section="fact",
+                    summary=observation.summary_zh,
+                    text=observation.summary_zh,
+                    from_keys=(observation.normalized_key,),
                 )
+                for observation in (_CITY, _PET)
+                if observation.normalized_key in raw_entries
             )
         )
 
-    return staged_parse
+    return answer
 
 
-async def test_a_forget_reaches_what_was_staged_before_it(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_forget_reaches_what_was_staged_before_it(memory_isolated_dir: Path) -> None:
     """A "remember X" then "forget X" inside one consolidation window must end with no X (#731).
 
     One staged entry does not consolidate on its own, so the forget's forced run is the first to
@@ -1672,7 +1532,7 @@ async def test_a_forget_reaches_what_was_staged_before_it(
     )
     writer, fake_client = _writer()
     calls: list[str] = []
-    monkeypatch.setattr(fake_client.responses, "parse", _consolidation_stage(calls=calls))
+    fake_client.responses.answer = _consolidation_stage(calls=calls)
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1681,6 +1541,7 @@ async def test_a_forget_reaches_what_was_staged_before_it(
         identity=IDENTITY,
     )
 
+    # order-contract: what precedes a forget is consolidated before it, so the forget reaches it.
     assert calls == ["observe", "forget"]
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.summary for fact in facts] == [_PET.summary_zh]
@@ -1689,9 +1550,7 @@ async def test_a_forget_reaches_what_was_staged_before_it(
     assert "fact.pet" in detail
 
 
-async def test_a_restatement_after_the_forget_survives_it(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_restatement_after_the_forget_survives_it(memory_isolated_dir: Path) -> None:
     """Something said again after the forget is the user changing their mind, not its target."""
     scope_dir = memory_isolated_dir / str(USER_ID)
     scope_dir.mkdir(parents=True)
@@ -1706,7 +1565,7 @@ async def test_a_restatement_after_the_forget_survives_it(
     )
     writer, fake_client = _writer()
     calls: list[str] = []
-    monkeypatch.setattr(fake_client.responses, "parse", _consolidation_stage(calls=calls))
+    fake_client.responses.answer = _consolidation_stage(calls=calls)
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1715,6 +1574,7 @@ async def test_a_restatement_after_the_forget_survives_it(
         identity=IDENTITY,
     )
 
+    # order-contract: the forget splits the batch, so a restatement after it is consolidated after it.
     assert calls == ["observe", "forget", "observe"]
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
@@ -1724,9 +1584,7 @@ async def test_a_restatement_after_the_forget_survives_it(
     assert "2026-09-03" in detail
 
 
-async def test_each_forget_reaches_only_what_came_before_it(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_each_forget_reaches_only_what_came_before_it(memory_isolated_dir: Path) -> None:
     """A batch holding two forgets is taken one forget at a time.
 
     Only a forced run that failed leaves one behind for the next. Split at the newer forget
@@ -1747,7 +1605,7 @@ async def test_each_forget_reaches_only_what_came_before_it(
     )
     writer, fake_client = _writer()
     calls: list[str] = []
-    monkeypatch.setattr(fake_client.responses, "parse", _consolidation_stage(calls=calls))
+    fake_client.responses.answer = _consolidation_stage(calls=calls)
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1756,6 +1614,7 @@ async def test_each_forget_reaches_only_what_came_before_it(
         identity=IDENTITY,
     )
 
+    # order-contract: each forget splits the batch at its own stamp, one forget at a time.
     assert calls == ["observe", "forget", "observe", "forget"]
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
@@ -1765,7 +1624,7 @@ async def test_each_forget_reaches_only_what_came_before_it(
 
 
 async def test_a_forget_still_runs_when_the_pass_before_it_fails(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """A failed observation pass must not hold back any forget that follows it.
 
@@ -1793,18 +1652,17 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails(
     calls: list[str] = []
     stage = _consolidation_stage(calls=calls)
 
-    async def failing_observation(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+    async def failing_observation(body: str, text_format: type[BaseModel]) -> BaseModel | None:
         """Fails every observation call and answers the forget passes as usual."""
-        if kwargs.get("text_format") is ToneForget:
+        if text_format is ToneForget:
             calls.append("tone")
-            return _parsed(output=ToneForget())
-        body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
+            return ToneForget()
         if "forget_request" in body:
-            return await stage(**kwargs)
+            return await stage(body=body, text_format=text_format)
         calls.append("observe")
-        return _parsed(output=None)
+        return None
 
-    monkeypatch.setattr(fake_client.responses, "parse", failing_observation)
+    fake_client.responses.answer = failing_observation
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1819,9 +1677,7 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails(
     assert count_raw_entries(scope=USER_SCOPE) == 4
 
 
-async def test_nothing_compacts_ahead_of_a_forget(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_nothing_compacts_ahead_of_a_forget(memory_isolated_dir: Path) -> None:
     """Compaction merges facts, so it waits until the batch's forgets have run.
 
     Run in the pass right before a forget, it could fold the fact the forget names into others,
@@ -1843,18 +1699,7 @@ async def test_nothing_compacts_ahead_of_a_forget(
         encoding="utf-8",
     )
     writer, fake_client = _writer()
-    observation_calls: list[tuple[str, str]] = []
-
-    async def recording_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
-        """Records each observation call's instructions beside its raw entries."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
-        if "forget_request" not in body and "<tone_evidence>" not in body:
-            observation_calls.append((str(kwargs["instructions"]), body))
-        return _parsed(output=_no_change())
-
-    monkeypatch.setattr(fake_client.responses, "parse", recording_parse)
+    fake_client.responses.answer = _answers()
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1863,6 +1708,15 @@ async def test_nothing_compacts_ahead_of_a_forget(
         identity=IDENTITY,
     )
 
+    observation_calls = [
+        (prompt, body)
+        for prompt, body in zip(
+            fake_client.responses.parse_instructions,
+            fake_client.responses.parse_bodies,
+            strict=True,
+        )
+        if "forget_request" not in body and "<tone_evidence>" not in body
+    ]
     before = [prompt for prompt, body in observation_calls if "fact.pet" in body]
     after = [prompt for prompt, body in observation_calls if "fact.city" in body]
     assert before, "the observation ahead of the forget reached consolidation"
@@ -1871,23 +1725,19 @@ async def test_nothing_compacts_ahead_of_a_forget(
     assert all(PHASE2_COMPACTION_BLOCK in prompt for prompt in after)
 
 
-def _tone_forget_answer(
-    bodies: list[str], answer: ToneForget | None
-) -> Callable[..., Awaitable[SimpleNamespace]]:
-    """Builds a fake parse answering the tone forget call with `answer` and nothing else."""
+def _tone_forget_answer(answer: ToneForget | None) -> MemoryAnswer:
+    """Builds an answer giving the tone forget call `answer` and changing no fact."""
 
-    async def parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
-        """Records each request body; only the tone forget call gets `answer`."""
-        bodies.append(str(cast("dict[str, object]", kwargs["input"][0])["content"]))
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=answer)
-        return _parsed(output=_no_change())
+    async def respond(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Only the tone forget call gets `answer`."""
+        del body
+        return answer if text_format is ToneForget else _no_change()
 
-    return parse
+    return respond
 
 
 async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """A tone preference is never a fact, so only its own pass can forget it.
 
@@ -1901,13 +1751,8 @@ async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
         _entry("2026-09-03T00:00:00+00:00", _ROAST) + "\n", encoding="utf-8"
     )
     writer, fake_client = _writer()
-    bodies: list[str] = []
-    monkeypatch.setattr(
-        fake_client.responses,
-        "parse",
-        _tone_forget_answer(
-            bodies=bodies, answer=ToneForget(drop_lines=(1, 9), drop_evidence=(1, 7))
-        ),
+    fake_client.responses.answer = _tone_forget_answer(
+        answer=ToneForget(drop_lines=(1, 9), drop_evidence=(1, 7))
     )
     forgets = _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再被粗口互嗆")
     assert await tone.forget_tone(
@@ -1920,17 +1765,16 @@ async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
 
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n- 回答要簡潔"
     # Two older entries offered, the restatement after the forget not among them.
-    assert "[2] [explicit_preference] 回答要簡潔" in bodies[0]
-    assert "[3]" not in bodies[0].split("<tone_evidence>")[1]
+    [body] = fake_client.responses.parse_bodies
+    assert "[2] [explicit_preference] 回答要簡潔" in body
+    assert "[3]" not in body.split("<tone_evidence>")[1]
     detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
     assert "interaction.roast" not in detail
     assert "preference.terse" in detail
     assert "interaction.roast" in read_raw_entries(scope=USER_SCOPE)
 
 
-async def test_each_tone_forget_sees_only_what_came_before_it(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_each_tone_forget_sees_only_what_came_before_it(memory_isolated_dir: Path) -> None:
     """A tone preference restated between two forgets is not offered to the first of them.
 
     The evidence lines carry no stamp, so the model could not tell a restatement from what
@@ -1947,10 +1791,7 @@ async def test_each_tone_forget_sees_only_what_came_before_it(
         encoding="utf-8",
     )
     writer, fake_client = _writer()
-    bodies: list[str] = []
-    monkeypatch.setattr(
-        fake_client.responses, "parse", _tone_forget_answer(bodies=bodies, answer=ToneForget())
-    )
+    fake_client.responses.answer = _answers()
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1959,15 +1800,14 @@ async def test_each_tone_forget_sees_only_what_came_before_it(
         identity=IDENTITY,
     )
 
-    tone_calls = [body for body in bodies if "<tone_note>" in body]
+    tone_calls = [body for body in fake_client.responses.parse_bodies if "<tone_note>" in body]
     assert len(tone_calls) == 2
+    # order-contract: the batch's forgets run one at a time, oldest stamp first.
     assert _ROAST.summary_zh not in tone_calls[0]
     assert _ROAST.summary_zh in tone_calls[1]
 
 
-async def test_a_failed_tone_forget_keeps_the_batch(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_failed_tone_forget_keeps_the_batch(memory_isolated_dir: Path) -> None:
     """The note is injected into every reply, so a forget it has not taken yet must be retried.
 
     Retiring the batch would leave the request in `detail.md`, where only a rebuild reads it.
@@ -1978,10 +1818,7 @@ async def test_a_failed_tone_forget_keeps_the_batch(
         entry_text=render_forget_requests(notes=("使用者不想再被粗口互嗆",), source="guild 42"),
     )
     writer, fake_client = _writer()
-    bodies: list[str] = []
-    monkeypatch.setattr(
-        fake_client.responses, "parse", _tone_forget_answer(bodies=bodies, answer=None)
-    )
+    fake_client.responses.answer = _tone_forget_answer(answer=None)
     await consolidation.consolidate_after_turn(
         scope=USER_SCOPE,
         forced=True,
@@ -1990,7 +1827,9 @@ async def test_a_failed_tone_forget_keeps_the_batch(
         identity=IDENTITY,
     )
 
-    assert any("<tone_note>" in body for body in bodies), "the tone forget was asked"
+    assert any("<tone_note>" in body for body in fake_client.responses.parse_bodies), (
+        "the tone forget was asked"
+    )
     assert read_tone(scope=USER_SCOPE) == _TONE_NOTE
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
@@ -2021,16 +1860,7 @@ async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_
         """Captures what the pipeline decided to report."""
         reported.append(summary)
 
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-        report=record,
-    )
+    _schedule(writer=writer, report=record)
     await _wait_for_inflight()
     assert len(reported) == 1
     assert reported[0].remembered == ("偏好繁體中文",)
@@ -2073,16 +1903,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         """Captures what the pipeline decided to report."""
         reported.append(summary)
 
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-        report=record,
-    )
+    _schedule(writer=writer, report=record)
     if outcome == "cleared-mid-flight":
         mark_cleared(scope=USER_SCOPE)
     await _wait_for_inflight()
@@ -2111,13 +1932,8 @@ async def test_a_failed_review_still_reports_the_forget_it_already_wrote(
         """Captures what the pipeline decided to report."""
         reported.append(summary)
 
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
+    _schedule(
         writer=writer,
-        identity=IDENTITY,
         remember_notes=("他換了新桌機",),
         forget_notes=("別再提那台舊筆電",),
         report=record,
@@ -2164,16 +1980,7 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
         ("superseded", "他在台北工作"),
         ("newest", "他養了一隻貓"),
     ):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=(note,),
-            report=_recorder(key=key),
-        )
+        _schedule(writer=writer, remember_notes=(note,), report=_recorder(key=key))
     await _drain_scope()
 
     assert [len(reports) for reports in seen.values()] == [1, 1, 1]
@@ -2220,7 +2027,7 @@ def test_a_repeated_note_keeps_its_newest_place_in_a_merge() -> None:
 
 
 async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """A remember from an older waiting turn must land ahead of a newer turn's forget (#736).
 
@@ -2230,32 +2037,22 @@ async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
     """
     writer, fake_client = _writer()
 
-    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
         """Reviews each note into one observation, and changes no fact."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
-        if kwargs.get("text_format") is RawMemoryDraft:
+        if text_format is ToneForget:
+            return ToneForget()
+        if text_format is RawMemoryDraft:
             key = "fact.city" if "台中" in body else "preference.lang"
-            return _parsed(output=_draft("住在台中", normalized_key=key))
-        return _parsed(output=_no_change())
+            return _draft("住在台中", normalized_key=key)
+        return _no_change()
 
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    fake_client.responses.answer = answer
     for remember, forget in (
         (("他喜歡繁體中文",), ()),
         (("他住在台中",), ()),
         ((), ("他已經不住台中了",)),
     ):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=remember,
-            forget_notes=forget,
-        )
+        _schedule(writer=writer, remember_notes=remember, forget_notes=forget)
     await _drain_scope()
 
     staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
@@ -2294,7 +2091,7 @@ async def test_a_failed_review_still_writes_the_forgets_of_later_rounds(
 
 
 async def test_a_partly_failed_merge_still_reports_what_it_staged(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """A later round's failed review must not hide what an earlier round already took down.
 
@@ -2303,18 +2100,19 @@ async def test_a_partly_failed_merge_still_reports_what_it_staged(
     writer, fake_client = _writer()
     reviews: list[int] = []
 
-    async def second_review_fails(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+    async def second_review_fails(body: str, text_format: type[BaseModel]) -> BaseModel:
         """Reviews the first round, fails the second, changes no fact."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        if kwargs.get("text_format") is RawMemoryDraft:
+        del body
+        if text_format is ToneForget:
+            return ToneForget()
+        if text_format is RawMemoryDraft:
             reviews.append(1)
             if len(reviews) > 1:
                 raise RuntimeError("review is down")
-            return _parsed(output=_draft("養了一隻貓", normalized_key="fact.pet"))
-        return _parsed(output=_no_change())
+            return _draft("養了一隻貓", normalized_key="fact.pet")
+        return _no_change()
 
-    monkeypatch.setattr(fake_client.responses, "parse", second_review_fails)
+    fake_client.responses.answer = second_review_fails
     reported: list[MemoryWriteSummary] = []
 
     async def record(summary: MemoryWriteSummary) -> None:
@@ -2359,16 +2157,8 @@ async def test_a_correction_lost_to_the_dedupe_is_logged(
         ),
     )
     writer, fake_client = _writer()
-
-    async def review_then_nothing(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
-        """Reviews the note into the reused key, and changes no fact."""
-        if kwargs.get("text_format") is ToneForget:
-            return _parsed(output=ToneForget())
-        if kwargs.get("text_format") is RawMemoryDraft:
-            return _parsed(output=_draft("住在台南", normalized_key="fact.city"))
-        return _parsed(output=_no_change())
-
-    monkeypatch.setattr(fake_client.responses, "parse", review_then_nothing)
+    # The review files the note under the reused key; no consolidation changes a fact.
+    fake_client.responses.answer = _answers(review=_draft("住在台南", normalized_key="fact.city"))
     logged: list[dict[str, object]] = []
 
     def record(message: str, **fields: object) -> None:
@@ -2379,16 +2169,7 @@ async def test_a_correction_lost_to_the_dedupe_is_logged(
     monkeypatch.setattr("discordbot.services.memory.pipeline.logfire.info", record)
     # An ordinary repeat, with no forget beside it, is what the dedupe is for: not logged.
     for forget in ((), ("使用者已經不住台中了",)):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=("使用者住在台南",),
-            forget_notes=forget,
-        )
+        _schedule(writer=writer, remember_notes=("使用者住在台南",), forget_notes=forget)
         await _wait_for_inflight()
 
     assert logged == [{"scope": USER_SCOPE, "user": IDENTITY, "keys": ["fact.city"]}]
@@ -2422,15 +2203,7 @@ async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert raw_file_bytes(scope=USER_SCOPE) == 0
@@ -2447,54 +2220,25 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
     release = asyncio.Event()
     seen_replies: list[str] = []
 
-    async def slow_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        seen_replies.append(str(first["content"]))
+    async def slow_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        seen_replies.append(body)
         started.set()
         if not release.is_set():
             await release.wait()
-        return _parsed(
-            output=_draft(
-                f"訊號 {len(seen_replies)}",
-                normalized_key=f"preference.replay.{len(seen_replies)}",
-            )
+        return _draft(
+            f"訊號 {len(seen_replies)}", normalized_key=f"preference.replay.{len(seen_replies)}"
         )
 
-    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    fake_client.responses.answer = slow_answer
     # A two-line subject: the source line must round-trip through the deferred replay.
     subject = f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=99)}"
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=subject,
-        message_list=_user_message(),
-        full_reply="第一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, subject=subject, full_reply="第一")
     await started.wait()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=subject,
-        message_list=_user_message(),
-        full_reply="第二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=subject,
-        message_list=_user_message(),
-        full_reply="第三",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, subject=subject, full_reply="第二")
+    _schedule(writer=writer, subject=subject, full_reply="第三")
     assert inflight._inflight_tasks.get(key=USER_SCOPE) is first_task
     release.set()
     await first_task
@@ -2526,27 +2270,17 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
     release = asyncio.Event()
     seen_notes: list[str] = []
 
-    async def slow_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        seen_notes.append(str(first["content"]))
+    async def slow_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        seen_notes.append(body)
         started.set()
         if not release.is_set():
             await release.wait()
-        return _parsed(output=_no_signal())
+        return _no_signal()
 
-    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    fake_client.responses.answer = slow_answer
     for note in ("記住 X", "記住 Y", "記住 Z"):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}",
-            message_list=_user_message(),
-            full_reply="回覆",
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=(note,),
-        )
+        _schedule(writer=writer, remember_notes=(note,))
         if note == "記住 X":
             await started.wait()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
@@ -2577,26 +2311,20 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
     release = asyncio.Event()
     requests: list[str] = []
 
-    async def slow_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        requests.append(str(first["content"]))
+    async def slow_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        requests.append(body)
         started.set()
         if not release.is_set():
             await release.wait()
-        return _parsed(output=_no_signal())
+        return _no_signal()
 
-    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    fake_client.responses.answer = slow_answer
     for guild, note in ((99, "在 99 說的"), (77, "在 77 說的"), (99, "也在 99 說的")):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
-            message_list=_user_message(),
-            full_reply="回覆",
+        _schedule(
             writer=writer,
-            identity=IDENTITY,
             remember_notes=(note,),
+            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
         )
         if guild == 99 and note == "在 99 說的":
             await started.wait()
@@ -2625,33 +2353,14 @@ async def test_pipeline_consolidates_at_threshold(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="回覆一")
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
-    parsed_outputs = [_draft("第二筆", normalized_key="preference.second"), _consolidated()]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    fake_client.responses.answer = _answers(
+        review=_draft("第二筆", normalized_key="preference.second"), facts=_consolidated()
     )
+    _schedule(writer=writer, full_reply="回覆二")
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     # The fact is stamped with the scheduling identity, not written by the model.
@@ -2671,24 +2380,15 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     writer, fake_client = _writer()
 
-    parse_results: list[SimpleNamespace | None] = [_parsed(output=_draft("訊號")), None]
+    async def consolidation_down(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Reviews the note, then fails every consolidation call."""
+        del body
+        if text_format is RawMemoryDraft:
+            return _draft("訊號")
+        raise RuntimeError("consolidation down")
 
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        result = parse_results.pop(0)
-        if result is None:
-            raise RuntimeError("consolidation down")
-        return result
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = consolidation_down
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
@@ -2704,21 +2404,8 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     writer, fake_client = _writer()
 
-    parsed_outputs: list[BaseModel] = [_draft("已知資訊"), _no_change()]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = _answers(review=_draft("已知資訊"))
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "既有內容" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -2735,35 +2422,19 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
     monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
     writer, fake_client = _writer()
-    seen_instructions: list[str] = []
-    seen_inputs: list[str] = []
-
-    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated(text="壓縮後")]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        seen_instructions.append(str(kwargs["instructions"]))
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        seen_inputs.append(str(first["content"]))
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    fake_client.responses.answer = _answers(
+        review=_draft("訊號"), facts=_consolidated(text="壓縮後")
     )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "壓縮後" in _memory_text()
     # The oversized compartment flips consolidation into compaction mode, and the
     # consolidation input is dated so the model can reason about how old evidence is.
-    assert "COMPACTION" in seen_instructions[1]
-    assert re.search(r"today: \d{4}-\d{2}-\d{2}", seen_inputs[1]) is not None
+    # order-contract: the compartment's call follows the note review and precedes the tone call.
+    assert "COMPACTION" in fake_client.responses.parse_instructions[1]
+    assert (
+        re.search(r"today: \d{4}-\d{2}-\d{2}", fake_client.responses.parse_bodies[1]) is not None
+    )
 
 
 async def test_pipeline_small_compartment_skips_compaction(
@@ -2772,26 +2443,11 @@ async def test_pipeline_small_compartment_skips_compaction(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
     writer, fake_client = _writer()
-    seen_instructions: list[str] = []
-
-    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        seen_instructions.append(str(kwargs["instructions"]))
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
+    _schedule(writer=writer)
     await _wait_for_inflight()
-    assert "COMPACTION" not in seen_instructions[1]
+    # order-contract: the compartment's call follows the note review and precedes the tone call.
+    assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
 
 _GUILD_222 = guild_compartment(guild_id=222)
@@ -2843,18 +2499,14 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
     writer, fake_client = _writer()
-    seen_inputs: list[str] = []
 
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        user_text = str(first["content"])
-        seen_inputs.append(user_text)
-        written = "本群事實" if _GUILD_222_NOTE in user_text else "全域事實"
-        return _parsed(output=_consolidated(summary=written, text=written))
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Writes one fact per compartment, named after the compartment that wrote it."""
+        del text_format
+        written = "本群事實" if _GUILD_222_NOTE in body else "全域事實"
+        return _consolidated(summary=written, text=written)
 
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    fake_client.responses.answer = answer
     await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert list_compartments(scope=USER_SCOPE) == [GLOBAL_COMPARTMENT, _GUILD_222]
@@ -2866,8 +2518,11 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
     assert guild_texts == ["本群事實"]
     # The global call is never shown the source_only evidence, so it cannot publish what
     # the flag confined: the partition runs before the model, not after it.
-    assert "全域偏好" in seen_inputs[0]
-    assert "本群祕密" not in seen_inputs[0]
+    [global_call] = [
+        body for body in fake_client.responses.parse_bodies if _GUILD_222_NOTE not in body
+    ]
+    assert "全域偏好" in global_call
+    assert "本群祕密" not in global_call
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
@@ -2883,15 +2538,14 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
     _stage_mixed_raw_batch()
     writer, fake_client = _writer()
 
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        if _GUILD_222_NOTE in str(first["content"]):
+    async def guild_down(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Fails the guild compartment's call and answers the global one."""
+        del text_format
+        if _GUILD_222_NOTE in body:
             raise RuntimeError("consolidation down")
-        return _parsed(output=_consolidated(summary="全域事實", text="全域事實"))
+        return _consolidated(summary="全域事實", text="全域事實")
 
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    fake_client.responses.answer = guild_down
     await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert count_raw_entries(scope=USER_SCOPE) == 2
@@ -2923,24 +2577,17 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
         evidence_kind="explicit_preference",
     )
     writer, fake_client = _writer()
-    seen_inputs: list[str] = []
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        user_text = str(first["content"])
-        seen_inputs.append(user_text)
-        if "<tone_evidence>" in user_text:
-            return _parsed(output=_no_change(tone="## 語氣偏好\n* 偏好禮貌"))
-        return _parsed(output=_consolidated(summary="本群事實", text="本群事實"))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    fake_client.responses.answer = _answers(
+        facts=_consolidated(summary="本群事實", text="本群事實"),
+        tone=_no_change(tone="## 語氣偏好\n* 偏好禮貌"),
+    )
     await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
-    tone_calls = [text for text in seen_inputs if "<tone_evidence>" in text]
-    fact_calls = [text for text in seen_inputs if "<tone_evidence>" not in text]
+    tone_calls = [text for text in fake_client.responses.parse_bodies if "<tone_evidence>" in text]
+    fact_calls = [
+        text for text in fake_client.responses.parse_bodies if "<tone_evidence>" not in text
+    ]
     # Exactly one call saw the unpartitioned evidence, and it was handed no facts to
     # write and no raw bucket, so it structurally cannot store one anywhere.
     assert len(tone_calls) == 1
@@ -2967,19 +2614,17 @@ def _stage_tone_observation() -> None:
     )
 
 
-def _clearing_tone_parse(fact_text: str) -> Callable[..., Awaitable[SimpleNamespace]]:
-    """Builds a parse double that stamps a clear while the tone call is in flight."""
+def _clearing_tone_answer(fact_text: str) -> MemoryAnswer:
+    """Builds an answer that stamps a clear while the tone call is in flight."""
 
-    async def parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        if "<tone_evidence>" in str(first["content"]):
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        if "<tone_evidence>" in body:
             mark_cleared(scope=USER_SCOPE)
-            return _parsed(output=_no_change(tone="## 語氣偏好\n* 偏好禮貌"))
-        return _parsed(output=_consolidated(summary=fact_text, text=fact_text))
+            return _no_change(tone="## 語氣偏好\n* 偏好禮貌")
+        return _consolidated(summary=fact_text, text=fact_text)
 
-    return parse
+    return answer
 
 
 async def test_a_clear_during_the_tone_call_keeps_the_batch_out_of_detail(
@@ -2994,7 +2639,7 @@ async def test_a_clear_during_the_tone_call_keeps_the_batch_out_of_detail(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     _stage_tone_observation()
     writer, fake_client = _writer()
-    monkeypatch.setattr(fake_client.responses, "parse", _clearing_tone_parse(fact_text="全域事實"))
+    fake_client.responses.answer = _clearing_tone_answer(fact_text="全域事實")
 
     await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
@@ -3003,28 +2648,19 @@ async def test_a_clear_during_the_tone_call_keeps_the_batch_out_of_detail(
     assert read_tone(scope=USER_SCOPE) == ""
 
 
-async def test_pipeline_aborts_write_after_clear(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     parse_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+    async def slow_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
         parse_started.set()
         await release.wait()
-        return _parsed(output=_draft("不該被寫入"))
+        return _draft("不該被寫入")
 
-    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = slow_answer
+    _schedule(writer=writer)
     await parse_started.wait()
     mark_cleared(scope=USER_SCOPE)
     release.set()
@@ -3032,24 +2668,10 @@ async def test_pipeline_aborts_write_after_clear(
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_background_failure_is_swallowed(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_background_failure_is_swallowed(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
-
-    async def exploding_parse(**kwargs: object) -> SimpleNamespace:
-        raise MemoryError("unexpected")
-
-    monkeypatch.setattr(fake_client.responses, "parse", exploding_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.raises = MemoryError("unexpected")
+    _schedule(writer=writer)
     task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert task is not None
     await asyncio.wait([task])
@@ -3062,21 +2684,9 @@ async def test_pipeline_background_failure_is_swallowed(
 # ---------------------------------------------------------------------------
 
 
-class ResponseStub:
-    """Records the initial interaction response payload."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.sent: dict[str, object] = {}
-
-    async def send_message(self, **kwargs: object) -> None:
-        """Records the response payload."""
-        self.sent = kwargs
-
-
-def _interaction(user_id: int = USER_ID) -> SimpleNamespace:
-    """Builds a minimal interaction stub for the memory cog."""
-    return SimpleNamespace(user=SimpleNamespace(id=user_id), response=ResponseStub())
+def _interaction() -> FakeInteraction:
+    """Builds an interaction invoked by the test user."""
+    return FakeInteraction(user=FakeUser(user_id=USER_ID))
 
 
 def _memory_cog() -> MemoryCogs:
@@ -3094,8 +2704,8 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     description = embed.description or ""
     assert "愛開玩笑" in description
@@ -3104,7 +2714,7 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     assert description.startswith("# 全部聊天都看得到")
     assert "## 使用者輪廓" in description
     # A memory that fits one embed keeps the original no-view behavior.
-    assert "view" not in interaction.response.sent
+    assert "view" not in interaction.response.sent[-1]
 
 
 async def test_memory_show_separates_a_guild_compartment_from_the_shared_one(
@@ -3119,7 +2729,7 @@ async def test_memory_show_separates_a_guild_compartment_from_the_shared_one(
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     description = embed.description or ""
     assert description.index("# 全部聊天都看得到") < description.index("# 只有伺服器 222 看得到")
@@ -3135,7 +2745,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    sent = interaction.response.sent
+    sent = interaction.response.sent[-1]
     assert sent["ephemeral"] is True
     view = sent["view"]
     assert isinstance(view, MemoryPagesView)
@@ -3152,8 +2762,8 @@ async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> No
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有任何記憶" in (embed.description or "")
 
@@ -3191,7 +2801,7 @@ async def test_regenerate_scope_memory_rebuilds_from_evidence_only(
     assert "喜歡簡短回覆" in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
     # Pure-evidence rebuild: no existing facts are shown, compaction always applied.
     assert "COMPACTION" in fake_client.responses.parse_instructions[-1]
-    user_text = fake_client.responses.parse_inputs[-1][0]["content"]
+    user_text = fake_client.responses.parse_bodies[-1]
     assert "<existing_facts>\n(empty)\n</existing_facts>" in user_text
     assert "舊的整理" not in user_text
     assert "喜歡條列式" in user_text
@@ -3347,7 +2957,7 @@ async def test_regenerate_scope_memory_failure_keeps_existing_state(
 
 
 async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_failed(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """A rebuild that gives up part way still accounts for what its earlier passes took.
 
@@ -3367,14 +2977,15 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     calls = 0
 
-    async def failing_second_parse(**kwargs: object) -> SimpleNamespace:
+    async def failing_second_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
         nonlocal calls
         calls += 1
         if calls > 1:
             raise TimeoutError
-        return _parsed(output=_consolidated(text="重建後的記憶"))
+        return _consolidated(text="重建後的記憶")
 
-    monkeypatch.setattr(fake_client.responses, "parse", failing_second_parse)
+    fake_client.responses.answer = failing_second_answer
     report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
@@ -3411,17 +3022,16 @@ async def test_regenerate_scope_memory_recheck_cooldown_under_lock(
     assert fake_client.responses.parse_models == []
 
 
-async def test_regenerate_scope_memory_aborts_write_after_clear(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_regenerate_scope_memory_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
 
-    async def clearing_parse(**kwargs: object) -> SimpleNamespace:
+    async def clearing_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
         mark_cleared(scope=USER_SCOPE)
-        return _parsed(output=_consolidated(text="不該被寫入"))
+        return _consolidated(text="不該被寫入")
 
-    monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
+    fake_client.responses.answer = clearing_answer
     report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
@@ -3431,7 +3041,7 @@ async def test_regenerate_scope_memory_aborts_write_after_clear(
 
 
 async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_call(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path,
 ) -> None:
     """The rebuild's tone call is its last await before the raw batch retires into
     `detail.md`, so a clear landing there must stop that tail too (#714).
@@ -3439,7 +3049,7 @@ async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     _stage_tone_observation()
     writer, fake_client = _writer()
-    monkeypatch.setattr(fake_client.responses, "parse", _clearing_tone_parse(fact_text="重建事實"))
+    fake_client.responses.answer = _clearing_tone_answer(fact_text="重建事實")
 
     report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
@@ -3448,40 +3058,6 @@ async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_
     assert report.result == "failed"
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert "喜歡有禮貌的回覆" not in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
-
-
-class RegenResponseStub(ResponseStub):
-    """Records defer calls in addition to direct responses."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded defer payload."""
-        super().__init__()
-        self.deferred: dict[str, object] | None = None
-
-    async def defer(self, **kwargs: object) -> None:
-        """Records the defer payload."""
-        self.deferred = kwargs
-
-
-class FollowupStub:
-    """Records followup payloads sent after a deferred response."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.sent: dict[str, object] = {}
-
-    async def send(self, **kwargs: object) -> None:
-        """Records the followup payload."""
-        self.sent = kwargs
-
-
-def _regen_interaction(user_id: int = USER_ID) -> SimpleNamespace:
-    """Builds an interaction stub with defer and followup support."""
-    return SimpleNamespace(
-        user=SimpleNamespace(id=user_id, display_name="Alice", name="alice"),
-        response=RegenResponseStub(),
-        followup=FollowupStub(),
-    )
 
 
 @pytest.mark.parametrize(
@@ -3507,15 +3083,15 @@ async def test_memory_regenerate_command_schedules_in_background(
     monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    interaction = _regen_interaction()
+    interaction = _interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # The command replies immediately and never blocks on the rebuild, so it
     # neither defers nor uses a followup.
-    assert interaction.response.deferred is None
-    assert interaction.followup.sent == {}
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.deferred is False
+    assert interaction.followup.sent == []
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert expected_text in (embed.description or "")
     assert calls["scope"] == USER_SCOPE
@@ -3536,15 +3112,15 @@ async def test_memory_regenerate_command_reports_no_evidence(
 
     monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # No raw or detail evidence exists for this scope.
-    interaction = _regen_interaction()
+    interaction = _interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # Without evidence the background task would no-op, so nothing is scheduled
     # and the user is told there is nothing to rebuild yet.
     assert scheduled is False
-    assert interaction.response.deferred is None
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.deferred is False
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有足夠的觀察記錄" in (embed.description or "")
 
@@ -3562,15 +3138,15 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
         return True
 
     monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
-    interaction = _regen_interaction()
+    interaction = _interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # Rejected up front: nothing scheduled, no defer, just the ephemeral notice.
     assert scheduled is False
-    assert interaction.response.deferred is None
-    assert interaction.followup.sent == {}
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
+    assert interaction.response.deferred is False
+    assert interaction.followup.sent == []
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "請稍後再試" in (embed.description or "")
 
@@ -3648,18 +3224,6 @@ def test_paginate_on_lines_rejects_non_positive_limit() -> None:
         paginate_on_lines(text="x", limit=0)
 
 
-class EditResponseStub:
-    """Records edit_message payloads from view button callbacks."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded payload."""
-        self.edited: dict[str, object] = {}
-
-    async def edit_message(self, **kwargs: object) -> None:
-        """Records the edit payload."""
-        self.edited = kwargs
-
-
 async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     view = MemoryPagesView(
         pages=["第一頁", "第二頁", "第三頁"],
@@ -3671,10 +3235,10 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     assert prev_button.disabled is True
     assert next_button.disabled is False
 
-    interaction = SimpleNamespace(response=EditResponseStub())
+    interaction = FakeInteraction()
     await next_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 1
-    embed = interaction.response.edited["embed"]
+    embed = interaction.response.edited[-1]["embed"]
     assert isinstance(embed, Embed)
     assert embed.description == "第二頁"
     assert "第 2/3 頁" in (embed.footer.text or "")
@@ -3687,7 +3251,7 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
 
     await prev_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 1
-    edited_embed = interaction.response.edited["embed"]
+    edited_embed = interaction.response.edited[-1]["embed"]
     assert isinstance(edited_embed, Embed)
     assert edited_embed.description == "第二頁"
 
@@ -3701,21 +3265,10 @@ async def test_memory_pages_view_timeout_disables_buttons() -> None:
     # Without a bound origin the timeout is a silent no-op.
     await view.on_timeout()
 
-    class OriginStub:
-        """Records the timeout edit on the original ephemeral response."""
-
-        def __init__(self) -> None:
-            """Initializes the recorded payload."""
-            self.edited: dict[str, object] = {}
-
-        async def edit_original_message(self, **kwargs: object) -> None:
-            """Records the edit payload."""
-            self.edited = kwargs
-
-    origin = OriginStub()
+    origin = FakeInteraction()
     view.bind_origin(interaction=as_interaction(fake=origin))
     await view.on_timeout()
-    assert origin.edited["view"] is view
+    assert origin.edits[-1]["view"] is view
     assert all(child.disabled for child in view.children if isinstance(child, Button))
 
 
@@ -3743,7 +3296,7 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "1 筆" in (embed.description or "")
     assert "整理" in (embed.description or "")
@@ -3759,7 +3312,7 @@ async def test_memory_show_counts_pending_observations_in_the_footer(
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "愛開玩笑" in (embed.description or "")
     assert embed.footer is not None
@@ -3774,7 +3327,7 @@ async def test_memory_show_leads_with_the_tone_note(memory_isolated_dir: Path) -
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert (embed.description or "").startswith("## 語氣偏好")
 
@@ -3804,39 +3357,21 @@ def test_transcript_caps_reply_so_current_message_survives_truncation(
     assert "[... reply truncated ...]" in transcript
 
 
-async def test_pipeline_cancelled_task_does_not_raise_or_replay(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_cancelled_task_does_not_raise_or_replay(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     started = asyncio.Event()
 
-    async def hang(**kwargs: object) -> SimpleNamespace:
+    async def hang(body: str, text_format: type[BaseModel]) -> None:
+        del body, text_format
         started.set()
         await asyncio.sleep(100)
-        return _parsed(output=None)
 
-    monkeypatch.setattr(fake_client.responses, "parse", hang)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = hang
+    _schedule(writer=writer, full_reply="一")
     await started.wait()
     task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert task is not None
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="二")
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -3847,50 +3382,32 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
 
 
-async def test_pipeline_drops_pending_replay_after_clear(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_drops_pending_replay_after_clear(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     first_started = asyncio.Event()
     release = asyncio.Event()
     parse_calls = 0
 
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+    async def first_call_waits(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
         nonlocal parse_calls
         parse_calls += 1
         if parse_calls == 1:
             first_started.set()
             await release.wait()
-        return _parsed(output=_draft("不該被寫入"))
+        return _draft("不該被寫入")
 
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="一",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = first_call_waits
+    _schedule(writer=writer, full_reply="一")
     await first_started.wait()
     # Queue a pending replay, then clear before the in-flight task finishes.
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="二",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="二")
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
-    clear_memory(scope=USER_SCOPE)
+    mark_cleared(scope=USER_SCOPE)
     release.set()
     first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
-    if first_task is not None:
-        await first_task
+    await first_task
     # The pre-clear pending turn must not be replayed back into storage.
     assert inflight._inflight_tasks.get(key=USER_SCOPE) is None
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -3932,10 +3449,7 @@ async def test_evaluate_returns_none_on_incomplete_response() -> None:
     fake_client.responses.status = "incomplete"
     # A response that hit the output-token budget must be refused even when the
     # parsed payload looks usable.
-    assert (
-        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
-        is None
-    )
+    assert await _evaluate(writer=writer) is None
 
 
 async def test_memory_calls_omit_max_output_tokens() -> None:
@@ -3943,7 +3457,7 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
     # uses the model's own ceiling; only the `incomplete` guard bounds output.
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
+    await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_extra_kwargs == [{}, {}]
@@ -3961,18 +3475,10 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("訊號")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
-    # Threshold is met but the cooldown has not elapsed: only the phase-1
-    # extract call ran and raw stays queued.
+    # Threshold is met but the cooldown has not elapsed: only the note review
+    # ran and raw stays queued.
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
@@ -3986,22 +3492,8 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
         time.monotonic() - MEMORY_CONSOLIDATION_COOLDOWN_SECONDS - 1
     )
     writer, fake_client = _writer()
-
-    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     # The attempt refreshed the per-user cooldown timestamp.
@@ -4015,25 +3507,10 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_MAX_BYTES", 10)
     consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
     writer, fake_client = _writer()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("超過位元組門檻的長訊號"),
-        _consolidated(text="爆量合併"),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    fake_client.responses.answer = _answers(
+        review=_draft("超過位元組門檻的長訊號"), facts=_consolidated(text="爆量合併")
     )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     # The raw byte burst escape hatch consolidates despite the active cooldown.
     assert "爆量合併" in _memory_text()
@@ -4045,29 +3522,11 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
     writer, fake_client = _writer()
-    seen_inputs: list[str] = []
-
-    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        seen_inputs.append(str(first["content"]))
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
+    _schedule(writer=writer)
     await _wait_for_inflight()
-    consolidation_input = seen_inputs[1]
+    # order-contract: the compartment's call follows the note review and precedes the tone call.
+    consolidation_input = fake_client.responses.parse_bodies[1]
     assert "<recent_detail>" in consolidation_input
     assert "舊的詳細證據" in consolidation_input
     # Identity header suffixes never reach the consolidation LLM.
@@ -4120,25 +3579,22 @@ async def test_memory_semaphore_caps_concurrent_updates(
     in_flight = 0
     max_in_flight = 0
 
-    async def tracking_parse(**kwargs: object) -> SimpleNamespace:
+    async def tracking_answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
         await asyncio.sleep(0.01)
         in_flight -= 1
-        return _parsed(output=_no_signal())
+        return _no_signal()
 
-    monkeypatch.setattr(fake_client.responses, "parse", tracking_parse)
+    fake_client.responses.answer = tracking_answer
     scopes = [user_scope(user_id=USER_ID + offset) for offset in range(3)]
     for offset, scope in enumerate(scopes):
-        pipeline.schedule_memory_update(
-            scope=scope,
-            subject=f"target_user_id: {USER_ID + offset}",
-            message_list=_user_message(),
-            full_reply="回覆",
+        _schedule(
             writer=writer,
-            identity=IDENTITY,
-            remember_notes=_NOTES,
+            subject=f"target_user_id: {USER_ID + offset}\n{subject_source_line(guild_id=42)}",
+            scope=scope,
         )
     tasks = [
         task for scope in scopes if (task := inflight._inflight_tasks.get(key=scope)) is not None
@@ -4179,22 +3635,10 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     # the wiped memory and must not delay the fresh state's first consolidation.
     mark_cleared(scope=USER_SCOPE)
     writer, fake_client = _writer()
-
-    parsed_outputs: list[BaseModel] = [_draft("清除後的新訊號"), _consolidated(text="全新整理")]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    fake_client.responses.answer = _answers(
+        review=_draft("清除後的新訊號"), facts=_consolidated(text="全新整理")
     )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "全新整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -4403,15 +3847,7 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
 ) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -4419,21 +3855,13 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
     assert job.transcript is None
 
 
-async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
+async def test_pipeline_review_failure_marks_failed_and_keeps_transcript(
     memory_isolated_dir: Path,
 ) -> None:
     writer, fake_client = _writer()
-    # extract() returns None on an LLM error, which must park the row at failed.
+    # `evaluate` returns None on an LLM error, which must park the row at failed.
     fake_client.responses.raises = RuntimeError("llm down")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -4445,15 +3873,7 @@ async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
 async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -4740,9 +4160,7 @@ async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer)
     assert draft is not None
     sharing_by_key = {
         observation.normalized_key: observation.sharing for observation in draft.observations
@@ -4791,9 +4209,7 @@ async def test_a_named_participant_locks_an_observation_with_no_id_token() -> No
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer, transcript=_ROSTER_TRANSCRIPT)
     assert draft is not None
     assert {
         observation.normalized_key: observation.sharing for observation in draft.observations
@@ -4815,9 +4231,7 @@ async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
             ),
         ),
     )
-    draft = await writer.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
-    )
+    draft = await _evaluate(writer=writer, transcript=_ROSTER_TRANSCRIPT)
     assert draft is not None
     assert [observation.sharing for observation in draft.observations] == ["global"]
 
@@ -4868,14 +4282,8 @@ def test_filter_duplicate_observations_legacy_evidence_pairs_with_none() -> None
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    _schedule(
+        writer=writer, subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}"
     )
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
@@ -4890,15 +4298,7 @@ async def test_pipeline_sourceless_subject_renders_without_source_fields(
     # old observation format.
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, subject=f"target_user_id: {USER_ID}")
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "- source:" not in raw_text
@@ -4959,12 +4359,11 @@ def test_read_tone_missing_file_returns_empty(memory_isolated_dir: Path) -> None
     assert read_tone(scope=USER_SCOPE) == ""
 
 
-def test_write_tone_roundtrip_without_header_or_identity(memory_isolated_dir: Path) -> None:
+def test_write_tone_roundtrip_without_header(memory_isolated_dir: Path) -> None:
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌\n")
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     on_disk = (memory_isolated_dir / str(USER_ID) / "tone.md").read_text(encoding="utf-8")
     assert "v1" not in on_disk
-    assert IDENTITY not in on_disk
     leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
     assert leftovers == []
 
@@ -4979,55 +4378,32 @@ def test_write_tone_truncates_past_byte_cap(
     assert len(stored.encode("utf-8")) <= 32
 
 
-def test_clear_memory_removes_tone_note(memory_isolated_dir: Path) -> None:
-    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌")
-    assert clear_memory(scope=USER_SCOPE) is True
-    assert read_tone(scope=USER_SCOPE) == ""
-    assert not (memory_isolated_dir / str(USER_ID)).exists()
-
-
 async def test_pipeline_consolidation_writes_tone_note(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     writer, fake_client = _writer()
-    seen_inputs: list[str] = []
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Three calls now: extraction, the compartment's facts, then the tone note on its
-        # own. Only the last is asked for `tone_markdown`.
-        _consolidated(),
-        _no_change(tone="## 語氣偏好\n* 偏好禮貌"),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        inputs = kwargs["input"]
-        assert isinstance(inputs, list)
-        first = cast("dict[str, object]", inputs[0])
-        seen_inputs.append(str(first["content"]))
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    # Three calls: the note review, the compartment's facts, then the tone note on its own.
+    # Only the last is asked for `tone_markdown`.
+    fake_client.responses.answer = _answers(
+        review=_draft("訊號"),
+        facts=_consolidated(),
+        tone=_no_change(tone="## 語氣偏好\n* 偏好禮貌"),
     )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     # The current note rode the TONE call, not the compartment's; the compartment call
     # is never shown it, because it has no business rewriting the note.
     # order-contract: the tone call runs after the scope's one fact-compartment call.
-    assert "<existing_tone>\n## 語氣偏好\n* 舊語氣\n</existing_tone>" in seen_inputs[2]
+    assert (
+        "<existing_tone>\n## 語氣偏好\n* 舊語氣\n</existing_tone>"
+        in fake_client.responses.parse_bodies[2]
+    )
     # order-contract: the preceding fact-compartment call must not receive the tone document.
-    assert "<existing_tone>" not in seen_inputs[1]
+    assert "<existing_tone>" not in fake_client.responses.parse_bodies[1]
 
 
 async def test_pipeline_no_op_consolidation_still_writes_tone(
@@ -5036,29 +4412,15 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     writer, fake_client = _writer()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("已知資訊"),
-        # A batch that changes no fact can still carry fresh tone signal, and it consumes
-        # the raw entries either way, so the tone must land now or be lost. The tone call
-        # runs after the compartment's regardless of whether that one changed anything.
-        _no_change(),
-        _no_change(tone="## 語氣偏好\n* 偏好簡短"),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    # A batch that changes no fact can still carry fresh tone signal, and it consumes the raw
+    # entries either way, so the tone must land now or be lost. The tone call runs after the
+    # compartment's regardless of whether that one changed anything.
+    fake_client.responses.answer = _answers(
+        review=_draft("已知資訊"),
+        facts=_no_change(),
+        tone=_no_change(tone="## 語氣偏好\n* 偏好簡短"),
     )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "既有內容" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好簡短"
@@ -5083,22 +4445,10 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
     writer, fake_client = _writer()
-
-    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated(tone=bad_tone)]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
+    fake_client.responses.answer = _answers(
+        review=_draft("訊號"), facts=_consolidated(), tone=_no_change(tone=bad_tone)
     )
+    _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -5153,7 +4503,7 @@ async def test_regenerate_scope_memory_writes_tone_and_ignores_existing_tone(
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 新語氣"
     # A pure-evidence rebuild feeds no existing tone to the model; the note is rebuilt
     # from the evidence alone, exactly like the facts.
-    user_text = fake_client.responses.parse_inputs[-1][0]["content"]
+    user_text = fake_client.responses.parse_bodies[-1]
     assert "<existing_tone>\n(empty)\n</existing_tone>" in user_text
     assert "舊語氣" not in user_text
 
@@ -5297,34 +4647,25 @@ async def test_clear_token_advances_past_legacy_wall_clock_tokens(
     assert job.transcript is None
 
 
-async def test_clear_scope_memory_drops_the_deferred_replay(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir: Path) -> None:
     """The deferred turn holds a pre-clear transcript in memory and in reply.db."""
     writer, fake_client = _writer()
     first_started = asyncio.Event()
     release = asyncio.Event()
     parse_calls = 0
 
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+    async def first_call_waits(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
         nonlocal parse_calls
         parse_calls += 1
         if parse_calls == 1:
             first_started.set()
             await release.wait()
-        return _parsed(output=_draft("不該被寫入"))
+        return _draft("不該被寫入")
 
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    fake_client.responses.answer = first_call_waits
     for reply in ("一", "二"):
-        pipeline.schedule_memory_update(
-            scope=USER_SCOPE,
-            subject=f"target_user_id: {USER_ID}",
-            message_list=_user_message(),
-            full_reply=reply,
-            writer=writer,
-            identity=IDENTITY,
-            remember_notes=_NOTES,
-        )
+        _schedule(writer=writer, full_reply=reply)
         await first_started.wait()
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
 
@@ -5386,15 +4727,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
 
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="清除已經回傳",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer, full_reply="清除已經回傳")
     await _wait_for_inflight()
 
     job = await memory_db.get_job(scope=USER_SCOPE)
@@ -5751,15 +5084,7 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("不該被寫入")
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        writer=writer,
-        identity=IDENTITY,
-        remember_notes=_NOTES,
-    )
+    _schedule(writer=writer)
     # The task has not run a single step yet; the clear lands first.
     await pipeline.clear_scope_memory(scope=USER_SCOPE)
     await _wait_for_inflight()
@@ -5779,11 +5104,11 @@ async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_
 
     await MemoryCogs.memory_clear.callback(cog, as_interaction(fake=interaction))
 
-    assert interaction.response.sent["ephemeral"] is True
-    view = interaction.response.sent["view"]
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    view = interaction.response.sent[-1]["view"]
     assert isinstance(view, MemoryClearConfirmView)
     assert view.scope == USER_SCOPE
-    embed = interaction.response.sent["embed"]
+    embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "沒辦法復原" in (embed.description or "")
     # Bound, or an abandoned one-click wipe prompt would never go inert.

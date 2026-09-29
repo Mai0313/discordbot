@@ -78,6 +78,8 @@ async def test_an_unchanged_scope_makes_no_commit(memory_repository: Path) -> No
     await asyncio.sleep(0.3)
     await service.stop()
     assert _git(memory_repository, "log", "--format=%s").strip() == "baseline"
+    # Skipped by the guard, not by a failed `git add`, which would leave no commit either.
+    assert service._failures == 0
     assert service.enabled
 
 
@@ -120,6 +122,7 @@ async def test_an_unstarted_service_drops_requests(memory_isolated_dir: Path) ->
     """Enqueueing before `start` must not bind a queue to whichever loop got there first."""
     service = MemoryGitService()
     service.enqueue(scope=user_scope(user_id=111), reason="update")
+    assert service._queue is None
     await service.stop()
 
 

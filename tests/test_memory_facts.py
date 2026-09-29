@@ -5,19 +5,13 @@ context may open, that a fact file round-trips, that a delta batch cannot widen 
 reach or wipe a scope, and that aging is deterministic now that the dates are code-stamped.
 """
 
-from typing import cast
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
+from functools import partial
 
 import pytest
 
-from discordbot.typings.memory import (
-    MemoryFact,
-    MemoryOwner,
-    MemorySection,
-    MemoryDurability,
-    MemoryDeltaAction,
-)
+from discordbot.typings.memory import MemoryOwner
 from discordbot.cogs.gen_reply.recall import (
     RecallContext,
     compartments_for_reading,
@@ -26,7 +20,6 @@ from discordbot.cogs.gen_reply.recall import (
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
     mint_fact_id,
-    node_type_for,
     parse_identity,
     parse_fact_file,
     render_fact_file,
@@ -42,7 +35,6 @@ from discordbot.services.memory.store import (
     write_fact,
     delete_fact,
     iter_scopes,
-    clear_memory,
     server_scope,
     scope_owner_id,
     compartment_dir,
@@ -50,6 +42,7 @@ from discordbot.services.memory.store import (
     list_compartments,
     prune_compartment,
     unaccounted_files,
+    delete_memory_files,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -59,63 +52,11 @@ from discordbot.services.memory.deltas import (
     render_existing_facts,
     tone_evidence_from_raw,
 )
-from discordbot.services.memory.writer import MemoryFactDelta
+
+from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
 
 _OWNER = MemoryOwner(owner_id=111, owner_name="Alice (alice)")
-_NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
-
-
-def _fact(  # noqa: PLR0913 -- test helper mirrors the stored fact's own fields
-    *,
-    fact_id: str = "0123456789abcdef",
-    compartment: str = GLOBAL_COMPARTMENT,
-    section: str = "preference",
-    durability: str = "stable",
-    text: str = "喜歡簡短回覆",
-    last_confirmed: datetime = _NOW,
-    subject_id: int | None = None,
-    keys: tuple[str, ...] = (),
-) -> MemoryFact:
-    """Builds a stored fact with the boilerplate filled in."""
-    return MemoryFact(
-        fact_id=fact_id,
-        summary="回覆長度偏好",
-        section=cast("MemorySection", section),
-        durability=cast("MemoryDurability", durability),
-        text=text,
-        compartment=compartment,
-        owner_id=_OWNER.owner_id,
-        owner_name=_OWNER.owner_name,
-        subject_id=subject_id,
-        node_type=node_type_for(section=cast("MemorySection", section)),
-        created=_NOW,
-        last_confirmed=last_confirmed,
-        keys=keys,
-    )
-
-
-def _delta(  # noqa: PLR0913 -- test helper mirrors the delta schema
-    *,
-    action: str = "create",
-    fact_id: str = "",
-    section: str = "preference",
-    durability: str = "stable",
-    summary: str = "回覆長度偏好",
-    text: str = "喜歡簡短回覆",
-    from_keys: tuple[str, ...] = (),
-    subject_id: str = "",
-) -> MemoryFactDelta:
-    """Builds a consolidation delta with the boilerplate filled in."""
-    return MemoryFactDelta(
-        action=cast("MemoryDeltaAction", action),
-        fact_id=fact_id,
-        section=cast("MemorySection", section),
-        durability=cast("MemoryDurability", durability),
-        summary=summary,
-        text=text,
-        from_keys=from_keys,
-        subject_id=subject_id,
-    )
+_fact = partial(make_fact, owner=_OWNER)
 
 
 def test_fact_file_round_trips(memory_isolated_dir: Path) -> None:
@@ -526,7 +467,7 @@ def test_clear_removes_the_whole_compartment_tree(memory_isolated_dir: Path) -> 
     scope = user_scope(user_id=111)
     for compartment in (GLOBAL_COMPARTMENT, guild_compartment(guild_id=222), DM_COMPARTMENT):
         write_fact(scope=scope, fact=_fact(compartment=compartment))
-    assert clear_memory(scope=scope)
+    assert delete_memory_files(scope=scope)
     assert list_compartments(scope=scope) == []
     assert not (memory_isolated_dir / scope).exists()
 
@@ -632,7 +573,7 @@ def test_a_create_delta_writes_a_fact(memory_isolated_dir: Path) -> None:
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(from_keys=("preference.a",)),),
+        deltas=(make_delta(from_keys=("preference.a",)),),
         owner=_OWNER,
         allow_mass_delete=False,
     )
@@ -652,7 +593,7 @@ def test_a_create_whose_keys_already_back_a_fact_updates_it(memory_isolated_dir:
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(summary="換個說法", text="新版本", from_keys=("preference.a",)),),
+        deltas=(make_delta(summary="換個說法", text="新版本", from_keys=("preference.a",)),),
         owner=_OWNER,
         allow_mass_delete=False,
     )
@@ -670,13 +611,13 @@ def test_an_update_keeps_the_original_creation_date(memory_isolated_dir: Path) -
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(action="update", fact_id="0123456789abcdef", text="改寫"),),
+        deltas=(make_delta(action="update", fact_id="0123456789abcdef", text="改寫"),),
         owner=_OWNER,
         allow_mass_delete=False,
     )
     stored = read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)[0]
-    assert stored.created == _NOW
-    assert stored.last_confirmed > _NOW
+    assert stored.created == STAMPED_AT
+    assert stored.last_confirmed > STAMPED_AT
 
 
 def test_an_update_naming_a_missing_id_becomes_a_create(memory_isolated_dir: Path) -> None:
@@ -686,7 +627,7 @@ def test_an_update_naming_a_missing_id_becomes_a_create(memory_isolated_dir: Pat
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(action="update", fact_id="f" * 16),),
+        deltas=(make_delta(action="update", fact_id="f" * 16),),
         owner=_OWNER,
         allow_mass_delete=False,
     )
@@ -702,9 +643,9 @@ def test_bad_deltas_are_dropped_without_failing_the_batch(memory_isolated_dir: P
         flavor="user",
         deltas=(
             # A server-only section on a user scope.
-            _delta(section="culture"),
-            _delta(text="   "),
-            _delta(fact_id="", text="好的事實"),
+            make_delta(section="culture"),
+            make_delta(text="   "),
+            make_delta(fact_id="", text="好的事實"),
         ),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -726,11 +667,11 @@ def test_an_unusable_subject_id_costs_the_field_and_not_the_run(memory_isolated_
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
         deltas=(
-            _delta(section="fact", summary="猜出來的 id", subject_id="阿華"),
+            make_delta(section="fact", summary="猜出來的 id", subject_id="阿華"),
             # `isdigit` accepts a superscript and `int()` refuses it, which is the same raise.
-            _delta(summary="上標數字", subject_id="²"),
+            make_delta(summary="上標數字", subject_id="²"),
             # And `isdecimal` accepts a digit string longer than CPython will convert.
-            _delta(summary="過長的 id", subject_id="9" * 4400),
+            make_delta(summary="過長的 id", subject_id="9" * 4400),
         ),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -754,8 +695,8 @@ def test_a_median_merge_is_not_mistaken_for_a_wipe(memory_isolated_dir: Path) ->
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
         deltas=(
-            _delta(summary="合併後的事實"),
-            *(_delta(action="delete", fact_id=fact_id) for fact_id in ids[:4]),
+            make_delta(summary="合併後的事實"),
+            *(make_delta(action="delete", fact_id=fact_id) for fact_id in ids[:4]),
         ),
         owner=_OWNER,
         allow_mass_delete=False,
@@ -774,7 +715,7 @@ def test_a_wipe_is_refused_and_changes_nothing(memory_isolated_dir: Path) -> Non
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=tuple(_delta(action="delete", fact_id=fact_id) for fact_id in ids),
+        deltas=tuple(make_delta(action="delete", fact_id=fact_id) for fact_id in ids),
         owner=_OWNER,
         allow_mass_delete=False,
     )
@@ -793,7 +734,7 @@ def test_a_rebuild_may_replace_the_whole_set(memory_isolated_dir: Path) -> None:
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=tuple(_delta(action="delete", fact_id=fact_id) for fact_id in ids),
+        deltas=tuple(make_delta(action="delete", fact_id=fact_id) for fact_id in ids),
         owner=_OWNER,
         allow_mass_delete=True,
     )
@@ -804,15 +745,20 @@ def test_a_rebuild_may_replace_the_whole_set(memory_isolated_dir: Path) -> None:
 def test_the_sweep_expires_recent_context_but_never_permanent(memory_isolated_dir: Path) -> None:
     """Aging is deterministic code now that the dates are stamped rather than written."""
     scope = user_scope(user_id=111)
-    today = _NOW + timedelta(days=60)
+    today = STAMPED_AT + timedelta(days=60)
     write_fact(
         scope=scope,
-        fact=_fact(fact_id="a" * 16, section="recent", durability="recent", last_confirmed=_NOW),
+        fact=_fact(
+            fact_id="a" * 16, section="recent", durability="recent", last_confirmed=STAMPED_AT
+        ),
     )
     write_fact(
         scope=scope,
         fact=_fact(
-            fact_id="b" * 16, section="permanent", durability="permanent", last_confirmed=_NOW
+            fact_id="b" * 16,
+            section="permanent",
+            durability="permanent",
+            last_confirmed=STAMPED_AT,
         ),
     )
     assert sweep_stale_facts(scope=scope, compartment=GLOBAL_COMPARTMENT, today=today) == 1
@@ -827,10 +773,14 @@ def test_stable_facts_age_by_displacement_within_their_own_compartment(
     """A busy compartment self-trims; a quiet one anchored elsewhere forgets nothing."""
     scope = user_scope(user_id=111)
     quiet = guild_compartment(guild_id=222)
-    write_fact(scope=scope, fact=_fact(fact_id="a" * 16, last_confirmed=_NOW))
-    write_fact(scope=scope, fact=_fact(fact_id="b" * 16, last_confirmed=_NOW + timedelta(days=90)))
-    write_fact(scope=scope, fact=_fact(fact_id="c" * 16, compartment=quiet, last_confirmed=_NOW))
-    today = _NOW + timedelta(days=365)
+    write_fact(scope=scope, fact=_fact(fact_id="a" * 16, last_confirmed=STAMPED_AT))
+    write_fact(
+        scope=scope, fact=_fact(fact_id="b" * 16, last_confirmed=STAMPED_AT + timedelta(days=90))
+    )
+    write_fact(
+        scope=scope, fact=_fact(fact_id="c" * 16, compartment=quiet, last_confirmed=STAMPED_AT)
+    )
+    today = STAMPED_AT + timedelta(days=365)
     assert sweep_stale_facts(scope=scope, compartment=GLOBAL_COMPARTMENT, today=today) == 1
     # The other compartment saw no newer activity, so nothing displaced its fact.
     assert sweep_stale_facts(scope=scope, compartment=quiet, today=today) == 0
@@ -890,7 +840,7 @@ def test_a_batch_reports_the_ids_it_wrote(memory_isolated_dir: Path) -> None:
         scope=scope,
         compartment=GLOBAL_COMPARTMENT,
         flavor="user",
-        deltas=(_delta(summary="新的事實"),),
+        deltas=(make_delta(summary="新的事實"),),
         owner=_OWNER,
         allow_mass_delete=False,
     )
@@ -910,15 +860,15 @@ def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
     write_fact(
         scope=scope,
         fact=_fact(
-            fact_id="a" * 16, section="permanent", durability="stable", last_confirmed=_NOW
+            fact_id="a" * 16, section="permanent", durability="stable", last_confirmed=STAMPED_AT
         ),
     )
     write_fact(
-        scope=scope, fact=_fact(fact_id="b" * 16, last_confirmed=_NOW + timedelta(days=120))
+        scope=scope, fact=_fact(fact_id="b" * 16, last_confirmed=STAMPED_AT + timedelta(days=120))
     )
     assert (
         sweep_stale_facts(
-            scope=scope, compartment=GLOBAL_COMPARTMENT, today=_NOW + timedelta(days=365)
+            scope=scope, compartment=GLOBAL_COMPARTMENT, today=STAMPED_AT + timedelta(days=365)
         )
         == 0
     )

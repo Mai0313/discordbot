@@ -91,9 +91,33 @@ def test_parse_args_defaults_to_the_real_rebuild_over_the_whole_store() -> None:
     assert args.effort == writer.effort
 
 
-def test_the_offline_fan_out_does_not_reuse_the_live_bots_concurrency_cap() -> None:
+async def test_the_offline_fan_out_runs_under_its_own_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The script carries its own bound, tuned by hand rather than exposed as a flag."""
     assert regen_script._CONCURRENCY != MEMORY_GLOBAL_CONCURRENCY
+    for scope in (_USER, _OTHER_USER, _SERVER):
+        _seed(scope=scope)
+    monkeypatch.setattr(regen_script, "_CONCURRENCY", 2)
+    in_flight = 0
+    peak = 0
+
+    async def _rebuild(scope: str, writer: object, identity: str) -> object:
+        """Holds its slot long enough for every scope the bound allows to be in flight."""
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return RegenerationReport(result="no_evidence")
+
+    monkeypatch.setattr(regen_script, "regenerate_scope_memory", _rebuild)
+
+    await regen_script._rebuild_batch(
+        writer=cast("MemoryWriterAI", None), scopes=regen_script._scopes_for_target(target="all")
+    )
+
+    assert peak == 2
     assert "concurrency" not in vars(regen_script._parse_args(argv=[]))
 
 

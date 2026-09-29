@@ -16,6 +16,11 @@ Which positions get exchanged is the one assumption: a stated `len(recorder) == 
 whole range, and otherwise only the positions the test indexes. A recorder holding more records
 than the test reads is therefore a known false negative, deliberately, in the same class as the
 two gaps recorded in #425.
+
+A recorder is only recognised as one when the test both creates it and writes it from a callable
+nested inside the test. A list handed to a test double built outside the test, such as a
+module-level factory taking the recorder as an argument, is never scanned, so an order assertion
+on it passes unflagged and carries its `# order-contract:` marker by convention alone.
 """
 
 from __future__ import annotations
@@ -120,7 +125,27 @@ def _list_assignment_names(target: ast.expr, value: ast.expr | None) -> set[str]
     return names
 
 
-class _LocalListRecorderVisitor(ast.NodeVisitor):
+class _OwnScopeVisitor(ast.NodeVisitor):
+    """Visits one callable's own body, never entering a nested callable or class."""
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        """Does not enter a nested async function, which has a lexical scope of its own."""
+        del node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """Does not enter a nested class, whose methods have scopes of their own."""
+        del node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Does not enter a nested sync function, which has a lexical scope of its own."""
+        del node
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        """Does not enter a lambda, which has a lexical scope of its own."""
+        del node
+
+
+class _LocalListRecorderVisitor(_OwnScopeVisitor):
     """Finds list initializers in a test body without entering nested scopes."""
 
     def __init__(self) -> None:
@@ -134,22 +159,6 @@ class _LocalListRecorderVisitor(ast.NodeVisitor):
         """Records direct, chained, and unpacked list assignments."""
         for target in node.targets:
             self.names.update(_list_assignment_names(target, node.value))
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """Does not enter nested async test doubles."""
-        del node
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Does not enter nested fake classes."""
-        del node
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Does not enter nested sync test doubles."""
-        del node
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        """Does not enter lambda test doubles."""
-        del node
 
 
 def _local_list_recorders(test: ast.AsyncFunctionDef) -> set[str]:
@@ -278,7 +287,7 @@ def _default_recorder_aliases(
     return aliases
 
 
-class _RecorderWriteVisitor(ast.NodeVisitor):
+class _RecorderWriteVisitor(_OwnScopeVisitor):
     """Finds mutations that resolve to test-scope recorder bindings."""
 
     def __init__(self, *, environment: dict[str, str], nonlocal_names: set[str]) -> None:
@@ -307,10 +316,6 @@ class _RecorderWriteVisitor(ast.NodeVisitor):
             self._record_nonlocal_rebinding(target, node.value)
         self.visit(node.value)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """Does not enter a child callable with a different lexical scope."""
-        del node
-
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         """Records in-place addition to a captured recorder."""
         if isinstance(node.op, ast.Add):
@@ -333,18 +338,6 @@ class _RecorderWriteVisitor(ast.NodeVisitor):
             if recorder:
                 self.found.add(recorder)
         self.generic_visit(node)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Does not enter a child class containing separate callable scopes."""
-        del node
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Does not enter a child callable with a different lexical scope."""
-        del node
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        """Does not enter a child lambda with a different lexical scope."""
-        del node
 
     def _record_nonlocal_rebinding(self, target: ast.expr, value: ast.expr | None) -> None:
         if not (
@@ -435,6 +428,15 @@ def _nested_function_writes(test: ast.AsyncFunctionDef, *, recorders: set[str]) 
     return _NestedRecorderWriteFinder(recorders=recorders).find(test)
 
 
+def _literal_index(node: ast.Subscript) -> int | None:
+    """Returns a subscript's constant integer index, or None for any other slice."""
+    try:
+        index = ast.literal_eval(node.slice)
+    except (ValueError, TypeError):
+        return None
+    return index if isinstance(index, int) else None
+
+
 def _root_subscript_name(node: ast.Subscript) -> str:
     """Returns the name at the root of a chained subscription."""
     value: ast.expr = node
@@ -469,12 +471,10 @@ def _normalizer_encodes_positions(node: ast.AST, *, recorders: set[str]) -> bool
     return False
 
 
-class _OrderedRecorderVisitor(ast.NodeVisitor):
-    """Finds recorder uses whose observed sequence remains part of an expression."""
+class _RecorderExpressionVisitor(ast.NodeVisitor):
+    """Walks one assertion expression over the given recorders."""
 
-    def __init__(self, *, recorders: set[str]) -> None:
-        self.recorders = recorders
-        self.found: set[str] = set()
+    recorders: set[str]
 
     def visit_Call(self, node: ast.Call) -> None:
         """Skips calls that deliberately remove or ignore order."""
@@ -486,15 +486,22 @@ class _OrderedRecorderVisitor(ast.NodeVisitor):
             return
         self.generic_visit(node)
 
+
+class _OrderedRecorderVisitor(_RecorderExpressionVisitor):
+    """Finds recorder uses whose observed sequence remains part of an expression."""
+
+    def __init__(self, *, recorders: set[str]) -> None:
+        self.recorders = recorders
+        self.found: set[str] = set()
+
     def visit_Subscript(self, node: ast.Subscript) -> None:
         """Skips one recorded item while retaining slices, which still encode sequence."""
-        if _root_subscript_name(node) in self.recorders and not isinstance(node.slice, ast.Slice):
-            try:
-                index = ast.literal_eval(node.slice)
-            except (ValueError, TypeError):
-                index = None
-            if isinstance(index, int):
-                return
+        if (
+            _root_subscript_name(node) in self.recorders
+            and not isinstance(node.slice, ast.Slice)
+            and _literal_index(node) is not None
+        ):
+            return
         self.generic_visit(node)
 
     def visit_DictComp(self, node: ast.DictComp) -> None:
@@ -515,37 +522,24 @@ class _OrderedRecorderVisitor(ast.NodeVisitor):
             self.found.add(node.id)
 
 
-class _IndexedRecorderVisitor(ast.NodeVisitor):
+class _IndexedRecorderVisitor(_RecorderExpressionVisitor):
     """Finds explicit positions read from a recorder inside one assertion."""
 
     def __init__(self, *, recorders: set[str]) -> None:
         self.recorders = recorders
         self.found: set[tuple[str, int]] = set()
 
-    def visit_Call(self, node: ast.Call) -> None:
-        """Skips indexes applied after a deliberate order-independent transform."""
-        if _called_name(
-            node.func
-        ) in _ORDER_INDEPENDENT_CALLS and not _normalizer_encodes_positions(
-            node, recorders=self.recorders
-        ):
-            return
-        self.generic_visit(node)
-
     def visit_Subscript(self, node: ast.Subscript) -> None:
         """Records direct integer indexes while ignoring fields inside a recorded item."""
         if isinstance(node.value, ast.Name) and node.value.id in self.recorders:
-            try:
-                index = ast.literal_eval(node.slice)
-            except (ValueError, TypeError):
-                index = None
-            if isinstance(index, int):
+            index = _literal_index(node)
+            if index is not None:
                 self.found.add((node.value.id, index))
                 return
         self.generic_visit(node)
 
 
-class _TestAssertionVisitor(ast.NodeVisitor):
+class _TestAssertionVisitor(_OwnScopeVisitor):
     """Collects assertions in a test body without entering its nested test doubles."""
 
     def __init__(self) -> None:
@@ -554,18 +548,6 @@ class _TestAssertionVisitor(ast.NodeVisitor):
     def visit_Assert(self, node: ast.Assert) -> None:
         """Records one test-body assertion."""
         self.found.append(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """Does not treat a nested async test double's assertions as the test's own."""
-        del node
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Does not enter nested fake classes."""
-        del node
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Does not treat a nested sync test double's assertions as the test's own."""
-        del node
 
 
 def _ordered_recorders(node: ast.expr, *, recorders: set[str]) -> set[str]:
@@ -754,11 +736,8 @@ class _PositionCanonicalizer(ast.NodeTransformer):
         self.generic_visit(node)
         if not (isinstance(node.value, ast.Name) and node.value.id == self.recorder):
             return node
-        try:
-            index = ast.literal_eval(node.slice)
-        except (ValueError, TypeError):
-            return node
-        if not isinstance(index, int):
+        index = _literal_index(node)
+        if index is None:
             return node
         # `int()` because `calls[True]` literal-evals to a bool, which prints as `True` while
         # hashing as 1, so the swapped and unswapped rewrites would label the same slot twice.
