@@ -136,13 +136,15 @@ class FakeDiscordMessage:
     ) -> None:
         """Initializes the fields a listener reads and the message mutation records.
 
-        `guild` defaults to None, which a real message carries only in a DM.
+        `guild` defaults to None, which a real message carries only in a DM. Setting
+        `edit_failure` makes every later edit raise it, the way Discord refuses one.
         """
         self.author = author or FakeUser()
         self.content = content
         self.guild = guild
         self.id = 1
         self.channel = SimpleNamespace(id=2)
+        self.edit_failure: Exception | None = None
         self.edits: list[DiscordPayload] = []
         self.reactions: list[str] = []
         self.removed: list[tuple[str, FakeUser]] = []
@@ -152,7 +154,9 @@ class FakeDiscordMessage:
         self.suppressed = False
 
     async def edit(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records an edit payload and suppress flag."""
+        """Records an edit payload and suppress flag, or raises `edit_failure` when set."""
+        if self.edit_failure is not None:
+            raise self.edit_failure
         if "suppress" in kwargs:
             self.suppressed = bool(kwargs["suppress"])
         self.edits.append(kwargs)

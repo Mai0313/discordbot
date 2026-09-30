@@ -1,25 +1,34 @@
 """Tests for the `/games` cog: its commands, how it seats players, and its startup cleanup."""
 
 from types import SimpleNamespace
+from random import Random
 from typing import Any, cast
 from pathlib import Path
 
 import pytest
+import logfire
 import nextcord
-from nextcord import Embed
+from nextcord import Embed, Interaction, HTTPException
 
 from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.utils import interaction_responses
 from discordbot.cogs.games import cog as games
-from discordbot.typings.games import GameParticipant
+from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
+from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import JackpotSnapshot
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
-from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    as_interaction,
+    make_forbidden,
+    make_not_found,
+)
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 
@@ -183,6 +192,133 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
 
     assert other_interaction.response.sent
     assert isinstance(other_interaction.response.sent[0]["content"], str)
+
+
+async def _nobody_joins(interaction: Interaction[Any]) -> GameParticipant | None:
+    """Lobby join hook for a table nobody joins."""
+    raise AssertionError(interaction)
+
+
+async def _everyone_stays(participants: list[GameParticipant]) -> RefreshParticipantsResult:
+    """Lobby start hook that leaves every participant seated."""
+    return RefreshParticipantsResult(participants=participants)
+
+
+def _scripted_blackjack_lobby(
+    dealt: list[Card], bot: GameParticipant | None = None
+) -> BlackjackLobbyView:
+    """Builds Alice's Blackjack lobby whose round deals `dealt` first, then fives."""
+    shoe = dealt + [Card(rank="5", suit="♠") for _ in range(100)]
+    return BlackjackLobbyView(
+        owner=GameParticipant(
+            user_id=1,
+            account_name="alice",
+            display_name="Alice",
+            bet=10,
+            balance_at_start=100,
+            is_allin=False,
+        ),
+        requested_bet=10,
+        rng=Random(x=0),  # noqa: S311 -- the scripted shoe decides the deal
+        prepare_participant=_nobody_joins,
+        refresh_participants=_everyone_stays,
+        bot_user_id=None if bot is None else bot.user_id,
+        extra_initial_participants=None if bot is None else [bot],
+        shoe_store=BlackjackShoeStore(shoes={7: shoe}),
+        channel_id=7,
+    )
+
+
+def _recorded_reports(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
+    """Captures `(level, fields)` for every `info` and `warn` the lobby writes."""
+    reports: list[tuple[str, dict[str, object]]] = []
+    for level in ("info", "warn"):
+        monkeypatch.setattr(
+            target=logfire,
+            name=level,
+            value=lambda message, level=level, **fields: reports.append((level, fields)),
+        )
+    return reports
+
+
+@pytest.mark.parametrize(
+    argnames=("failure", "level"),
+    argvalues=[
+        (make_forbidden(message="Missing Access"), "warn"),
+        (make_not_found(message="Unknown Message"), "info"),
+    ],
+    ids=["channel_refused", "message_gone"],
+)
+async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the_owner(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException, level: str
+) -> None:
+    """A lobby whose table edit Discord refuses goes back to taking presses and its timeout.
+
+    The refusal is a channel the server shut the bot out of, or a lobby someone deleted: the
+    type and the ids are the whole finding, so it is logged without a traceback, and a deleted
+    lobby is a routine outcome rather than a degraded one.
+    """
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.lobby.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None: scheduled.append(message),
+    )
+    reports = _recorded_reports(monkeypatch=monkeypatch)
+    # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    message = FakeDiscordMessage()
+    message.edit_failure = failure
+    lobby.message = as_message(fake=message)
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
+
+    await start_button.callback(as_interaction(fake=owner_interaction))
+
+    assert len(owner_interaction.followup.sent) == 1
+    assert owner_interaction.followup.sent[0]["ephemeral"] is True
+    assert reports == [(level, {"channel_id": 200, "message_id": 1, "code": failure.code})]
+    assert not lobby.is_finished()
+    await lobby.on_timeout()
+    assert scheduled == [message]
+
+
+async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bot's first move edits the table right after it lands; that refusal is the table's.
+
+    Reported as a failed start, the owner would be told no table opened while one is up.
+    """
+
+    class _ShutOutAfterTheTable(FakeDiscordMessage):
+        async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+            await super().edit(**kwargs)
+            self.edit_failure = make_forbidden(message="Missing Access")
+
+    reports = _recorded_reports(monkeypatch=monkeypatch)
+    bot = GameParticipant(
+        user_id=999,
+        account_name="dealer",
+        display_name="Dealer",
+        bet=10,
+        balance_at_start=100,
+        is_allin=False,
+    )
+    # Alice 5 5, the bot 5 5, the dealer's hole 5 and an ace up: the bot owes an insurance call.
+    lobby = _scripted_blackjack_lobby(
+        dealt=[Card(rank="5", suit="♠")] * 5 + [Card(rank="A", suit="♠")], bot=bot
+    )
+    message = _ShutOutAfterTheTable()
+    lobby.message = as_message(fake=message)
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
+
+    with pytest.raises(nextcord.Forbidden):
+        await start_button.callback(as_interaction(fake=owner_interaction))
+
+    assert len(message.edits) == 1, "the table landed before the refusal"
+    assert owner_interaction.followup.sent == []
+    assert reports == []
 
 
 async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
