@@ -4695,16 +4695,24 @@ async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output(
 
 
 @pytest.mark.parametrize(
-    argnames=("tone_answer", "expected"),
+    argnames=("tone_answer", "expected", "result", "raw_left"),
     argvalues=[
-        pytest.param(None, "## 語氣偏好\n* 舊語氣", id="failed-call-keeps"),
-        pytest.param(_no_change(tone=""), "", id="empty-answer-clears"),
+        pytest.param(None, "## 語氣偏好\n* 舊語氣", "failed", 1, id="failed-call-keeps"),
+        pytest.param(_no_change(tone=""), "", "regenerated", 0, id="empty-answer-clears"),
     ],
 )
 async def test_regenerate_scope_memory_clears_the_tone_note_on_an_empty_answer_only(
-    memory_isolated_dir: Path, tone_answer: ConsolidatedMemory | None, expected: str
+    memory_isolated_dir: Path,
+    tone_answer: ConsolidatedMemory | None,
+    expected: str,
+    result: str,
+    raw_left: int,
 ) -> None:
-    """A failed tone call says nothing about the evidence; only an empty answer reads as no signal."""
+    """A failed tone call says nothing about the evidence; only an empty answer reads as no signal.
+
+    Nor does a failed call retire the raw batch whose tone evidence the note never absorbed:
+    once in `detail.md` it is out of every incremental tone update's reach (#825).
+    """
     writer, fake_client = _writer()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     _stage_tone_observation()
@@ -4720,8 +4728,26 @@ async def test_regenerate_scope_memory_clears_the_tone_note_on_an_empty_answer_o
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
-    assert report.result == "regenerated"
+    assert report.result == result
     assert read_tone(scope=USER_SCOPE) == expected
+    assert count_raw_entries(scope=USER_SCOPE) == raw_left
+
+
+async def test_regenerate_scope_memory_retires_a_server_raw_batch_with_no_tone_note(
+    memory_isolated_dir: Path,
+) -> None:
+    """A server scope has no tone tier, so its absent tone call must not hold the batch back."""
+    scope = server_scope(server_id=555)
+    append_raw_entry(scope=scope, entry_text="- 社群觀察")
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = _consolidated(section="culture", text="整理")
+
+    report = await regeneration.regenerate_scope_memory(scope=scope, writer=writer, identity="srv")
+
+    assert report.result == "regenerated"
+    assert "整理" in _memory_text(scope=scope, flavor="server")
+    assert count_raw_entries(scope=scope) == 0
+    assert not (memory_isolated_dir / scope / "tone.md").exists()
 
 
 # ---------------------------------------------------------------------------

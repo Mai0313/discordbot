@@ -148,9 +148,9 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
     deleted.
 
     On an LLM failure the compartment is left exactly as it was, and the raw batch is
-    retired only when every compartment rebuilt. The report carries what the run removed
-    unread whichever way it ended, so a rebuild that gave up on its third compartment
-    still accounts for what the first two destroyed.
+    retired only when every compartment and the tone note rebuilt. The report carries what
+    the run removed unread whichever way it ended, so a rebuild that gave up on its third
+    compartment still accounts for what the first two destroyed.
     """
     started_at = time.monotonic()
     unreadable_removed = 0
@@ -219,13 +219,13 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                 # before it.
                 raw_entries = read_raw_entries(scope=scope)
                 evidence = read_evidence(scope=scope)
-                await rebuild_tone_note(run=run, evidence=evidence)
+                tone_rebuilt = await rebuild_tone_note(run=run, evidence=evidence)
         except TimeoutError:
             logfire.warn(
                 "Memory regeneration timed out", scope=scope, compartments=len(compartments)
             )
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
-        if cleared_since(scope=scope, started_at=started_at):
+        if not tone_rebuilt or cleared_since(scope=scope, started_at=started_at):
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         report_injection_size(scope=scope, flavor=run.flavor)
         if raw_entries:
