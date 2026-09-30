@@ -344,6 +344,33 @@ async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("failure", "text", "traceback"),
+    [
+        (make_forbidden(message="Missing Access"), "refused", False),
+        (make_server_error(), "Failed to delete", True),
+    ],
+    ids=["refused", "broke"],
+)
+async def test_a_refused_delete_is_reported_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, text: str, traceback: bool
+) -> None:
+    """The delete gets the same carve-out as the sweep's fetch; a 5xx keeps its traceback."""
+
+    class _UndeletableMessageStub(_AlreadyDeletedMessageStub):
+        async def delete(self) -> None:
+            """Fails the way Discord fails the delete."""
+            raise failure
+
+    warns = _recorded_warns(monkeypatch=monkeypatch)
+
+    assert await delete_public_message(message=as_message(fake=_UndeletableMessageStub())) is False
+    assert [
+        (text in message, fields["message_id"], fields["channel_id"], "_exc_info" in fields)
+        for message, fields in warns
+    ] == [(True, 789, 456, traceback)]
+
+
 async def test_schedule_public_message_delete_uses_default_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,10 +1,10 @@
 """Button views for deciding public loan requests."""
 
 from typing import ClassVar
-import contextlib
 
+import logfire
 import nextcord
-from nextcord import Message, ButtonStyle, Interaction
+from nextcord import Message, NotFound, Forbidden, ButtonStyle, Interaction
 from nextcord.ui import View, Button
 from nextcord.ext import commands
 
@@ -94,11 +94,39 @@ class LoanDecisionViewBase(View):
             description="### 申請已逾時，自動拒絕",
             color=self.PANEL_COLOR,
         )
-        with contextlib.suppress(Exception):
+        try:
             await self.message.edit(
                 embed=embed,
                 view=None,
                 **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+            )
+        except NotFound:
+            logfire.info(
+                "Loan request message gone before its timeout edit",
+                proposal_id=self.proposal_id,
+                channel_id=self.message.channel.id,
+                message_id=self.message.id,
+            )
+        except Forbidden:
+            # The panel is the command's followup, so this edit rides the command's token rather
+            # than the channel; a refusal's stack is identical every time, so the ids are the
+            # whole finding.
+            logfire.warn(
+                "Discord refused the loan request's timeout edit",
+                proposal_id=self.proposal_id,
+                channel_id=self.message.channel.id,
+                message_id=self.message.id,
+            )
+        # Broad on purpose: the proposal is already rejected, a raise here would only reach
+        # nextcord's timeout task, and the cleanup below must still be scheduled.
+        except Exception as exc:
+            logfire.warn(
+                "Loan request timeout edit failed",
+                proposal_id=self.proposal_id,
+                channel_id=self.message.channel.id,
+                message_id=self.message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
         self._schedule_cleanup()
 

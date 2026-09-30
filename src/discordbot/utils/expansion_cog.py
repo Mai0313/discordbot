@@ -28,7 +28,7 @@ import contextlib
 from collections.abc import Callable
 
 import logfire
-from nextcord import File, Color, Embed, Message, NotFound
+from nextcord import File, Color, Embed, Message, NotFound, Forbidden
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
 
@@ -510,8 +510,17 @@ class ExpansionCog[ParsedT](commands.Cog):
                     channel_id=message.channel.id,
                 )
                 return
+            # A guild without Manage Messages refuses this on every expansion with an identical
+            # stack, so the ids are the whole finding.
+            except Forbidden as error:
+                logfire.warn(
+                    "Could not suppress the source message embed",
+                    message_id=message.id,
+                    guild_id=message.guild.id if message.guild else None,
+                    error_type=type(error).__name__,
+                )
             # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
-            # expansion. A persistent Forbidden means the guild lacks Manage Messages.
+            # expansion.
             except Exception as error:
                 logfire.warn(
                     "Could not suppress the source message embed",

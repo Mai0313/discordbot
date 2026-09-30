@@ -48,7 +48,13 @@ from tests.helpers.games import (
     attached_button,
     settle_only_seat,
 )
-from tests.helpers.casting import as_message, as_interaction
+from tests.helpers.casting import (
+    as_message,
+    as_interaction,
+    make_forbidden,
+    make_not_found,
+    make_server_error,
+)
 from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
 
@@ -843,6 +849,43 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     assert len(message.edits) == 2
     assert message.edits[1]["view"] is None
     assert scheduled_cleanups == [message]
+
+
+@pytest.mark.parametrize(
+    ("failure", "level", "traceback"),
+    [
+        (make_forbidden(message="Missing Access"), "warn", False),
+        (make_not_found(message="Unknown Message"), "info", False),
+        (make_server_error(), "warn", True),
+    ],
+    ids=["refused", "message_gone", "broke"],
+)
+async def test_a_table_edit_on_the_way_to_settling_that_fails_is_reported(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str, traceback: bool
+) -> None:
+    """The disable and both peek stages only show the round moving, so a failure only logs."""
+    monkeypatch.setattr(blackjack_views, "PEEK_REVEAL_DELAY_SECONDS", 0)
+    reports: list[tuple[str, dict[str, object]]] = []
+    for name in ("info", "warn"):
+        monkeypatch.setattr(
+            target=blackjack_views.logfire,
+            name=name,
+            value=lambda _message, name=name, **fields: reports.append((name, fields)),
+        )
+    message = FakeDiscordMessage()
+    message.edit_failure = failure
+    view = _make_view(
+        round_state=_round_with_two_cards(
+            player_cards=[Card(rank="10", suit="♠"), Card(rank="8", suit="♥")],
+            dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
+        )
+    )
+
+    await view._safe_edit_view_locked(message=as_message(fake=message), interaction=None)
+    await view._animate_peek_locked(message=as_message(fake=message), interaction=None)
+
+    # order-contract: the three edits are awaited one after another, and each reports the same.
+    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)] * 3
 
 
 async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: list[object]) -> None:

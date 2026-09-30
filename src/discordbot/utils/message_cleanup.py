@@ -204,6 +204,15 @@ async def delete_public_message(message: Message, message_id: int | None = None)
         await message.delete()
     except NotFound:
         pass
+    except Forbidden:
+        # Expected rather than diagnosable, like the sweep's fetch below: the server's overwrites
+        # shut the bot out of the channel, so the ids are the whole finding.
+        logfire.warn(
+            "Discord refused to delete a public response",
+            message_id=resolved_message_id,
+            channel_id=getattr(getattr(message, "channel", None), "id", None),
+        )
+        return False
     except HTTPException:
         logfire.warn(
             "Failed to delete public response",

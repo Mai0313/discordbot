@@ -14,6 +14,9 @@ from pathlib import Path
 from datetime import UTC, datetime
 from unittest.mock import ANY
 
+import pytest
+import logfire
+
 from discordbot.utils import interaction_responses as interactions
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
@@ -42,13 +45,19 @@ from discordbot.services.economy.database import (
     BalanceAdjustmentResult,
 )
 
-from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    as_interaction,
+    make_forbidden,
+    make_not_found,
+    make_server_error,
+)
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
 
-    import pytest
     from nextcord.ext import commands
 
 
@@ -910,6 +919,46 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     central_timeout_title = central_message.edits[0]["embed"].title
     assert central_timeout_title is not None
     assert "逾時" in central_timeout_title
+
+
+@pytest.mark.parametrize(
+    argnames=("failure", "level", "traceback"),
+    argvalues=[
+        (make_forbidden(message="Missing Access"), "warn", False),
+        (make_not_found(message="Unknown Message"), "info", False),
+        (make_server_error(), "warn", True),
+    ],
+    ids=["refused", "message_gone", "broke"],
+)
+async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str, traceback: bool
+) -> None:
+    """Nothing awaits a timeout, so its failure is logged here at the level its cause earns."""
+
+    async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
+        """Answers the rejection the timeout asks for."""
+        return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
+            update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
+        )
+
+    monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
+    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=views)
+    reports: list[tuple[str, dict[str, object]]] = []
+    for name in ("info", "warn"):
+        monkeypatch.setattr(
+            target=logfire,
+            name=name,
+            value=lambda _message, name=name, **fields: reports.append((name, fields)),
+        )
+    message = FakeDiscordMessage()
+    message.edit_failure = failure
+    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view.message = as_message(fake=message)
+
+    await view.on_timeout()
+
+    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
+    assert scheduled == [message]
 
 
 async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) -> None:
