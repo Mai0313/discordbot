@@ -83,6 +83,9 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> None:
             request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=run.today)
         )
     )
+    if tone_evidence and result is None:
+        logfire.warn("Memory tone rebuild call failed; tone note left untouched", scope=run.scope)
+        return
     if cleared_since(scope=run.scope, started_at=run.started_at):
         return
     if result is None or not result.tone_markdown:

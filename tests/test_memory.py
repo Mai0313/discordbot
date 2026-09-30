@@ -4642,6 +4642,36 @@ async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output(
     assert read_tone(scope=USER_SCOPE) == ""
 
 
+@pytest.mark.parametrize(
+    argnames=("tone_answer", "expected"),
+    argvalues=[
+        pytest.param(None, "## 語氣偏好\n* 舊語氣", id="failed-call-keeps"),
+        pytest.param(_no_change(tone=""), "", id="empty-answer-clears"),
+    ],
+)
+async def test_regenerate_scope_memory_clears_the_tone_note_on_an_empty_answer_only(
+    memory_isolated_dir: Path, tone_answer: ConsolidatedMemory | None, expected: str
+) -> None:
+    """A failed tone call says nothing about the evidence; only an empty answer reads as no signal."""
+    writer, fake_client = _writer()
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
+    _stage_tone_observation()
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Gives the tone call `tone_answer` and lets every other call through."""
+        del text_format
+        return tone_answer if "<tone_evidence>" in body else _consolidated(text="重建後的記憶")
+
+    fake_client.responses.answer = answer
+
+    report = await regeneration.regenerate_scope_memory(
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
+    )
+
+    assert report.result == "regenerated"
+    assert read_tone(scope=USER_SCOPE) == expected
+
+
 # ---------------------------------------------------------------------------
 # personal memory clear (/memory clear)
 # ---------------------------------------------------------------------------
