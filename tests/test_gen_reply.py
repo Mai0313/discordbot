@@ -6058,6 +6058,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     expected_prep: list[int],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
+    # A deployment where every route can run: VIDEO needs a Gemini key, while the QA video
+    # marker's switch is off to show it gates only the marker, never the route.
+    monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
+    monkeypatch.setenv(name="INLINE_VIDEO_ENABLED", value="false")
     cog = _cog()
     # Distinctive non-fallback grade so the effort reaching the answer model is checked to
     # be the graded value, not the "high" default a failed parse would also produce.
@@ -6455,6 +6459,40 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
     assert received == [prepared]
+
+
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_answers_a_keyless_video_route_as_qa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a Gemini key a VIDEO route is answered as QA, never handed to the video handler.
+
+    That handler pays for the director and then renders direct to Google, so on a keyless
+    deployment it could only fail the whole turn.
+    """
+    cog = _cog()
+    video_prompts: list[str] = []
+
+    async def fake_video_handler(
+        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
+        """Records the dispatch and drains the handed-over context task."""
+        del self
+        await context_task
+        video_prompts.append(user_prompt)
+
+    monkeypatch.setattr(
+        RouteClassifier, "classify", _classify_stub(route=RouteClassification(decision="VIDEO"))
+    )
+    monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=ReplyContext()))
+    monkeypatch.setattr(MediaReplyRoutes, "handle_video", fake_video_handler)
+    streams = _install_streamer(monkeypatch=monkeypatch)
+
+    message = FakeMessage(content="<@!999> make a video of a cat", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=as_message(fake=message))
+
+    assert video_prompts == []
+    assert len(streams) == 1
 
 
 def _link_config(*, gemini_api_key: str) -> LLMConfig:
