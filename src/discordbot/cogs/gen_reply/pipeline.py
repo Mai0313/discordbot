@@ -319,6 +319,14 @@ class ReplyPipeline(BaseModel):
                 recall_picks.set_result(
                     route.recall_user_ids if isinstance(route, RecallRouteClassification) else []
                 )
+                if route.decision == "VIDEO" and not self.config.gemini_key_configured:
+                    # The VIDEO route renders direct to Google, so without a key it could only
+                    # pay for the director and then fail the turn; the request is answered as QA.
+                    logfire.info(
+                        "gen_reply VIDEO route needs a Gemini key; answering as QA",
+                        message_id=message.id,
+                    )
+                    route = route.model_copy(update={"decision": "QA"})
                 route_decision = route.decision
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "QA" and route.link_context_sources:
