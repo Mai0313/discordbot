@@ -5102,6 +5102,45 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     assert len(text_markers) == len(full_files) == 1
 
 
+async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file no renderer can type is left out of the route marker and the media budget alike."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="<@999> build this", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png",
+            content_type="image/png",
+            payload=base64.b64decode(_png_b64()),
+            attachment_id=1,
+        ),
+        # No content type and a name `mimetypes` cannot guess, so the MIME resolves to "".
+        FakeAttachment(filename="Makefile", content_type=None, payload=b"all:\n", attachment_id=2),
+    ]
+
+    text_only = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
+    )
+    full = await cog.toolkit.input_builder.process_single_message(message=as_message(fake=message))
+
+    text_markers = [
+        part
+        for part in text_only["content"]
+        if isinstance(part, dict) and str(part.get("text", "")).startswith("[attachment:")
+    ]
+    full_files = [
+        part
+        for part in full["content"]
+        if isinstance(part, dict) and part.get("type") == "input_file"
+    ]
+    budgeted = cog.toolkit.input_builder.count_supported_sources(message=as_message(fake=message))
+    assert len(text_markers) == len(full_files) == budgeted == 1
+
+
 @pytest.mark.parametrize(
     ("text_only", "logged"),
     [

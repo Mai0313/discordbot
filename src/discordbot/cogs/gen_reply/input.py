@@ -420,7 +420,9 @@ class MessageInputBuilder(BaseModel):
         binaries (archives, executables, octet-stream) and the Office /
         OpenDocument formats the Gemini backend rejects at generation time
         (`Unsupported MIME type`) are checked first and return `unknown`, so
-        they are dropped before reaching the API instead of 400-ing the reply.
+        they are dropped before reaching the API instead of 400-ing the reply. An empty type
+        (none sent and none guessable from the filename) is `unknown` too, because every
+        renderer drops an attachment it cannot type.
         """
         unsupported_binary_mimes = frozenset({
             "application/octet-stream",
@@ -455,7 +457,7 @@ class MessageInputBuilder(BaseModel):
             "application/vnd.oasis.opendocument.spreadsheet",
             "application/vnd.oasis.opendocument.presentation",
         })
-        if content_type in unsupported_binary_mimes:
+        if not content_type or content_type in unsupported_binary_mimes:
             return "unknown"
         if content_type.startswith("video/"):
             return "video"
@@ -466,7 +468,7 @@ class MessageInputBuilder(BaseModel):
         # Everything else (documents, source code, structured text, an unlisted application
         # type) proxies as `image` / `input_file`. MIME cannot reliably tell an unlisted binary
         # apart from unlisted text/code, and a positive allowlist silently drops legitimate code
-        # attachments, so the denylist above stays the only drop rule; the renderers make the
+        # attachments, so the check above stays the only drop rule; the renderers make the
         # final call (the inline path keeps only PDF + UTF-8, Gemini ingests the rest).
         return "image"
 
