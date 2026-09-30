@@ -2,6 +2,8 @@
 
 import re
 import ast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
 from nextcord import IntegrationType, InteractionContextType
@@ -9,11 +11,16 @@ from nextcord import IntegrationType, InteractionContextType
 # The whole module, not the five tag constants by name: reading its namespace is what lets a
 # sixth marker be noticed instead of quietly falling outside a fixed import list.
 from discordbot.cogs.gen_reply import markers
+from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
+from tests.helpers.casting import as_message
 from tests.helpers.source_tree import PACKAGE, REPO_ROOT, python_modules
+
+if TYPE_CHECKING:
+    from nextcord import ClientUser
 
 _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
 # A slash that follows a word character, `:`, `/`, `.` or `-` belongs to a URL, a file path,
@@ -674,6 +681,27 @@ def test_capabilities_doc_states_the_clamp_collect_tax_actually_applies() -> Non
     assert _COLLECT_TAX_CLAMP_WORDING in line.lower(), (
         f"/admin collect_tax is clamped and its line does not say so: {line}"
     )
+
+
+def test_capabilities_doc_offers_no_plain_reply_as_a_way_to_reach_me() -> None:
+    """In a server, replying to the bot without mentioning it starts no turn.
+
+    A Discord reply with its ping on puts the bot in `message.mentions`, which the server
+    trigger ignores on purpose so that replying to an expansion card or a downloaded video is
+    not a request. This document is the answer model's only description of the bot, so a "reply to me" in it is the
+    bot promising an answer it then never gives.
+
+    Both halves are asserted, as the clamp guard above does: the wording alone would survive a
+    trigger change that made a plain reply work, leaving the document silent about it.
+    """
+    bot = SimpleNamespace(id=999)
+    reply = SimpleNamespace(guild=SimpleNamespace(id=1), content="and this one?", mentions=[bot])
+    assert not is_addressed_to_bot(
+        message=as_message(fake=reply), bot_user=cast("ClientUser", bot)
+    ), "a plain reply now reaches the bot in a server: capabilities.md can offer it again"
+    lowered = CAPABILITIES_DOC.lower()
+    offered = [phrase for phrase in ("reply to me", "replying to me") if phrase in lowered]
+    assert not offered, f"capabilities.md offers a plain reply as a trigger: {offered}"
 
 
 def test_no_command_hides_behind_a_discord_permission() -> None:
