@@ -24,7 +24,11 @@ from discordbot.utils.llm_transcript import (
 )
 from discordbot.cogs.gen_reply.generation import VOICE_REPLY_FILENAME
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, load_attachment_bytes
+from discordbot.cogs.gen_reply.attachment.loaders import (
+    attachment_mime,
+    load_image_bytes,
+    load_attachment_bytes,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence, Coroutine
@@ -56,7 +60,11 @@ class AttachmentSource(BaseModel):
         ),
     )
     content_type: str = Field(
-        ..., description="Resolved MIME type, empty only for unguessable sources."
+        ...,
+        description=(
+            "Resolved MIME type; empty when the sent type is blank or parameter-only, or when "
+            "none is sent and the filename is unguessable."
+        ),
     )
     cache_key: int | str = Field(
         ...,
@@ -247,7 +255,7 @@ class MessageInputBuilder(BaseModel):
             # so re-uploading the WAV only adds latency and feeds the model duplicate self-output.
             if drop_own_voice and attachment.filename == VOICE_REPLY_FILENAME:
                 continue
-            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+            content_type = attachment_mime(attachment=attachment)
             sources.append(
                 AttachmentSource(
                     handle=attachment,
@@ -421,8 +429,8 @@ class MessageInputBuilder(BaseModel):
         OpenDocument formats the Gemini backend rejects at generation time
         (`Unsupported MIME type`) are checked first and return `unknown`, so
         they are dropped before reaching the API instead of 400-ing the reply. An empty type
-        (none sent and none guessable from the filename) is `unknown` too, because every
-        renderer drops an attachment it cannot type.
+        (a blank or parameter-only one sent, or none sent and none guessable from the
+        filename) is `unknown` too, because every renderer drops an attachment it cannot type.
         """
         unsupported_binary_mimes = frozenset({
             "application/octet-stream",

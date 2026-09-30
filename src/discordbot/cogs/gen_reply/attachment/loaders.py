@@ -47,9 +47,13 @@ def resolve_source_filename(source: Attachment | StickerItem | str, *, url_fallb
 
 
 def attachment_mime(attachment: Attachment) -> str:
-    """Returns the bare MIME type of a file attachment, empty when unguessable."""
+    """Returns the bare, lowercase MIME type of a file attachment.
+
+    Empty when the sent type is blank or parameter-only, or when none is sent and the filename
+    is unguessable.
+    """
     content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
-    return content_type.split(";")[0].strip()
+    return content_type.split(";")[0].strip().lower()
 
 
 async def load_attachment_bytes(attachment: Attachment) -> LoadedMedia:

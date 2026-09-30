@@ -5182,10 +5182,19 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     assert len(text_markers) == len(full_files) == 1
 
 
+@pytest.mark.parametrize(
+    "content_type",
+    [None, " ", "; charset=utf-8", "application/zip; x", "Application/Zip"],
+    ids=["none", "blank", "parameter-only", "denylisted-with-parameter", "denylisted-mixed-case"],
+)
 async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_counted(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, content_type: str | None
 ) -> None:
-    """A file no renderer can type is left out of the route marker and the media budget alike."""
+    """A file no renderer can type, or a denylisted one, is left out of the marker and budget.
+
+    The gate and the renderers read the same normalised MIME, so a parameter or a case change
+    can neither pass a blank type the renderer then drops nor carry a denylisted one through.
+    """
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
@@ -5198,8 +5207,10 @@ async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_count
             payload=base64.b64decode(_png_b64()),
             attachment_id=1,
         ),
-        # No content type and a name `mimetypes` cannot guess, so the MIME resolves to "".
-        FakeAttachment(filename="Makefile", content_type=None, payload=b"all:\n", attachment_id=2),
+        # A name `mimetypes` cannot guess, so a missing type resolves to "".
+        FakeAttachment(
+            filename="Makefile", content_type=content_type, payload=b"all:\n", attachment_id=2
+        ),
     ]
 
     text_only = await cog.toolkit.input_builder.process_single_message(
