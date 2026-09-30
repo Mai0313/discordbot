@@ -109,10 +109,11 @@ async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
     if run.flavor != "user" or not forgets:
         return True
     cutoff = newest_stamp(text=forgets)
-    note = read_tone(scope=run.scope).splitlines()
-    note_lines = (
-        tuple(line for line in note[1:] if line.strip()) if note[:1] == [TONE_HEADER] else ()
-    )
+    note = read_tone(scope=run.scope)
+    # Anything after the header on its own line is content too: the rewrite below replaces
+    # that line, so content left unoffered there would be deleted without being named.
+    body = note.removeprefix(TONE_HEADER).lstrip(" ：:") if note.startswith(TONE_HEADER) else ""
+    note_lines = tuple(line for line in body.splitlines() if line.strip())
     evidence = [
         observation
         for observation in tone_observations(text=read_evidence(scope=run.scope))
