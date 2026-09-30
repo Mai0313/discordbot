@@ -97,7 +97,9 @@ discordbot = "discordbot.cli:main"
 
 [dependency-groups]
 dev = [
-    "google-antigravity",
+    # 0.1.8+ ships protobuf 7 gencode, which refuses the protobuf 6 runtime that xai-sdk's
+    # `protobuf<7` holds the lock to; lift this ceiling once xai-sdk accepts protobuf 7.
+    "google-antigravity<0.1.8",
     "ipykernel",
     "ipywidgets",
     "notebook",
