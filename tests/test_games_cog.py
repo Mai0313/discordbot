@@ -30,6 +30,7 @@ from tests.helpers.casting import (
     as_interaction,
     make_forbidden,
     make_not_found,
+    make_server_error,
 )
 from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
@@ -282,6 +283,36 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     assert reports == [(level, {"channel_id": 200, "message_id": 1, "code": failure.code})]
     assert not lobby.is_finished()
     await lobby.on_timeout()
+    assert scheduled == [message]
+
+
+@pytest.mark.parametrize(
+    argnames=("failure", "level", "traceback"),
+    argvalues=[
+        (make_forbidden(message="Missing Access"), "warn", False),
+        (make_not_found(message="Unknown Message"), "info", False),
+        (make_server_error(), "warn", True),
+    ],
+    ids=["refused", "message_gone", "broke"],
+)
+async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException, level: str, traceback: bool
+) -> None:
+    """Nothing awaits a timeout, so its failure is logged here at the level its cause earns."""
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.lobby.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None: scheduled.append(message),
+    )
+    reports = _recorded_reports(monkeypatch=monkeypatch)
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    message = FakeDiscordMessage()
+    message.edit_failure = failure
+    lobby.message = as_message(fake=message)
+
+    await lobby.on_timeout()
+
+    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
     assert scheduled == [message]
 
 

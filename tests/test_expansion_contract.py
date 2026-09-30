@@ -31,7 +31,7 @@ import contextlib
 from collections.abc import Callable, Iterator
 
 import pytest
-from nextcord import Message
+from nextcord import Message, Forbidden
 from nextcord.ext import commands
 
 from discordbot.utils import expansion_placeholder as expansion_module
@@ -51,10 +51,11 @@ from discordbot.utils.expansion_placeholder import (
     ExpansionPlaceholder,
     expansion_failure_emoji,
     report_expansion_read_failure,
+    report_expansion_delivery_failure,
 )
 from discordbot.services.platforms.instagram import InstagramConversation
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden
+from tests.helpers.casting import as_bot, as_message, make_forbidden, make_server_error
 from tests.helpers.source_tree import PACKAGE
 from tests.helpers.link_sources import (
     BOT_USER_ID,
@@ -631,6 +632,78 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
     assert "filtered" in str(recorded["reason"])
     assert "_exc_info" not in recorded
     assert recorded["message_id"] == 7
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
+    cog: type[ExpansionCog[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hiding Discord's own preview takes Manage Messages, which many guilds never grant.
+
+    That refusal repeats on every link pasted there with an identical stack, so it is reported
+    with the ids alone (`.github/CONTRIBUTING.md#logging`), and the card lands regardless.
+    """
+    staged = _stage(cog=cog, outcome="readable")
+    staged.message.edit_failure = make_forbidden(message="Missing Permissions")
+    warns: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        target=expansion_module.logfire,
+        name="warn",
+        value=lambda message, **fields: warns.append((message, fields)),
+    )
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
+    assert warns == [
+        (
+            "Could not suppress the source message embed",
+            {"message_id": 1, "guild_id": 100, "error_type": "Forbidden"},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "level", "traceback"),
+    [
+        (
+            Forbidden(
+                response=make_forbidden().response,
+                message={
+                    "code": 400001,
+                    "message": "Access to file uploads has been limited for this guild",
+                },
+            ),
+            "warn",
+            False,
+        ),
+        (make_server_error(), "error", True),
+    ],
+    ids=["refused", "broke"],
+)
+def test_a_refused_delivery_names_its_code_instead_of_a_traceback(
+    error: Exception, level: str, traceback: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal's stack is the same every time, while its code says which refusal it was.
+
+    Not every `Forbidden` here is a missing permission (#719), so the code is what survives of
+    the traceback; a 5xx keeps its traceback.
+    """
+    reports: list[tuple[str, dict[str, object]]] = []
+    for name in ("info", "warn", "error"):
+        monkeypatch.setattr(
+            target=expansion_module.logfire,
+            name=name,
+            value=lambda _message, name=name, **fields: reports.append((name, fields)),
+        )
+
+    report_expansion_delivery_failure(
+        error=error, platform="Threads", url="https://example.test/p/1", message_id=7, channel_id=8
+    )
+
+    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
+    if not traceback:
+        assert reports[0][1]["code"] == 400001
 
 
 def test_the_shell_is_not_itself_a_loadable_cog() -> None:

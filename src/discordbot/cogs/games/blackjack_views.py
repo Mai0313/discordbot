@@ -9,7 +9,7 @@ import contextlib
 
 import logfire
 import nextcord
-from nextcord import Embed, Message, ButtonStyle, Interaction
+from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interaction
 
 from discordbot.typings.games import (
     Card,
@@ -1121,17 +1121,54 @@ class BlackjackView(GameView):
                 "Blackjack final edit done", channel_id=self._channel_id, message_id=message.id
             )
 
+    async def _safe_edit_locked(
+        self,
+        message: Message,
+        interaction: Interaction[commands.Bot] | None,
+        payload: dict[str, Any],
+        step: str,
+    ) -> None:
+        """Edits the table on the way to settling; a failed edit is logged, never raised."""
+        try:
+            await asyncio.wait_for(
+                edit_game_message(message=message, interaction=interaction, payload=payload),
+                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
+            )
+        except NotFound:
+            logfire.info(
+                "Blackjack table message gone before an edit",
+                step=step,
+                channel_id=self._channel_id,
+                message_id=message.id,
+            )
+        except Forbidden:
+            # Only an edit no press triggered goes through the channel, which the server can
+            # shut the bot out of; the ids are the whole finding.
+            logfire.warn(
+                "Discord refused a Blackjack table edit",
+                step=step,
+                channel_id=self._channel_id,
+                message_id=message.id,
+            )
+        # Broad on purpose: these edits only show the round moving, so no failure of theirs may
+        # stop it from settling.
+        except Exception as exc:
+            logfire.warn(
+                "Blackjack table edit failed",
+                step=step,
+                channel_id=self._channel_id,
+                message_id=message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+
     async def _safe_edit_view_locked(
         self, message: Message, interaction: Interaction[commands.Bot] | None
     ) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                edit_game_message(
-                    message=message, interaction=interaction, payload={"view": self}
-                ),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
+        await self._safe_edit_locked(
+            message=message, interaction=interaction, payload={"view": self}, step="view"
+        )
 
     async def _animate_peek_locked(
         self, message: Message, interaction: Interaction[commands.Bot] | None
@@ -1145,29 +1182,23 @@ class BlackjackView(GameView):
         body_hidden = build_in_progress_embeds(
             round_state=self.round_state, dealer_steps=self._dealer_steps
         )
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                edit_game_message(
-                    message=message,
-                    interaction=interaction,
-                    payload=table_edit_kwargs(embeds=body_hidden, view=self, target=message),
-                ),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
+        await self._safe_edit_locked(
+            message=message,
+            interaction=interaction,
+            payload=table_edit_kwargs(embeds=body_hidden, view=self, target=message),
+            step="peek hidden",
+        )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
         reveal_body = build_in_progress_embeds(
             round_state=self.round_state, dealer_steps=self._dealer_steps, force_show_hole=True
         )
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                edit_game_message(
-                    message=message,
-                    interaction=interaction,
-                    payload=table_edit_kwargs(embeds=reveal_body, view=self, target=message),
-                ),
-                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
-            )
+        await self._safe_edit_locked(
+            message=message,
+            interaction=interaction,
+            payload=table_edit_kwargs(embeds=reveal_body, view=self, target=message),
+            step="peek reveal",
+        )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
     async def _maybe_animate_insurance_close_locked(

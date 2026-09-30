@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 import asyncio
-import contextlib
 
 import logfire
 import nextcord
@@ -90,11 +89,35 @@ class BaseGameLobbyView(GameView):
         self._disable_buttons()
         self.stop()
         embed = self._build_lobby_embed(status="Lobby 已逾時")
-        with contextlib.suppress(Exception):
+        try:
             await self.message.edit(
                 embed=embed,
                 view=self,
                 **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+            )
+        except NotFound:
+            logfire.info(
+                "Lobby message gone before its timeout edit",
+                channel_id=self.message.channel.id,
+                message_id=self.message.id,
+            )
+        except Forbidden:
+            # Once a press has rebound the message this edit goes through the channel, which the
+            # server can shut the bot out of; the ids are the whole finding.
+            logfire.warn(
+                "Discord refused the lobby's timeout edit",
+                channel_id=self.message.channel.id,
+                message_id=self.message.id,
+            )
+        # Broad on purpose: a raise here would only reach nextcord's timeout task, and the
+        # cleanup below must still be scheduled.
+        except Exception as exc:
+            logfire.warn(
+                "Lobby timeout edit failed",
+                channel_id=self.message.channel.id,
+                message_id=self.message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
         schedule_public_message_delete(message=self.message, user_name=self.owner.account_name)
 

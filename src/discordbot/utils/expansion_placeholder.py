@@ -324,7 +324,6 @@ async def send_expansion_placeholder(
             message_id=message.id,
             channel_id=message.channel.id,
             error_type=type(error).__name__,
-            _exc_info=error,
         )
         return None
     except HTTPException as error:
@@ -428,13 +427,15 @@ def report_expansion_delivery_failure(
             channel_id=channel_id,
         )
     elif isinstance(error, Forbidden):
+        # No traceback, whose stack is the same on every refusal; the code says which refusal it
+        # was, since not every one here is a missing permission (#719).
         logfire.warn(
             f"Missing permission to post the {platform} expansion",
             url=url,
             message_id=message_id,
             channel_id=channel_id,
             error_type=type(error).__name__,
-            _exc_info=error,
+            code=error.code,
         )
     else:
         logfire.error(

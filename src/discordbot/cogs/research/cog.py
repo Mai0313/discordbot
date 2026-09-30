@@ -30,6 +30,7 @@ from nextcord import (
     Interaction,
     SlashOption,
     TextChannel,
+    HTTPException,
     AllowedMentions,
 )
 from nextcord.ext import commands
@@ -183,19 +184,42 @@ class ResearchCogs(commands.Cog):
             owner_id=message.author.id, brief=brief, anchor=anchor or message
         )
         if outcome == "exists" and existing is not None:
-            with contextlib.suppress(Exception):
-                await message.reply(content=f"你已經有一個深度研究在進行了:<#{existing}>")
+            content = f"你已經有一個深度研究在進行了:<#{existing}>"
         elif outcome == "unsupported":
-            with contextlib.suppress(Exception):
-                await message.reply(
-                    content="深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)"
-                )
+            content = "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)"
         elif outcome == "forbidden":
-            with contextlib.suppress(Exception):
-                await message.reply(content=FORBIDDEN_REPLY)
+            content = FORBIDDEN_REPLY
         elif outcome == "error":
-            with contextlib.suppress(Exception):
-                await message.reply(content=ERROR_REPLY)
+            content = ERROR_REPLY
+        else:
+            return
+        try:
+            await message.reply(content=content)
+        except Forbidden:
+            # The server's overwrites decide who may post here; the ids are the whole finding.
+            logfire.warn(
+                "deep research cannot say why it did not start",
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
+        # Broad on purpose: the launch has already ended, and anything raised here would reach
+        # `research_bridge`, which reports it as a dropped brief.
+        except Exception as exc:
+            # A reply to a message that is already gone comes back as 50035, not only as NotFound.
+            if isinstance(exc, HTTPException) and (isinstance(exc, NotFound) or exc.code == 50035):
+                logfire.info(
+                    "deep research's request is gone before it could say why it did not start",
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                )
+                return
+            logfire.warn(
+                "failed to say why deep research did not start",
+                message_id=message.id,
+                channel_id=message.channel.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     @nextcord.slash_command(
         name="deep_research",
@@ -698,8 +722,12 @@ class ResearchCogs(commands.Cog):
             return cached
         try:
             fetched = await self.bot.fetch_channel(thread_id)
-        except (NotFound, Forbidden):
+        except NotFound:
             logfire.info("research thread is gone; skipping", thread_id=thread_id)
+            return None
+        except Forbidden:
+            # Missing Access, such as View Channel lost on the parent; the id is the whole finding.
+            logfire.warn("research thread refused the fetch; skipping", thread_id=thread_id)
             return None
         # Broad on purpose: every caller treats None as "gone" and returns, so a transient REST
         # or transport failure must not raise into a resume sweep. It is logged apart from the

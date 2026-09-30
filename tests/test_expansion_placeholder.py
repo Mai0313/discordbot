@@ -3,6 +3,7 @@
 import pytest
 from nextcord import Embed, Message, HTTPException
 
+from discordbot.utils import expansion_placeholder as placeholder_module
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
@@ -111,6 +112,25 @@ async def test_a_channel_that_refuses_the_placeholder_answers_none() -> None:
         )
         is None
     )
+
+
+async def test_a_refused_placeholder_is_logged_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The channel's overwrites are the server's to set, so the ids are the whole finding."""
+    warns: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        target=placeholder_module.logfire,
+        name="warn",
+        value=lambda _message, **fields: warns.append(fields),
+    )
+    source = await _refusing(error=make_forbidden())
+
+    await send_expansion_placeholder(
+        message=as_message(fake=source), text=_TEXT, source=_SOURCE, url=_URL
+    )
+
+    assert warns == [{"message_id": 1, "channel_id": 2, "error_type": "Forbidden"}]
 
 
 async def test_a_link_deleted_before_the_placeholder_answers_none() -> None:

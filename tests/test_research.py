@@ -40,6 +40,7 @@ from tests.helpers.casting import (
     make_forbidden,
     make_not_found,
     make_server_error,
+    make_invalid_form_body,
     make_media_hosting_config,
     as_interaction_event_stream,
 )
@@ -1177,6 +1178,68 @@ async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
     assert errors[0][1].get("_exc_info") is not None, (
         "a transport failure still needs its traceback"
     )
+
+
+@pytest.mark.parametrize(
+    ("failure", "level", "traceback"),
+    [
+        (make_forbidden(message="Missing Permissions"), "warn", False),
+        (make_not_found(message="Unknown Message"), "info", False),
+        (make_invalid_form_body(), "info", False),
+        (make_server_error(), "warn", True),
+    ],
+    ids=["refused", "message_gone", "reply_target_gone", "broke"],
+)
+async def test_a_launch_that_cannot_say_why_it_stopped_logs_it(
+    research_isolated_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    level: str,
+    traceback: bool,
+) -> None:
+    """The launch has already ended, so its notice failing is logged here and raises nothing."""
+    anchor = _Anchor(error=make_server_error(), channel=_text_channel())
+
+    async def refuse(**kwargs: object) -> NoReturn:
+        """Fails the reply the way Discord does."""
+        del kwargs
+        raise failure
+
+    anchor.reply = refuse  # ty: ignore[invalid-assignment]
+    records = {name: _recorded(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")}
+
+    await _launching_cog(monkeypatch=monkeypatch).launch(
+        message=as_message(fake=anchor), brief="b"
+    )
+
+    assert [
+        (name, fields["message_id"], fields["channel_id"], "_exc_info" in fields)
+        for name, found in records.items()
+        for _, fields in found
+    ] == [(level, 10, 20, traceback)]
+
+
+@pytest.mark.parametrize(
+    ("failure", "level"),
+    [(make_not_found(message="Unknown Channel"), "info"), (make_forbidden(), "warn")],
+    ids=["deleted", "shut_out"],
+)
+async def test_a_thread_the_bot_lost_access_to_is_not_reported_as_deleted(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str
+) -> None:
+    """Both end the resume the same way, but only a deletion is the owner's doing."""
+    cog = _research_cog(enabled=True)
+    cog.bot = as_bot(
+        fake=SimpleNamespace(
+            get_channel=lambda channel_id: None, fetch_channel=AsyncMock(side_effect=failure)
+        )
+    )
+    records = {name: _recorded(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")}
+
+    assert await cog._fetch_thread(thread_id=5) is None
+    assert [(name, fields) for name, found in records.items() for _, fields in found] == [
+        (level, {"thread_id": 5})
+    ]
 
 
 async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
