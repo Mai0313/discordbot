@@ -42,6 +42,7 @@ from discordbot.cogs.games.settlement import (
 )
 from discordbot.cogs.games.interactions import (
     GameView,
+    edit_game_message,
     table_edit_kwargs,
     publish_final_table,
     set_view_item_visible,
@@ -519,8 +520,9 @@ class BlackjackLobbyView(BaseGameLobbyView):
             status=status,
         )
 
-    async def _start_game(self, message: Message | None) -> bool:
+    async def _start_game(self, interaction: Interaction[commands.Bot]) -> bool:
         """Deals the table and replaces the lobby message with the game view."""
+        message = interaction.message
         if message is None:
             return False
         shoe: list[Card] | None = None
@@ -543,17 +545,15 @@ class BlackjackLobbyView(BaseGameLobbyView):
         )
         view.message = message
         if round_state.finished:
-            await view.finalize(message=message)
+            await view.finalize(message=message, interaction=interaction)
             return True
         view.sync_buttons()
         seat_embeds = build_in_progress_embeds(round_state=round_state)
         await self._show_table(
-            message=message,
-            kwargs_factory=lambda: table_edit_kwargs(
-                embeds=seat_embeds, view=view, target=message
-            ),
+            interaction=interaction,
+            payload=table_edit_kwargs(embeds=seat_embeds, view=view, target=message),
         )
-        await view.maybe_play_bot_turn(message=message)
+        await view.maybe_play_bot_turn(message=message, interaction=interaction)
         return True
 
 
@@ -631,7 +631,7 @@ class BlackjackView(GameView):
         """Auto-resolves the round when nobody clicked in time."""
         if self.message is None:
             return
-        await self.finalize(message=self.message)
+        await self.finalize(message=self.message, interaction=None)
 
     async def _run_player_action(
         self, *, interaction: Interaction[commands.Bot], apply: Callable[..., object]
@@ -650,7 +650,7 @@ class BlackjackView(GameView):
                 return
             active = self.round_state.active_player()
             if active is None:
-                await self._finalize_locked(message=interaction.message)
+                await self._finalize_locked(message=interaction.message, interaction=interaction)
                 return
             try:
                 apply(user_id=interaction.user.id)
@@ -661,10 +661,14 @@ class BlackjackView(GameView):
                 return
             self._state_revision += 1
             if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
+                await self._finalize_locked(message=interaction.message, interaction=interaction)
                 return
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+            await self._edit_in_progress_locked(
+                message=interaction.message, interaction=interaction
+            )
+            await self._maybe_play_bot_turn_locked(
+                message=interaction.message, interaction=interaction
+            )
 
     @nextcord.ui.button(
         label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0
@@ -738,11 +742,17 @@ class BlackjackView(GameView):
                 return
             self._state_revision += 1
             if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
+                await self._finalize_locked(message=interaction.message, interaction=interaction)
                 return
-            await self._maybe_animate_insurance_close_locked(message=interaction.message)
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+            await self._maybe_animate_insurance_close_locked(
+                message=interaction.message, interaction=interaction
+            )
+            await self._edit_in_progress_locked(
+                message=interaction.message, interaction=interaction
+            )
+            await self._maybe_play_bot_turn_locked(
+                message=interaction.message, interaction=interaction
+            )
 
     async def _take_insurance_locked(
         self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
@@ -756,7 +766,7 @@ class BlackjackView(GameView):
             await self._send_notice(
                 interaction=interaction, content=_insurance_refusal_notice(error=error)
             )
-            await self._edit_in_progress_locked(message=message)
+            await self._edit_in_progress_locked(message=message, interaction=interaction)
             return False
         return True
 
@@ -767,7 +777,7 @@ class BlackjackView(GameView):
         try:
             self.round_state.decline_insurance(user_id=user_id)
         except ValueError:
-            await self._edit_in_progress_locked(message=message)
+            await self._edit_in_progress_locked(message=message, interaction=interaction)
             return False
         return True
 
@@ -793,18 +803,28 @@ class BlackjackView(GameView):
             interaction=interaction, decide=self._decline_insurance_locked
         )
 
-    async def finalize(self, message: Message) -> None:
+    async def finalize(
+        self, message: Message, interaction: Interaction[commands.Bot] | None
+    ) -> None:
         """Settles every player exactly once."""
         async with self._round_lock:
-            await self._finalize_locked(message=message)
+            await self._finalize_locked(message=message, interaction=interaction)
 
-    async def maybe_play_bot_turn(self, message: Message) -> None:
+    async def maybe_play_bot_turn(
+        self, message: Message, interaction: Interaction[commands.Bot]
+    ) -> None:
         """Public entry point that drives the bot's turn(s) under the round lock."""
         async with self._round_lock:
-            await self._maybe_play_bot_turn_locked(message=message)
+            await self._maybe_play_bot_turn_locked(message=message, interaction=interaction)
 
-    async def _maybe_play_bot_turn_locked(self, message: Message) -> None:
-        """Plays consecutive bot moves until the bot no longer owns the next table decision."""
+    async def _maybe_play_bot_turn_locked(
+        self, message: Message, interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Plays consecutive bot moves until the bot no longer owns the next table decision.
+
+        The bot moves inside the human press that handed it the turn, so its edits go through
+        that press too.
+        """
         if self.bot_user_id is None:
             return
         bot_user_id = self.bot_user_id
@@ -823,10 +843,14 @@ class BlackjackView(GameView):
             before_revision = self._state_revision
             if self.round_state.phase == "insurance":
                 action_label = "insurance"
-                await self._dispatch_bot_insurance_locked(message=message, bot_player=bot_seat)
+                await self._dispatch_bot_insurance_locked(
+                    message=message, bot_player=bot_seat, interaction=interaction
+                )
             else:
                 action_label = "action"
-                await self._dispatch_bot_action_locked(message=message, active=bot_seat)
+                await self._dispatch_bot_action_locked(
+                    message=message, active=bot_seat, interaction=interaction
+                )
             steps += 1
             if self._state_revision == before_revision:
                 logfire.error(
@@ -867,7 +891,11 @@ class BlackjackView(GameView):
         return None
 
     async def _dispatch_bot_insurance_locked(
-        self, *, message: Message, bot_player: BlackjackPlayerHand
+        self,
+        *,
+        message: Message,
+        bot_player: BlackjackPlayerHand,
+        interaction: Interaction[commands.Bot],
     ) -> None:
         """Applies the bot's deterministic count-based insurance decision."""
         if not bot_player.hands:
@@ -899,13 +927,17 @@ class BlackjackView(GameView):
                 )
         self._state_revision += 1
         if self.round_state.finished:
-            await self._finalize_locked(message=message)
+            await self._finalize_locked(message=message, interaction=interaction)
             return
-        await self._maybe_animate_insurance_close_locked(message=message)
-        await self._edit_in_progress_locked(message=message)
+        await self._maybe_animate_insurance_close_locked(message=message, interaction=interaction)
+        await self._edit_in_progress_locked(message=message, interaction=interaction)
 
     async def _dispatch_bot_action_locked(
-        self, *, message: Message, active: BlackjackPlayerHand
+        self,
+        *,
+        message: Message,
+        active: BlackjackPlayerHand,
+        interaction: Interaction[commands.Bot],
     ) -> None:
         """Computes the bot's deterministic action on its active hand, then applies it."""
         hand = self.round_state.active_hand()
@@ -917,9 +949,9 @@ class BlackjackView(GameView):
                 self.round_state.stand(user_id=active.participant.user_id)
             self._state_revision += 1
             if self.round_state.finished:
-                await self._finalize_locked(message=message)
+                await self._finalize_locked(message=message, interaction=interaction)
             else:
-                await self._edit_in_progress_locked(message=message)
+                await self._edit_in_progress_locked(message=message, interaction=interaction)
             return
         is_pair_hand = len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed
         chosen_action = choose_bot_action(
@@ -939,9 +971,9 @@ class BlackjackView(GameView):
                 self.round_state.stand(user_id=active.participant.user_id)
         self._state_revision += 1
         if self.round_state.finished:
-            await self._finalize_locked(message=message)
+            await self._finalize_locked(message=message, interaction=interaction)
             return
-        await self._edit_in_progress_locked(message=message)
+        await self._edit_in_progress_locked(message=message, interaction=interaction)
 
     def _apply_bot_action(
         self, *, user_id: int, action: BotAction, allowed: tuple[BotAction, ...]
@@ -990,22 +1022,28 @@ class BlackjackView(GameView):
             button.disabled = False
             set_view_item_visible(view=self, item=button, visible=action in allowed)
 
-    async def _edit_in_progress_locked(self, message: Message) -> None:
+    async def _edit_in_progress_locked(
+        self, message: Message, interaction: Interaction[commands.Bot]
+    ) -> None:
         """Refreshes the per-seat embeds while holding the round lock."""
         self.sync_buttons()
         seat_embeds = build_in_progress_embeds(
             round_state=self.round_state, dealer_steps=self._dealer_steps
         )
-        await message.edit(**table_edit_kwargs(embeds=seat_embeds, view=self, target=message))
+        await interaction.edit_original_message(
+            **table_edit_kwargs(embeds=seat_embeds, view=self, target=message)
+        )
 
     async def _reject_stale_action_locked(
         self, interaction: Interaction[commands.Bot], message: Message
     ) -> None:
         """Sends a private stale-action notice and refreshes the table."""
         await self._send_notice(interaction=interaction, content="這個操作已經失效，請看最新牌桌")
-        await self._edit_in_progress_locked(message=message)
+        await self._edit_in_progress_locked(message=message, interaction=interaction)
 
-    async def _finalize_locked(self, message: Message) -> None:
+    async def _finalize_locked(
+        self, message: Message, interaction: Interaction[commands.Bot] | None
+    ) -> None:
         """Applies settlements and publishes the final table embeds once."""
         if self._settled:
             return
@@ -1017,7 +1055,7 @@ class BlackjackView(GameView):
             self.round_state.stand_all_remaining()
         self._disable_buttons()
         self.stop()
-        await self._safe_edit_view_locked(message=message)
+        await self._safe_edit_view_locked(message=message, interaction=interaction)
         logfire.debug(
             "Blackjack finalize started",
             players=len(self.round_state.players),
@@ -1026,7 +1064,7 @@ class BlackjackView(GameView):
 
         if self.round_state.peeked_blackjack and not self._peek_animated:
             self._peek_animated = True
-            await self._animate_peek_locked(message=message)
+            await self._animate_peek_locked(message=message, interaction=interaction)
 
         await self._play_dealer_locked()
         logfire.debug(
@@ -1073,6 +1111,7 @@ class BlackjackView(GameView):
             embeds=seat_embeds,
             user_name=self.owner.account_name,
             game_name="Blackjack",
+            interaction=interaction,
             channel_id=self._channel_id,
             message_id=message.id,
             players=len(self.round_state.players),
@@ -1082,14 +1121,21 @@ class BlackjackView(GameView):
                 "Blackjack final edit done", channel_id=self._channel_id, message_id=message.id
             )
 
-    async def _safe_edit_view_locked(self, message: Message) -> None:
+    async def _safe_edit_view_locked(
+        self, message: Message, interaction: Interaction[commands.Bot] | None
+    ) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(view=self), timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS
+                edit_game_message(
+                    message=message, interaction=interaction, payload={"view": self}
+                ),
+                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
 
-    async def _animate_peek_locked(self, message: Message) -> None:
+    async def _animate_peek_locked(
+        self, message: Message, interaction: Interaction[commands.Bot] | None
+    ) -> None:
         """Renders the dealer hole-card peek as a 2-stage reveal.
 
         Buttons stay disabled throughout so the caller can safely chain finalize /
@@ -1101,7 +1147,11 @@ class BlackjackView(GameView):
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(**table_edit_kwargs(embeds=body_hidden, view=self, target=message)),
+                edit_game_message(
+                    message=message,
+                    interaction=interaction,
+                    payload=table_edit_kwargs(embeds=body_hidden, view=self, target=message),
+                ),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
@@ -1111,12 +1161,18 @@ class BlackjackView(GameView):
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(**table_edit_kwargs(embeds=reveal_body, view=self, target=message)),
+                edit_game_message(
+                    message=message,
+                    interaction=interaction,
+                    payload=table_edit_kwargs(embeds=reveal_body, view=self, target=message),
+                ),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
-    async def _maybe_animate_insurance_close_locked(self, message: Message) -> None:
+    async def _maybe_animate_insurance_close_locked(
+        self, message: Message, interaction: Interaction[commands.Bot]
+    ) -> None:
         """Plays the no-BJ peek reveal once when insurance phase ends without BJ."""
         if self._peek_animated:
             return
@@ -1127,7 +1183,7 @@ class BlackjackView(GameView):
         if self.round_state.phase != "player_actions":
             return
         self._peek_animated = True
-        await self._animate_peek_locked(message=message)
+        await self._animate_peek_locked(message=message, interaction=interaction)
 
     async def _play_dealer_locked(self) -> None:
         """Runs the dealer phase using H17 rules (no AI involved)."""

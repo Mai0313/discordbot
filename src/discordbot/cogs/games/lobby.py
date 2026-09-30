@@ -13,12 +13,12 @@ from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interacti
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
-from discordbot.cogs.games.interactions import GameView, edit_message_with_retry
+from discordbot.cogs.games.interactions import GameView
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
 
 if TYPE_CHECKING:
     from random import Random
-    from collections.abc import Callable, Iterable
+    from collections.abc import Iterable
 
     from nextcord.ui import Button
     from nextcord.ext import commands
@@ -121,7 +121,7 @@ class BaseGameLobbyView(GameView):
                 return
             self._participants[participant.user_id] = participant
             await self._refresh_message(
-                message=interaction.message, status=f"{participant.display_name} 已加入"
+                interaction=interaction, status=f"{participant.display_name} 已加入"
             )
 
     @nextcord.ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary)
@@ -144,7 +144,7 @@ class BaseGameLobbyView(GameView):
                 return
             await interaction.response.defer()
             await self._refresh_message(
-                message=interaction.message, status=f"{participant.display_name} 已離開"
+                interaction=interaction, status=f"{participant.display_name} 已離開"
             )
 
     @nextcord.ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary)
@@ -168,20 +168,20 @@ class BaseGameLobbyView(GameView):
             }
             if self.owner.user_id not in self._participants:
                 await self._send_notice(interaction=interaction, content="你的餘額不足, 不能開始")
-                await self._refresh_message(message=interaction.message, status="房主餘額不足")
+                await self._refresh_message(interaction=interaction, status="房主餘額不足")
                 return
             self._started = True
         if refreshed.dropped_names:
             names = ", ".join(refreshed.dropped_names)
             await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
         try:
-            started = await self._start_game(message=interaction.message)
+            started = await self._start_game(interaction=interaction)
         except (Forbidden, NotFound) as error:
             # Still started means the table is up and the refusal came from playing it.
             if self._started:
                 raise
             # Expected rather than diagnosable, so the code and the ids are the whole finding: a
-            # lobby someone deleted is routine, a channel the server shut the bot out of is not.
+            # lobby someone deleted is routine, a refusal is not.
             if isinstance(error, NotFound):
                 logfire.info(
                     "Lobby message gone before its start edit; lobby reopened",
@@ -203,24 +203,28 @@ class BaseGameLobbyView(GameView):
         if started:
             self.stop()
 
-    async def _refresh_message(self, message: Message | None, status: str) -> None:
+    async def _refresh_message(self, interaction: Interaction[commands.Bot], status: str) -> None:
         """Edits the lobby message with the latest participant state."""
+        message = interaction.message
         if message is None:
             return
         self.message = message
         embed = self._build_lobby_embed(status=status)
-        await message.edit(
+        await interaction.edit_original_message(
             embed=embed,
             view=self,
             **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
         )
 
     async def _show_table(
-        self, message: Message, kwargs_factory: Callable[[], dict[str, Any]]
+        self, interaction: Interaction[commands.Bot], payload: dict[str, Any]
     ) -> None:
-        """Edits the lobby message into its table; an edit that never lands reopens the lobby."""
+        """Edits the lobby message into its table; an edit that never lands reopens the lobby.
+
+        No retry here: nextcord's webhook client already retries every Discord 5xx before raising.
+        """
         try:
-            await edit_message_with_retry(message=message, kwargs_factory=kwargs_factory)
+            await interaction.edit_original_message(**payload)
         except Exception:
             self._started = False
             raise
@@ -229,7 +233,7 @@ class BaseGameLobbyView(GameView):
         """Builds the lobby embed for a concrete game type."""
         raise NotImplementedError
 
-    async def _start_game(self, message: Message | None) -> bool:
+    async def _start_game(self, interaction: Interaction[commands.Bot]) -> bool:
         """Starts a concrete game from the current lobby participants."""
         raise NotImplementedError
 
@@ -263,8 +267,9 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self._jackpot_snapshot = initial_jackpot
         self._jackpot_generation = initial_jackpot_generation
 
-    async def _start_game(self, message: Message | None) -> bool:
+    async def _start_game(self, interaction: Interaction[commands.Bot]) -> bool:
         """Charges antes before delegating to the jackpot game start hook."""
+        message = interaction.message
         if message is None:
             self._started = False
             return False
@@ -286,11 +291,11 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
                 status = f"餘額不足已移出: {', '.join(dropped)}"
             else:
                 status = "餘額不足, 請重新開始"
-            await self._refresh_message(message=message, status=status)
+            await self._refresh_message(interaction=interaction, status=status)
             return False
         try:
             await self._start_game_after_antes(
-                message=message, final_balances=result.player_balances
+                interaction=interaction, message=message, final_balances=result.player_balances
             )
         except Exception:
             await self._refund_pregame_antes()
@@ -339,7 +344,10 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self._jackpot_generation = result.jackpot_generation
 
     async def _start_game_after_antes(
-        self, message: Message, final_balances: dict[int, int]
+        self,
+        interaction: Interaction[commands.Bot],
+        message: Message,
+        final_balances: dict[int, int],
     ) -> None:
         """Starts a jackpot-backed game after ante settlement succeeds."""
         raise NotImplementedError
