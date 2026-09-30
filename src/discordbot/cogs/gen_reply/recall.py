@@ -2,10 +2,11 @@
 
 Recall is the half that only reads. The write side is the answer model marking notes in
 its own reply (`markers.py`) and `services/memory/` turning them into facts; nothing here
-touches either. Code directly resolves the current author, reply-chain authors, and users
-explicitly mentioned in the current message. The route call (`routing.py`) only decides
-whether the latest message obliquely refers to an additional member from a public server
-nickname table, naming ids from the candidate block rendered here. Every path
+touches either. Code directly resolves the current author, the replied-to message's author
+(one hop, never further up the chain), and users explicitly mentioned in the current message.
+The route call (`routing.py`) only decides whether the latest message obliquely refers to an
+additional member from a public server nickname table, naming ids from the candidate block
+rendered here. Every path
 still passes a per-request allowlist to `recall_user_memories`, which drops any requested
 id outside it before reading a file. A second boundary decides how much of an allowed
 user's memory this conversation may see, and it is a path join rather than a filter:
