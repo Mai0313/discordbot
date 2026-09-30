@@ -499,8 +499,9 @@ class ResearchCogs(commands.Cog):
     ) -> None:
         """Edits the opening status message to its terminal content.
 
-        Falls back to a fresh send when there is no status message (a restart resume) or the edit
-        fails (e.g. the opening message was deleted).
+        Falls back to a fresh send when there is no status message (its post failed, or a resume
+        found none from before the restart) or the edit fails (e.g. the opening message was
+        deleted).
         """
         if status is not None:
             try:
@@ -599,22 +600,29 @@ class ResearchCogs(commands.Cog):
         logfire.info("resumed in-flight research sessions", count=len(sessions))
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
-        """Resumes one research session, delivering when it settles."""
+        """Resumes one research session, delivering when it settles.
+
+        The status line the run posted before the restart is taken over, so it ends with the
+        resume instead of reading `Researching...` forever.
+        """
         thread = await self._fetch_thread(thread_id=session.thread_id)
+        status = await self._find_prior_status(thread=thread) if thread is not None else None
         # No interaction id means the row was written but the bot restarted before the run id was
-        # stored; there is nothing to resume. Tell the thread so the owner is not left staring at
-        # the old `Researching...` message forever.
+        # stored; there is nothing to resume. End the old status line and tell the thread so the
+        # owner is not left staring at `Researching...` forever.
         if session.interaction_id is None:
             await self._release(thread_id=session.thread_id, phase="failed")
+            if thread is not None:
+                await self._finalize_status(
+                    status=status, thread=thread, content=RESEARCH_FAILED_STATUS
+                )
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
-        # Give the resumed run the same live reasoning view as a fresh one; a fetch miss leaves
-        # status None so the streamer's editor no-ops but still drives the stream to a result.
-        status = (
-            await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
-            if thread is not None
-            else None
-        )
+        # Give the resumed run the same live reasoning view as a fresh one, on a line of its own
+        # when none survived the restart; a fetch miss leaves status None so the streamer's editor
+        # no-ops but still drives the stream to a result.
+        if thread is not None and status is None:
+            status = await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
         streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
         try:
             result = await resume_research_stream(
@@ -653,6 +661,35 @@ class ResearchCogs(commands.Cog):
             content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
             allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
         )
+
+    async def _find_prior_status(self, *, thread: "Thread") -> Message | None:
+        """Returns the bot's status line from before the restart, or None when none is found.
+
+        Only the process that posted it held that message, so it is read back off the thread: the
+        run's first post, still headed `-# Researching...`. Without Read Message History, which a
+        launch never checks, Discord answers the read with no messages rather than an error, so
+        that gap logs nothing; an empty or failed read only means the resume posts its own line.
+        """
+        try:
+            # The thread's id predates every message in it, so the one default page read after it
+            # holds the thread's oldest messages, the run's first post among them.
+            async for message in thread.history(after=thread):
+                if message.author == self.bot.user and message.content.startswith(
+                    "-# Researching..."
+                ):
+                    return message
+        except Forbidden:
+            # Missing Access, such as View Channel lost on the parent; the id is the whole finding.
+            logfire.warn("research thread refused the history read", thread_id=thread.id)
+        except Exception as exc:
+            # Broad: a resume must not die on a best-effort lookup it can do without.
+            logfire.warn(
+                "failed to read research thread history",
+                thread_id=thread.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+        return None
 
     async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
         """Returns the thread by id from cache or a REST fetch, or None when gone."""

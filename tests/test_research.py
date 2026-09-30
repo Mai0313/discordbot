@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 import asyncio
 from pathlib import Path
 import sqlite3
@@ -46,6 +46,8 @@ from tests.helpers.casting import (
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs.research.database import ResearchPhase
@@ -1328,14 +1330,27 @@ class _RunThread:
 
     id = _THREAD_ID
 
-    def __init__(self, *, error: Exception | None = None, status_posts: bool = True) -> None:
-        """Initializes the write log, the guild upload limit, and how writes fail."""
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        status_posts: bool = True,
+        earlier: list[FakeDiscordMessage] | None = None,
+    ) -> None:
+        """Initializes the write log, the guild upload limit, how writes fail, and the history."""
         self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
         self.writes: list[dict[str, object]] = []
         self.error = error
         self.status_posts = status_posts
         self.sends = 0
         self.deleted = False
+        self.earlier = earlier or []
+
+    async def history(self, **kwargs: object) -> "AsyncIterator[FakeDiscordMessage]":
+        """Hands back what the thread held before the restart, oldest first."""
+        del kwargs
+        for message in self.earlier:
+            yield message
 
     async def send(self, **kwargs: object) -> _RunStatus:
         """Records a post and answers with the message it created, as Discord does."""
@@ -1355,7 +1370,7 @@ class _RunThread:
 class _ThreadBot:
     """The bot surface a run reads: its own user, and the thread lookup a resume starts from."""
 
-    user = None
+    user = FakeUser(user_id=900, name="bot", bot=True)
 
     def __init__(self, *, thread: _RunThread | None) -> None:
         """Initializes the one thread the cache holds; None is a thread deleted meanwhile."""
@@ -1369,6 +1384,7 @@ class _ThreadBot:
         channel.id = self.thread.id
         channel.guild = self.thread.guild
         channel.send = self.thread.send
+        channel.history = self.thread.history
         return channel
 
     async def fetch_channel(self, channel_id: int) -> None:
@@ -1604,6 +1620,81 @@ async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
         "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
     ]
     assert thread.sends == 2, "the failed line is the resume's own status edited, not a new post"
+
+
+@pytest.mark.parametrize(
+    ("settles", "stored_id", "ends_as"),
+    [
+        ("completed", True, "# Report\nbody"),
+        (RuntimeError("interaction expired"), True, "-# Research failed (Antigravity)"),
+        ("completed", False, "-# Research failed (Antigravity)"),
+    ],
+    ids=["delivers", "resume_fails", "no_stored_id"],
+)
+async def test_a_resume_ends_the_status_line_posted_before_the_restart(
+    research_isolated_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    settles: str | Exception,
+    stored_id: bool,
+    ends_as: str,
+) -> None:
+    """The resume takes the pre-restart line over, so nothing is left claiming to research."""
+    if isinstance(settles, Exception):
+
+        async def _expired(**_kwargs: object) -> None:
+            raise settles
+
+        monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
+    before_restart = FakeDiscordMessage(
+        author=_ThreadBot.user, content="-# Researching... (Antigravity, 12m30s)\n-# Weighing"
+    )
+    # Neither a member's copy of the line nor a bot line of another kind is the status.
+    thread = _RunThread(
+        earlier=[
+            FakeDiscordMessage(author=FakeUser(user_id=_OWNER_ID), content="-# Researching... ?"),
+            FakeDiscordMessage(author=_ThreadBot.user, content="-# Research failed (Antigravity)"),
+            before_restart,
+        ]
+    )
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_settling_client(status="completed"), thread=thread
+    )
+
+    await _resume_run(cog=cog, stored_id=stored_id)
+
+    assert str(before_restart.edits[-1]["content"]).startswith(ends_as)
+    assert not any(str(write["content"]).startswith("-# Researching") for write in thread.writes)
+
+
+@pytest.mark.parametrize("refused", [True, False], ids=["missing_access", "failing"])
+async def test_a_resume_whose_history_read_fails_runs_on_a_status_line_of_its_own(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    """A 403 is the server's setting and logs the id alone; any other failure keeps its trace."""
+    error = make_forbidden(message="Missing Access") if refused else make_server_error()
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    thread = _RunThread()
+
+    def _failed(**_kwargs: object) -> NoReturn:
+        raise error
+
+    monkeypatch.setattr(target=thread, name="history", value=_failed)
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_settling_client(status="completed"), thread=thread
+    )
+
+    await _resume_run(cog=cog)
+
+    await _assert_owner_released(cog=cog, phase="done")
+    assert thread.writes[0]["content"] == "-# Researching... (Antigravity)"
+    assert warns == [
+        ("research thread refused the history read", {"thread_id": _THREAD_ID})
+        if refused
+        else (
+            "failed to read research thread history",
+            {"thread_id": _THREAD_ID, "error_type": "HTTPException", "_exc_info": error},
+        )
+    ]
 
 
 async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
