@@ -63,16 +63,19 @@ async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> None:
     _write_tone_result(scope=run.scope, tone_markdown=result.tone_markdown)
 
 
-async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> None:
+async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
     """Rebuilds the tone note from the whole evidence corpus, in its own call.
 
     This pass saw everything, so no signal anywhere means a surviving note is stale and
     would keep injecting a preference the evidence no longer supports. It is the only path
     allowed to delete the note for want of signal; `forget_tone` deletes it only by taking
     its last line.
+
+    Returns False when the call failed or a clear overtook it, so the rebuild keeps the raw
+    batch whose tone evidence the note never absorbed; True when it ran or had nothing to do.
     """
     if run.flavor != "user":
-        return
+        return True
     tone_evidence = tone_evidence_from_raw(raw_text=evidence)
     result = (
         None
@@ -85,13 +88,14 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> None:
     )
     if tone_evidence and result is None:
         logfire.warn("Memory tone rebuild call failed; tone note left untouched", scope=run.scope)
-        return
+        return False
     if cleared_since(scope=run.scope, started_at=run.started_at):
-        return
+        return False
     if result is None or not result.tone_markdown:
         clear_tone(scope=run.scope)
-        return
+        return True
     _write_tone_result(scope=run.scope, tone_markdown=result.tone_markdown)
+    return True
 
 
 async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
