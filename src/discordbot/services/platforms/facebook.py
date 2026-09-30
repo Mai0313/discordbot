@@ -69,9 +69,13 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # group-home URLs that are not posts at all. `is_facebook_post_url` makes
 # that call on the parsed URL instead, where the query is readable. The tail class is ASCII URL
 # characters ending on one that a real id or query value ends on, so a link written mid-sentence
-# in Chinese or Japanese is matched without swallowing the terminator.
+# in Chinese or Japanese is matched without swallowing the terminator. The one path refused here
+# is a `/<page>/videos/` page, for the reason `fb.watch` is: logged out it carries no post
+# (2026-09-30), and refusing it later in `is_facebook_post_url` would still hide a post link
+# after it.
 FACEBOOK_URL_RE = re.compile(
     rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
+    r"(?![^/?\s]+/videos/)"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 

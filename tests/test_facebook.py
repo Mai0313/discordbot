@@ -258,6 +258,21 @@ def test_an_fb_watch_link_does_not_shadow_a_post_link_after_it() -> None:
     assert match.group(0) == _PERMALINK
 
 
+@pytest.mark.parametrize(
+    "video_url",
+    [
+        "https://www.facebook.com/SomePage/videos/1234567890/",
+        "https://www.facebook.com/SomePage/videos/some-title/1234567890/",
+    ],
+)
+def test_a_video_link_does_not_shadow_a_post_link_after_it(video_url: str) -> None:
+    """A logged-out video page carries no post, so it must not take the first match either."""
+    match = FACEBOOK_URL_RE.search(string=f"see {video_url} and {_PERMALINK}")
+
+    assert match is not None
+    assert match.group(0) == _PERMALINK
+
+
 def test_a_post_is_read_with_its_text_images_and_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole point: the full body, not the ~190 characters the Open Graph tag carries."""
     downloader = _downloader(monkeypatch, html=_page())
