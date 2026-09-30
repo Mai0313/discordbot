@@ -471,9 +471,6 @@ def test_the_group_name_comes_from_the_group_the_url_names(
     assert post.group_name == "The real group"
 
 
-@pytest.mark.xfail(
-    strict=True, reason="#744: a page post borrows the first Group node's name on the page"
-)
 def test_a_page_post_carries_no_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """A page post has no group, and must not borrow a recommendation's name.
 
