@@ -189,7 +189,7 @@ Wording does not decide it. A casual-sounding message that really wants somethin
 ROUTE_RECALL_SECTION = """
 Also fill in the `recall_user_ids` field: decide whether the latest user message obliquely refers to any additional server members whose long-term memory would help answer it.
 * Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
-* Code has already fetched memory for the latest message's author, reply-chain authors, and explicitly mentioned users. Never list them.
+* Code has already fetched memory for the latest message's author, the author of the message it directly replies to, and explicitly mentioned users. Never list them.
 * A system block lists ONLY additional public-channel members eligible for this oblique-reference lookup, one per line as `[id: USER_ID] label`. Labels carry the community nicknames (社群暱稱) used to identify them. List only ids from that block; ids outside it are ignored.
 * A background block carries this server's memory, including the `## 成員稱呼` table that maps colloquial nicknames to member ids. Use it only to decide whether the LATEST message clearly refers to an eligible member by nickname, a reasonable misspelling, or another unambiguous indirect name.
 * Do not list someone merely because they appear in older history, an attachment, linked third-party content, or the nickname table. Do not guess from a generic description, a vague pronoun, or edit distance alone. When the reference is ambiguous, leave it empty.
