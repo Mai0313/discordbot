@@ -5,7 +5,7 @@ per-server memory share every gate, renderer and redaction here.
 """
 
 import re
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Self, TypeVar, cast
 
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
@@ -41,6 +41,10 @@ from discordbot.services.memory.constants import (
     OBSERVATION_QUOTE_MAX_CHARS,
     OBSERVATION_DEFAULT_TTL_DAYS,
     OBSERVATION_SUMMARY_MAX_CHARS,
+)
+from discordbot.services.memory.server_prompts import (
+    SERVER_PHASE2_PROMPT,
+    SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
 if TYPE_CHECKING:
@@ -338,6 +342,16 @@ class MemoryWriterAI(BaseModel):
     consolidate_prompt: str = Field(
         default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
     )
+
+    @classmethod
+    def for_server(cls, client: AsyncOpenAI, model: ModelSettings) -> Self:
+        """Builds the writer for a server scope, which differs from a user one only in its prompts."""
+        return cls(
+            client=client,
+            model=model,
+            evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
+            consolidate_prompt=SERVER_PHASE2_PROMPT,
+        )
 
     async def evaluate(
         self, subject: str, transcript: str, notes: tuple[str, ...]
