@@ -280,8 +280,19 @@ class FakeInteraction:
         self.locale = locale
         self.response = FakeResponse()
         self.followup = FakeFollowup()
+        self.edit_failure: Exception | None = None
         self.edits: list[OriginalEditPayload] = []
 
     async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
-        """Records an edit to the deferred original response."""
+        """Records an edit to the deferred original response, or raises `edit_failure` when set.
+
+        A pressed control's original response is the message the control sits on, so a
+        `FakeDiscordMessage` handed in shows the edit too. Its own `edit_failure` stays out of
+        it: that is the channel refusing, and the token edits the message whatever the channel
+        allows.
+        """
+        if self.edit_failure is not None:
+            raise self.edit_failure
         self.edits.append(kwargs)
+        if isinstance(self.message, FakeDiscordMessage):
+            self.message.edits.append(DiscordPayload(**kwargs))

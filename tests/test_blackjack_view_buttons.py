@@ -533,9 +533,9 @@ async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
     )
     view = _make_view(round_state=round_state)
     assert view.bot_user_id is None
-    message = MagicMock()
-    await view._maybe_play_bot_turn_locked(message=message)
-    assert message.edit.called is False
+    press = MagicMock()
+    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=press)
+    assert press.edit_original_message.called is False
 
 
 async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
@@ -546,10 +546,10 @@ async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
     )
     view = _make_view(round_state=round_state)
     view.bot_user_id = 999
-    message = MagicMock()
-    await view._maybe_play_bot_turn_locked(message=message)
+    press = MagicMock()
+    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=press)
     # The human's hand is untouched because the bot never acts on a human seat.
-    assert message.edit.called is False
+    assert press.edit_original_message.called is False
     assert len(round_state.players[0].hands[0].cards) == 2
 
 
@@ -571,7 +571,7 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
 
     monkeypatch.setattr(view, "_dispatch_bot_action_locked", no_op_dispatch)
 
-    await view._maybe_play_bot_turn_locked(message=MagicMock())
+    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=MagicMock())
 
     assert calls == 1
 
@@ -596,7 +596,10 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
     view.bot_user_id = 1
     message = FakeDiscordMessage()
 
-    await view.maybe_play_bot_turn(message=as_message(fake=message))
+    await view.maybe_play_bot_turn(
+        message=as_message(fake=message),
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
+    )
 
     assert message.edits == []
     assert round_state.phase == "insurance"
@@ -627,7 +630,7 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
     monkeypatch.setattr(view, "_dispatch_bot_action_locked", fake_dispatch)
     monkeypatch.setattr(blackjack_views.asyncio, "sleep", fake_sleep)
 
-    await view._maybe_play_bot_turn_locked(message=MagicMock())
+    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=MagicMock())
 
     assert dispatch_calls == 2
     assert sleep_calls == [blackjack_views.BOT_TURN_EDIT_DELAY_SECONDS]
@@ -652,7 +655,9 @@ async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> No
     view = _make_view(round_state=round_state)
     monkeypatch.setattr(view, "_edit_in_progress_locked", AsyncMock())
 
-    await view._dispatch_bot_action_locked(message=MagicMock(), active=round_state.players[0])
+    await view._dispatch_bot_action_locked(
+        message=MagicMock(), active=round_state.players[0], interaction=MagicMock()
+    )
 
     assert bot_hand.finished is True
     assert (bot_hand.surrendered, bot_hand.doubled, len(bot_hand.cards)) == (False, False, 2)
@@ -735,7 +740,7 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     monkeypatch.setattr(blackjack_views, "settle_blackjack_player", _stop_after_save)
 
     with pytest.raises(RuntimeError, match="stop after shoe save"):
-        await view.finalize(message=view.message)
+        await view.finalize(message=view.message, interaction=None)
 
     # The store holds a decoupled copy of the round's remaining shoe.
     assert store.shoes.get(42) == round_state.shoe
@@ -765,7 +770,10 @@ async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
 
     monkeypatch.setattr(blackjack_views, "record_blackjack_history", record_blackjack_history)
 
-    await view.finalize(message=as_message(fake=FakeDiscordMessage(guild=FakeGuild(guild_id=888))))
+    await view.finalize(
+        message=as_message(fake=FakeDiscordMessage(guild=FakeGuild(guild_id=888))),
+        interaction=None,
+    )
     round_state.dealer.append(Card(rank="K", suit="♣"))
     await view.wait_for_background_tasks()
 
@@ -794,8 +802,8 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     )
 
     await asyncio.gather(
-        view.finalize(message=as_message(fake=message)),
-        view.finalize(message=as_message(fake=message)),
+        view.finalize(message=as_message(fake=message), interaction=None),
+        view.finalize(message=as_message(fake=message), interaction=None),
     )
 
     assert await get_balance(user_id=1) == 150
@@ -850,7 +858,7 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: list[obj
     message = FakeDiscordMessage()
     view = _make_view(round_state=round_state)
 
-    await view.finalize(message=as_message(fake=message))
+    await view.finalize(message=as_message(fake=message), interaction=None)
 
     assert [str(card) for card in view.round_state.dealer] == ["10♣", "3♦", "5♣"]
     assert view.round_state.dealer_played is True
@@ -878,7 +886,7 @@ async def test_blackjack_view_dealer_hits_soft_17(scheduled_cleanups: list[objec
     message = FakeDiscordMessage()
     view = _make_view(round_state=round_state)
 
-    await view.finalize(message=as_message(fake=message))
+    await view.finalize(message=as_message(fake=message), interaction=None)
 
     # Soft 17 must trigger a draw; the drawn K lands a hard 17, where the dealer stands.
     assert len(view.round_state.dealer) >= 3
@@ -959,21 +967,21 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     assert scheduled_cleanups == [message]
 
 
-class _HeldEditMessage(FakeDiscordMessage):
+class _HeldEditInteraction(FakeInteraction):
     """Holds its first edit open until the test releases it, like a slow Discord round trip."""
 
-    def __init__(self) -> None:
+    def __init__(self, message: FakeDiscordMessage) -> None:
         """Initializes the hold and release signals beside the recorded edits."""
-        super().__init__()
+        super().__init__(message=message)
         self.holding = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+    async def edit_original_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
         """Blocks the first edit until released, then records it."""
         if not self.holding.is_set():
             self.holding.set()
             await self.release.wait()
-        await super().edit(**kwargs)
+        await super().edit_original_message(**kwargs)
 
 
 class _ContendedLock(asyncio.Lock):
@@ -1005,22 +1013,23 @@ async def test_a_timeout_waits_for_the_action_in_flight(scheduled_cleanups: list
         player=seat(bet=50, balance_at_start=100),
     )
     round_state.shoe = [Card(rank="5", suit="♣")]
-    message = _HeldEditMessage()
+    message = FakeDiscordMessage()
     view = _make_view(round_state=round_state)
     view.message = as_message(fake=message)
     lock = _ContendedLock()
     view._round_lock = lock
+    hit_press = _HeldEditInteraction(message=message)
 
     hit = asyncio.create_task(
         coro=attached_button(view=view, custom_id="bj:hit").callback(
-            as_interaction(fake=FakeInteraction(message=message))
+            as_interaction(fake=hit_press)
         )
     )
-    await message.holding.wait()
+    await hit_press.holding.wait()
     timeout = asyncio.create_task(coro=view.on_timeout())
     contended = asyncio.create_task(coro=lock.contended.wait())
     await asyncio.wait({timeout, contended}, return_when=asyncio.FIRST_COMPLETED)
-    message.release.set()
+    hit_press.release.set()
     await asyncio.gather(hit, timeout)
     contended.cancel()
     await asyncio.gather(contended, return_exceptions=True)

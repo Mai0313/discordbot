@@ -32,7 +32,7 @@ from discordbot.cogs.games.dragon_gate import (
     card_value,
     has_open_gate,
 )
-from discordbot.cogs.games.interactions import publish_final_table, edit_message_with_retry
+from discordbot.cogs.games.interactions import publish_final_table
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
 from discordbot.cogs.games.dragon_gate_views import (
     DRAGON_GATE_VISIBLE_PLAYER_LINES,
@@ -67,28 +67,6 @@ if TYPE_CHECKING:
     from discordbot.cogs.games.lobby import PrepareParticipant
 
 T = TypeVar("T")
-
-
-class RetryMessageStub:
-    """Message stub that fails once with a transient Discord error."""
-
-    def __init__(self) -> None:
-        """Initializes retry records."""
-        self.id = 123
-        self.edits: list[dict[str, Any]] = []
-
-    async def edit(self, **kwargs: Any) -> RetryMessageStub:  # noqa: ANN401 -- Discord kwargs
-        """Records an edit and fails the first attempt."""
-        self.edits.append(kwargs)
-        if len(self.edits) == 1:
-            raise _TransientEditError
-        return self
-
-
-class _TransientEditError(Exception):
-    """Fake Discord 5xx error for retry tests."""
-
-    status = 503
 
 
 _RIGGED_FILLER: tuple[str, ...] = ("2", "♠") * 32
@@ -455,39 +433,6 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     assert "彩金池清空" in final.description
 
 
-async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Retries rebuild file-backed edit kwargs instead of reusing consumed streams."""
-    sleep_delays: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        """Records backoff without slowing the test."""
-        sleep_delays.append(delay)
-
-    monkeypatch.setattr(game_interactions, "DiscordServerError", _TransientEditError)
-    monkeypatch.setattr(game_interactions.asyncio, "sleep", fake_sleep)
-    message = RetryMessageStub()
-    payloads: list[object] = []
-
-    def kwargs_factory() -> dict[str, Any]:
-        file_marker = object()
-        payloads.append(file_marker)
-        return {"files": [file_marker]}
-
-    result = await edit_message_with_retry(
-        message=as_message(fake=message), kwargs_factory=kwargs_factory
-    )
-
-    assert result is message
-    assert sleep_delays == [0.5]
-    assert len(payloads) == 2
-    # order-contract: the retry helper awaits the failed edit before building the retry payload.
-    assert message.edits[0]["files"][0] is payloads[0]
-    # order-contract: the successful retry carries the second payload built after that failure.
-    assert message.edits[1]["files"][0] is payloads[1]
-
-
 @pytest.mark.parametrize(
     argnames="failure",
     argvalues=[make_not_found(), RuntimeError("edit refused")],
@@ -519,6 +464,7 @@ async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
         embeds=[Embed(title="settled")],
         user_name="alice",
         game_name="Dragon Gate",
+        interaction=None,
         message_id=message.id,
     )
 
@@ -703,7 +649,7 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
         make_not_found(message="Unknown Message"),
         make_server_error(),
     ],
-    ids=["channel_refused", "message_gone", "discord_failing"],
+    ids=["refused", "message_gone", "discord_failing"],
 )
 async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the_lobby(
     monkeypatch: pytest.MonkeyPatch, failure: HTTPException
@@ -762,13 +708,12 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
 
-    message.edit_failure = failure
+    owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_start.edit_failure = failure
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
     # Only a refusal is answered in place; any other failure still reaches the view's on_error.
     with contextlib.suppress(HTTPException):
-        await start_button.callback(
-            as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
-        )
+        await start_button.callback(as_interaction(fake=owner_start))
 
     await assert_wallet_consistent(user_id=1, expected_balance=1_000)
     await assert_wallet_consistent(user_id=2, expected_balance=1_000)
@@ -782,6 +727,92 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
     assert not view.is_finished()
     await view.on_timeout()
     assert scheduled == [message]
+
+
+async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_plays_its_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every press edits the message it sits on through its own token, not through the channel.
+
+    The lobby went up on the slash command's token, so it shows in a channel the server shut the
+    bot out of afterwards, where every channel edit is refused. A start edited through the
+    channel charges the antes for a table that never appears.
+    """
+    owner = _participant(user_id=1, display_name="Alice")
+    bob = _participant(user_id=2, display_name="Bob")
+    state = JackpotState()
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+
+    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
+        """Seats Bob."""
+        del interaction
+        return bob
+
+    async def refresh_participants(
+        participants: list[GameParticipant],
+    ) -> RefreshParticipantsResult:
+        """Leaves all participants seated for lobby start."""
+        return RefreshParticipantsResult(participants=participants)
+
+    message = FakeDiscordMessage()
+    message.edit_failure = make_forbidden(message="Missing Access")
+    view = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
+        prepare_participant=cast("PrepareParticipant", prepare_participant),
+        refresh_participants=refresh_participants,
+        initial_jackpot=state.jackpot,
+    )
+    view.message = as_message(fake=message)
+    buttons = {getattr(child, "label", ""): child for child in view.children}
+
+    await buttons["加入"].callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
+    assert isinstance(message.edits[-1]["view"], DragonGateLobbyView)
+
+    owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    await buttons["開始"].callback(as_interaction(fake=owner_start))
+    table = message.edits[-1]["view"]
+    assert isinstance(table, DragonGateView)
+    assert owner_start.followup.sent == []
+    assert len(state.calls) == 2, "the antes were charged once and never handed back"
+    assert {call["player_id"]: call["player_delta"] for call in state.calls} == {
+        1: -ANTE,
+        2: -ANTE,
+    }
+
+    await table._handle_bet_choice(
+        choice="min",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+    assert len(state.calls) == 3
+    assert len(message.edits) == 3
+    assert message.edits[-1]["view"] is table
+
+    # Bob's gate is the filler's pair of twos, so he calls it before he may bet.
+    await attached_button(view=table, custom_id="dg:higher").callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=2), message=message, custom_id="dg:higher")
+        )
+    )
+    assert len(message.edits) == 4
+    await attached_button(view=table, custom_id="dg:leave").callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
+    )
+    assert len(message.edits) == 5, "Alice left and the table stayed open for Bob"
+    assert message.edits[-1]["view"] is table
+
+    await attached_button(view=table, custom_id="dg:leave").callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=2), message=message, custom_id="dg:leave")
+        )
+    )
+    assert message.edits[-1]["view"] is None, "the last leave settled the table"
 
 
 async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
@@ -913,6 +944,8 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
     message = FakeDiscordMessage()
+    # The channel refuses every edit, so the closing render lands only through the press.
+    message.edit_failure = make_forbidden(message="Missing Access")
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
@@ -1021,6 +1054,8 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
     message = FakeDiscordMessage()
+    # The channel refuses every edit, so the closing render lands only through the press.
+    message.edit_failure = make_forbidden(message="Missing Access")
     view = DragonGateView(
         round_state=round_state,
         owner=owner,

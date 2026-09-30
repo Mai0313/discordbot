@@ -370,7 +370,10 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
 
     async def _start_game_after_antes(
-        self, message: Message, final_balances: dict[int, int]
+        self,
+        interaction: Interaction[commands.Bot],
+        message: Message,
+        final_balances: dict[int, int],
     ) -> None:
         """Starts the active table after all lobby antes have been charged."""
         round_state = DragonGateRound.from_participants(
@@ -386,8 +389,8 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         view.message = message
         embeds = view.in_progress_embeds()
         await self._show_table(
-            message=message,
-            kwargs_factory=lambda: table_edit_kwargs(embeds=embeds, view=view, target=message),
+            interaction=interaction,
+            payload=table_edit_kwargs(embeds=embeds, view=view, target=message),
         )
 
 
@@ -459,7 +462,9 @@ class DragonGateView(GameView):
             if self._settled:
                 return
             await self._refund_remaining_winners_locked()
-            await self._finalize_locked(message=self.message, reason="逾時未操作")
+            await self._finalize_locked(
+                message=self.message, reason="逾時未操作", interaction=None
+            )
 
     @nextcord.ui.button(
         label="同點猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher", row=1
@@ -623,7 +628,7 @@ class DragonGateView(GameView):
                 await self._send_notice(interaction=interaction, content="這手不需要猜大小")
                 return
             self.sync_controls()
-            await interaction.message.edit(
+            await interaction.edit_original_message(
                 **table_edit_kwargs(
                     embeds=self.in_progress_embeds(), view=self, target=interaction.message
                 )
@@ -711,7 +716,9 @@ class DragonGateView(GameView):
                 reason = (
                     "彩金池清空，系統已自動補池" if settlement.jackpot_depleted else "彩金池清空"
                 )
-                await self._finalize_locked(message=message, reason=reason)
+                await self._finalize_locked(
+                    message=message, reason=reason, interaction=interaction
+                )
                 return
             if (
                 was_loss
@@ -720,10 +727,12 @@ class DragonGateView(GameView):
             ):
                 self.round_state.withdraw(user_id=interaction.user.id)
                 if self.round_state.finished:
-                    await self._finalize_locked(message=message, reason="所有玩家已離桌或餘額歸零")
+                    await self._finalize_locked(
+                        message=message, reason="所有玩家已離桌或餘額歸零", interaction=interaction
+                    )
                     return
             self.sync_controls()
-            await message.edit(
+            await interaction.edit_original_message(
                 **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
             )
 
@@ -748,10 +757,12 @@ class DragonGateView(GameView):
                     user_id=interaction.user.id, delta=delta
                 )
             if self.round_state.finished:
-                await self._finalize_locked(message=message, reason="所有玩家已離桌")
+                await self._finalize_locked(
+                    message=message, reason="所有玩家已離桌", interaction=interaction
+                )
                 return
             self.sync_controls()
-            await message.edit(
+            await interaction.edit_original_message(
                 **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
             )
 
@@ -798,7 +809,9 @@ class DragonGateView(GameView):
                 continue
             await self._refund_winnings_to_pool_locked(user_id=participant.user_id, delta=delta)
 
-    async def _finalize_locked(self, message: Message, reason: str) -> None:
+    async def _finalize_locked(
+        self, message: Message, reason: str, interaction: Interaction[commands.Bot] | None
+    ) -> None:
         """Builds final results, clears the controls, and schedules cleanup."""
         if self._settled:
             return
@@ -840,6 +853,7 @@ class DragonGateView(GameView):
             embeds=embeds,
             user_name=self.owner.account_name,
             game_name="Dragon Gate",
+            interaction=interaction,
             message_id=message.id,
             reason=reason,
         )

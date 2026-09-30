@@ -1,21 +1,17 @@
 """Shared helpers for game view interactions."""
 
-from typing import Any, Self, Final, Unpack, ClassVar, TypedDict
+from typing import Any, Self, Unpack, ClassVar, TypedDict
 import asyncio
-from collections.abc import Callable
 
 import logfire
 from nextcord import Embed, Message, NotFound, Interaction
 from nextcord.ui import Item, View, Button
 from nextcord.ext import commands
-from nextcord.errors import DiscordServerError
 
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.utils.interaction_responses import send_ephemeral_notice
-
-_EDIT_ATTEMPTS: Final[int] = 3
 
 
 class _FinalRenderFailureFields(TypedDict, total=False):
@@ -84,31 +80,19 @@ def set_view_item_visible(view: View, item: Item[View], visible: bool) -> None:
         view.remove_item(item=item)
 
 
-async def edit_message_with_retry(
-    message: Message, kwargs_factory: Callable[[], dict[str, Any]]
-) -> Message:
-    """Edits `message`, retrying transient Discord 5xx errors with backoff.
+async def edit_game_message(
+    message: Message, interaction: Interaction[commands.Bot] | None, payload: dict[str, Any]
+) -> None:
+    """Edits a game message through the press it answers, or through the channel without one.
 
-    Cloudflare in front of discord.com returns 502/503/504 for a couple of seconds at a time,
-    so the backoff spends ~1.5s on that window before the error propagates. What rides on it is
-    a game start: an edit that never lands fails the start, and the table never appears.
-
-    The payload is rebuilt per attempt because a failed one has already consumed any upload
-    streams it carries.
+    A press's own token edits the message its control sits on whatever the channel allows, where
+    the channel endpoint answers 403 once the server shuts the bot out. An edit no press
+    triggered has only the channel.
     """
-    for attempt in range(_EDIT_ATTEMPTS - 1):
-        try:
-            return await message.edit(**kwargs_factory())
-        except DiscordServerError as error:
-            logfire.warn(
-                "Discord 5xx on message.edit, retrying",
-                attempt=attempt + 1,
-                status=error.status,
-                message_id=message.id,
-                _exc_info=error,
-            )
-            await asyncio.sleep(0.5 * (attempt + 1))
-    return await message.edit(**kwargs_factory())
+    if interaction is None:
+        await message.edit(**payload)
+    else:
+        await interaction.edit_original_message(**payload)
 
 
 async def publish_final_table(
@@ -116,19 +100,25 @@ async def publish_final_table(
     embeds: list[Embed],
     user_name: str,
     game_name: str,
+    interaction: Interaction[commands.Bot] | None,
     **failure_fields: Unpack[_FinalRenderFailureFields],
 ) -> bool:
     """Shows a settled table's final embeds with no controls, then schedules its deletion.
 
-    Never raises: settlement is already committed when this runs, so a render that fails is
-    logged (`failure_fields` ride the warning) and the deletion is scheduled regardless.
+    `interaction` is the press that settled the table, if one did (`edit_game_message`). Never
+    raises: settlement is already committed when this runs, so a render that fails is logged
+    (`failure_fields` ride the warning) and the deletion is scheduled regardless.
 
     Returns:
         Whether the final render reached the message.
     """
     try:
         await asyncio.wait_for(
-            message.edit(**table_edit_kwargs(embeds=embeds, view=None, target=message)),
+            edit_game_message(
+                message=message,
+                interaction=interaction,
+                payload=table_edit_kwargs(embeds=embeds, view=None, target=message),
+            ),
             timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
         )
     except NotFound:

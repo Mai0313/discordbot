@@ -13,15 +13,17 @@ from nextcord import Embed, Interaction, HTTPException
 from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.utils import interaction_responses
 from discordbot.cogs.games import cog as games
+from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import JackpotSnapshot
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
-from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
+from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
+from tests.helpers.games import attached_button
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -29,6 +31,7 @@ from tests.helpers.casting import (
     make_forbidden,
     make_not_found,
 )
+from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 
@@ -247,16 +250,16 @@ def _recorded_reports(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[s
         (make_forbidden(message="Missing Access"), "warn"),
         (make_not_found(message="Unknown Message"), "info"),
     ],
-    ids=["channel_refused", "message_gone"],
+    ids=["refused", "message_gone"],
 )
 async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the_owner(
     monkeypatch: pytest.MonkeyPatch, failure: HTTPException, level: str
 ) -> None:
     """A lobby whose table edit Discord refuses goes back to taking presses and its timeout.
 
-    The refusal is a channel the server shut the bot out of, or a lobby someone deleted: the
-    type and the ids are the whole finding, so it is logged without a traceback, and a deleted
-    lobby is a routine outcome rather than a degraded one.
+    The refusal, or a lobby someone deleted: the type and the ids are the whole finding, so it is
+    logged without a traceback, and a deleted lobby is a routine outcome rather than a degraded
+    one.
     """
     scheduled: list[object] = []
     monkeypatch.setattr(
@@ -267,9 +270,9 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
     lobby = _scripted_blackjack_lobby(dealt=[])
     message = FakeDiscordMessage()
-    message.edit_failure = failure
     lobby.message = as_message(fake=message)
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_interaction.edit_failure = failure
     start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
 
     await start_button.callback(as_interaction(fake=owner_interaction))
@@ -290,9 +293,9 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     Reported as a failed start, the owner would be told no table opened while one is up.
     """
 
-    class _ShutOutAfterTheTable(FakeDiscordMessage):
-        async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
-            await super().edit(**kwargs)
+    class _RefusedAfterTheTable(FakeInteraction):
+        async def edit_original_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+            await super().edit_original_message(**kwargs)
             self.edit_failure = make_forbidden(message="Missing Access")
 
     reports = _recorded_reports(monkeypatch=monkeypatch)
@@ -308,9 +311,9 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     lobby = _scripted_blackjack_lobby(
         dealt=[Card(rank="5", suit="♠")] * 5 + [Card(rank="A", suit="♠")], bot=bot
     )
-    message = _ShutOutAfterTheTable()
+    message = FakeDiscordMessage()
     lobby.message = as_message(fake=message)
-    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_interaction = _RefusedAfterTheTable(user=FakeUser(user_id=1), message=message)
     start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
 
     with pytest.raises(nextcord.Forbidden):
@@ -319,6 +322,154 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     assert len(message.edits) == 1, "the table landed before the refusal"
     assert owner_interaction.followup.sent == []
     assert reports == []
+
+
+async def _start_in_a_shut_out_channel(
+    monkeypatch: pytest.MonkeyPatch, dealt: list[Card], bot: GameParticipant | None = None
+) -> FakeDiscordMessage:
+    """Presses 開始 on Alice's scripted lobby in a channel that refuses every edit.
+
+    The lobby went up on the slash command's token, so it shows in a channel the server shut the
+    bot out of afterwards. Returns the lobby message, whose `edits` hold only what landed.
+    """
+    monkeypatch.setattr(
+        "discordbot.cogs.games.interactions.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None: None,
+    )
+    monkeypatch.setattr(blackjack_views, "PEEK_REVEAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(blackjack_views, "BOT_TURN_EDIT_DELAY_SECONDS", 0)
+    await seed_balance(user_id=1, name="alice", amount=100)
+    if bot is not None:
+        await seed_balance(user_id=bot.user_id, name=bot.account_name, amount=100)
+    lobby = _scripted_blackjack_lobby(dealt=dealt, bot=bot)
+    message = FakeDiscordMessage()
+    message.edit_failure = make_forbidden(message="Missing Access")
+    lobby.message = as_message(fake=message)
+    owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
+
+    await start_button.callback(as_interaction(fake=owner_start))
+
+    assert owner_start.followup.sent == []
+    return message
+
+
+def _alice_press(message: FakeDiscordMessage) -> FakeInteraction:
+    """Builds one press by Alice on the table message."""
+    return FakeInteraction(user=FakeUser(user_id=1), message=message)
+
+
+async def test_a_blackjack_lobby_in_a_channel_the_bot_was_shut_out_of_still_deals_and_settles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The start and each table press edit through their own token, which no channel can refuse."""
+    # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
+    message = await _start_in_a_shut_out_channel(monkeypatch=monkeypatch, dealt=[])
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+    stale_double = attached_button(view=table, custom_id="bj:double")
+
+    await attached_button(view=table, custom_id="bj:hit").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    stale_press = _alice_press(message=message)
+    await stale_double.callback(as_interaction(fake=stale_press))
+
+    assert len(stale_press.followup.sent) == 1
+    assert len(message.edits) == 3, "the stale press refreshed the table it was pressed on"
+
+    await attached_button(view=table, custom_id="bj:stand").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    await table.wait_for_background_tasks()
+
+    assert {"view": table} in message.edits, "the controls went dead before the dealer played"
+    assert message.edits[-1]["view"] is None, "the settled table replaced the live one"
+
+
+async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dealer natural under a ten ends the round at the deal, so the start press shows it all."""
+    # Alice 5 5, the dealer's hole an ace under a king.
+    message = await _start_in_a_shut_out_channel(
+        monkeypatch=monkeypatch,
+        dealt=[Card(rank="5", suit="♠")] * 2
+        + [Card(rank="A", suit="♠"), Card(rank="K", suit="♠")],
+    )
+    table = message.edits[0]["view"]
+    assert isinstance(table, BlackjackView)
+    await table.wait_for_background_tasks()
+
+    # The controls going dead, the peek's two frames, and the settled table.
+    assert len(message.edits) == 4
+    assert message.edits[-1]["view"] is None
+
+
+async def test_a_blackjack_natural_under_an_ace_settles_inside_the_insurance_press(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last insurance call closes the phase on a dealer natural, so its press shows the end."""
+    # Alice 5 5, the dealer's hole a king under an ace.
+    message = await _start_in_a_shut_out_channel(
+        monkeypatch=monkeypatch,
+        dealt=[Card(rank="5", suit="♠")] * 2
+        + [Card(rank="K", suit="♠"), Card(rank="A", suit="♠")],
+    )
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+
+    await attached_button(view=table, custom_id="bj:insure_no").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    await table.wait_for_background_tasks()
+
+    # The table, the controls going dead, the peek's two frames, and the settled table.
+    assert len(message.edits) == 5
+    assert message.edits[-1]["view"] is None
+
+
+async def test_the_bot_plays_its_seat_through_the_press_that_handed_it_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bot sits at every table its wallet can fund, and it has no press of its own.
+
+    Every move it makes runs inside a human press still holding the round lock, so it edits the
+    table through that press; through the channel, a shut-out table stalls on its first move.
+    """
+    bot = GameParticipant(
+        user_id=999,
+        account_name="dealer",
+        display_name="Dealer",
+        bet=10,
+        balance_at_start=100,
+        is_allin=False,
+    )
+    # Alice 5 5, the bot 5 5, the dealer's hole a 6 under an ace: insurance, no natural, and a
+    # dealer bound for 17 on a shoe of fives, so the bot draws to 20 before it stands.
+    message = await _start_in_a_shut_out_channel(
+        monkeypatch=monkeypatch,
+        dealt=[Card(rank="5", suit="♠")] * 4
+        + [Card(rank="6", suit="♠"), Card(rank="A", suit="♠")],
+        bot=bot,
+    )
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+    assert len(message.edits) == 2, "the table, then the bot's insurance call on the start press"
+
+    await attached_button(view=table, custom_id="bj:insure_no").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    assert len(message.edits) == 5, "the peek's two frames, then the table after it"
+
+    await attached_button(view=table, custom_id="bj:stand").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    await table.wait_for_background_tasks()
+
+    bot_hand = table.round_state.players[1].hands[0]
+    assert len(bot_hand.cards) == 4, "the bot drew twice on the press that handed it the turn"
+    assert message.edits[-1]["view"] is None, "the bot played its hand out and the table settled"
 
 
 async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
