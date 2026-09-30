@@ -146,9 +146,11 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     # The completion suffix (owner ping + usage footer, plus a hosted-URL line for any report file
     # too big to attach) rides the last chunk only when it still fits under Discord's message-length
     # cap; otherwise it becomes its own trailing message so a near-limit final chunk never pushes the
-    # send over the limit and drops the chunk / attachment.
+    # send over the limit and drops the chunk / attachment. The footer ends the suffix after a
+    # blank line, the only place `utils/llm_transcript.py::USAGE_FOOTER_RE` strips it from the
+    # bot's own history, so every other line goes before it.
     hosted_lines = ("\n" + "\n".join(hosted_urls)) if hosted_urls else ""
-    suffix = f"\n\n<@{owner_id}>\n{footer}{hosted_lines}"
+    suffix = f"\n\n<@{owner_id}>{hosted_lines}\n\n{footer}"
     if len(chunks[-1]) + len(suffix) <= DISCORD_MESSAGE_LIMIT:
         chunks[-1] = f"{chunks[-1]}{suffix}"
     else:
