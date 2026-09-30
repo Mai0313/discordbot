@@ -130,6 +130,7 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
         (30, -100, True, (30, -100, -70)),
         (0, 100, False, (0, 100, 100)),
         (0, -100, False, (0, 0, 0)),
+        (0, -100, True, (0, -100, -100)),
         (-100, -50, False, (-100, 0, -100)),
         (-100, 30, False, (-100, 30, -70)),
     ],
@@ -139,6 +140,7 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
         "allow-negative",
         "missing-account",
         "missing-account-debit",
+        "missing-account-allow-negative-debit",
         "debit-below-zero",
         "credit-below-zero",
     ],
@@ -146,7 +148,7 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
 async def test_dry_run_projects_the_change_without_writing(
     start: int, delta: int, allow_negative: bool, expected: tuple[int, int, int]
 ) -> None:
-    """A dry run reports the `(before, applied_delta, after)` the real run applies, and writes nothing."""
+    """A dry run reports the `(before, applied_delta, after, created)` the real run applies, and writes nothing."""
     await adjust_balance(user_id=1, name="alice", delta=start, allow_negative=True)
     account = await get_account(user_id=1)
 
@@ -162,3 +164,4 @@ async def test_dry_run_projects_the_change_without_writing(
         user_id=1, name="", delta=delta, allow_negative=allow_negative
     )
     assert (applied.before, applied.applied_delta, applied.after) == expected
+    assert change.created == applied.created

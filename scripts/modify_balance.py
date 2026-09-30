@@ -85,7 +85,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--allow-negative",
         action="store_true",
-        help="Allow the resulting balance to go below zero. By default it clamps at zero.",
+        help=(
+            "Allow the resulting balance to go below zero. By default a debit stops at zero "
+            "and never lowers a balance already at or below zero; a credit applies in full."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -135,7 +138,7 @@ async def modify_balance(
             requested_delta=delta,
             applied_delta=projected_applied_delta,
             after=projected_after,
-            created=False,
+            created=created and projected_applied_delta != 0,
             dry_run=dry_run,
         )
 
