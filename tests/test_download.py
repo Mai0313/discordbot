@@ -125,6 +125,41 @@ def test_download_resolves_facebook_share_links(
     ]
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://notfacebook.com/watch?v=123",
+        "https://facebook.com.evil.example/watch?v=9",
+        "https://notfacebook.com/share/r/17h4SsC2p1",
+    ],
+)
+def test_a_lookalike_facebook_host_reaches_ytdlp_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str
+) -> None:
+    """A host that merely contains `facebook.com` is some other site, never a Facebook reel."""
+    _captured_params, captured_calls = _install_youtube_dl_stub(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
+    )
+    resolved: list[str] = []
+
+    def record_resolve(self: VideoDownloader, url: str) -> str:
+        """Records a share-link resolution, which only Facebook's own host may reach."""
+        del self
+        resolved.append(url)
+        return url
+
+    monkeypatch.setattr(
+        target=VideoDownloader, name="_resolve_facebook_share_url", value=record_resolve
+    )
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    with downloader.download(url=url, quality="best"):
+        pass
+
+    assert captured_calls == [{"url": url, "download": True}]
+    assert resolved == []
+
+
 def test_facebook_share_resolution_never_downloads_the_page(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
