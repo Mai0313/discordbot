@@ -86,6 +86,21 @@ DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 # only a large one spends any of that window.
 ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 15.0
 
+# Bound on a Discord attachment's transfer to the Gemini Files API, before the activation poll
+# above starts. Without it an upload into a stalled connection never returns and keeps its media
+# slot for the life of the process. Expiry drops the attachment, as a failed upload does, so it
+# also caps the largest file the bot can read: at 120s Discord's largest attachment (500 MiB
+# with Nitro, as of 2026-09) needs about 35 Mbit/s of upload, and one that cannot finish is
+# uploaded and dropped again on every reply that references it.
+ATTACHMENT_UPLOAD_TIMEOUT_SECONDS: Final[float] = 120.0
+
+# Bound on one Files API state read (`files.get`) of an attachment, in its activation poll or
+# its pending re-poll. Nothing around those reads bounds them, and the poll checks its own
+# deadline only between reads, so a read that never returns would hang the render. The read
+# carries a few hundred bytes of metadata, so one this slow has stalled; expiry fails the poll
+# or the re-poll the way an error from the read does.
+FILES_API_READ_TIMEOUT_SECONDS: Final[float] = 10.0
+
 # Bound on one xAI Files API upload, and the only deadline that call has: `xai-sdk` registers
 # timeout interceptors for unary-unary and unary-stream RPCs only, while `Files.UploadFile` is
 # client-streaming, so the 27-minute default it advertises reaches every RPC except the one this
@@ -113,7 +128,8 @@ GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 60.0
 # --------------------------------------------------------------------------------------
 
 # Bound for waiting on a Files API entry to become usable: the source video uploaded for an omni
-# edit (polled to ACTIVE) and the URI-delivered generated clip (download retried until it lands).
+# edit (its transfer and the poll to ACTIVE) and the URI-delivered generated clip (download
+# retried until it lands).
 # Generous because a large clip can sit in PROCESSING a while; the render hard-fails past it, since
 # video is the primary deliverable.
 FILES_READY_TIMEOUT_SECONDS: Final[float] = 180.0

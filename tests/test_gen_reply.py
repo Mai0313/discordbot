@@ -4248,6 +4248,86 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     assert load_calls == 1  # adopt path did not re-download the source
 
 
+def _stalled(call: Callable[..., Awaitable[object]]) -> Callable[..., Awaitable[object]]:
+    """Wraps a fake Files API call so it answers only after outlasting any bound under test.
+
+    It does answer, and successfully, so a test can tell a call that was given up on from one
+    that was waited out.
+    """
+
+    async def stalled(**kwargs: object) -> object:
+        """Sleeps past the bound, then answers as the wrapped call does."""
+        await asyncio.sleep(5)
+        return await call(**kwargs)
+
+    return stalled
+
+
+async def test_a_stalled_attachment_upload_drops_only_that_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upload that never returns is given up on like a failed one, not waited on forever."""
+    files = FakeGeminiFiles()
+    monkeypatch.setattr(files, "upload", _stalled(call=files.upload))
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.ATTACHMENT_UPLOAD_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    uploaded = await _fake_uploader(files=files)._upload_or_pend(
+        filename="clip.mp4", data=b"x", content_type="video/mp4"
+    )
+
+    assert uploaded is None
+
+
+async def test_a_stalled_activation_read_drops_only_that_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A poll read that never returns fails the poll, however far off the poll's own bound is."""
+    files = FakeGeminiFiles(processing_rounds=1)
+    monkeypatch.setattr(files, "get", _stalled(call=files.get))
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.FILES_API_READ_TIMEOUT_SECONDS", 0.01
+    )
+
+    uploaded = await _fake_uploader(files=files)._upload_or_pend(
+        filename="clip.mp4", data=b"x", content_type="video/mp4"
+    )
+
+    assert uploaded is None
+
+
+async def test_a_stalled_pending_repoll_falls_back_to_a_fresh_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-poll read that never returns costs a re-upload, as a failed re-poll does."""
+    files = FakeGeminiFiles()
+    uploader = _fake_uploader(files=files)
+    uploader._pending_uploads["vid"] = PendingUpload(
+        name="files/vid",
+        uri="https://files.test/files/vid",
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    monkeypatch.setattr(files, "get", _stalled(call=files.get))
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.FILES_API_READ_TIMEOUT_SECONDS", 0.01
+    )
+
+    async def _load() -> LoadedMedia:
+        return LoadedMedia(data=b"x", mime_type="video/mp4")
+
+    uploaded = await uploader._resolve_file_upload(
+        cache_key="vid", filename="v.mp4", load_data=_load, kind="file"
+    )
+
+    assert uploaded == UploadedFile(
+        uri="https://files.test/v.mp4", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
+    )
+    assert files.upload_calls == [("v.mp4", "video/mp4")]
+    assert "vid" not in uploader._pending_uploads
+
+
 def test_loggable_cache_key_strips_url_query_token() -> None:
     """An int key logs unchanged; a URL key drops its (possibly signed) query string."""
     assert loggable_cache_key(cache_key=12345) == 12345
@@ -5704,6 +5784,77 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
 
     assert result == b"mp4"
     assert calls["n"] == 2
+
+
+async def test_a_stalled_clip_download_fails_the_video_within_its_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A download that never returns fails the render at the bound instead of hanging it."""
+
+    async def download(*, file: object) -> bytes:
+        """Returns the clip, once the stall lets it."""
+        del file
+        return b"mp4"
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.01)
+    client = SimpleNamespace(
+        aio=SimpleNamespace(files=SimpleNamespace(download=_stalled(call=download)))
+    )
+    generator = VideoGenerator(
+        client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
+    )
+
+    with pytest.raises(TimeoutError):
+        await generator._download_output_video(uri="https://files.test/v:download?alt=media")
+
+
+async def test_a_never_servable_clip_fails_with_the_download_error_at_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clip that keeps refusing to download fails with that refusal, not a bare timeout."""
+
+    async def download(*, file: object) -> bytes:
+        """Refuses the download the way a file that is not servable yet does, after a round trip."""
+        del file
+        await asyncio.sleep(0)
+        raise RuntimeError("404 NOT_FOUND: file is not servable yet")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.05)
+    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=download)))
+    generator = VideoGenerator(
+        client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
+    )
+
+    with pytest.raises(RuntimeError, match="not servable yet"):
+        await generator._download_output_video(uri="https://files.test/v:download?alt=media")
+
+
+async def test_a_stalled_source_video_upload_fails_the_edit_within_its_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An edit's source upload that never returns fails as one that never became ACTIVE."""
+
+    async def upload(*, file: object, config: dict[str, str]) -> SimpleNamespace:
+        """Returns the uploaded clip ACTIVE, once the stall lets it."""
+        del file, config
+        return SimpleNamespace(
+            name="files/vid", uri="https://files.test/vid", state=FileState.ACTIVE
+        )
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.01)
+    client = SimpleNamespace(
+        aio=SimpleNamespace(files=SimpleNamespace(upload=_stalled(call=upload)))
+    )
+    generator = VideoGenerator(
+        client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Source video did not become ACTIVE before the deadline"
+    ):
+        await generator._upload_source_video(
+            source_video=LoadedMedia(data=b"clip", mime_type="video/mp4")
+        )
 
 
 async def test_handle_video_reply_passes_reference_images() -> None:
