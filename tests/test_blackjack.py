@@ -724,6 +724,23 @@ def test_split_twenty_one_pushes_dealer_non_natural_twenty_one() -> None:
     assert delta == 0
 
 
+def test_split_twenty_one_against_a_dealer_bust_reads_as_dealer_bust() -> None:
+    """A split-derived 21 beats a busted dealer the way any other hand does, label included."""
+    hand = BlackjackHandState(
+        cards=[Card(rank="A", suit="♠"), Card(rank="K", suit="♠")],
+        bet=100,
+        base_bet=100,
+        is_split_hand=True,
+        finished=True,
+    )
+    outcome, delta = settle_hand(
+        hand=hand,
+        dealer=[Card(rank="K", suit="♣"), Card(rank="6", suit="♦"), Card(rank="K", suit="♥")],
+    )
+    assert outcome == "dealer_bust"
+    assert delta == 100
+
+
 def test_surrender_marks_hand_with_half_bet_refund() -> None:
     """Surrender stops the hand and books a half-bet loss at settlement."""
     round_state = _two_player_round(

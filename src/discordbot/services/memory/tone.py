@@ -83,6 +83,9 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> None:
             request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=run.today)
         )
     )
+    if tone_evidence and result is None:
+        logfire.warn("Memory tone rebuild call failed; tone note left untouched", scope=run.scope)
+        return
     if cleared_since(scope=run.scope, started_at=run.started_at):
         return
     if result is None or not result.tone_markdown:
@@ -106,10 +109,11 @@ async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
     if run.flavor != "user" or not forgets:
         return True
     cutoff = newest_stamp(text=forgets)
-    note = read_tone(scope=run.scope).splitlines()
-    note_lines = (
-        tuple(line for line in note[1:] if line.strip()) if note[:1] == [TONE_HEADER] else ()
-    )
+    note = read_tone(scope=run.scope)
+    # Anything after the header on its own line is content too: the rewrite below replaces
+    # that line, so content left unoffered there would be deleted without being named.
+    body = note.removeprefix(TONE_HEADER).lstrip(" ：:") if note.startswith(TONE_HEADER) else ""
+    note_lines = tuple(line for line in body.splitlines() if line.strip())
     evidence = [
         observation
         for observation in tone_observations(text=read_evidence(scope=run.scope))

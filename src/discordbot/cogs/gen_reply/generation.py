@@ -236,7 +236,7 @@ class ImageGenerator(BaseModel):
             if image_bytes_list:
                 result = await self.client.images.edit(
                     image=image_bytes_list,
-                    prompt=prompt or "請依照附件內容進行編輯或優化。",
+                    prompt=prompt or "Edit or refine according to the attached content.",
                     model=self.image_model.name,
                     n=1,
                     response_format="b64_json",
@@ -577,7 +577,7 @@ class VideoGenerator(BaseModel):
         carries no video, folding in `status` + `output_text` (omni signals a soft refusal /
         incomplete / budget_exceeded that way; the `Interaction` has no `error` / `rai_*` field).
         """
-        text = prompt or "請依照訊息內容生成一段影片。"
+        text = prompt or "Generate a video from the message content."
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
         # A source-video edit is the one task we still pin: with task omitted, omni infers the mode
         # (image_to_video vs reference_to_video vs text_to_video) from the prompt + input media,
@@ -686,50 +686,64 @@ class VideoGenerator(BaseModel):
         `FILES_READY_TIMEOUT_SECONDS` so a stuck file hard-fails diagnosably instead of hanging,
         since video is the primary deliverable.
         """
-        deadline = time.monotonic() + FILES_READY_TIMEOUT_SECONDS
         attempt = 0
-        while True:
-            try:
-                return await self.client.aio.files.download(file=uri)
-            except Exception as exc:
-                if time.monotonic() >= deadline:
-                    raise
-                attempt += 1
-                logfire.debug(
-                    "gen_reply video download not ready; retrying",
-                    attempt=attempt,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
-                )
-                await asyncio.sleep(2.0)
+        failure: Exception | None = None
+        try:
+            # Covers an attempt that never returns as well as the retries: google-genai sets no
+            # transport timeout of its own.
+            async with asyncio.timeout(delay=FILES_READY_TIMEOUT_SECONDS):
+                while True:
+                    try:
+                        return await self.client.aio.files.download(file=uri)
+                    except Exception as exc:
+                        failure = exc
+                        attempt += 1
+                        logfire.debug(
+                            "gen_reply video download not ready; retrying",
+                            attempt=attempt,
+                            error_type=type(exc).__name__,
+                            _exc_info=exc,
+                        )
+                        await asyncio.sleep(2.0)
+        except TimeoutError:
+            # The last failed attempt says why the file never became servable; only a download
+            # that never answered at all is left as the bare timeout.
+            if failure is None:
+                raise
+            raise failure from None
 
     async def _upload_source_video(self, *, source_video: LoadedMedia) -> str:
         """Uploads a source clip to the Files API and returns its ACTIVE uri; raises on failure.
 
         The edit path feeds the actual clip (not a poster frame), so the video IS the primary
         deliverable and a failed upload must hard-fail with a diagnosable error rather than pass a
-        None uri into `VideoContentParam`. The activation bound is generous
-        (`FILES_READY_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
-        and can sit in PROCESSING longer than the reply-upload's window.
+        None uri into `VideoContentParam`. The bound is generous (`FILES_READY_TIMEOUT_SECONDS`)
+        because a raw clip is far larger than an image and can sit in PROCESSING longer than the
+        reply-upload's window, and it covers the transfer as well as the poll, since
+        google-genai sets no transport timeout and an upload into a stalled connection never
+        returns.
         """
-        uploaded = await upload_file(
-            client=self.client,
-            source=source_video.data,
-            mime_type=source_video.mime_type,
-            display_name="source.mp4",
-        )
-        file_name = uploaded.name
-        if file_name is None:
-            raise RuntimeError("Source video upload returned no file name")
-        uploaded = await poll_while_processing(
-            client=self.client,
-            uploaded=uploaded,
-            name=file_name,
-            poll_interval_seconds=1.0,
-            timeout_seconds=FILES_READY_TIMEOUT_SECONDS,
-        )
-        if uploaded.state == FileState.PROCESSING:
-            raise RuntimeError("Source video did not become ACTIVE before the deadline")
+        try:
+            async with asyncio.timeout(delay=FILES_READY_TIMEOUT_SECONDS):
+                uploaded = await upload_file(
+                    client=self.client,
+                    source=source_video.data,
+                    mime_type=source_video.mime_type,
+                    display_name="source.mp4",
+                )
+                file_name = uploaded.name
+                if file_name is None:
+                    raise RuntimeError("Source video upload returned no file name")
+                uploaded = await poll_while_processing(
+                    client=self.client,
+                    uploaded=uploaded,
+                    name=file_name,
+                    poll_interval_seconds=1.0,
+                    timeout_seconds=None,
+                    read_timeout_seconds=None,
+                )
+        except TimeoutError as exc:
+            raise RuntimeError("Source video did not become ACTIVE before the deadline") from exc
         if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
             raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
         return uploaded.uri

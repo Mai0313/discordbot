@@ -2,14 +2,11 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
+    "python_full_version >= '4'",
     "python_full_version >= '3.14' and python_full_version < '4'",
     "python_full_version == '3.13.*'",
-    "python_full_version >= '4'",
     "python_full_version < '3.13'",
 ]
-
-[options]
-prerelease-mode = "if-necessary"
 
 [[package]]
 name = "absl-py"
@@ -1038,7 +1035,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "google-antigravity" },
+    { name = "google-antigravity", specifier = "<0.1.8" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "notebook" },
@@ -1303,7 +1300,7 @@ wheels = [
 
 [[package]]
 name = "google-antigravity"
-version = "0.1.12"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -1315,11 +1312,11 @@ dependencies = [
     { name = "websockets" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/0b/6d0ddd102f2d3be0016e05a6da388bdee94a93083e82b4254b5d963eae04/google_antigravity-0.1.12-py3-none-macosx_11_0_arm64.whl", hash = "sha256:e29686090e01c9097f7cb5d15fdf64fa589eeecef941f9c0ea774edf2cdb82be", size = 32246671, upload-time = "2026-08-13T23:31:21.027Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/48/1f7a7107cbc0b16c3cfcd0756a470d7c1e7950d6afc33cead5863f130ec3/google_antigravity-0.1.12-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:3647983b57a4d9815f86577f5aa56b545b1da6b6111b7348f7265593c458d855", size = 35100705, upload-time = "2026-08-13T23:31:24.024Z" },
-    { url = "https://files.pythonhosted.org/packages/90/cd/a206d89eda0d944ddef6a0557a430d94a38c2e770335023754981fa67126/google_antigravity-0.1.12-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:249c102cac831e290a4a62918a2e0c01482696b6533b2a02e8215890080d634a", size = 38888620, upload-time = "2026-08-13T23:31:26.944Z" },
-    { url = "https://files.pythonhosted.org/packages/a5/cf/2dbab91b0ca81d7d7efe14e093a4305483eff97764e34a075959ba2a9ff9/google_antigravity-0.1.12-py3-none-win_amd64.whl", hash = "sha256:7466c2305a41fa00fc0ac7f714a30df5fb90c14643a66086a97cf0c814b69da6", size = 37227060, upload-time = "2026-08-13T23:31:30.478Z" },
-    { url = "https://files.pythonhosted.org/packages/21/8e/7558ddaee65681de5f317c5b421d2946ccb5cd71b636d87f967cf53558f1/google_antigravity-0.1.12-py3-none-win_arm64.whl", hash = "sha256:69ea10d21c8ffe13f2eb2c4b0945fcda29ea8bd39a04b6ee1d6adcd92b6f09b8", size = 33609294, upload-time = "2026-08-13T23:31:33.394Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/aa/609ecaca0611519fe49094d7993e046f274c5d8622541d502b4a6b6bc8e5/google_antigravity-0.1.7-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2707d823bba1dfc4c3384d7d78aea13eb25fdf8a28a8345944b38c16c1405c8a", size = 31644051, upload-time = "2026-07-16T21:03:58.157Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/d9/8936a14195c3d923c49f3ee4810ab9dd0655c9618814a7c35837734e075d/google_antigravity-0.1.7-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:c5070a0f9a6c4406ea460550ae1a543cfb7c9fc185b80921c31ea681aa645ec5", size = 37042570, upload-time = "2026-07-16T21:04:01.126Z" },
+    { url = "https://files.pythonhosted.org/packages/41/55/c5e11b0f91c70540a0e247c53de117c0986b167e94e205c131dc8fadcf76/google_antigravity-0.1.7-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:0958f4481dd4700a0a32acb948f959fb1858657038f103c5a0d067727010f71e", size = 39141605, upload-time = "2026-07-16T21:04:04.392Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/80/1bd2f9ef2dc20b498186d6e888c09b86ce519748e85188c898d1c7bba77c/google_antigravity-0.1.7-py3-none-win_amd64.whl", hash = "sha256:c2a20d7a22b9ca086c570efce2d36b688ef15e30a371f7fbb93cd05aba49d563", size = 36434279, upload-time = "2026-07-16T21:04:07.246Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/3b/e2cf44fb9da8ac407199c1c351fcdc4876c0aece1b61123b2a439a36af66/google_antigravity-0.1.7-py3-none-win_arm64.whl", hash = "sha256:6acaa5ed047cb9bad6ad50992aea71616eff2a6767161b96aab5f7a1cd765ce5", size = 32907283, upload-time = "2026-07-16T21:04:10.104Z" },
 ]
 
 [[package]]

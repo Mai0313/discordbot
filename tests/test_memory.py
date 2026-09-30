@@ -1782,6 +1782,58 @@ async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
     assert "interaction.roast" in read_raw_entries(scope=USER_SCOPE)
 
 
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        pytest.param(
+            "## 語氣偏好：\n- 偏好高強度粗口互嗆\n- 回答要簡潔",
+            "## 語氣偏好\n- 回答要簡潔",
+            id="fullwidth-colon",
+        ),
+        pytest.param(
+            "## 語氣偏好 \n- 偏好高強度粗口互嗆\n- 回答要簡潔",
+            "## 語氣偏好\n- 回答要簡潔",
+            id="trailing-space",
+        ),
+        pytest.param(
+            "## 語氣偏好：偏好高強度粗口互嗆\n- 回答要簡潔",
+            "## 語氣偏好\n- 回答要簡潔",
+            id="content-on-the-header-line",
+        ),
+        pytest.param(
+            "## 語氣偏好：回答要簡潔\n- 偏好高強度粗口互嗆",
+            "## 語氣偏好\n回答要簡潔",
+            id="header-line-content-survives",
+        ),
+    ],
+)
+async def test_a_forget_reaches_a_tone_note_under_any_header_the_write_accepts(
+    memory_isolated_dir: Path, note: str, expected: str
+) -> None:
+    """The write keeps any note leading with the header, so the forget must reach all of it."""
+    write_tone(scope=USER_SCOPE, content=note)
+    writer, fake_client = _writer()
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Drops whichever offered note line holds the forgotten preference."""
+        del text_format
+        lines = body.split("<tone_note>")[1].split("</tone_note>", maxsplit=1)[0].splitlines()
+        return ToneForget(
+            drop_lines=tuple(
+                int(line.split("]")[0].lstrip("[")) for line in lines if "粗口互嗆" in line
+            )
+        )
+
+    fake_client.responses.answer = answer
+    forgets = _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再被粗口互嗆")
+    run = start_run(
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY, started_at=time.monotonic()
+    )
+    assert await tone.forget_tone(run=run, forgets=forgets)
+
+    assert read_tone(scope=USER_SCOPE) == expected
+
+
 async def test_each_tone_forget_sees_only_what_came_before_it(memory_isolated_dir: Path) -> None:
     """A tone preference restated between two forgets is not offered to the first of them.
 
@@ -4640,6 +4692,36 @@ async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output(
 
     assert report.result == "regenerated"
     assert read_tone(scope=USER_SCOPE) == ""
+
+
+@pytest.mark.parametrize(
+    argnames=("tone_answer", "expected"),
+    argvalues=[
+        pytest.param(None, "## 語氣偏好\n* 舊語氣", id="failed-call-keeps"),
+        pytest.param(_no_change(tone=""), "", id="empty-answer-clears"),
+    ],
+)
+async def test_regenerate_scope_memory_clears_the_tone_note_on_an_empty_answer_only(
+    memory_isolated_dir: Path, tone_answer: ConsolidatedMemory | None, expected: str
+) -> None:
+    """A failed tone call says nothing about the evidence; only an empty answer reads as no signal."""
+    writer, fake_client = _writer()
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
+    _stage_tone_observation()
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Gives the tone call `tone_answer` and lets every other call through."""
+        del text_format
+        return tone_answer if "<tone_evidence>" in body else _consolidated(text="重建後的記憶")
+
+    fake_client.responses.answer = answer
+
+    report = await regeneration.regenerate_scope_memory(
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
+    )
+
+    assert report.result == "regenerated"
+    assert read_tone(scope=USER_SCOPE) == expected
 
 
 # ---------------------------------------------------------------------------

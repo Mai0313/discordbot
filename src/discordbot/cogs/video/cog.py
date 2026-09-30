@@ -45,7 +45,7 @@ QUALITY_CHOICES: dict[str, VideoQuality] = {
     "Best Quality": "best",
     "High (1080p)": "high",
     "Medium (720p)": "medium",
-    "Low (480p)": "low",
+    "Low (480p, 540p on Douyin)": "low",
 }
 
 _DOWNLOAD_FAILED = "-# 檔案無法下載"

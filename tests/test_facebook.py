@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from discordbot.services.platforms.facebook import (
+    FACEBOOK_URL_RE,
     FacebookURL,
     FetchedPage,
     FacebookOutput,
@@ -249,6 +250,14 @@ def test_a_url_that_names_no_post_is_refused(url: str) -> None:
     assert not is_facebook_post_url(url=url)
 
 
+def test_an_fb_watch_link_does_not_shadow_a_post_link_after_it() -> None:
+    """Every caller acts on the first match alone, so an `fb.watch` link must not take it."""
+    match = FACEBOOK_URL_RE.search(string=f"see https://fb.watch/72TEK5emY-/ and {_PERMALINK}")
+
+    assert match is not None
+    assert match.group(0) == _PERMALINK
+
+
 def test_a_post_is_read_with_its_text_images_and_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole point: the full body, not the ~190 characters the Open Graph tag carries."""
     downloader = _downloader(monkeypatch, html=_page())
@@ -471,9 +480,6 @@ def test_the_group_name_comes_from_the_group_the_url_names(
     assert post.group_name == "The real group"
 
 
-@pytest.mark.xfail(
-    strict=True, reason="#744: a page post borrows the first Group node's name on the page"
-)
 def test_a_page_post_carries_no_group_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """A page post has no group, and must not borrow a recommendation's name.
 

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from random import Random
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+import contextlib
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
-from nextcord import Embed
+from nextcord import Embed, HTTPException
 from nextcord.ui import StringSelect
 
 from discordbot.cogs.games import interactions as game_interactions
@@ -32,6 +33,7 @@ from discordbot.cogs.games.dragon_gate import (
     has_open_gate,
 )
 from discordbot.cogs.games.interactions import publish_final_table, edit_message_with_retry
+from discordbot.services.economy.database import apply_jackpot_settlement_batch
 from discordbot.cogs.games.dragon_gate_views import (
     DRAGON_GATE_VISIBLE_PLAYER_LINES,
     DRAGON_GATE_VISIBLE_HISTORY_LINES,
@@ -46,8 +48,16 @@ from discordbot.cogs.games.dragon_gate_views import (
 from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import seat, component_ids, component_rows, attached_button
-from tests.helpers.casting import as_message, as_interaction, make_not_found
+from tests.helpers.casting import (
+    as_message,
+    as_interaction,
+    make_forbidden,
+    make_not_found,
+    make_server_error,
+)
+from tests.helpers.economy import seed_balance, get_jackpot_pool
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.economy_invariants import assert_wallet_consistent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -684,6 +694,94 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     embed = message.edits[-1]["embed"]
     assert isinstance(embed, Embed)
     assert embed.description == "餘額不足已移出: Bob"
+
+
+@pytest.mark.parametrize(
+    argnames="failure",
+    argvalues=[
+        make_forbidden(message="Missing Access"),
+        make_not_found(message="Unknown Message"),
+        make_server_error(),
+    ],
+    ids=["channel_refused", "message_gone", "discord_failing"],
+)
+async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the_lobby(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException
+) -> None:
+    """The antes are charged before the table edit, so a table that never appears hands them back.
+
+    Left marked started, the lobby would refuse every press and skip its own timeout cleanup.
+    """
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.lobby.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None: scheduled.append(message),
+    )
+    batches: list[list[JackpotSettlementRequest]] = []
+
+    async def recording_batch(
+        game_id: str, settlements: Sequence[JackpotSettlementRequest]
+    ) -> JackpotSettlementBatchResult:
+        """Records each batch and applies it to the isolated ledger."""
+        batches.append(list(settlements))
+        return await apply_jackpot_settlement_batch(game_id=game_id, settlements=settlements)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", recording_batch
+    )
+    owner = _participant(user_id=1, display_name="Alice")
+    bob = _participant(user_id=2, display_name="Bob")
+    for participant in (owner, bob):
+        await seed_balance(
+            user_id=participant.user_id, name=participant.account_name, amount=1_000
+        )
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+
+    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
+        """Seats Bob."""
+        del interaction
+        return bob
+
+    async def refresh_participants(
+        participants: list[GameParticipant],
+    ) -> RefreshParticipantsResult:
+        """Leaves all participants seated for lobby start."""
+        return RefreshParticipantsResult(participants=participants)
+
+    message = FakeDiscordMessage()
+    view = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
+        prepare_participant=cast("PrepareParticipant", prepare_participant),
+        refresh_participants=refresh_participants,
+        initial_jackpot=pool_before,
+    )
+    view.message = as_message(fake=message)
+    join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
+    await join_button.callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
+
+    message.edit_failure = failure
+    start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
+    # Only a refusal is answered in place; any other failure still reaches the view's on_error.
+    with contextlib.suppress(HTTPException):
+        await start_button.callback(
+            as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
+        )
+
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000)
+    await assert_wallet_consistent(user_id=2, expected_balance=1_000)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
+    assert len(batches) == 2, "the antes go back in one transaction, as they were charged"
+    # order-contract: the refund is awaited after the ante batch it reverses.
+    assert {request.player_id: request.player_delta for request in batches[-1]} == {
+        1: ANTE,
+        2: ANTE,
+    }
+    assert not view.is_finished()
+    await view.on_timeout()
+    assert scheduled == [message]
 
 
 async def test_dragon_gate_view_pair_choice_bet_settles_immediately(

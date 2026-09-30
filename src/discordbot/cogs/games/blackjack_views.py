@@ -45,7 +45,6 @@ from discordbot.cogs.games.interactions import (
     table_edit_kwargs,
     publish_final_table,
     set_view_item_visible,
-    edit_message_with_retry,
 )
 from discordbot.cogs.games.presentation import (
     WIN_COLOR,
@@ -548,7 +547,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             return True
         view.sync_buttons()
         seat_embeds = build_in_progress_embeds(round_state=round_state)
-        await edit_message_with_retry(
+        await self._show_table(
             message=message,
             kwargs_factory=lambda: table_edit_kwargs(
                 embeds=seat_embeds, view=view, target=message

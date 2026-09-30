@@ -5,10 +5,12 @@ import base64
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nextcord import File, Embed, Thread, Permissions, TextChannel, AllowedMentions
+from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.research import cog as research_cog
@@ -18,6 +20,7 @@ from discordbot.cogs.research import streaming as research_streaming
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import ModelPriceEntry
+from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
@@ -46,6 +49,7 @@ if TYPE_CHECKING:
     from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs.research.database import ResearchPhase
+    from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:
@@ -859,6 +863,65 @@ async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.Mo
     ]
 
 
+@pytest.mark.parametrize(
+    ("report_text", "hosted"),
+    [("# Report\nbody", False), ("X" * 1990, False), ("# Report\nbody", True)],
+    ids=["inline", "own_message", "hosted_file"],
+)
+async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
+    tmp_path: Path, report_text: str, hosted: bool
+) -> None:
+    """Every delivered shape renders back as the bot's own history with the footer gone."""
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    planner = _disabled_delivery()
+    if hosted:
+        thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
+        planner = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(
+                config=make_media_hosting_config(
+                    enabled=True, base_url="https://media.test", serve_dir=str(tmp_path)
+                )
+            )
+        )
+    footer = "-# antigravity-preview-09-2026 · ⬆ 1,234 ⬇ 567 · $0.00236800"
+    await deliver_report(
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=as_message(fake=status),  # minimal status-message double
+        owner_id=1,
+        result=_completed_result(report_text=report_text),
+        footer=footer,
+        media_delivery=planner,
+    )
+    posted = [str(write["content"]) for write in [*status.edits, *thread.sends]]
+    assert footer in posted[-1]
+    builder = MessageInputBuilder(
+        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))),
+        runtime_models=RuntimeModelCatalog(),
+        # Rendering a message's text never reaches its attachments.
+        attachment_handler=cast("AttachmentRenderer", SimpleNamespace()),
+    )
+
+    history = [
+        await builder.get_cleaned_content(
+            message=as_message(
+                fake=SimpleNamespace(
+                    content=content,
+                    author=SimpleNamespace(id=999),
+                    embeds=[],
+                    snapshots=[],
+                    is_system=lambda: False,
+                )
+            )
+        )
+        for content in posted
+    ]
+
+    assert not any("⬆" in text for text in history)
+    # Only the footer goes: the report, the owner ping and any hosted link all stay.
+    assert history == [content.replace(f"\n\n{footer}", "").strip() for content in posted]
+
+
 # ----- restart resume sweep -----------------------------------------------------------------
 
 
@@ -1272,6 +1335,7 @@ class _RunThread:
         self.error = error
         self.status_posts = status_posts
         self.sends = 0
+        self.deleted = False
 
     async def send(self, **kwargs: object) -> _RunStatus:
         """Records a post and answers with the message it created, as Discord does."""
@@ -1280,6 +1344,12 @@ class _RunThread:
             raise self.error
         self.writes.append(kwargs)
         return _RunStatus(thread=self)
+
+    async def delete(self) -> None:
+        """Records the thread's deletion, or fails it the way every later write fails."""
+        if self.error is not None:
+            raise self.error
+        self.deleted = True
 
 
 class _ThreadBot:
@@ -1430,6 +1500,73 @@ async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner
     assert thread.writes[-1]["content"] == "-# Research failed (Antigravity)"
 
 
+def _lock_reply_db(
+    *, monkeypatch: pytest.MonkeyPatch, call: str
+) -> list[tuple[str, dict[str, object]]]:
+    """Makes one research store call fail the way a locked `reply.db` does; returns the errors."""
+
+    async def _locked(**_kwargs: object) -> None:
+        raise OperationalError("research", None, sqlite3.OperationalError("database is locked"))
+
+    monkeypatch.setattr(target=rdb, name=call, value=_locked)
+    return _recorded(monkeypatch=monkeypatch, level="error")
+
+
+@pytest.mark.parametrize("call", ["active_thread_for_owner", "upsert_session"])
+async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    errors = _lock_reply_db(monkeypatch=monkeypatch, call=call)
+    channel = _text_channel()
+    thread = _RunThread()
+    anchor = _Anchor(channel=channel, thread=thread)
+    channel.send = AsyncMock(return_value=anchor)
+    interaction = _ResearchInteraction(channel=channel)
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace())
+
+    await cog.deep_research(as_interaction(fake=interaction), topic="topic")
+
+    assert [edit.get("content") for edit in interaction.edits] == ["開研究串失敗了,等等再試一次"]
+    assert anchor.deleted is True
+    # Only the upsert comes after the thread is opened, and a thread with no row is not a run.
+    assert thread.deleted is (call == "upsert_session")
+    assert thread.writes == []
+    assert cog._active_threads == set()
+    assert not cog._tasks
+    assert len(errors) == 1
+    assert errors[0][1].get("_exc_info") is not None
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["deleted", "delete_refused"])
+async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fails(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    _lock_reply_db(monkeypatch=monkeypatch, call="upsert_session")
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    thread = _RunThread(error=make_forbidden(message="Missing Permissions") if refused else None)
+    anchor = _Anchor(channel=_text_channel(), thread=thread)
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace())
+
+    await cog.launch(message=as_message(fake=anchor), brief="b")
+
+    assert [reply.get("content") for reply in anchor.replies] == ["開研究串失敗了,等等再試一次"]
+    assert thread.deleted is not refused
+    # The marker's anchor is the reply that promised the run, so it stays.
+    assert anchor.deleted is False
+    assert cog._active_threads == set()
+    # A launch never asks for the Manage Threads a delete takes, so a refusal logs the ids alone.
+    assert warns == (
+        [
+            (
+                "research thread of a failed launch could not be deleted",
+                {"thread_id": _THREAD_ID, "owner_id": _OWNER_ID},
+            )
+        ]
+        if refused
+        else []
+    )
+
+
 @pytest.mark.parametrize("stored_id", [True, False], ids=["resume_fails", "no_stored_id"])
 async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them(
     research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, stored_id: bool
@@ -1447,6 +1584,26 @@ async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them
     notice = thread.writes[-1]
     assert notice["content"] == "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次"
     _assert_pings_only_the_owner(write=notice)
+
+
+async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _expired(**_kwargs: object) -> None:
+        raise RuntimeError("interaction expired")
+
+    monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
+    thread = _RunThread()
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
+
+    await _resume_run(cog=cog)
+
+    assert [write["content"] for write in thread.writes] == [
+        "-# Researching... (Antigravity)",
+        "-# Research failed (Antigravity)",
+        "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
+    ]
+    assert thread.sends == 2, "the failed line is the resume's own status edited, not a new post"
 
 
 async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
@@ -1504,7 +1661,7 @@ async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
     report = thread.writes[-1]
     agent_name = cog.runtime_models.antigravity_model.name
     assert report["content"] == (
-        f"# Report\nbody\n\n<@300>\n-# {agent_name} · ⬆ 1,234 ⬇ 567 · $0.00236800"
+        f"# Report\nbody\n\n<@300>\n\n-# {agent_name} · ⬆ 1,234 ⬇ 567 · $0.00236800"
     )
     _assert_pings_only_the_owner(write=report)
 
@@ -1524,7 +1681,7 @@ async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
     await _assert_owner_released(cog=cog, phase="done")
     report = thread.writes[-1]
     assert report["content"] == (
-        "# Report\nbody\n\n<@300>\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
+        "# Report\nbody\n\n<@300>\n\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
     )
     _assert_pings_only_the_owner(write=report)
 

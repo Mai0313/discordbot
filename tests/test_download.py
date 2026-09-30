@@ -1,5 +1,6 @@
 """Tests for the yt-dlp downloader facade and the `/download_video` command."""
 
+import re
 import time
 from types import TracebackType, SimpleNamespace
 from typing import Any, Self, NoReturn, get_args
@@ -122,6 +123,41 @@ def test_download_resolves_facebook_share_links(
     assert captured_calls == [
         {"url": "https://www.facebook.com/reel/828357636228730", "download": True}
     ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://notfacebook.com/watch?v=123",
+        "https://facebook.com.evil.example/watch?v=9",
+        "https://notfacebook.com/share/r/17h4SsC2p1",
+    ],
+)
+def test_a_lookalike_facebook_host_reaches_ytdlp_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str
+) -> None:
+    """A host that merely contains `facebook.com` is some other site, never a Facebook reel."""
+    _captured_params, captured_calls = _install_youtube_dl_stub(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
+    )
+    resolved: list[str] = []
+
+    def record_resolve(self: VideoDownloader, url: str) -> str:
+        """Records a share-link resolution, which only Facebook's own host may reach."""
+        del self
+        resolved.append(url)
+        return url
+
+    monkeypatch.setattr(
+        target=VideoDownloader, name="_resolve_facebook_share_url", value=record_resolve
+    )
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    with downloader.download(url=url, quality="best"):
+        pass
+
+    assert captured_calls == [{"url": url, "download": True}]
+    assert resolved == []
 
 
 def test_facebook_share_resolution_never_downloads_the_page(
@@ -480,6 +516,21 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
 
     cog = VideoCogs(bot=as_bot(fake=object()))
     assert cog.download_video.options["quality"].default in presets
+
+
+def test_a_quality_label_names_what_each_downloader_asks_for() -> None:
+    """A label naming a resolution names exactly the ones requested, Douyin's where it differs."""
+    for label, preset in QUALITY_CHOICES.items():
+        named = set(re.findall(pattern=r"(\d+)p", string=label))
+        if not named:
+            continue
+        ytdlp = set(
+            re.findall(pattern=r"height<=(\d+)", string=VideoDownloader.quality_formats[preset])
+        )
+        douyin = DouyinDownloader.quality_ratios[preset].removesuffix("p")
+        assert named == {*ytdlp, douyin}, label
+        if douyin not in ytdlp:
+            assert f"{douyin}p on Douyin" in label, label
 
 
 class DownloadResultStub:

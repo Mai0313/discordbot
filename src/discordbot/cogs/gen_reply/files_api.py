@@ -13,8 +13,9 @@ client can poll a file to ACTIVE: the proxy's file resource reports a deprecated
 status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answer request.
 
 `upload_file` and `poll_while_processing` are the upload and the activation poll every direct
-upload is made of. They decide nothing: each raises the SDK's own error, and what a missing
-resource name, a file still PROCESSING at the bound, or a failure costs is the caller's call.
+upload is made of. They decide nothing: each raises the SDK's own error (the poll also a
+`TimeoutError` for a read past the bound its caller set), and what a missing resource name, a
+file still PROCESSING at the bound, or a failure costs is the caller's call.
 `upload_to_files_api` serves the callers with no later reference to re-poll from (linked-post
 media, a generated clip handed to its persona reply), so it bounds the whole transfer and gives up.
 """
@@ -66,19 +67,21 @@ async def upload_file(
     )
 
 
-async def poll_while_processing(
+async def poll_while_processing(  # noqa: PLR0913 -- each bound is its caller's own decision
     *,
     client: genai.Client,
     uploaded: File,
     name: str,
     poll_interval_seconds: float,
     timeout_seconds: float | None,
+    read_timeout_seconds: float | None,
 ) -> File:
     """Re-reads an uploaded file until it leaves PROCESSING, returning the last state seen.
 
     The file comes back still PROCESSING only when `timeout_seconds`, counted from this call,
     elapsed first; None polls for as long as the file processes, for a caller that bounds the
-    whole transfer itself.
+    whole transfer itself. That bound is checked only between reads, so a caller that bounds
+    nothing around this call bounds each read too: a read that never returns outlasts it.
 
     Args:
         client: The client the file was uploaded with (a file is readable only by that key).
@@ -86,8 +89,10 @@ async def poll_while_processing(
         name: The file's resource name (`files/<id>`), which the poll reads it back by.
         poll_interval_seconds: The wait between two reads.
         timeout_seconds: How long to keep polling, or None for no bound here.
+        read_timeout_seconds: How long one read may take, or None for no bound here.
 
     Raises:
+        TimeoutError: One read did not return within `read_timeout_seconds`.
         Exception: Whatever the SDK or its transport raised, unchanged.
     """
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -95,7 +100,8 @@ async def poll_while_processing(
         if deadline is not None and time.monotonic() >= deadline:
             return uploaded
         await asyncio.sleep(poll_interval_seconds)
-        uploaded = await client.aio.files.get(name=name)
+        async with asyncio.timeout(delay=read_timeout_seconds):
+            uploaded = await client.aio.files.get(name=name)
     return uploaded
 
 
@@ -155,6 +161,7 @@ async def upload_to_files_api(
                 name=file_name,
                 poll_interval_seconds=1.0,
                 timeout_seconds=None,
+                read_timeout_seconds=None,
             )
     except TimeoutError as exc:
         logfire.warn(

@@ -55,10 +55,11 @@ from discordbot.services.platforms.page_json import (
 )
 
 # Every host Facebook serves posts on, so `FacebookURL.clean_url` aims a fetch from any of them at
-# `www`, where the payload actually is. `fb.watch` and `fb.com` are short forms its own share
-# sheet emits; a `fb.watch/<code>` link names no post that `is_facebook_post_url` accepts, so the
-# pattern matches it and the post filter then refuses it.
-_FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com", "fb.watch"})
+# `www`, where the payload actually is. `fb.com` is a short form its own share sheet emits.
+# `fb.watch` is deliberately absent here and from `FACEBOOK_URL_RE`: logged out, its links redirect
+# to a `/<page>/videos/<id>` page the reader finds no post in (2026-09-30), and since every caller
+# acts on the first match alone, claiming one would hide a readable post link after it.
+_FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
 # Deliberately host-anchored rather than path-anchored: a Facebook post is spelled at least six
@@ -70,7 +71,7 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # characters ending on one that a real id or query value ends on, so a link written mid-sentence
 # in Chinese or Japanese is matched without swallowing the terminator.
 FACEBOOK_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com|fb\.watch)/"
+    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
@@ -431,10 +432,11 @@ class FacebookDownloader(PlatformDownloader):
     def _group_name_of(*, payloads: list[Any], group_id: str) -> str:
         """The name of the group the post sits in, empty for a page or profile post.
 
-        Matched on the URL's own group id where there is one, since a group page also serialises
-        the groups it recommends alongside the one being read.
+        Matched on the URL's own group id and never guessed without one, since a page also
+        serialises the groups it recommends alongside the one being read.
         """
-        fallback = ""
+        if not group_id:
+            return ""
         for payload in payloads:
             for node in walk(node=payload):
                 if node.get("__typename") != "Group":
@@ -442,10 +444,9 @@ class FacebookDownloader(PlatformDownloader):
                 name = node.get("name")
                 if not isinstance(name, str) or not name:
                     continue
-                if group_id and str(node.get("id")) == group_id:
+                if str(node.get("id")) == group_id:
                     return name
-                fallback = fallback or name
-        return "" if group_id else fallback
+        return ""
 
     def parse_metadata(self, *, url: str) -> FacebookConversation:
         """Reads one public Facebook post and the comments the page preloaded with it.

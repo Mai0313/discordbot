@@ -130,7 +130,7 @@ class VideoDownloader(PlatformDownloader):
         """
         parsed = urlparse(url)
 
-        if "facebook.com" not in parsed.netloc:
+        if not host_matches_domain(host=normalized_host(url=url), domain="facebook.com"):
             return url
 
         if parsed.path.startswith("/share/"):

@@ -76,6 +76,9 @@ _PATH_ID_RE = re.compile(r"/(?:video|note|slides)/(\d+)")
 # Douyin short links redirect to) is rejected rather than guessed at.
 _ALLOWED_HOSTS = frozenset({"douyin.com", "iesdouyin.com"})
 
+# Hosts whose single-segment path is a short link, the one post link that carries no id.
+_SHORT_LINK_HOSTS = frozenset({"v.douyin.com", "jx.douyin.com"})
+
 # Markers of ByteDance's two bot walls. `waf-jschallenge` / `out-sha256.js` is the per-path WAF
 # challenge served by iesdouyin; `byted_acrawler` is the JS shell every `www.douyin.com` page
 # returns. Both mean "come back later", never "this post does not exist" - conflating the two
@@ -125,8 +128,8 @@ def is_douyin_post_url(url: str) -> bool:
     that claims a message on its own: a pasted profile or live-room link would earn a warning
     reaction and a failure reply nobody asked for, and would spend a Douyin request finding out.
 
-    A post id in the URL is proof. Otherwise only a bare single-segment path can be a short
-    link, and those never live on the live-streaming host.
+    A post id in the URL is proof. Otherwise only a bare single-segment path on a short-link
+    host can be a post: the same shape on `www.douyin.com` is a feed page such as `/jingxuan`.
 
     Args:
         url: A URL already known to be a Douyin URL.
@@ -137,7 +140,7 @@ def is_douyin_post_url(url: str) -> bool:
     if _extract_post_id(url=url):
         return True
     parsed = urlparse(normalized_url(url=url))
-    if (parsed.hostname or "").lower().startswith("live."):
+    if (parsed.hostname or "").lower() not in _SHORT_LINK_HOSTS:
         return False
     return len([segment for segment in parsed.path.split("/") if segment]) == 1
 
