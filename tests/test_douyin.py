@@ -656,10 +656,16 @@ def test_download_reuses_a_caller_supplied_post(
         (f"https://www.douyin.com/video/{_VIDEO_ID}", True),
         (f"https://www.douyin.com/user/MS4wLjABAAAAMOcq?modal_id={_VIDEO_ID}", True),
         ("https://v.douyin.com/abc123", True),
+        ("https://jx.douyin.com/abc123", True),
         (f"https://www.iesdouyin.com/share/note/{_PHOTO_ID}", True),
         ("https://www.douyin.com/user/MS4wLjABAAAAMOcq", False),
         ("https://live.douyin.com/123456", False),
         ("https://www.douyin.com/search/whatever", False),
+        # Feed pages share a short link's single-segment shape but not its host.
+        ("https://www.douyin.com/jingxuan", False),
+        ("https://www.douyin.com/discover", False),
+        ("https://www.douyin.com/hot", False),
+        ("https://douyin.com/follow", False),
     ],
 )
 def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bool) -> None:
