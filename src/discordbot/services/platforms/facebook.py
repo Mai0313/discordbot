@@ -55,10 +55,11 @@ from discordbot.services.platforms.page_json import (
 )
 
 # Every host Facebook serves posts on, so `FacebookURL.clean_url` aims a fetch from any of them at
-# `www`, where the payload actually is. `fb.watch` and `fb.com` are short forms its own share
-# sheet emits; a `fb.watch/<code>` link names no post that `is_facebook_post_url` accepts, so the
-# pattern matches it and the post filter then refuses it.
-_FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com", "fb.watch"})
+# `www`, where the payload actually is. `fb.com` is a short form its own share sheet emits.
+# `fb.watch` is deliberately absent here and from `FACEBOOK_URL_RE`: logged out, its links redirect
+# to a `/<page>/videos/<id>` page the reader finds no post in (2026-09-30), and since every caller
+# acts on the first match alone, claiming one would hide a readable post link after it.
+_FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
 # Deliberately host-anchored rather than path-anchored: a Facebook post is spelled at least six
@@ -70,7 +71,7 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # characters ending on one that a real id or query value ends on, so a link written mid-sentence
 # in Chinese or Japanese is matched without swallowing the terminator.
 FACEBOOK_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com|fb\.watch)/"
+    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 

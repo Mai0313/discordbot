@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from discordbot.services.platforms.facebook import (
+    FACEBOOK_URL_RE,
     FacebookURL,
     FetchedPage,
     FacebookOutput,
@@ -247,6 +248,14 @@ def test_clean_url_keeps_the_comment_the_url_singles_out() -> None:
 def test_a_url_that_names_no_post_is_refused(url: str) -> None:
     """A profile or group home would otherwise cost a full page fetch to learn nothing."""
     assert not is_facebook_post_url(url=url)
+
+
+def test_an_fb_watch_link_does_not_shadow_a_post_link_after_it() -> None:
+    """Every caller acts on the first match alone, so an `fb.watch` link must not take it."""
+    match = FACEBOOK_URL_RE.search(string=f"see https://fb.watch/72TEK5emY-/ and {_PERMALINK}")
+
+    assert match is not None
+    assert match.group(0) == _PERMALINK
 
 
 def test_a_post_is_read_with_its_text_images_and_counts(monkeypatch: pytest.MonkeyPatch) -> None:
