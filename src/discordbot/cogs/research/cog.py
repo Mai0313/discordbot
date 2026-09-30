@@ -279,7 +279,7 @@ class ResearchCogs(commands.Cog):
                 await anchor.delete()
             await interaction.edit_original_message(content=ERROR_REPLY)
 
-    async def _start_for(
+    async def _start_for(  # noqa: PLR0911 -- one early outcome per way a launch stops short
         self, *, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims the owner's slot, opens the thread, and spawns the research.
@@ -291,7 +291,18 @@ class ResearchCogs(commands.Cog):
         if anchor.guild is None or not isinstance(anchor.channel, TextChannel):
             return "unsupported", None
         async with self._owner_locks.hold(key=owner_id):
-            existing = await db.active_thread_for_owner(owner_id=owner_id)
+            try:
+                existing = await db.active_thread_for_owner(owner_id=owner_id)
+            except Exception as exc:
+                # Broad: every store failure ends the launch the same way, as an answered error.
+                logfire.error(
+                    "failed to read the owner's research slot",
+                    message_id=anchor.id,
+                    owner_id=owner_id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+                return "error", None
             if existing is not None:
                 return "exists", existing
             name = await self._generate_thread_name(brief=brief)
@@ -320,17 +331,49 @@ class ResearchCogs(commands.Cog):
                 )
                 return "error", None
             agent = self.runtime_models.antigravity_model.name
-            await db.upsert_session(
-                thread_id=thread.id,
-                owner_id=owner_id,
-                channel_id=anchor.channel.id,
-                guild_id=anchor.guild.id,
-                source_message_id=anchor.id,
-                agent=agent,
-                interaction_id=None,
-                brief=brief,
-                phase="researching",
-            )
+            try:
+                await db.upsert_session(
+                    thread_id=thread.id,
+                    owner_id=owner_id,
+                    channel_id=anchor.channel.id,
+                    guild_id=anchor.guild.id,
+                    source_message_id=anchor.id,
+                    agent=agent,
+                    interaction_id=None,
+                    brief=brief,
+                    phase="researching",
+                )
+            except Exception as exc:
+                # Broad, as above. A thread with no row is never run, so the one just opened is
+                # withdrawn.
+                logfire.error(
+                    "failed to record research session",
+                    message_id=anchor.id,
+                    owner_id=owner_id,
+                    thread_id=thread.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+                try:
+                    await thread.delete()
+                except Forbidden:
+                    # Deleting a thread takes Manage Threads, which a launch never requires, so
+                    # the ids are the whole finding.
+                    logfire.warn(
+                        "research thread of a failed launch could not be deleted",
+                        thread_id=thread.id,
+                        owner_id=owner_id,
+                    )
+                except Exception as delete_error:
+                    # Broad: the launch has already failed, and any failure leaves the thread.
+                    logfire.warn(
+                        "failed to delete the research thread of a failed launch",
+                        thread_id=thread.id,
+                        owner_id=owner_id,
+                        error_type=type(delete_error).__name__,
+                        _exc_info=delete_error,
+                    )
+                return "error", None
             self._active_threads.add(thread.id)
         # Mark the source message so the deep-research activation is visually distinct from the
         # normal QA pipeline reactions (best-effort).

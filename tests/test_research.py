@@ -5,10 +5,12 @@ import base64
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nextcord import File, Embed, Thread, Permissions, TextChannel, AllowedMentions
+from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.research import cog as research_cog
@@ -1272,6 +1274,7 @@ class _RunThread:
         self.error = error
         self.status_posts = status_posts
         self.sends = 0
+        self.deleted = False
 
     async def send(self, **kwargs: object) -> _RunStatus:
         """Records a post and answers with the message it created, as Discord does."""
@@ -1280,6 +1283,12 @@ class _RunThread:
             raise self.error
         self.writes.append(kwargs)
         return _RunStatus(thread=self)
+
+    async def delete(self) -> None:
+        """Records the thread's deletion, or fails it the way every later write fails."""
+        if self.error is not None:
+            raise self.error
+        self.deleted = True
 
 
 class _ThreadBot:
@@ -1428,6 +1437,73 @@ async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner
 
     await _assert_owner_released(cog=cog, phase="failed")
     assert thread.writes[-1]["content"] == "-# Research failed (Antigravity)"
+
+
+def _lock_reply_db(
+    *, monkeypatch: pytest.MonkeyPatch, call: str
+) -> list[tuple[str, dict[str, object]]]:
+    """Makes one research store call fail the way a locked `reply.db` does; returns the errors."""
+
+    async def _locked(**_kwargs: object) -> None:
+        raise OperationalError("research", None, sqlite3.OperationalError("database is locked"))
+
+    monkeypatch.setattr(target=rdb, name=call, value=_locked)
+    return _recorded(monkeypatch=monkeypatch, level="error")
+
+
+@pytest.mark.parametrize("call", ["active_thread_for_owner", "upsert_session"])
+async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    errors = _lock_reply_db(monkeypatch=monkeypatch, call=call)
+    channel = _text_channel()
+    thread = _RunThread()
+    anchor = _Anchor(channel=channel, thread=thread)
+    channel.send = AsyncMock(return_value=anchor)
+    interaction = _ResearchInteraction(channel=channel)
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace())
+
+    await cog.deep_research(as_interaction(fake=interaction), topic="topic")
+
+    assert [edit.get("content") for edit in interaction.edits] == ["開研究串失敗了,等等再試一次"]
+    assert anchor.deleted is True
+    # Only the upsert comes after the thread is opened, and a thread with no row is not a run.
+    assert thread.deleted is (call == "upsert_session")
+    assert thread.writes == []
+    assert cog._active_threads == set()
+    assert not cog._tasks
+    assert len(errors) == 1
+    assert errors[0][1].get("_exc_info") is not None
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["deleted", "delete_refused"])
+async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fails(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    _lock_reply_db(monkeypatch=monkeypatch, call="upsert_session")
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    thread = _RunThread(error=make_forbidden(message="Missing Permissions") if refused else None)
+    anchor = _Anchor(channel=_text_channel(), thread=thread)
+    cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace())
+
+    await cog.launch(message=as_message(fake=anchor), brief="b")
+
+    assert [reply.get("content") for reply in anchor.replies] == ["開研究串失敗了,等等再試一次"]
+    assert thread.deleted is not refused
+    # The marker's anchor is the reply that promised the run, so it stays.
+    assert anchor.deleted is False
+    assert cog._active_threads == set()
+    # A launch never asks for the Manage Threads a delete takes, so a refusal logs the ids alone.
+    assert warns == (
+        [
+            (
+                "research thread of a failed launch could not be deleted",
+                {"thread_id": _THREAD_ID, "owner_id": _OWNER_ID},
+            )
+        ]
+        if refused
+        else []
+    )
 
 
 @pytest.mark.parametrize("stored_id", [True, False], ids=["resume_fails", "no_stored_id"])
