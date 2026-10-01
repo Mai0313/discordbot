@@ -6,7 +6,7 @@ from scripts import modify_balance as modify_balance_script
 from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
 from discordbot.services.economy.database import get_account, adjust_balance
 
-from tests.helpers.economy import seed_balance
+from tests.helpers.economy import seed_balance, hide_from_leaderboard
 
 
 def test_parse_args_accepts_all_target() -> None:
@@ -18,16 +18,16 @@ def test_parse_args_accepts_all_target() -> None:
 
 
 async def test_modify_all_balances_updates_existing_accounts_only() -> None:
-    """Bulk adjustment updates only accounts already present in the DB."""
+    """Bulk adjustment updates every account already in the DB, one hidden from the boards too."""
     await seed_balance(user_id=1, name="alice", amount=100)
     await seed_balance(user_id=2, name="bob", amount=200)
+    await hide_from_leaderboard(user_id=2)
 
     result = await modify_balance_script.modify_all_balances(delta=50_000)
 
     assert len(result.changes) == 2
     assert result.applied_delta == 100_000
     assert all(not change.created for change in result.changes)
-    assert await get_account(user_id=3) is None
 
     alice = await get_account(user_id=1)
     bob = await get_account(user_id=2)
@@ -37,16 +37,36 @@ async def test_modify_all_balances_updates_existing_accounts_only() -> None:
     assert bob.balance == 50_200
 
 
-async def test_modify_balance_reports_actual_adjustment_after_stale_read(
+@pytest.mark.parametrize(
+    argnames=("account", "adjustment", "expected_name", "expected"),
+    argvalues=[
+        (
+            AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0),
+            BalanceAdjustmentResult(new_balance=0, applied_delta=-25),
+            "alice",
+            (25, -25, 0),
+        ),
+        (None, BalanceAdjustmentResult(new_balance=20, applied_delta=-80), "1", (100, -80, 20)),
+    ],
+    ids=["stale-account", "missing-account"],
+)
+async def test_modify_balance_reports_the_adjustment_not_the_stale_read(
     monkeypatch: pytest.MonkeyPatch,
+    account: AccountSnapshot | None,
+    adjustment: BalanceAdjustmentResult,
+    expected_name: str,
+    expected: tuple[int, int, int],
 ) -> None:
-    """The CLI summary uses the adjustment result, not the pre-read projection."""
+    """The CLI summary uses the adjustment result, not the pre-read projection.
+
+    A missing account still goes through the transactional write, since the read may be stale.
+    """
     call: dict[str, int | str | bool] = {}
 
-    async def fake_get_account(user_id: int) -> AccountSnapshot:
-        """Returns a stale pre-adjustment account snapshot."""
+    async def fake_get_account(user_id: int) -> AccountSnapshot | None:
+        """Returns the pre-adjustment read, which the write has already overtaken."""
         assert user_id == 1
-        return AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
+        return account
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool
@@ -58,20 +78,19 @@ async def test_modify_balance_reports_actual_adjustment_after_stale_read(
             "delta": delta,
             "allow_negative": allow_negative,
         })
-        return BalanceAdjustmentResult(new_balance=0, applied_delta=-25)
+        return adjustment
 
     monkeypatch.setattr(target=modify_balance_script, name="get_account", value=fake_get_account)
     monkeypatch.setattr(
         target=modify_balance_script, name="adjust_balance", value=fake_adjust_balance
     )
 
-    result = await modify_balance_script.modify_balance(user_id=1, name="", delta=-80)
+    result = await modify_balance_script.modify_balance(user_id=1, name="", delta=-100)
 
-    assert call == {"user_id": 1, "name": "alice", "delta": -80, "allow_negative": False}
-    assert result.before == 25
-    assert result.requested_delta == -80
-    assert result.applied_delta == -25
-    assert result.after == 0
+    assert call == {"user_id": 1, "name": expected_name, "delta": -100, "allow_negative": False}
+    assert (result.before, result.applied_delta, result.after) == expected
+    assert result.requested_delta == -100
+    assert result.created is False
 
 
 async def test_modify_balance_missing_user_negative_noops_without_creating() -> None:
@@ -83,43 +102,6 @@ async def test_modify_balance_missing_user_negative_noops_without_creating() -> 
     assert result.after == 0
     assert result.created is False
     assert await get_account(user_id=3) is None
-
-
-async def test_modify_balance_missing_user_negative_delegates_to_database(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Missing-user negative writes still go through the transactional API."""
-    call: dict[str, int | str | bool] = {}
-
-    async def fake_get_account(user_id: int) -> AccountSnapshot | None:
-        """Returns no account for the requested user."""
-        assert user_id == 3
-        return None
-
-    async def fake_adjust_balance(
-        user_id: int, name: str, delta: int, allow_negative: bool
-    ) -> BalanceAdjustmentResult:
-        """Records that the missing-user write still reaches the DB facade."""
-        call.update({
-            "user_id": user_id,
-            "name": name,
-            "delta": delta,
-            "allow_negative": allow_negative,
-        })
-        return BalanceAdjustmentResult(new_balance=20, applied_delta=-80)
-
-    monkeypatch.setattr(target=modify_balance_script, name="get_account", value=fake_get_account)
-    monkeypatch.setattr(
-        target=modify_balance_script, name="adjust_balance", value=fake_adjust_balance
-    )
-
-    result = await modify_balance_script.modify_balance(user_id=3, name="", delta=-100)
-
-    assert call == {"user_id": 3, "name": "3", "delta": -100, "allow_negative": False}
-    assert result.before == 100
-    assert result.applied_delta == -80
-    assert result.after == 20
-    assert result.created is False
 
 
 @pytest.mark.parametrize(

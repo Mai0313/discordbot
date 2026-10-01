@@ -22,7 +22,7 @@ from discordbot.cogs.economy.boards import (
 def _empty_board_cache() -> Iterator[None]:
     """Starts every test from an empty process-local board cache.
 
-    Nothing clears it in production any more, so a leftover entry from a previous
+    Nothing clears it in production, so a leftover entry from a previous
     test would otherwise be indistinguishable from one this test's own eviction
     was supposed to remove.
     """

@@ -135,7 +135,7 @@ async def test_guild_avatar_url_fetches_member_when_cache_misses() -> None:
 
 
 async def test_guild_avatar_url_falls_back_to_global_avatar() -> None:
-    """Missing guild avatars and missing members fall back to the global avatar."""
+    """A member the guild cannot find falls back to the global avatar."""
     guild = FakeGuild(cached_member=None, fetched_member=None)
 
     avatar_url = await guild_avatar_url(
@@ -145,3 +145,16 @@ async def test_guild_avatar_url_falls_back_to_global_avatar() -> None:
 
     assert avatar_url == "https://cdn.test/global.png"
     assert guild.fetch_count == 1
+
+
+async def test_a_member_without_a_guild_avatar_falls_back_to_global_avatar() -> None:
+    """A member the guild knows but who set no server avatar shows the global one."""
+    guild = FakeGuild(cached_member=FakeMember(guild_avatar_url=None), fetched_member=None)
+
+    avatar_url = await guild_avatar_url(
+        user=as_avatar_user(fake=FakeUser(avatar_url="https://cdn.test/global.png")),
+        guild=as_guild(fake=guild),
+    )
+
+    assert avatar_url == "https://cdn.test/global.png"
+    assert guild.fetch_count == 0

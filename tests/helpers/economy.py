@@ -4,14 +4,22 @@ from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import select, update
 
 from discordbot.utils.timezone import as_taipei, database_now
+from discordbot.typings.economy import LoanContractView, LoanProposalAcceptResult
 from discordbot.services.economy.database import (
     UserAccount,
     CasinoAccount,
     open_session,
     adjust_balance,
     _taipei_midnight,
+    accept_loan_proposal,
     get_jackpot_snapshot,
+    record_guild_participant,
+    create_personal_loan_request,
 )
+
+# The guild central-bank tests lend in. Only its participants' balances back its pool, and a
+# forced collection there reaches only a participant.
+LENDING_GUILD = 555
 
 
 class CasinoDailyStats(BaseModel):
@@ -37,6 +45,51 @@ async def seed_balance(user_id: int, name: str, amount: int, avatar_url: str = "
     """
     result = await adjust_balance(user_id=user_id, name=name, delta=amount, avatar_url=avatar_url)
     return result.new_balance
+
+
+async def seed_participant(
+    user_id: int, name: str, amount: int, guild_id: int = LENDING_GUILD
+) -> int:
+    """Seeds a balance and records the user as taking part in `guild_id`."""
+    balance = await seed_balance(user_id=user_id, name=name, amount=amount)
+    await record_guild_participant(guild_id=guild_id, user_id=user_id)
+    return balance
+
+
+async def approve_as_admin(
+    proposal_id: int, actor_id: int, name: str, allow_self_approval: bool = False
+) -> LoanProposalAcceptResult | None:
+    """Approves a central-bank proposal as a server administrator of `LENDING_GUILD`."""
+    return await accept_loan_proposal(
+        proposal_id=proposal_id,
+        actor_id=actor_id,
+        actor_name=name,
+        approver_is_guild_admin=True,
+        guild_id=LENDING_GUILD,
+        allow_central_bank_self_approval=allow_self_approval,
+    )
+
+
+async def open_personal_loan(
+    borrower_id: int, borrower_name: str, lender_id: int, lender_name: str, amount: int
+) -> LoanContractView:
+    """Opens a personal loan at the default rate, accepted by the lender, and returns its contract.
+
+    The lender must already hold `amount`.
+    """
+    proposal = await create_personal_loan_request(
+        borrower_id=borrower_id,
+        borrower_name=borrower_name,
+        lender_id=lender_id,
+        lender_name=lender_name,
+        amount=amount,
+    )
+    assert proposal is not None
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=lender_id, actor_name=lender_name
+    )
+    assert accepted is not None
+    return accepted.contract
 
 
 async def hide_from_leaderboard(user_id: int) -> None:
