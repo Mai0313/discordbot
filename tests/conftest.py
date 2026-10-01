@@ -195,6 +195,18 @@ def file_api_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def media_hosting_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turns media hosting off for every planner a cog builds from the environment.
+
+    Autouse because such a planner reads `.env`, and on a deployment's checkout that names the
+    live serve directory: an oversize item a test delivered through it would be published there
+    without the test noticing. A test about hosting builds its own config through
+    `make_media_hosting_config`, which reads nothing from the environment.
+    """
+    monkeypatch.setenv(name="MEDIA_HOSTING_ENABLED", value="false")
+
+
+@pytest.fixture(autouse=True)
 def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Points the LiteLLM price-table mirror at a throwaway file.
 
