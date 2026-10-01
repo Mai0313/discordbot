@@ -4340,6 +4340,44 @@ async def test_a_latin_roster_name_typed_against_chinese_still_locks() -> None:
     assert [observation.sharing for observation in draft.observations] == ["source_only"]
 
 
+async def test_the_bot_stays_out_of_the_roster_when_its_reply_carried_an_attachment() -> None:
+    """A bot reply with an attachment renders behind an author prefix like anyone's.
+
+    The bot is no third party, so a fact about how the user uses it keeps its `global`,
+    while a real participant in the same transcript still locks.
+    """
+    bot_user_id = 999
+    fake_client = FakeMemoryClient()
+    writer = MemoryWriterAI(
+        client=cast("AsyncOpenAI", fake_client), model=TEST_MEMORY_MODEL, bot_user_id=bot_user_id
+    )
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者常請破貓幫忙畫圖",
+                normalized_key="pattern.drawing",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                sharing="global",
+            ),
+            _observation(
+                summary="使用者常跟小美一起打遊戲",
+                normalized_key="pattern.duo",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                sharing="global",
+            ),
+        ),
+    )
+    transcript = f"{_ROSTER_TRANSCRIPT}\n[message 3 | user]\n  破貓 (破貓) [id: {bot_user_id}]: 這是你要的圖\n"
+    draft = await _evaluate(writer=writer, transcript=transcript)
+    assert draft is not None
+    assert {
+        observation.normalized_key: observation.sharing for observation in draft.observations
+    } == {"pattern.drawing": "global", "pattern.duo": "source_only"}
+
+
 @pytest.mark.usefixtures("memory_isolated_dir")
 async def test_a_restated_fact_is_confirmed_again_when_consolidation_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,

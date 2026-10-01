@@ -4703,6 +4703,13 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
     assert logged == ["gemini Files API key missing; dropping attachment"]
 
 
+def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:
+    """The note review leaves the bot out of the sharing gate's roster only if it knows its id."""
+    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
+    assert toolkit.memory_writer.bot_user_id == 999
+
+
 async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
     """A response without an expiry still bounds the render cache by the requested TTL."""
     renderer = _fake_grok_uploader(files=FakeXAIFiles(expires_at=None))

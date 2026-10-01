@@ -170,8 +170,10 @@ class ReplyToolkit(BaseModel):
         """The memory writing service, for a user scope and a server scope alike.
 
         Returns:
-            A writer bound to the proxy client and the memory deployments.
+            A writer bound to the proxy client, the memory deployments and the bot's own id.
         """
         return MemoryWriterAI(
-            client=self.openai_client, model=self.runtime_models.memory_writer_model
+            client=self.openai_client,
+            model=self.runtime_models.memory_writer_model,
+            bot_user_id=self.bot.user.id if self.bot.user is not None else None,
         )

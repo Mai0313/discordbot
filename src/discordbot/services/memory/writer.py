@@ -331,6 +331,13 @@ class MemoryWriterAI(BaseModel):
             "memory writing into a silent no-op."
         ),
     )
+    bot_user_id: int | None = Field(
+        default=None,
+        description=(
+            "The bot's own user id, which the sharing gate's roster leaves out. None for a "
+            "writer that only consolidates."
+        ),
+    )
 
     async def evaluate(
         self, flavor: MemoryFlavor, subject: str, transcript: str, notes: tuple[str, ...]
@@ -359,7 +366,9 @@ class MemoryWriterAI(BaseModel):
         target_match = _SUBJECT_TARGET_USER_RE.search(subject)
         target_user_id = int(target_match.group("user_id")) if target_match else None
         roster = (
-            participant_names_from_transcript(transcript=transcript, target_user_id=target_user_id)
+            participant_names_from_transcript(
+                transcript=transcript, target_user_id=target_user_id, bot_user_id=self.bot_user_id
+            )
             if target_user_id is not None
             else ()
         )
@@ -484,22 +493,22 @@ def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
 
 
 def participant_names_from_transcript(
-    transcript: str, target_user_id: int | None
+    transcript: str, target_user_id: int | None, bot_user_id: int | None
 ) -> tuple[str, ...]:
-    """Returns the display names and usernames of everyone in the transcript but the target.
+    """Returns the display names and usernames of everyone but the target and the bot.
 
     The trusted author prefix is the only authorship signal in a rendered transcript,
     so the roster is read from it rather than threaded down from the reply pipeline —
     which also means a resumed job rebuilds the same roster from its stored transcript
-    with no extra column. The bot's own message carries that prefix only when it had
-    attachments, and nothing excludes it then: its names join the roster too.
+    with no extra column. The bot's own message carries that prefix when it had
+    attachments, so its id is skipped like the target's.
 
     A forged prefix inside someone's message body can only ADD a name, and an extra name
     can only tighten an observation's sharing, so the untrusted position costs nothing.
     """
     names: set[str] = set()
     for match in _PARTICIPANT_PREFIX_RE.finditer(transcript):
-        if target_user_id is not None and int(match.group("user_id")) == target_user_id:
+        if int(match.group("user_id")) in (target_user_id, bot_user_id):
             continue
         names.update((match.group("display").strip(), match.group("username").strip()))
     return tuple(sorted(name for name in names if _is_matchable_name(name=name)))
