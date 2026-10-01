@@ -295,6 +295,20 @@ class ResearchCogs(commands.Cog):
                 content=_launch_reply(outcome="forbidden", thread_id=None)
             )
             return
+        # Broad: whatever else stops the anchor, the requester still waits on this deferral, and
+        # the command error handler only logs.
+        except Exception as exc:
+            logfire.error(
+                "failed to post the deep research anchor",
+                channel_id=interaction.channel.id,
+                owner_id=interaction.user.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            await interaction.edit_original_message(
+                content=_launch_reply(outcome="error", thread_id=None)
+            )
+            return
         outcome, thread_id = await self._start_for(
             owner_id=interaction.user.id, brief=topic, anchor=anchor
         )
