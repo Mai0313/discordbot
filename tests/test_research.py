@@ -1380,7 +1380,7 @@ async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
 
 
 class _RefusingThread(_FakeThread):
-    """A research thread whose overwrites changed under the run, so every send is refused."""
+    """A research thread whose parent channel stopped letting the bot write mid-run."""
 
     async def send(self, **kwargs: object) -> None:
         """Refuses the way Discord refuses a thread the bot may no longer write in."""

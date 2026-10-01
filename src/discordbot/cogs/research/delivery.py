@@ -189,7 +189,8 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
                 await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
         except Forbidden:
-            # The thread's overwrites changed under the run; the ids are the whole finding.
+            # The bot's permissions in the parent channel, which the thread inherits, changed
+            # under the run; the ids are the whole finding.
             logfire.warn(
                 "research thread refused the report edit",
                 thread_id=thread.id,
