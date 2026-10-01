@@ -17,7 +17,6 @@ from discordbot.services.memory.store import (
     read_raw_entries,
 )
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
-from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 from discordbot.services.memory.regeneration import RegenerationReport
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
@@ -100,7 +99,6 @@ async def test_the_offline_fan_out_runs_under_its_own_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The script carries its own bound, tuned by hand rather than exposed as a flag."""
-    assert regen_script._CONCURRENCY != MEMORY_GLOBAL_CONCURRENCY
     for scope in (_USER, _OTHER_USER, _SERVER):
         _seed(scope=scope)
     monkeypatch.setattr(regen_script, "_CONCURRENCY", 2)

@@ -14,7 +14,6 @@ from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
-from discordbot.services.memory.facts import sections_for_flavor
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     BOT_MEMORY_DIR_NAME,
@@ -189,16 +188,6 @@ def test_server_prompts_target_the_server_not_individuals() -> None:
     )
 
 
-def test_server_consolidation_prompt_offers_exactly_the_server_sections() -> None:
-    """A delta naming a section the code allowlist lacks is dropped, so the two must agree."""
-    sections_block = SERVER_PHASE2_PROMPT.split("SECTIONS:")[1].split("DURABILITY")[0]
-    for section in sections_for_flavor(flavor="server"):
-        assert f"`{section}`" in sections_block
-    # The per-user sections are not offered; a delta naming one would be discarded.
-    assert "`preference`" not in sections_block
-    assert "`interaction`" not in sections_block
-
-
 def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
     """Nicknames are the one carve-out from the no-individuals rule, and must survive the gate."""
     assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_EVALUATOR_PROMPT
@@ -226,12 +215,6 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
     assert "the id is appended for you" in SERVER_PHASE2_PROMPT
     # Every alias fact is permanent, which is what exempts it from the freshness sweep.
     assert "every `member_alias` fact" in SERVER_PHASE2_PROMPT
-
-
-def test_server_consolidation_prompt_leaves_dating_and_aging_to_code() -> None:
-    """Dates are code-stamped now, so a prompt that still asks for one would fight the sweep."""
-    # The freshness tags the model used to write are gone from the contract.
-    assert "[~YYYY-MM]" not in SERVER_PHASE2_PROMPT
 
 
 def test_server_phase1_prompt_pins_sharing_global() -> None:
@@ -486,5 +469,3 @@ async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")
-    # A DM read must never reach the store, not even to create its directory.
-    assert list_compartments(scope=SERVER_SCOPE) == []

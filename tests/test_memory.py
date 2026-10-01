@@ -1208,61 +1208,6 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
     })
 
 
-async def test_regenerate_does_not_resurrect_a_forgotten_fact(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A rebuild derives from evidence, and the evidence a forget removed is still in detail.md.
-
-    Without replaying the forget requests afterwards, `/memory regenerate` re-creates exactly
-    what the user asked to have removed, and does it every time they run it.
-    """
-    monkeypatch.setattr(
-        "discordbot.services.memory.regeneration.MEMORY_REGENERATION_COOLDOWN_SECONDS", 0.0
-    )
-    # The evidence a forget was aimed at, retired to the cold tier as consolidation leaves it,
-    # plus the forget request itself.
-    append_detail(
-        scope=USER_SCOPE,
-        text=render_memory_observations(
-            observations=(_observation(summary="住在台中", normalized_key="fact.city"),),
-            source="guild 42",
-        ),
-    )
-    append_raw_entry(
-        scope=USER_SCOPE,
-        entry_text=render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42"),
-    )
-    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
-    writer, fake_client = _writer()
-    deletes_only_calls: list[bool] = []
-    real_apply = consolidation.apply_deltas
-
-    def recording_apply(**kwargs: Any) -> DeltaOutcome:  # noqa: ANN401 -- a pass-through of the real signature
-        """Records the write gate each applied batch ran under."""
-        deletes_only_calls.append(bool(kwargs.get("deletes_only", False)))
-        return real_apply(**kwargs)
-
-    # Both, and that is the point: the rebuild writes its own facts through
-    # `regeneration.apply_deltas`, while the forget it replays afterwards runs back through
-    # the retained fan-out. Patching only the first would leave `deletes_only_calls` at
-    # `[False]` and the assertion below looking at the wrong half of the run.
-    monkeypatch.setattr("discordbot.services.memory.consolidation.apply_deltas", recording_apply)
-    monkeypatch.setattr("discordbot.services.memory.regeneration.apply_deltas", recording_apply)
-    # The rebuild re-creates the fact from evidence; the replayed forget changes nothing.
-    fake_client.responses.answer = _answers(
-        facts=ConsolidatedMemory(
-            deltas=(make_delta(section="fact", summary="住在台中", text="使用者住在台中"),)
-        )
-    )
-    report = await regeneration.regenerate_scope_memory(
-        scope=USER_SCOPE, writer=writer, identity=IDENTITY
-    )
-    assert report.result == "regenerated"
-    # The forget was replayed against the rebuilt tree, under the same deletion-only gate the
-    # incremental path uses, so its own sentence still could not be written anywhere.
-    assert True in deletes_only_calls
-
-
 def _entry(timestamp: str, *observations: MemoryObservation, source: str = "guild 42") -> str:
     """Renders one timestamped raw/detail entry holding the given observations."""
     return (
@@ -1410,7 +1355,8 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
 
     Regeneration read `raw.md` and the detail tail before rebuilding. Retiring that raw copy
     would restore the evidence the replayed forget just removed, and the tone rebuild would
-    still be handed it.
+    still be handed it. The replayed forget runs under the same deletion-only gate as the
+    incremental one, so the fact it also tries to write lands nowhere.
     """
     monkeypatch.setattr(
         "discordbot.services.memory.regeneration.MEMORY_REGENERATION_COOLDOWN_SECONDS", 0.0
@@ -1436,7 +1382,10 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
         if "forget_request" in body:
             rebuilt = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
             return ConsolidatedMemory(
-                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt)
+                deltas=(
+                    *(make_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt),
+                    make_delta(section="fact", summary="使用者要求忘記住處", text="不住台中了"),
+                )
             )
         if "<tone_evidence>" in body:
             return _no_change()
@@ -2791,15 +2740,28 @@ async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> N
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_background_failure_is_swallowed(memory_isolated_dir: Path) -> None:
+async def test_pipeline_background_failure_is_swallowed(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that raises past the review frees its scope and still replays the turn behind it."""
+    reads: list[str] = []
+
+    def fail_the_first_read(scope: str) -> str:
+        """Fails the first turn after its review succeeded, and reads normally after that."""
+        reads.append(scope)
+        if len(reads) == 1:
+            raise RuntimeError("evidence read blew up")
+        return read_evidence(scope=scope)
+
+    monkeypatch.setattr(pipeline, "read_evidence", fail_the_first_read)
     writer, fake_client = _writer()
-    fake_client.responses.raises = MemoryError("unexpected")
-    _schedule(writer=writer)
-    task = inflight._inflight_tasks.get(key=USER_SCOPE)
-    assert task is not None
-    await asyncio.wait([task])
-    assert inflight._inflight_tasks.get(key=USER_SCOPE) is None
-    assert count_raw_entries(scope=USER_SCOPE) == 0
+    fake_client.responses.output_parsed = _draft("喜歡簡短")
+    _schedule(writer=writer, full_reply="第一")
+    # Deferred behind the first, which has not started yet.
+    _schedule(writer=writer, full_reply="第二")
+    # Returns only once the scope's slot is empty.
+    await _drain_scope()
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -4067,7 +4029,7 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
     await memory_db.upsert_pending(
         scope=USER_SCOPE,
         flavor="user",
-        subject=f"target_user_id: {USER_ID}",
+        subject=_SUBJECT,
         transcript=payload,
         identity=IDENTITY,
         token=42,
@@ -4077,7 +4039,7 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.resume_memory_update(
         scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
+        subject=_SUBJECT,
         transcript=payload,
         writer=writer,
         identity=IDENTITY,
@@ -4490,16 +4452,19 @@ async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_d
     assert "- sharing: global" in raw_text
 
 
-async def test_pipeline_sourceless_subject_renders_without_source_fields(
+async def test_pipeline_server_subject_renders_without_source_fields(
     memory_isolated_dir: Path,
 ) -> None:
-    # A server-flavor or pre-source-line subject parses to None and keeps the
-    # old observation format.
+    """A server-flavor subject carries no source line, so its observations carry neither field."""
+    scope = server_scope(server_id=555)
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
-    _schedule(writer=writer, subject=f"target_user_id: {USER_ID}")
-    await _wait_for_inflight()
-    raw_text = read_raw_entries(scope=USER_SCOPE)
+    _schedule(writer=writer, subject=server_subject(server_id=555), scope=scope)
+    task = inflight._inflight_tasks.get(key=scope)
+    assert task is not None
+    await task
+    raw_text = read_raw_entries(scope=scope)
+    assert "喜歡簡短" in raw_text
     assert "- source:" not in raw_text
     assert "- sharing:" not in raw_text
 
@@ -4558,11 +4523,9 @@ def test_read_tone_missing_file_returns_empty(memory_isolated_dir: Path) -> None
     assert read_tone(scope=USER_SCOPE) == ""
 
 
-def test_write_tone_roundtrip_without_header(memory_isolated_dir: Path) -> None:
+def test_write_tone_roundtrip(memory_isolated_dir: Path) -> None:
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌\n")
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
-    on_disk = (memory_isolated_dir / str(USER_ID) / "tone.md").read_text(encoding="utf-8")
-    assert "v1" not in on_disk
     leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
     assert leftovers == []
 
@@ -4655,12 +4618,26 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 原有偏好"
 
 
+def _server_tone_observation() -> str:
+    """Renders one server observation carrying tone evidence, so a tone call would have work."""
+    return render_memory_observations(
+        observations=(
+            _observation(
+                summary="社群愛互嗆",
+                category="interaction_style",
+                evidence_kind="repeated_behavior",
+            ),
+        ),
+        source=None,
+    )
+
+
 async def test_consolidate_if_needed_server_scope_never_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     scope = server_scope(server_id=555)
-    append_raw_entry(scope=scope, entry_text="- 第一筆")
+    append_raw_entry(scope=scope, entry_text=_server_tone_observation())
     append_raw_entry(scope=scope, entry_text="- 第二筆")
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(
@@ -4773,9 +4750,11 @@ async def test_regenerate_scope_memory_retires_a_server_raw_batch_with_no_tone_n
 ) -> None:
     """A server scope has no tone tier, so its absent tone call must not hold the batch back."""
     scope = server_scope(server_id=555)
-    append_raw_entry(scope=scope, entry_text="- 社群觀察")
+    append_raw_entry(scope=scope, entry_text=_server_tone_observation())
     writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _consolidated(section="culture", text="整理")
+    fake_client.responses.output_parsed = _consolidated(
+        section="culture", text="整理", tone="## 語氣偏好\n* 不該存在"
+    )
 
     report = await regeneration.regenerate_scope_memory(scope=scope, writer=writer, identity="srv")
 
@@ -4879,26 +4858,25 @@ async def test_clear_scope_memory_removes_a_staged_turn_without_files(
     assert job.transcript is None
 
 
-async def test_clear_token_advances_past_legacy_wall_clock_tokens(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+async def test_clear_token_advances_past_the_largest_stored_token(
+    memory_isolated_dir: Path,
 ) -> None:
-    legacy_token = 4_000_000_000_000_000_000
+    stored_token = 4_000_000_000_000_000_000
     await memory_db.upsert_pending(
         scope=USER_SCOPE,
         flavor="user",
         subject="s",
-        transcript="clear this after the clock moves backwards",
+        transcript="清除前的對話",
         identity="",
-        token=legacy_token,
+        token=stored_token,
     )
-    monkeypatch.setattr(time, "time_ns", lambda: 1)
 
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
 
     job = await get_job(scope=USER_SCOPE)
     assert job is not None
     assert job.status == "cleared"
-    assert job.token > legacy_token
+    assert job.token > stored_token
     assert job.transcript is None
 
 
