@@ -9,7 +9,13 @@ from typing import Final, Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.games import Card, BotAction, SettleOutcome, GameParticipant
+from discordbot.typings.games import (
+    Card,
+    BotAction,
+    SettleOutcome,
+    GameParticipant,
+    BlackjackDealerStep,
+)
 from discordbot.typings.economy import MAX_SINGLE_BET
 
 RoundPhase = Literal["insurance", "player_actions", "settled"]
@@ -819,12 +825,46 @@ class BlackjackRound(BaseModel):
         self.dealer_played = True
         self.phase = "settled"
 
-    def _find_player(self, user_id: int) -> BlackjackPlayerHand:
-        """Returns the player by user_id or raises when unknown."""
+    def play_dealer(self) -> list[BlackjackDealerStep]:
+        """Draws for the dealer under H17 rules, then closes the dealer phase.
+
+        Returns:
+            Each hit in draw order, then a stand unless the dealer bust. Empty, with the round
+            left as it was, when the dealer already played or no hand needs it to.
+        """
+        if self.dealer_played or not self.needs_dealer_play():
+            return []
+        steps: list[BlackjackDealerStep] = []
+        while dealer_must_hit(cards=self.dealer):
+            total_before = self.dealer_total()
+            drawn_card = self.draw_dealer_card()
+            steps.append(
+                BlackjackDealerStep(
+                    total_before=total_before,
+                    action="hit",
+                    drawn_card=drawn_card,
+                    total_after=self.dealer_total(),
+                )
+            )
+        final_total = self.dealer_total()
+        if final_total <= 21:
+            steps.append(BlackjackDealerStep(total_before=final_total, action="stand"))
+        self.mark_dealer_played()
+        return steps
+
+    def find_player(self, user_id: int) -> BlackjackPlayerHand | None:
+        """Returns the seat `user_id` holds at this table, or None when they hold none."""
         for player in self.players:
             if player.participant.user_id == user_id:
                 return player
-        raise ValueError("Unknown user for this round")
+        return None
+
+    def _find_player(self, user_id: int) -> BlackjackPlayerHand:
+        """Returns the player by user_id or raises when unknown."""
+        player = self.find_player(user_id=user_id)
+        if player is None:
+            raise ValueError("Unknown user for this round")
+        return player
 
     def _require_active(self, user_id: int) -> tuple[BlackjackPlayerHand, BlackjackHandState]:
         """Returns the active (player, hand) tuple or raises when not turn."""

@@ -312,7 +312,7 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
     ]
 
 
-async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
+def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
     """Dealer hits ≤16 and stands on a hard 17 under H17 rules."""
     round_state = _round_with_two_cards(
         player_cards=[card(rank="10"), card(rank="9", suit="♥")],
@@ -320,16 +320,15 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
     )
     round_state.players[0].hands[0].finished = True
     round_state.shoe = [card(rank="6")]
-    view = _make_view(round_state=round_state)
 
-    await view._play_dealer_locked()
+    steps = round_state.play_dealer()
 
     assert round_state.dealer_played is True
-    first_step = view._dealer_steps[0]
+    first_step = steps[0]
     assert first_step.action == "hit"
     assert first_step.total_before == 11
     assert first_step.total_after == 17
-    final_step = view._dealer_steps[-1]
+    final_step = steps[-1]
     assert final_step.action == "stand"
     assert final_step.total_before == 17
 
@@ -341,26 +340,23 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
         ([card(rank="K", suit="♣"), card(rank="8", suit="♦")], 18),
     ],
 )
-async def test_play_dealer_stands_on_hard_17_plus(
-    dealer_cards: list[Card], expected_total: int
-) -> None:
+def test_play_dealer_stands_on_hard_17_plus(dealer_cards: list[Card], expected_total: int) -> None:
     """Dealer stands deterministically on any hard 17+ total."""
     round_state = _round_with_two_cards(
         player_cards=[card(rank="10"), card(rank="9", suit="♥")], dealer_cards=dealer_cards
     )
     round_state.players[0].hands[0].finished = True
-    view = _make_view(round_state=round_state)
 
-    await view._play_dealer_locked()
+    steps = round_state.play_dealer()
 
     assert round_state.dealer_played is True
     assert round_state.dealer_total() == expected_total
-    step = view._dealer_steps[-1]
+    step = steps[-1]
     assert step.action == "stand"
     assert step.total_before == expected_total
 
 
-async def test_play_dealer_hits_soft_17() -> None:
+def test_play_dealer_hits_soft_17() -> None:
     """Dealer hits soft 17 (H17 rule) instead of standing."""
     round_state = _round_with_two_cards(
         player_cards=[card(rank="10"), card(rank="9", suit="♥")],
@@ -368,20 +364,19 @@ async def test_play_dealer_hits_soft_17() -> None:
     )
     round_state.players[0].hands[0].finished = True
     round_state.shoe = [card(rank="3")]
-    view = _make_view(round_state=round_state)
 
-    await view._play_dealer_locked()
+    steps = round_state.play_dealer()
 
     assert [str(card) for card in round_state.dealer] == ["A♣", "6♦", "3♠"]
-    first_step = view._dealer_steps[0]
+    first_step = steps[0]
     assert first_step.action == "hit"
     assert first_step.total_before == 17
-    final_step = view._dealer_steps[-1]
+    final_step = steps[-1]
     assert final_step.action == "stand"
     assert final_step.total_before == 20
 
 
-async def test_play_dealer_records_nothing_after_a_bust() -> None:
+def test_play_dealer_records_nothing_after_a_bust() -> None:
     """A dealer that busts shows the hit that did it and no stand after it."""
     round_state = _round_with_two_cards(
         player_cards=[card(rank="10"), card(rank="9", suit="♥")],
@@ -389,12 +384,11 @@ async def test_play_dealer_records_nothing_after_a_bust() -> None:
     )
     round_state.players[0].hands[0].finished = True
     round_state.shoe = [card(rank="K")]
-    view = _make_view(round_state=round_state)
 
-    await view._play_dealer_locked()
+    steps = round_state.play_dealer()
 
     assert round_state.dealer_played is True
-    path = blackjack_views._format_dealer_decision_path(steps=view._dealer_steps)
+    path = blackjack_views._format_dealer_decision_path(steps=steps)
     assert path == "規則: 16 hit 抽 K♠ → 26"
 
 
