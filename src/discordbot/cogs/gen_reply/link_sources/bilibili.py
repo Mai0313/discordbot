@@ -24,14 +24,12 @@ semaphore only bounds concurrent multi-hundred-MB downloads on the host.
 """
 
 import asyncio
-import tempfile
 
 from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
@@ -42,16 +40,13 @@ from discordbot.services.platforms.ytdlp import (
     VideoDownloader,
     download_with_stop_signal,
 )
-from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
+from discordbot.cogs.gen_reply.link_sources import (
+    AI_INGEST_QUALITY,
+    system_block,
+    link_context_blocks,
+)
 from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
-
-# Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
-# Same rationale as the Douyin builder's: the model samples frames at its own media
-# resolution, so extra source pixels buy it nothing while costing real download and upload
-# time on the reply's critical path — and Bilibili is long-form, so bytes scale with duration
-# first (anonymous access mostly tops out around 480p regardless).
-AI_INGEST_QUALITY: VideoQuality = "low"
 
 # Longest video worth downloading for one reply. A longer clip cannot finish the download plus
 # the Files API upload inside `LINK_MEDIA_TIMEOUT_SECONDS` anyway; failing from the metadata
@@ -203,7 +198,8 @@ async def build_bilibili_context_messages(
             # The probe is a couple of cheap page requests, so it deliberately does NOT take
             # bilibili_fetch_semaphore: a queue of multi-minute downloads holding both slots
             # must never starve the always-injected text block into the timeout notice.
-            downloader = VideoDownloader(output_folder=tempfile.gettempdir())
+            # No output folder because `parse_metadata` downloads nothing.
+            downloader = VideoDownloader(output_folder="")
             metadata = await asyncio.to_thread(downloader.parse_metadata, url=url)
         except Exception as error:
             # Broad on purpose: yt-dlp wraps deleted, private, region-locked, member-only and

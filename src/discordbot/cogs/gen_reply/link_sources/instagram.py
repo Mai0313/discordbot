@@ -24,6 +24,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS, MAX_INSTAGRAM_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
+    comment_lines,
     defuse_markers,
     build_post_context,
 )
@@ -97,12 +98,7 @@ INSTAGRAM_SEPARATORS = PostSeparators(
 def _render_conversation(
     *, post: InstagramOutput, conversation: InstagramConversation, attached_images: int
 ) -> str:
-    """Renders the post, its counters and its comments as compact text.
-
-    The comment the URL singled out is labelled rather than moved to the front: its position in
-    the thread is part of reading it, and a model told which one was linked can answer about it
-    without losing what came before.
-    """
+    """Renders the post, its counters and its comments as compact text."""
     handle = defuse_markers(text=post.author_name)
     full_name = defuse_markers(text=post.author_full_name)
     header = f"[Instagram post the user linked] @{handle}".rstrip()
@@ -128,18 +124,14 @@ def _render_conversation(
     if counters:
         lines.append(", ".join(counters))
     lines.append(post.url)
-
-    comments = conversation.comments[:MAX_INSTAGRAM_COMMENTS]
-    if comments:
-        lines.append(f"\n[{len(comments)} of the post's comments, as the page served them]")
-        for comment in comments:
-            marker = (
-                " (this is the comment the user's link points at)"
-                if comment.comment_id == conversation.selected_comment_id
-                else ""
-            )
-            author = defuse_markers(text=comment.author_name)
-            lines.append(f"- @{author}{marker}: {defuse_markers(text=comment.text)}")
+    lines.extend(
+        comment_lines(
+            conversation=conversation,
+            cap=MAX_INSTAGRAM_COMMENTS,
+            served_as="as the page served them",
+            handle_prefix="@",
+        )
+    )
     return "\n".join(lines)
 
 

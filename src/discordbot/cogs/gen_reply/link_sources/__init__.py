@@ -17,8 +17,9 @@ those platforms are the rate-limit sensitive ones.
 `registry.py` holds the instances and says why each entry's `build` is an adapter rather than the
 builder itself.
 
-What the builders share lives here too: the block shapes, the marker defusing, and
-`build_post_context`, the one read-render-upload flow the conversation-shaped post sources run.
+What the builders share lives here too: the block shapes, the marker defusing, the comment lines,
+the clip quality, and `build_post_context`, the read-render-upload flow every conversation-shaped
+post source runs except Threads, whose media step splits one budget across two posts.
 """
 
 import re
@@ -34,10 +35,23 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
-from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
+from discordbot.services.platforms.base import (
+    PlatformOutput,
+    LinkableComments,
+    PlatformConversation,
+    LinkableCommentOutput,
+)
 from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
+
+# Resolution asked for a clip the model reads: the lowest preset. The model samples frames at its
+# own media resolution, so extra source pixels buy it nothing while costing download and upload
+# time on the reply's critical path, which on long-form video scales with duration first (and
+# anonymous Bilibili access mostly tops out around 480p regardless). Deliberately below what the
+# bot asks for a clip it posts to Discord, where a human watching does notice.
+AI_INGEST_QUALITY: VideoQuality = "low"
 
 
 def system_block(*, text: str) -> EasyInputMessageParam:
@@ -237,13 +251,46 @@ def defuse_markers(*, text: str) -> str:
     and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
     own long-term memory, and what it can reach there survives every later conversation.
 
-    Shared by the sources that carry a DISCUSSION rather than a caption — Threads, Facebook,
-    Instagram and Twitter, each of which hands the model thousands of characters written by
-    strangers. Douyin and Bilibili do not use it: a caption or a video title is one line by its
-    own author, and `tests/test_prompt_guards.py` owns the prompt rule that covers every
-    undefused path.
+    Used by every source that hands the model posts around the linked one as well: its comments,
+    or the post it replies to or quotes. Douyin and Bilibili do not use it: a caption or a video
+    title is one line by its own author, and `tests/test_prompt_guards.py` owns the prompt rule
+    that covers every undefused path.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
+
+
+def comment_lines[OutputT: LinkableCommentOutput](
+    conversation: LinkableComments[OutputT], cap: int, served_as: str, handle_prefix: str
+) -> list[str]:
+    """Renders up to `cap` comments under a header counting them, marking the one the link named.
+
+    The named comment is labelled rather than moved to the front: its position in the thread is
+    part of reading it, and a model told which one was linked can answer about it without losing
+    what came before.
+
+    Args:
+        conversation: The post's conversation.
+        cap: How many comments ride.
+        served_as: Closes the header, saying in the source's own words how much of the
+            discussion the page served.
+        handle_prefix: Written before each author's name, e.g. `@` where names are handles.
+
+    Returns:
+        Lines to append to the rendered post, none when it has no comments.
+    """
+    comments = conversation.comments[:cap]
+    if not comments:
+        return []
+    lines = [f"\n[{len(comments)} of the post's comments, {served_as}]"]
+    for comment in comments:
+        marker = (
+            " (this is the comment the user's link points at)"
+            if comment.comment_id == conversation.selected_comment_id
+            else ""
+        )
+        author = defuse_markers(text=comment.author_name)
+        lines.append(f"- {handle_prefix}{author}{marker}: {defuse_markers(text=comment.text)}")
+    return lines
 
 
 class LinkUrlFilter(Protocol):

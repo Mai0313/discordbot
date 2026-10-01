@@ -18,14 +18,12 @@ retryable and the link is fine, while a deleted post never will be.
 """
 
 import asyncio
-import tempfile
 
 from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
@@ -40,15 +38,12 @@ from discordbot.services.platforms.douyin import (
     douyin_url_locks,
     douyin_fetch_semaphore,
 )
-from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
+from discordbot.cogs.gen_reply.link_sources import (
+    AI_INGEST_QUALITY,
+    system_block,
+    link_context_blocks,
+)
 from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
-
-# Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).
-# Deliberately below what the expansion posts to Discord: the model samples frames at its own
-# media resolution, so extra source pixels buy it nothing while costing real download and
-# upload time on the reply's critical path. A human watching the expansion does notice, which
-# is why that path still asks for the best available.
-AI_INGEST_QUALITY: VideoQuality = "low"
 
 # Leads the injected blocks when the media really is attached. The wording is load-bearing on
 # two fronts: it tells the model the link is ALREADY fetched below (so it answers about the
@@ -219,7 +214,8 @@ async def build_douyin_context_messages(
             # is bounded separately, so a slow Google round-trip never blocks another link.
             # Re-entering either here would deadlock: an asyncio.Semaphore is not reentrant.
             async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
-                downloader = DouyinDownloader(output_folder=tempfile.gettempdir())
+                # No output folder because `parse_metadata` writes nothing.
+                downloader = DouyinDownloader(output_folder="")
                 post = await asyncio.to_thread(downloader.parse_metadata, url=url)
         except DouyinBlockedError:
             logfire.warn(

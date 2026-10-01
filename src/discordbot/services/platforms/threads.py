@@ -42,9 +42,7 @@ from discordbot.services.platforms.base import (
 from discordbot.services.platforms.page_json import FetchedPage, walk, fetch_page
 from discordbot.services.platforms.file_downloads import stream_to_file
 
-# Single source of truth for detecting a Threads post URL, shared by the parse_threads
-# cog (which expands it into embeds) and gen_reply (which self-parses it into answer
-# context). Matches the two shapes that name a post on both threads.net and threads.com: the
+# Matches the two shapes that name a post on both threads.net and threads.com: the
 # canonical `@user/post/<code>`, and the `share/<code>` form the app's share button copies. Both
 # paths are anchored, so a profile or any other Threads page still matches nothing. The shortcode
 # + query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
@@ -57,7 +55,7 @@ from discordbot.services.platforms.file_downloads import stream_to_file
 # than left behind because the match is what gets echoed back to a user; giving one shape to every
 # URL this module publishes is `ThreadsURL.clean_url`'s job, not this pattern's.
 THREADS_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
     r"[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]/?"
 )
 
@@ -65,7 +63,7 @@ THREADS_URL_RE = re.compile(
 # carries a code unrelated to the post's (`DfX81RWN8` for a post whose own code is `DZZImVsCWU-`)
 # and the page's JSON never carries it, so the share form names its post only through the redirect
 # it answers with; `ThreadsURL.post_code` and `ThreadsDownloader.extract_post_data` have the rest.
-_POST_PATH_RE = re.compile(r"^/@[^/]+/post/([^/]+)/?$")
+_POST_PATH_RE = re.compile(pattern=r"^/@[^/]+/post/([^/]+)/?$")
 
 # Where a Threads fetch has to be aimed, and every spelling of the host that is aimed there.
 # Threads lives on `https://www.threads.com` and 301s everything else to it, so normalising the
@@ -258,6 +256,15 @@ class LinkedInlineMedia(MediaContainer):
     caption: Caption | None = Field(default=None, description="Linked media caption")
 
 
+def _isolate(value: object, handler: ValidatorFunctionWrapHandler, message: str) -> object | None:
+    """Validates `value`, or logs `message` and drops it to None when it fails the schema."""
+    try:
+        return handler(value)
+    except ValidationError:
+        logfire.warn(message, _exc_info=True)
+        return None
+
+
 class ShareInfo(_ThreadsModel):
     """Represents what a post quotes or reposts.
 
@@ -306,14 +313,11 @@ class ShareInfo(_ThreadsModel):
         the quote is the most disposable thing in the payload, and losing only it degrades to
         exactly the pre-quote-post behaviour.
         """
-        try:
-            return handler(value)
-        except ValidationError:
-            logfire.warn(
-                "A quoted Threads post no longer matches the parser schema; dropping just it",
-                _exc_info=True,
-            )
-            return None
+        return _isolate(
+            value=value,
+            handler=handler,
+            message="A quoted Threads post no longer matches the parser schema; dropping just it",
+        )
 
 
 class PostEdge(_ThreadsModel):
@@ -331,14 +335,11 @@ class PostEdge(_ThreadsModel):
         ancestor costs the target itself. Same isolation `_isolate_quoted_post` gives a quote,
         one level up.
         """
-        try:
-            return handler(value)
-        except ValidationError:
-            logfire.warn(
-                "A Threads post no longer matches the parser schema; dropping just it",
-                _exc_info=True,
-            )
-            return None
+        return _isolate(
+            value=value,
+            handler=handler,
+            message="A Threads post no longer matches the parser schema; dropping just it",
+        )
 
 
 class PostConnection(_ThreadsModel):
@@ -385,14 +386,11 @@ class ThreadEdge(_ThreadsModel):
         the connection, and the connection is the whole of the page's replies, so one bad branch
         would cost all of them. That is coarser than the per-branch loss this replaced.
         """
-        try:
-            return handler(value)
-        except ValidationError:
-            logfire.warn(
-                "A Threads reply branch no longer matches the parser schema; dropping just it",
-                _exc_info=True,
-            )
-            return None
+        return _isolate(
+            value=value,
+            handler=handler,
+            message="A Threads reply branch no longer matches the parser schema; dropping just it",
+        )
 
 
 class ThreadConnection(_ThreadsModel):
@@ -740,7 +738,7 @@ class ThreadsConversation(PlatformConversation[ThreadsOutput]):
 
 
 _SJS_PATTERN = re.compile(
-    r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', re.DOTALL
+    pattern=r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', flags=re.DOTALL
 )
 
 # The cheap test for a block worth parsing, and deliberately broader than what the parse reads.
@@ -760,9 +758,8 @@ _POST_PAYLOAD_MARKER = "text_post_app_info"
 # a page it did not serve. It is what separates a refusal ABOUT this post from a refusal of the
 # request: the geo-block page carries the post's own media id (`DdeVIevkwd7` -> 3989719261639804795,
 # measured 2026-09-20), so the server resolved what was asked for and then declined it, which a
-# throttled fetch cannot do. Read the route rather than the banner beside it — that one is
-# localized, the trap `services/platforms/twitter.py` already refuses to walk into.
-_SERVED_ROUTE_RE = re.compile(r'"canonicalRouteName":"(?P<route>[^"]+)"')
+# throttled fetch cannot do. Read the route rather than the banner beside it, which is localized.
+_SERVED_ROUTE_RE = re.compile(pattern=r'"canonicalRouteName":"(?P<route>[^"]+)"')
 
 # Matched POSITIVELY and by name. This page is byte-for-byte the same SHAPE as the throttle — a
 # ~320 KB shell with the payload marker zero times — so reading "any route that is not the post
@@ -1151,7 +1148,7 @@ class ThreadsDownloader(PlatformDownloader):
             reply_to_username=post.reply_to_username,
             like_count=post.like_count or 0,
             # `Post` keeps Threads' own words for these because it mirrors Threads' schema;
-            # the output model is where the three sources converge on one vocabulary.
+            # the output model is where the vocabularies converge.
             comment_count=post.reply_count,
             repost_count=post.repost_count,
             quote_count=post.quote_count,

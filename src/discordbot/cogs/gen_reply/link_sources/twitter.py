@@ -40,6 +40,7 @@ from discordbot.cogs.gen_reply.link_sources import (
     defuse_markers,
     build_post_context,
 )
+from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
 
 # Leads the injected blocks when the post's images really are attached. The wording carries two
 # loads: it tells the model the link is ALREADY fetched below (so it answers about the post rather
@@ -110,10 +111,7 @@ def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -
 
     `attached_images` is how many of this post's images actually rode into the block, and only the
     linked post ever has any: the post it replies to and the post it quotes are context, and their
-    pictures reach the model as URLs exactly as their own posts do. Naming the number is what keeps
-    the count from reading as a claim — a line saying the post carries three images, next to a
-    separator saying the images are attached below, is how a model ends up describing pictures it
-    was never given.
+    pictures reach the model as URLs exactly as their own posts do.
     """
     lines = [f"[{label}] @{defuse_markers(text=post.author_name)}".rstrip()]
     if post.taken_at is not None:
@@ -128,16 +126,11 @@ def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -
             "not serve the rest. Do not treat the text above as the whole post.)"
         )
     if post.image_urls:
-        if attached_images:
-            lines.append(
-                f"The post carries {len(post.image_urls)} image(s), "
-                f"{attached_images} of them attached below."
+        lines.append(
+            image_count_line(
+                carried=len(post.image_urls), attached=attached_images, urls=post.image_urls
             )
-        else:
-            lines.append(
-                f"The post carries {len(post.image_urls)} image(s), none of them attached — "
-                "URLs only: " + ", ".join(post.image_urls)
-            )
+        )
     if post.video_urls:
         lines.append(f"The post carries a video, which could not be watched: {post.video_urls[0]}")
     counters = [
@@ -158,7 +151,7 @@ def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -
 
 
 def _render_conversation(
-    *, post: TwitterOutput, conversation: TwitterConversation, attached_images: int = 0
+    *, post: TwitterOutput, conversation: TwitterConversation, attached_images: int
 ) -> str:
     """Renders the post, whatever it answers, and whatever it quotes, as compact text.
 

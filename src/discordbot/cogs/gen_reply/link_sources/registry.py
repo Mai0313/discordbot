@@ -221,8 +221,8 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="twitter",
-        # Path-anchored on `/status/<digits>`, so unlike Facebook, Instagram and Douyin no
-        # `url_filter` is needed: a profile or the home page never matches in the first place.
+        # Path-anchored on `/status/<digits>`, so no `url_filter` is needed: a profile or the
+        # home page never matches in the first place.
         url_pattern=TWITTER_URL_RE,
         # Deliberately NOT opting in, unlike the three other post sources. They do because what
         # they fetch includes the comments their own expansion does not show, so a mention on

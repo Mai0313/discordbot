@@ -1,10 +1,9 @@
 """Facebook post URL parsing and page extraction.
 
-Read by the cog that expands a pasted link and by the reply pipeline that reads the post into
-answer context. `base.py` owns the contract both of them are written against.
+`base.py` owns the contract every caller is written against.
 
-This module downloads nothing: both callers work from the image URLs alone, so there is no
-scratch directory anywhere in this feature.
+This module downloads nothing: callers work from the image URLs alone, so there is no scratch
+directory anywhere in this feature.
 
 Two things about this source shape everything below.
 
@@ -37,9 +36,9 @@ from pydantic import Field, BaseModel, computed_field
 from discordbot.utils.urls import URL_START_ANCHOR, host_matches_domain
 from discordbot.typings.timeouts import FACEBOOK_PAGE_TIMEOUT_SECONDS
 from discordbot.services.platforms.base import (
-    PlatformOutput,
+    LinkableComments,
     PlatformDownloader,
-    PlatformConversation,
+    LinkableCommentOutput,
     thread_branches,
 )
 from discordbot.services.platforms.page_json import (
@@ -76,17 +75,19 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # unreadable), and refusing them later in `is_facebook_post_url` would still hide a post link
 # after them.
 FACEBOOK_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
     r"(?![^/?\s]+/videos/|share/[rv]/)"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
 # The path shapes that name a post on their own. A `share/p/<code>` link names one only through
 # the redirect it answers with, exactly as a Threads share link does.
-_GROUP_POST_PATH_RE = re.compile(r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)")
-_PAGE_POST_PATH_RE = re.compile(r"^/(?:[^/]+)/(?:posts|videos)/(?P<post>[0-9]+)")
-_NUMERIC_POST_PATH_RE = re.compile(r"^/(?:[0-9]+)/posts/(?P<post>[0-9]+)")
-_SHARE_PATH_RE = re.compile(r"^/share/p/[A-Za-z0-9]+")
+_GROUP_POST_PATH_RE = re.compile(
+    pattern=r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)"
+)
+_PAGE_POST_PATH_RE = re.compile(pattern=r"^/(?:[^/]+)/(?:posts|videos)/(?P<post>[0-9]+)")
+_NUMERIC_POST_PATH_RE = re.compile(pattern=r"^/(?:[0-9]+)/posts/(?P<post>[0-9]+)")
+_SHARE_PATH_RE = re.compile(pattern=r"^/share/p/[A-Za-z0-9]+")
 
 # A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
 # every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
@@ -109,7 +110,7 @@ _LOGIN_WALL_PATHS = ("/login", "/checkpoint", "/recover")
 # "the comment this URL names" and "the post this comment hangs off" exact matches rather than
 # guesses. `legacy_fbid` carries the trailing id directly and wins for that half; the decode is
 # the fallback for a node without it, and the only source for the leading one.
-_COMMENT_ID_RE = re.compile(r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
+_COMMENT_ID_RE = re.compile(pattern=r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
 
 
 def is_facebook_post_url(*, url: str) -> bool:
@@ -209,11 +210,11 @@ class FacebookURL(BaseModel):
         return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
 
 
-class FacebookOutput(PlatformOutput):
+class FacebookOutput(LinkableCommentOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
-    Deliberately one type for both, exactly as `ThreadsOutput` and `InstagramOutput` are: a
-    caller that walks one platform's conversation walks the others with the same code. A comment
+    Deliberately one type for both, as on every platform with a conversation: a caller that
+    walks one platform's conversation walks the others with the same code. A comment
     leaves empty the fields it has no version of — it carries no media, no group and no counts
     of its own.
 
@@ -228,12 +229,9 @@ class FacebookOutput(PlatformOutput):
         description="The group the POST was made in, empty for a page post and on every comment",
     )
     share_count: int = Field(default=0, description="Shares the post reports; 0 on a comment")
-    comment_id: str = Field(
-        default="", description="The comment's own numeric id; empty on the post itself"
-    )
 
 
-class FacebookConversation(PlatformConversation[FacebookOutput]):
+class FacebookConversation(LinkableComments[FacebookOutput]):
     """One Facebook post and the discussion under it, shaped like `ThreadsConversation`.
 
     What the three inherited fields mean on Facebook. `chain` always has exactly one element —
@@ -242,26 +240,6 @@ class FacebookConversation(PlatformConversation[FacebookOutput]):
     preloads is a handful of a much longer thread, which is the one thing a caller must not
     present as the whole discussion. `selected_comment_id` is whatever a `?comment_id=` URL named.
     """
-
-    @computed_field
-    @cached_property
-    def selected_comment(self) -> FacebookOutput | None:
-        """The comment the URL singled out, or None when it named none or was not preloaded.
-
-        A named comment that is not on the page is the ordinary miss rather than an error: the
-        page preloads only the first handful, so a link to an old comment resolves to nothing
-        and the caller shows the post alone.
-        """
-        if not self.selected_comment_id:
-            return None
-        return next(
-            (
-                comment
-                for comment in self.comments
-                if comment.comment_id == self.selected_comment_id
-            ),
-            None,
-        )
 
 
 def _text_of(*, value: JsonValue) -> str:
@@ -395,7 +373,7 @@ class FacebookDownloader(PlatformDownloader):
     def _comment_branches(
         *, payloads: list[Any], post_url: str, post_id: str
     ) -> list[list[FacebookOutput]]:
-        """Every preloaded comment on THIS post, grouped into branches the way Threads groups replies.
+        """Every preloaded comment on THIS post, grouped into branches by `thread_branches`.
 
         A reply names its own parent in `comment_direct_parent`, so it is threaded behind that
         comment rather than behind whichever one the page happened to serialise before it; a

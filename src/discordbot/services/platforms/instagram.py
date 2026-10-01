@@ -1,7 +1,6 @@
 """Instagram post URL parsing and page extraction.
 
-Read by the cog that expands a pasted link and by the reply pipeline that reads the post into
-answer context. `base.py` owns the contract both of them are written against.
+`base.py` owns the contract every caller is written against.
 
 Logged out, the page ships the whole post — full caption, every carousel image at original
 resolution, the counters, AND the complete comment list — inside JSON script blocks, under a
@@ -43,9 +42,9 @@ from pydantic import Field, BaseModel, computed_field
 from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
 from discordbot.services.platforms.base import (
-    PlatformOutput,
+    LinkableComments,
     PlatformDownloader,
-    PlatformConversation,
+    LinkableCommentOutput,
     thread_branches,
 )
 from discordbot.services.platforms.page_json import (
@@ -156,7 +155,7 @@ class InstagramURL(BaseModel):
         return f"{_CANONICAL_INSTAGRAM_ORIGIN}/{kind}/{match.group('code')}/"
 
 
-class InstagramOutput(PlatformOutput):
+class InstagramOutput(LinkableCommentOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
     Deliberately one type for both, exactly as `ThreadsOutput` is: a caller that walks a
@@ -171,12 +170,9 @@ class InstagramOutput(PlatformOutput):
     author_full_name: str = Field(
         default="", description="The author's display name, which comments do not carry"
     )
-    comment_id: str = Field(
-        default="", description="The comment's own numeric id; empty on the post itself"
-    )
 
 
-class InstagramConversation(PlatformConversation[InstagramOutput]):
+class InstagramConversation(LinkableComments[InstagramOutput]):
     """One Instagram post and the discussion under it, shaped like `ThreadsConversation`.
 
     What the three inherited fields mean on Instagram. `chain` always has exactly one element —
@@ -185,21 +181,6 @@ class InstagramConversation(PlatformConversation[InstagramOutput]):
     that is the WHOLE comment list rather than a preload. `selected_comment_id` is whatever a
     `/c/<id>/` permalink named.
     """
-
-    @computed_field
-    @cached_property
-    def selected_comment(self) -> InstagramOutput | None:
-        """The comment the URL singled out, or None when it named none or it was not on the page."""
-        if not self.selected_comment_id:
-            return None
-        return next(
-            (
-                comment
-                for comment in self.comments
-                if comment.comment_id == self.selected_comment_id
-            ),
-            None,
-        )
 
 
 class InstagramDownloader(PlatformDownloader):
@@ -220,8 +201,8 @@ class InstagramDownloader(PlatformDownloader):
 
         Matched on the shortcode alone. The page's "more posts by this author" rail serialises
         nodes carrying the same keys, so anything positional would read a neighbouring post's
-        caption as this one's; those nodes also omit `carousel_media` and `image_versions2`,
-        which is what the second test below leans on when several nodes share the code.
+        caption as this one's; those nodes also omit `carousel_media` and `image_versions2`, so
+        when several nodes share the code, the one carrying either wins.
         """
         fallback: dict[str, Any] | None = None
         for payload in payloads:
@@ -264,7 +245,7 @@ class InstagramDownloader(PlatformDownloader):
 
     @staticmethod
     def _comment_branches(*, payloads: list[Any], post_url: str) -> list[list[InstagramOutput]]:
-        """Every comment on the page, grouped into branches the way Threads groups replies.
+        """Every comment on the page, grouped into branches by `thread_branches`.
 
         A comment carries `parent_comment_id` when it answers another one, so a reply is
         threaded behind the comment it answers instead of standing alone; everything else opens

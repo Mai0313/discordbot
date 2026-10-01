@@ -13,7 +13,7 @@ its media is images.
 
 from typing import Any
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Sequence, Coroutine
 
 from google import genai
 import logfire
@@ -163,7 +163,7 @@ async def upload_post_images(
     )
 
 
-def image_count_line(*, carried: int, attached: int) -> str:
+def image_count_line(*, carried: int, attached: int, urls: Sequence[str] = ()) -> str:
     """Says how many of a post's images the model was actually handed.
 
     The two numbers differ whenever the cap binds or an upload fails, which is routine, and the
@@ -173,10 +173,16 @@ def image_count_line(*, carried: int, attached: int) -> str:
     Args:
         carried: How many images the post has.
         attached: How many of them rode into the block.
+        urls: The post's image URLs, listed when none of them rode in; empty lists none.
 
     Returns:
         One line for the rendered post text.
     """
     if attached:
         return f"The post carries {carried} image(s), {attached} of them attached below."
+    if urls:
+        return (
+            f"The post carries {carried} image(s), none of them attached — URLs only: "
+            + ", ".join(urls)
+        )
     return f"The post carries {carried} image(s), none of them attached."
