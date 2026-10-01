@@ -205,8 +205,8 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
     assert "`member_alias`" in SERVER_PHASE2_PROMPT
     assert "taken ONLY from the column-0 author prefix" in SERVER_PHASE2_PROMPT
     assert "never guess an id from message text" in SERVER_PHASE2_PROMPT
-    # The row is rendered from `display_name` + `aliases`; asking for the formatted body
-    # instead is what produced sentences on seven rows in eight.
+    # The row is rendered from `display_name` + `aliases`, since a model asked for the
+    # formatted body writes sentences instead.
     assert "`display_name`" in SERVER_PHASE2_PROMPT
     assert "`aliases`" in SERVER_PHASE2_PROMPT
     assert "leave `text` empty" in SERVER_PHASE2_PROMPT
@@ -304,11 +304,10 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
 def test_an_alias_row_is_built_from_its_fields_not_the_models_prose(
     memory_isolated_dir: Path,
 ) -> None:
-    """The compact shape was a prompt request the model honoured about one time in eight.
+    """Code renders the compact shape, since a model asked for it rarely writes it.
 
-    Code renders it now, so whatever the model puts in `text` — a full sentence, an id
-    token, a personal aside that has no business in a nickname table — never reaches the
-    stored row.
+    Whatever the model puts in `text` — a full sentence, an id token, a personal aside that
+    has no business in a nickname table — never reaches the stored row.
     """
     apply_deltas(
         scope=SERVER_SCOPE,
@@ -337,9 +336,9 @@ def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias(
 ) -> None:
     """The mapping the table exists for is the alias and the id; the name is a label.
 
-    A member the evidence only ever identifies by id is an ordinary outcome (13 of the
-    99 live rows), so the row is written without one rather than lost. A row with no
-    alias carries nothing at all and is dropped like any other empty body.
+    A member the evidence only ever identifies by id is an ordinary outcome, so the row is
+    written without one rather than lost. A row with no alias carries nothing at all and is
+    dropped like any other empty body.
     """
     outcome = apply_deltas(
         scope=SERVER_SCOPE,

@@ -2,7 +2,7 @@
 
 These pin the mechanisms the directory boundary rests on: which directories a reading
 context may open, that a fact file round-trips, that a delta batch cannot widen a fact's
-reach or wipe a scope, and that aging is deterministic now that the dates are code-stamped.
+reach or wipe a scope, and that aging is deterministic off code-stamped dates.
 """
 
 from pathlib import Path
@@ -291,9 +291,9 @@ def test_iter_scopes_ignores_a_scope_whose_only_file_is_unreadable(
 ) -> None:
     """A file no reader can parse must not answer for a whole scope on its own.
 
-    Listing it instead of parsing it kept such a scope on `iter_scopes` permanently, so
-    the restart sweep and the offline rebuild picked it up on every run with nothing
-    either could do about it.
+    Listed rather than parsed, such a scope would stay on `iter_scopes` for good, so the
+    restart sweep and the offline rebuild would pick it up on every run with nothing either
+    could do about it.
     """
     scope = user_scope(user_id=111)
     directory = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT)
@@ -366,7 +366,7 @@ def test_prune_compartment_reports_a_file_the_store_never_wrote(memory_isolated_
 
 
 def test_a_file_the_store_cannot_decode_never_stops_the_sweep(memory_isolated_dir: Path) -> None:
-    """`iter_scopes` parses the tier now, so an undecodable file must degrade, not raise.
+    """`iter_scopes` parses the tier, so an undecodable file must degrade, not raise.
 
     A hand edit saved in the wrong encoding would otherwise abort the restart sweep and
     stop the offline rebuild starting at all — the tool for repairing exactly that store.
@@ -402,7 +402,7 @@ def test_a_fact_shaped_name_carrying_a_newline_is_not_the_stores_own(
 def test_a_directory_named_like_a_fact_file_never_reaches_a_reader(
     memory_isolated_dir: Path,
 ) -> None:
-    """`iter_scopes` parses the tier now, so a reader that raises takes the sweep with it.
+    """`iter_scopes` parses the tier, so a reader that raises takes the sweep with it.
 
     `_read_text` catches only a missing file, so one hand-made directory whose name ends
     in `.md` would abort the restart sweep and every offline run.
@@ -653,7 +653,7 @@ def test_bad_deltas_are_dropped_without_failing_the_batch(memory_isolated_dir: P
 
 
 def test_an_unusable_subject_id_costs_the_field_and_not_the_run(memory_isolated_dir: Path) -> None:
-    """The id used to be cast unguarded here, and raising abandons the rest of the fan-out.
+    """An id cast unguarded here would raise, and raising abandons the rest of the fan-out.
 
     A user scope is where that bites: `member_alias` is a server-only section, so the guard
     that reads this field never fires on one and every delta reached the cast.
@@ -740,7 +740,7 @@ def test_a_rebuild_may_replace_the_whole_set(memory_isolated_dir: Path) -> None:
 
 
 def test_the_sweep_expires_recent_context_but_never_permanent(memory_isolated_dir: Path) -> None:
-    """Aging is deterministic code now that the dates are stamped rather than written."""
+    """Aging is deterministic code off the stamped dates, never the model's writing."""
     scope = user_scope(user_id=111)
     today = STAMPED_AT + timedelta(days=60)
     write_fact(

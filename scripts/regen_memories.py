@@ -92,27 +92,25 @@ _BATCH_TARGETS = ("all", "users", "servers")
 
 
 class _ScopeRow(BaseModel):
-    """One scope's line in the closing report.
-
-    Attributes:
-        scope: The scope key this row is about.
-        result: How the rebuild ended, or the exception text when it raised.
-        counts: Facts written per compartment; the previewed observation counts instead
-            on a dry run and on a scope whose rebuild raised before it wrote anything.
-        unreadable_removed: Fact files this run destroyed that no reader could parse.
-    """
+    """One scope's line in the closing report."""
 
     model_config = ConfigDict(frozen=True)
 
     scope: str = Field(..., description="The scope key this row is about.")
     result: str = Field(
-        ..., description="How the rebuild ended, or the exception text.", examples=["regenerated"]
+        ...,
+        description="How the rebuild ended, or the exception text when it raised.",
+        examples=["regenerated"],
     )
     counts: dict[str, int] = Field(
-        ..., description="Facts written per compartment, or previewed observation counts."
+        ...,
+        description=(
+            "Facts written per compartment; the previewed observation counts instead on a "
+            "dry run and on a scope whose rebuild raised."
+        ),
     )
     unreadable_removed: int = Field(
-        ..., description="Fact files this run removed unread.", examples=[3]
+        ..., description="Fact files this run removed that no reader could parse.", examples=[3]
     )
 
 
@@ -155,11 +153,11 @@ def _loss_note(result: str, buckets: dict[str, int]) -> str:
     """Returns the warning for a scope that rebuilds empty or loses its global compartment.
 
     The empty-bucket test is what makes the first note reachable on `--dry-run`: a dry
-    run's result is always the literal `dry-run`, so keying on `no_evidence` alone flagged
-    a scope with nothing to rebuild from only once the destructive run had happened, and
-    until then mislabelled it `EMPTY GLOBAL` (one live scope, measured). It also retires
-    that second note for server scopes, whose evidence all routes to `global` by
-    construction, so its user-flavored wording can no longer land on one.
+    run's result is always the literal `dry-run`, so keying on `no_evidence` alone would
+    flag a scope with nothing to rebuild from only once the destructive run had happened,
+    and mislabel it `EMPTY GLOBAL` until then. It also keeps that second note off server
+    scopes, whose evidence all routes to `global` by construction, so its user-flavored
+    wording cannot land on one.
     """
     if result == "no_evidence" or not any(buckets.values()):
         return "REBUILDS EMPTY: no evidence left to rebuild from"
@@ -230,9 +228,9 @@ async def _regen_one(
         # The batch's own bound (`_CONCURRENCY` has why). The rebuild still takes
         # `memory_semaphore` inside, so a run reaches whichever of the two is tighter.
         try:
-            # Inside the handler because it is not safe either: `read_owner` parses the
-            # id out of the scope key, so one non-numeric directory under the store (a
-            # backup copy, which this tool's own advice invites) used to raise past the
+            # Inside the handler because it can raise too: `read_owner` parses the id out
+            # of the scope key, so one non-numeric directory under the store (a backup
+            # copy, which this tool's own advice invites) would otherwise raise past the
             # gather and throw away every row that had already rebuilt.
             identity = render_owner_identity(owner=read_owner(scope=scope))
             report = await regenerate_scope_memory(scope=scope, writer=writer, identity=identity)
@@ -241,8 +239,8 @@ async def _regen_one(
         except Exception as error:
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
             result, counts = f"error: {type(error).__name__}: {error}", _preview(scope=scope)
-    # A 145-scope run is several minutes of LLM work, so each scope reports as it lands
-    # rather than leaving the closing report as the only output.
+    # A store-wide run is minutes of LLM work, so each scope reports as it lands rather
+    # than leaving the closing report as the only output.
     console.print(f"{scope}: {result}")
     return _ScopeRow(scope=scope, result=result, counts=counts, unreadable_removed=removed)
 
@@ -284,9 +282,8 @@ async def _rebuild_batch(
 def _confirmed() -> bool:
     """Asks for a typed `y` before the run writes anything.
 
-    This is what the removed `--apply` flag used to carry. Nothing on stdin raises
-    `EOFError`, which is refused rather than read as consent: an unattended or piped
-    invocation is exactly the one that must not rewrite the store.
+    Nothing on stdin raises `EOFError`, which is refused rather than read as consent: an
+    unattended or piped invocation is exactly the one that must not rewrite the store.
     """
     try:
         answer = console.input("[bold yellow]Type y to rebuild: [/bold yellow]")

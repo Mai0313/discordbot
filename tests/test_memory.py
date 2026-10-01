@@ -268,7 +268,7 @@ def _consolidated(
     section: MemorySection = "preference",
     tone: str = "",
 ) -> ConsolidatedMemory:
-    """Builds a one-delta consolidation result, the shape phase-2 now returns."""
+    """Builds a one-delta consolidation result."""
     return ConsolidatedMemory(
         deltas=(make_delta(summary=summary, text=text, section=section),), tone_markdown=tone
     )
@@ -1076,8 +1076,7 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
 async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Path) -> None:
     """No marker, no work at all: no model call, no reply.db row, no background task.
 
-    Most replies are this case. It is the whole saving over the extraction pass this
-    replaced, which ran on every single reply to find out whether there was anything to find.
+    Most replies are this case, so it has to cost nothing.
     """
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
@@ -1091,16 +1090,14 @@ async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Pa
 async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_dir: Path) -> None:
     """A forget needs no review: it stores nothing, it only names what should go.
 
-    It is also written BEFORE the note review runs, so a failing review cannot leave the bot
-    still repeating what the user just asked it to drop.
-
     A stored fact has to exist first, because a forget is copied into the compartments the
     scope actually has: a scope with none has nothing to delete, and the request is dropped
     rather than kept around waiting for a compartment to appear.
     """
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
     writer, fake_client = _writer()
-    fake_client.responses.raises = RuntimeError("review is down")
+    # The consolidation the forget forces fails, so `raw.md` still holds it for the reads below.
+    fake_client.responses.raises = RuntimeError("consolidation is down")
     _schedule(writer=writer, remember_notes=(), forget_notes=("使用者已經不住台中了",))
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
@@ -1854,10 +1851,10 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
 ) -> None:
     """The reply is showing `正在整理記憶⋯`, so every way a turn can end has to take it back.
 
-    Four of them record nothing, and before this they were all silent, which left the promise
-    standing over work that had finished. The guarantee is a `finally` in `_run_memory_update`
-    rather than a report call per branch, because the branch that forgets to report is exactly
-    the one nobody notices.
+    Four of them record nothing, and a silent one leaves the promise standing over work that
+    has finished. The guarantee is a `finally` in `_run_memory_update` rather than a report
+    call per branch, because the branch that forgets to report is exactly the one nobody
+    notices.
     """
 
     def _blow_up(**kwargs: object) -> str:
@@ -2365,7 +2362,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
 async def test_pipeline_compaction_triggers_past_compartment_size(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Compaction is now decided per compartment, off the rendered size of its own facts."""
+    """Compaction is decided per compartment, off the rendered size of its own facts."""
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
@@ -3335,8 +3332,8 @@ async def test_memory_show_leads_with_the_tone_note(memory_isolated_dir: Path) -
 def test_transcript_caps_reply_so_current_message_survives_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Pin the (now much larger) limits so the head/tail-vs-reply-cap interplay
-    # stays deterministically exercised.
+    # Pin the limits so the head/tail-vs-reply-cap interplay stays deterministically
+    # exercised.
     monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_TRANSCRIPT_MAX_CHARS", 12_000)
     monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_REPLY_MAX_CHARS", 2_000)
     message_list = [
@@ -3557,10 +3554,9 @@ def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
     loop can never see finish, parking the scope for good, or a queue of turns whose replay
     was wired to a loop that is gone.
 
-    Being loop-local is what rules both out. The conftest fixture used to stand in for it by
-    resetting the two dicts by hand, which said nothing at all about the running bot. Two
-    real `asyncio.run` loops rather than the per-test one, because the rebuild is exactly
-    what happens BETWEEN loops and a single test only ever sees one.
+    Being loop-local is what rules both out. Two real `asyncio.run` loops rather than the
+    per-test one, because the rebuild is exactly what happens BETWEEN loops and a single test
+    only ever sees one.
     """
     scope = user_scope(user_id=987654321)
 
@@ -4007,8 +4003,8 @@ def test_render_memory_observations_stamps_source_and_sharing() -> None:
     assert lines.index("- sharing: source_only") < lines.index("- summary_zh: 喜歡簡短")
 
 
-def test_render_memory_observations_without_source_keeps_legacy_format() -> None:
-    # The server flavor (and a pre-source-line job) renders neither field.
+def test_render_memory_observations_without_source_omits_source_and_sharing() -> None:
+    # The server flavor renders neither field.
     rendered = render_memory_observations(
         observations=(_observation(summary="喜歡簡短"),), source=None
     )
@@ -4021,7 +4017,7 @@ def test_subjects_round_trip_through_parse() -> None:
     assert parse_subject_source(subject=guild_subject) == "guild 123"
     dm_subject = user_subject(user_id=USER_ID, guild_id=None)
     assert parse_subject_source(subject=dm_subject) == "dm"
-    # Legacy user jobs and server-flavor subjects carry no source line.
+    # A subject without a source line, as every server-flavor one is, parses to None.
     assert parse_subject_source(subject=f"target_user_id: {USER_ID}") is None
     assert parse_subject_source(subject=server_subject(server_id=9)) is None
 
@@ -4321,9 +4317,7 @@ async def test_pipeline_server_subject_renders_without_source_fields(
 def test_prompts_cover_sharing_classification() -> None:
     """The note review authors `sharing`, so the classification rules live with it.
 
-    The old "NEVER loosen a source_only candidate" anchor went with the extraction pass that
-    used to propose one: there is no earlier model call left whose decision could be loosened.
-    What still has to be in the prompt is the default and the third-party rule, which
+    What has to be in the prompt is the default and the third-party rule, which
     `_sanitize_observation` mirrors deterministically on the code side.
     """
     assert "SHARING CLASSIFICATION" in PHASE1_EVALUATOR_PROMPT
@@ -4333,10 +4327,10 @@ def test_prompts_cover_sharing_classification() -> None:
 
 
 def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
-    """Provenance is the directory now, so the prompt must say the model writes one of them.
+    """Provenance is the directory, so the prompt must say the model writes one of them.
 
-    The per-bullet `[src:...]` tag it used to author is gone: code routes the evidence
-    before the call, and the model is told what it may not carry back across that line.
+    Code routes the evidence before the call, and the model is told what it may not carry
+    back across that line.
     """
     assert "WHAT A COMPARTMENT IS" in PHASE2_PROMPT
     assert "<global_reference>" in PHASE2_PROMPT
@@ -4448,10 +4442,8 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
 ) -> None:
     """An unusable tone note is dropped on its own; the facts it rode with still commit.
 
-    This changed with the delta rewrite: a malformed note used to reject the whole batch,
-    because a whole-file main rewrite could have moved tone bullets out on the promise
-    they landed in the note. A delta batch is per fact, so it no longer holds the facts
-    hostage to the tone tier, which is best-effort and repaired by the next pass.
+    A delta batch is per fact, so it never holds the facts hostage to the tone tier, which
+    is best-effort and repaired by the next pass.
     """
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
