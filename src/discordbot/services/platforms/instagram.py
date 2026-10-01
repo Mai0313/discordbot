@@ -49,11 +49,11 @@ from discordbot.services.platforms.base import (
 )
 from discordbot.services.platforms.page_json import (
     BROWSER_HEADERS,
-    JsonValue,
     FetchedPage,
     walk,
     str_of,
     time_of,
+    count_of,
     deep_get,
     fetch_page,
     json_payloads,
@@ -68,7 +68,7 @@ _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 # characters ending on one a real shortcode or query value ends on, so a link written straight
 # after Chinese or Japanese text is matched without swallowing the terminator.
 INSTAGRAM_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*instagram\.com/"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*instagram\.com/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
@@ -76,12 +76,12 @@ INSTAGRAM_URL_RE = re.compile(
 # is Instagram's base64url alphabet. `/reels/audio/<id>/` is a sound page rather than a post and
 # is refused here, since it otherwise parses with `audio` as the shortcode.
 _POST_PATH_RE = re.compile(
-    r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?!audio/)(?P<code>[A-Za-z0-9_-]+)"
+    pattern=r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?!audio/)(?P<code>[A-Za-z0-9_-]+)"
 )
 
 # A comment permalink hangs off the post path. It is parsed but never fetched: see the module
 # docstring for what that URL answers with.
-_COMMENT_PATH_RE = re.compile(r"/c/(?P<comment>[0-9]+)")
+_COMMENT_PATH_RE = re.compile(pattern=r"/c/(?P<comment>[0-9]+)")
 
 
 # Instagram's own media-type enum, as it appears on both a post and a carousel child.
@@ -89,11 +89,6 @@ _MEDIA_TYPE_VIDEO = 2
 
 # Where a fetch lands when Instagram will not show the post logged out.
 _LOGIN_WALL_PATHS = ("/accounts/login", "/challenge", "/accounts/suspended")
-
-
-def _int_of(*, value: JsonValue) -> int:
-    """An integer field, or zero when the page served something else."""
-    return value if isinstance(value, int) else 0
 
 
 def is_instagram_post_url(*, url: str) -> bool:
@@ -273,7 +268,7 @@ class InstagramDownloader(PlatformDownloader):
                     url=post_url,
                     author_name=str_of(value=deep_get(node, "user", "username")),
                     author_icon_url=str_of(value=deep_get(node, "user", "profile_pic_url")),
-                    like_count=_int_of(value=node.get("comment_like_count")),
+                    like_count=count_of(value=node.get("comment_like_count")),
                     taken_at=time_of(value=node.get("created_at")),
                     comment_id=comment_id,
                 )
@@ -330,8 +325,8 @@ class InstagramDownloader(PlatformDownloader):
             author_icon_url=str_of(value=deep_get(media, "user", "profile_pic_url")),
             image_urls=image_urls,
             video_urls=video_urls,
-            like_count=_int_of(value=media.get("like_count")),
-            comment_count=_int_of(value=media.get("comment_count")),
+            like_count=count_of(value=media.get("like_count")),
+            comment_count=count_of(value=media.get("comment_count")),
             taken_at=time_of(value=media.get("taken_at")),
         )
         return InstagramConversation(

@@ -40,7 +40,7 @@ BROWSER_HEADERS: Final[dict[str, str]] = {
 }
 
 JSON_SCRIPT_RE: Final[re.Pattern[str]] = re.compile(
-    r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL
+    pattern=r'<script type="application/json"[^>]*>(.*?)</script>', flags=re.DOTALL
 )
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
@@ -142,6 +142,24 @@ def deep_get(node: JsonValue, *keys: str) -> JsonValue:
 def str_of(*, value: JsonValue) -> str:
     """A string field, or an empty one when the page served a null or another type."""
     return value if isinstance(value, str) else ""
+
+
+def count_of(*, value: JsonValue) -> int:
+    """Reads a count the page serves as a bare value, a `{"count": n}` wrapper, or "1,017".
+
+    An int rather than the page's own formatted string, so every platform's counters are the
+    same type and whoever renders them picks the formatting once. Zero for anything else.
+    """
+    if isinstance(value, dict):
+        value = value.get("count")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        digits = value.replace(",", "").strip()
+        return int(digits) if digits.isdigit() else 0
+    return 0
 
 
 def time_of(*, value: JsonValue) -> datetime | None:

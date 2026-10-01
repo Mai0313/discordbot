@@ -1183,6 +1183,33 @@ async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
     ], "a permission the bot cannot earn needs the ids and no traceback"
 
 
+@pytest.mark.parametrize(
+    ("error", "error_type"),
+    [(make_server_error(), "HTTPException"), (OSError("connection reset"), "OSError")],
+    ids=["server_error", "transport"],
+)
+async def test_deep_research_answers_when_its_anchor_fails_for_another_reason(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, error: Exception, error_type: str
+) -> None:
+    """Only a refusal drops the traceback; any other failure still answers on the token."""
+    channel = _text_channel()
+    channel.send = AsyncMock(side_effect=error)
+    interaction = _ResearchInteraction(channel=channel)
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
+
+    await _launching_cog(monkeypatch=monkeypatch).deep_research(
+        as_interaction(fake=interaction), topic="topic"
+    )
+
+    assert [edit.get("content") for edit in interaction.edits] == ["開研究串失敗了,等等再試一次"]
+    assert errors == [
+        (
+            "failed to post the deep research anchor",
+            {"channel_id": 20, "owner_id": 1, "error_type": error_type, "_exc_info": error},
+        )
+    ]
+
+
 async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
     research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

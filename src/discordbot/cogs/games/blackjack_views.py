@@ -879,6 +879,14 @@ class BlackjackView(GameView):
                 self.round_state.take_insurance(user_id=user_id)
             else:
                 self.round_state.decline_insurance(user_id=user_id)
+        except InsuranceBetTooSmallError:
+            # Expected on a 1-point bet, and the seat is still open, so the decline cannot fail.
+            logfire.info(
+                "Bot bet too small to insure; declining",
+                user_id=user_id,
+                bet=bot_player.participant.bet,
+            )
+            self.round_state.decline_insurance(user_id=user_id)
         except ValueError as exc:
             logfire.warn(
                 "Bot insurance action rejected; declining as fallback",
@@ -925,15 +933,12 @@ class BlackjackView(GameView):
             else:
                 await self._edit_in_progress_locked(message=message, interaction=interaction)
             return
-        is_pair_hand = len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed
         chosen_action = choose_bot_action(
             hand_cards=list(hand.cards),
             dealer_cards=list(self.round_state.dealer),
             shoe=list(self.round_state.shoe),
             allowed_actions=allowed,
-            is_pair_hand=is_pair_hand,
             bet=hand.bet,
-            doubled=hand.doubled,
         )
         applied = self._apply_bot_action(
             user_id=active.participant.user_id, action=chosen_action, allowed=allowed

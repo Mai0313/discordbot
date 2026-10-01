@@ -30,11 +30,9 @@ from discordbot.services.memory.store import (
     scope_lock,
     mark_cleared,
     cleared_since,
-    read_evidence,
     append_raw_entry,
     delete_memory_files,
 )
-from discordbot.services.memory.deltas import filter_duplicate_observations
 from discordbot.services.memory.writer import (
     MemoryWriterAI,
     MemoryObservation,
@@ -264,7 +262,7 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
 
     The reply.db row is written `pending` at the top (awaited, before the lock) so
     a redeploy mid-review resumes this turn; it is marked `done` once phase-1
-    is terminal (staged, no signal, all dupes, or cleared) and `failed` only
+    is terminal (staged, no signal, or cleared) and `failed` only
     when the LLM call itself fails, so the restart sweep retries just that case.
     Consolidation needs no DB row: `raw.md` is its durable, re-entrant queue.
 
@@ -386,31 +384,16 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         if draft is None:
             reviewed = False
             continue
-        deduped = filter_duplicate_observations(
-            observations=draft.observations,
-            existing_text=read_evidence(scope=scope),
-            source=source,
-        )
-        if forget_notes and len(deduped) < len(draft.observations):
-            # A correction's new fact that reuses the key of something already staged is
-            # dropped here, before the forget beside it (this round's or, in a merged row, an
-            # earlier one's) has run. Counted before anything is decided about it.
-            logfire.info(
-                "Memory observation dropped as already staged on a forgetting turn",
-                scope=scope,
-                user=turn.identity,
-                keys=[
-                    observation.normalized_key
-                    for observation in draft.observations
-                    if observation not in deduped
-                ],
-            )
-        if deduped:
+        if draft.observations:
+            # Staged even when its key is already in the evidence: a member's alias key never
+            # changes, and a restatement is what keeps a stored fact from aging out.
             append_raw_entry(
                 scope=scope,
-                entry_text=render_memory_observations(observations=deduped, source=source),
+                entry_text=render_memory_observations(
+                    observations=draft.observations, source=source
+                ),
             )
-            kept.extend(deduped)
+            kept.extend(draft.observations)
     if not reviewed:
         # The LLM path itself failed: keep the row (payload intact) so the
         # restart sweep retries it, no extra timeout needed. The cause detail is

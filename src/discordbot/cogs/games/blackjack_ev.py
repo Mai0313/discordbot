@@ -334,13 +334,12 @@ def _select_recommended(*, ordered: tuple[ActionEv, ...]) -> ActionEv:
     return top_non_split
 
 
-def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision surface.
+def _evaluate_actions(
     *,
     ctx: _EvContext,
     deck: tuple[int, ...],
     hand_cards: list[Card],
     allowed_actions: tuple[BotAction, ...],
-    doubled: bool,
     bet: int,
 ) -> list[ActionEv]:
     """Computes each legal action's EV over a deck."""
@@ -350,14 +349,9 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
     evs: list[ActionEv] = []
     if "stand" in allowed_actions:
         stand_ev = _stand_ev_unit(
-            player_total=player_total,
-            five_card_eligible=num_cards >= 5 and not doubled,
-            shoe=deck,
-            ctx=ctx,
+            player_total=player_total, five_card_eligible=num_cards >= 5, shoe=deck, ctx=ctx
         )
-        evs.append(
-            ActionEv(action="stand", expected_value=2.0 * stand_ev if doubled else stand_ev)
-        )
+        evs.append(ActionEv(action="stand", expected_value=stand_ev))
     if "hit" in allowed_actions:
         evs.append(
             ActionEv(
@@ -399,13 +393,12 @@ def _make_context(*, dealer_cards: list[Card]) -> _EvContext:
     )
 
 
-def recommend_action(  # noqa: PLR0913 -- one EV-engine entry point mirroring the full decision surface.
+def recommend_action(
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
-    doubled: bool,
     bet: int,
 ) -> BotAction:
     """Returns the EV-maximizing legal action for one bot-player decision.
@@ -420,7 +413,6 @@ def recommend_action(  # noqa: PLR0913 -- one EV-engine entry point mirroring th
         dealer_cards: The dealer's cards (hole card first, then up-card).
         shoe: The true remaining undealt shoe.
         allowed_actions: Legal actions for the active hand.
-        doubled: Whether the active hand has already doubled.
         bet: The base hand bet, which prices a surrender at the loss
             `surrender_loss` settles it for.
 
@@ -432,7 +424,6 @@ def recommend_action(  # noqa: PLR0913 -- one EV-engine entry point mirroring th
         deck=build_shoe_value_counts(shoe=shoe),
         hand_cards=hand_cards,
         allowed_actions=allowed_actions,
-        doubled=doubled,
         bet=bet,
     )
     ordered = tuple(sorted(evs, key=lambda candidate: candidate.expected_value, reverse=True))

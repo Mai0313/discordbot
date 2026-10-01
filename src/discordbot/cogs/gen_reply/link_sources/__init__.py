@@ -18,8 +18,9 @@ those platforms are the rate-limit sensitive ones.
 builder itself.
 
 What the builders share lives here too: the block shapes, the marker defusing, the comment lines,
-the clip quality, and `build_post_context`, the read-render-upload flow every conversation-shaped
-post source runs except Threads, whose media step splits one budget across two posts.
+the clip quality, `read_post`, the read every conversation-shaped post source starts with, and
+`build_post_context`, the read-render-upload flow every one of them runs except Threads, whose
+media step splits one budget across two posts.
 """
 
 import re
@@ -154,6 +155,47 @@ class PostRenderer[OutputT, ConversationT](Protocol):
     ) -> str: ...
 
 
+async def read_post[ConversationT: PlatformConversation[Any]](
+    *,
+    platform: str,
+    url: str,
+    reader: Callable[[], PostReader[ConversationT]],
+    readable: Callable[[ConversationT], bool],
+) -> ConversationT | None:
+    """Reads a post URL into its conversation, or None when there is nothing to show.
+
+    Never raises, and logs whichever way it fails, so a caller only has to inject its notice.
+
+    Args:
+        platform: The platform's display name, for the log lines.
+        url: The post URL found in the conversation.
+        reader: Builds the platform's downloader.
+        readable: Whether the conversation holds a post worth showing. The source's own rule,
+            since what counts as readable differs per platform.
+
+    Returns:
+        The conversation, or None when the read failed or `readable` refused it.
+    """
+    try:
+        conversation = await asyncio.to_thread(reader().parse_metadata, url=url)
+    # Broad on purpose: a parse error must degrade to the unavailable notice rather than break
+    # the reply pipeline, which relies on every builder never raising.
+    except Exception as error:
+        logfire.warn(
+            f"{platform} post read failed; injecting unavailable notice",
+            url=url,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
+        return None
+    if not readable(conversation):
+        logfire.info(
+            f"{platform} post unavailable for context; injecting unavailable notice", url=url
+        )
+        return None
+    return conversation
+
+
 async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 -- a source's reader and wording plus the four per-call inputs every builder takes
     *,
     platform: str,
@@ -190,27 +232,18 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
         Input blocks ready to splice into the answer input before the current message.
     """
     with logfire.span(f"gen_reply {platform.lower()} context"):
-        try:
-            downloader = reader()
-            conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
-        # Broad on purpose: a parse error must degrade to the unavailable notice rather than
-        # break the reply pipeline, which relies on this builder never raising.
-        except Exception as error:
-            logfire.warn(
-                f"{platform} post read failed; injecting unavailable notice",
-                url=url,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
+        conversation = await read_post(
+            platform=platform,
+            url=url,
+            reader=reader,
+            readable=lambda conversation: (
+                conversation.target is not None and conversation.target.is_readable
+            ),
+        )
+        if conversation is None or conversation.target is None:
             return [system_block(text=unavailable_notice)]
 
         target = conversation.target
-        if target is None or not target.is_readable:
-            logfire.info(
-                f"{platform} post unavailable for context; injecting unavailable notice", url=url
-            )
-            return [system_block(text=unavailable_notice)]
-
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
             media_parts = await upload_post_images(
@@ -234,7 +267,8 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
 # a tag added there cannot be missed here. Case-insensitive because the extraction is, and a
 # defusing pass stricter than what it defends against is no defence at all.
 _MARKER_TAG_RE = re.compile(
-    rf"</?({'|'.join(re.escape(name) for name in MARKER_TAG_NAMES)})>", flags=re.IGNORECASE
+    pattern=rf"</?({'|'.join(re.escape(pattern=name) for name in MARKER_TAG_NAMES)})>",
+    flags=re.IGNORECASE,
 )
 
 

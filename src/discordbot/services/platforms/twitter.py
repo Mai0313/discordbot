@@ -77,13 +77,13 @@ from discordbot.services.platforms.base import (
 # `[A-Za-z0-9_-]` for the reason every pattern here does: a link written straight after Chinese or
 # Japanese text stops at the terminator instead of swallowing it.
 TWITTER_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:www\.|mobile\.|m\.)?(?:x|twitter)\.com/"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:www\.|mobile\.|m\.)?(?:x|twitter)\.com/"
     r"(?:i/web/status|[A-Za-z0-9_]{1,20}/status(?:es)?)/\d+"
     r"(?:/(?:photo|video)/\d+)?/?"
     r"(?:\?[A-Za-z0-9=&%_.-]*[A-Za-z0-9_-])?"
 )
 
-_STATUS_PATH_RE = re.compile(r"/status(?:es)?/(?P<id>\d+)")
+_STATUS_PATH_RE = re.compile(pattern=r"/status(?:es)?/(?P<id>\d+)")
 
 # A status id is a signed 64-bit snowflake, and one past that range is the only input the endpoint
 # answers 400 to (measured: 2**63 - 1 and every smaller nonsense id answer 404, which classifies as

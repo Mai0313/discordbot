@@ -58,6 +58,7 @@ from tests.helpers.casting import (
 )
 from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_logs
 
 
 def _round_with_two_cards(
@@ -481,6 +482,44 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
     assert message.edits == []
     assert round_state.phase == "insurance"
     assert round_state.players[1].insurance_resolved is False
+
+
+async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 1-point bet has no half to insure, so a bot that wants insurance declines instead.
+
+    The refusal is expected rather than a failure, so it is an info record with no traceback.
+    """
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[
+            seat(user_id=1, display_name="Bot", bet=1),
+            seat(user_id=2, display_name="Bob"),
+        ],
+    )
+    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="7", suit="♥")]
+    round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
+    round_state.dealer = [card(rank="9", suit="♦"), card(rank="A", suit="♣")]
+    round_state.phase = "insurance"
+    round_state.insurance_offered = True
+    # All tens: the bot's count says insurance is worth buying.
+    round_state.shoe = [card(rank="10")] * 20
+    view = _make_view(round_state=round_state)
+    infos = capture_logs(monkeypatch=monkeypatch, level="info")
+    warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
+    message = FakeDiscordMessage()
+
+    await view._dispatch_bot_insurance_locked(
+        message=as_message(fake=message),
+        bot_player=round_state.players[0],
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
+    )
+
+    bot = round_state.players[0]
+    assert (bot.insurance_resolved, bot.insurance_bet) == (True, 0)
+    assert warnings == []
+    assert ("Bot bet too small to insure; declining", {"user_id": 1, "bet": 1}) in infos
 
 
 async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.MonkeyPatch) -> None:

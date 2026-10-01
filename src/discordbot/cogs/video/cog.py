@@ -114,10 +114,18 @@ class VideoCogs(commands.Cog):
         interaction: Interaction[commands.Bot],
         url: str = SlashOption(
             description="Video URL, or the share text containing it (YouTube, Instagram, X, Douyin, etc.)",
+            description_localizations={
+                Locale.zh_TW: "影片連結,或含有連結的分享文字 (YouTube, Instagram, X, 抖音 等)",
+                Locale.ja: "動画のリンク、またはそれを含む共有テキスト (YouTube, Instagram, X, 抖音 など)",
+            },
             required=True,
         ),
         quality: VideoQuality = SlashOption(
             description="Video quality (higher quality = larger file size)",
+            description_localizations={
+                Locale.zh_TW: "影片畫質 (畫質越高,檔案越大)",
+                Locale.ja: "動画の画質 (高画質ほどファイルサイズが大きくなります)",
+            },
             required=False,
             default="best",
             choices=QUALITY_CHOICES,
@@ -205,7 +213,9 @@ class VideoCogs(commands.Cog):
             )
             return
 
-        await self._refuse_oversize(interaction=interaction, file_size_mb=file_size_mb)
+        await self._refuse_oversize(
+            interaction=interaction, file_size_mb=file_size_mb, upload_limit=upload_limit
+        )
 
     async def _download_douyin(
         self,
@@ -277,7 +287,9 @@ class VideoCogs(commands.Cog):
                         return
                     if not plan.hosted_urls:
                         await self._refuse_oversize(
-                            interaction=interaction, file_size_mb=delivery.total_mb
+                            interaction=interaction,
+                            file_size_mb=delivery.total_mb,
+                            upload_limit=upload_limit,
                         )
                         return
 
@@ -356,11 +368,15 @@ class VideoCogs(commands.Cog):
             )
 
     async def _refuse_oversize(
-        self, interaction: Interaction[commands.Bot], file_size_mb: float
+        self, interaction: Interaction[commands.Bot], file_size_mb: float, upload_limit: int
     ) -> None:
         """Tells the user a file too big to attach could not be hosted either."""
         await self._edit_quietly(
-            interaction=interaction, content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+            interaction=interaction,
+            content=(
+                f"-# 下載失敗\n檔案大小 {file_size_mb:.1f}MB，"
+                f"超過上傳上限 {upload_limit / 1024 / 1024:.0f}MB"
+            ),
         )
 
     async def _deliver(
