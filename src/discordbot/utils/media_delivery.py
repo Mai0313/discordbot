@@ -376,7 +376,7 @@ class MediaHostingService(BaseModel):
                 name=name,
                 size_bytes=len(data),
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
@@ -408,7 +408,7 @@ class MediaHostingService(BaseModel):
                 "Failed to hash media file",
                 path=str(file_path),
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
             return None
         hit = self._dedup_hit(serve=serve, name=name)
@@ -424,7 +424,7 @@ class MediaHostingService(BaseModel):
                 "Failed to copy media into the serve dir",
                 path=str(file_path),
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
@@ -437,7 +437,7 @@ class MediaHostingService(BaseModel):
                 "Failed to finalize hosted media",
                 name=name,
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
@@ -450,7 +450,7 @@ class MediaHostingService(BaseModel):
                 "Hosted media published but the source file could not be removed",
                 path=str(file_path),
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
         self.enforce_cap(now=time.time())
         return url

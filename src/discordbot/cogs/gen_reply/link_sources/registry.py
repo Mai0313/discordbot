@@ -224,10 +224,10 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # Path-anchored on `/status/<digits>`, so no `url_filter` is needed: a profile or the
         # home page never matches in the first place.
         url_pattern=TWITTER_URL_RE,
-        # Deliberately NOT opting in, unlike the three other post sources. They do because what
-        # they fetch includes the comments their own expansion does not show, so a mention on
-        # someone else's link has something new to answer from. Twitter's endpoint serves no
-        # replies at all, so a second read of the same link would find exactly what the first did.
+        # Deliberately leaves `search_replied_to_message` off. A post source sets it when what it
+        # fetches includes the comments its own expansion does not show, so a mention on someone
+        # else's link has something new to answer from. Twitter's endpoint serves no replies at
+        # all, so a second read of the same link would find exactly what the first did.
         build=_build_twitter_link_context,
         timeout_notice=TWITTER_TIMEOUT_NOTICE,
         media_ingest_allowed=_needs_files_api,

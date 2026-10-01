@@ -45,6 +45,7 @@ from discordbot.services.platforms.threads import (
 )
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
+    read_post,
     system_block,
     defuse_markers,
     post_context_blocks,
@@ -802,38 +803,32 @@ async def build_threads_context_messages(
     Returns:
         Input blocks ready to splice into the answer input before the current message.
     """
-    try:
-        with logfire.span("gen_reply threads context"):
-            # No output folder because `parse_metadata` writes nothing.
-            downloader = ThreadsDownloader(output_folder="")
-            conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
-    # Broad on purpose: a parse error must degrade to the unavailable notice rather than break
-    # the reply pipeline, which relies on this builder never raising.
-    except Exception as error:
-        logfire.warn(
-            "Threads metadata parse failed; injecting unavailable notice",
+    with logfire.span("gen_reply threads context"):
+        conversation = await read_post(
+            platform="Threads",
             url=url,
-            error_type=type(error).__name__,
-            _exc_info=error,
+            # No output folder because `parse_metadata` writes nothing.
+            reader=lambda: ThreadsDownloader(output_folder=""),
+            # A non-empty chain rather than a readable target: a quote post with no text or media
+            # of its own is still worth showing.
+            readable=lambda conversation: bool(conversation.chain),
         )
-        return [system_block(text=THREADS_UNAVAILABLE_NOTICE)]
+        if conversation is None:
+            return [system_block(text=THREADS_UNAVAILABLE_NOTICE)]
 
-    if not conversation.chain:
-        logfire.info("Threads post unavailable for context; injecting unavailable notice", url=url)
-        return [system_block(text=THREADS_UNAVAILABLE_NOTICE)]
-
-    # Trim a long chain to the target plus its nearest ancestors before rendering, so the
-    # text side is bounded like the media side (the tail is closest to the linked post).
-    chain = conversation.chain[-MAX_THREADS_POSTS:]
-    target = chain[-1]
-    if target.quoted_unavailable:
-        # A routine user-driven outcome (a removed remote post), so info, not warn. Logged because
-        # it is common — measured at 15 of 96 live quote relations — and otherwise leaves no trace.
-        logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
-    text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
-    media = IngestedMedia()
-    if answer_model_is_gemini and gemini_client is not None:
-        media = await _ingest_media(target=target, gemini_client=gemini_client)
+        # Trim a long chain to the target plus its nearest ancestors before rendering, so the
+        # text side is bounded like the media side (the tail is closest to the linked post).
+        chain = conversation.chain[-MAX_THREADS_POSTS:]
+        target = chain[-1]
+        if target.quoted_unavailable:
+            # A routine user-driven outcome (a removed remote post), so info, not warn. Logged
+            # because it is common — measured at 15 of 96 live quote relations — and otherwise
+            # leaves no trace.
+            logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
+        text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
+        media = IngestedMedia()
+        if answer_model_is_gemini and gemini_client is not None:
+            media = await _ingest_media(target=target, gemini_client=gemini_client)
 
     url_lines: list[str] = []
     if media.parts:

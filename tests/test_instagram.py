@@ -219,6 +219,23 @@ def test_a_post_is_read_with_its_caption_images_and_counts(
     assert post.taken_at is not None
 
 
+@pytest.mark.parametrize(
+    ("served", "expected"), [("8,855", 8855), ({"count": 8855}, 8855), (True, 0), (None, 0)]
+)
+def test_a_count_reads_the_same_in_any_shape_the_page_serves(
+    monkeypatch: pytest.MonkeyPatch, served: object, expected: int
+) -> None:
+    """A formatted or wrapped count is still the number, and a flag is not a count."""
+    media = _media()
+    media["like_count"] = served
+    downloader = _downloader(monkeypatch, html=_page(media=media))
+
+    post = downloader.parse_metadata(url=_URL).target
+
+    assert post is not None
+    assert post.like_count == expected
+
+
 def test_the_chain_is_the_post_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     """Instagram has no ancestor posts, but the shape matches Threads so callers agree."""
     downloader = _downloader(monkeypatch, html=_page())

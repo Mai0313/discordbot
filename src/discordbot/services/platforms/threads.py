@@ -310,8 +310,8 @@ class ShareInfo(_ThreadsModel):
         and it did not even have to be the TARGET's own quoted post — an ancestor's was enough.
 
         This is the same isolation `_isolate_post` gives a post in a connection, one level lower:
-        the quote is the most disposable thing in the payload, and losing only it degrades to
-        exactly the pre-quote-post behaviour.
+        the quote is the most disposable thing in the payload, and losing only it leaves the post
+        read as one that quotes nothing.
         """
         return _isolate(
             value=value,
@@ -384,7 +384,7 @@ class ThreadEdge(_ThreadsModel):
 
         Isolating the posts alone is not enough: an unmodelled shape at the branch level fails
         the connection, and the connection is the whole of the page's replies, so one bad branch
-        would cost all of them. That is coarser than the per-branch loss this replaced.
+        would cost all of them.
         """
         return _isolate(
             value=value,
