@@ -1,10 +1,10 @@
-"""What every conversation-shaped link source's builder owes, checked against each of them.
+"""What every link source built on `build_post_context` owes, checked against each of them.
 
-Facebook, Instagram and Twitter read a post, render it and upload its images through one
-`build_post_context`, so the outcomes that flow decides are tested here once per source: which
-separator opens the block, where the trailer closes it, what a failed read or a failed image
-leaves, and which quoted text is defused. Each source's own test file keeps only how its post is
-rendered.
+`_SOURCES` lists those sources, and the outcomes that shared flow decides are tested here once per
+source: which separator opens the block, where the trailer closes it, what a failed read or a
+failed image leaves, and which quoted text is defused. Each source's own test file keeps only how
+its post is rendered. The timeout notice, injected in place of any build that outran the grace,
+is checked against every registered source.
 """
 
 from typing import Any

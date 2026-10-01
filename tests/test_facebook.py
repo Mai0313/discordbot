@@ -1,8 +1,9 @@
 """Tests for Facebook URL parsing and post extraction.
 
 Every test replaces `FacebookDownloader._fetch_page`, the one seam that touches the network.
-The fixture HTML mirrors the real page's shape closely enough to exercise the walk: the story is buried under a route-dependent key, repeated,
-and surrounded by the module-loader blocks the real page is mostly made of.
+The fixture HTML mirrors the real page's shape closely enough to exercise the walk: the story is
+buried under a route-dependent key, repeated, and surrounded by the module-loader blocks the real
+page is mostly made of.
 """
 
 import base64

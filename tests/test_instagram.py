@@ -1,8 +1,8 @@
 """Tests for Instagram URL parsing and post extraction.
 
 Every test replaces `InstagramDownloader._fetch_page`, the one seam that touches the network.
-The fixture page mirrors the real one's shape where it matters: the wanted post sits among the author's OTHER posts, which carry the same
-keys and would be picked up by anything positional.
+The fixture page mirrors the real one's shape where it matters: the wanted post sits among the
+author's OTHER posts, which carry the same keys and would be picked up by anything positional.
 """
 
 from typing import Any
