@@ -3,7 +3,7 @@
 import re
 import time
 from types import TracebackType, SimpleNamespace
-from typing import Any, Self, NoReturn, get_args
+from typing import Any, Self, get_args
 from pathlib import Path
 import threading
 
@@ -13,24 +13,34 @@ from requests.exceptions import RequestException
 from discordbot.cogs.video import cog as video
 from discordbot.utils.urls import normalized_host, extract_first_url, host_matches_domain
 from discordbot.typings.video import VideoQuality
-from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
+from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs, douyin_failure_message
 from discordbot.services.platforms import ytdlp as downloader_module
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.ytdlp import (
     DownloadResult,
     VideoDownloader,
     DownloadStoppedError,
 )
-from discordbot.services.platforms.douyin import DOUYIN_URL_RE, DouyinDownloader
+from discordbot.services.platforms.douyin import (
+    DOUYIN_URL_RE,
+    DouyinError,
+    DouyinDownload,
+    DouyinDownloader,
+    DouyinBlockedError,
+    DouyinTransferError,
+    DouyinUnavailableError,
+)
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
-from tests.helpers.casting import as_bot, as_interaction, make_media_hosting_config
-from tests.helpers.link_sources import SAMPLE_POST_URLS
+from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner, hosting_off_planner
 from tests.helpers.discord_mocks import FakeInteraction
 
 # What `extract_info` answers for a finished download: the least `download` reads a result from.
 _DOWNLOADED_INFO = {"id": "video_id", "ext": "mp4"}
+
+_DOUYIN_VIDEO_URL = "https://www.douyin.com/video/7664447317017136422"
+_DOUYIN_NOTE_URL = "https://www.douyin.com/note/7159955455492541733"
 
 
 def _install_youtube_dl_stub(
@@ -431,47 +441,6 @@ def test_every_url_pattern_shares_the_generic_start_anchor() -> None:
         assert pattern.search(string=f"看這個{url}") is not None, url
 
 
-async def test_download_video_extracts_a_url_from_share_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A share blob pasted into the command reaches the downloader as its bare link.
-
-    Share buttons wrap the URL in copy, so a command that only accepted a bare URL would fail on
-    the most natural thing to paste. Both downloaders are stubbed, so a blob that went through
-    whole would be caught at whichever one it reached.
-    """
-    asked: list[str] = []
-
-    class _RefusingDownloader:
-        """Records the URL a download was asked for, then fails it."""
-
-        def __init__(self, *, output_folder: str) -> None:
-            """Accepts the scratch directory the command hands every downloader."""
-            del output_folder
-
-        def download(self, *, url: str, **kwargs: object) -> NoReturn:
-            """Records `url` and ends the command on its failure path."""
-            del kwargs
-            asked.append(url)
-            raise RuntimeError("stop here")
-
-    monkeypatch.setattr(target=video, name="DouyinDownloader", value=_RefusingDownloader)
-    monkeypatch.setattr(target=video, name="VideoDownloader", value=_RefusingDownloader)
-    blob = (
-        "8.46 Y@m.QX :9pm UYm:/ 06/01 短片《临时司机》#AI短片# 内容过于真实 "
-        "https://v.douyin.com/tLgj3lCAnds 复制此链接，打开Dou音搜索，直接观看视频"
-    )
-
-    await VideoCogs.download_video.callback(
-        VideoCogs(bot=as_bot(fake=object())),
-        as_interaction(fake=FakeInteraction()),
-        url=blob,
-        quality="best",
-    )
-
-    assert asked == ["https://v.douyin.com/tLgj3lCAnds"]
-
-
 def test_download_video_leaves_a_bare_url_untouched() -> None:
     """The common case must be unchanged: a bare URL passes through as-is."""
     url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -537,63 +506,69 @@ def test_a_quality_label_names_what_each_downloader_asks_for() -> None:
             assert f"{douyin}p on Douyin" in label, label
 
 
-class DownloaderStub:
-    """Fake downloader that returns queued download results."""
+class _CannedDownloader:
+    """Stands in for whichever downloader `/download_video` picks, answering one canned outcome."""
 
-    def __init__(self, results: list[DownloadResult]) -> None:
-        """Initializes queued results and recorded calls."""
-        self.results = results
-        self.calls: list[dict[str, str]] = []
+    def __init__(self, outcome: DownloadResult | DouyinDownload | Exception) -> None:
+        """Holds the finished download to answer with, or the error to raise."""
+        self.outcome = outcome
+        self.calls: list[dict[str, object]] = []
 
-    def download(
-        self, url: str, quality: str, stop_signal: threading.Event | None = None
-    ) -> DownloadResult:
-        """Records the download request and returns the next queued result.
-
-        `stop_signal` is accepted and ignored: the real downloader takes it so a caller can
-        abort a blocking yt-dlp run, and `/download_video` now passes one on every call.
-        """
-        del stop_signal
-        kwargs: dict[str, str] = {"url": url, "quality": quality}
+    def download(self, **kwargs: object) -> DownloadResult | DouyinDownload:
+        """Records what the command asked for, then answers the canned outcome."""
         self.calls.append(kwargs)
-        return self.results.pop(0)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
 
 
-class _RaiseDownloader:
-    """Downloader stub that always fails."""
+def _install(
+    monkeypatch: pytest.MonkeyPatch, outcome: DownloadResult | DouyinDownload | Exception
+) -> tuple[VideoCogs, _CannedDownloader]:
+    """Builds the cog with hosting off and both of its downloaders answering `outcome`."""
+    cog = VideoCogs(bot=as_bot(fake=object()))
+    cog.media_delivery = hosting_off_planner()
+    stub = _CannedDownloader(outcome=outcome)
+    monkeypatch.setattr(target=video, name="DouyinDownloader", value=lambda output_folder: stub)
+    monkeypatch.setattr(target=video, name="VideoDownloader", value=lambda output_folder: stub)
+    return cog, stub
 
-    def download(
-        self, url: str, quality: str, stop_signal: threading.Event | None = None
-    ) -> DownloadResult:
-        """Raises a deterministic download failure, taking the signature the command calls."""
-        raise RuntimeError("download failed")
+
+async def test_download_video_extracts_a_url_from_share_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A share blob pasted into the command reaches the downloader as its bare link.
+
+    Share buttons wrap the URL in copy, so a command that only accepted a bare URL would fail on
+    the most natural thing to paste. Both downloaders are stubbed, so a blob that went through
+    whole would be caught at whichever one it reached.
+    """
+    cog, stub = _install(monkeypatch=monkeypatch, outcome=RuntimeError("stop here"))
+    blob = (
+        "8.46 Y@m.QX :9pm UYm:/ 06/01 短片《临时司机》#AI短片# 内容过于真实 "
+        "https://v.douyin.com/tLgj3lCAnds 复制此链接，打开Dou音搜索，直接观看视频"
+    )
+
+    await VideoCogs.download_video.callback(
+        cog, as_interaction(fake=FakeInteraction()), url=blob, quality="best"
+    )
+
+    assert [call["url"] for call in stub.calls] == ["https://v.douyin.com/tLgj3lCAnds"]
 
 
 async def test_video_deliver_and_download_branches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies video delivery, oversize URL fallback, hosting-off, and download error branches."""
-    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
     serve_dir = tmp_path / "serve"
-    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
-            )
-        )
-    )
+    serve_dir.mkdir()
     small = tmp_path / "small.mp4"
     small.write_bytes(data=b"0" * 100)
     big = tmp_path / "big.mp4"
     big.write_bytes(data=b"0" * 300)
 
     # Fits: attached natively, under its size and source lines.
-    monkeypatch.setattr(
-        video,
-        "VideoDownloader",
-        lambda output_folder: DownloaderStub(results=[DownloadResult(filename=small)]),
-    )
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=small))
     interaction = FakeInteraction()
     await VideoCogs.download_video.callback(
         cog, interaction, url="https://source.test/video", quality="best"
@@ -605,8 +580,8 @@ async def test_video_deliver_and_download_branches(
     assert interaction.followup.sent == []
 
     # Too big for native upload + hosting on: post the URL, no 480p retry, no attachment.
-    downloader = DownloaderStub(results=[DownloadResult(filename=big)])
-    monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
+    cog, downloader = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=big))
+    cog.media_delivery = hosting_planner(serve_dir=serve_dir)
     host_interaction = FakeInteraction(filesize_limit=200)
     await VideoCogs.download_video.callback(
         cog, host_interaction, url="https://x.test", quality="best"
@@ -619,26 +594,17 @@ async def test_video_deliver_and_download_branches(
     assert "file" not in host_interaction.edits[-1]
     assert host_interaction.followup.sent == []
 
-    # Too big + hosting unavailable: fall back to the "file too large" message.
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(enabled=True, base_url="", serve_dir="")
-        )
-    )
+    # Too big + hosting off: fall back to the "file too large" message.
     big2 = tmp_path / "big2.mp4"
     big2.write_bytes(data=b"0" * 300)
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=big2))
     fail_interaction = FakeInteraction(filesize_limit=200)
-    monkeypatch.setattr(
-        video,
-        "VideoDownloader",
-        lambda output_folder: DownloaderStub(results=[DownloadResult(filename=big2)]),
-    )
     await VideoCogs.download_video.callback(
         cog, fail_interaction, url="https://x.test", quality="best"
     )
     assert "檔案大小超過" in fail_interaction.edits[-1]["content"]
 
-    monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: _RaiseDownloader())
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=RuntimeError("download failed"))
     error_interaction = FakeInteraction()
     await VideoCogs.download_video.callback(
         cog, error_interaction, url="https://x.test", quality="best"
@@ -691,3 +657,155 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
     # ended: aborted on the signal rather than running its stall out.
     assert downloader.aborted is True
     assert downloader.finished is False
+
+
+async def test_cog_routes_douyin_away_from_ytdlp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Douyin link must never reach the yt-dlp downloader, whose extractor cannot serve it."""
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"0" * 128)
+    cog, stub = _install(
+        monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
+    )
+
+    def _fail(output_folder: str) -> None:
+        raise AssertionError("yt-dlp must not be used for a Douyin URL")
+
+    monkeypatch.setattr(video, "VideoDownloader", _fail)
+    interaction = FakeInteraction()
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://v.douyin.com/NdlfIZPcgz4", quality="best"
+    )
+
+    assert stub.calls[0]["url"] == "https://v.douyin.com/NdlfIZPcgz4"
+    # The gallery cap is applied at download time, not after.
+    assert stub.calls[0]["max_images"] == video.DISCORD_ATTACHMENT_LIMIT
+    assert "來源" in interaction.edits[-1]["content"]
+
+
+async def test_cog_states_how_many_gallery_images_were_omitted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A capped gallery says so; silently sending a partial set would mislead the user."""
+    images = []
+    for index in range(3):
+        image = tmp_path / f"{index}.jpg"
+        image.write_bytes(b"0" * 16)
+        images.append(image)
+
+    cog, _stub = _install(
+        monkeypatch=monkeypatch,
+        outcome=DouyinDownload(is_photo=True, filenames=images, total_images=48),
+    )
+    interaction = FakeInteraction()
+
+    await VideoCogs.download_video.callback(cog, interaction, url=_DOUYIN_NOTE_URL, quality="best")
+
+    content = interaction.edits[-1]["content"]
+    assert "已省略 45 張圖片" in content
+    assert len(interaction.edits[-1]["files"]) == 3
+
+
+async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A gallery hosted in full must post every URL, not just the first one.
+
+    The bare-URL reply exists so a lone oversize video renders an inline player; sending a gallery
+    down that path would silently discard every image past the first, plus the omitted-count note.
+    """
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    images = []
+    for index in range(3):
+        image = tmp_path / f"{index}.jpg"
+        image.write_bytes(bytes([index]) * 4096)  # distinct bytes so hosting cannot dedup them
+        images.append(image)
+
+    cog, _stub = _install(
+        monkeypatch=monkeypatch,
+        outcome=DouyinDownload(is_photo=True, filenames=images, total_images=len(images)),
+    )
+    cog.media_delivery = hosting_planner(serve_dir=serve_dir)
+    interaction = FakeInteraction(filesize_limit=1024)
+
+    await VideoCogs.download_video.callback(cog, interaction, url=_DOUYIN_NOTE_URL, quality="best")
+
+    content = interaction.edits[-1]["content"]
+    hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
+    assert len(hosted) == len(images)
+    assert "檔案無法下載" not in content
+
+
+@pytest.mark.parametrize(
+    argnames=("error", "expected"),
+    argvalues=[
+        (DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST"), "-# 這則貼文已被刪除或設為私人"),
+        (DouyinBlockedError("challenge"), "-# 抖音暫時擋住了請求，請稍後再試"),
+        (DouyinTransferError("read timed out"), "-# 這次檔案沒抓完,稍後再試一次"),
+        (TimeoutError(), "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"),
+        (DouyinError("boom"), "-# 檔案無法下載"),
+        (OSError(28, "No space left on device"), "-# 檔案無法下載"),
+    ],
+    ids=["gone", "blocked", "transfer", "stalled", "douyin", "other"],
+)
+def test_each_douyin_failure_gets_its_own_wording(error: Exception, expected: str) -> None:
+    """Only a filtered post may read as deleted, and only a bot wall as Douyin refusing.
+
+    Exact strings, because the retryable three all end in a "try again later" that a substring
+    check cannot tell apart.
+    """
+    assert douyin_failure_message(error=error) == expected
+
+
+async def test_cog_reports_a_non_douyin_error_instead_of_hanging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure that is not a DouyinError must not escape and strand the placeholder.
+
+    The Douyin branch runs before the command's own try block, and the bot's application-command
+    error handler only logs, so an escaping exception would leave the user looking at
+    "正在下載影片..." indefinitely.
+    """
+    cog, _stub = _install(monkeypatch=monkeypatch, outcome=OSError(28, "No space left on device"))
+    interaction = FakeInteraction()
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url=_DOUYIN_VIDEO_URL, quality="best"
+    )
+
+    assert "檔案無法下載" in interaction.edits[-1]["content"]
+
+
+async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An oversize clip is delivered as a hosted URL, the fallback the README advertises.
+
+    Uses a real hosting service because the bug this guards against only appears once hosting
+    actually moves the source file out of the download folder.
+    """
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"0" * 4096)
+
+    cog, _stub = _install(
+        monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
+    )
+    cog.media_delivery = hosting_planner(serve_dir=serve_dir)
+    interaction = FakeInteraction(filesize_limit=1024)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url=_DOUYIN_VIDEO_URL, quality="best"
+    )
+
+    content = interaction.edits[-1]["content"]
+    # Asserted per line rather than as a substring: the URL has to start its own line for Discord
+    # to render it, so an anywhere-in-the-body match would accept a message Discord would not link.
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
+    assert "檔案無法下載" not in content
+    # The file really was hosted, so discarding the URL would have lost a completed upload.
+    assert list(serve_dir.glob("*.mp4"))

@@ -12,10 +12,10 @@ from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
     MediaHostingService,
-    MediaDeliveryPlanner,
 )
 
 from tests.helpers.casting import make_media_hosting_config
+from tests.helpers.link_sources import hosting_planner, hosting_off_planner
 
 
 def _service(
@@ -54,15 +54,6 @@ def _age(path: Path, *, seconds: float) -> None:
     """Backdates a file's mtime by `seconds` (so it is past the eviction grace / age cutoff)."""
     when = time.time() - seconds
     os.utime(path, (when, when))
-
-
-def _planner(
-    *, serve_dir: Path, enabled: bool = True, base_url: str = "https://media.test"
-) -> MediaDeliveryPlanner:
-    """Builds a delivery planner over a host writer pointed at a temp serve dir."""
-    return MediaDeliveryPlanner(
-        media_hosting=_service(serve_dir=serve_dir, enabled=enabled, base_url=base_url)
-    )
 
 
 # --- host writer (publish_bytes / publish_path) ---------------------------------------------
@@ -448,9 +439,9 @@ def test_media_item_to_file_carries_filename(tmp_path: Path) -> None:
 # --- planner --------------------------------------------------------------------------------
 
 
-async def test_plan_single_item_fits_is_native(tmp_path: Path) -> None:
+async def test_plan_single_item_fits_is_native() -> None:
     """A lone item under the limit attaches natively; nothing hosted or dropped."""
-    planner = _planner(serve_dir=tmp_path, enabled=False)
+    planner = hosting_off_planner()
     plan = await planner.plan(
         items=[MediaItem(source=b"x" * 10, filename="a.png")], upload_limit=100
     )
@@ -461,7 +452,7 @@ async def test_plan_single_item_fits_is_native(tmp_path: Path) -> None:
 
 async def test_plan_hosts_individually_oversize_bytes_item(tmp_path: Path) -> None:
     """A bytes item over the limit is hosted to a URL, none attached, none dropped."""
-    planner = _planner(serve_dir=tmp_path)
+    planner = hosting_planner(serve_dir=tmp_path)
     plan = await planner.plan(
         items=[MediaItem(source=b"y" * 200, filename="big.wav")], upload_limit=100
     )
@@ -477,7 +468,7 @@ async def test_plan_hosts_oversize_path_item_by_move(tmp_path: Path) -> None:
     serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"m" * 200)
-    planner = _planner(serve_dir=serve_dir)
+    planner = hosting_planner(serve_dir=serve_dir)
 
     plan = await planner.plan(
         items=[MediaItem(source=source, filename=source.name)], upload_limit=100
@@ -489,9 +480,9 @@ async def test_plan_hosts_oversize_path_item_by_move(tmp_path: Path) -> None:
     assert not source.exists()
 
 
-async def test_plan_drops_oversize_when_hosting_disabled(tmp_path: Path) -> None:
+async def test_plan_drops_oversize_when_hosting_disabled() -> None:
     """With hosting off, an oversize item drops while the fitting one still attaches."""
-    planner = _planner(serve_dir=tmp_path, enabled=False)
+    planner = hosting_off_planner()
     items = [
         MediaItem(source=b"x" * 50, filename="small.png"),
         MediaItem(source=b"y" * 200, filename="big.wav"),
@@ -506,7 +497,7 @@ async def test_plan_drops_oversize_when_hosting_disabled(tmp_path: Path) -> None
 
 async def test_plan_peels_largest_on_combined_overflow(tmp_path: Path) -> None:
     """Items each fitting individually but summing past the limit peel the largest to a URL."""
-    planner = _planner(serve_dir=tmp_path)
+    planner = hosting_planner(serve_dir=tmp_path)
     # All three fit under the limit individually, but their sum + the 1 MiB envelope margin does
     # not; only the largest is peeled to a hosted URL, leaving the other two as native attachments.
     limit = 1024 * 1024 + 500
@@ -526,11 +517,9 @@ async def test_plan_peels_largest_on_combined_overflow(tmp_path: Path) -> None:
     assert plan.dropped_items == []
 
 
-async def test_plan_drops_largest_on_combined_overflow_when_hosting_disabled(
-    tmp_path: Path,
-) -> None:
+async def test_plan_drops_largest_on_combined_overflow_when_hosting_disabled() -> None:
     """Host-off combined-overflow: the largest is peeled into dropped_items, the rest stay native."""
-    planner = _planner(serve_dir=tmp_path, enabled=False)
+    planner = hosting_off_planner()
     # Each fits individually, but sum + the 1 MiB margin overflows; with hosting off the largest
     # cannot be hosted, so it drops (the streamer's drop + ⚠️ path) while the rest stay native in order.
     limit = 1024 * 1024 + 500
@@ -549,9 +538,9 @@ async def test_plan_drops_largest_on_combined_overflow_when_hosting_disabled(
     assert [item.filename for item in plan.dropped_items] == ["reply.wav"]
 
 
-async def test_plan_clamps_to_attachment_limit(tmp_path: Path) -> None:
+async def test_plan_clamps_to_attachment_limit() -> None:
     """Eleven items all fitting (voice + music + 9 images) clamp to 10, dropping the trailing one."""
-    planner = _planner(serve_dir=tmp_path, enabled=False)
+    planner = hosting_off_planner()
     # Limit is well above the combined size + envelope margin, so nothing is hosted; only the
     # 10-attachment count cap applies, dropping the trailing item while native keeps input order.
     limit = 1024 * 1024 + 1000
@@ -566,16 +555,14 @@ async def test_plan_clamps_to_attachment_limit(tmp_path: Path) -> None:
     assert [item.filename for item in plan.dropped_items] == ["f10.png"]
 
 
-async def test_plan_count_clamp_precedes_peel_so_marginal_overflow_keeps_voice(
-    tmp_path: Path,
-) -> None:
+async def test_plan_count_clamp_precedes_peel_so_marginal_overflow_keeps_voice() -> None:
     """An 11th trailing image causing a marginal overflow is dropped first, sparing the voice clip.
 
     Eleven items each fit individually but their sum overflows; dropping the trailing 11th (count
     cap) brings the rest under the limit, so the prioritized (largest, leading) voice clip is never
     peeled. With hosting off, peeling-before-clamping would have dropped the voice clip instead.
     """
-    planner = _planner(serve_dir=tmp_path, enabled=False)
+    planner = hosting_off_planner()
     items = [
         MediaItem(source=b"v" * 200, filename="reply.wav"),  # largest + leads: must survive
         MediaItem(source=b"m" * 10, filename="music.mp3"),

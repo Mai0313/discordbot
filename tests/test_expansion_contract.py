@@ -55,7 +55,7 @@ from discordbot.utils.expansion_placeholder import (
 )
 from discordbot.services.platforms.instagram import InstagramConversation
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden, make_server_error
+from tests.helpers.casting import as_message, make_forbidden, make_server_error
 from tests.helpers.source_tree import PACKAGE
 from tests.helpers.link_sources import (
     BOT_USER_ID,
@@ -63,11 +63,12 @@ from tests.helpers.link_sources import (
     FACEBOOK_URL,
     INSTAGRAM_URL,
     StubDouyinDownloader,
-    StubConversationDownloader,
+    stub_bot,
     twitter_post,
     facebook_post,
     instagram_post,
     hosting_off_planner,
+    stub_conversation_cog,
 )
 from tests.helpers.discord_mocks import (
     FakeUser,
@@ -163,11 +164,6 @@ class _Staged:
         self.cog.__dict__["downloader_factory"] = recording
 
 
-def _bot() -> commands.Bot:
-    """A bot whose user a test can mention as `<@BOT_USER_ID>`."""
-    return as_bot(fake=SimpleNamespace(user=FakeUser(user_id=BOT_USER_ID, bot=True)))
-
-
 def _stage_conversation(
     *,
     cog: type[ExpansionCog[Any]],
@@ -177,15 +173,13 @@ def _stage_conversation(
     unreadable: PlatformConversation[Any],
 ) -> _Staged:
     """Stages a Facebook, Instagram or Twitter cog, whose unreadable post is an empty one."""
-    staged = _Staged(
-        cog=cog(bot=_bot()), message=FakeDiscordMessage(content=url, guild=FakeGuild())
-    )
     if isinstance(outcome, Exception):
-        stub = StubConversationDownloader(outcome=outcome)
+        instance, stub = stub_conversation_cog(cog_type=cog, outcome=outcome)
     else:
-        stub = StubConversationDownloader(
-            outcome=readable if outcome == "readable" else unreadable
+        instance, stub = stub_conversation_cog(
+            cog_type=cog, outcome=readable if outcome == "readable" else unreadable
         )
+    staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
     staged.serve(factory=lambda: stub)
     return staged
 
@@ -193,7 +187,7 @@ def _stage_conversation(
 def _stage_threads(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     """Stages the Threads cog, whose unreadable post is a walk that found no chain."""
     url = "https://www.threads.com/@alice/post/ABC123"
-    instance = cog(bot=_bot())
+    instance = cog(bot=stub_bot())
     instance.__dict__["media_delivery"] = hosting_off_planner()
     staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
     readable = ThreadsConversation(chain=[ThreadsOutput(text="post body", url=url)])
@@ -216,7 +210,7 @@ def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged
     Douyin has no empty post: what it reads and then refuses is media nothing can carry, staged
     here as a clip past a four-byte upload ceiling with hosting off.
     """
-    instance = cog(bot=_bot())
+    instance = cog(bot=stub_bot())
     instance.__dict__["media_delivery"] = hosting_off_planner()
     guild = FakeGuild(filesize_limit=4) if outcome == "unreadable" else FakeGuild()
     staged = _Staged(
@@ -387,7 +381,7 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     channel and the Discord 5xx that raises straight past it. Behavioural rather than a source
     scan, because what matters is that the marker lands whichever call site got there.
     """
-    instance = cog(bot=as_bot(fake=SimpleNamespace(user=FakeUser(bot=True))))
+    instance = cog(bot=stub_bot())
     message = FakeDiscordMessage()
 
     await instance._mark_failed(message=as_message(fake=message), current_emoji=None)

@@ -1,7 +1,7 @@
 """Tests for the cog that auto-expands Douyin links pasted into a channel."""
 
 from types import SimpleNamespace
-from typing import Unpack, NoReturn, TypedDict
+from typing import Unpack, NoReturn
 import asyncio
 from pathlib import Path
 import threading
@@ -9,7 +9,6 @@ import threading
 import pytest
 
 from discordbot.cogs.parse_douyin import cog as parse_douyin
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.services.platforms.douyin import DouyinMetadata
 from discordbot.utils.expansion_placeholder import (
@@ -17,10 +16,14 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_RETRY_LATER_EMOJI,
 )
 
-from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
+from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
+    StubDouyinOptions,
     StubDouyinDownloader,
+    stub_bot,
+    hosting_planner,
     hosting_off_planner,
+    stub_douyin_downloads,
     race_every_scratch_teardown,
 )
 from tests.helpers.discord_mocks import (
@@ -33,31 +36,12 @@ from tests.helpers.discord_mocks import (
 _URL = "https://v.douyin.com/abc123"
 
 
-class _StubOptions(TypedDict, total=False):
-    """Canned per-stage outcomes a test forwards through `_cog` to the stub downloader."""
-
-    post: DouyinMetadata | None
-    files: list[tuple[str, bytes]] | None
-    parse_error: Exception | None
-    download_error: Exception | None
-    total_images: int
-
-
-def _cog(
-    **downloader_kwargs: Unpack[_StubOptions],
-) -> tuple[DouyinCogs, dict[str, StubDouyinDownloader]]:
-    """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
-    cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+def _cog(**canned: Unpack[StubDouyinOptions]) -> tuple[DouyinCogs, list[StubDouyinDownloader]]:
+    """Builds a cog wired to stub downloaders and a hosting-off delivery planner."""
+    cog = DouyinCogs(bot=stub_bot())
     cog.media_delivery = hosting_off_planner()
-    made: dict[str, StubDouyinDownloader] = {}
-
-    def factory(output_folder: str) -> StubDouyinDownloader:
-        """Records the stub so a test can assert on what it was asked to do."""
-        stub = StubDouyinDownloader(output_folder=output_folder, **downloader_kwargs)
-        made["stub"] = stub
-        return stub
-
-    cog.__dict__["downloader_factory"] = factory
+    made: list[StubDouyinDownloader] = []
+    cog.__dict__["downloader_factory"] = stub_douyin_downloads(made=made, **canned)
     return cog, made
 
 
@@ -89,7 +73,7 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     assert delivered["embeds"][0].author.name == "somebody"
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
     # The scratch dir is per invocation and removed with its files once delivery finishes.
-    assert not await asyncio.to_thread(Path(made["stub"].output_folder).exists)
+    assert not await asyncio.to_thread(Path(made[0].output_folder).exists)
 
 
 async def test_a_message_without_a_link_is_ignored() -> None:
@@ -100,20 +84,14 @@ async def test_a_message_without_a_link_is_ignored() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions == []
-    assert made == {}
+    assert made == []
 
 
 async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
     """Too big to attach means a hosted link, exactly as `/download_video` behaves."""
     cog, _ = _cog()
-    (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path / "serve")
-            )
-        )
-    )
+    (tmp_path / "serve").mkdir()
+    cog.media_delivery = hosting_planner(serve_dir=tmp_path / "serve")
     message = _message(filesize_limit=4)  # tiny ceiling -> the clip counts as oversize
 
     await cog.on_message(message=as_message(fake=message))
@@ -149,9 +127,9 @@ async def test_the_parsed_post_is_handed_to_the_download() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    stub = made["stub"]
-    assert stub.download_calls == 1
-    assert stub.received_post is stub.post
+    (stub,) = made
+    assert len(stub.download_calls) == 1
+    assert stub.download_calls[0]["post"] is stub.post
 
 
 async def test_a_non_post_link_is_left_alone() -> None:
@@ -172,7 +150,7 @@ async def test_a_non_post_link_is_left_alone() -> None:
 
         assert message.reactions == [], content
         assert message.replies == [], content
-        assert made == {}, content
+        assert made == [], content
 
 
 def _stall_every_read(*, cog: DouyinCogs, release: threading.Event) -> None:

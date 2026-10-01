@@ -1,6 +1,6 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
-from typing import Any
+from typing import Any, Unpack
 import asyncio
 from pathlib import Path
 import threading
@@ -13,7 +13,6 @@ from discordbot.services.platforms.douyin import (
     DouyinError,
     DouyinDownload,
     DouyinMetadata,
-    DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
     DouyinUnavailableError,
@@ -30,7 +29,13 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
 )
 
 from tests.helpers.casting import step_dicts, make_stub_gemini_client
-from tests.helpers.link_sources import FakeUploads, race_every_scratch_teardown
+from tests.helpers.link_sources import (
+    FakeUploads,
+    StubDouyinOptions,
+    StubDouyinDownloader,
+    stub_douyin_downloads,
+    race_every_scratch_teardown,
+)
 
 _URL = "https://v.douyin.com/abc123"
 
@@ -47,55 +52,27 @@ def _post(is_photo: bool = False, images: int = 0) -> DouyinMetadata:
     )
 
 
-def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder can hit
+def _stub_douyin(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    post: DouyinMetadata | None = None,
-    files: list[str] | None = None,
-    parse_error: Exception | None = None,
-    download_error: Exception | None = None,
     uploads: FakeUploads | None = None,
-) -> tuple[FakeUploads, dict[str, object]]:
-    """Stubs the downloader and the Files API upload so no network or SDK is touched."""
-    resolved_post = post or _post()
-    recorded: dict[str, object] = {}
+    **canned: Unpack[StubDouyinOptions],
+) -> tuple[FakeUploads, list[StubDouyinDownloader]]:
+    """Stubs the downloader and the Files API upload so no network or SDK is touched.
 
-    def fake_parse_metadata(self: DouyinDownloader, *, url: str) -> DouyinMetadata:
-        """Returns the canned post, or raises the canned parse failure."""
-        del url
-        if parse_error is not None:
-            raise parse_error
-        return resolved_post
-
-    def fake_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
-        self: DouyinDownloader,
-        url: str,
-        quality: str = "best",
-        max_images: int | None = None,
-        max_bytes: int | None = None,
-        post: DouyinMetadata | None = None,
-    ) -> DouyinDownload:
-        """Writes canned files into the builder's scratch dir, or raises."""
-        del url
-        recorded["quality"] = quality
-        recorded["max_images"] = max_images
-        recorded["max_bytes"] = max_bytes
-        recorded["post"] = post
-        if download_error is not None:
-            raise download_error
-        names = files if files is not None else [f"{resolved_post.aweme_id}.mp4"]
-        written: list[Path] = []
-        for name in names[: max_images or len(names)]:
-            path = Path(self.output_folder) / name
-            path.write_bytes(b"media-bytes")
-            written.append(path)
-        return DouyinDownload(is_photo=resolved_post.is_photo, filenames=written)
-
-    monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=fake_parse_metadata)
-    monkeypatch.setattr(target=DouyinDownloader, name="download", value=fake_download)
+    The post defaults to `_post()`, whose clip is `777.mp4`.
+    """
+    canned.setdefault("post", _post())
+    canned.setdefault("files", [("777.mp4", b"media-bytes")])
+    made: list[StubDouyinDownloader] = []
+    monkeypatch.setattr(
+        target=douyin_builder,
+        name="DouyinDownloader",
+        value=stub_douyin_downloads(made=made, **canned),
+    )
     resolved_uploads = uploads or FakeUploads()
     monkeypatch.setattr(douyin_builder, "upload_as_input_file", resolved_uploads)
-    return resolved_uploads, recorded
+    return resolved_uploads, made
 
 
 async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any]]:
@@ -121,7 +98,7 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     A Douyin CDN url is unusable to both backends anyway (the play endpoint needs a mobile
     User-Agent), so the upload is the only shape that works, not merely the tidier one.
     """
-    uploads, recorded = _stub_douyin(monkeypatch)
+    uploads, made = _stub_douyin(monkeypatch)
 
     blocks = await _build()
 
@@ -143,30 +120,34 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     assert filename.endswith(".mp4")
     # A fail-fast Content-Length guard, not a quality lever: the resolution is chosen separately
     # by `quality=AI_INGEST_QUALITY`, deliberately below what the human-facing expansion posts.
-    assert recorded["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
-    assert recorded["quality"] == douyin_builder.AI_INGEST_QUALITY
+    (call,) = made[-1].download_calls
+    assert call["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
+    assert call["quality"] == douyin_builder.AI_INGEST_QUALITY
 
 
 async def test_the_parsed_post_is_handed_to_the_download(monkeypatch: pytest.MonkeyPatch) -> None:
     """The caption is parsed once and reused, so the post is never resolved twice."""
-    _, recorded = _stub_douyin(monkeypatch)
+    post = _post()
+    _, made = _stub_douyin(monkeypatch, post=post)
 
     await _build()
 
-    assert isinstance(recorded["post"], DouyinMetadata)
+    (call,) = made[-1].download_calls
+    assert call["post"] is post
 
 
 async def test_a_gallery_is_capped_and_uploaded_as_images(monkeypatch: pytest.MonkeyPatch) -> None:
     """A photo post rides as image parts, capped so a huge gallery cannot blow the budget."""
-    uploads, recorded = _stub_douyin(
+    uploads, made = _stub_douyin(
         monkeypatch,
         post=_post(is_photo=True, images=20),
-        files=[f"777_{index}.jpg" for index in range(20)],
+        files=[(f"777_{index}.jpg", b"media-bytes") for index in range(20)],
     )
 
     blocks = await _build()
 
-    assert recorded["max_images"] == MAX_DOUYIN_INGEST_IMAGES
+    (call,) = made[-1].download_calls
+    assert call["max_images"] == MAX_DOUYIN_INGEST_IMAGES
     media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
     assert len(media) == MAX_DOUYIN_INGEST_IMAGES
     assert all(mime == "image/jpeg" for _source, mime, _name in uploads.calls)
@@ -340,24 +321,20 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
     removed = race_every_scratch_teardown(monkeypatch)
     release = threading.Event()
 
-    def blocking_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
-        self: DouyinDownloader,
-        url: str,
-        quality: str = "best",
-        max_images: int | None = None,
-        max_bytes: int | None = None,
-        post: DouyinMetadata | None = None,
-    ) -> DouyinDownload:
-        """Blocks the worker thread the way a stalling CDN read does.
+    class _StallingDownloader(StubDouyinDownloader):
+        """Reads the post, then stalls its download the way a stalling CDN read does."""
 
-        Released by the test rather than slept out: `asyncio.to_thread` cannot cancel this, so
-        a fixed sleep would be charged to the event loop's own shutdown join at teardown.
-        """
-        del url, quality, max_images, max_bytes, post
-        release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
-        raise AssertionError("should have been abandoned")
+        def download(self, *args: object, **kwargs: object) -> DouyinDownload:
+            """Blocks the worker thread until the test releases it.
 
-    monkeypatch.setattr(target=DouyinDownloader, name="download", value=blocking_download)
+            Released by the test rather than slept out: `asyncio.to_thread` cannot cancel this,
+            so a fixed sleep would be charged to the event loop's own shutdown join at teardown.
+            """
+            del args, kwargs
+            release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
+            raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(target=douyin_builder, name="DouyinDownloader", value=_StallingDownloader)
 
     try:
         with pytest.raises(TimeoutError):
