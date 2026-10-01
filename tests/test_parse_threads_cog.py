@@ -752,3 +752,21 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
     assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
     assert placeholder_withdrawn(message=message)
     assert video_file.exists() is True
+
+
+async def test_threads_cog_sends_no_author_icon_for_an_author_without_a_picture() -> None:
+    """An author Threads serves without a picture gets no icon, rather than an empty icon URL."""
+    cog = _cog()
+    parent = _thread_output(text="parent", author_name="parent")
+    target = _thread_output(text="target", author_name="target")
+    target.author_icon_url = ""
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[parent, target]))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    authors = [embed.to_dict()["author"] for embed in expansion_payload(message=message)["embeds"]]
+    assert [author.get("icon_url") for author in authors] == [
+        "https://example.test/avatar.png",
+        None,
+    ]
