@@ -26,6 +26,7 @@ _GROUP_ID = "1176671326743489"
 _COMMENT_ID = "1730777104666239"
 _PERMALINK = f"https://www.facebook.com/groups/{_GROUP_ID}/posts/{_POST_ID}/"
 _SHARE_URL = "https://www.facebook.com/share/p/1MQuL1qHQ4/"
+_PFBID = "pfbid02Lq7KxT9vUo3wQmZb5n8cYdHs1rFgJpAe4iLtN6uWkVyXzB7hRaE2DfGqC9sMjP3l"
 
 
 def _story(
@@ -206,6 +207,21 @@ def test_a_share_link_names_no_post_until_it_redirects() -> None:
     assert parsed.post_id == ""
     assert parsed.is_share_link
     assert is_facebook_post_url(url=_SHARE_URL)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://www.facebook.com/NASA/posts/{_PFBID}",
+        f"https://www.facebook.com/100064/posts/{_PFBID}/?mibextid=wwXIfr",
+        f"https://www.facebook.com/permalink.php?story_fbid={_PFBID}&id=100077759593577",
+        f"https://m.facebook.com/story.php?story_fbid={_PFBID}&id=100077759593577",
+    ],
+)
+def test_a_pfbid_link_is_a_post(url: str) -> None:
+    """No story node carries a `pfbid` id, so the link names no `post_id` yet is still a post."""
+    assert FacebookURL(raw_url=url).post_id == ""
+    assert is_facebook_post_url(url=url)
 
 
 def test_clean_url_drops_the_tokens_that_name_whoever_shared_it() -> None:
@@ -456,6 +472,39 @@ def test_a_share_link_takes_its_post_id_from_where_it_landed(
     post = _parse(downloader, _SHARE_URL)
 
     assert post.text == "the shared post"
+
+
+def test_a_pfbid_link_reads_the_story_on_its_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `pfbid` link lands on a `pfbid` URL again, so neither names the story's numeric id."""
+    downloader = _downloader(
+        monkeypatch,
+        html=_page(stories=[_story(text="the pfbid post")]),
+        final_url=f"https://www.facebook.com/story.php?story_fbid={_PFBID}&id=100077759593577",
+    )
+
+    post = _parse(
+        downloader,
+        f"https://www.facebook.com/permalink.php?story_fbid={_PFBID}&id=100077759593577",
+    )
+
+    assert post.text == "the pfbid post"
+
+
+def test_a_pfbid_page_keeps_only_its_storys_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The URL names no numeric id, so the story read off the page decides whose comments stay."""
+    comments = [
+        _comment(comment_id="11", text="on the linked post"),
+        _comment(comment_id="22", text="on another post", post_id="999"),
+    ]
+    downloader = _downloader(
+        monkeypatch,
+        html=_page(stories=[_story(), _story(post_id="999")], comments=comments),
+        final_url=f"https://www.facebook.com/NASA/posts/{_PFBID}",
+    )
+
+    conversation = downloader.parse_metadata(url=f"https://www.facebook.com/NASA/posts/{_PFBID}")
+
+    assert [comment.text for comment in conversation.comments] == ["on the linked post"]
 
 
 def test_a_login_wall_reads_as_an_unreadable_post(monkeypatch: pytest.MonkeyPatch) -> None:
