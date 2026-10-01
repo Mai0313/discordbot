@@ -815,19 +815,49 @@ def test_a_refused_short_link_is_retryable_only_when_http_says_so(
     assert isinstance(raised.value, DouyinBlockedError) is retryable
 
 
-def test_a_stalled_media_download_is_retryable_but_not_the_bot_wall(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    argnames=("status", "retryable"),
+    argvalues=[(403, False), (404, False), (429, True), (503, True)],
+)
+def test_a_refused_media_download_is_retried_only_when_http_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: int, retryable: bool
 ) -> None:
-    """A transfer that keeps stalling is retryable, and is not the bot wall.
+    """A status a retry will not change is asked once and never earns the retry-later mark."""
+    calls = _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
+    )
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+
+    with pytest.raises(DouyinError) as raised:
+        downloader._download_to(url="https://cdn.test/v.mp4", filename="v.mp4")
+
+    assert len(calls) == (downloader.max_retries if retryable else 1)
+    assert isinstance(raised.value, LinkRetryableError) is retryable
+
+
+@pytest.mark.parametrize(
+    argnames="failure",
+    argvalues=[
+        requests.ReadTimeout("stalled"),
+        requests.exceptions.ChunkedEncodingError("connection dropped mid-body"),
+    ],
+    ids=["read-timeout", "cut-off-body"],
+)
+def test_a_stalled_media_download_is_retryable_but_not_the_bot_wall(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: requests.RequestException
+) -> None:
+    """A transfer that keeps stalling or gets cut off is retryable, and is not the bot wall.
 
     The download is the request that stalls in practice, so its retries running out is the
     ordinary Douyin failure; reported flat, it would read as a post with nothing showable in it.
+    A body cut off mid-transfer carries no status, so the shared classifier alone would call it
+    final.
     """
 
     def stall(**kwargs: object) -> Path:
         """Never completes, the way a stalling CDN transfer does not."""
         del kwargs
-        raise requests.ReadTimeout("stalled")
+        raise failure
 
     monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
     downloader = DouyinDownloader(output_folder=str(tmp_path))
