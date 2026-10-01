@@ -121,8 +121,9 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         _regeneration_tasks.pop(key=scope)
     if task.cancelled():
         # Cancelled (e.g. bot shutdown): reading result() would raise
-        # CancelledError out of this callback, and an aborted rebuild leaves the
-        # existing memory untouched, so there is nothing to recover.
+        # CancelledError out of this callback. A cancel lands only at an await, so
+        # each compartment is either already replaced or untouched, and raw.md is
+        # not yet retired.
         return
     try:
         task.result()
@@ -199,7 +200,8 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                     )
                     if result is None:
                         logfire.warn(
-                            "Memory regeneration LLM call failed; memory left untouched",
+                            "Memory regeneration LLM call failed; "
+                            "this and later compartments left untouched",
                             scope=scope,
                             compartment=compartment,
                         )
