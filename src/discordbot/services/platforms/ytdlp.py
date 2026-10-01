@@ -1,10 +1,8 @@
-"""yt-dlp wrapper utilities shared by `/download_video` and the Bilibili link builder.
+"""yt-dlp wrapper: a synchronous downloader and metadata probe, plus the asyncio stop signal.
 
-`VideoDownloader` itself is synchronous. The metadata probe exists for the link builder,
-which has to decide whether to fetch at all; `download_with_stop_signal` is the asyncio half,
-for either caller having to abandon a download that outran its budget -- the reply's, or the
-command's own deadline. It is here rather than at either call site because both need it and
-neither may import from the other's directory.
+`VideoDownloader` itself is synchronous. The metadata probe is for a caller that has to decide
+whether to fetch at all; `download_with_stop_signal` is the asyncio half, for a caller having to
+abandon a download that outran its budget.
 """
 
 from typing import Any, ClassVar
@@ -29,21 +27,16 @@ from discordbot.typings.timeouts import (
     SHARE_RESOLVE_TIMEOUT_SECONDS,
 )
 from discordbot.services.platforms.base import PlatformDownloader
-from discordbot.services.platforms.file_downloads import TemporaryDownload
 
 
 class DownloadStoppedError(Exception):
     """Raised inside yt-dlp when the caller's stop signal is set mid-download."""
 
 
-class DownloadResult(TemporaryDownload):
+class DownloadResult(BaseModel):
     """Represents a downloaded video file."""
 
     filename: Path = Field(..., description="Local path of the downloaded file.")
-
-    def unlink(self) -> None:
-        """Deletes the downloaded file."""
-        self.filename.unlink(missing_ok=True)
 
 
 class VideoMetadata(BaseModel):
@@ -128,20 +121,20 @@ class VideoDownloader(PlatformDownloader):
             https://www.facebook.com/watch?v=828357636228730
             -> https://www.facebook.com/reel/828357636228730
         """
-        parsed = urlparse(url)
+        parsed = urlparse(url=url)
 
         if not host_matches_domain(host=normalized_host(url=url), domain="facebook.com"):
             return url
 
         if parsed.path.startswith("/share/"):
-            resolved_url = self._resolve_facebook_share_url(url)
+            resolved_url = self._resolve_facebook_share_url(url=url)
             if resolved_url != url:
-                return self._convert_facebook_url(resolved_url)
+                return self._convert_facebook_url(url=resolved_url)
             return url
 
         # Check if it's a Facebook watch URL
         if parsed.path == "/watch":
-            query_params = parse_qs(parsed.query)
+            query_params = parse_qs(qs=parsed.query)
             video_id = query_params.get("v", [None])[0]
 
             if video_id:
@@ -160,7 +153,6 @@ class VideoDownloader(PlatformDownloader):
             A dictionary of yt-dlp parameters.
         """
         output_path = Path(self.output_folder)
-        output_path.mkdir(parents=True, exist_ok=True)
 
         # Base headers safe for most sites; site-specific headers added conditionally below.
         # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
@@ -211,7 +203,7 @@ class VideoDownloader(PlatformDownloader):
             RuntimeError: When yt-dlp returns no metadata for the URL.
         """
         # Convert Facebook watch URLs to reel format
-        url = self._convert_facebook_url(url)
+        url = self._convert_facebook_url(url=url)
 
         params = self.get_params(quality=quality, url=url)
         if stop_signal is not None:
@@ -243,7 +235,7 @@ class VideoDownloader(PlatformDownloader):
         Raises:
             RuntimeError: When yt-dlp returns no metadata for the URL.
         """
-        url = self._convert_facebook_url(url)
+        url = self._convert_facebook_url(url=url)
         params = self.get_params(quality="best", url=url)
         # `extract_flat` keeps a playlist-shaped page (a channel, a user space, a collection)
         # to ONE request instead of resolving every entry over the network in a probe that is

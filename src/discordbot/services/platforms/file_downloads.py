@@ -1,15 +1,11 @@
-"""Shared primitives for pulling a file down over HTTP and cleaning it up afterwards.
+"""Shared primitive for pulling a file down over HTTP.
 
 `stream_to_file` writes one remote file and leaves the failure POLICY to its caller, since what
 a failed transfer means (worth retrying, or worth reporting) differs per source.
-`TemporaryDownload` is the delete-on-exit context manager a download result subclasses, each
-deciding which files are its own.
 """
 
-import types
 from pathlib import Path
 
-from pydantic import BaseModel
 import requests
 
 # How much is read off the socket at a time. A buffer size, not a policy.
@@ -18,41 +14,6 @@ _CHUNK_BYTES = 1 << 16
 
 class DownloadTooLargeError(RuntimeError):
     """The media exceeds the caller's cap. Deterministic, so it is never worth retrying."""
-
-
-class TemporaryDownload(BaseModel):
-    """A download result that deletes the files it names when its `with` block ends.
-
-    `unlink` belongs to the subclass: what "its files" means differs per source, and that
-    difference is the only thing these results do not share.
-    """
-
-    def unlink(self) -> None:
-        """Deletes every file this result names."""
-        raise NotImplementedError
-
-    def __enter__(self):
-        """Enters the context manager.
-
-        Returns:
-            This download result.
-        """
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ):
-        """Exits the context manager and deletes the downloaded files.
-
-        Args:
-            exc_type: Exception type raised inside the context, if any.
-            exc_val: Exception value raised inside the context, if any.
-            exc_tb: Traceback raised inside the context, if any.
-        """
-        self.unlink()
 
 
 def _reject_oversize_header(response: requests.Response, url: str, max_bytes: int | None) -> None:

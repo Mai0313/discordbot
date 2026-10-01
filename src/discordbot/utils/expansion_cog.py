@@ -35,10 +35,12 @@ from nextcord.ext import commands
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
+from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
 from discordbot.utils.discord_embeds import (
     DISCORD_EMBED_TOTAL_LIMIT,
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     utf16_length,
+    embed_text_length,
     clip_to_utf16_limit,
 )
 from discordbot.utils.expansion_placeholder import (
@@ -46,12 +48,10 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
     ExpansionPlaceholder,
-    expansion_failure_emoji,
     send_expansion_placeholder,
-    report_expansion_read_failure,
     resume_expansion_placeholders,
-    report_expansion_delivery_failure,
 )
 
 # What a post card shows before it starts scrolling the channel. A gallery post can carry far
@@ -148,6 +148,29 @@ class ConversationReader[ConversationT](Protocol):
         ...
 
 
+def with_gallery(card: Embed, images: list[str]) -> list[Embed]:
+    """Shows the first image on `card` and each further one on a bare embed after it.
+
+    The further embeds reuse the card's URL, which is what makes Discord merge them into one
+    gallery under the card rather than stacking separate cards.
+
+    Args:
+        card: The post's own embed.
+        images: The images to show, empty for none.
+
+    Returns:
+        The card followed by its gallery.
+    """
+    if images:
+        card.set_image(url=images[0])
+    embeds = [card]
+    for image_url in images[1:]:
+        extra = Embed(url=card.url)
+        extra.set_image(url=image_url)
+        embeds.append(extra)
+    return embeds
+
+
 def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform supplies
     *,
     post: CardPost,
@@ -160,10 +183,8 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
 ) -> list[Embed]:
     """Builds the linked post's own embed plus one bare embed per further image.
 
-    The further images reuse the post's URL, which is what makes Discord merge them into one
-    gallery under the post rather than stacking separate cards. A long body is cut rather than
-    split across a second embed: the whole card is one post, and a reader who wants the tail has
-    the link.
+    A long body is cut rather than split across a second embed: the whole card is one post, and
+    a reader who wants the tail has the link.
 
     Args:
         post: The linked post.
@@ -195,15 +216,8 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
     )
     if author:
         main.set_author(name=author, url=post.url, icon_url=post.author_icon_url or None)
-    if images:
-        main.set_image(url=images[0])
     main.set_footer(text=footer)
-    embeds = [main]
-    for image_url in images[1:]:
-        extra = Embed(url=post.url)
-        extra.set_image(url=image_url)
-        embeds.append(extra)
-    return embeds
+    return with_gallery(card=main, images=images)
 
 
 def context_card_budget(*, card: Embed) -> int:
@@ -219,12 +233,117 @@ def context_card_budget(*, card: Embed) -> int:
     Returns:
         The UTF-16 units left for every secondary card together.
     """
-    spent = sum(
-        utf16_length(value=text)
-        for text in (card.description, card.footer.text, card.author.name)
-        if isinstance(text, str)
+    return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
+
+
+def expansion_failure_emoji(*, error: Exception) -> str:
+    """Picks the mark a failed read earns, the same way for every platform.
+
+    Read off the exception's CLASS rather than its message: a platform refusing the request or a
+    transport that never answered is the retryable mark, since the link is fine and works later;
+    anything else `LinkReadError` covers means the platform answered and there is no post in it;
+    and an error from outside that tree is the bot's own. `utils/link_errors.py` owns which fetch
+    failures are classified at all and why a 403 deliberately is not.
+
+    Args:
+        error: What the read raised.
+
+    Returns:
+        One of the `EXPANSION_*_EMOJI` outcome marks.
+    """
+    if isinstance(error, LinkRetryableError | TimeoutError):
+        return EXPANSION_RETRY_LATER_EMOJI
+    if isinstance(error, LinkReadError):
+        return EXPANSION_UNREADABLE_EMOJI
+    return EXPANSION_FAILED_EMOJI
+
+
+def report_expansion_read_failure(
+    *, error: Exception, platform: str, url: str, message_id: int
+) -> None:
+    """Logs a failed read at the severity `.github/CONTRIBUTING.md#logging` gives its outcome.
+
+    The ladder is keyed on how tolerable the failure is, not on how deep it happened, so the
+    levels line up with the marks `expansion_failure_emoji` picks rather than with any one
+    platform's habits: a post the platform says is gone is a routine user-driven outcome, a read
+    the platform explains any other way is degraded but handled, and an error from outside that
+    tree broke a user-visible deliverable — a `TimeoutError` excepted, which rides `warn` for the
+    same reason it rides the retryable mark: it says the read was too slow, never that the bot is
+    wrong.
+
+    The `info` branch deliberately carries no exception and does carry `reason`: a traceback for
+    a deleted post is noise, while the platform's own words for WHY it refused exist in no other
+    line, and a deleted post logged at `warn` with a traceback is what makes a real regression
+    unfindable.
+
+    Args:
+        error: What the read raised.
+        platform: The platform's display name, for the log message.
+        url: The post being expanded.
+        message_id: The source message carrying the link.
+    """
+    if isinstance(error, LinkUnavailableError):
+        logfire.info(
+            f"{platform} post is gone or private",
+            url=url,
+            message_id=message_id,
+            error_type=type(error).__name__,
+            reason=str(error),
+        )
+        return
+    report = logfire.warn if isinstance(error, LinkReadError | TimeoutError) else logfire.error
+    report(
+        f"{platform} read failed",
+        url=url,
+        message_id=message_id,
+        error_type=type(error).__name__,
+        _exc_info=error,
     )
-    return DISCORD_EMBED_TOTAL_LIMIT - spent - _CONTEXT_CARD_SLACK
+
+
+def report_expansion_delivery_failure(
+    *, error: Exception, platform: str, url: str, message_id: int, channel_id: int
+) -> None:
+    """Logs a failed delivery at the severity it deserves, the same way for every platform.
+
+    Only the placeholder's own disappearance is routine. On an edit 50035 is a rejected body
+    rather than a message that went away, so it is a defect here and
+    `send_expansion_placeholder`'s 50035 branch must not be copied down.
+
+    Args:
+        error: What the delivery raised.
+        platform: The platform's display name, for the log message.
+        url: The post being expanded.
+        message_id: The source message carrying the link.
+        channel_id: The channel it was posted in.
+    """
+    if isinstance(error, NotFound):
+        logfire.info(
+            f"The {platform} expansion placeholder is gone",
+            url=url,
+            message_id=message_id,
+            channel_id=channel_id,
+        )
+    elif isinstance(error, Forbidden):
+        # No traceback, whose stack is the same on every refusal; the code says which refusal it
+        # was, since not every one here is a missing permission (#719).
+        logfire.warn(
+            f"Missing permission to post the {platform} expansion",
+            url=url,
+            message_id=message_id,
+            channel_id=channel_id,
+            error_type=type(error).__name__,
+            code=error.code,
+        )
+    else:
+        logfire.error(
+            f"Failed to send {platform} expansion",
+            url=url,
+            message_id=message_id,
+            channel_id=channel_id,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
 
 
 class ExpansionDelivery(BaseModel):
@@ -684,6 +803,29 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     def _video_link(self, *, post: PostT) -> str:
         """Where a video post's link points; only its first video gets one."""
         return post.video_urls[0]
+
+    @staticmethod
+    def _omitted_media_notes(post: CardPost, shown_images: int) -> list[str]:
+        """The footer notes for what the card leaves out of a post's media.
+
+        Images past the ones shown are counted, and so is every video but the first, since only
+        the first gets a link.
+
+        Args:
+            post: The linked post.
+            shown_images: How many of its images the card shows.
+
+        Returns:
+            One note per kind left out, empty when nothing was.
+        """
+        notes: list[str] = []
+        remaining_images = len(post.image_urls) - shown_images
+        if remaining_images > 0:
+            notes.append(f"🖼️ 另有 {remaining_images} 張")
+        remaining_videos = len(post.video_urls) - 1
+        if remaining_videos > 0:
+            notes.append(f"🎬 另有 {remaining_videos} 部影片")
+        return notes
 
     def _footer_text(self, *, post: PostT, shown_images: int) -> str:
         """The post card's counter line, given how many of its images the card shows.

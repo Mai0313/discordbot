@@ -39,14 +39,3 @@ LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "douyin": DOUYIN_EMOJI,
     "bilibili": BILIBILI_EMOJI,
 }
-
-__all__ = [
-    "BILIBILI_EMOJI",
-    "DOUYIN_EMOJI",
-    "FACEBOOK_EMOJI",
-    "INSTAGRAM_EMOJI",
-    "LINK_SOURCE_EMOJIS",
-    "THREADS_EMOJI",
-    "TWITTER_EMOJI",
-    "LinkSourceName",
-]

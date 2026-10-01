@@ -22,6 +22,7 @@ from nextcord import Embed
 from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.utils.link_errors import LinkRetryableError
 from discordbot.cogs.parse_threads import cog as parse_threads
+from discordbot.utils.discord_embeds import embed_text_length
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
@@ -405,7 +406,7 @@ async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() ->
 
     embeds = cog._build_embeds(results=_long_threads_chain())
 
-    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
+    assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     authors = [cast("str", embed.author.name) for embed in embeds if embed.author]
     assert authors[-1].startswith("user-9-")
     assert any(author.startswith("user-8-") for author in authors)
@@ -430,7 +431,7 @@ async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None
 
     embeds = cog._build_embeds(results=[root, parent, target])
 
-    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
+    assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     descriptions = [embed.description or "" for embed in embeds]
     assert descriptions[0].startswith("parent-")
     assert descriptions[1].startswith("target-")
@@ -452,7 +453,7 @@ async def test_threads_cog_drops_an_over_budget_post_with_its_gallery() -> None:
 
     embeds = cog._build_embeds(results=[parent, target])
 
-    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
+    assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == ["parent", "target"]
     assert all(not embed.image for embed in embeds)
     assert all("被引用的貼文" not in (embed.description or "") for embed in embeds)
@@ -467,7 +468,7 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
     embeds = cog._build_embeds(results=chain)
 
     assert len(embeds) < len(chain)
-    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
+    assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == [
         "user-5",
         "user-6",
@@ -491,7 +492,7 @@ async def test_threads_cog_delivers_a_trimmed_chain_in_one_message() -> None:
 
     assert len(message.replies) == 1  # the placeholder the card was edited onto, and nothing else
     embeds = expansion_payload(message=message)["embeds"]
-    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
+    assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert "篇未展開" in cast("str", embeds[-1].footer.text)
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
 

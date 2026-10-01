@@ -83,8 +83,6 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         if post.comment_count:
             replies += "（Twitter 不提供留言）"
         parts = [f"♥ {post.like_count:,}", replies]
-        # Never positive today: the reader keeps at most four media per post and the card shows
-        # four. It says what was left out if that reader slice is ever widened.
         omitted = len(post.image_urls) - shown_images
         if omitted > 0:
             parts.append(f"另有 {omitted} 張圖片")
@@ -122,8 +120,8 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         context_count = bool(conversation.parent) + bool(post.quoted)
         hint = VIDEO_HINT.format(url=self._video_link(post=post)) if post.video_urls else ""
         truncated = _TRUNCATED_NOTICE if post.is_truncated else ""
-        # The reader keeps at most four media per post, so the shared cap binds on nothing here;
-        # it is what keeps the card bounded if that reader slice is ever widened.
+        # The reader keeps no more media per post than the card shows, so the cap binds on nothing
+        # today; it keeps the card bounded if the reader ever keeps more.
         shown = post.image_urls[:POST_CARD_MAX_IMAGES]
         # A video's poster frame stands in for the image a clip has none of, so a video post is
         # not a card with nothing on it. Stills win when the post has both.

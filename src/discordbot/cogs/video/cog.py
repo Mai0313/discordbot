@@ -1,11 +1,10 @@
-"""Slash command cog for downloading videos through yt-dlp."""
+"""Slash command cog that downloads a video, or a Douyin gallery, and sends it back."""
 
 import asyncio
-from pathlib import Path
 
 import logfire
 import nextcord
-from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
+from nextcord import Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.urls import extract_first_url
@@ -13,8 +12,8 @@ from discordbot.typings.video import VideoQuality
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.media_delivery import (
-    DISCORD_ATTACHMENT_LIMIT,
     MediaItem,
     upload_limit_for,
     build_media_delivery_planner,
@@ -194,10 +193,7 @@ class VideoCogs(commands.Cog):
         plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
         if plan.native:
             await self._deliver(
-                interaction=interaction,
-                file_size_mb=file_size_mb,
-                file_path=result.filename,
-                url=url,
+                interaction=interaction, file_size_mb=file_size_mb, item=plan.native[0], url=url
             )
             return
 
@@ -261,34 +257,33 @@ class VideoCogs(commands.Cog):
                 return
 
             try:
-                with result:
-                    delivery = await plan_douyin_delivery(
-                        planner=self.media_delivery, result=result, upload_limit=upload_limit
-                    )
-                    plan = delivery.plan
+                delivery = await plan_douyin_delivery(
+                    planner=self.media_delivery, result=result, upload_limit=upload_limit
+                )
+                plan = delivery.plan
 
-                    # Nothing to attach has two ways out; anything else is the normal reply.
-                    if not plan.native:
-                        # Only a lone oversize file may collapse to the bare-URL reply, which
-                        # deliberately posts nothing but the link so Discord renders the inline
-                        # player. A gallery would lose every URL past the first, plus the omitted
-                        # / dropped notices, so it goes through the normal reply instead.
-                        if plan.hosted_urls and len(result.filenames) == 1:
-                            await self._deliver_url(
-                                interaction=interaction,
-                                file_size_mb=delivery.total_mb,
-                                public_url=plan.hosted_urls[0],
-                            )
-                            return
-                        if not plan.hosted_urls:
-                            await self._refuse_oversize(
-                                interaction=interaction, file_size_mb=delivery.total_mb
-                            )
-                            return
+                # Nothing to attach has two ways out; anything else is the normal reply.
+                if not plan.native:
+                    # Only a lone oversize file may collapse to the bare-URL reply, which
+                    # deliberately posts nothing but the link so Discord renders the inline
+                    # player. A gallery would lose every URL past the first, plus the omitted
+                    # / dropped notices, so it goes through the normal reply instead.
+                    if plan.hosted_urls and len(result.filenames) == 1:
+                        await self._deliver_url(
+                            interaction=interaction,
+                            file_size_mb=delivery.total_mb,
+                            public_url=plan.hosted_urls[0],
+                        )
+                        return
+                    if not plan.hosted_urls:
+                        await self._refuse_oversize(
+                            interaction=interaction, file_size_mb=delivery.total_mb
+                        )
+                        return
 
-                    await self._deliver_douyin(
-                        interaction=interaction, delivery=delivery, result=result, url=url
-                    )
+                await self._deliver_douyin(
+                    interaction=interaction, delivery=delivery, result=result, url=url
+                )
             except Exception as error:
                 # Broad on purpose, for the same reason as the download step above: an escape
                 # leaves the interaction unanswered and the user on the placeholder.
@@ -372,13 +367,13 @@ class VideoCogs(commands.Cog):
         self,
         interaction: Interaction[commands.Bot],
         file_size_mb: float,
-        file_path: Path,
+        item: MediaItem,
         url: str,
     ) -> None:
         """Edits the deferred placeholder into the final downloaded file response."""
         await interaction.edit_original_message(
             content=_file_header(file_size_mb=file_size_mb, url=url),
-            file=File(fp=file_path, filename=file_path.name),
+            file=item.to_file(),
             allowed_mentions=AllowedMentions.none(),
         )
 

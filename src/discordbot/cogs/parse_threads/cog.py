@@ -8,7 +8,6 @@ downloaded and attached.
 share link to the post's own URL, reads no post and downloads nothing.
 """
 
-from typing import TYPE_CHECKING
 import asyncio
 import contextlib
 
@@ -20,11 +19,18 @@ from nextcord.ext import commands
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
-from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
+from discordbot.utils.expansion_cog import (
+    VIDEO_HINT,
+    ExpansionCog,
+    ExpansionDelivery,
+    with_gallery,
+)
 from discordbot.utils.discord_embeds import (
+    DISCORD_EMBED_COUNT_LIMIT,
     DISCORD_EMBED_TOTAL_LIMIT,
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     utf16_length,
+    embed_text_length,
 )
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -39,9 +45,6 @@ from discordbot.services.platforms.threads import (
     ThreadsConversation,
 )
 
-if TYPE_CHECKING:
-    from nextcord.types.embed import Embed as EmbedData
-
 # Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
 # (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
 # post is not a layer of the thread, so a shade from that ramp would read as one.
@@ -53,8 +56,6 @@ _QUOTED_POST_COLOR = Color.blurple()
 # permalink to offer. Never worded as a deletion — the payload says "unavailable", nothing more.
 _QUOTED_UNAVAILABLE_HINT = "\n\n🔗 *引用的貼文目前無法瀏覽(可能已刪除或改為私人)*"
 
-_MAX_EMBEDS_PER_MESSAGE = 10
-
 # Held back from the message-wide budget for the remainder notes, which are appended to the
 # target's footer after selection has already measured it: what a post gave up is not known until
 # every slot is spent. Sixty-four UTF-16 units is well past the longest pair of notes (emoji count
@@ -62,28 +63,12 @@ _MAX_EMBEDS_PER_MESSAGE = 10
 _REMAINDER_RESERVE = 64
 
 
-def _embed_text_length(embed: Embed) -> int:
-    """Counts every text-bearing embed field against Discord's message-wide limit."""
-    payload: EmbedData = embed.to_dict()
-    text_parts = [
-        value for value in (payload.get("title"), payload.get("description")) if value is not None
-    ]
-    if footer := payload.get("footer"):
-        text_parts.append(footer["text"])
-    if (author := payload.get("author")) and (name := author.get("name")):
-        text_parts.append(name)
-    for field in payload.get("fields", []):
-        text_parts.extend((field["name"], field["value"]))
-
-    return sum(utf16_length(value=value) for value in text_parts)
-
-
 def _allocate_embed_slots(
     *, posts: list[ThreadsOutput], priority: list[int], reserved: list[int]
 ) -> list[int]:
     """Allocates Discord's ten embed slots in relevance order."""
     slots = [0] * len(posts)
-    budget = _MAX_EMBEDS_PER_MESSAGE
+    budget = DISCORD_EMBED_COUNT_LIMIT
     for index in reserved:
         slots[index] = 1
         budget -= 1
@@ -321,23 +306,17 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         `image_count == 0` yields a single text-only context embed.
         """
         main_embed = self._build_post_embed(output=output, color=color)
-        embeds = [main_embed]
         # A quoted post sits outside the chain the gradient describes, so it says what it is:
         # without the line it reads as one more post in the thread rather than as the post the
         # linked one is arguing with, and by a different author at that.
         if is_quoted:
             main_embed.description = f"🔗 **被引用的貼文**\n\n{main_embed.description or ''}"
-        if image_count > 0:
-            main_embed.set_image(url=output.image_urls[0])
-            for img_url in output.image_urls[1:image_count]:
-                extra = Embed(url=output.url)
-                extra.set_image(url=img_url)
-                embeds.append(extra)
+        embeds = with_gallery(card=main_embed, images=output.image_urls[:image_count])
         # Target videos are downloaded and attached as files; ancestor and quoted-post videos are
         # not, so surface a link hint — otherwise a video-only parent shows as an empty embed, and
         # a quoted clip would look like a quoted post with nothing in it.
         if not is_target and output.video_urls and output.url:
-            hint = f"\n\n🎬 [點此觀看影片]({output.url})"
+            hint = VIDEO_HINT.format(url=output.url)
             main_embed.description = (main_embed.description or "") + hint
         # Only for the target, because the target's quote is the only one this expansion shows at
         # all. Every parsed post carries `quoted` / `quoted_unavailable`, so without the gate an
@@ -375,7 +354,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
                 is_target=index == chain_depth - 1,
                 is_quoted=is_quoted,
             )[0]
-            length = _embed_text_length(embed=main_embed)
+            length = embed_text_length(embed=main_embed)
             if index != chain_depth - 1 and length > text_budget:
                 continue
             selected.add(index)
@@ -396,9 +375,9 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         # than the embed cap can't show every post; keep the target and its nearest ancestors,
         # which are the most relevant context, and count the rest in the target's footer.
         trimmed = 0
-        if len(results) > _MAX_EMBEDS_PER_MESSAGE:
-            trimmed = len(results) - _MAX_EMBEDS_PER_MESSAGE
-            results = results[-_MAX_EMBEDS_PER_MESSAGE:]
+        if len(results) > DISCORD_EMBED_COUNT_LIMIT:
+            trimmed = len(results) - DISCORD_EMBED_COUNT_LIMIT
+            results = results[-DISCORD_EMBED_COUNT_LIMIT:]
         chain_depth = len(results)
         # The post the target quotes is not a chain member: it is what the target is talking
         # about, by someone who never joined this thread. So it is allocated alongside the chain

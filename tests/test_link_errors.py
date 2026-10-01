@@ -17,6 +17,7 @@ from discordbot.utils.link_errors import (
     LinkUnavailableError,
     link_fetch_error,
 )
+from discordbot.utils.expansion_cog import expansion_failure_emoji
 from discordbot.services.platforms.douyin import (
     DouyinError,
     DouyinBlockedError,
@@ -27,7 +28,6 @@ from discordbot.services.platforms.facebook import FacebookDownloader
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
-    expansion_failure_emoji,
 )
 from discordbot.services.platforms.instagram import InstagramDownloader
 

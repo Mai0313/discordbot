@@ -1,25 +1,25 @@
-"""Helpers for Discord embed rendering quirks."""
+"""Discord's per-message ceilings, and helpers for its embed rendering quirks."""
 
 from io import BytesIO
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from functools import cache
 
 from PIL import Image
 from nextcord import File, Embed, Attachment
 
-from discordbot.utils.media_delivery import DISCORD_ATTACHMENT_LIMIT
+if TYPE_CHECKING:
+    from nextcord.types.embed import Embed as EmbedData
 
 # Discord's own ceilings on what one message may carry: its `content`, one `embed.description`,
-# and every text field of every embed in it summed. Overshooting any of them makes Discord reject
-# the whole send, not trim it.
+# every text field of every embed in it summed, and how many embeds and attachments it holds.
+# Overshooting any of them makes Discord reject the whole send, not trim it.
 DISCORD_MESSAGE_LIMIT: Final[int] = 2000
 DISCORD_EMBED_DESCRIPTION_LIMIT: Final[int] = 4096
 DISCORD_EMBED_TOTAL_LIMIT: Final[int] = 6000
+DISCORD_EMBED_COUNT_LIMIT: Final[int] = 10
+DISCORD_ATTACHMENT_LIMIT: Final[int] = 10
 
 DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
-DEFAULT_EMBED_SPACER_WIDTH: Final[int] = 640
-DEFAULT_EMBED_SPACER_HEIGHT: Final[int] = 1
-_TRANSPARENT_RGBA: Final[tuple[int, int, int, int]] = (0, 0, 0, 0)
 
 
 def utf16_length(*, value: str) -> int:
@@ -50,6 +50,22 @@ def clip_to_utf16_limit(*, text: str, limit: int, notice: str) -> str:
         kept.append(character)
         spent += cost
     return f"{''.join(kept)}{notice}"
+
+
+def embed_text_length(embed: Embed) -> int:
+    """Counts every text-bearing embed field against Discord's message-wide limit."""
+    payload: EmbedData = embed.to_dict()
+    text_parts = [
+        value for value in (payload.get("title"), payload.get("description")) if value is not None
+    ]
+    if footer := payload.get("footer"):
+        text_parts.append(footer["text"])
+    if (author := payload.get("author")) and (name := author.get("name")):
+        text_parts.append(name)
+    for field in payload.get("fields", []):
+        text_parts.extend((field["name"], field["value"]))
+
+    return sum(utf16_length(value=value) for value in text_parts)
 
 
 def embed_spacer_url() -> str:
@@ -145,11 +161,8 @@ def embed_spacer_payload(
 
 @cache
 def _transparent_png_bytes() -> bytes:
-    image = Image.new(
-        mode="RGBA",
-        size=(DEFAULT_EMBED_SPACER_WIDTH, DEFAULT_EMBED_SPACER_HEIGHT),
-        color=_TRANSPARENT_RGBA,
-    )
+    # The width every spaced embed renders at, one transparent pixel tall so it shows nothing.
+    image = Image.new(mode="RGBA", size=(640, 1), color=(0, 0, 0, 0))
     buffer = BytesIO()
     image.save(fp=buffer, format="PNG", optimize=True)
     return buffer.getvalue()

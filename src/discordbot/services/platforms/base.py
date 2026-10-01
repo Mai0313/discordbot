@@ -12,16 +12,16 @@ Three bases, each answering a question that used to be answered once per platfor
 `thread_branches` builds that model's `reply_branches` for a platform whose comments name the one
 they answer.
 
-`raise NotImplementedError` rather than `abc.ABC`, matching `TemporaryDownload.unlink` one module
-over: this repo's answer to an unimplemented member is a raise, and an ABC would catch only the
-forgotten override while saying nothing about the signature — which is the half that actually
-drifted. `tests/test_platform_shape.py` is what holds the signature.
+`raise NotImplementedError` rather than `abc.ABC`: this repo's answer to an unimplemented member
+is a raise, and an ABC would catch only the forgotten override while saying nothing about the
+signature — which is the half that actually drifted. `tests/test_platform_shape.py` is what holds
+the signature.
 
 **A second method is deliberately NOT declared here, and the reason is the return type.** Many
 platforms write nothing to disk at all, handing image URLs to Discord to fetch itself. The ones
 that do write have nothing a base could hold them to: a walk that downloads as it goes yields
 its conversation from a context manager, because what it has to clean up hangs off that
-conversation, while a plain fetch returns a `TemporaryDownload` and takes its own options (a
+conversation, while a plain fetch returns a model naming its files and takes its own options (a
 quality preset, an image cap, an already-parsed post, a stop signal) alongside the url. A shared
 declaration would have to be the union of all that or the intersection, and the intersection is
 empty. So the name differs too, on purpose: `parse` hands back a parsed conversation, `download`

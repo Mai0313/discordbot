@@ -61,13 +61,7 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
             parts.append(f"💬 {post.comment_count:,}")
         if post.share_count > 0:
             parts.append(f"↗️ {post.share_count:,}")
-        remaining_images = len(post.image_urls) - shown_images
-        if remaining_images > 0:
-            parts.append(f"🖼️ 另有 {remaining_images} 張")
-        # Only the first video gets a link, so the rest would otherwise go unmentioned.
-        remaining_videos = len(post.video_urls) - 1
-        if remaining_videos > 0:
-            parts.append(f"🎬 另有 {remaining_videos} 部影片")
+        parts.extend(self._omitted_media_notes(post=post, shown_images=shown_images))
         return " · ".join(parts)
 
     def _comment_url(self, *, post_url: str, comment: FacebookOutput) -> str:
