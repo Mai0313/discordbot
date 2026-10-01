@@ -44,7 +44,13 @@ from discordbot.typings.emojis import (
     FACEBOOK_EMOJI,
     INSTAGRAM_EMOJI,
 )
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
+from discordbot.typings.memory import (
+    MemoryFact,
+    MemoryOwner,
+    MemorySection,
+    MemoryDurability,
+    MemoryWriteSummary,
+)
 from discordbot.typings.models import (
     ModelSettings,
     RouteClassification,
@@ -64,6 +70,7 @@ from discordbot.utils.media_delivery import MediaItem, MediaHostingService, Medi
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
     count_media_parts,
+    memory_report_for,
     build_runtime_instructions,
 )
 from discordbot.cogs.gen_reply.recall import (
@@ -144,7 +151,12 @@ from discordbot.cogs.gen_reply.generation import (
     music_filename,
     speechify_discord_markup,
 )
-from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_source
+from discordbot.cogs.gen_reply.references import (
+    find_youtube_url,
+    message_link_texts,
+    authored_link_texts,
+    link_url_for_source,
+)
 from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaReplyRoutes
 from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
@@ -1614,7 +1626,8 @@ async def test_set_memory_note_splices_before_the_usage_footer() -> None:
 
     It goes before the usage footer for the same reason the hosted-URL line does: appended
     after it, `USAGE_FOOTER_RE` could no longer strip the footer, and every later history
-    render would carry the model / token / cost line inside the bot's own answer.
+    render would carry the model / token / cost line inside the bot's own answer. Directly above
+    the footer, the note comes off with it (#865).
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
@@ -1627,10 +1640,8 @@ async def test_set_memory_note_splices_before_the_usage_footer() -> None:
 
     content = message.replies[0].content or ""
     assert "記下了 使用者偏好繁體中文" in content
-    assert USAGE_FOOTER_RE.search(content) is not None
-    stripped = USAGE_FOOTER_RE.sub("", content)
-    assert "記下了" in stripped
-    assert "⬆" not in stripped
+    assert content.index("記下了") < content.index("⬆")
+    assert USAGE_FOOTER_RE.sub("", content) == "好喔"
 
 
 async def test_set_memory_note_declines_when_the_reply_is_already_full() -> None:
@@ -1714,8 +1725,9 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
 async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     """`full_reply` is the transcript the memory reviewer reads and history renders later.
 
-    The note is chrome the bot added, not something it said. `USAGE_FOOTER_RE` cannot remove it
-    downstream either: the note sits before the ⬆⬇ line and that regex only reaches what follows.
+    The note is chrome the bot added, not something it said. `USAGE_FOOTER_RE` cannot be relied
+    on to remove it downstream either: it takes the note only while the note sits directly above
+    the footer, which a hosted-URL line breaks.
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
@@ -1731,6 +1743,40 @@ async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
     assert "正在整理記憶" not in full_reply
     assert USAGE_FOOTER_RE.sub("", full_reply) == "好喔"
+
+
+async def test_a_memory_note_never_reaches_a_later_turns_history() -> None:
+    """The memory note comes off wherever the bot's own reply is read back.
+
+    A gateway turn re-reads the reply off Discord rather than `full_reply`, and the forget line
+    quotes what the user asked to drop, so a note left on would hand the forgotten item back to
+    the answer model and both memory reviews on every later turn (#865).
+    """
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="好，我不會再提了<forget-memory>我住在台中</forget-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
+    )
+    await memory_report_for(streamer=streamer)(
+        MemoryWriteSummary(remembered=("使用者偏好繁體中文",), forgotten=("我住在台中",))
+    )
+    on_screen = message.replies[0].content or ""
+    assert "不再記得 我住在台中" in on_screen, "the note never landed, so this proves nothing"
+
+    bot_reply = as_message(
+        fake=FakeMessage(content=on_screen, author=FakeAuthor(bot=True, user_id=999))
+    )
+    assert await _media_builder().get_cleaned_content(message=bot_reply) == "好，我不會再提了"
+    spans = [
+        *message_link_texts(message=bot_reply, strip_usage_footer=True),
+        *authored_link_texts(message=bot_reply),
+    ]
+    assert all("記下了" not in span and "台中" not in span for span in spans)
 
 
 @pytest.mark.parametrize(

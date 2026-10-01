@@ -39,7 +39,8 @@ RETRY_HINT_EMOJI: Final[str] = "🔁"
 # this down about you" without parsing the whole sentence, and can mistake the read credit for
 # something the bot just recorded. Each note also opens on its VERB for the same reason. Plain
 # unicode rather than app emoji because uploading one is not something the bot can do; swapping
-# in a custom `<:name:id>` later is a change to these three lines.
+# in a custom `<:name:id>` later is a change to these three lines, and to
+# `utils/llm_transcript.py::USAGE_FOOTER_RE`, which spells the write and forget marks too.
 MEMORY_READ_EMOJI: Final[str] = "📖"
 MEMORY_WRITE_EMOJI: Final[str] = "✏️"
 MEMORY_FORGET_EMOJI: Final[str] = "🩹"

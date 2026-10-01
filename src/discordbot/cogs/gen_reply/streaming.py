@@ -789,8 +789,9 @@ class ResponseStreamer(BaseModel):
 
         Both are chrome rather than something the answer said, and both have to go before the
         text becomes `full_reply`: that string is the transcript the memory reviewer reads back
-        and the `/ask` turn the store replays. `USAGE_FOOTER_RE` reaches neither, since both sit
-        before the ⬆⬇ line rather than after it.
+        and the `/ask` turn the store replays. `USAGE_FOOTER_RE` cannot be relied on for either:
+        it takes the note only while the note sits directly above the footer, which a hosted-URL
+        line breaks, and it never takes the hint.
         """
         stripped = self._without_memory_note(text=text)
         if not self._hint_line:
@@ -827,9 +828,10 @@ class ResponseStreamer(BaseModel):
         The line goes BEFORE the usage footer, exactly as `_finalize_media_edit` places a
         hosted-URL line: appending after it would leave `USAGE_FOOTER_RE` unable to strip the
         footer, so every later history render would keep the model / token / cost line inside
-        the bot's own answer. Widening that regex instead is not an option, because its
-        optional trailing group matches lines AFTER the ⬆⬇ line and loosening it would start
-        eating any reply that happens to end in stacked subtext.
+        the bot's own answer. Widening that regex's trailing group instead is not an option,
+        because it matches lines AFTER the ⬆⬇ line and loosening it would start eating any reply
+        that happens to end in stacked subtext; the note above the footer is taken by a leading
+        group anchored on the note's own marks.
 
         The old note is removed by value rather than off the end, because it is not always at
         the end: `_finalize_media_edit` rebuilds the content as body + hosted-URL line + footer,
