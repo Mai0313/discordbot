@@ -1655,6 +1655,35 @@ async def test_a_rebuild_takes_each_forget_against_only_what_came_before_it(
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
 
 
+async def test_a_rebuild_hands_no_compartment_an_empty_corpus(memory_isolated_dir: Path) -> None:
+    """A compartment whose evidence all follows a forget is emptied first without a call.
+
+    The call could only answer with an empty batch: one more paid request, and one more way
+    to fail the rebuild.
+    """
+    guild = guild_compartment(guild_id=42)
+    city = _observation(
+        summary=_CITY.summary_zh, normalized_key="fact.city", sharing="source_only"
+    )
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(summary=_CITY.summary_zh, compartment=guild))
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", _PET),
+        _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
+        _entry("2026-09-03T00:00:00+00:00", city),
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    fake_client.responses.answer = _consolidation_stage(calls=calls)
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    # order-contract: the pet before the forget, the forget, then the city after it.
+    assert calls == ["observe", "forget", "observe"]
+    facts = read_facts(scope=USER_SCOPE, compartment=guild)
+    assert [fact.summary for fact in facts] == [_CITY.summary_zh]
+
+
 async def test_a_refused_pass_after_a_forget_fails_the_rebuild_and_puts_back_what_it_replaced(
     memory_isolated_dir: Path,
 ) -> None:
@@ -3086,12 +3115,16 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
     broken = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT / f"{'b' * 16}.md"
     broken.parent.mkdir(parents=True, exist_ok=True)
     broken.write_text("hand-edited into nonsense\n", encoding="utf-8")
-    # A second compartment for the run to fail on, after `global` has been replaced.
-    write_fact(
-        scope=USER_SCOPE,
-        fact=_stored_fact(fact_id="a" * 16, compartment=guild_compartment(guild_id=222)),
-    )
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    # A second compartment for the run to fail on, after `global` has been replaced.
+    append_detail(
+        scope=USER_SCOPE,
+        text=_entry(
+            "2026-06-02T00:00:00+00:00",
+            _observation(summary="本群祕密", normalized_key="fact.secret", sharing="source_only"),
+            source="guild 222",
+        ),
+    )
     calls = 0
 
     async def failing_second_answer(body: str, text_format: type[BaseModel]) -> BaseModel:

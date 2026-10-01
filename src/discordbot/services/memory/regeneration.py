@@ -200,13 +200,15 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
                         compartments if index == 0 else global_first(compartments=set(segment))
                     ):
                         raw_bucket = segment.get(compartment, "")
-                        if not raw_bucket and not read_facts(scope=scope, compartment=compartment):
-                            # A leftover directory with nothing to distil and nothing to keep:
-                            # the model would be handed an empty corpus and could only answer
-                            # with an empty batch, so the prune alone reaches the same state.
-                            # It also removes the emptied directory, which is what stops the
-                            # leftover costing another call — and another way to fail the
-                            # compartments that do have something — on every later rebuild.
+                        if not raw_bucket:
+                            # Nothing to distil before the first forget: the model would be
+                            # handed an empty corpus and could only answer with an empty batch,
+                            # so the prune alone reaches the same state without a call that
+                            # could fail the compartments that do have something. A later
+                            # segment merges into the emptied compartment.
+                            replaced[compartment] = read_facts(
+                                scope=scope, compartment=compartment
+                            )
                             unreadable_removed += _prune_rebuilt_compartment(
                                 scope=scope, compartment=compartment, keep=set()
                             )
@@ -360,8 +362,8 @@ def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
     Compartments that still hold files but have no surviving evidence are included so
     the rebuild empties them; leaving them alone would keep pre-rebuild facts visible
     alongside the new ones with no evidence behind them. Touching one does not always
-    mean consolidating it: an entry that turns out to hold neither evidence nor a
-    readable fact is pruned without a model call (`regenerate_scope_memory` has the why).
+    mean consolidating it: an entry with no evidence before the first forget is pruned
+    without a model call (`regenerate_scope_memory` has the why).
     """
     return global_first(
         compartments={GLOBAL_COMPARTMENT, *buckets, *list_compartments(scope=scope)}
