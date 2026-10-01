@@ -37,10 +37,7 @@ from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.discord_embeds import embed_spacer_payload
-
-# What Discord answers when the message being replied to no longer exists. It is a generic
-# invalid-form-body code, so it means this only on a send that carries a message reference.
-_UNSENDABLE_REPLY = 50035
+from discordbot.utils.discord_errors import is_reply_target_gone
 
 # The whole reaction vocabulary an auto-expansion answers with, shared so one symbol means one
 # thing whichever platform was linked. Nothing else reaches the channel, so the reaction IS the
@@ -326,8 +323,7 @@ async def send_expansion_placeholder(
         )
         return None
     except HTTPException as error:
-        # A reply to a message that is already gone comes back as 50035, not only as NotFound.
-        if not isinstance(error, NotFound) and error.code != _UNSENDABLE_REPLY:
+        if not is_reply_target_gone(error=error):
             raise
         logfire.info(
             "The message to expand is gone", message_id=message.id, channel_id=message.channel.id

@@ -20,6 +20,7 @@ from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
+from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -362,14 +363,14 @@ class ResponseStreamer(BaseModel):
     async def _reply_or_send(self, content: str) -> Message:
         """Replies to the source message, sending unparented if it was deleted.
 
-        Deleting the source before the reply lands makes Discord 400 with code 50035
-        (unknown message_reference); we log it and send into the same channel instead of
-        wasting the whole pipeline. Other HTTP errors still propagate to the caller.
+        A source deleted before the reply lands is logged and the reply sent into the same
+        channel instead of wasting the whole pipeline. Other HTTP errors still propagate to the
+        caller.
         """
         try:
             return await self.surface.send(content=content)
         except HTTPException as exc:
-            if exc.code != 50035 and not isinstance(exc, NotFound):
+            if not is_reply_target_gone(error=exc):
                 raise
             logfire.info(
                 "Source message deleted before reply; sending unparented",

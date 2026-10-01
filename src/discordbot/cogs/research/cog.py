@@ -54,6 +54,7 @@ from discordbot.cogs.research.agent import (
     resume_research_stream,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
+from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
@@ -217,8 +218,7 @@ class ResearchCogs(commands.Cog):
         # Broad on purpose: the launch has already ended, and anything raised here would reach
         # `research_bridge`, which reports it as a dropped brief.
         except Exception as exc:
-            # A reply to a message that is already gone comes back as 50035, not only as NotFound.
-            if isinstance(exc, HTTPException) and (isinstance(exc, NotFound) or exc.code == 50035):
+            if isinstance(exc, HTTPException) and is_reply_target_gone(error=exc):
                 logfire.info(
                     "deep research's request is gone before it could say why it did not start",
                     message_id=message.id,

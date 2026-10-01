@@ -19,16 +19,7 @@ from functools import cached_property
 from openai import AsyncOpenAI
 import logfire
 import nextcord
-from nextcord import (
-    Embed,
-    Locale,
-    Message,
-    NotFound,
-    Attachment,
-    Interaction,
-    SlashOption,
-    HTTPException,
-)
+from nextcord import Embed, Locale, Message, Attachment, Interaction, SlashOption, HTTPException
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
@@ -40,6 +31,7 @@ from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.discord_embeds import embed_spacer_payload
+from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import flavor_of, read_owner, iter_scopes
@@ -251,9 +243,9 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             await surface.send(embed=error_embed, **spacer)
         except HTTPException as send_error:
-            # Source deleted before the error landed (50035): send it unparented. Rebuild
-            # the spacer; the failed reply already consumed the single-use spacer file.
-            if send_error.code != 50035 and not isinstance(send_error, NotFound):
+            # Source deleted before the error landed: send it unparented. Rebuild the
+            # spacer; the failed reply already consumed the single-use spacer file.
+            if not is_reply_target_gone(error=send_error):
                 raise
             fresh_spacer = embed_spacer_payload(
                 embeds=[error_embed], is_edit=False, target=message
