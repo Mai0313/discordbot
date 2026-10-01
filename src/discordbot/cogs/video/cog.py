@@ -213,7 +213,9 @@ class VideoCogs(commands.Cog):
             )
             return
 
-        await self._refuse_oversize(interaction=interaction, file_size_mb=file_size_mb)
+        await self._refuse_oversize(
+            interaction=interaction, file_size_mb=file_size_mb, upload_limit=upload_limit
+        )
 
     async def _download_douyin(
         self,
@@ -285,7 +287,9 @@ class VideoCogs(commands.Cog):
                         return
                     if not plan.hosted_urls:
                         await self._refuse_oversize(
-                            interaction=interaction, file_size_mb=delivery.total_mb
+                            interaction=interaction,
+                            file_size_mb=delivery.total_mb,
+                            upload_limit=upload_limit,
                         )
                         return
 
@@ -364,11 +368,15 @@ class VideoCogs(commands.Cog):
             )
 
     async def _refuse_oversize(
-        self, interaction: Interaction[commands.Bot], file_size_mb: float
+        self, interaction: Interaction[commands.Bot], file_size_mb: float, upload_limit: int
     ) -> None:
         """Tells the user a file too big to attach could not be hosted either."""
         await self._edit_quietly(
-            interaction=interaction, content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+            interaction=interaction,
+            content=(
+                f"-# 下載失敗\n檔案大小 {file_size_mb:.1f}MB，"
+                f"超過上傳上限 {upload_limit / 1024 / 1024:.0f}MB"
+            ),
         )
 
     async def _deliver(
