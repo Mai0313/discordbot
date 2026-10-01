@@ -716,10 +716,11 @@ class DouyinDownloader(PlatformDownloader):
         """Streams a remote file into the output folder, retrying a stalled transfer.
 
         The media CDN intermittently stalls mid-transfer, which surfaces as a read timeout
-        rather than an error status, so a failed attempt is retried from scratch. `stream_to_file`
-        owns the rest: the output folder it must never re-create, the `max_bytes` fail-fast and
-        the removal of a partial file. An oversize file is deterministic — it would be oversize
-        again next time — so it is raised past this loop rather than through it.
+        rather than an error status, so a failed attempt is retried from scratch, unless HTTP
+        answered with a status a retry would not change. `stream_to_file` owns the rest: the
+        output folder it must never re-create, the `max_bytes` fail-fast and the removal of a
+        partial file. An oversize file is deterministic — it would be oversize again next time —
+        so it is raised past this loop rather than through it, like that status.
 
         Args:
             url: The media URL.
@@ -731,7 +732,8 @@ class DouyinDownloader(PlatformDownloader):
 
         Raises:
             DouyinTooLargeError: If the media exceeds `max_bytes`.
-            DouyinError: If every attempt fails.
+            DouyinError: If HTTP refuses with a status a retry would not change, or every
+                attempt fails.
         """
         filepath = Path(self.output_folder) / filename
 
@@ -748,6 +750,10 @@ class DouyinDownloader(PlatformDownloader):
             except DownloadTooLargeError as e:
                 raise DouyinTooLargeError(str(e)) from e
             except RequestException as e:
+                # Only an HTTP answer is taken as final: a body cut off mid-transfer carries none,
+                # and is the stall this loop exists for.
+                if e.response is not None and not is_retryable_fetch_failure(error=e):
+                    raise DouyinError(f"Failed to download Douyin media from {url}: {e}") from e
                 last_error = e
                 logfire.debug(
                     "Retrying a stalled Douyin media download",
