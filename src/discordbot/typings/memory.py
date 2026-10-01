@@ -11,8 +11,8 @@ A fact's fields split into two ownership zones. The model authors ``summary``,
 distils from; everything else is stamped by code — provenance the model cannot copy
 wrong. Stamped is not the same as hidden: ``MemoryFact`` below has what an update or
 delete is handed back and why. ``compartment`` is stamped too, but only so a tree edited
-outside the store can be *detected*: the containing directory always wins
-(``facts.parse_fact_file``).
+outside the store can be *detected*: a fact whose stored value disagrees with its
+containing directory is skipped (``facts.parse_fact_file``).
 """
 
 from typing import Literal
@@ -125,7 +125,9 @@ class MemoryFact(BaseModel):
     text: str = Field(..., description="The fact body, as rendered into the reply prompt.")
     compartment: str = Field(
         ...,
-        description="Compartment recorded at write time; the containing directory still wins.",
+        description=(
+            "Compartment recorded at write time; a fact whose directory disagrees is skipped."
+        ),
         examples=["global", "g/123456789012345678", "dm"],
     )
     owner_id: int = Field(

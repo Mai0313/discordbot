@@ -286,7 +286,7 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
         if settled or turn.report is None:
             return
         settled = True
-        await report_writes(report=turn.report, summary=summary)
+        await report_writes(report=turn.report, summary=summary, scope=turn.scope)
 
     try:
         if cleared_since(scope=turn.scope, started_at=turn.captured_at):
@@ -302,7 +302,8 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
                 identity=turn.identity,
                 token=turn.token,
                 captured_at=turn.captured_at,
-            )
+            ),
+            scope=turn.scope,
         )
         if cleared_since(scope=turn.scope, started_at=turn.captured_at):
             # The clear landed while the row was being written. Its durable tombstone
@@ -378,7 +379,9 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             # resurrecting deleted memory. The tombstone already owns the durable
             # ordering; this terminal write is only best-effort cleanup for a
             # process-local store clear.
-            await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
+            await safe_db_write(
+                coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope
+            )
             return None
         if draft is None:
             reviewed = False
@@ -418,7 +421,8 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             flavor=flavor_of(scope=scope),
         )
         await safe_db_write(
-            coro=memory_db.mark_failed(scope=scope, token=turn.token, error="evaluate failed")
+            coro=memory_db.mark_failed(scope=scope, token=turn.token, error="evaluate failed"),
+            scope=scope,
         )
         if report is not None and (kept or forget_notes):
             # What earlier rounds staged and every forget are durable regardless of the failed
@@ -433,11 +437,11 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         return True if forget_notes else None
     if not kept and not forget_notes:
         logfire.debug("Memory notes survived nothing", scope=scope, notes=len(remember_notes))
-        await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
+        await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope)
         return None
     # The turn is durable in raw.md now; record success before the (best-effort,
     # self-healing) consolidation so a consolidation crash never re-runs the review.
-    await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
+    await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope)
     if report is not None:
         await report(_write_summary(observations=tuple(kept), forgotten=forget_notes))
     return bool(forget_notes)
@@ -451,6 +455,6 @@ async def safe_list_resumable() -> list[memory_db.MemoryJob]:
     """
     try:
         return await memory_db.list_resumable()
-    except Exception:
-        logfire.warn("memory_job resume read failed", _exc_info=True)
+    except Exception as exc:
+        logfire.warn("memory_job resume read failed", error_type=type(exc).__name__, _exc_info=exc)
         return []

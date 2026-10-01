@@ -101,8 +101,13 @@ async def consolidate_if_needed(scope: str, writer: MemoryWriterAI, identity: st
                 writer=writer,
                 identity=identity,
             )
-    except Exception:
-        logfire.warn("Background memory consolidation sweep failed", scope=scope, _exc_info=True)
+    except Exception as exc:
+        logfire.warn(
+            "Background memory consolidation sweep failed",
+            scope=scope,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
 
 
 async def consolidate_after_turn(

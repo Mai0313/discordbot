@@ -2138,7 +2138,7 @@ async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises
         """Records what the surviving reply was told."""
         seen.append(summary)
 
-    merged = inflight._merged_report(newer=newer, older=older)
+    merged = inflight._merged_report(newer=newer, older=older, scope=USER_SCOPE)
     assert merged is not None
     await merged(MemoryWriteSummary(remembered=("偏好繁體中文",)))
 
