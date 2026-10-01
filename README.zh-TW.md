@@ -119,7 +119,7 @@ flowchart TD
 | `/games dragon_gate`                        | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                                                |
 | `/games blackjack_history [member] [count]` | 顯示某位玩家最近的 Blackjack 牌局：手牌、下注與結果（預設 10 場，最多 50 場）。               |
 | `/casino`                                   | 顯示賭場系統累積 P&L (跨伺服器)。                                                             |
-| `/pocat`                                    | 顯示 bot 玩家自己的錢包 (等同 `/balance @bot`)。                                              |
+| `/pocat`                                    | 顯示 bot 玩家自己的錢包：餘額與累計流水。                                                     |
 | `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。        |
 | `/memory server show`                       | 私密查看 bot 對這個伺服器社群的記憶；只能在 bot 所在的伺服器使用。                            |
 | `/ping`                                     | 檢查 bot latency。                                                                            |

@@ -250,8 +250,8 @@ def _span_command_paths(span: str) -> set[str]:
 def _readme_command_table(readme: str) -> tuple[set[str], set[str]]:
     """Returns the commands one README's table lists, and every command the table names.
 
-    A row lists its command in the first cell; a command a description mentions, such as
-    `/pocat`'s `/balance @bot`, is named without being listed.
+    A row lists its command in the first cell; a command a description mentions is named
+    without being listed.
     """
     text = (REPO_ROOT / readme).read_text(encoding="utf-8")
     listed: set[str] = set()

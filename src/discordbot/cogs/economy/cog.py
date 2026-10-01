@@ -514,11 +514,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="pocat",
-        description="Show the bot player's own wallet (shortcut for /balance @bot).",
+        description="Show the bot player's own wallet: balance plus total earned and spent.",
         name_localizations={Locale.zh_TW: "破貓", Locale.ja: "ポキャット"},
         description_localizations={
-            Locale.zh_TW: "顯示機器人玩家自己的錢包 (等同 /balance @bot)",
-            Locale.ja: "ボットプレイヤー自身の財布を表示します (/balance @bot のショートカット)。",
+            Locale.zh_TW: "顯示機器人玩家自己的錢包：餘額與累計流水",
+            Locale.ja: "ボットプレイヤー自身の財布 (残高と累計の収支) を表示します。",
         },
         nsfw=False,
         integration_types=INSTALL_CONTEXTS,
