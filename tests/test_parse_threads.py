@@ -30,8 +30,14 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
     build_threads_context_messages,
 )
 
-from tests.helpers.casting import step_dicts, make_stub_gemini_client
-from tests.helpers.link_sources import FakeUploads
+from tests.helpers.casting import make_stub_gemini_client
+from tests.helpers.link_sources import (
+    FakeUploads,
+    block_body,
+    block_parts,
+    block_separator,
+    serve_conversation,
+)
 
 _URL = "https://www.threads.com/@alice/post/ABC123"
 
@@ -80,15 +86,12 @@ def _stub_parse(
     results: list[ThreadsOutput],
     branches: list[list[ThreadsOutput]] | None = None,
 ) -> None:
-    """Replaces ThreadsDownloader.parse_metadata with a canned conversation (no network)."""
-    conversation = ThreadsConversation(chain=results, reply_branches=branches or [])
-
-    def fake_parse_metadata(self: ThreadsDownloader, *, url: str) -> ThreadsConversation:
-        """Returns the canned conversation regardless of url."""
-        del url
-        return conversation
-
-    monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=fake_parse_metadata)
+    """Serves the builder's read a canned conversation (no network)."""
+    serve_conversation(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        post=ThreadsConversation(chain=results, reply_branches=branches or []),
+    )
 
 
 def _stub_media(
@@ -109,9 +112,9 @@ def _stub_media(
         path.write_bytes(b"clip-bytes")
         return path
 
-    monkeypatch.setattr(image_ingest, "load_image_bytes", fake_load_image_bytes)
-    monkeypatch.setattr(image_ingest, "upload_as_input_file", uploads)
-    monkeypatch.setattr(threads_builder, "upload_as_input_file", uploads)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=fake_load_image_bytes)
+    monkeypatch.setattr(target=image_ingest, name="upload_as_input_file", value=uploads)
+    monkeypatch.setattr(target=threads_builder, name="upload_as_input_file", value=uploads)
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
 
@@ -121,8 +124,8 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     """Media rides as input_file parts holding a Files API uri, never a remote URL.
 
     Handing the model an http(s) url instead makes the proxy base64-inline the media and
-    leaves the native Interactions path with a uri Gemini cannot resolve, so the absence of
-    `file_url` / http `image_url` is the property worth pinning.
+    leaves the native Interactions path with a uri Gemini cannot resolve, so every media part
+    must carry the uri the upload returned, and none may be an http `image_url`.
     """
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
@@ -135,9 +138,9 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     )
 
     assert len(blocks) == 2
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
+    assert block_separator(blocks=blocks) == THREADS_CONTEXT_SEPARATOR
 
-    parts = step_dicts(steps=blocks[1]["content"])
+    parts = block_parts(blocks=blocks)
     assert parts[0]["type"] == "input_text"
     assert "@alice" in parts[0]["text"]
     assert "TARGET" in parts[0]["text"]
@@ -147,7 +150,6 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
         "https://files.test/threads_image_0.jpg",
         "https://files.test/threads_video_0.mp4",
     ]
-    assert all("file_url" not in part for part in media)
     assert not any(part["type"] == "input_image" for part in parts)
     # The filename keeps a real extension: the native Interactions bridge classifies by it.
     assert [part["filename"] for part in media] == ["threads_image_0.jpg", "threads_video_0.mp4"]
@@ -186,10 +188,11 @@ async def test_video_is_uploaded_from_disk_and_cleaned_up(monkeypatch: pytest.Mo
     assert isinstance(source, Path)  # streamed from disk, never read into memory
     assert mime_type == "video/mp4"
     assert not source.exists()  # deleted after the upload, and its temp dir is gone too
+    assert not source.parent.exists()
 
 
 async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ancestors contribute text only; each media part now costs a fetch plus an upload."""
+    """Ancestors contribute text only; each media part costs a fetch plus an upload."""
     ancestor = _post(text="ancestor", images=["https://cdn.test/ancestor.jpg"])
     target = _post(text="target", images=["https://cdn.test/target.jpg"])
     _stub_parse(monkeypatch, [ancestor, target])  # chain is [root, ..., target]
@@ -200,12 +203,10 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
+    media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert len(media) == 1
     assert len(uploads.calls) == 1
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "ancestor" in text  # the ancestor still supplies context, just no media
 
 
@@ -225,9 +226,7 @@ async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.Mon
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
+    media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     names = [part["filename"] for part in media]
     assert sum(name.endswith(".mp4") for name in names) == 1  # only the leftover slot
@@ -247,7 +246,7 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     # The target and the nearest ancestors are kept; the oldest posts are dropped.
     assert "TARGET" in text
     assert f"post {MAX_THREADS_POSTS + 3}" in text  # the target (last) survives
@@ -277,7 +276,7 @@ async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyP
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "first comment" in text
     assert "second comment" in text
     # The linked post comes first: the discussion is context for it, not the other way round.
@@ -312,7 +311,7 @@ async def test_a_comment_by_the_post_author_is_labelled_as_theirs(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "by the linked post's own author)] @alice" in text
     assert "by a reader)] @bob" in text
 
@@ -330,7 +329,7 @@ async def test_comments_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert text.count("[REPLY (") == MAX_THREADS_REPLIES
     # Threads ranks the branches itself, so the trim drops the tail it ranked least relevant.
     assert "comment 0" in text
@@ -356,7 +355,7 @@ async def test_one_deep_branch_cannot_starve_the_top_ranked_comments(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     for index in range(5):
         assert f"top comment {index}" in text
     assert text.count("[REPLY (") == MAX_THREADS_REPLIES
@@ -388,7 +387,7 @@ async def test_an_unrenderable_tail_still_counts_as_a_reply_the_page_carried(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "1 of the 2 nested replies the page carried" in text
     # The empty one holds nothing, so it is never announced as content withheld from the model.
     assert "further replies under this comment were not included" not in text
@@ -415,7 +414,7 @@ async def test_a_trailing_empty_comment_is_dropped_but_a_middle_one_survives(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "@dave" not in text  # the empty tail carries nothing and answers nobody shown
     assert "@bob" in text  # kept: carol's comment says it answers bob
     assert "(no readable text)" in text
@@ -450,7 +449,7 @@ async def test_a_generation_marker_inside_a_comment_is_defused(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "<GENERATE-VIDEO>" not in text
     assert "</generate-video>" not in text
     assert "<generate-image>" not in text
@@ -480,7 +479,7 @@ async def test_the_quoted_post_is_rendered_between_the_target_and_the_comments(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert THREADS_QUOTED_POST_LEAD in text
     assert THREADS_QUOTED_POST_GUARD in text
     assert "A different author wrote it" in text
@@ -512,7 +511,7 @@ async def test_a_self_quote_is_not_described_as_two_people(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "A different author wrote it" not in text
     assert "The linked post's own author wrote it too" in text
     assert THREADS_QUOTED_POST_GUARD in text
@@ -529,7 +528,7 @@ async def test_a_quoted_post_with_no_named_author_claims_nothing_about_who_wrote
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "A different author wrote it" not in text
     assert "The linked post's own author wrote it too" not in text
     assert THREADS_QUOTED_POST_LEAD in text
@@ -547,7 +546,7 @@ async def test_a_post_quoting_nothing_renders_no_quoted_section(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "QUOTED (" not in text
     assert THREADS_QUOTED_POST_LEAD not in text
     assert THREADS_QUOTED_UNAVAILABLE_NOTICE not in text
@@ -564,7 +563,7 @@ async def test_an_unavailable_quoted_post_is_named_rather_than_left_silent(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert THREADS_QUOTED_UNAVAILABLE_NOTICE in text
     assert "do NOT say the linked post quotes nothing" in text
     assert "QUOTED (" not in text
@@ -589,7 +588,7 @@ async def test_a_generation_marker_inside_a_quoted_post_is_defused(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "<GENERATE-VIDEO>" not in text
     assert "</generate-video>" not in text
     assert "(GENERATE-VIDEO)a whole movie(generate-video)" in text
@@ -616,7 +615,7 @@ async def test_the_quoted_posts_media_is_ingested_after_the_targets(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    parts = step_dicts(steps=blocks[1]["content"])
+    parts = block_parts(blocks=blocks)
     media = [part for part in parts if part["type"] == "input_file"]
     # The quoted post's filenames carry their own prefix: clips are written to the shared scratch
     # dir before upload, so a reused name would truncate the target's file mid-upload.
@@ -625,7 +624,7 @@ async def test_the_quoted_posts_media_is_ingested_after_the_targets(
         "threads_quoted_image_0.jpg",
         "threads_quoted_image_1.jpg",
     ]
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
+    assert block_separator(blocks=blocks) == THREADS_CONTEXT_SEPARATOR
     # Attribution is the point: an unlabelled photo of the post being argued with reads as the
     # one-line comment's own.
     text = parts[0]["text"]
@@ -648,7 +647,7 @@ async def test_a_text_only_quote_post_hands_the_whole_media_budget_to_what_it_qu
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    parts = step_dicts(steps=blocks[1]["content"])
+    parts = block_parts(blocks=blocks)
     media = [part for part in parts if part["type"] == "input_file"]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     assert len(uploads.calls) == MAX_THREADS_MEDIA_PARTS
@@ -679,14 +678,14 @@ async def test_the_target_keeps_first_claim_on_the_media_budget(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    parts = step_dicts(steps=blocks[1]["content"])
+    parts = block_parts(blocks=blocks)
     media = [part for part in parts if part["type"] == "input_file"]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     assert all(part["filename"].startswith("threads_image_") for part in media)
     # The squeezed-out item is never fetched, and it is reported against the post that owns it.
     assert len(uploads.calls) == MAX_THREADS_MEDIA_PARTS
     text = parts[0]["text"]
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
+    assert block_separator(blocks=blocks) == THREADS_PARTIAL_MEDIA_SEPARATOR
     assert (
         "Images of the post it quotes NOT attached (1), URLs only: https://cdn.test/squeezed.jpg"
         in text
@@ -786,21 +785,21 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
         ],
     )
     _stub_media(monkeypatch, uploads=FakeUploads())
-    monkeypatch.setattr(threads_builder, "LINK_MEDIA_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(target=threads_builder, name="LINK_MEDIA_TIMEOUT_SECONDS", value=0.01)
 
-    async def never_returns(source: str) -> tuple[bytes, str]:
+    async def never_returns(source: str) -> LoadedMedia:
         """Outlasts the bound, so the whole ingest degrades."""
         del source
         await asyncio.sleep(delay=5)
         raise AssertionError("the bound should have fired first")
 
-    monkeypatch.setattr(image_ingest, "load_image_bytes", never_returns)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=never_returns)
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    parts = step_dicts(steps=blocks[1]["content"])
+    parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     text = parts[0]["text"]
     assert "Images of the linked post NOT attached (1)" in text
@@ -827,8 +826,8 @@ async def test_a_quoted_posts_urls_ride_as_text_for_a_model_that_cannot_read_the
         url=_URL, answer_model_is_gemini=False, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    parts = step_dicts(steps=blocks[1]["content"])
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     text = parts[0]["text"]
     assert "Images of the linked post NOT attached (1)" in text
@@ -849,7 +848,7 @@ async def test_a_post_whose_comments_the_page_withheld_says_so(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "reports 381 replies, but the page did not include any of them" in text
     assert "Do not state or imply that the post has no comments" in text
 
@@ -876,7 +875,7 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     # Comments, not branches: this branch holds two, and the post's own count stays in the
     # message, since this notice runs instead of the one that would have reported it.
     assert "carried 2 comment(s) under the linked post, which reports 40 replies in total" in text
@@ -907,7 +906,7 @@ async def test_comment_media_is_noted_but_never_ingested(monkeypatch: pytest.Mon
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "1 image(s), NOT attached" in text
     assert len(uploads.calls) == 1  # the target's image, and nothing from the comment
     assert "https://cdn.test/comment.jpg" not in text
@@ -926,7 +925,7 @@ async def test_a_post_with_no_replies_at_all_renders_no_comment_section(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert "REPLY (" not in text
     assert "comments under the linked post" not in text
     assert "did not include any of them" not in text
@@ -947,7 +946,7 @@ async def test_the_quoted_block_is_closed_by_a_trailing_guard(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert text.endswith(THREADS_CONTEXT_TRAILER)
     assert "another separator" in THREADS_CONTEXT_TRAILER  # names the forgery it heads off
 
@@ -964,7 +963,7 @@ async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.Monkey
         url=_URL, answer_model_is_gemini=True, gemini_client=None
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -981,8 +980,8 @@ async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPat
     )
 
     # The separator must not claim the media was fetched, since only its URLs are supplied.
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    parts = step_dicts(steps=blocks[1]["content"])
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     text = parts[0]["text"]
     assert "https://cdn.test/a.jpg" in text
@@ -1001,8 +1000,8 @@ async def test_failed_media_degrades_to_an_honest_text_block(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    parts = step_dicts(steps=blocks[1]["content"])
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     assert "https://cdn.test/a.jpg" in parts[0]["text"]
 
@@ -1018,8 +1017,8 @@ async def test_failed_upload_degrades_to_an_honest_text_block(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    assert [part["type"] for part in step_dicts(steps=blocks[1]["content"])] == ["input_text"]
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    assert [part["type"] for part in block_parts(blocks=blocks)] == ["input_text"]
 
 
 async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1038,8 +1037,8 @@ async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.Monk
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    parts = step_dicts(steps=blocks[1]["content"])
+    assert block_separator(blocks=blocks) == THREADS_PARTIAL_MEDIA_SEPARATOR
+    parts = block_parts(blocks=blocks)
     media = [part for part in parts if part["type"] == "input_file"]
     assert [part["filename"] for part in media] == ["threads_video_0.mp4"]
     # The image that never arrived is named and handed over as a URL, so the model can say it
@@ -1063,8 +1062,8 @@ async def test_a_carousel_past_the_cap_names_the_images_it_left_out(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    parts = step_dicts(steps=blocks[1]["content"])
+    assert block_separator(blocks=blocks) == THREADS_PARTIAL_MEDIA_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert len([part for part in parts if part["type"] == "input_file"]) == MAX_THREADS_MEDIA_PARTS
     text = parts[0]["text"]
     assert f"{MAX_THREADS_MEDIA_PARTS} item(s) reached you and 5 did not" in text
@@ -1087,8 +1086,8 @@ async def test_a_video_squeezed_out_by_the_image_budget_is_named(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
-    parts = step_dicts(steps=blocks[1]["content"])
+    assert block_separator(blocks=blocks) == THREADS_PARTIAL_MEDIA_SEPARATOR
+    parts = block_parts(blocks=blocks)
     media = [part for part in parts if part["type"] == "input_file"]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     assert all(part["filename"].endswith(".jpg") for part in media)
@@ -1109,7 +1108,7 @@ async def test_a_url_list_longer_than_the_cap_still_states_its_true_size(
         url=_URL, answer_model_is_gemini=False, gemini_client=make_stub_gemini_client()
     )
 
-    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    text = block_body(blocks=blocks)
     assert f"Images of the linked post NOT attached ({MAX_THREADS_MEDIA_PARTS + 3})" in text
     assert "plus 3 more whose URLs are not listed here" in text
 
@@ -1123,7 +1122,7 @@ async def test_text_only_post_keeps_the_context_separator(monkeypatch: pytest.Mo
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
+    assert block_separator(blocks=blocks) == THREADS_CONTEXT_SEPARATOR
 
 
 async def test_build_empty_post_returns_unavailable_notice(
@@ -1138,21 +1137,18 @@ async def test_build_empty_post_returns_unavailable_notice(
 
     assert len(blocks) == 1
     assert blocks[0]["role"] == "system"
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_UNAVAILABLE_NOTICE
+    assert block_separator(blocks=blocks) == THREADS_UNAVAILABLE_NOTICE
 
 
 async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A parse error degrades to the unavailable notice instead of raising into the pipeline."""
-
-    def boom(self: ThreadsDownloader, *, url: str) -> ThreadsConversation:
-        """Simulates an HTTP/parse failure."""
-        raise RuntimeError("fetch failed")
-
-    monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=boom)
+    serve_conversation(
+        monkeypatch, downloader=ThreadsDownloader, error=RuntimeError("fetch failed")
+    )
 
     blocks = await build_threads_context_messages(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert len(blocks) == 1
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_UNAVAILABLE_NOTICE
+    assert block_separator(blocks=blocks) == THREADS_UNAVAILABLE_NOTICE
