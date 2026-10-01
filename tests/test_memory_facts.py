@@ -8,6 +8,7 @@ reach or wipe a scope, and that aging is deterministic now that the dates are co
 from pathlib import Path
 from datetime import timedelta
 from functools import partial
+from collections.abc import Callable
 
 import pytest
 
@@ -33,16 +34,18 @@ from discordbot.services.memory.store import (
     read_owner,
     user_scope,
     write_fact,
+    write_tone,
     delete_fact,
     iter_scopes,
     server_scope,
+    append_detail,
     scope_owner_id,
     compartment_dir,
+    append_raw_entry,
     guild_compartment,
     list_compartments,
     prune_compartment,
     unaccounted_files,
-    delete_memory_files,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -219,26 +222,6 @@ def test_rendered_document_groups_by_section_and_dates_recent(memory_isolated_di
     assert "* [2026-07-01] 正在搬家" in document
 
 
-def test_member_alias_rows_carry_their_id_for_the_allowlist(memory_isolated_dir: Path) -> None:
-    """The nickname table stays parseable, so allowlist widening keeps working."""
-    scope = server_scope(server_id=500)
-    write_fact(
-        scope=scope,
-        fact=_fact(
-            fact_id="a" * 16,
-            section="member_alias",
-            durability="permanent",
-            text="小明(社群暱稱:明哥)",
-            subject_id=777,
-        ),
-    )
-    document = read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="server"
-    )
-    assert "## 成員稱呼" in document
-    assert allowlist_ids_from_server_memory(memory=document) == {777: "小明(社群暱稱:明哥)"}
-
-
 def test_the_document_is_capped_and_says_so(memory_isolated_dir: Path) -> None:
     """Past the cap the render stops and admits it, rather than silently overflowing."""
     scope = user_scope(user_id=111)
@@ -270,10 +253,34 @@ def test_reads_are_cached_until_a_write_lands(memory_isolated_dir: Path) -> None
     )
 
 
-def test_iter_scopes_finds_compartment_trees_and_skips_dot_dirs(memory_isolated_dir: Path) -> None:
-    """The sweep sees a scope that has only fact files, and never the git directory."""
-    write_fact(scope=user_scope(user_id=111), fact=_fact())
-    write_fact(scope=server_scope(server_id=500), fact=_fact())
+@pytest.mark.parametrize(
+    "write_tier",
+    [
+        pytest.param(lambda scope: append_raw_entry(scope=scope, entry_text="- 觀察"), id="raw"),
+        pytest.param(
+            lambda scope: append_detail(
+                scope=scope,
+                text="## 2026-07-01T00:00:00+00:00\n### stable_fact\n- normalized_key: a",
+            ),
+            id="detail",
+        ),
+        pytest.param(
+            lambda scope: write_tone(scope=scope, content="## 語氣偏好\n* 簡短"), id="tone"
+        ),
+        pytest.param(lambda scope: write_fact(scope=scope, fact=_fact()), id="fact"),
+    ],
+)
+def test_iter_scopes_finds_a_scope_holding_one_tier_and_skips_dot_dirs(
+    memory_isolated_dir: Path, write_tier: Callable[[str], None]
+) -> None:
+    """Any one tier on disk makes a scope, of either flavor, and the git directory never is one.
+
+    `detail.md` alone counts: it is what a rebuild reconstructs everything from, and a scope
+    that has gone quiet since its last consolidation holds nothing else — which is the steady
+    state for a server, not an edge case.
+    """
+    write_tier(user_scope(user_id=111))
+    write_tier(server_scope(server_id=500))
     (memory_isolated_dir / ".git").mkdir(parents=True, exist_ok=True)
     (memory_isolated_dir / ".git" / "raw.md").write_text("## 2026-01-01T00:00:00+00:00\n")
     assert iter_scopes() == ["111", "bot_memories/500"]
@@ -460,16 +467,6 @@ def test_prune_compartment_removes_a_directory_it_emptied(memory_isolated_dir: P
     assert pruned.unreadable == ()
     assert not directory.exists()
     assert list_compartments(scope=scope) == []
-
-
-def test_clear_removes_the_whole_compartment_tree(memory_isolated_dir: Path) -> None:
-    """A clear has to walk the tree now, not three fixed filenames."""
-    scope = user_scope(user_id=111)
-    for compartment in (GLOBAL_COMPARTMENT, guild_compartment(guild_id=222), DM_COMPARTMENT):
-        write_fact(scope=scope, fact=_fact(compartment=compartment))
-    assert delete_memory_files(scope=scope)
-    assert list_compartments(scope=scope) == []
-    assert not (memory_isolated_dir / scope).exists()
 
 
 def test_read_owner_recovers_the_stored_identity(memory_isolated_dir: Path) -> None:
@@ -873,20 +870,6 @@ def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
         == 0
     )
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
-
-
-def test_a_scope_whose_only_evidence_is_detail_is_still_a_scope(memory_isolated_dir: Path) -> None:
-    """`detail.md` alone counts: it is what a rebuild reconstructs everything from, and a
-    scope that has gone quiet since its last consolidation holds nothing else — which is
-    the steady state for a server, not an edge case. Missing it made the migration skip
-    22 of the live store's scopes, half of them server memories.
-    """
-    scope = user_scope(user_id=111)
-    (memory_isolated_dir / scope).mkdir(parents=True)
-    (memory_isolated_dir / scope / "detail.md").write_text(
-        "## 2026-07-01T00:00:00+00:00\n### stable_fact\n- normalized_key: a\n", encoding="utf-8"
-    )
-    assert iter_scopes() == ["111"]
 
 
 def test_an_alias_row_cannot_be_given_someone_elses_id(memory_isolated_dir: Path) -> None:

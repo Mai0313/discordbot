@@ -1,6 +1,5 @@
 """Tests for the bot's per-server (community) long-term memory flavor."""
 
-from types import SimpleNamespace
 from pathlib import Path
 from datetime import datetime, timedelta
 from functools import partial
@@ -32,11 +31,10 @@ from discordbot.services.memory.server_prompts import (
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
-from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
-from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.memory import STAMPED_AT, make_fact, make_delta, make_memory_cog
+from tests.helpers.casting import as_interaction
 from tests.helpers.discord_mocks import FakeInteraction
 
-BOT_ID = 555
 GUILD_ID = 777
 SERVER_SCOPE = server_scope(server_id=GUILD_ID)
 SERVER_OWNER = MemoryOwner(owner_id=GUILD_ID, owner_name="My Server")
@@ -430,19 +428,13 @@ def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _server_cog() -> MemoryCogs:
-    """Builds a MemoryCogs whose bot exposes a stable user id."""
-    bot = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
-    return MemoryCogs(bot=as_bot(fake=bot))
-
-
 async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
     """The command shows the guild's own facts, rendered under the server headings."""
     write_fact(
         scope=SERVER_SCOPE,
         fact=_fact(fact_id="a" * 16, section="profile", text="大家都很愛玩楓之谷"),
     )
-    cog = _server_cog()
+    cog = make_memory_cog()
     interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     assert interaction.response.sent[-1]["ephemeral"] is True
@@ -453,7 +445,7 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
 
 async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     """A guild the bot has never consolidated gets a placeholder, not an empty embed."""
-    cog = _server_cog()
+    cog = make_memory_cog()
     interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent[-1]["embed"]
@@ -463,7 +455,7 @@ async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path
 
 async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     """There is no server scope in a DM, so the command refuses before reading anything."""
-    cog = _server_cog()
+    cog = make_memory_cog()
     interaction = FakeInteraction(in_guild=False)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent[-1]["embed"]
