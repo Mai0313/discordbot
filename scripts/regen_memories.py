@@ -26,11 +26,14 @@ written, and no client is even built, until the operator answers `y`.
 
 Two expected losses, reported rather than hidden:
 
-* a scope with no evidence at all rebuilds empty — its facts were distilled from evidence
-  that has since been trimmed away, and there is nothing to rebuild them from;
+* a scope whose evidence yields no fact rebuilds empty, since the rebuild never reads the
+  existing facts back in;
 * a scope whose every observation is `source_only` gets an empty `global/`, so it will
   read as having no memory in a server it has never spoken in, until its next
   cross-server-safe observation.
+
+A scope with no evidence at all is not one of them: the rebuild skips it, facts and tone
+note untouched, and the report says so.
 
 The report also names any file in a compartment directory the store did not write. A
 rebuild removes every fact file it did not re-emit, an unreadable one included, but
@@ -120,7 +123,8 @@ def _scopes_for_target(target: str) -> list[str]:
     Raises:
         SystemExit: The target names a single scope with nothing on disk to rebuild,
             which is what a mistyped id looks like. Reported here rather than left to
-            come back as a `no_evidence` row, which reads like data loss.
+            come back as a skipped `no_evidence` row, which would pass the typo off as a
+            real scope.
     """
     scopes = iter_scopes()
     if target == "all":
@@ -150,17 +154,23 @@ def _written(scope: str) -> dict[str, int]:
 
 
 def _loss_note(result: str, buckets: dict[str, int]) -> str:
-    """Returns the warning for a scope that rebuilds empty or loses its global compartment.
+    """Returns the note for a scope the rebuild skips, empties, or leaves without `global`.
 
-    The empty-bucket test is what makes the first note reachable on `--dry-run`: a dry
-    run's result is always the literal `dry-run`, so keying on `no_evidence` alone would
-    flag a scope with nothing to rebuild from only once the destructive run had happened,
-    and mislabel it `EMPTY GLOBAL` until then. It also keeps that second note off server
-    scopes, whose evidence all routes to `global` by construction, so its user-flavored
-    wording cannot land on one.
+    The skip is read off the result, never off the counts: a skipped scope's real-run
+    counts are the facts it still holds, and a scope whose evidence holds no observation
+    (only a forget request, say) is still rebuilt, from nothing. The dry run reports the
+    skip under the same result for that reason. Empty counts mean an empty rebuild only on
+    a rebuild that finished or the preview of one; a failed or raised one may have stopped
+    before distilling anything. The empty-bucket test also keeps the `EMPTY GLOBAL` note
+    off server scopes, whose evidence all routes to `global` by construction, so its
+    user-flavored wording cannot land on one.
     """
-    if result == "no_evidence" or not any(buckets.values()):
-        return "REBUILDS EMPTY: no evidence left to rebuild from"
+    if result == "no_evidence":
+        return "SKIPPED: no evidence to rebuild from, so its memory is kept as it is"
+    if not any(buckets.values()):
+        if result in ("regenerated", "dry-run"):
+            return "REBUILDS EMPTY: its evidence yields no fact"
+        return ""
     if not buckets.get(GLOBAL_COMPARTMENT):
         return "EMPTY GLOBAL: unknown in a server this user has not spoken in"
     return ""
@@ -319,7 +329,8 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
             rows=[
                 _ScopeRow(
                     scope=scope,
-                    result="dry-run",
+                    # The rebuild's own guard, so the preview names the scopes the run skips.
+                    result="dry-run" if read_evidence(scope=scope) else "no_evidence",
                     counts=_preview(scope=scope),
                     unreadable_removed=0,
                 )
