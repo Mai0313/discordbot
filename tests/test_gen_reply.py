@@ -13,7 +13,7 @@ import itertools
 from collections import Counter
 from unittest.mock import MagicMock
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 # openai 3.x builds its exceptions on httpx2, so a request or response handed to one has to
 # come from there. google-genai is still on httpx 0.x, and both live in the environment.
@@ -3338,7 +3338,7 @@ async def test_dead_source_skipped_within_ttl_then_retried(
     """A failing source is skipped (no re-fetch) for the TTL, then retried once after it."""
     calls = {"n": 0}
 
-    def _raise_get_image_data(image_file: str) -> bytes:
+    def _raise_get_image_data(image_file: str) -> LoadedMedia:
         del image_file
         calls["n"] += 1
         raise RuntimeError("CDN url expired")
@@ -3366,7 +3366,7 @@ async def test_non_history_render_does_not_dead_cache_transient_failure(
     """Current/reference renders (allow_dead_cache off) retry a transient failure, not poison it."""
     calls = {"n": 0}
 
-    def _raise_get_image_data(image_file: str) -> bytes:
+    def _raise_get_image_data(image_file: str) -> LoadedMedia:
         del image_file
         calls["n"] += 1
         raise RuntimeError("transient blip")
@@ -3932,7 +3932,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     message.embeds = [img_embed]
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
-        lambda image_file: _png_bytes(),
+        lambda image_file: LoadedMedia(data=_png_bytes(), mime_type="image/png"),
     )
     parts = await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
@@ -3959,6 +3959,62 @@ async def test_an_image_attachment_mime_is_normalized_before_the_downscale() -> 
         source=_ImageAttachment(content_type="Image/GIF; charset=binary", payload=b"GIF89a")
     )
     assert loaded == LoadedMedia(data=b"GIF89a", mime_type="image/gif")
+
+
+def _transparent_png() -> bytes:
+    """A black square on a transparent 64x64 background."""
+    image = Image.new(mode="RGBA", size=(64, 64), color=(0, 0, 0, 0))
+    image.paste(im=(0, 0, 0, 255), box=(16, 16, 48, 48))
+    buffered = BytesIO()
+    image.save(fp=buffered, format="PNG")
+    return buffered.getvalue()
+
+
+def _animated_gif() -> bytes:
+    """A red square on a transparent first frame, then a solid blue second frame."""
+    palette = [0, 0, 0, 255, 0, 0, 0, 0, 255]
+    first = Image.new(mode="P", size=(32, 32), color=0)
+    first.putpalette(data=palette)
+    first.paste(im=1, box=(8, 8, 24, 24))
+    second = Image.new(mode="P", size=(32, 32), color=2)
+    second.putpalette(data=palette)
+    buffered = BytesIO()
+    first.save(fp=buffered, format="GIF", save_all=True, append_images=[second], transparency=0)
+    return buffered.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("payload", "center"),
+    [(_transparent_png(), (0, 0, 0, 255)), (_animated_gif(), (255, 0, 0, 255))],
+    ids=["transparent-png", "animated-gif"],
+)
+async def test_a_linked_image_reaches_the_model_as_one_still_keeping_its_alpha(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes, center: tuple[int, int, int, int]
+) -> None:
+    """A linked image keeps its transparency, and an animated one arrives as its first frame."""
+    monkeypatch.setattr(
+        "discordbot.utils.images.requests.get",
+        lambda url, timeout: SimpleNamespace(content=payload),
+    )
+    loaded = await load_image_bytes(source="https://cdn.test/linked")
+    still = Image.open(fp=BytesIO(initial_bytes=loaded.data))
+    assert loaded.mime_type == "image/png"
+    assert getattr(still, "n_frames", 1) == 1
+    rgba = still.convert("RGBA")
+    assert rgba.getchannel(channel="A").getpixel(xy=(0, 0)) == 0
+    assert rgba.getpixel(xy=(rgba.width // 2, rgba.height // 2)) == center
+
+
+async def test_a_linked_page_that_is_not_an_image_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead CDN's HTML error page is dropped, never handed on as an image."""
+    monkeypatch.setattr(
+        "discordbot.utils.images.requests.get",
+        lambda url, timeout: SimpleNamespace(content=b"<html>404</html>"),
+    )
+    with pytest.raises(UnidentifiedImageError):
+        await load_image_bytes(source="https://cdn.test/gone.png")
 
 
 @pytest.fixture
@@ -4195,7 +4251,8 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
 
     url = "https://example.test/image.png"
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.loaders.get_image_data", lambda image_file: b"jpeg"
+        "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
+        lambda image_file: LoadedMedia(data=b"jpeg", mime_type="image/jpeg"),
     )
     url_image_rendered = await renderer.render_image(source=url, cache_key=url)
     assert url_image_rendered is not None

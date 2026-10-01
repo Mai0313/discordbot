@@ -1,7 +1,6 @@
 """Image loading, downscaling, and data-URI helpers."""
 
 from io import BytesIO
-import re
 import base64
 
 from PIL import Image
@@ -10,36 +9,6 @@ import requests
 
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.timeouts import IMAGE_FETCH_TIMEOUT_SECONDS
-
-_DATA_URI_RE = re.compile(pattern=r"^data:image/(?:jpg|jpeg|png|gif|bmp|webp);base64,")
-
-
-def get_pil_image(image_file: str) -> Image.Image:
-    """Loads an image from an `http(s)://` URL or a base64 data URI.
-
-    Args:
-        image_file: `http(s)://...` URL or `data:image/<mime>;base64,...` URI.
-
-    Returns:
-        The decoded image, converted to RGB.
-
-    Raises:
-        ValueError: `image_file` is neither an `http(s)://` URL nor a
-            recognised image data URI.
-        requests.RequestException: The URL could not be fetched.
-        PIL.UnidentifiedImageError: What came back is not a decodable image, which is
-            what a 404 HTML body from a dead CDN arrives as.
-    """
-    if image_file.startswith(("http://", "https://")):
-        response = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
-        image = Image.open(fp=BytesIO(initial_bytes=response.content))
-    elif match := _DATA_URI_RE.match(string=image_file):
-        payload = base64.b64decode(s=image_file[match.end() :])
-        image = Image.open(fp=BytesIO(initial_bytes=payload))
-    else:
-        raise ValueError(f"Unsupported image source: {image_file[:64]!r}")
-    return image.convert("RGB")
-
 
 # Gemini scales anything past 3072x3072 down server-side before the model sees it, so
 # capping the longest edge locally never changes what the model consumes; it only stops
@@ -98,36 +67,36 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
         return unchanged
 
 
-def get_image_data(image_file: str) -> bytes:
-    """Returns the underlying bytes of an image.
+def get_image_data(image_file: str) -> LoadedMedia:
+    """Fetches an image URL as one still, downscaled to the provider's effective resolution.
 
-    Fast path: when `image_file` is already a `data:image/<mime>;base64,...`
-    URI, the embedded payload is decoded and returned as-is — no PIL
-    decode/encode round trip, no format change. JPEG stays JPEG, PNG stays PNG.
-
-    Slow path: anything else is fetched / decoded via :func:`get_pil_image`,
-    downscaled to the provider's effective resolution, and re-encoded as JPEG.
+    Unlike an attachment, an animated image keeps only its first frame: linked GIFs are mostly
+    GIF-picker clips of several megabytes, and a reply's history can carry several of them.
+    A still with transparency stays PNG so its alpha survives; anything else becomes JPEG.
 
     Args:
-        image_file: URL or data URI.
+        image_file: `http(s)://...` URL.
 
     Returns:
-        Raw image bytes.
+        The re-encoded still and its MIME type.
 
     Raises:
-        ValueError: `image_file` is not a supported URL or image data URI.
+        requests.RequestException: The URL could not be fetched, or is not `http(s)://`.
+        PIL.UnidentifiedImageError: What came back is not a decodable image, which is
+            what a 404 HTML body from a dead CDN arrives as.
     """
-    if match := _DATA_URI_RE.match(string=image_file):
-        payload = image_file[match.end() :]
-        return base64.b64decode(s=payload)
-
-    image = get_pil_image(image_file=image_file)
+    response = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
+    # An image opens on its first frame, and saving without `save_all` writes only that frame.
+    image = Image.open(fp=BytesIO(initial_bytes=response.content))
     image.thumbnail(
         size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
     )
     buffered = BytesIO()
-    image.save(fp=buffered, format="JPEG", quality=95)
-    return buffered.getvalue()
+    if image.has_transparency_data:
+        image.save(fp=buffered, format="PNG")
+        return LoadedMedia(data=buffered.getvalue(), mime_type="image/png")
+    image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
+    return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
 
 
 def to_data_uri(data: bytes, mime_type: str | None = None) -> str:

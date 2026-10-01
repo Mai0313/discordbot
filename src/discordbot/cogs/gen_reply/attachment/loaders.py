@@ -22,8 +22,7 @@ async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedi
     concurrency or does not.
     """
     if isinstance(source, str):
-        file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
-        return LoadedMedia(data=file_bytes, mime_type="image/jpeg")
+        return await asyncio.to_thread(get_image_data, image_file=source)
     if isinstance(source, Attachment):
         content_type = attachment_mime(attachment=source) or "image/png"
     else:
