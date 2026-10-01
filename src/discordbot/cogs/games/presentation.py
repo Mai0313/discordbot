@@ -2,8 +2,9 @@
 
 from typing import Final
 
-from discordbot.typings.games import SettleOutcome
+from discordbot.typings.games import Card, SettleOutcome
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.cogs.games.blackjack import BlackjackPlayerHand, is_blackjack, dealer_up_card
 from discordbot.services.economy.presentation import amount_code
 
 WIN_COLOR = DISCORD_GREEN
@@ -27,6 +28,15 @@ DEALER_BUST_RESULT_EMOJI = "🎊"
 NATURAL_RESULT_EMOJI = "✨"
 
 
+def delta_color(delta: int) -> int:
+    """Returns the win, lose or push color for a signed point change."""
+    if delta > 0:
+        return WIN_COLOR
+    if delta < 0:
+        return LOSE_COLOR
+    return PUSH_COLOR
+
+
 def card_line(cards_text: str) -> str:
     """Renders a hand string as an H1 line with doubled inter-card spacing.
 
@@ -39,12 +49,28 @@ def card_line(cards_text: str) -> str:
             `"🂠 K♥"`).
 
     Returns:
-        Markdown-ready H1 line for placement in an embed field value.
+        Markdown-ready H1 line for an embed description.
     """
     if not cards_text:
         return ""
     spaced = cards_text.replace(" ", "  ")
     return f"# {spaced}"
+
+
+def render_hand(cards: list[Card], hide_first: bool = False) -> str:
+    """Formats a hand for display.
+
+    Args:
+        cards: Cards to render.
+        hide_first: Whether to replace the first card with a hidden-card marker.
+
+    Returns:
+        A space-separated display string for the hand.
+    """
+    if hide_first and cards:
+        rest = " ".join(str(card) for card in cards[1:])
+        return f"🂠 {rest}".strip()
+    return " ".join(str(card) for card in cards)
 
 
 def metadata_line(text: str) -> str:
@@ -130,3 +156,38 @@ def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total:
     if outcome == "surrender":
         return "## 🏳️ 投降 · 退一半"
     return f"## 平手 · {player_total} = {dealer_total}"
+
+
+def blackjack_player_early_finish_note(
+    player: BlackjackPlayerHand, dealer: list[Card], peeked_blackjack: bool
+) -> str | None:
+    """Returns a short explanation for round paths that skipped player actions.
+
+    Args:
+        player: Player to inspect.
+        dealer: Dealer cards at settlement time.
+        peeked_blackjack: Whether the dealer revealed a Blackjack via peek.
+
+    Returns:
+        The explanation text, or `None` when no early-finish path applies.
+    """
+    if not player.hands:
+        return None
+    first_hand = player.hands[0]
+    player_bj = (
+        len(player.hands) == 1
+        and not first_hand.is_split_hand
+        and is_blackjack(cards=first_hand.cards)
+    )
+    if peeked_blackjack and player_bj:
+        return f"{_dealer_peek_note(dealer=dealer)}, 你也起手 Blackjack, 本局直接平手"
+    if peeked_blackjack:
+        return f"{_dealer_peek_note(dealer=dealer)}, 本局直接結算"
+    if player_bj:
+        return "你起手 Blackjack, 本局直接結算"
+    return None
+
+
+def _dealer_peek_note(dealer: list[Card]) -> str:
+    """Returns the reason text for dealer Blackjack revealed by a hole-card peek."""
+    return f"莊家明牌 {dealer_up_card(dealer=dealer)}, peek 暗牌確認 Blackjack"

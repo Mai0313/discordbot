@@ -933,19 +933,3 @@ class BlackjackRound(BaseModel):
         `draw_dealer_card` at a time, closed by `mark_dealer_played`.
         """
         self.phase = "settled"
-
-
-def render_hand(cards: list[Card], hide_first: bool = False) -> str:
-    """Formats a hand for display.
-
-    Args:
-        cards: Cards to render.
-        hide_first: Whether to replace the first card with a hidden-card marker.
-
-    Returns:
-        A space-separated display string for the hand.
-    """
-    if hide_first and cards:
-        rest = " ".join(str(card) for card in cards[1:])
-        return f"🂠 {rest}".strip()
-    return " ".join(str(card) for card in cards)

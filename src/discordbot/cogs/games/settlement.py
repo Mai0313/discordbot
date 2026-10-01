@@ -13,45 +13,8 @@ from discordbot.cogs.games.blackjack import (
     BlackjackHandState,
     BlackjackPlayerHand,
     settle_hand,
-    is_blackjack,
-    dealer_up_card,
 )
 from discordbot.services.economy.database import get_vip, apply_blackjack_settlement
-
-
-def blackjack_player_early_finish_note(
-    player: BlackjackPlayerHand, dealer: list[Card], peeked_blackjack: bool
-) -> str | None:
-    """Returns a short explanation for round paths that skipped player actions.
-
-    Args:
-        player: Player to inspect.
-        dealer: Dealer cards at settlement time.
-        peeked_blackjack: Whether the dealer revealed a Blackjack via peek.
-
-    Returns:
-        The explanation text, or `None` when no early-finish path applies.
-    """
-    if not player.hands:
-        return None
-    first_hand = player.hands[0]
-    player_bj = (
-        len(player.hands) == 1
-        and not first_hand.is_split_hand
-        and is_blackjack(cards=first_hand.cards)
-    )
-    if peeked_blackjack and player_bj:
-        return f"{_dealer_peek_note(dealer=dealer)}, 你也起手 Blackjack, 本局直接平手"
-    if peeked_blackjack:
-        return f"{_dealer_peek_note(dealer=dealer)}, 本局直接結算"
-    if player_bj:
-        return "你起手 Blackjack, 本局直接結算"
-    return None
-
-
-def _dealer_peek_note(dealer: list[Card]) -> str:
-    """Returns the reason text for dealer Blackjack revealed by a hole-card peek."""
-    return f"莊家明牌 {dealer_up_card(dealer=dealer)}, peek 暗牌確認 Blackjack"
 
 
 def _aggregate_outcome(

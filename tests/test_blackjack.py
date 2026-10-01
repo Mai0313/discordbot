@@ -20,7 +20,6 @@ from discordbot.cogs.games.blackjack import (
     can_double,
     hand_value,
     is_soft_17,
-    render_hand,
     settle_hand,
     is_blackjack,
     can_surrender,
@@ -29,7 +28,7 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs.games.settlement import blackjack_player_early_finish_note
+from discordbot.cogs.games.presentation import render_hand, blackjack_player_early_finish_note
 from discordbot.services.economy.database import buy_vip, get_casino_ledger
 
 from tests.helpers.games import card, seat, settle_only_seat

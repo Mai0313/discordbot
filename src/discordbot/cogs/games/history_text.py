@@ -15,7 +15,7 @@ from nextcord import Embed
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import SettleOutcome, BlackjackHistoryRecord, BlackjackHistoryPayload
-from discordbot.cogs.games.presentation import WIN_COLOR, LOSE_COLOR, PUSH_COLOR
+from discordbot.cogs.games.presentation import PUSH_COLOR, delta_color
 
 # Embed description hard limit is 4096; keep headroom for the title, summary
 # line, code fences, and a possible truncation note.
@@ -128,15 +128,6 @@ def _render_block(rows: Sequence[_Row]) -> str:
     return f"```\n{body}\n```"
 
 
-def _net_color(net_delta: int) -> int:
-    """Returns the embed accent color for the overall net result."""
-    if net_delta > 0:
-        return WIN_COLOR
-    if net_delta < 0:
-        return LOSE_COLOR
-    return PUSH_COLOR
-
-
 def build_blackjack_history_embed(
     *, player_name: str, records: Sequence[BlackjackHistoryRecord]
 ) -> Embed:
@@ -164,5 +155,5 @@ def build_blackjack_history_embed(
     if omitted:
         parts.append(f"-# 還有 {omitted} 場較舊紀錄未顯示")
     return Embed(
-        title=title, description="\n".join(parts), color=_net_color(net_delta=summary.net_delta)
+        title=title, description="\n".join(parts), color=delta_color(delta=summary.net_delta)
     )

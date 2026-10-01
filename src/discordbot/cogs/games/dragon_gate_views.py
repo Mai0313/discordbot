@@ -40,8 +40,6 @@ from discordbot.cogs.games.interactions import (
     set_view_item_visible,
 )
 from discordbot.cogs.games.presentation import (
-    WIN_COLOR,
-    LOSE_COLOR,
     PUSH_COLOR,
     POT_FIELD_EMOJI,
     TURN_FIELD_EMOJI,
@@ -49,6 +47,7 @@ from discordbot.cogs.games.presentation import (
     LAST_HAND_FIELD_EMOJI,
     FINISH_REASON_FIELD_EMOJI,
     LOBBY_PLAYERS_FIELD_EMOJI,
+    delta_color,
     metadata_line,
     lobby_participant_line,
 )
@@ -172,16 +171,6 @@ def _gate_description_block(turn: DragonGateTurn) -> str:
             return f"{cards}\n### ⚠️ 同點門柱\n{hint}"
         return f"{cards}\n### {_direction_label(direction=turn.direction)}"
     return cards
-
-
-def _table_color(results: list[DragonGatePlayerResult]) -> int:
-    """Returns the final embed color from the table's net result."""
-    total_delta = sum(result.delta for result in results)
-    if total_delta > 0:
-        return WIN_COLOR
-    if total_delta < 0:
-        return LOSE_COLOR
-    return PUSH_COLOR
 
 
 def _settlement_result_heading(delta: int) -> str:
@@ -327,7 +316,7 @@ def build_dragon_gate_final_embed(
     embed = Embed(
         title=_final_title(results=results),
         description="\n".join(description_parts),
-        color=_table_color(results=results),
+        color=delta_color(delta=sum(result.delta for result in results)),
     )
     if round_state.participants and round_state.participants[0].avatar_url:
         embed.set_thumbnail(url=round_state.participants[0].avatar_url)

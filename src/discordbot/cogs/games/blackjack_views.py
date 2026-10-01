@@ -1,4 +1,4 @@
-"""Interactive components for multiplayer casino game sessions."""
+"""Blackjack lobby and table views, and the seat embeds they render."""
 
 from __future__ import annotations
 
@@ -30,15 +30,11 @@ from discordbot.cogs.games.blackjack import (
     InsuranceBetTooSmallError,
     InsuranceBeyondBalanceError,
     hand_value,
-    render_hand,
     is_five_card_win,
     is_five_card_twenty_one,
 )
 from discordbot.cogs.games.bot_player import choose_bot_action, bot_takes_insurance
-from discordbot.cogs.games.settlement import (
-    settle_blackjack_player,
-    blackjack_player_early_finish_note,
-)
+from discordbot.cogs.games.settlement import settle_blackjack_player
 from discordbot.cogs.games.interactions import (
     GameView,
     edit_game_message,
@@ -57,10 +53,13 @@ from discordbot.cogs.games.presentation import (
     SYSTEM_NARRATOR_NAME,
     LOBBY_PLAYERS_FIELD_EMOJI,
     card_line,
+    delta_color,
+    render_hand,
     metadata_line,
     player_result_title,
     settlement_metadata,
     lobby_participant_line,
+    blackjack_player_early_finish_note,
 )
 from discordbot.services.economy.presentation import amount_code, currency_text
 
@@ -225,11 +224,7 @@ def _player_seat_color(
 ) -> int:
     """Picks a player seat embed color from settlement or in-progress state."""
     if settlement is not None:
-        if settlement.delta > 0:
-            return WIN_COLOR
-        if settlement.delta < 0:
-            return LOSE_COLOR
-        return PUSH_COLOR
+        return delta_color(delta=settlement.delta)
     if insurance_phase:
         return IN_PROGRESS_COLOR
     if is_active:
