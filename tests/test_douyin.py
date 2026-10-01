@@ -674,7 +674,7 @@ def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bo
     assert is_douyin_post_url(url=url) is expected
 
 
-def test_download_creates_the_output_folder_once(
+def test_a_download_never_recreates_a_removed_output_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """`_download_to` must not re-create the output folder per file.
@@ -683,24 +683,15 @@ def test_download_creates_the_output_folder_once(
     mid-download; re-creating it per file would silently strand every later image there
     forever. Failing the open instead turns the removal into the stop signal.
     """
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
-        return _FakeResponse(body=b"image-bytes")
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    scratch = tmp_path / "gone"
+    _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(body=b"image-bytes")
+    )
+    scratch = tmp_path / "gone"  # the scratch dir a cancelled caller has already removed
     downloader = DouyinDownloader(output_folder=scratch.as_posix())
-    post = downloader.parse_metadata(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
 
-    # Stand in for the rmtree a cancelled caller performs between two files.
-    scratch.mkdir()
-    scratch.rmdir()
     with pytest.raises(FileNotFoundError):
         downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
     assert not scratch.exists()  # nothing re-created it behind the caller's back
-    assert post.is_photo
 
 
 def test_failed_gallery_leaves_no_images_behind(

@@ -109,7 +109,7 @@ def test_publish_bytes_same_content_different_suffix_two_files(tmp_path: Path) -
 
 
 def test_publish_bytes_rejects_non_allowlisted_suffix(tmp_path: Path) -> None:
-    """A suffix the host would 404 (e.g. .aiff from the music renderer) is refused, nothing written."""
+    """A suffix the host would 404 (e.g. .aiff) is refused, nothing written."""
     service = _service(serve_dir=tmp_path)
 
     url = service.publish_bytes(data=b"x", suffix=".aiff")
@@ -411,12 +411,6 @@ def test_cleanup_no_op_on_missing_serve_dir(tmp_path: Path) -> None:
     assert not serve_dir.exists()
 
 
-def test_empty_config_is_unavailable() -> None:
-    """Empty base_url / serve_dir make the service unavailable (the test-green guard)."""
-    config = make_media_hosting_config(enabled=True, base_url="", serve_dir="")
-    assert config.available is False
-
-
 # --- MediaItem ------------------------------------------------------------------------------
 
 
@@ -521,7 +515,7 @@ async def test_plan_drops_largest_on_combined_overflow_when_hosting_disabled() -
     """Host-off combined-overflow: the largest is peeled into dropped_items, the rest stay native."""
     planner = hosting_off_planner()
     # Each fits individually, but sum + the 1 MiB margin overflows; with hosting off the largest
-    # cannot be hosted, so it drops (the streamer's drop + ⚠️ path) while the rest stay native in order.
+    # cannot be hosted, so it drops while the rest stay native in order.
     limit = 1024 * 1024 + 500
     items = [
         MediaItem(source=b"a" * 400, filename="reply.wav"),
@@ -539,7 +533,7 @@ async def test_plan_drops_largest_on_combined_overflow_when_hosting_disabled() -
 
 
 async def test_plan_clamps_to_attachment_limit() -> None:
-    """Eleven items all fitting (voice + music + 9 images) clamp to 10, dropping the trailing one."""
+    """Eleven items all fitting clamp to 10, dropping the trailing one."""
     planner = hosting_off_planner()
     # Limit is well above the combined size + envelope margin, so nothing is hosted; only the
     # 10-attachment count cap applies, dropping the trailing item while native keeps input order.

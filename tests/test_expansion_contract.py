@@ -281,7 +281,7 @@ def test_the_discovery_finds_something() -> None:
     assert _COGS
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_names_its_platform_the_shared_way(cog: type[ExpansionCog[Any]]) -> None:
     """`SOURCE` keys the pending-expansion rows, the marker lookup and the resume sweep.
 
@@ -299,7 +299,7 @@ def test_no_two_expansion_cogs_share_a_source_key() -> None:
     assert len(set(keys)) == len(keys)
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -321,7 +321,7 @@ def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
         assert cog._footer_text is not ConversationExpansionCog._footer_text
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_keeps_the_shared_listener(cog: type[ExpansionCog[Any]]) -> None:
     """The listener, the restart sweep and the expansion body are the shell's, not a cog's.
 
@@ -336,7 +336,7 @@ def test_an_expansion_cog_keeps_the_shared_listener(cog: type[ExpansionCog[Any]]
     assert cog._mark_failed is ExpansionCog._mark_failed
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_spells_no_status_mark_of_its_own(cog: type[ExpansionCog[Any]]) -> None:
     """One symbol, one meaning, whichever platform was linked.
 
@@ -352,7 +352,7 @@ def test_an_expansion_cog_spells_no_status_mark_of_its_own(cog: type[ExpansionCo
         assert f'"{literal}"' not in body, f"{cog.__module__} spells {literal} itself"
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_decides_no_shared_outcome_of_its_own(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -370,7 +370,7 @@ def test_an_expansion_cog_decides_no_shared_outcome_of_its_own(
     assert "isinstance(error, TimeoutError)" not in source
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -388,7 +388,7 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     assert message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -406,7 +406,7 @@ async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
         assert staged.message.replies == []
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_bot_author_is_ignored(cog: type[ExpansionCog[Any]]) -> None:
     """Otherwise the bot's own posts, and other bots' link cards, would be expanded again."""
     staged = _stage(cog=cog, outcome="readable")
@@ -418,7 +418,7 @@ async def test_a_bot_author_is_ignored(cog: type[ExpansionCog[Any]]) -> None:
     assert staged.message.reactions == []
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_the_reply_slot_is_claimed_before_the_reactions_and_the_read(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -446,7 +446,7 @@ async def test_the_reply_slot_is_claimed_before_the_reactions_and_the_read(
     assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_the_platform_marker_rides_beside_the_status_chain(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -463,7 +463,7 @@ async def test_the_platform_marker_rides_beside_the_status_chain(
     assert all(emoji != marker for emoji, _ in staged.message.removed)
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_refused_slot_reads_nothing_and_still_names_the_platform(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -488,10 +488,10 @@ async def test_a_refused_slot_reads_nothing_and_still_names_the_platform(
     assert staged.message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 @pytest.mark.parametrize(
-    ("outcome", "expected"),
-    [
+    argnames=("outcome", "expected"),
+    argvalues=[
         ("unreadable", EXPANSION_UNREADABLE_EMOJI),
         (LinkRetryableError("429"), EXPANSION_RETRY_LATER_EMOJI),
         (RuntimeError("the parser blew up"), EXPANSION_FAILED_EMOJI),
@@ -520,7 +520,7 @@ async def test_an_expansion_that_delivers_nothing_leaves_only_its_mark(
     assert not staged.message.suppressed  # nothing was delivered, so the link keeps its preview
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_failure_outside_the_read_still_marks_the_message(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -547,8 +547,8 @@ async def test_a_failure_outside_the_read_still_marks_the_message(
 
 
 @pytest.mark.parametrize(
-    ("error", "expected"),
-    [
+    argnames=("error", "expected"),
+    argvalues=[
         (LinkRetryableError("429"), EXPANSION_RETRY_LATER_EMOJI),
         (TimeoutError(), EXPANSION_RETRY_LATER_EMOJI),
         (LinkUnavailableError("410"), EXPANSION_UNREADABLE_EMOJI),
@@ -569,8 +569,8 @@ def test_one_failure_earns_the_same_mark_on_every_platform(
 
 
 @pytest.mark.parametrize(
-    ("error", "expected"),
-    [
+    argnames=("error", "expected"),
+    argvalues=[
         (LinkUnavailableError("410"), "info"),
         (LinkRetryableError("429"), "warn"),
         (TimeoutError(), "warn"),
@@ -628,7 +628,7 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
     assert recorded["message_id"] == 7
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     cog: type[ExpansionCog[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -658,8 +658,8 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
 
 
 @pytest.mark.parametrize(
-    ("error", "level", "traceback"),
-    [
+    argnames=("error", "level", "traceback"),
+    argvalues=[
         (
             Forbidden(
                 response=make_forbidden().response,

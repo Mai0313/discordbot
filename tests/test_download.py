@@ -136,8 +136,8 @@ def test_download_resolves_facebook_share_links(
 
 
 @pytest.mark.parametrize(
-    "url",
-    [
+    argnames="url",
+    argvalues=[
         "https://notfacebook.com/watch?v=123",
         "https://facebook.com.evil.example/watch?v=9",
         "https://notfacebook.com/share/r/17h4SsC2p1",

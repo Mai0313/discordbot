@@ -39,7 +39,7 @@ def _http_error(*, status: int) -> requests.HTTPError:
     return requests.HTTPError(f"{status} error", response=response)
 
 
-@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+@pytest.mark.parametrize(argnames="status", argvalues=[429, 500, 502, 503, 504])
 def test_a_platform_asking_us_to_come_back_is_retryable(status: int) -> None:
     """429 says exactly that and a 5xx says the failure is the server's own."""
     error = link_fetch_error(error=_http_error(status=status), url="https://example.test/p/1")
@@ -47,7 +47,7 @@ def test_a_platform_asking_us_to_come_back_is_retryable(status: int) -> None:
     assert isinstance(error, LinkRetryableError)
 
 
-@pytest.mark.parametrize("status", [404, 410])
+@pytest.mark.parametrize(argnames="status", argvalues=[404, 410])
 def test_a_post_the_platform_says_is_gone_is_unavailable(status: int) -> None:
     """The server looked and there is nothing to serve, which no retry changes."""
     error = link_fetch_error(error=_http_error(status=status), url="https://example.test/p/1")
@@ -56,8 +56,12 @@ def test_a_post_the_platform_says_is_gone_is_unavailable(status: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "failure",
-    [requests.Timeout("too slow"), requests.ConnectionError("reset"), requests.ConnectTimeout()],
+    argnames="failure",
+    argvalues=[
+        requests.Timeout("too slow"),
+        requests.ConnectionError("reset"),
+        requests.ConnectTimeout(),
+    ],
 )
 def test_a_request_that_never_got_an_answer_is_retryable(
     failure: requests.RequestException,
@@ -68,7 +72,7 @@ def test_a_request_that_never_got_an_answer_is_retryable(
     assert isinstance(error, LinkRetryableError)
 
 
-@pytest.mark.parametrize("status", [400, 401, 403])
+@pytest.mark.parametrize(argnames="status", argvalues=[400, 401, 403])
 def test_an_ambiguous_refusal_keeps_the_plain_error(status: int) -> None:
     """A 403 logged out could be a post we may not read or a wall that lifts in minutes.
 
@@ -95,18 +99,21 @@ def test_the_message_still_names_the_url_it_could_not_read() -> None:
 
 
 @pytest.mark.parametrize(
-    "build_downloader",
-    [FacebookDownloader, InstagramDownloader, lambda: ThreadsDownloader(output_folder="")],
+    argnames="build_downloader",
+    argvalues=[
+        FacebookDownloader,
+        InstagramDownloader,
+        lambda: ThreadsDownloader(output_folder=""),
+    ],
     ids=["facebook", "instagram", "threads"],
 )
 def test_a_refused_page_leaves_each_reader_as_a_retryable_error(
     build_downloader: Callable[[], object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The three readers wrapped every fetch failure in a bare `RuntimeError` before this.
+    """A refused page is retryable, never the bare `RuntimeError` that paints the failure cross.
 
-    Which meant a 429 reached the channel as the cross that says the bot broke. Stubbing
-    `requests.get` rather than `_fetch_page` is the point: `_fetch_page` is the seam every
-    other test in the suite replaces, so it is the one thing nothing else exercises.
+    Stubbing `requests.get` rather than `_fetch_page` is the point: `_fetch_page` is the seam
+    every other test in the suite replaces, so it is the one thing nothing else exercises.
     """
 
     def refuse(**kwargs: object) -> requests.Response:

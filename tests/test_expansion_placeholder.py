@@ -1,7 +1,7 @@
 """Tests for the reply slot a link expansion claims before it has anything to show."""
 
 import pytest
-from nextcord import Embed, Message, HTTPException
+from nextcord import Embed, Message
 
 from discordbot.utils import expansion_placeholder as placeholder_module
 from discordbot.utils.expansion_placeholder import (
@@ -13,7 +13,13 @@ from discordbot.utils.expansion_placeholder import (
     resume_expansion_placeholders,
 )
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden, make_not_found
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    make_forbidden,
+    make_not_found,
+    make_invalid_form_body,
+)
 from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
 
 _TEXT = "-# 正在讀取貼文⋯"
@@ -135,10 +141,7 @@ async def test_a_refused_placeholder_is_logged_without_a_traceback(
 
 async def test_a_link_deleted_before_the_placeholder_answers_none() -> None:
     """Discord answers 50035 rather than NotFound when the message replied to is gone."""
-    gone = HTTPException(
-        response=make_not_found().response, message={"code": 50035, "message": "Invalid Form Body"}
-    )
-    source = await _refusing(error=gone)
+    source = await _refusing(error=make_invalid_form_body())
 
     assert (
         await send_expansion_placeholder(
