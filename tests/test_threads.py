@@ -5,6 +5,7 @@ from typing import Self
 from pathlib import Path
 
 import pytest
+import requests
 
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.services.platforms import threads as threads_module
@@ -1387,3 +1388,24 @@ def test_download_media_does_not_rebuild_a_removed_scratch_dir(
         downloader.download_media(url="https://cdn.test/v2.mp4", filename="clip2.mp4")
 
     assert not scratch.exists()
+
+
+def test_download_media_cut_off_mid_body_is_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CDN transfer whose connection drops part-way through is a come-back-later.
+
+    The media download classifies its own failure rather than going through the page fetch's,
+    so the page tests say nothing about it.
+    """
+
+    def cut_off(**kwargs: object) -> Path:
+        """Loses the connection after the headers, as a dropped CDN transfer does."""
+        del kwargs
+        raise requests.exceptions.ChunkedEncodingError("connection dropped mid-body")
+
+    monkeypatch.setattr(target=threads_module, name="stream_to_file", value=cut_off)
+    downloader = ThreadsDownloader(output_folder=str(tmp_path))
+
+    with pytest.raises(LinkRetryableError):
+        downloader.download_media(url="https://cdn.test/v.mp4", filename="clip.mp4")

@@ -84,7 +84,8 @@ def fetch_page(*, url: str, headers: dict[str, str], timeout: float) -> FetchedP
         The page and where the request ended.
 
     Raises:
-        LinkRetryableError: The platform refused the request or never answered.
+        LinkRetryableError: The platform refused the request, never answered, or lost the
+            connection part-way through the body.
         LinkUnavailableError: The platform answered that there is no such page.
         RuntimeError: The fetch failed in a way HTTP does not classify.
     """

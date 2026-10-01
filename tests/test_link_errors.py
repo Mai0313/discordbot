@@ -6,9 +6,11 @@ someone a working link is dead. So these pin the mapping status by status rather
 a range check to keep meaning what it meant.
 """
 
+import io
 from collections.abc import Callable
 
 import pytest
+import urllib3
 import requests
 
 from discordbot.utils.link_errors import (
@@ -68,6 +70,26 @@ def test_a_request_that_never_got_an_answer_is_retryable(
 ) -> None:
     """No response at all is about the network, never about the post."""
     error = link_fetch_error(error=failure, url="https://example.test/p/1")
+
+    assert isinstance(error, LinkRetryableError)
+
+
+def test_a_body_cut_off_mid_transfer_is_retryable() -> None:
+    """A connection lost part-way through the body is the same network failure, only later.
+
+    The error is the one `requests` itself raises over a truncated body rather than a class
+    picked by hand: it subclasses neither `ConnectionError` nor `Timeout` and carries no
+    response, so only reading a real cut-off body pins what the classifier has to accept.
+    """
+    response = requests.Response()
+    response.status_code = 200
+    response.raw = urllib3.HTTPResponse(
+        body=io.BytesIO(b"x" * 500), headers={"Content-Length": "100000"}, preload_content=False
+    )
+    with pytest.raises(requests.RequestException) as dropped:
+        _ = response.content
+
+    error = link_fetch_error(error=dropped.value, url="https://example.test/p/1")
 
     assert isinstance(error, LinkRetryableError)
 

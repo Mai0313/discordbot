@@ -47,10 +47,16 @@ def is_retryable_fetch_failure(*, error: requests.RequestException) -> bool:
         error: What `requests` raised.
 
     Returns:
-        True for a request that never got an answer, a 429, or a 5xx.
+        True for a request that never got an answer or lost it part-way through the body, a
+        429, or a 5xx.
     """
-    # `Timeout` subclasses `ConnectionError` for `ConnectTimeout` only, so both are named.
-    if isinstance(error, requests.Timeout | requests.ConnectionError):
+    # `Timeout` subclasses `ConnectionError` for `ConnectTimeout` only, so both are named. A
+    # connection lost after the headers, part-way through the body, raises
+    # `ChunkedEncodingError` instead: neither of those, and it carries no response.
+    if isinstance(
+        error,
+        requests.Timeout | requests.ConnectionError | requests.exceptions.ChunkedEncodingError,
+    ):
         return True
     # `Response.__bool__` is `self.ok`, so a 429 and a 503 are both FALSY: testing the response
     # for truth here would classify nothing and raise nothing while looking correct.
