@@ -545,13 +545,11 @@ class ReplyContextBuilder(BaseModel):
         tone_block = render_tone_block(tone=author_tone) if author_tone else None
 
         # The answer needs the uploaded renders; await the full history render and the shared
-        # reference/current uploads here. `parts_task` is shielded so cancelling this speculative
-        # prep (IMAGE / VIDEO) never cancels the shared upload task those routes still reuse; the
-        # full history render rides as an ordinary gather child, so it is cancelled together with
-        # prep.
+        # reference/current uploads here. Cancelling this build cancels the upload too, which is
+        # safe only while nothing else reads `parts_task`.
         with logfire.span("gen_reply context build", message_id=self.message.id):
             hist_messages, (reference_messages, current_message) = await asyncio.gather(
-                self.render_history(hist_messages=raw_history), asyncio.shield(parts_task)
+                self.render_history(hist_messages=raw_history), parts_task
             )
         # Covers the history fetch/render plus waiting on the shared attachment upload, so
         # the log separates pre-answer attachment cost from the route-call cost.

@@ -146,11 +146,7 @@ from discordbot.cogs.gen_reply.generation import (
 )
 from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_source
 from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaReplyRoutes
-from discordbot.cogs.gen_reply.speculation import (
-    discard_task,
-    run_until_deadline,
-    await_deadline_bound_task,
-)
+from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
@@ -5888,54 +5884,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         assert effort_flags == ["low"]
 
 
-async def test_prepare_reply_context_shields_shared_parts_task(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cancelling the speculative prep must not cancel the shared upload task.
-
-    A media route whose generation fails discards the prep it was handed while the turn still
-    owns `parts_task` and drains it; an unshielded `await parts_task` inside prep would take the
-    upload down with the prep instead.
-    """
-    cog = _cog()
-    release = asyncio.Event()
-
-    async def slow_parts() -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Stands in for an upload still activating when the route is decided."""
-        await release.wait()
-        return ([], [])
-
-    async def fake_history(self: object, *, limit: int) -> list[object]:
-        """Returns empty history so prep parks directly on the shared parts task."""
-        del self, limit
-        return []
-
-    monkeypatch.setattr(ReplyContextBuilder, "fetch_history", fake_history)
-    parts_task = asyncio.create_task(coro=slow_parts())
-    builder = _context_builder(
-        cog=cog,
-        message=as_message(fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))),
-    )
-    prep_task = asyncio.create_task(
-        coro=builder.build(
-            history_limit=100,
-            parts_task=parts_task,
-            recall=builder.plan_recall(),
-            recall_picks=_resolved_picks(),
-        )
-    )
-    # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    await discard_task(task=prep_task)
-
-    assert not parts_task.cancelled()
-    release.set()
-    reference_messages, current_message = await parts_task
-    assert (reference_messages, current_message) == ([], [])
-
-
 async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6707,7 +6655,7 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
 
     def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
         """Records the fields of the off-route build failure report."""
-        if message == "Speculative reply context build failed off-route":
+        if message == "Discarded speculative task failed":
             warned.append(kwargs)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.speculation.logfire.warn", record_warn)
