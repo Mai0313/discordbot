@@ -11,5 +11,3 @@ from typing import Literal
 # instead of silently downgrading; the command's own `QUALITY_CHOICES` carries the presets as its
 # values. A preset added here has to be answered in all three.
 VideoQuality = Literal["best", "high", "medium", "low"]
-
-__all__ = ["VideoQuality"]

@@ -5,8 +5,9 @@ the caller's give-up, and a directory of its own is what keeps that overshoot fr
 concurrent request's files or piling up in the system temp dir. What the directory is FOR past
 that depends on the writer, so do not read one into another. A writer that opens into a folder it
 never rebuilds (`services/platforms/file_downloads.py::stream_to_file`) takes the removal as its
-stop signal, since its next write fails. yt-dlp re-creates its output dir per DASH format and so
-cannot; its worker is stopped with a `threading.Event` and a bounded join instead
+stop signal, since its next open fails; a file it already has open streams on to its end. yt-dlp
+re-creates its output dir per DASH format and so cannot; its worker is stopped with a
+`threading.Event` and a bounded join instead
 (`services/platforms/ytdlp.py::download_with_stop_signal`), and reaches the removal as a live
 writer only in the case that logs, where the worker ignored that join window.
 
@@ -19,16 +20,12 @@ caller has told the user what happened, so a raised cleanup replaces a timeout's
 a generic failure, relabels a delivered file as undelivered, or escapes a listener entirely. So
 the removal is reported here instead, and never travels.
 
-The `gen_reply/link_sources/` builders were carved out of that at first, on the grounds that they
-degrade to a notice on any failure anyway, so a raised teardown would cost them only a misleading
-log line. #561 measured it and found two costs past that, both of them the exception SWALLOWING
-one. A cleanup raising while the post-route grace unwinds the build replaces that
-`CancelledError`, and `asyncio.wait_for` raises `TimeoutError` only for a builder that lets one
-out — so `speculation.py::run_until_deadline` returned the degraded blocks instead, `gen_reply`'s
-pipeline never reached the branch that injects the source's own timeout notice, and a link that
-never answered was reported to the model as one that answered without its media. And each builder
-RETURNS its result from inside the `with`, so a cleanup raising over a finished one discards it,
-which is a delivered file reported undelivered by another name.
+That holds for the `gen_reply/link_sources/` builders too, although they degrade to a notice on
+any failure. A cleanup raising while the post-route grace unwinds a build replaces its
+`CancelledError`, which `asyncio.wait_for` needs to raise `TimeoutError`, so a link that never
+answered would reach the model as one that answered without its media rather than as the
+source's own timeout notice. And each builder RETURNS its result from inside the `with`, so a
+cleanup raising over a finished one would discard it.
 """
 
 from typing import TYPE_CHECKING

@@ -1,19 +1,18 @@
-"""Slash command cog for downloading videos through yt-dlp."""
+"""Slash command cog that downloads a video, or a Douyin gallery, and sends it back."""
 
 import asyncio
-from pathlib import Path
 
 import logfire
 import nextcord
-from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
+from nextcord import Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.urls import extract_first_url
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
-from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.media_delivery import (
     MediaItem,
     upload_limit_for,
@@ -194,10 +193,7 @@ class VideoCogs(commands.Cog):
         plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
         if plan.native:
             await self._deliver(
-                interaction=interaction,
-                file_size_mb=file_size_mb,
-                file_path=result.filename,
-                url=url,
+                interaction=interaction, file_size_mb=file_size_mb, item=plan.native[0], url=url
             )
             return
 
@@ -371,13 +367,13 @@ class VideoCogs(commands.Cog):
         self,
         interaction: Interaction[commands.Bot],
         file_size_mb: float,
-        file_path: Path,
+        item: MediaItem,
         url: str,
     ) -> None:
         """Edits the deferred placeholder into the final downloaded file response."""
         await interaction.edit_original_message(
             content=_file_header(file_size_mb=file_size_mb, url=url),
-            file=File(fp=file_path, filename=file_path.name),
+            file=item.to_file(),
             allowed_mentions=AllowedMentions.none(),
         )
 

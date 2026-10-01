@@ -54,18 +54,20 @@ from discordbot.services.platforms.file_downloads import DownloadTooLargeError, 
 # Only whole labels may precede the host (`(?:[A-Za-z0-9-]+\.)*`) and the `.com` must be followed
 # immediately by `/`, so a lookalike host such as `douyin.com.attacker.com/x` does not match.
 DOUYIN_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[A-Za-z0-9-]+\.)*(?:douyin|iesdouyin)\.com"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:[A-Za-z0-9-]+\.)*(?:douyin|iesdouyin)\.com"
     r"/[A-Za-z0-9_.?=&%/-]*[A-Za-z0-9_/-]"
 )
 
 # `_ROUTER_DATA` is assigned in a plain inline <script>. The JSON is matched non-greedily up to
 # the closing tag rather than to the first `}` so a nested object cannot truncate it.
-_ROUTER_DATA_RE = re.compile(r"_ROUTER_DATA\s*=\s*(\{.*?\});?\s*</script>", re.DOTALL)
+_ROUTER_DATA_RE = re.compile(
+    pattern=r"_ROUTER_DATA\s*=\s*(\{.*?\});?\s*</script>", flags=re.DOTALL
+)
 
 # The post id in a URL path. The other shape is a `modal_id` query parameter, which MUST be read
 # before this one: `douyin.com/user/<sec_uid>?modal_id=<id>` carries both, and taking the path
 # first would yield the profile's sec_uid instead of the post.
-_PATH_ID_RE = re.compile(r"/(?:video|note|slides)/(\d+)")
+_PATH_ID_RE = re.compile(pattern=r"/(?:video|note|slides)/(\d+)")
 
 # Hosts whose links can be resolved at all. Anything else (notably `ixigua.com`, which some
 # Douyin short links redirect to) is rejected rather than guessed at.
@@ -104,14 +106,14 @@ def is_douyin_url(url: str) -> bool:
 
 def _extract_post_id(url: str) -> str:
     """Reads the aweme id straight out of a URL, or returns an empty string."""
-    parsed = urlparse(normalized_url(url=url))
+    parsed = urlparse(url=normalized_url(url=url))
     # `modal_id` wins over the path: a `/user/<sec_uid>?modal_id=<id>` link carries both and
     # the path would give the profile id.
-    modal_ids = parse_qs(parsed.query).get("modal_id")
+    modal_ids = parse_qs(qs=parsed.query).get("modal_id")
     if modal_ids and modal_ids[0].isdigit():
         return modal_ids[0]
 
-    match = _PATH_ID_RE.search(parsed.path)
+    match = _PATH_ID_RE.search(string=parsed.path)
     return match.group(1) if match else ""
 
 
@@ -121,7 +123,7 @@ def is_douyin_post_url(url: str) -> bool:
     `DOUYIN_URL_RE` matches the host, not the path, which is right for `/download_video` (a
     human typed the link, so answering "that is not a post" is useful) but wrong for anything
     that claims a message on its own: a pasted profile or live-room link would earn a warning
-    reaction and a failure reply nobody asked for, and would spend a Douyin request finding out.
+    reaction nobody asked for, and would spend a Douyin request finding out.
 
     A post id in the URL is proof. Otherwise only a bare single-segment path on a short-link
     host can be a post: the same shape on `www.douyin.com` is a feed page such as `/jingxuan`.
@@ -134,7 +136,7 @@ def is_douyin_post_url(url: str) -> bool:
     """
     if _extract_post_id(url=url):
         return True
-    parsed = urlparse(normalized_url(url=url))
+    parsed = urlparse(url=normalized_url(url=url))
     if (parsed.hostname or "").lower() not in _SHORT_LINK_HOSTS:
         return False
     return len([segment for segment in parsed.path.split("/") if segment]) == 1
@@ -144,7 +146,7 @@ class DouyinError(LinkReadError):
     """Base error for every Douyin lookup failure.
 
     Sits under the shared tree so the reaction an expansion answers with is picked the same
-    way here as for the three platforms that had no taxonomy of their own.
+    way here as for every other platform.
     """
 
 
@@ -230,9 +232,9 @@ class _DouyinPayload(BaseModel):
 
     Douyin writes an absent optional as null rather than omitting it: `images` on a video
     post, `video` / `play_addr` on a photo one, `url_list` on an image it has no clean copy
-    of. Every field below carries a default, so a null would raise where the `.get(...) or
-    {}` chains this replaced simply fell through. Dropping the key is what makes null and
-    absent the same thing again, at the boundary rather than at each read.
+    of. Every field below carries a default, but an explicit null would still fail validation
+    rather than fall back to it. Dropping the key is what makes null and absent the same
+    thing, at the boundary rather than at each read.
     """
 
     @model_validator(mode="before")
@@ -519,7 +521,7 @@ class DouyinDownloader(PlatformDownloader):
             return ""
         # Douyin sends an absolute Location today, but a relative one is legal, so resolve it
         # against the request URL rather than trusting the header verbatim.
-        return urljoin(url, location)
+        return urljoin(base=url, url=location)
 
     def _fetch_share_payload(self, aweme_id: str) -> _DouyinVideoInfo:
         """Fetches and parses the share page for a post id.
@@ -559,7 +561,7 @@ class DouyinDownloader(PlatformDownloader):
                 error=e, message=f"Failed to fetch Douyin post {aweme_id}: {e}"
             ) from e
 
-        match = _ROUTER_DATA_RE.search(html)
+        match = _ROUTER_DATA_RE.search(string=html)
         if not match:
             if any(marker in html for marker in _CHALLENGE_MARKERS):
                 raise DouyinBlockedError(
@@ -759,8 +761,7 @@ class DouyinDownloader(PlatformDownloader):
 
         # Every retry spent on a transfer that kept stalling, which is the ordinary Douyin
         # failure rather than an exotic one and is emphatically worth trying later. Reported
-        # flat, it read as a post with nothing showable in it — the same conflation the two
-        # fetch sites above stopped making.
+        # flat, it would read as a post with nothing showable in it.
         message = f"Failed to download Douyin media from {url}: {last_error}"
         if isinstance(last_error, RequestException):
             raise DouyinTransferError(message) from last_error

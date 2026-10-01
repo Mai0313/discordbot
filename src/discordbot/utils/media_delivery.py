@@ -131,6 +131,9 @@ def upload_limit_for(guild: "Guild | None") -> int:
     table lookup keyed on `premium_tier`); a DM has no guild to query, so it falls back to
     Discord's non-Nitro base of 20 MiB.
 
+    The guild path deliberately trusts that static table even though it over-reports 25 MiB for
+    tier 0/1 against Discord's real 20 MiB base, so it self-corrects when nextcord updates it.
+
     Args:
         guild: The destination guild, or None for a DM.
 
@@ -305,8 +308,9 @@ class MediaHostingService(BaseModel):
         """Atomically moves a written temp onto its content-addressed name and returns the URL.
 
         `os.replace` is atomic within the serve filesystem, so the final name only ever appears with
-        complete content (a crash leaves a `.tmp-*` the sweep reaps, never a poison cache entry that
-        dedup would serve forever). mtime is stamped to now so it means "last hosted" for both caps.
+        complete content (a crash leaves a `.mediahost-tmp-*` the sweep reaps, never a poison cache
+        entry that dedup would serve forever). mtime is stamped to now so it means "last hosted"
+        for both caps.
         """
         final = serve / name
         os.replace(tmp, final)
@@ -721,17 +725,3 @@ def build_media_delivery_planner() -> MediaDeliveryPlanner:
     stays on the host-free path until hosting is set up.
     """
     return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
-
-
-__all__ = [
-    "DEFAULT_NON_NITRO_UPLOAD_LIMIT",
-    "DISCORD_ATTACHMENT_LIMIT",
-    "MEDIA_ENVELOPE_MARGIN",
-    "MediaDeliveryPlanner",
-    "MediaHostingConfig",
-    "MediaHostingService",
-    "MediaItem",
-    "MediaPlan",
-    "build_media_delivery_planner",
-    "upload_limit_for",
-]
