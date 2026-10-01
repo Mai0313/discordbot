@@ -209,13 +209,16 @@ def choose_bot_action(
     )
 
 
-def bot_takes_insurance(*, shoe: list[Card]) -> bool:
-    """Returns whether the bot buys insurance: only when the unseen shoe makes it +EV.
+def bot_takes_insurance(*, shoe: list[Card], dealer_cards: list[Card]) -> bool:
+    """Returns whether the bot buys insurance: only when the face-down cards make it +EV.
 
-    Priced from the remaining shoe's ten-value density alone; the dealer's hole card is never
-    an input, so it cannot reach the decision. Insurance pays +2x its cost on a ten-value hole
-    and loses the cost otherwise, EV = cost * (3p - 1), so it only turns positive once that
-    density clears one third.
+    Priced from the ten-value density of every card still face down at the table: the remaining
+    shoe plus the dealer's hole card (`dealer_cards[0]`, hole first as dealt). The action engine
+    plays the hole, but here it is only one card of that pool, which is the same whichever of
+    its cards lies in the hole, so the hole cannot reach the decision. Insurance pays +2x its
+    cost on a ten-value hole and loses the cost otherwise, EV = cost * (3p - 1), so it only
+    turns positive once that density clears one third.
     """
-    ten_count = sum(1 for card in shoe if card.rank in TEN_VALUE_RANKS)
-    return bool(shoe) and ten_count / len(shoe) > 1.0 / 3.0
+    face_down = [*shoe, dealer_cards[0]]
+    ten_count = sum(1 for card in face_down if card.rank in TEN_VALUE_RANKS)
+    return bool(shoe) and ten_count / len(face_down) > 1.0 / 3.0

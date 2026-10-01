@@ -522,6 +522,39 @@ async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
     assert ("Bot bet too small to insure; declining", {"user_id": 1, "bet": 1}) in infos
 
 
+async def test_a_dealt_bot_counts_the_hole_among_the_face_down_cards() -> None:
+    """A king in the hole leaves the shoe at exactly a third tens, so it alone says decline.
+
+    With the hole counted the seven face-down cards hold three tens, past a third, so the bot
+    insures (#860). Dealt for real, so the hole is wherever the deal puts it.
+    """
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[seat(user_id=1, display_name="Bot"), seat(user_id=2, display_name="Bob")],
+    )
+    round_state.shoe = [
+        card(rank="9"),
+        card(rank="8"),  # bot
+        card(rank="7"),
+        card(rank="6"),  # Bob
+        card(rank="K"),  # dealer hole
+        card(rank="A"),  # dealer up
+        *[card(rank=rank) for rank in ("10", "J", "2", "3", "4", "5")],
+    ]
+    round_state.deal_initial()
+    view = _make_view(round_state=round_state)
+    message = FakeDiscordMessage()
+
+    await view._dispatch_bot_insurance_locked(
+        message=as_message(fake=message),
+        bot_player=round_state.players[0],
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
+    )
+
+    bot = round_state.players[0]
+    assert (bot.insurance_resolved, bot.insurance_bet) == (True, 50)
+
+
 async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Consecutive bot-owned decisions wait briefly between message edits."""
     round_state = _round_with_two_cards(

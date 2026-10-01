@@ -873,7 +873,9 @@ class BlackjackView(GameView):
     ) -> None:
         """Applies the bot's deterministic count-based insurance decision."""
         user_id = bot_player.participant.user_id
-        take_insurance = bot_takes_insurance(shoe=self.round_state.shoe)
+        take_insurance = bot_takes_insurance(
+            shoe=self.round_state.shoe, dealer_cards=self.round_state.dealer
+        )
         try:
             if take_insurance:
                 self.round_state.take_insurance(user_id=user_id)
