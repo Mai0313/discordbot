@@ -6,6 +6,8 @@ import pytest
 
 from discordbot.utils.images import to_data_uri, shrink_image_bytes
 
+from tests.helpers.logfire_capture import capture_logs
+
 
 def _encoded_bytes(size: tuple[int, int], mode: str, image_format: str) -> bytes:
     """Encodes a solid-color test image of the given size, mode, and format."""
@@ -88,14 +90,18 @@ def test_shrink_passes_gif_through() -> None:
     assert shrunk.mime_type == "image/gif"
 
 
-def test_shrink_passes_undecodable_payload_through() -> None:
-    """Bytes PIL cannot decode pass through unchanged."""
+def test_shrink_passes_undecodable_payload_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bytes PIL cannot decode pass through unchanged, and the fallback says why."""
     payload = b"definitely not an image"
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
 
     assert shrunk.data == payload
     assert shrunk.mime_type == "image/png"
+    assert [
+        (fields["content_type"], fields["size_bytes"], fields["error_type"]) for _, fields in warns
+    ] == [("image/png", len(payload), "UnidentifiedImageError")]
 
 
 @pytest.mark.parametrize(

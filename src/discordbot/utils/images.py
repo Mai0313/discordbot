@@ -5,6 +5,7 @@ import re
 import base64
 
 from PIL import Image
+import logfire
 import requests
 
 from discordbot.typings.media import LoadedMedia
@@ -83,8 +84,15 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> LoadedMedia:
             return LoadedMedia(data=buffered.getvalue(), mime_type="image/png")
         image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
         return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
-    except Exception:
-        # An undecodable or exotic payload is sent as-is, for the API to reject.
+    except Exception as exc:
+        # Broad: an undecodable or exotic payload is sent as-is, for the API to reject.
+        logfire.warn(
+            "image could not be downscaled; sending it unchanged",
+            content_type=content_type,
+            size_bytes=len(payload),
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
         return unchanged
 
 
