@@ -9,15 +9,17 @@ operator-maintained.
 
 from functools import cached_property
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
+import logfire
 import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.colors import DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
+from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.memory.views import (
     MEMORY_EMBED_COLOR,
     MEMORY_PAGE_MAX_CHARS,
@@ -293,12 +295,27 @@ class MemoryCogs(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
+        try:
+            writer = self.memory_writer
+        except OpenAIError as exc:
+            # The SDK refuses to build the client when no proxy key is configured.
+            logfire.info(
+                "memory regeneration needs the proxy key; none is configured", scope=scope
+            )
+            embed = Embed(
+                title=_REGEN_TITLE,
+                description=f"```\n{extract_friendly_error(exc=exc)}\n```",
+                color=DISCORD_RED,
+            )
+            embed.set_footer(text=type(exc).__name__)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
         # The rebuild runs far past Discord's ack window, so it is dispatched to the
         # background task queue and the command replies immediately; the user checks
         # back with `/memory show`.
         scheduled = schedule_memory_regeneration(
             scope=scope,
-            writer=self.memory_writer,
+            writer=writer,
             identity=render_author_identity(
                 display_name=interaction.user.display_name,
                 username=interaction.user.name,

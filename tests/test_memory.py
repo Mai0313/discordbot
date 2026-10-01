@@ -18,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import (
     MemoryOwner,
     MemoryFlavor,
@@ -3215,6 +3216,27 @@ async def test_memory_regenerate_command_schedules_in_background(
     assert calls["scope"] == USER_SCOPE
     assert calls["writer"] is writer_sentinel
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
+
+
+async def test_memory_regenerate_without_a_proxy_key_answers_the_command(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writer's client is first built here, and the SDK refuses it without a key."""
+    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
+    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
+    cog = make_memory_cog()
+    cog.config = LLMConfig.model_construct()
+    calls = _record_schedules(monkeypatch=monkeypatch)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    interaction = _interaction()
+
+    await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
+
+    assert calls == {}
+    assert interaction.response.sent[-1]["ephemeral"] is True
+    embed = interaction.response.sent[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert embed.footer.text == "OpenAIError"
 
 
 async def test_memory_regenerate_command_reports_no_evidence(

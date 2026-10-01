@@ -26,6 +26,7 @@ from discordbot.cogs.gen_reply.recall import RecallContext
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.surface import INTERACTION_FOLLOWUP_LIMIT, TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
+from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.streaming import TRUNCATED_NOTICE, ResponseStreamer
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_conversation
@@ -125,11 +126,6 @@ class _FakeAskInteraction:
         """Records an edit of the deferred response and returns its message."""
         self.edits.append(kwargs)
         return SimpleNamespace(id=1, content=kwargs.get("content"))
-
-
-async def _echo_prompt(content: str) -> str:
-    """Stands in for the mention stripper, which has nothing to strip out of a command option."""
-    return content.strip()
 
 
 # One attachment option's resolved payload, as Discord sends it back in `interaction.data`.
@@ -479,28 +475,34 @@ async def test_a_gateway_turn_records_nothing() -> None:
     assert await load_ask_turns(channel_id=CHANNEL_ID, user_id=ASKER_ID, limit=10) == []
 
 
-def _ask_cog(run_turn: Callable[..., Awaitable[None]]) -> ReplyGeneratorCogs:
-    """A cog whose `/ask` gets as far as handing `run_turn` the turn, and no further."""
+def _ask_cog(
+    *,
+    interaction: Any,  # noqa: ANN401 -- see `_interaction`
+    monkeypatch: pytest.MonkeyPatch,
+    run: Callable[[ReplyPipeline], Awaitable[None]],
+) -> ReplyGeneratorCogs:
+    """A cog whose `/ask` gets as far as handing the pipeline the turn, and no further."""
     cog = ReplyGeneratorCogs(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
     )
-    cog.__dict__["toolkit"] = SimpleNamespace(
-        input_builder=SimpleNamespace(get_user_prompt=_echo_prompt)
-    )
-    cog.__dict__["_run_turn"] = run_turn
+    cog.__dict__["toolkit"] = _toolkit(interaction=interaction)
+    cog.__dict__["media_delivery"] = hosting_off_planner()
+    monkeypatch.setattr(ReplyPipeline, "run", run)
     return cog
 
 
-async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
+async def test_ask_defers_before_anything_slower_than_three_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The token dies after three seconds, and every phase of a turn is slower than that."""
     ran: list[tuple[TurnSurface, str]] = []
 
-    async def _run_turn(*, surface: TurnSurface, user_prompt: str) -> None:
+    async def _run(pipeline: ReplyPipeline) -> None:
         """Records the turn the command would have run."""
-        ran.append((surface, user_prompt))
+        ran.append((pipeline.surface, pipeline.user_prompt))
 
-    cog = _ask_cog(run_turn=_run_turn)
     interaction = _interaction()
+    cog = _ask_cog(interaction=interaction, monkeypatch=monkeypatch, run=_run)
 
     await cog.ask(interaction, question="在幹嘛", attachment=None)
 
@@ -512,23 +514,27 @@ async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
     assert surface.message.id == ASK_SNOWFLAKE
 
 
-async def test_ask_answers_a_blank_question_without_running_a_turn() -> None:
+async def test_ask_answers_a_blank_question_without_running_a_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A whitespace-only option would otherwise route on nothing at all."""
 
-    async def _never(*, surface: TurnSurface, user_prompt: str) -> None:
+    async def _never(pipeline: ReplyPipeline) -> None:
         """Fails if a blank question ever reaches the pipeline."""
-        del surface, user_prompt
+        del pipeline
         raise AssertionError("a blank question must not run a turn")
 
-    cog = _ask_cog(run_turn=_never)
     interaction = _interaction()
+    cog = _ask_cog(interaction=interaction, monkeypatch=monkeypatch, run=_never)
 
     await cog.ask(interaction, question="   ", attachment=None)
 
     assert [edit["content"] for edit in interaction.edits] == ["?"]
 
 
-async def test_ask_answers_an_attachment_sent_without_a_question() -> None:
+async def test_ask_answers_an_attachment_sent_without_a_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A file on its own is something to answer, not an empty prompt.
 
     The attachment reaches the turn only through the synthesized message, so that message is
@@ -536,12 +542,12 @@ async def test_ask_answers_an_attachment_sent_without_a_question() -> None:
     """
     ran: list[tuple[TurnSurface, str]] = []
 
-    async def _run_turn(*, surface: TurnSurface, user_prompt: str) -> None:
+    async def _run(pipeline: ReplyPipeline) -> None:
         """Records the turn the command would have run."""
-        ran.append((surface, user_prompt))
+        ran.append((pipeline.surface, pipeline.user_prompt))
 
-    cog = _ask_cog(run_turn=_run_turn)
     interaction = _interaction()
+    cog = _ask_cog(interaction=interaction, monkeypatch=monkeypatch, run=_run)
     interaction.data = {"resolved": {"attachments": {"9": _CAT_PNG}}}
 
     await cog.ask(
@@ -554,6 +560,25 @@ async def test_ask_answers_an_attachment_sent_without_a_question() -> None:
     ((surface, user_prompt),) = ran
     assert user_prompt == ""
     assert [attachment.filename for attachment in surface.message.attachments] == ["cat.png"]
+
+
+async def test_ask_without_a_proxy_key_answers_its_deferred_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Otherwise the asker is left on Discord's "thinking" state with nothing ever landing."""
+    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
+    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
+    cog = ReplyGeneratorCogs(
+        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
+    )
+    cog.config = LLMConfig.model_construct()
+    interaction = _interaction()
+
+    await cog.ask(interaction, question="在幹嘛", attachment=None)
+
+    (edit,) = interaction.edits
+    assert edit["embed"].title == "Something went wrong"
+    assert edit["embed"].footer.text == "OpenAIError"
 
 
 class _EditableReply:
