@@ -775,11 +775,15 @@ class DragonGateView(GameView):
 
     async def _refund_winnings_to_pool_locked(self, *, user_id: int, delta: int) -> None:
         """Pushes one player's positive table delta back into the jackpot ("逆贏不拿")."""
-        participant = self._participant_for(user_id=user_id)
+        participant = next(
+            participant
+            for participant in self.round_state.participants
+            if participant.user_id == user_id
+        )
         settlement = await apply_jackpot_settlement(
             player_id=user_id,
-            player_account_name=participant.account_name if participant else "",
-            player_avatar_url=participant.avatar_url if participant else "",
+            player_account_name=participant.account_name,
+            player_avatar_url=participant.avatar_url,
             player_delta=-delta,
             game_id=GAME_ID,
         )
@@ -848,13 +852,6 @@ class DragonGateView(GameView):
             message_id=message.id,
             reason=reason,
         )
-
-    def _participant_for(self, user_id: int) -> GameParticipant | None:
-        """Returns the participant matching a Discord user ID."""
-        for participant in self.round_state.participants:
-            if participant.user_id == user_id:
-                return participant
-        return None
 
     def _current_turn_notice(self) -> str:
         """Returns the ephemeral notice for users acting out of turn."""
