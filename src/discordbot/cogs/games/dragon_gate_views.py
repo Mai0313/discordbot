@@ -641,10 +641,7 @@ class DragonGateView(GameView):
         pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
         if user_id is None:
             return pool_max
-        balance = self._final_balances.get(user_id)
-        if balance is None:
-            return pool_max
-        return min(pool_max, max(balance, 0))
+        return min(pool_max, max(self._final_balances[user_id], 0))
 
     def _active_max_bet(self) -> int:
         """Returns the active player's balance-bounded maximum bet."""
@@ -670,7 +667,6 @@ class DragonGateView(GameView):
             if self._settled:
                 return
             jackpot_before = self._jackpot_snapshot
-            participant = self._participant_for(user_id=interaction.user.id)
             try:
                 # Refresh from the live wallet: a player may have spent or transferred
                 # outside the table since the ante, so the in-table cache can be stale.
@@ -688,8 +684,8 @@ class DragonGateView(GameView):
             was_loss = turn_result.delta < 0
             settlement = await apply_jackpot_settlement(
                 player_id=interaction.user.id,
-                player_account_name=participant.account_name if participant else "",
-                player_avatar_url=participant.avatar_url if participant else "",
+                player_account_name=turn_result.participant.account_name,
+                player_avatar_url=turn_result.participant.avatar_url,
                 player_delta=turn_result.delta,
                 game_id=GAME_ID,
                 expected_jackpot_generation=self._jackpot_generation,
@@ -816,16 +812,13 @@ class DragonGateView(GameView):
         results: list[DragonGatePlayerResult] = []
         for participant in self.round_state.participants:
             user_id = participant.user_id
-            final_balance = self._final_balances.get(user_id)
-            if final_balance is None:
-                final_balance = await get_balance(user_id=user_id)
             gross_delta = self.round_state.player_delta(user_id=user_id)
             refunded = self._refunded_to_pool.get(user_id, 0)
             results.append(
                 DragonGatePlayerResult(
                     participant=participant,
                     delta=gross_delta - refunded,
-                    final_balance=final_balance,
+                    final_balance=self._final_balances[user_id],
                     withdrawn=user_id in self.round_state.withdrawn_user_ids,
                     refunded_to_pool=refunded,
                 )

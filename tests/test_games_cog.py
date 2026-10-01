@@ -51,13 +51,8 @@ def _cog() -> GamesCogs:
 
 
 async def fake_game_balance(user_id: int) -> int:
-    """Returns a small fake game balance for anyone.
-
-    Never asked about the bot's own id: `_bot_blackjack_participant` reads `get_account`, so
-    the empty isolated economy DB is what makes the bot skip its seat, not a balance.
-    """
-    del user_id
-    return 100
+    """Returns a small fake game balance for anyone but the bot, whose empty wallet keeps it out."""
+    return 0 if user_id == 999 else 100
 
 
 async def _empty_game_balance(user_id: int) -> int:
@@ -83,13 +78,13 @@ async def test_bot_blackjack_participant_spreads_bet_by_true_count(
     """The bot's Kelly wager rises with a favorable channel true count."""
     cog = _cog()
 
-    async def fake_get_account(*, user_id: int) -> object:
-        return SimpleNamespace(balance=1_000_000, total_earned=0, total_spent=0)
+    async def fake_get_balance(*, user_id: int) -> int:
+        return 1_000_000
 
     async def fake_avatar(*, user: object, guild: object = None) -> str:
         return ""
 
-    monkeypatch.setattr(games, "get_account", fake_get_account)
+    monkeypatch.setattr(games, "get_balance", fake_get_balance)
     monkeypatch.setattr(games, "guild_avatar_url", fake_avatar)
 
     neutral = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=1)
@@ -531,8 +526,8 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     """Verifies owner over-betting clamps the shared Blackjack lobby bet."""
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns distinct balances for the owner and the joining player."""
-        return {1: 300, 2: 50_000_000}[user_id]
+        """Returns distinct balances for the owner and the joining player; the bot has none."""
+        return {1: 300, 2: 50_000_000, 999: 0}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
@@ -623,8 +618,8 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
     """Bet zero means all in, but a huge balance still caps at MAX_SINGLE_BET."""
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns a large owner balance that exceeds the single-bet cap."""
-        return {1: 300_000_000_000_000}[user_id]
+        """Returns a large owner balance that exceeds the single-bet cap; the bot has none."""
+        return {1: 300_000_000_000_000, 999: 0}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
