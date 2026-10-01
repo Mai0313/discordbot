@@ -114,7 +114,7 @@ async def settle_blackjack_player(
         outcome=_aggregate_outcome(
             hand_settlements=hand_settlements, insurance=insurance, base_delta=base_delta
         ),
-        delta=effective_delta,
+        delta=result.applied_player_delta,
         new_balance=result.player_balance,
         casino_balance=result.casino_balance,
         base_delta=base_delta,

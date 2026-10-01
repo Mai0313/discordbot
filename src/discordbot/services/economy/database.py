@@ -1082,7 +1082,8 @@ async def apply_blackjack_settlement(
         casino_delta: Signed change to apply to the casino ledger balance.
 
     Returns:
-        A `RoundSettlementResult` with the post-write player and casino balances.
+        A `RoundSettlementResult` with the post-write player and casino balances
+        and the player delta actually applied.
     """
     now = _database_now()
     async with open_session() as session:
@@ -1115,7 +1116,11 @@ async def apply_blackjack_settlement(
         except Exception:
             await _rollback_session(session=session)
             raise
-    return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
+    return RoundSettlementResult(
+        player_balance=player_balance,
+        casino_balance=casino_balance,
+        applied_player_delta=applied_player_delta,
+    )
 
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
