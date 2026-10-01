@@ -244,8 +244,7 @@ async def test_a_transient_http_failure_keeps_its_traceback(
 ) -> None:
     """The carve-out is for `Forbidden` alone; a 5xx is still something to look at.
 
-    Both used to share one `except HTTPException`, so dropping the traceback there would have
-    taken it from every transport failure too.
+    One `except HTTPException` for both would drop the traceback from every transport failure.
     """
 
     class _ServerErrorBotStub(_ForbiddenChannelBotStub):

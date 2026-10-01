@@ -173,8 +173,8 @@ async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch
     assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
 
 
-async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies only the Blackjack lobby owner can press Start."""
+async def test_a_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anyone but the owner pressing 開始 is told so privately, and the lobby stays open."""
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = _cog()
@@ -188,8 +188,8 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(as_interaction(fake=other_interaction))
 
-    assert other_interaction.response.sent
-    assert isinstance(other_interaction.response.sent[0]["content"], str)
+    assert other_interaction.response.sent == [{"content": "只有房主可以開始", "ephemeral": True}]
+    assert lobby_view._started is False
 
 
 async def _nobody_joins(interaction: Interaction[Any]) -> GameParticipant | None:
@@ -682,26 +682,6 @@ async def test_dragon_gate_rejects_empty_balance_with_spacer(
     assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
     assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
-
-
-async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies only the Dragon Gate lobby owner can press Start."""
-    monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
-    monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
-
-    cog = _cog()
-
-    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.dragon_gate.callback(cog, owner_interaction)
-    lobby_view = owner_interaction.followup.sent[-1]["view"]
-    assert isinstance(lobby_view, DragonGateLobbyView)
-
-    start_button = lobby_button(view=lobby_view, label="開始")
-    other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
-    await start_button.callback(as_interaction(fake=other_interaction))
-
-    assert other_interaction.response.sent
-    assert isinstance(other_interaction.response.sent[0]["content"], str)
 
 
 async def test_prepare_participant_insufficient_balance_applies_embed_spacer() -> None:

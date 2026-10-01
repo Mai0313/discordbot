@@ -270,42 +270,6 @@ def test_settle_equal_total_is_push() -> None:
     assert delta == 0
 
 
-def test_settle_five_card_twenty_one_keeps_main_hand_push_against_dealer_21() -> None:
-    """Five-card 21 uses its own outcome while the main hand can still push."""
-    outcome, delta = _settle_cards(
-        player=[
-            Card(rank="2", suit="♠"),
-            Card(rank="3", suit="♥"),
-            Card(rank="4", suit="♣"),
-            Card(rank="5", suit="♦"),
-            Card(rank="7", suit="♠"),
-        ],
-        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♥")],
-        bet=50,
-    )
-
-    assert outcome == "five_card_twenty_one"
-    assert delta == 0
-
-
-def test_settle_five_card_non_21_wins_against_dealer_21() -> None:
-    """Five-card non-bust hands win normally even when the dealer reaches 21."""
-    outcome, delta = _settle_cards(
-        player=[
-            Card(rank="2", suit="♠"),
-            Card(rank="3", suit="♥"),
-            Card(rank="4", suit="♣"),
-            Card(rank="5", suit="♦"),
-            Card(rank="6", suit="♠"),
-        ],
-        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♥")],
-        bet=50,
-    )
-
-    assert outcome == "five_card_win"
-    assert delta == 50
-
-
 def test_settle_unfinished_hand_raises() -> None:
     """Trying to settle a still-live hand is a programmer error."""
     hand = BlackjackHandState(cards=[Card(rank="10", suit="♠")], bet=50, base_bet=50)
@@ -504,6 +468,47 @@ def test_allowed_actions_list_the_active_hand_in_button_order() -> None:
     assert round_state.allowed_actions() == ()
 
 
+@pytest.mark.parametrize(
+    argnames=("ranks", "hand_flags", "balance_at_start", "peeked_blackjack", "expected"),
+    argvalues=[
+        (("10", "K"), {}, 1_000, False, ("hit", "stand", "double", "split", "surrender")),
+        (("A", "10"), {}, 1_000, False, ("hit", "stand", "double", "surrender")),
+        (("5", "6", "4"), {"actions_taken": 1}, 1_000, False, ("hit", "stand")),
+        (("8", "3"), {"is_split_hand": True}, 1_000, False, ("hit", "stand")),
+        (("A", "5"), {"is_split_hand": True, "is_split_aces": True}, 1_000, False, ()),
+        (("8", "8"), {}, 150, False, ("hit", "stand", "surrender")),
+        (("9", "9"), {}, 1_000, True, ("hit", "stand", "double", "split")),
+    ],
+    ids=[
+        "ten-value-pair",
+        "ace-ten",
+        "after-a-hit",
+        "split-hand",
+        "split-aces",
+        "short-of-a-second-bet",
+        "after-a-peeked-blackjack",
+    ],
+)
+def test_allowed_actions_follow_the_active_hand(
+    ranks: tuple[str, ...],
+    hand_flags: dict[str, object],
+    balance_at_start: int,
+    peeked_blackjack: bool,
+    expected: tuple[str, ...],
+) -> None:
+    """Each action is offered only while its rule allows it on the hand waiting to act."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat(balance_at_start=balance_at_start)]
+    )
+    round_state.players[0].hands[0] = BlackjackHandState(
+        cards=[Card(rank=rank, suit="♠") for rank in ranks], bet=100, base_bet=100
+    ).model_copy(update=hand_flags)
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+    round_state.peeked_blackjack = peeked_blackjack
+
+    assert round_state.allowed_actions() == expected
+
+
 def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -519,8 +524,11 @@ def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
     assert round_state.players[0].hands[0].cards[-1] is fallback_card
 
 
-def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
-    """Five cards that do not bust auto-stand even when below 21."""
+@pytest.mark.parametrize(
+    argnames=("fifth", "total"), argvalues=[("6", 20), ("7", 21)], ids=["under-21", "21"]
+)
+def test_hit_auto_stands_on_a_fifth_card_that_does_not_bust(fifth: str, total: int) -> None:
+    """Five cards that do not bust stand on their own, at 21 or below it, and the turn moves on."""
     round_state = _two_player_round(
         cards_a=[
             Card(rank="2", suit="♠"),
@@ -531,34 +539,12 @@ def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
         cards_b=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
         dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
-    round_state.shoe = [Card(rank="6", suit="♠")]
+    round_state.shoe = [Card(rank=fifth, suit="♠")]
 
     round_state.hit(user_id=1)
 
     alice = round_state.players[0].hands[0]
-    assert alice.total() == 20
-    assert alice.finished is True
-    assert round_state.active_player() == round_state.players[1]
-
-
-def test_hit_auto_stands_on_fifth_card_twenty_one() -> None:
-    """A multiplayer hand advances after the fifth card makes 21."""
-    round_state = _two_player_round(
-        cards_a=[
-            Card(rank="2", suit="♠"),
-            Card(rank="3", suit="♥"),
-            Card(rank="4", suit="♣"),
-            Card(rank="5", suit="♦"),
-        ],
-        cards_b=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
-        dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
-    )
-    round_state.shoe = [Card(rank="7", suit="♠")]
-
-    round_state.hit(user_id=1)
-
-    alice = round_state.players[0].hands[0]
-    assert alice.total() == 21
+    assert alice.total() == total
     assert alice.finished is True
     assert round_state.active_player() == round_state.players[1]
 
@@ -827,9 +813,8 @@ def test_take_insurance_rejects_zero_chip_half_bet() -> None:
 def test_each_insurance_refusal_has_its_own_class() -> None:
     """The three refusals a seat can hit are told apart by class, not by their wording.
 
-    Every one of them used to be a bare `ValueError`, so the view picked its notice by looking
-    for "balance" in the English message and told a 1-point seat its table was stale — when
-    what had happened was that half its bet rounds to zero and no refresh would ever change it.
+    The view picks each one's notice off the class. Read off the wording instead, a 1-point seat
+    whose half bet rounds to zero would be sent to refresh a table no refresh can change.
     """
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),

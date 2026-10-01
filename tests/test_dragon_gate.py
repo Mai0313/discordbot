@@ -491,7 +491,7 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
 async def test_dragon_gate_lobby_join_leave_and_owner_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Lobby buttons mutate participants and only the owner starts the table."""
+    """Lobby buttons mutate participants, and the owner's start charges the ante."""
     owner = await _funded(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     message = FakeDiscordMessage()
@@ -522,13 +522,8 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     )
     assert view.participants == [owner]
 
-    start_button = lobby_button(view=view, label="開始")
-    other_interaction = FakeInteraction(user=FakeUser(user_id=2), message=message)
-    await start_button.callback(as_interaction(fake=other_interaction))
-    assert other_interaction.response.sent
-
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
-    await start_button.callback(as_interaction(fake=owner_interaction))
+    await lobby_button(view=view, label="開始").callback(as_interaction(fake=owner_interaction))
     assert isinstance(message.edits[-1]["view"], DragonGateView)
     assert settlements == [
         JackpotSettlementRequest(
@@ -1086,6 +1081,7 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     )
 
     # Bet settled +20 into Alice. Leave refunds 20 back into the pool.
+    # order-contract: the leave hands back winnings the bet already settled.
     assert [request.player_delta for request in settlements] == [20, -20]
     assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
     assert view._refunded_to_pool[1] == 20
@@ -1253,6 +1249,7 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
 
     await view.on_timeout()
 
+    # order-contract: the timeout hands back winnings the bet already settled.
     assert [request.player_delta for request in settlements] == [20, -20]
     assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
     assert view._refunded_to_pool[1] == 20
@@ -1342,9 +1339,8 @@ def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:
 def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     """A long round must not grow the history past what Discord will render.
 
-    The block gained a line per resolved turn and nothing dropped one, so a long round passed the
-    limit and the table stopped updating while the round carried on — silently, since what fails
-    is the edit rather than anything a player does.
+    Past the limit the table stops updating while the round carries on, and silently, since what
+    fails is the edit rather than anything a player does.
 
     Both limits, because the one that binds first is not the obvious one: a description gets
     4096, but `_finalize_locked` sends this embed beside the final one and Discord counts 6000
@@ -1353,8 +1349,8 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     Every input is at its widest rather than at whatever a convenient deal produced — the gate
     that renders longest, names at Discord's 32-character maximum, every seat withdrawn so each
     scoreboard row carries its suffix, and amounts at the widest the compact formatter emits.
-    A worst case assembled from whatever was to hand reads 360 characters narrower than this
-    one, which is four line counts' worth of headroom that is not there.
+    A worst case assembled from whatever is to hand reads several lines' worth narrower, which is
+    headroom that is not there.
     """
     longest_name = "w" * 32
     participants = [

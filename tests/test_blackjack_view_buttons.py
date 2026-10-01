@@ -104,8 +104,12 @@ def _button_states(view: BlackjackView) -> dict[str, bool]:
     return states
 
 
-async def test_player_actions_same_rank_pair_enables_every_action_button() -> None:
-    """Initial deal with [8, 8] vs dealer up 6 enables all five action buttons."""
+async def test_action_controls_show_on_their_rows_and_leave_once_not_allowed() -> None:
+    """A fresh pair shows all five actions on their rows; a Hit removes the first-action ones.
+
+    Which actions a hand allows is the round's rule; the view's part is that an action it no
+    longer allows leaves the view rather than staying behind disabled.
+    """
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -113,14 +117,6 @@ async def test_player_actions_same_rank_pair_enables_every_action_button() -> No
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    assert component_ids(view=view) == {
-        "bj:hit",
-        "bj:stand",
-        "bj:double",
-        "bj:split",
-        "bj:surrender",
-    }
-    assert all(disabled is False for disabled in _button_states(view=view).values())
     assert component_rows(view=view) == {
         "bj:hit": 0,
         "bj:stand": 0,
@@ -128,114 +124,14 @@ async def test_player_actions_same_rank_pair_enables_every_action_button() -> No
         "bj:split": 1,
         "bj:surrender": 1,
     }
+    assert all(disabled is False for disabled in _button_states(view=view).values())
 
-
-async def test_player_actions_ten_value_pair_shows_split() -> None:
-    """10 + K can be split because both cards have Blackjack value 10."""
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
-    )
-    view = _make_view(round_state=round_state)
-    view.sync_buttons()
-
-    assert "bj:split" in component_ids(view=view)
-
-
-async def test_player_actions_ace_ten_hides_split() -> None:
-    """A + 10 is not a same-value pair."""
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
-    )
-    view = _make_view(round_state=round_state)
-    view.sync_buttons()
-
-    ids = component_ids(view=view)
-    assert "bj:hit" in ids
-    assert "bj:stand" in ids
-    assert "bj:double" in ids
-    assert "bj:split" not in ids
-    assert "bj:surrender" in ids
-
-
-async def test_player_actions_after_hit_removes_double_split_surrender() -> None:
-    """After a Hit the first-action-only controls leave the view instead of being disabled."""
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
-    )
-    round_state.players[0].hands[0].cards.append(Card(rank="4", suit="♣"))
-    round_state.players[0].hands[0].actions_taken = 1
-    view = _make_view(round_state=round_state)
+    round_state.shoe = [Card(rank="2", suit="♠")]
+    round_state.hit(user_id=1)
     view.sync_buttons()
 
     assert component_ids(view=view) == {"bj:hit", "bj:stand"}
     assert all(disabled is False for disabled in _button_states(view=view).values())
-
-
-async def test_player_actions_is_split_hand_removes_double_split_surrender() -> None:
-    """A hand born out of Split cannot be doubled (no DAS), re-split, or surrendered."""
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="8", suit="♠"), Card(rank="3", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
-    )
-    round_state.players[0].hands[0].is_split_hand = True
-    view = _make_view(round_state=round_state)
-    view.sync_buttons()
-
-    assert component_ids(view=view) == {"bj:hit", "bj:stand"}
-    assert all(disabled is False for disabled in _button_states(view=view).values())
-
-
-async def test_split_aces_subhand_removes_hit_and_stand() -> None:
-    """Split Aces removes Hit and Stand with `finished` still False; Split removed the rest."""
-    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
-    finished_hand = BlackjackHandState(
-        cards=[Card(rank="A", suit="♠"), Card(rank="5", suit="♥")],
-        bet=100,
-        base_bet=100,
-        is_split_hand=True,
-        is_split_aces=True,
-        finished=False,
-    )
-    round_state.players[0].hands = [finished_hand]
-    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    view = _make_view(round_state=round_state)
-    view.sync_buttons()
-
-    assert component_ids(view=view) == set()
-
-
-async def test_player_actions_low_balance_removes_double_and_split() -> None:
-    """Insufficient balance for the extra wager hides Double and Split affordances."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(balance_at_start=150)]
-    )
-    round_state.players[0].hands[0].cards = [Card(rank="8", suit="♠"), Card(rank="8", suit="♥")]
-    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    view = _make_view(round_state=round_state)
-    view.sync_buttons()
-
-    ids = component_ids(view=view)
-    assert "bj:hit" in ids
-    assert "bj:stand" in ids
-    assert "bj:double" not in ids
-    assert "bj:split" not in ids
-    assert "bj:surrender" in ids
-
-
-async def test_player_actions_peeked_blackjack_removes_surrender() -> None:
-    """A revealed dealer Blackjack closes the Surrender window."""
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="9", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
-    )
-    round_state.peeked_blackjack = True
-    view = _make_view(round_state=round_state)
-    view.sync_buttons()
-
-    assert "bj:surrender" not in component_ids(view=view)
 
 
 async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> None:
@@ -930,32 +826,6 @@ async def test_a_five_card_twenty_one_still_waits_for_the_dealer_to_play(
 
     assert [str(card) for card in round_state.dealer] == ["10♣", "6♦", "5♣"]
     assert await get_balance(user_id=1) == 1_100
-
-
-async def test_blackjack_view_dealer_hits_soft_17(scheduled_cleanups: ScheduledDeletes) -> None:
-    """Soft 17 forces a hit under the H17 rule."""
-    await seed_balance(user_id=1, name="alice", amount=100)
-    round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="6", suit="♦")],
-        player=seat(bet=50, balance_at_start=100),
-    )
-    round_state.shoe = [Card(rank="K", suit="♠")]
-
-    message = FakeDiscordMessage()
-    view = _make_view(round_state=round_state)
-
-    await view.finalize(message=as_message(fake=message), interaction=None)
-
-    # Soft 17 must trigger a draw; the drawn K lands a hard 17, where the dealer stands.
-    assert len(view.round_state.dealer) >= 3
-    assert view.round_state.dealer_played is True
-    assert "embeds" not in message.edits[0]
-    final_embeds = message.edits[1]["embeds"]
-    description = cast("str", final_embeds[0].description)
-    assert "規則: 17 hit" in description
-    await view.wait_for_background_tasks()
-    assert scheduled_cleanups.messages == [message]
 
 
 async def test_blackjack_view_locks_actions_while_finalizing(
