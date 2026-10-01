@@ -30,7 +30,10 @@ async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedi
         content_type = guess_type(source.url)[0] or "image/png"
     file_bytes = await source.read()
     return await asyncio.to_thread(
-        shrink_image_bytes, payload=file_bytes, content_type=content_type
+        shrink_image_bytes,
+        payload=file_bytes,
+        content_type=content_type,
+        filename=resolve_source_filename(source=source, url_fallback="image.png"),
     )
 
 

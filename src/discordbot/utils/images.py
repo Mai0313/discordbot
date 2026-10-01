@@ -47,7 +47,7 @@ def get_pil_image(image_file: str) -> Image.Image:
 _MAX_IMAGE_DIMENSION = 3072
 
 
-def shrink_image_bytes(payload: bytes, content_type: str) -> LoadedMedia:
+def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> LoadedMedia:
     """Downscales an image to the provider's effective resolution and re-encodes it.
 
     Photos re-encode as JPEG quality 95 (near-lossless, a fraction of PNG photo
@@ -60,6 +60,7 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> LoadedMedia:
     Args:
         payload: The original encoded image bytes.
         content_type: The image's MIME type, used to pick passthrough cases.
+        filename: The source's upload filename, logged when the payload cannot be decoded.
 
     Returns:
         The (possibly re-encoded) image bytes and their MIME type.
@@ -88,6 +89,7 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> LoadedMedia:
         # Broad: an undecodable or exotic payload is sent as-is, for the API to reject.
         logfire.warn(
             "image could not be downscaled; sending it unchanged",
+            filename=filename,
             content_type=content_type,
             size_bytes=len(payload),
             error_type=type(exc).__name__,
