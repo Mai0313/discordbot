@@ -3,7 +3,8 @@
 import asyncio
 import contextlib
 
-from nextcord import Message, ClientUser
+import logfire
+from nextcord import Message, Forbidden, ClientUser
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 
 
@@ -12,8 +13,9 @@ async def update_reaction(
 ) -> str:
     """Adds a status reaction to a message, replacing the bot's previous one.
 
-    Both add and remove are best-effort; transient API failures are suppressed
-    so reaction bookkeeping never breaks the surrounding flow.
+    Both add and remove are best-effort; failures are suppressed so reaction
+    bookkeeping never breaks the surrounding flow, and a refused add is logged
+    with its ids.
 
     Args:
         message: The message to react on.
@@ -28,7 +30,16 @@ async def update_reaction(
         with contextlib.suppress(Exception):
             await message.remove_reaction(emoji=previous, member=bot_user)
     with contextlib.suppress(Exception):
-        await message.add_reaction(emoji=emoji)
+        try:
+            await message.add_reaction(emoji=emoji)
+        except Forbidden:
+            # The channel's permissions decide who may react; the ids are the whole finding.
+            logfire.warn(
+                "Discord refused a reaction",
+                message_id=message.id,
+                channel_id=message.channel.id,
+                emoji=emoji,
+            )
     return emoji
 
 

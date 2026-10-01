@@ -116,5 +116,11 @@ async def send_ephemeral_notice(
     # Broad on purpose: the notice is advisory, and every way Discord can refuse it (an expired
     # token, an already-answered response, a transient HTTP error) must leave the caller's own
     # flow running, whether that is an interaction check or a button callback.
-    except Exception:
-        logfire.warn(log_message, _exc_info=True)
+    except Exception as exc:
+        logfire.warn(
+            log_message,
+            user_id=interaction.user.id if interaction.user is not None else None,
+            channel_id=interaction.channel_id,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )

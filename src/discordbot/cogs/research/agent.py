@@ -355,13 +355,14 @@ async def _drive(
         await streamer.stream(
             events=driver.events(open_initial=open_initial, on_created=on_created)
         )
-    except Exception:
+    except Exception as exc:
         if not driver.interaction_id:
             raise
         logfire.warn(
             "research stream failed; polling for the terminal result",
             interaction_id=driver.interaction_id,
-            _exc_info=True,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
         )
     return await _poll_until_terminal(client=driver.client, interaction_id=driver.interaction_id)
 

@@ -1,12 +1,15 @@
 """Tests for the shared interaction send helpers and which of them expire."""
 
+from typing import NoReturn
+
 import pytest
 import nextcord
 
 from discordbot.utils import interaction_responses as interactions
 
-from tests.helpers.casting import as_interaction
+from tests.helpers.casting import as_interaction, make_not_found
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_logs
 
 
 @pytest.fixture
@@ -63,3 +66,27 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     assert sent["ephemeral"] is True
     assert sent["embed"] is embed
     assert scheduled_deletes == []
+
+
+async def test_a_refused_ephemeral_notice_is_logged_with_who_it_was_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The notice is advisory, so a refusal raises nothing and logs whom it was meant for."""
+    interaction = FakeInteraction(user=FakeUser(user_id=5), channel_id=6)
+
+    async def refuse(**kwargs: object) -> NoReturn:
+        """Fails the response the way Discord does once the token has expired."""
+        del kwargs
+        raise make_not_found(message="Unknown interaction")
+
+    monkeypatch.setattr(target=interaction.response, name="send_message", value=refuse)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    await interactions.send_ephemeral_notice(
+        interaction=as_interaction(fake=interaction), content="notice", log_message="notice failed"
+    )
+
+    assert [
+        (message, fields["user_id"], fields["channel_id"], fields["error_type"])
+        for message, fields in warns
+    ] == [("notice failed", 5, 6, "NotFound")]

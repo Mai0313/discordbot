@@ -80,9 +80,8 @@ def _cog_of(module: Path) -> str:
 def test_a_cog_never_imports_a_peer_cog() -> None:
     """A cog directory holds one cog's code; reaching into another one is what services are for.
 
-    The rule covers helper modules too, not just `cog.py`. Before the split it was only the
-    cog modules that stayed apart while their helper packages imported each other freely,
-    which is how "where does the economy live" stopped having an answer.
+    The rule covers helper modules too, not just `cog.py`: cog modules that stay apart while
+    their helpers import each other freely leave a feature with no one place it lives.
     """
     offenders: list[str] = []
     for module in python_modules(root=_COGS):
@@ -175,7 +174,7 @@ def _reachable_within_package(module: Path) -> dict[Path, str]:
 
 
 def test_services_never_reaches_discord() -> None:
-    """`services/` is the Discord-free layer, and until now nothing but prose said so.
+    """`services/` is the Discord-free layer, through everything it imports.
 
     The layering scan above reads `discordbot.*` edges only, so `import nextcord` inside a service
     — or inside anything a service imports — was invisible to every test in the suite. That was
@@ -190,8 +189,7 @@ def test_services_never_reaches_discord() -> None:
     modules = python_modules(root=PACKAGE / "services")
 
     # `rglob` on a directory that is not there yields nothing, so a renamed or mistyped start path
-    # would leave this scanning zero modules and passing. The other two discovery sweeps in this
-    # change carry the same tripwire for the same reason. Anchored on the package this guard exists
+    # would leave this scanning zero modules and passing. Anchored on the package this guard exists
     # for rather than on a module inside it, so nothing here depends on which files that package
     # happens to hold.
     assert PACKAGE / "services" / "platforms" / "__init__.py" in modules, "scan found no services"
@@ -211,7 +209,7 @@ def test_nothing_inside_the_memory_package_imports_its_entry_point() -> None:
     edge back up would make one of them unusable without dragging a whole turn's orchestration in
     behind it — and the turn body that the queue runs reaches it as an argument for that reason.
     Nothing else says so: the layer rules above see one `services` module importing another and
-    have no opinion, which is how the cluster that used to live in this module got there.
+    have no opinion.
     """
     memory = PACKAGE / "services" / "memory"
     entry = "discordbot.services.memory.pipeline"

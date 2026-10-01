@@ -6,6 +6,8 @@ import pytest
 
 from discordbot.utils.images import to_data_uri, shrink_image_bytes
 
+from tests.helpers.logfire_capture import capture_logs
+
 
 def _encoded_bytes(size: tuple[int, int], mode: str, image_format: str) -> bytes:
     """Encodes a solid-color test image of the given size, mode, and format."""
@@ -18,7 +20,7 @@ def test_shrink_reencodes_oversized_png_as_jpeg() -> None:
     """An oversized opaque PNG is downscaled to the provider cap and becomes JPEG."""
     payload = _encoded_bytes(size=(4000, 20), mode="RGB", image_format="PNG")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/png", filename="test.png")
 
     assert shrunk.mime_type == "image/jpeg"
     image = Image.open(fp=BytesIO(initial_bytes=shrunk.data))
@@ -30,7 +32,7 @@ def test_shrink_reencodes_small_png_photo_as_jpeg() -> None:
     """An in-bounds opaque PNG still re-encodes as the cheaper JPEG."""
     payload = _encoded_bytes(size=(64, 64), mode="RGB", image_format="PNG")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/png", filename="test.png")
 
     assert shrunk.mime_type == "image/jpeg"
 
@@ -39,7 +41,7 @@ def test_shrink_passes_small_jpeg_through() -> None:
     """An in-bounds JPEG passes through byte-identical."""
     payload = _encoded_bytes(size=(64, 64), mode="RGB", image_format="JPEG")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/jpeg")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/jpeg", filename="test.jpg")
 
     assert shrunk.data == payload
     assert shrunk.mime_type == "image/jpeg"
@@ -49,7 +51,7 @@ def test_shrink_keeps_alpha_as_png() -> None:
     """An oversized transparent image downscales but stays PNG so alpha survives."""
     payload = _encoded_bytes(size=(4000, 20), mode="RGBA", image_format="PNG")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/png", filename="test.png")
 
     assert shrunk.mime_type == "image/png"
     image = Image.open(fp=BytesIO(initial_bytes=shrunk.data))
@@ -61,7 +63,7 @@ def test_shrink_passes_small_alpha_png_through() -> None:
     """An in-bounds transparent PNG passes through byte-identical."""
     payload = _encoded_bytes(size=(64, 64), mode="RGBA", image_format="PNG")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/png", filename="test.png")
 
     assert shrunk.data == payload
     assert shrunk.mime_type == "image/png"
@@ -71,7 +73,7 @@ def test_shrink_keeps_palette_as_png() -> None:
     """An oversized palette image downscales but stays PNG to avoid JPEG artifacts."""
     payload = _encoded_bytes(size=(4000, 20), mode="P", image_format="PNG")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/png", filename="test.png")
 
     assert shrunk.mime_type == "image/png"
     image = Image.open(fp=BytesIO(initial_bytes=shrunk.data))
@@ -82,20 +84,25 @@ def test_shrink_passes_gif_through() -> None:
     """GIFs pass through untouched so animation survives."""
     payload = _encoded_bytes(size=(4000, 20), mode="RGB", image_format="GIF")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/gif")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/gif", filename="test.gif")
 
     assert shrunk.data == payload
     assert shrunk.mime_type == "image/gif"
 
 
-def test_shrink_passes_undecodable_payload_through() -> None:
-    """Bytes PIL cannot decode pass through unchanged."""
+def test_shrink_passes_undecodable_payload_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bytes PIL cannot decode pass through unchanged, and the fallback says why."""
     payload = b"definitely not an image"
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
-    shrunk = shrink_image_bytes(payload=payload, content_type="image/png")
+    shrunk = shrink_image_bytes(payload=payload, content_type="image/png", filename="test.png")
 
     assert shrunk.data == payload
     assert shrunk.mime_type == "image/png"
+    assert [
+        (fields["filename"], fields["content_type"], fields["size_bytes"], fields["error_type"])
+        for _, fields in warns
+    ] == [("test.png", "image/png", len(payload), "UnidentifiedImageError")]
 
 
 @pytest.mark.parametrize(

@@ -29,9 +29,9 @@ from tests.helpers.source_tree import PACKAGE
 def test_the_detail_file_cap_stays_above_the_window_consolidation_reads() -> None:
     """The disk cap must never trim into content consolidation can still reach.
 
-    `DETAIL_FILE_MAX_BYTES` stayed in `services/memory/constants.py` (it bounds a file) while
-    `MEMORY_DETAIL_CONTEXT_MAX_CHARS` moved to the budgets module (it bounds a request), so the
-    two now describe each other across a module boundary. Lowering the cap or raising the read
+    `DETAIL_FILE_MAX_BYTES` lives in `services/memory/constants.py` (it bounds a file) and
+    `MEMORY_DETAIL_CONTEXT_MAX_CHARS` in the budgets module (it bounds a request), so the two
+    describe each other across a module boundary. Lowering the cap or raising the read
     window past this point would let a trim delete evidence a rebuild still expects to read.
     """
     read_window_bytes = MEMORY_DETAIL_CONTEXT_MAX_CHARS * 4
