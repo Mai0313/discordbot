@@ -69,7 +69,7 @@ def douyin_failure_message(error: Exception) -> str:
     if isinstance(error, DouyinBlockedError):
         return "-# 抖音暫時擋住了請求，請稍後再試"
     if isinstance(error, DouyinTransferError):
-        return "-# 這次檔案沒抓完,稍後再試一次"
+        return "-# 這次沒有抓到,稍後再試一次"
     if isinstance(error, TimeoutError):
         return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
     return _DOWNLOAD_FAILED

@@ -34,6 +34,7 @@ from discordbot.services.platforms.douyin import (
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
+    DouyinTransferError,
     DouyinUnavailableError,
     douyin_url_locks,
     douyin_fetch_semaphore,
@@ -86,8 +87,18 @@ DOUYIN_BLOCKED_NOTICE = (
     "invent the post's contents. ===="
 )
 
+# A read that stalled, never connected, was cut off or hit a Douyin 5xx: as worth retrying as
+# a block, but nothing refused us, and naming a block sends someone off to wait out a wall
+# that was never there.
+DOUYIN_TRANSFER_NOTICE = (
+    "==== We tried to read the Douyin link in the user's message but the request to Douyin "
+    "did not go through this time. The post is NOT deleted; it just could not be read right "
+    "now. Tell the user exactly that and suggest trying again in a while. Do not invent the "
+    "post's contents. ===="
+)
+
 # Used when the read failed for a reason that says nothing about the post: a link that is not
-# a post at all, a network error, an unexpected response shape. Kept apart from the deleted /
+# a post at all, a 403 or a 404, an unexpected response shape. Kept apart from the deleted /
 # private notice because asserting a working link is dead is the worst thing this can say.
 DOUYIN_UNREADABLE_NOTICE = (
     "==== We tried to read the Douyin link in the user's message but could not read it this "
@@ -229,6 +240,13 @@ async def build_douyin_context_messages(
                 _exc_info=True,
             )
             return [system_block(text=DOUYIN_BLOCKED_NOTICE)]
+        except DouyinTransferError:
+            logfire.warn(
+                "Douyin context read did not go through; injecting the retryable notice",
+                url=url,
+                _exc_info=True,
+            )
+            return [system_block(text=DOUYIN_TRANSFER_NOTICE)]
         except DouyinUnavailableError as error:
             # A deleted or private post is a routine remote outcome, not a defect; the message
             # is the only place Douyin's own filter reason lives.
@@ -239,8 +257,8 @@ async def build_douyin_context_messages(
             )
             return [system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
         except Exception as error:
-            # Anything else says nothing about the post: an unresolvable link, a transport
-            # error, a changed payload shape. `DOUYIN_UNAVAILABLE_NOTICE` would have the model
+            # Anything else says nothing about the post: an unresolvable link, a 403 or a
+            # 404, a changed payload shape. `DOUYIN_UNAVAILABLE_NOTICE` would have the model
             # assert the post is deleted, which for these is simply false.
             logfire.warn(
                 "Douyin metadata read failed; injecting neutral notice",

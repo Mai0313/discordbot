@@ -789,20 +789,29 @@ def test_local_write_failure_leaves_no_partial_file(
 
 
 @pytest.mark.parametrize(
+    argnames="url",
+    argvalues=[f"https://www.douyin.com/video/{_VIDEO_ID}", "https://v.douyin.com/AbCdEf12/"],
+    ids=["share-page", "short-link"],
+)
+@pytest.mark.parametrize(
     argnames="failure",
     argvalues=[
         requests.ReadTimeout("stalled"),
+        requests.ConnectTimeout("never connected"),
+        requests.ConnectionError("connection refused"),
         requests.exceptions.ChunkedEncodingError("connection dropped mid-body"),
     ],
-    ids=["read-timeout", "cut-off-body"],
+    ids=["read-timeout", "connect-timeout", "no-connection", "cut-off-body"],
 )
-def test_a_stalled_share_page_read_is_retryable(
-    monkeypatch: pytest.MonkeyPatch, failure: requests.RequestException
+def test_a_stalled_read_is_retryable_but_not_the_bot_wall(
+    monkeypatch: pytest.MonkeyPatch, url: str, failure: requests.RequestException
 ) -> None:
-    """A read that never got an answer or got cut off is a come-back-later, never a missing post.
+    """A read that never got an answer or got cut off is a come-back-later, never a block.
 
     Douyin raises its own classes, so its own fetch is what has to be asked: a synthetic error
-    handed to the shared classifier passes whether or not this reader ever raises a retryable one.
+    handed to the shared classifier passes whether or not this reader ever raises a retryable
+    one. Not the bot wall either: `/download_video` and the AI reply answer in words, and
+    blaming a wall sends someone off to wait out something that was never there.
     """
 
     def stall(url: str, kwargs: dict[str, object]) -> _FakeResponse:
@@ -813,25 +822,36 @@ def test_a_stalled_share_page_read_is_retryable(
     _install_session(monkeypatch=monkeypatch, handler=stall)
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
-    with pytest.raises(DouyinBlockedError):
-        downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+    with pytest.raises(DouyinTransferError) as raised:
+        downloader.parse_metadata(url=url)
+    assert isinstance(raised.value, LinkRetryableError)
+    assert not isinstance(raised.value, DouyinBlockedError)
 
 
 @pytest.mark.parametrize(
-    argnames=("status", "retryable"), argvalues=[(429, True), (503, True), (404, False)]
+    argnames="url",
+    argvalues=[f"https://www.douyin.com/video/{_VIDEO_ID}", "https://v.douyin.com/AbCdEf12/"],
+    ids=["share-page", "short-link"],
 )
-def test_a_refused_short_link_is_retryable_only_when_http_says_so(
-    monkeypatch: pytest.MonkeyPatch, status: int, retryable: bool
+@pytest.mark.parametrize(
+    argnames=("status", "expected"),
+    argvalues=[(429, DouyinBlockedError), (503, DouyinTransferError), (404, DouyinError)],
+)
+def test_only_a_429_reads_as_douyin_refusing(
+    monkeypatch: pytest.MonkeyPatch, url: str, status: int, expected: type[DouyinError]
 ) -> None:
-    """A refused short-link hop carries no `Location`, which is not the same as no post."""
+    """A 429 is a refusal, a 5xx the server's own failure, and a 404 no reason to retry.
+
+    A refused short-link hop carries no `Location`, which is not the same as no post either.
+    """
     _install_session(
         monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
     with pytest.raises(DouyinError) as raised:
-        downloader._resolve_aweme_id(url="https://v.douyin.com/AbCdEf12/")
-    assert isinstance(raised.value, DouyinBlockedError) is retryable
+        downloader.parse_metadata(url=url)
+    assert type(raised.value) is expected
 
 
 @pytest.mark.parametrize(
