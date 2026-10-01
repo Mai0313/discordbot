@@ -12,7 +12,7 @@ from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interacti
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
-from discordbot.cogs.games.interactions import GameView
+from discordbot.cogs.games.interactions import GameView, edit_game_message
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
 
 if TYPE_CHECKING:
@@ -70,6 +70,8 @@ class BaseGameLobbyView(GameView):
         self.prepare_participant = prepare_participant
         self.refresh_participants = refresh_participants
         self.message: Message | None = None
+        # The last press that edited the lobby; the timeout's edit and delete ride its token.
+        self.last_press: Interaction[commands.Bot] | None = None
         self._participants: dict[int, GameParticipant] = {owner.user_id: owner}
         for extra in extra_initial_participants or ():
             if extra.user_id != owner.user_id:
@@ -90,10 +92,14 @@ class BaseGameLobbyView(GameView):
         self.stop()
         embed = self._build_lobby_embed(status="Lobby 已逾時")
         try:
-            await self.message.edit(
-                embed=embed,
-                view=self,
-                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+            await edit_game_message(
+                message=self.message,
+                interaction=self.last_press,
+                payload={
+                    "embed": embed,
+                    "view": self,
+                    **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+                },
             )
         except NotFound:
             logfire.info(
@@ -102,8 +108,9 @@ class BaseGameLobbyView(GameView):
                 message_id=self.message.id,
             )
         except Forbidden:
-            # Once a press has rebound the message this edit goes through the channel, which the
-            # server can shut the bot out of; the ids are the whole finding.
+            # Once a press has rebound the message, an edit with no working press behind it
+            # goes through the channel, which the server can shut the bot out of; the ids are
+            # the whole finding.
             logfire.warn(
                 "Discord refused the lobby's timeout edit",
                 channel_id=self.message.channel.id,
@@ -119,7 +126,9 @@ class BaseGameLobbyView(GameView):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-        schedule_public_message_delete(message=self.message, user_name=self.owner.account_name)
+        schedule_public_message_delete(
+            message=self.message, user_name=self.owner.account_name, interaction=self.last_press
+        )
 
     @nextcord.ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
     async def join(
@@ -232,6 +241,7 @@ class BaseGameLobbyView(GameView):
         if message is None:
             return
         self.message = message
+        self.last_press = interaction
         embed = self._build_lobby_embed(status=status)
         await interaction.edit_original_message(
             embed=embed,

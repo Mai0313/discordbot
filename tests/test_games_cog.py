@@ -23,7 +23,7 @@ from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed
 from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
-from tests.helpers.games import attached_button
+from tests.helpers.games import seat, attached_button
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -265,7 +265,7 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     scheduled: list[object] = []
     monkeypatch.setattr(
         "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: scheduled.append(message),
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(message),
     )
     reports = _recorded_reports(monkeypatch=monkeypatch)
     # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
@@ -302,7 +302,7 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
     scheduled: list[object] = []
     monkeypatch.setattr(
         "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: scheduled.append(message),
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(message),
     )
     reports = _recorded_reports(monkeypatch=monkeypatch)
     lobby = _scripted_blackjack_lobby(dealt=[])
@@ -314,6 +314,44 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
     assert scheduled == [message]
+
+
+@pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
+async def test_a_lobby_someone_joined_times_out_through_the_join_in_a_shut_out_channel(
+    monkeypatch: pytest.MonkeyPatch, expired: bool
+) -> None:
+    """The join rebound the lobby to the message it pressed, which only the join's token reaches.
+
+    So the timeout closes it and schedules its delete through that token while it lives.
+    """
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.lobby.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
+    )
+    bob = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
+
+    async def seat_bob(interaction: Interaction[Any]) -> GameParticipant:
+        del interaction
+        return bob
+
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    lobby.prepare_participant = seat_bob
+    message = FakeDiscordMessage()
+    message.edit_failure = make_forbidden(message="Missing Access")
+    lobby.message = as_message(fake=message)
+    join = FakeInteraction(
+        user=FakeUser(user_id=2, name="bob", display_name="Bob"), message=message
+    )
+    join_button = next(child for child in lobby.children if getattr(child, "label", "") == "加入")
+    await join_button.callback(as_interaction(fake=join))
+    join.expired = expired
+
+    await lobby.on_timeout()
+
+    embed = join.edits[-1]["embed"]
+    assert (embed.description == "Lobby 已逾時") is not expired
+    assert scheduled == [join]
 
 
 async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
@@ -365,7 +403,7 @@ async def _start_in_a_shut_out_channel(
     """
     monkeypatch.setattr(
         "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: None,
+        lambda message, delay=180, user_name=None, interaction=None: None,
     )
     monkeypatch.setattr(blackjack_views, "PEEK_REVEAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(blackjack_views, "BOT_TURN_EDIT_DELAY_SECONDS", 0)
@@ -393,12 +431,20 @@ def _alice_press(message: FakeDiscordMessage) -> FakeInteraction:
 async def test_a_blackjack_lobby_in_a_channel_the_bot_was_shut_out_of_still_deals_and_settles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The start and each table press edit through their own token, which no channel can refuse."""
+    """The start and each table press edit through their own token, which no channel can refuse.
+
+    The settling press's token also carries the table's scheduled delete.
+    """
     # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
     message = await _start_in_a_shut_out_channel(monkeypatch=monkeypatch, dealt=[])
     table = message.edits[-1]["view"]
     assert isinstance(table, BlackjackView)
     stale_double = attached_button(view=table, custom_id="bj:double")
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.interactions.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
+    )
 
     await attached_button(view=table, custom_id="bj:hit").callback(
         as_interaction(fake=_alice_press(message=message))
@@ -409,13 +455,54 @@ async def test_a_blackjack_lobby_in_a_channel_the_bot_was_shut_out_of_still_deal
     assert len(stale_press.followup.sent) == 1
     assert len(message.edits) == 3, "the stale press refreshed the table it was pressed on"
 
-    await attached_button(view=table, custom_id="bj:stand").callback(
-        as_interaction(fake=_alice_press(message=message))
-    )
+    stand = _alice_press(message=message)
+    await attached_button(view=table, custom_id="bj:stand").callback(as_interaction(fake=stand))
     await table.wait_for_background_tasks()
 
     assert {"view": table} in message.edits, "the controls went dead before the dealer played"
     assert message.edits[-1]["view"] is None, "the settled table replaced the live one"
+    assert scheduled == [stand]
+
+
+@pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
+@pytest.mark.parametrize(argnames="last", argvalues=["start", "hit"])
+async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_through_its_last_press(
+    monkeypatch: pytest.MonkeyPatch, last: str, expired: bool
+) -> None:
+    """A timeout has no press of its own, so it renders and deletes through the last one.
+
+    That is the start itself when nobody pressed after it. Once that press's token has expired
+    only the channel is left, whose refusal is expected and so carries no traceback.
+    """
+    # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
+    message = await _start_in_a_shut_out_channel(monkeypatch=monkeypatch, dealt=[])
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+    if last == "start":
+        press = cast("FakeInteraction", table.last_press)
+        assert press.edits[0]["view"] is table, "the start press dealt the table"
+    else:
+        press = _alice_press(message=message)
+        await attached_button(view=table, custom_id="bj:hit").callback(as_interaction(fake=press))
+    press.expired = expired
+    scheduled: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.interactions.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append((
+            message,
+            interaction,
+        )),
+    )
+    reports = _recorded_reports(monkeypatch=monkeypatch)
+
+    await table.on_timeout()
+    await table.wait_for_background_tasks()
+
+    assert (press.edits[-1]["view"] is None) is not expired, "the settled table landed via it"
+    assert scheduled == [(message, press)], "the delete rides the same press"
+    assert [(level, "_exc_info" in fields) for level, fields in reports] == (
+        [("warn", False), ("warn", False)] if expired else []
+    )
 
 
 async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(

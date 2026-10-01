@@ -4,13 +4,13 @@ from typing import Any, Self, Unpack, ClassVar, TypedDict
 import asyncio
 
 import logfire
-from nextcord import Embed, Message, NotFound, Interaction
+from nextcord import Embed, Message, NotFound, Forbidden, Interaction, HTTPException
 from nextcord.ui import Item, View, Button
 from nextcord.ext import commands
 
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import schedule_public_message_delete
+from discordbot.utils.message_cleanup import report_press_failure, schedule_public_message_delete
 from discordbot.utils.interaction_responses import send_ephemeral_notice
 
 
@@ -83,16 +83,24 @@ def set_view_item_visible(view: View, item: Item[View], visible: bool) -> None:
 async def edit_game_message(
     message: Message, interaction: Interaction[commands.Bot] | None, payload: dict[str, Any]
 ) -> None:
-    """Edits a game message through the press it answers, or through the channel without one.
+    """Edits a game message through a press on it while that press's token lives, else the channel.
 
     A press's own token edits the message its control sits on whatever the channel allows, where
     the channel endpoint answers 403 once the server shuts the bot out. An edit no press
-    triggered has only the channel.
+    triggered, a timeout's, rides the last press that edited the message, so only a message with
+    no live press left has only the channel. That press must be one answered on the message
+    itself: a press answered with a private notice holds a token for that notice instead. A
+    token that fails hands the edit to the channel too, since only the channel tells a message
+    already gone from a token that cannot reach it.
     """
-    if interaction is None:
-        await message.edit(**payload)
-    else:
-        await interaction.edit_original_message(**payload)
+    if interaction is not None and not interaction.is_expired():
+        try:
+            await interaction.edit_original_message(**payload)
+        except HTTPException as error:
+            report_press_failure(error=error, message=message, action="edit")
+        else:
+            return
+    await message.edit(**payload)
 
 
 async def publish_final_table(
@@ -105,9 +113,11 @@ async def publish_final_table(
 ) -> bool:
     """Shows a settled table's final embeds with no controls, then schedules its deletion.
 
-    `interaction` is the press that settled the table, if one did (`edit_game_message`). Never
-    raises: settlement is already committed when this runs, so a render that fails is logged
-    (`failure_fields` ride the warning) and the deletion is scheduled regardless.
+    `interaction` is the press that settled the table or, on a timeout, the last press that
+    edited it; the render and the deletion both go through it while its token lives
+    (`edit_game_message`). Never raises: settlement is already committed when this runs, so a
+    render that fails is logged (`failure_fields` ride the warning) and the deletion is
+    scheduled regardless.
 
     Returns:
         Whether the final render reached the message.
@@ -125,6 +135,14 @@ async def publish_final_table(
         # Opener deleted the public table before the round finished; nothing to render.
         logfire.info(f"{game_name} table message gone before final edit", message_id=message.id)
         landed = False
+    except Forbidden:
+        # Only a render with no working press behind it goes through the channel, which the
+        # server can shut the bot out of; the ids are the whole finding.
+        logfire.warn(
+            f"Discord refused the {game_name} final table edit; settled round never rendered",
+            **failure_fields,
+        )
+        landed = False
     # Broad on purpose: settlement is already committed, so this render must never raise back
     # into the round and skip the cleanup scheduling below.
     except Exception as exc:
@@ -137,5 +155,5 @@ async def publish_final_table(
         landed = False
     else:
         landed = True
-    schedule_public_message_delete(message=message, user_name=user_name)
+    schedule_public_message_delete(message=message, user_name=user_name, interaction=interaction)
     return landed

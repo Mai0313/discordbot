@@ -93,8 +93,13 @@ def scheduled_cleanups(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """Records each table the view hands to the public-message cleanup instead of scheduling it."""
     scheduled: list[object] = []
 
-    def record(message: object, delay: float = 180, user_name: str | None = None) -> None:
-        del delay, user_name
+    def record(
+        message: object,
+        delay: float = 180,
+        user_name: str | None = None,
+        interaction: object | None = None,
+    ) -> None:
+        del delay, user_name, interaction
         scheduled.append(message)
 
     monkeypatch.setattr(game_interactions, "schedule_public_message_delete", record)

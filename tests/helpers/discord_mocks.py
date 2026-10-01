@@ -273,6 +273,24 @@ class FakeInteraction:
         self.followup = FakeFollowup()
         self.edit_failure: Exception | None = None
         self.edits: list[OriginalEditPayload] = []
+        # A live token by default; set to model one past Discord's 15-minute life.
+        self.expired = False
+        self.delete_failure: Exception | None = None
+        self.original_deleted = False
+
+    def is_expired(self) -> bool:
+        """Answers whether the token has outlived its life, as `expired` says."""
+        return self.expired
+
+    async def delete_original_message(self) -> None:
+        """Records a delete of the original response, or raises `delete_failure` when set.
+
+        Recorded here rather than on the message, so a test tells the token's delete from the
+        channel's.
+        """
+        if self.delete_failure is not None:
+            raise self.delete_failure
+        self.original_deleted = True
 
     async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
         """Records an edit to the deferred original response, or raises `edit_failure` when set.
