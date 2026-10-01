@@ -33,10 +33,16 @@ from collections.abc import Callable, Iterator
 import pytest
 from nextcord import Message, Forbidden
 
-from discordbot.utils import expansion_placeholder as expansion_module
+from discordbot.utils import expansion_cog as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
-from discordbot.utils.expansion_cog import ExpansionCog, ConversationExpansionCog
+from discordbot.utils.expansion_cog import (
+    ExpansionCog,
+    ConversationExpansionCog,
+    expansion_failure_emoji,
+    report_expansion_read_failure,
+    report_expansion_delivery_failure,
+)
 from discordbot.services.platforms.base import PlatformConversation
 from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
 from discordbot.services.platforms.twitter import TwitterConversation
@@ -48,9 +54,6 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
     ExpansionPlaceholder,
-    expansion_failure_emoji,
-    report_expansion_read_failure,
-    report_expansion_delivery_failure,
 )
 from discordbot.services.platforms.instagram import InstagramConversation
 
