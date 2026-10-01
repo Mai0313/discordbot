@@ -68,19 +68,19 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # group-home URLs that are not posts at all. `is_facebook_post_url` makes
 # that call on the parsed URL instead, where the query is readable. The tail class is ASCII URL
 # characters ending on one that a real id or query value ends on, so a link written mid-sentence
-# in Chinese or Japanese is matched without swallowing the terminator. The paths refused here
-# are a `/<page>/videos/` page and the video (`/share/v/`) and reel (`/share/r/`) share forms,
-# for the reason `fb.watch` is: logged out they carry no post (`/videos/` checked 2026-09-30;
-# all 35 share links of those two forms the bot met from 2026-09-27 to 09-30 read as
-# unreadable).
+# in Chinese or Japanese is matched without swallowing the terminator. The one path refused here
+# is a `/<page>/videos/` page, whose id `is_facebook_post_url` would accept: logged out it carries
+# no post, for the reason `fb.watch` is left out (2026-09-30).
 FACEBOOK_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
-    r"(?![^/?\s]+/videos/|share/[rv]/)"
+    r"(?![^/?\s]+/videos/)"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
 # The path shapes that name a post on their own. A `share/p/<code>` link names one only through
-# the redirect it answers with, exactly as a Threads share link does.
+# the redirect it answers with, exactly as a Threads share link does. The video (`share/v/`) and
+# reel (`share/r/`) share forms are left out: logged out they carry no post (all 35 the bot met
+# from 2026-09-27 to 09-30 read as unreadable).
 _GROUP_POST_PATH_RE = re.compile(
     pattern=r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)"
 )
