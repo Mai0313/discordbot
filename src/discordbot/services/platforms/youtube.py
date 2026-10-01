@@ -13,7 +13,7 @@ from discordbot.utils.urls import URL_START_ANCHOR
 # on `[A-Za-z0-9_-]` so a link written mid-sentence stops cleanly at a non-ASCII terminator
 # (e.g. zh/ja `...VIDEOID。`) instead of swallowing punctuation into the URL.
 YOUTUBE_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:www\.|m\.)?"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:www\.|m\.)?"
     r"(?:"
     r"youtube\.com/(?:watch\?[A-Za-z0-9=&%_.-]*v=[A-Za-z0-9_-]{11}|(?:shorts|live)/[A-Za-z0-9_-]{11})"
     r"|youtu\.be/[A-Za-z0-9_-]{11}"

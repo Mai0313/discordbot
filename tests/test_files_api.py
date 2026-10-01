@@ -1,4 +1,4 @@
-"""Tests for the shared Gemini Files API upload used by link-media ingestion."""
+"""Tests for the shared Gemini Files API upload of media the bot fetched or generated itself."""
 
 import io
 from types import SimpleNamespace

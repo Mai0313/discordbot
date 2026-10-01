@@ -176,12 +176,10 @@ def _reachable_within_package(module: Path) -> dict[Path, str]:
 def test_services_never_reaches_discord() -> None:
     """`services/` is the Discord-free layer, through everything it imports.
 
-    The layering scan above reads `discordbot.*` edges only, so `import nextcord` inside a service
-    — or inside anything a service imports — was invisible to every test in the suite. That was
-    affordable while `services/` held a ledger and a memory store, neither of which has a Discord
-    surface to be tempted by. `services/platforms/` is what changes it: its job is to turn a link
-    into something a channel shows, the send sits one import away, and `utils/douyin_delivery.py`
-    exists precisely because that one import was there.
+    The layering scan above reads `discordbot.*` edges only, so it cannot see `import nextcord`
+    inside a service or inside anything a service imports. `services/platforms/` is where that
+    edge tempts most: its job is to turn a link into something a channel shows, so the send always
+    sits one import away.
 
     Transitive on purpose. A direct-import check is satisfied by moving the offending line one
     module over, which is the same edge wearing a hat.

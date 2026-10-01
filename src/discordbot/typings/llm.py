@@ -179,6 +179,3 @@ class LLMConfig(BaseSettings):
         and the key is present.
         """
         return self.inline_video_enabled and self.gemini_key_configured
-
-
-__all__ = ["LLMConfig"]

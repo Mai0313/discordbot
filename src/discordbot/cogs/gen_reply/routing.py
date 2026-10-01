@@ -103,9 +103,9 @@ class RouteClassifier(BaseModel):
                 )
                 route = RouteClassification(decision="QA")
         except ValidationError as exc:
-            # `responses.parse` validates before `output_parsed` is reachable, so an empty /
-            # safety-filtered response and a genuine schema mismatch both land here; the
-            # attached exception is the only way to tell them apart.
+            # `responses.parse` validates the message text before `output_parsed` is reachable,
+            # so an empty text and a genuine schema mismatch both land here; the attached
+            # exception is the only way to tell them apart.
             logfire.warn(
                 "RouteClassification parse failed; defaulting to QA",
                 message_id=self.message.id,

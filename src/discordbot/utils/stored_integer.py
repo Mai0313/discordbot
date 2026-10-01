@@ -60,7 +60,7 @@ def int_compare_text(column: _StoredIntegerColumn, value: int) -> ColumnElement[
     )
 
 
-class StoredIntegerComparator(TypeDecorator.Comparator[int]):
+class _StoredIntegerComparator(TypeDecorator.Comparator[int]):
     """Routes SQL arithmetic and comparisons through integer-aware UDFs."""
 
     def __add__(self, other: object) -> ColumnElement[Any]:
@@ -120,7 +120,7 @@ class StoredInteger(TypeDecorator[int]):
 
     impl = Text
     cache_ok = True
-    comparator_factory = StoredIntegerComparator
+    comparator_factory = _StoredIntegerComparator
 
     def process_bind_param(self, value: object | None, dialect: Any) -> str:  # noqa: ANN401 -- SQLAlchemy hook signature
         """Converts a Python integer into canonical decimal text."""
@@ -135,13 +135,3 @@ def configure_sqlite_stored_integer_functions(dbapi_connection: Any) -> None:  #
     """Registers SQLite UDFs used by `StoredInteger` SQL expressions."""
     dbapi_connection.create_function("discordbot_int_add_text", 2, sqlite_int_add_text)
     dbapi_connection.create_function("discordbot_int_compare_text", 2, sqlite_int_compare_text)
-
-
-__all__ = [
-    "StoredInteger",
-    "configure_sqlite_stored_integer_functions",
-    "int_add_text",
-    "int_compare_text",
-    "stored_int_to_int",
-    "stored_int_to_text",
-]

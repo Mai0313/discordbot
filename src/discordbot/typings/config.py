@@ -28,6 +28,3 @@ class LoggingConfig(BaseSettings):
             validation_alias=AliasChoices("LOG_LEVEL"),
         )
     )
-
-
-__all__ = ["DiscordConfig", "LoggingConfig"]

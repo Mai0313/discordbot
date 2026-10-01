@@ -8,7 +8,7 @@ two allowlist entries and the rule stays readable. An input budget is spelled `M
 than the rule it enforces, which is a hand-maintained list pretending to be a rule.
 
 What is worth pinning instead is the coupling: two pairs that describe each other in prose and
-live in different modules now, which is the exact decay the collection exists to prevent.
+live in different modules, which is the exact decay the collection exists to prevent.
 """
 
 import ast

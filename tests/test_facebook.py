@@ -251,8 +251,10 @@ def test_clean_url_keeps_the_comment_the_url_singles_out() -> None:
         f"https://www.facebook.com/groups/{_GROUP_ID}",
         "https://www.facebook.com/",
         "https://www.facebook.com/marketplace/item/123456/",
+        # A reel or video share link lands on a page carrying no post, like a `/videos/` link.
         "https://www.facebook.com/share/r/17h4SsC2p1",
         "https://www.facebook.com/share/v/1AbCdEfGhJ/",
+        "https://www.facebook.com/share/v/1AbCdEfGhJ/?mibextid=wwXIfr",
         # `id` is kept but never READ as a post id, or every profile link would look like a post.
         "https://www.facebook.com/profile.php?id=100077759593577",
     ],
@@ -280,21 +282,6 @@ def test_an_fb_watch_link_does_not_shadow_a_post_link_after_it() -> None:
 def test_a_video_link_does_not_shadow_a_post_link_after_it(video_url: str) -> None:
     """A logged-out video page carries no post, so it must not take the first match either."""
     match = FACEBOOK_URL_RE.search(string=f"see {video_url} and {_PERMALINK}")
-
-    assert match is not None
-    assert match.group(0) == _PERMALINK
-
-
-@pytest.mark.parametrize(
-    "share_url",
-    [
-        "https://www.facebook.com/share/r/17h4SsC2p1",
-        "https://www.facebook.com/share/v/1AbCdEfGhJ/?mibextid=wwXIfr",
-    ],
-)
-def test_a_reel_or_video_share_link_does_not_shadow_a_post_link_after_it(share_url: str) -> None:
-    """A reel or video share link lands on a page carrying no post, like a `/videos/` link."""
-    match = FACEBOOK_URL_RE.search(string=f"see {share_url} and {_PERMALINK}")
 
     assert match is not None
     assert match.group(0) == _PERMALINK

@@ -28,11 +28,7 @@ from discordbot.cogs.gen_reply.surface import INTERACTION_FOLLOWUP_LIMIT, TurnSu
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.streaming import TRUNCATED_NOTICE, ResponseStreamer
-from discordbot.cogs.gen_reply.ask_message import (
-    build_ask_message,
-    interaction_channel,
-    rebuild_conversation,
-)
+from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_conversation
 
 from tests.helpers.casting import as_bot
 from tests.helpers.link_sources import hosting_off_planner
@@ -154,11 +150,7 @@ def _interaction(**kwargs: Any) -> Any:  # noqa: ANN401 -- the fake stands in fo
 
 def _ask_message(*, interaction: Any) -> Message:  # noqa: ANN401 -- see `_interaction`
     """The message the pipeline would answer for this invocation."""
-    return build_ask_message(
-        interaction=interaction,
-        question="在幹嘛",
-        channel=interaction_channel(interaction=interaction),
-    )
+    return build_ask_message(interaction=interaction, question="在幹嘛")
 
 
 def test_the_synthesized_message_is_the_invocation_itself() -> None:
@@ -318,8 +310,6 @@ def test_a_rebuilt_conversation_gives_the_bot_its_own_turns() -> None:
             ask_store.AskTurn(message_id=ASK_SNOWFLAKE + 2, question="午安", answer="午安啊"),
         ],
         interaction=interaction,
-        bot=interaction.client,
-        channel=interaction_channel(interaction=interaction),
     )
 
     assert [m.content for m in messages] == ["早", "早安", "午安", "午安啊"]

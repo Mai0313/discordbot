@@ -1,6 +1,7 @@
 """Local OpenAI Agents smoke test for the Discord reply prompt."""
 
 from typing import TYPE_CHECKING, cast
+from pathlib import Path
 
 from agents import Agent, Runner, set_tracing_disabled
 from google import genai
@@ -82,6 +83,7 @@ def gen_reply_gemini(user_prompt: str) -> None:
             else:
                 console.print(getattr(delta, "text", ""), end="")
         responses_list.append(response.model_dump())
+    Path("./data").mkdir(exist_ok=True)
     with open("./data/agent_response.json", "wb") as f:
         f.write(orjson.dumps(responses_list, option=orjson.OPT_INDENT_2))
 
