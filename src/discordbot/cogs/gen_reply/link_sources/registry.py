@@ -244,8 +244,8 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="bilibili",
-        # Path-anchored to the watchable /video/ forms (plus b23.tv short links), so unlike
-        # Douyin no url_filter is needed on top.
+        # Path-anchored to the watchable /video/ forms (plus b23.tv short links), so no url_filter
+        # is needed on top.
         url_pattern=BILIBILI_URL_RE,
         build=_build_bilibili_link_context,
         timeout_notice=BILIBILI_TIMEOUT_NOTICE,
