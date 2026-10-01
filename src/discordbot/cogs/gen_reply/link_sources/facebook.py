@@ -23,6 +23,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.context_budgets import MAX_FACEBOOK_COMMENTS, MAX_FACEBOOK_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
+    comment_lines,
     defuse_markers,
     build_post_context,
 )
@@ -100,12 +101,7 @@ FACEBOOK_SEPARATORS = PostSeparators(
 def _render_conversation(
     *, post: FacebookOutput, conversation: FacebookConversation, attached_images: int
 ) -> str:
-    """Renders the post, its counters and its preloaded comments as compact text.
-
-    The comment the URL singled out is labelled rather than moved to the front: its position in
-    the thread is part of reading it, and a model told which one was linked can answer about it
-    without losing what came before.
-    """
+    """Renders the post, its counters and its preloaded comments as compact text."""
     header = f"[Facebook post the user linked] {defuse_markers(text=post.author_name)}".rstrip()
     if post.group_name:
         header = f"{header} — posted in the group {defuse_markers(text=post.group_name)}"
@@ -130,21 +126,14 @@ def _render_conversation(
     if counters:
         lines.append(", ".join(counters))
     lines.append(post.url)
-
-    comments = conversation.comments[:MAX_FACEBOOK_COMMENTS]
-    if comments:
-        lines.append(
-            f"\n[{len(comments)} of the post's comments, as preloaded by the page — not the "
-            f"whole discussion]"
+    lines.extend(
+        comment_lines(
+            conversation=conversation,
+            cap=MAX_FACEBOOK_COMMENTS,
+            served_as="as preloaded by the page — not the whole discussion",
+            handle_prefix="",
         )
-        for comment in comments:
-            marker = (
-                " (this is the comment the user's link points at)"
-                if comment.comment_id == conversation.selected_comment_id
-                else ""
-            )
-            author = defuse_markers(text=comment.author_name)
-            lines.append(f"- {author}{marker}: {defuse_markers(text=comment.text)}")
+    )
     return "\n".join(lines)
 
 

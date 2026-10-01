@@ -36,7 +36,12 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.emojis import LinkSourceName
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
-from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
+from discordbot.services.platforms.base import (
+    PlatformOutput,
+    LinkableComments,
+    PlatformConversation,
+    LinkableCommentOutput,
+)
 from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
 
 
@@ -244,6 +249,40 @@ def defuse_markers(*, text: str) -> str:
     undefused path.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
+
+
+def comment_lines[OutputT: LinkableCommentOutput](
+    conversation: LinkableComments[OutputT], cap: int, served_as: str, handle_prefix: str
+) -> list[str]:
+    """Renders up to `cap` comments under a header counting them, marking the one the link named.
+
+    The named comment is labelled rather than moved to the front: its position in the thread is
+    part of reading it, and a model told which one was linked can answer about it without losing
+    what came before.
+
+    Args:
+        conversation: The post's conversation.
+        cap: How many comments ride.
+        served_as: Closes the header, saying in the source's own words how much of the
+            discussion the page served.
+        handle_prefix: Written before each author's name, e.g. `@` where names are handles.
+
+    Returns:
+        Lines to append to the rendered post, none when it has no comments.
+    """
+    comments = conversation.comments[:cap]
+    if not comments:
+        return []
+    lines = [f"\n[{len(comments)} of the post's comments, {served_as}]"]
+    for comment in comments:
+        marker = (
+            " (this is the comment the user's link points at)"
+            if comment.comment_id == conversation.selected_comment_id
+            else ""
+        )
+        author = defuse_markers(text=comment.author_name)
+        lines.append(f"- {handle_prefix}{author}{marker}: {defuse_markers(text=comment.text)}")
+    return lines
 
 
 class LinkUrlFilter(Protocol):

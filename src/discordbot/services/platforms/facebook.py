@@ -37,9 +37,9 @@ from pydantic import Field, BaseModel, computed_field
 from discordbot.utils.urls import URL_START_ANCHOR, host_matches_domain
 from discordbot.typings.timeouts import FACEBOOK_PAGE_TIMEOUT_SECONDS
 from discordbot.services.platforms.base import (
-    PlatformOutput,
+    LinkableComments,
     PlatformDownloader,
-    PlatformConversation,
+    LinkableCommentOutput,
     thread_branches,
 )
 from discordbot.services.platforms.page_json import (
@@ -209,7 +209,7 @@ class FacebookURL(BaseModel):
         return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
 
 
-class FacebookOutput(PlatformOutput):
+class FacebookOutput(LinkableCommentOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
     Deliberately one type for both, exactly as `ThreadsOutput` and `InstagramOutput` are: a
@@ -228,12 +228,9 @@ class FacebookOutput(PlatformOutput):
         description="The group the POST was made in, empty for a page post and on every comment",
     )
     share_count: int = Field(default=0, description="Shares the post reports; 0 on a comment")
-    comment_id: str = Field(
-        default="", description="The comment's own numeric id; empty on the post itself"
-    )
 
 
-class FacebookConversation(PlatformConversation[FacebookOutput]):
+class FacebookConversation(LinkableComments[FacebookOutput]):
     """One Facebook post and the discussion under it, shaped like `ThreadsConversation`.
 
     What the three inherited fields mean on Facebook. `chain` always has exactly one element —
@@ -242,26 +239,6 @@ class FacebookConversation(PlatformConversation[FacebookOutput]):
     preloads is a handful of a much longer thread, which is the one thing a caller must not
     present as the whole discussion. `selected_comment_id` is whatever a `?comment_id=` URL named.
     """
-
-    @computed_field
-    @cached_property
-    def selected_comment(self) -> FacebookOutput | None:
-        """The comment the URL singled out, or None when it named none or was not preloaded.
-
-        A named comment that is not on the page is the ordinary miss rather than an error: the
-        page preloads only the first handful, so a link to an old comment resolves to nothing
-        and the caller shows the post alone.
-        """
-        if not self.selected_comment_id:
-            return None
-        return next(
-            (
-                comment
-                for comment in self.comments
-                if comment.comment_id == self.selected_comment_id
-            ),
-            None,
-        )
 
 
 def _text_of(*, value: JsonValue) -> str:

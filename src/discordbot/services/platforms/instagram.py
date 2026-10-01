@@ -43,9 +43,9 @@ from pydantic import Field, BaseModel, computed_field
 from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
 from discordbot.services.platforms.base import (
-    PlatformOutput,
+    LinkableComments,
     PlatformDownloader,
-    PlatformConversation,
+    LinkableCommentOutput,
     thread_branches,
 )
 from discordbot.services.platforms.page_json import (
@@ -156,7 +156,7 @@ class InstagramURL(BaseModel):
         return f"{_CANONICAL_INSTAGRAM_ORIGIN}/{kind}/{match.group('code')}/"
 
 
-class InstagramOutput(PlatformOutput):
+class InstagramOutput(LinkableCommentOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
     Deliberately one type for both, exactly as `ThreadsOutput` is: a caller that walks a
@@ -171,12 +171,9 @@ class InstagramOutput(PlatformOutput):
     author_full_name: str = Field(
         default="", description="The author's display name, which comments do not carry"
     )
-    comment_id: str = Field(
-        default="", description="The comment's own numeric id; empty on the post itself"
-    )
 
 
-class InstagramConversation(PlatformConversation[InstagramOutput]):
+class InstagramConversation(LinkableComments[InstagramOutput]):
     """One Instagram post and the discussion under it, shaped like `ThreadsConversation`.
 
     What the three inherited fields mean on Instagram. `chain` always has exactly one element —
@@ -185,21 +182,6 @@ class InstagramConversation(PlatformConversation[InstagramOutput]):
     that is the WHOLE comment list rather than a preload. `selected_comment_id` is whatever a
     `/c/<id>/` permalink named.
     """
-
-    @computed_field
-    @cached_property
-    def selected_comment(self) -> InstagramOutput | None:
-        """The comment the URL singled out, or None when it named none or it was not on the page."""
-        if not self.selected_comment_id:
-            return None
-        return next(
-            (
-                comment
-                for comment in self.comments
-                if comment.comment_id == self.selected_comment_id
-            ),
-            None,
-        )
 
 
 class InstagramDownloader(PlatformDownloader):

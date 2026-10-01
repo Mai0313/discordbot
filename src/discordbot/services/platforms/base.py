@@ -12,6 +12,10 @@ Three bases, each answering a question that used to be answered once per platfor
 `thread_branches` builds that model's `reply_branches` for a platform whose comments name the one
 they answer.
 
+`LinkableCommentOutput` and `LinkableComments` specialise the last two for a platform whose links
+can name a single comment: the comment's own id, and the lookup that resolves `selected_comment`
+from it.
+
 `raise NotImplementedError` rather than `abc.ABC`: this repo's answer to an unimplemented member
 is a raise, and an ABC would catch only the forgotten override while saying nothing about the
 signature — which is the half that actually drifted. `tests/test_platform_shape.py` is what holds
@@ -151,7 +155,7 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
 
         None here rather than a lookup, because `selected_comment_id` is matched against an id
         the comment carries, and that id is not one of the nine — a platform whose links can
-        address a single comment overrides this and reads its own field.
+        address a single comment builds on `LinkableComments`, which does the lookup.
         """
         return None
 
@@ -170,6 +174,38 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
     def posts(self) -> list[OutputT]:
         """Everything the page yielded: the chain oldest first, then the replies in page order."""
         return [*self.chain, *self.comments]
+
+
+class LinkableCommentOutput(PlatformOutput):
+    """One post or comment on a platform whose links can name a single comment."""
+
+    comment_id: str = Field(
+        default="", description="The comment's own numeric id; empty on the post itself"
+    )
+
+
+class LinkableComments[OutputT: LinkableCommentOutput](PlatformConversation[OutputT]):
+    """A conversation whose URL can single out one of its comments by id."""
+
+    @computed_field
+    @cached_property
+    def selected_comment(self) -> OutputT | None:
+        """The comment the URL singled out, or None when it named none or it was not on the page.
+
+        A named comment missing from the page is the ordinary miss rather than an error: a page
+        that preloads only the first handful resolves a link to an old comment to nothing, and
+        the caller shows the post alone.
+        """
+        if not self.selected_comment_id:
+            return None
+        return next(
+            (
+                comment
+                for comment in self.comments
+                if comment.comment_id == self.selected_comment_id
+            ),
+            None,
+        )
 
 
 def thread_branches[OutputT: PlatformOutput](
