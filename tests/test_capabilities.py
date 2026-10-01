@@ -704,6 +704,18 @@ def test_capabilities_doc_offers_no_plain_reply_as_a_way_to_reach_me() -> None:
     assert not offered, f"capabilities.md offers a plain reply as a trigger: {offered}"
 
 
+def test_capabilities_doc_promises_the_ask_clock_only_where_it_is_kept() -> None:
+    """Only an image or a video asked for on its own is kept inside `/ask`'s window (#845).
+
+    A clip added to an answer and an answer stream that hangs can still outlive the token
+    (#628). This document is the answer model's only account of `/ask`, so a line saying
+    everything else finishes inside the window is the bot promising a bound it does not keep.
+    """
+    assert "everything else i do finishes" not in CAPABILITIES_DOC.lower(), (
+        "capabilities.md promises an /ask bound that only the IMAGE and VIDEO routes keep"
+    )
+
+
 def test_no_command_hides_behind_a_discord_permission() -> None:
     """The premise behind "neither is a Discord role": Discord filters nothing away here.
 

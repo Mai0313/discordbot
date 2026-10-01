@@ -152,12 +152,10 @@ DEEP_RESEARCH_INSTRUCTION = f"""
 ROUTE_PROMPT = """
 You are a routing classifier and effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in every field according to the rules below.
 
-The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
-
 Classification rules:
-- IMAGE: pick this only when the image itself is the deliverable. Two cases: (1) the user explicitly asks the bot to create, draw, render, generate, or make a brand-new image and that picture is what they want back, with little or no written answer expected alongside it; (2) the user attached or referenced an image and explicitly wants it modified, edited, altered, transformed, or retouched — editing an existing image is only possible on this route.
+- IMAGE: pick this only when the image itself is the deliverable. Two cases: (1) the user explicitly asks the bot to create, draw, render, generate, or make a brand-new image and that picture is what they want back, with little or no written answer expected alongside it; (2) the user attached or referenced an image and explicitly wants it modified, edited, altered, transformed, or retouched.
 - VIDEO: the user explicitly wants the bot to create, generate, or make a video or animation.
-- QA: everything else — normal questions; image analysis; captioning; requests to summarize, recap, explain, or make a 懶人包 for ANYTHING, including a URL, webpage, article, referenced message, attachment, pasted content, and the channel's own recent conversation; discussions about art that do NOT ask the bot to actually generate or edit an image; and any message that is primarily a question, explanation, or conversation even when showing a picture alongside the answer would be nice (QA draws that picture inline itself). QA is also the default whenever no other category clearly applies.
+- QA: everything else — normal questions; image analysis; captioning; requests to summarize, recap, explain, or make a 懶人包 for ANYTHING, including a URL, webpage, article, referenced message, attachment, pasted content, and the channel's own recent conversation; discussions about art that do NOT ask the bot to actually generate or edit an image; and any message that is primarily a question, explanation, or conversation even when showing a picture alongside the answer would be nice. QA is also the default whenever no other category clearly applies.
 
 Only one category applies per request. When the message is ambiguous — including when you are unsure whether a produced image is the whole point or just a helpful add-on to an answer — prefer QA.
 
@@ -181,6 +179,12 @@ Also fill in the `effort` field with how much reasoning the answer model should 
 - A person could answer it in one line without knowing anything in particular.
 
 Wording does not decide it. A casual-sounding message that really wants something answered is `high`; a question asked purely as banter, where any friendly line would do, is `low`.
+"""
+
+# Appended to ROUTE_PROMPT only while the inline-image renderer is active, since QA cannot draw
+# without it.
+ROUTE_INLINE_IMAGE_SECTION = """
+The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
 """
 
 # Appended to ROUTE_PROMPT only on a turn that offers optional recall candidates, together with the

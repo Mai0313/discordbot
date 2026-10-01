@@ -110,6 +110,7 @@ from discordbot.cogs.gen_reply.prompts import (
     ROUTE_PROMPT,
     VIDEO_PROMPT,
     ROUTE_RECALL_SECTION,
+    ROUTE_INLINE_IMAGE_SECTION,
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.surface import TurnSurface
@@ -917,7 +918,11 @@ def _classifier(
     *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
-    return RouteClassifier(toolkit=toolkit or cog.toolkit, message=message)
+    return RouteClassifier(
+        toolkit=toolkit or cog.toolkit,
+        message=message,
+        inline_image_enabled=cog.config.inline_image_enabled,
+    )
 
 
 def _streamer(*, message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
@@ -1215,11 +1220,13 @@ def _assert_route_offered(*, cog: ReplyGeneratorCogs, candidates: set[int]) -> N
     (route_input,) = responses.parse_inputs
     if candidates:
         assert responses.parse_text_formats == [RecallRouteClassification]
-        assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_RECALL_SECTION]
+        assert responses.parse_instructions == [
+            ROUTE_PROMPT + ROUTE_INLINE_IMAGE_SECTION + ROUTE_RECALL_SECTION
+        ]
         assert extract_callable_user_ids(request=route_input) == candidates
     else:
         assert responses.parse_text_formats == [RouteClassification]
-        assert responses.parse_instructions == [ROUTE_PROMPT]
+        assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_INLINE_IMAGE_SECTION]
         assert extract_callable_user_ids(request=route_input) == set()
         assert extract_server_memory_block(request=route_input) is None
 
@@ -7795,6 +7802,30 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
     assert set(extract_user_memory_blocks(request=[context.memory_block])) == {1}
 
 
+@pytest.mark.parametrize("inline_image_enabled", [True, False])
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_route_hears_that_qa_draws_only_while_the_answer_can(
+    inline_image_enabled: bool,
+) -> None:
+    """The route is told QA draws inline exactly when the answer is offered the marker (#845).
+
+    With `INLINE_IMAGE_ENABLED` off the answer is never handed `INLINE_IMAGE_INSTRUCTION`, so a
+    route still told QA draws keeps a picture request on a path that cannot make one. With it on
+    the marker also edits the turn's own images, so the route must not hear that editing is the
+    IMAGE route's alone either.
+    """
+    cog = _cog()
+    cog.config.inline_image_enabled = inline_image_enabled
+
+    await _run_pipeline(
+        cog=cog, message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    )
+
+    (instructions,) = _recorded(cog).responses.parse_instructions
+    assert ("inline" in instructions) is inline_image_enabled
+    assert "only possible on this route" not in instructions
+
+
 @pytest.mark.parametrize(
     ("seeded_ids", "server_nick", "mentions", "picks", "present", "absent"),
     [
@@ -8225,7 +8256,7 @@ async def test_the_route_reads_neither_memory_block_without_candidates() -> None
 
     responses = _recorded(cog).responses
     assert responses.parse_text_formats == [RouteClassification]
-    assert responses.parse_instructions == [ROUTE_PROMPT]
+    assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_INLINE_IMAGE_SECTION]
     assert responses.parse_inputs == [[*_ROUTE_REFERENCE, *_ROUTE_CURRENT]]
     assert type(route) is RouteClassification
     assert route.effort == "low"
@@ -8259,7 +8290,10 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last()
 
     responses = _recorded(cog).responses
     assert responses.parse_text_formats == [RecallRouteClassification] * 2
-    assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_RECALL_SECTION] * 2
+    assert (
+        responses.parse_instructions
+        == [ROUTE_PROMPT + ROUTE_INLINE_IMAGE_SECTION + ROUTE_RECALL_SECTION] * 2
+    )
     candidate_block = render_callable_users_block(allowed=candidates)
     assert responses.parse_inputs == [
         [_ROUTE_SERVER_MEMORY, *_ROUTE_REFERENCE, *_ROUTE_CURRENT, candidate_block],

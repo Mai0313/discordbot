@@ -267,7 +267,11 @@ class ReplyPipeline(BaseModel):
         link_tasks: dict[str, LinkTask] = {}
         link_context_deadline: float | None = None
         context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
-        classifier = RouteClassifier(toolkit=self.toolkit, message=message)
+        classifier = RouteClassifier(
+            toolkit=self.toolkit,
+            message=message,
+            inline_image_enabled=self.config.inline_image_enabled,
+        )
         try:
             with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
