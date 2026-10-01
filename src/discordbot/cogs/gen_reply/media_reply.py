@@ -5,15 +5,11 @@ error path; everything after delivery is best-effort and must leave the picture 
 screen whatever happens. The persona reply itself lives in `answer.py`, since it is the same act
 as any other streamed reply.
 
-They share a second thing, which only `/ask` made visible (#619). Both generations can outlast the
-surface they were going to answer through: the omni render bounds a whole edit at
-`VIDEO_RENDER_TIMEOUT_SECONDS` plus a `FILES_READY_TIMEOUT_SECONDS` at each end, and the image
-render carries no bound of its own at all beyond the proxy client's, which it can spend twice on
-the empty-payload retry with `PROMPT_REFINE_TIMEOUT_SECONDS` in front. Against a channel that
-costs nothing; against an interaction token it costs the entire turn, because the delivery and
-the failure notice both go through it and both 404 together. So each generation runs inside
-`TurnSurface.delivery_budget_seconds`, which is None on the gateway path and leaves the routes
-exactly as they were there.
+They share a second thing: either generation can outlast the surface it was going to answer
+through. Against a channel that costs nothing; against an interaction token it costs the entire
+turn, because the delivery and the failure notice both go through it and both 404 together.
+So each generation runs inside `TurnSurface.delivery_budget_seconds`, which is None on the
+gateway path and adds no bound there.
 """
 
 import time

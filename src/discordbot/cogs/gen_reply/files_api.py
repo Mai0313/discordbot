@@ -16,8 +16,8 @@ status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answ
 upload is made of. They decide nothing: each raises the SDK's own error (the poll also a
 `TimeoutError` for a read past the bound its caller set), and what a missing resource name, a
 file still PROCESSING at the bound, or a failure costs is the caller's call.
-`upload_to_files_api` serves the callers with no later reference to re-poll from (linked-post
-media, a generated clip handed to its persona reply), so it bounds the whole transfer and gives up.
+`upload_to_files_api` serves a caller with no later reference to re-poll from, so it bounds the
+whole transfer and gives up.
 """
 
 import io
@@ -38,10 +38,10 @@ from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 # fetching bytes Google would reject. It is the provider's limit, not a policy of ours.
 FILES_API_MAX_BYTES = 2 * 1024**3
 
-# Caps concurrent link-media uploads across all in-flight pipelines. Deliberately NOT the
-# attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can hold its
-# slot for minutes, which would starve the ordinary per-message attachment renders that share
-# that pool. Small on purpose — these uploads are large and few.
+# Caps concurrent `upload_to_files_api` transfers across all in-flight pipelines. Deliberately
+# NOT the attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can
+# hold its slot for minutes, which would starve the ordinary per-message attachment renders that
+# share that pool. Small on purpose — these uploads are large and few.
 LINK_MEDIA_UPLOAD_CONCURRENCY = 2
 
 link_media_upload_semaphore = LoopLocalSemaphore(

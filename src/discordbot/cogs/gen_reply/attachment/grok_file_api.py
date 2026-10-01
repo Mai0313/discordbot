@@ -82,11 +82,11 @@ class GrokFileUploader(FileUploadRenderer):
         """The xAI SDK client for direct Files API uploads, built lazily.
 
         Reaches xAI's own host rather than the proxy base url, since LiteLLM refuses to route a
-        file upload to xai. Built inside this module rather than via a shared factory while the
-        renderer is still disabled in `select.py`, like the Anthropic uploader's client. Unlike
-        that one, an empty key fails here rather than at the request: the constructor raises
-        `ValueError`, so `_upload_file` resolves the client before the upload call to keep a
-        missing key from being logged as an upload failure.
+        file upload to xai. Built in this module, which the bot never imports while `select.py`
+        keeps the renderer disabled, so `xai-sdk` stays out of the live request path. Unlike the
+        Anthropic uploader's client, an empty key fails here rather than at the request: the
+        constructor raises `ValueError`, so `_upload_file` resolves the client before the upload
+        call to keep a missing key from being logged as an upload failure.
 
         Returns:
             An xAI client reused across uploads.

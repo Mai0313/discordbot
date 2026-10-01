@@ -37,10 +37,8 @@ if TYPE_CHECKING:
 class AttachmentSource(BaseModel):
     """One renderable attachment source classified from message metadata.
 
-    Collected once per message and shared by the text-only marker render, the
-    Files-API upload, the per-message render cache key, and the IMAGE route's
-    raw-bytes path. Carries only metadata (no bytes, no network) so it is safe to
-    build on the route critical path.
+    Collected once per message and shared by every render of it. Carries only metadata (no
+    bytes, no network) so it is safe to build on the route critical path.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -90,9 +88,9 @@ class MessageInputBuilder(BaseModel):
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
     # time, so an edit or a late embed unfurl that swaps a URL without changing the
-    # source count still re-renders. Each entry pairs the files' real expiry (the earliest
-    # Gemini `expiration_time` across the rendered parts) with the parts, so a handle is
-    # re-uploaded just before it actually expires instead of on a guessed fixed TTL.
+    # source count still re-renders. Each entry pairs the parts with the earliest expiry among
+    # them (the provider's own for an uploaded file), so a handle is re-uploaded just before it
+    # actually expires instead of on a guessed fixed TTL.
     _attachment_cache: OrderedDict[
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
@@ -619,11 +617,10 @@ class MessageInputBuilder(BaseModel):
 
         A sticker is named rather than called an image: it renders through the image path like
         any other, but the marker is all a text-only reader gets, and "image" makes a pure
-        reaction indistinguishable from a screenshot someone needs read. That cost the effort
-        grade 18 of 20 on a sticker-only message, and naming it takes the same message to 20 of
-        20 `low` with no prompt change (#493). The route reads the same marker and does not move
-        on it: `ROUTE_PROMPT`'s IMAGE branch keys on "an image", yet an edit request over a
-        sticker measured IMAGE 20 of 20 under either spelling.
+        reaction indistinguishable from a screenshot someone needs read, which costs a
+        sticker-only message its `low` effort grade. The route reads the same marker and does not
+        move on it: `ROUTE_PROMPT`'s IMAGE branch keys on "an image", yet an edit request over a
+        sticker routes to IMAGE under either spelling.
         """
         content = await self.get_cleaned_content(message=message)
         markers: list[ResponseInputTextParam] = [

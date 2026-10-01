@@ -767,11 +767,6 @@ class ResponseStreamer(BaseModel):
             memory_lookups=self.memory_lookups.total,
             chunked=chunked,
         )
-        # The pending note is chrome the bot added, not something it said, so it must not reach
-        # the caller: this return value becomes `full_reply`, which is the transcript the memory
-        # reviewer reads back and the text every later history render carries. `USAGE_FOOTER_RE`
-        # cannot take it out downstream either, since the note sits BEFORE the ⬆⬇ line and that
-        # regex only reaches what follows it.
         return self._without_added_lines(text=self.stored_content)
 
     def _without_memory_note(self, *, text: str) -> str:
@@ -781,12 +776,12 @@ class ResponseStreamer(BaseModel):
         return text.replace(f"\n{self._memory_note}", "", 1)
 
     def _without_added_lines(self, *, text: str) -> str:
-        """Returns `text` with every line the bot added to the reply removed.
+        """Returns `text` without the memory note and the dropped-media hint line.
 
         Both are chrome rather than something the answer said, and both have to go before the
-        text becomes `full_reply`: that string is the transcript the memory reviewer reads back,
-        the `/ask` turn the store replays, and every later history render. `USAGE_FOOTER_RE`
-        reaches neither, since both sit before the ⬆⬇ line rather than after it.
+        text becomes `full_reply`: that string is the transcript the memory reviewer reads back
+        and the `/ask` turn the store replays. `USAGE_FOOTER_RE` reaches neither, since both sit
+        before the ⬆⬇ line rather than after it.
         """
         stripped = self._without_memory_note(text=text)
         if not self._hint_line:
@@ -928,7 +923,7 @@ class ResponseStreamer(BaseModel):
         Best-effort: a skip (not requested / disabled / empty) is silent, while a
         requested-but-failed clip (timeout / refusal) hints the source message and returns None.
         The upload-limit decision (attach vs host vs drop) is made by `_attach_generated_media`,
-        so an oversized clip is no longer dropped here (there is deliberately no spoken-length cap).
+        so an oversized clip is not dropped here (there is deliberately no spoken-length cap).
         """
         if not self.markers.voice_requested:
             # The expected common path: the answer model wrapped no <generate-voice> segment.
@@ -993,7 +988,7 @@ class ResponseStreamer(BaseModel):
         Best-effort like voice: no request or a disabled generator is silent. The capped prompts
         render concurrently; a generation failure drops that image and a single ⚠️ hint rides on
         the source message. The upload-limit decision (attach vs host) is left to
-        `_attach_generated_media`, so a large image is no longer dropped here for size. The uploaded
+        `_attach_generated_media`, so a large image is not dropped here for size. The uploaded
         source images (for editing) are awaited from the shared `source_images_task` so an inline
         `<generate-image>` and `<generate-video>` in the same reply load them only once; only the raw
         bytes are used here (the edit path needs no mime).

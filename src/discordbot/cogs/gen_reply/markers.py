@@ -16,8 +16,7 @@ video content are meant to be pulled.
 The memory tags (`<write-memory>`, `<forget-memory>`, `<write-server-memory>`) are pulled the same
 way and carry one plain sentence each: what to remember about the person being replied to, what
 they no longer want remembered, or what to remember about the community. They are the answer
-model's half of the memory write path, replacing the separate extraction pass that used to re-read
-the conversation afterwards (#596). Nothing here decides WHOSE memory is written or which
+model's half of the memory write path. Nothing here decides WHOSE memory is written or which
 compartment it lands in: the scope comes from the message's author and guild in `answer.py`, so a
 marker body can never name one.
 
@@ -274,11 +273,10 @@ def scrub_markers_for_preview(*, text: str) -> str:
     that is a prefix of any marker tag (`<generate-imag`, `</generate-voic`, ...) is trimmed so a
     half-streamed tag never flickers.
 
-    This walks `_PULLED`, i.e. the same order extraction uses, which the preview did not always
-    do: a marker open nested inside another marker's complete block (malformed output — the
-    model never writes it) used to survive here and vanish at extraction, so the preview flashed
-    text the finished reply then dropped. Sharing the order is what makes the preview agree with
-    the reply.
+    This walks `_PULLED`, the same order extraction uses, which is what makes the preview agree
+    with the reply: a marker open nested inside another marker's complete block (malformed
+    output) is hidden here exactly when extraction drops it, so the preview never flashes text
+    the finished reply then loses.
     """
     cleaned = text
     for marker in _PULLED:

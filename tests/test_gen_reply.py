@@ -5680,7 +5680,7 @@ class _NeverFinishes:
 
 
 async def test_a_video_outliving_the_ask_window_says_so_instead_of_hanging() -> None:
-    """Out of surface before out of work, the route stops while it can still be heard (#619).
+    """Out of surface before out of work, the route stops while it can still be heard.
 
     The render is left running rather than made to fail: what is pinned here is that the route
     gives up on it. A clip that lands after the interaction token dies is delivered into a 404,
@@ -7775,7 +7775,7 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
         ([], None, [], ["42"], [], ["📖"]),
         # Nobody present is nameable and the route picked a table-only member: the footer has
         # no name to print, so it reports the bare count. Only reachable because the optional
-        # offer is not gated on a deterministic memory existing (#663).
+        # offer is not gated on a deterministic memory existing.
         ([42], (42, "Boss", "李董"), [], ["42"], ["\n-# 📖 讀了 1 人的記憶"], []),
     ],
     ids=[

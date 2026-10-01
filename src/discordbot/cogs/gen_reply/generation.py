@@ -1,41 +1,8 @@
-"""Media-generation services: the image, voice, video, and music render calls behind one shape.
+"""Media-generation services: the prompt director and the image, voice, video and music renders.
 
-All runtime media generators are BaseModel services held as `ReplyToolkit` `cached_property`s, so
-every media render goes through the same calling convention instead of a half-free-function /
-half-class mix:
-
-- `PromptGenerator` is the upstream prompt director shared by the router IMAGE and VIDEO routes:
-  `refine` expands a thin user request into one rich, self-contained generation prompt with the
-  grounding tools (so a vague "draw the heroine of some anime" is looked up first), best-effort and
-  gated per-route by `IMAGE_REFINE_PROMPT_ENABLED` / `VIDEO_REFINE_PROMPT_ENABLED`. It runs on the
-  proxy like the answer model. The QA-route inline
-  `<generate-image>` marker does NOT refine (its description is already written by the answer model).
-- `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
-  is the raising primitive shared by the router IMAGE route and the best-effort inline path (both
-  edit source pixels when the message carried an image); `generate` is the QA-route
-  `<generate-image>` marker's best-effort wrapper (timeout, None on any failure) so a slow inline
-  render never blocks anything but its own reply.
-- `VoiceGenerator` runs the text-to-speech model on the same LiteLLM proxy (`AsyncOpenAI`) as the
-  image generator. Kept on the proxy on purpose: TTS has many interchangeable providers, so the
-  one-SDK proxy path stays the most portable, unlike the omni video and Lyria music renders
-  below, which can only go direct.
-  `generate` is best-effort but returns a `VoiceClip` carrying a `VoiceOutcome`
-  (OK / EMPTY / TIMEOUT / ERROR) rather than a bare None, so the caller can hint a timeout (⏱️)
-  apart from any other failure (⚠️). The `speechify_discord_markup` helper that prepares its spoken
-  input lives alongside it.
-- `VideoGenerator` runs the native-omni render behind the VIDEO route DIRECT to Google
-  (`genai.Client`, the Interactions API is Gemini-only, not reachable via the proxy). One model
-  (`interactions.create`) backs text / reference-image / source-video generation: a `source_video`
-  is pinned to `task="edit"` while everything else omits the task so omni infers the mode
-  (image_to_video / reference_to_video / text_to_video). `render` is the raising primitive for the
-  VIDEO route; `generate` is its best-effort twin for the QA-route `<generate-video>` marker (None on
-  any failure), mirroring `ImageGenerator`.
-- `MusicGenerator` runs the native-Lyria render behind the QA-route `<generate-music>` marker via the
-  Gemini Interactions API, also DIRECT to Google. Like `ImageGenerator.generate` it is best-effort
-  only (`generate`, None on any failure), since music is inline-only.
-
-Keeping them here means a future provider swap (or a move of a render off the proxy) changes
-one place.
+Each is a BaseModel service held as a `ReplyToolkit` `cached_property`, so every media render
+goes through one calling convention, and a provider swap (or a move of a render off the proxy)
+changes one place.
 """
 
 import re
@@ -326,7 +293,7 @@ class PromptGenerator(BaseModel):
         ..., description="Shared LiteLLM-proxy client used for the refinement call."
     )
     prompt_model: ModelSettings = Field(
-        ..., description="Model settings for the prompt director (flash + high + grounding)."
+        ..., description="Model settings for the prompt director, which needs the grounding tools."
     )
 
     async def refine(
@@ -399,10 +366,12 @@ class PromptGenerator(BaseModel):
 class VoiceGenerator(BaseModel):
     """Best-effort text-to-speech for spoken replies through the LiteLLM proxy.
 
-    Holds the shared async client; `generate` renders one reply with the fixed `TTS_*` voice
-    config to a `VoiceClip` carrying the WAV bytes (when produced) plus an outcome
-    (OK / EMPTY / TIMEOUT / ERROR), so the caller both degrades to a text reply and can hint
-    why the clip is missing (a timeout vs. any other provider error, e.g. a policy refusal).
+    Kept on the proxy on purpose: TTS has many interchangeable providers, so the one-SDK proxy
+    path stays the most portable, unlike the omni video and Lyria music renders, which can only
+    go direct. `generate` renders one reply with the fixed `TTS_*` voice config to a `VoiceClip`
+    carrying the WAV bytes (when produced) plus an outcome (OK / EMPTY / TIMEOUT / ERROR), so
+    the caller both degrades to a text reply and can hint why the clip is missing (a timeout
+    vs. any other provider error, e.g. a policy refusal).
 
     The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it fixes the voice age/gender and lets
     the tone follow the reply's own wording), prepended to the input text because the proxy's
@@ -499,10 +468,10 @@ class _InteractionResult(Protocol):
     trap: `google.genai.interactions` star-imports `Interaction` from both the request-union
     alias (which carries none of these attributes) and the response module, and only the
     runtime import order makes the response class win. `ty` resolves it to the response class,
-    so a nominal `cast("Interaction", ...)` is no longer wrong there, merely fragile: its
-    meaning rests on that import order, while this Protocol pins the attributes actually read.
-    That the collision is real rather than theoretical was demonstrated by mypy, which bound
-    the request union before it was dropped in #356; no checker in the tree will show it again.
+    so a nominal `cast("Interaction", ...)` is not wrong there, merely fragile: its meaning rests
+    on that import order, while this Protocol pins the attributes actually read. The collision
+    is real rather than theoretical, since a checker can bind the request union instead, and no
+    checker in the tree will show it.
     """
 
     @property
@@ -554,25 +523,19 @@ class VideoGenerator(BaseModel):
         Gemini-only). A `source_video` is uploaded to the Files API and edited in place with an
         explicit `task="edit"`; otherwise the task is omitted and omni infers image_to_video /
         reference_to_video / text_to_video from the prompt plus any input images (up to
-        `MAX_VIDEO_REFERENCE_IMAGES`, each carrying its real mime type — omni 400s an image content
-        block whose mime is empty, "Unsupported MIME type: "). 16:9 is sent only for pure text (an
-        edit keeps the source clip's ratio, and an image request may become image_to_video, which
-        follows the source frame's ratio, so no aspect ratio is sent there); `delivery="uri"` so the
+        `MAX_VIDEO_REFERENCE_IMAGES`). 16:9 is sent only for pure text; `delivery="uri"` so the
         clip comes back as a Files URI (no base64 bloat) and is downloaded with a bounded retry
-        (`_download_output_video`):
-        the file can still be finalizing when the interaction reports `completed`, so a larger clip's
-        first download may fail and is retried until it lands. Duration is
-        left to omni's default. Raises `RuntimeError` when the interaction is not `completed` or
-        carries no video, folding in `status` + `output_text` (omni signals a soft refusal /
-        incomplete / budget_exceeded that way; the `Interaction` has no `error` / `rai_*` field).
+        (`_download_output_video`). Duration is left to omni's default. Raises `RuntimeError`
+        when the interaction is not `completed` or carries no video, folding in `status` +
+        `output_text` (omni signals a soft refusal / incomplete / budget_exceeded that way; the
+        `Interaction` has no `error` / `rai_*` field).
         """
         text = prompt or "Generate a video from the message content."
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
-        # A source-video edit is the one task we still pin: with task omitted, omni infers the mode
+        # A source-video edit is the one task pinned: with task omitted, omni infers the mode
         # (image_to_video vs reference_to_video vs text_to_video) from the prompt + input media,
-        # which follows the #317 "hand the raw request over and let the model decide" direction and
-        # covers image_to_video without a brittle image-count heuristic. If a future deployment finds
-        # the inferred mode underwhelming (e.g. a lone image not animated in place), pin it back here.
+        # which covers image_to_video without a brittle image-count heuristic. If the inferred
+        # mode underwhelms (e.g. a lone image not animated in place), pin it here.
         generation_config: GenerationConfigParam | None = None
         task_label: str
         # 16:9 is the generation default we keep for pure text; it is omitted when images are present

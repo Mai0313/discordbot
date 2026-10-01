@@ -124,16 +124,15 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
 
 
 def test_to_interactions_input_sends_inlined_bytes_as_data_not_as_a_uri() -> None:
-    """With the Files API off every attachment arrives inlined, and both halves used to break.
+    """With the Files API off every attachment arrives inlined, and both halves must still land.
 
     `file_api_enabled=false` selects `InlineRenderer` for every provider, Gemini included, and
     it renders a base64 `data:` URI wherever the Files API path renders an https one. The two
     settings are independent — `use_interactions` never consults `file_api_enabled` — so a
     YouTube link plus an attachment reaches here inlined.
 
-    The image went out in `uri`, which the SDK documents as a URI for the server to fetch, and
-    the PDF was read from neither of the two fields it can arrive in, so it was dropped without
-    a record anywhere (#661).
+    The image must not go out in `uri`, which the SDK documents as a URI for the server to
+    fetch, and the PDF arrives only in `file_data`, a field the Files API path never fills.
     """
     png = "data:image/png;base64,iVBORw0KGgo="
     pdf = "data:application/pdf;base64,JVBERi0xLjQK"
@@ -198,9 +197,8 @@ def test_to_interactions_input_never_demotes_an_unusable_data_uri_to_a_uri(
 ) -> None:
     """An inlined reference with nothing to send is dropped, never put in `uri`.
 
-    Recognising one exact shape and falling through on everything else puts the odd one back in
-    the field the server fetches from, which is #661 again through a narrower door — and worse
-    than before, since the empty case used to be dropped.
+    Recognising one exact shape and falling through on everything else would put the odd one
+    back in the field the server fetches from.
     """
     parts = _inlined_image_parts(reference=reference)
 
