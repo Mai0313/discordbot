@@ -465,21 +465,26 @@ async def test_a_blackjack_lobby_in_a_channel_the_bot_was_shut_out_of_still_deal
 
 
 @pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
+@pytest.mark.parametrize(argnames="last", argvalues=["start", "hit"])
 async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_through_its_last_press(
-    monkeypatch: pytest.MonkeyPatch, expired: bool
+    monkeypatch: pytest.MonkeyPatch, last: str, expired: bool
 ) -> None:
     """A timeout has no press of its own, so it renders and deletes through the last one.
 
-    Once that press's token has expired only the channel is left, whose refusal is expected
-    and so carries no traceback.
+    That is the start itself when nobody pressed after it. Once that press's token has expired
+    only the channel is left, whose refusal is expected and so carries no traceback.
     """
     # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
     message = await _start_in_a_shut_out_channel(monkeypatch=monkeypatch, dealt=[])
     table = message.edits[-1]["view"]
     assert isinstance(table, BlackjackView)
-    hit = _alice_press(message=message)
-    await attached_button(view=table, custom_id="bj:hit").callback(as_interaction(fake=hit))
-    hit.expired = expired
+    if last == "start":
+        press = cast("FakeInteraction", table.last_press)
+        assert press.edits[0]["view"] is table, "the start press dealt the table"
+    else:
+        press = _alice_press(message=message)
+        await attached_button(view=table, custom_id="bj:hit").callback(as_interaction(fake=press))
+    press.expired = expired
     scheduled: list[tuple[object, object]] = []
     monkeypatch.setattr(
         "discordbot.cogs.games.interactions.schedule_public_message_delete",
@@ -493,8 +498,8 @@ async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_t
     await table.on_timeout()
     await table.wait_for_background_tasks()
 
-    assert (hit.edits[-1]["view"] is None) is not expired, "the settled table landed via the hit"
-    assert scheduled == [(message, hit)], "the delete rides the same press"
+    assert (press.edits[-1]["view"] is None) is not expired, "the settled table landed via it"
+    assert scheduled == [(message, press)], "the delete rides the same press"
     assert [(level, "_exc_info" in fields) for level, fields in reports] == (
         [("warn", False), ("warn", False)] if expired else []
     )

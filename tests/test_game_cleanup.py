@@ -27,6 +27,7 @@ from tests.helpers.casting import (
     make_forbidden,
     make_not_found,
     make_server_error,
+    make_invalid_webhook_token,
 )
 from tests.helpers.discord_mocks import FakeInteraction
 
@@ -381,10 +382,11 @@ async def test_a_refused_delete_is_reported_without_a_traceback(
         (False, None, True, []),
         (True, None, False, []),
         (False, make_not_found(), False, [("info", False)]),
+        (False, make_invalid_webhook_token(), False, [("info", False)]),
         (False, make_forbidden(message="Missing Access"), False, [("warn", False)]),
         (False, make_server_error(), False, [("warn", True)]),
     ],
-    ids=["live", "expired", "token_404", "token_refused", "token_broke"],
+    ids=["live", "expired", "token_404", "token_401", "token_refused", "token_broke"],
 )
 async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
     monkeypatch: pytest.MonkeyPatch,

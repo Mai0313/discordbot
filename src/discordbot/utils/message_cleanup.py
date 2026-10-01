@@ -195,14 +195,15 @@ async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage
 def report_press_failure(error: HTTPException, message: Message, action: str) -> None:
     """Logs a press's token failing to `action` a public message, before the channel is tried.
 
-    A 404 is a message already gone or one the token cannot reach, which the channel attempt
-    tells apart and reports; a 403 is a refusal whose code is the whole finding. Anything else
-    keeps its traceback.
+    A 404 is a message already gone or one the token cannot reach, and a 401 a token past its
+    life, which Discord answers in either form; the channel attempt tells those apart and
+    reports. A 403 is a refusal whose code is the whole finding. Anything else keeps its
+    traceback.
     """
     text = f"A press could not {action} a public message; trying the channel"
     message_id = getattr(message, "id", None)
     channel_id = getattr(getattr(message, "channel", None), "id", None)
-    if isinstance(error, NotFound):
+    if isinstance(error, NotFound) or error.status == 401:
         logfire.info(text, message_id=message_id, channel_id=channel_id, code=error.code)
     elif isinstance(error, Forbidden):
         logfire.warn(text, message_id=message_id, channel_id=channel_id, code=error.code)

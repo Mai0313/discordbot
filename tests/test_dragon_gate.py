@@ -55,6 +55,7 @@ from tests.helpers.casting import (
     make_forbidden,
     make_not_found,
     make_server_error,
+    make_invalid_webhook_token,
 )
 from tests.helpers.economy import seed_balance, get_jackpot_pool
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
@@ -480,10 +481,11 @@ async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
     argnames=("failure", "report"),
     argvalues=[
         (make_not_found(message="Unknown Webhook"), ("info", False)),
+        (make_invalid_webhook_token(), ("info", False)),
         (make_forbidden(message="Missing Access"), ("warn", False)),
         (make_server_error(), ("warn", True)),
     ],
-    ids=["token_404", "token_refused", "token_broke"],
+    ids=["token_404", "token_401", "token_refused", "token_broke"],
 )
 async def test_a_final_render_the_press_cannot_make_goes_through_the_channel(
     monkeypatch: pytest.MonkeyPatch, failure: HTTPException, report: tuple[str, bool]
@@ -1407,42 +1409,75 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
 
 
 @pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
+@pytest.mark.parametrize(argnames="last", argvalues=["start", "bet", "direction", "leave"])
 async def test_a_dragon_gate_table_left_to_time_out_in_a_shut_out_channel_closes_through_its_last_press(
-    monkeypatch: pytest.MonkeyPatch, expired: bool
+    monkeypatch: pytest.MonkeyPatch, last: str, expired: bool
 ) -> None:
-    """A timeout has no press of its own, so it renders and deletes through the last bet's.
+    """A timeout has no press of its own, so it renders and deletes through the last one.
 
-    Once that bet's token has expired only the channel is left, which refuses the render.
+    Whichever control that press was, the start included. Once its token has expired only the
+    channel is left, which refuses the render.
     """
-    alice = _participant(user_id=1, display_name="Alice")
-    round_state = DragonGateRound.from_participants(
-        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[alice]
-    )
-    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
+    owner = _participant(user_id=1, display_name="Alice")
+    bob = _participant(user_id=2, display_name="Bob")
+    state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
     scheduled: list[object] = []
     monkeypatch.setattr(
         "discordbot.cogs.games.interactions.schedule_public_message_delete",
         lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
     )
+
+    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
+        """Seats Bob."""
+        del interaction
+        return bob
+
+    async def refresh_participants(
+        participants: list[GameParticipant],
+    ) -> RefreshParticipantsResult:
+        """Leaves all participants seated for lobby start."""
+        return RefreshParticipantsResult(participants=participants)
+
     message = FakeDiscordMessage()
     message.edit_failure = make_forbidden(message="Missing Access")
-    view = DragonGateView(
-        round_state=round_state,
-        owner=alice,
-        jackpot_snapshot=state.jackpot,
-        final_balances={1: 1_000_000},
+    lobby = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
+        prepare_participant=cast("PrepareParticipant", prepare_participant),
+        refresh_participants=refresh_participants,
+        initial_jackpot=state.jackpot,
     )
-    view.message = as_message(fake=message)
-    view.sync_controls()
-    bet = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
-    await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=bet))
-    bet.expired = expired
+    lobby.message = as_message(fake=message)
+    buttons = {getattr(child, "label", ""): child for child in lobby.children}
+    await buttons["加入"].callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
+    press = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    await buttons["開始"].callback(as_interaction(fake=press))
+    table = message.edits[-1]["view"]
+    assert isinstance(table, DragonGateView)
+    if last != "start":
+        press = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        await table._handle_bet_choice(choice="min", interaction=as_interaction(fake=press))
+    # Bob's gate is the filler's pair of twos, so he calls it before he may bet.
+    if last == "direction":
+        press = FakeInteraction(user=FakeUser(user_id=2), message=message, custom_id="dg:higher")
+        await attached_button(view=table, custom_id="dg:higher").callback(
+            as_interaction(fake=press)
+        )
+    elif last == "leave":
+        press = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        await attached_button(view=table, custom_id="dg:leave").callback(
+            as_interaction(fake=press)
+        )
+    assert press.edits[-1]["view"] is table, "the table is still open"
+    press.expired = expired
 
-    await view.on_timeout()
+    await table.on_timeout()
 
-    assert (bet.edits[-1]["view"] is None) is not expired, "the settled table landed via the bet"
-    assert scheduled == [bet], "the delete rides the same press"
+    assert (press.edits[-1]["view"] is None) is not expired, "the settled table landed via it"
+    assert scheduled == [press], "the delete rides the same press"
 
 
 def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:

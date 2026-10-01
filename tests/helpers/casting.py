@@ -130,6 +130,18 @@ def make_invalid_form_body() -> HTTPException:
     )
 
 
+def make_invalid_webhook_token() -> HTTPException:
+    """Builds the 401 ``Invalid Webhook Token`` (code 50027) an expired interaction token gets.
+
+    nextcord has no subclass for a 401, so it raises the plain ``HTTPException``. Same shape as
+    `make_invalid_form_body`.
+    """
+    response = cast("ClientResponse", SimpleNamespace(status=401, reason="Unauthorized"))
+    return HTTPException(
+        response=response, message={"code": 50027, "message": "Invalid Webhook Token"}
+    )
+
+
 def make_server_error(message: str = "upstream") -> HTTPException:
     """Builds the plain ``HTTPException`` nextcord raises when Discord itself is failing.
 
