@@ -521,6 +521,9 @@ async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(
 
     # The controls going dead, the peek's two frames, and the settled table.
     assert len(message.edits) == 4
+    hidden, revealed = (cast("str", edit["embeds"][0].description) for edit in message.edits[1:3])
+    assert "🂠" in hidden, "the peek shows the hole card face down first"
+    assert "🂠" not in revealed
     assert message.edits[-1]["view"] is None
 
 

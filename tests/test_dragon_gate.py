@@ -865,6 +865,7 @@ async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_play
         )
     )
     assert message.edits[-1]["view"] is None, "the last leave settled the table"
+    assert table.is_finished(), "the settled table stopped taking presses"
 
 
 async def test_dragon_gate_view_pair_choice_bet_settles_immediately(

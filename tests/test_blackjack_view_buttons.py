@@ -921,6 +921,35 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: list[obj
     assert scheduled_cleanups == [message]
 
 
+async def test_a_five_card_twenty_one_still_waits_for_the_dealer_to_play(
+    scheduled_cleanups: list[object],
+) -> None:
+    """過五關 wins whatever the dealer holds, except at 21, where the dealer still plays.
+
+    The dealer's 16 draws to 21, so the hand pushes and only the five-card bonus is paid.
+    """
+    await seed_balance(user_id=1, name="alice", amount=1_000)
+    round_state = _round_with_two_cards(
+        player_cards=[
+            Card(rank="2", suit="♠"),
+            Card(rank="3", suit="♥"),
+            Card(rank="4", suit="♣"),
+            Card(rank="5", suit="♦"),
+            Card(rank="7", suit="♠"),
+        ],
+        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="6", suit="♦")],
+        player=seat(bet=100, balance_at_start=1_000),
+    )
+    round_state.shoe = [Card(rank="5", suit="♣")]
+    view = _make_view(round_state=round_state)
+
+    await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
+    await view.wait_for_background_tasks()
+
+    assert [str(card) for card in round_state.dealer] == ["10♣", "6♦", "5♣"]
+    assert await get_balance(user_id=1) == 1_100
+
+
 async def test_blackjack_view_dealer_hits_soft_17(scheduled_cleanups: list[object]) -> None:
     """Soft 17 forces a hit under the H17 rule."""
     await seed_balance(user_id=1, name="alice", amount=100)
@@ -994,6 +1023,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     )
     await settlement_started.wait()
 
+    assert view.is_finished(), "the view stopped taking presses before it settled"
     assert len(message.edits) == 1
     in_flight_view = cast("BlackjackView", message.edits[0]["view"])
     assert all(child.disabled for child in in_flight_view.children if isinstance(child, Button))

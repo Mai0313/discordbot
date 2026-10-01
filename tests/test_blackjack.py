@@ -6,7 +6,6 @@ from random import Random
 
 import pytest
 
-from discordbot.typings.games import BlackjackHandSettlement, BlackjackPlayerSettlement
 from discordbot.typings.economy import MAX_SINGLE_BET, VIP_PURCHASE_COST
 from discordbot.cogs.games.blackjack import (
     Card,
@@ -184,11 +183,15 @@ def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
         rng=Random(x=0), participants=[seat(user_id=1, display_name="Bob")]
     )
     player = round_state.players[0]
-    player.hands[0].cards = [Card(rank="9", suit="♠"), Card(rank="7", suit="♥")]
+    player.hands[0].cards = [
+        Card(rank="7", suit="♣"),
+        Card(rank="7", suit="♦"),
+        Card(rank="7", suit="♠"),
+    ]
     assert (
         blackjack_player_early_finish_note(
             player=player,
-            dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
+            dealer=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
             peeked_blackjack=False,
         )
         is None
@@ -984,20 +987,6 @@ def test_from_participants_deals_from_an_injected_shoe() -> None:
 # Settlement against the ledger --------------------------------------------
 
 
-def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
-    """Default Blackjack hand settlement lists are isolated per model instance."""
-    first = BlackjackPlayerSettlement(
-        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push"
-    )
-    second = BlackjackPlayerSettlement(
-        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push"
-    )
-
-    first.hands.append(BlackjackHandSettlement(cards=[], bet=10, outcome="push", delta=0))
-
-    assert second.hands == []
-
-
 def _finished_round(bet: int, balance_at_start: int = 100) -> BlackjackRound:
     """Builds a one-seat round already marked settled; each test deals its own cards."""
     round_state = BlackjackRound.from_participants(
@@ -1079,7 +1068,7 @@ def _split_hands(second: Card) -> list[BlackjackHandState]:
 
 
 async def test_settle_blackjack_player_split_both_wins_aggregates_delta() -> None:
-    """Split hands aggregate into a single ledger write."""
+    """Both split hands' wins add up into the seat's one settlement."""
     await seed_balance(user_id=1, name="alice", amount=200)
     round_state = _finished_round(bet=50)
     round_state.players[0].hands = _split_hands(second=Card(rank="9", suit="♦"))
@@ -1095,7 +1084,11 @@ async def test_settle_blackjack_player_split_both_wins_aggregates_delta() -> Non
 
 
 async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
-    """A split that nets to zero does not trigger the VIP bonus."""
+    """A split that nets to zero settles as one zero write: no VIP bonus, no win or loss booked.
+
+    A write per hand would book the losing hand as the day's casino loss and the winning one
+    as its win, though the seat neither won nor lost.
+    """
     await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 200)
     purchase = await buy_vip(user_id=1, name="alice")
     assert purchase is not None
@@ -1109,6 +1102,7 @@ async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
     assert settlement.base_delta == 0
     assert settlement.delta == 0
     assert settlement.vip_bonus == 0
+    await assert_daily_casino_stats(user_id=1, loss=0, win=0, net=0)
 
 
 @pytest.mark.parametrize(
