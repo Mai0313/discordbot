@@ -37,7 +37,6 @@ player delta and the house-side mirror in one atomic SQLite transaction.
 
 from time import monotonic
 from typing import Any, Final
-import asyncio
 from datetime import datetime, timedelta
 from contextlib import AbstractAsyncContextManager
 from collections.abc import Mapping, Sequence
@@ -94,6 +93,8 @@ from discordbot.typings.economy import (
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
     JackpotSettlementBatchResult,
+    clamped_balance,
+    simple_interest,
     clamp_loan_rate_bps,
     central_bank_credit_ceiling,
 )
@@ -418,6 +419,7 @@ CENTRAL_BANK_LEDGER_ID: Final[str] = "central_bank"
 # for it. A seeded pool is topped back up to this amount whenever it drains.
 _JACKPOT_SEEDS: Final[Mapping[str, int]] = {"dragon_gate": 1_000}
 
+# Serializes loan approval so central-bank capacity is consumed once.
 _loan_accept_lock = LoopLocalLock()
 type _TopNCacheKey = tuple[int | None, bool]
 type _TopLosersCacheKey = tuple[int, bool, datetime]
@@ -475,11 +477,6 @@ def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 
         negative_length.asc(),
         negative_text.asc(),
     )
-
-
-def _current_loan_accept_lock() -> asyncio.Lock:
-    """Serializes loan approval so central-bank capacity is consumed once."""
-    return _loan_accept_lock.get()
 
 
 async def _seed_singleton_rows(conn: AsyncConnection) -> None:
@@ -546,6 +543,14 @@ def open_session() -> AbstractAsyncContextManager[AsyncSession]:
         A context manager yielding an `AsyncSession` on the current module-level `_engine`.
     """
     return _database.open_session(engine=_engine)
+
+
+async def _balance_in_session(session: AsyncSession, user_id: int) -> int:
+    """Reads one wallet balance, returning 0 for a user with no wallet row."""
+    result = await session.execute(
+        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
+    )
+    return result.scalar_one_or_none() or 0
 
 
 async def _upsert_user_metadata_in_session(
@@ -718,14 +723,9 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
     The observed balance is pinned in the UPDATE predicate, so concurrent
     clamped debits cannot both compute their applied delta from the same stale
     balance. A negative delta against a missing row is a no-op so manual clamp
-    operations do not create zero-balance accounts.
+    operations do not create zero-balance accounts. Caller guarantees
+    `delta != 0`.
     """
-    if delta == 0:
-        read_result = await session.execute(
-            statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-        )
-        return read_result.scalar_one_or_none() or 0, 0
-
     for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         read_result = await session.execute(
             statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
@@ -790,12 +790,7 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     session: AsyncSession, user_id: int, name: str, current_balance: int, delta: int, now: datetime
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
-    if delta < 0 and current_balance <= 0:
-        new_balance = current_balance
-    elif delta < 0:
-        new_balance = max(current_balance + delta, 0)
-    else:
-        new_balance = current_balance + delta
+    new_balance = clamped_balance(balance=current_balance, delta=delta, allow_negative=False)
     applied = new_balance - current_balance
     update_values: dict[str, Any] = {"balance": new_balance, "updated_at": now}
     if name:
@@ -985,10 +980,7 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             session=session, user_id=user_id, name=name, delta=applied_delta, now=now
         )
         return new_balance, applied_delta
-    read_result = await session.execute(
-        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-    )
-    return read_result.scalar_one_or_none() or 0, 0
+    return await _balance_in_session(session=session, user_id=user_id), 0
 
 
 async def credit_with_repayment(
@@ -1047,10 +1039,7 @@ async def adjust_balance(
     now = _database_now()
     async with open_session() as session:
         if delta == 0:
-            result = await session.execute(
-                statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-            )
-            new_balance = result.scalar_one_or_none() or 0
+            new_balance = await _balance_in_session(session=session, user_id=user_id)
             return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=0)
         if allow_negative:
             new_balance = await _apply_signed_delta_in_session(
@@ -1259,12 +1248,6 @@ async def _claim_jackpot_payout_in_session(
     now: datetime,
 ) -> tuple[int, JackpotSnapshot, bool]:
     """Atomically claims up to `amount` from the requested jackpot generation."""
-    if amount <= 0:
-        snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-            session=session, game_id=game_id, now=now
-        )
-        return 0, snapshot, False
-
     for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=now
@@ -1344,7 +1327,6 @@ async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mi
         jackpot_generation=result.jackpot_generation,
         applied_player_delta=result.applied_player_deltas.get(player_id, 0),
         jackpot_depleted=result.jackpot_depleted,
-        rejected=player_id in result.rejected_player_ids,
     )
 
 
@@ -1590,10 +1572,7 @@ async def get_balance(user_id: int) -> int:
         The current balance, or 0 if the user has never been seen.
     """
     async with open_session() as session:
-        result = await session.execute(
-            statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-        )
-        return result.scalar_one_or_none() or 0
+        return await _balance_in_session(session=session, user_id=user_id)
 
 
 async def get_vip(user_id: int) -> bool:
@@ -1783,23 +1762,19 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
 
         tax = amount * TRANSFER_TAX_BPS // 10_000
         net = amount - tax
-        credit_stmt = _build_credit_upsert(
-            user_id=receiver_id, name=receiver_name, amount=net, now=now
-        )
-        await _upsert_user_metadata_in_session(
+        credit_result = await _credit_with_repayment_in_session(
             session=session,
             user_id=receiver_id,
             name=receiver_name,
             avatar_url=receiver_avatar_url,
+            amount=net,
             now=now,
         )
-        credit_result = await session.execute(statement=credit_stmt)
-        receiver_balance = credit_result.scalar_one()
 
         await _commit_balance_write(session=session)
         return TransferResult(
             sender_balance=sender_balance,
-            receiver_balance=receiver_balance,
+            receiver_balance=credit_result.new_balance,
             received_amount=net,
             tax_amount=tax,
         )
@@ -2025,7 +2000,9 @@ def _loan_interest_delta(
     elapsed_days = int(elapsed_seconds // 86_400)
     if elapsed_days <= 0:
         return 0, last_accrued_at
-    interest = principal_remaining * monthly_rate_bps * elapsed_days // (10_000 * 30)
+    interest = simple_interest(
+        principal=principal_remaining, monthly_rate_bps=monthly_rate_bps, days=elapsed_days
+    )
     return interest, _as_taipei(dt=last_accrued_at) + timedelta(days=elapsed_days)
 
 
@@ -2153,10 +2130,7 @@ async def _user_total_debt_in_session(session: AsyncSession, user_id: int) -> in
 
 async def _credit_ceiling_in_session(session: AsyncSession, user_id: int) -> int:
     """Returns how much more central-bank credit one borrower may still draw."""
-    balance_result = await session.execute(
-        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-    )
-    balance = balance_result.scalar_one_or_none() or 0
+    balance = await _balance_in_session(session=session, user_id=user_id)
     total_debt = await _user_total_debt_in_session(session=session, user_id=user_id)
     return central_bank_credit_ceiling(balance=balance, total_debt=total_debt)
 
@@ -2242,10 +2216,17 @@ async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both 
     monthly_rate_bps: int = DEFAULT_LOAN_MONTHLY_RATE_BPS,
     borrower_avatar_url: str = "",
     lender_avatar_url: str = "",
-) -> LoanProposalView | None:
-    """Creates a borrower-initiated personal loan request."""
+) -> LoanProposalView:
+    """Creates a borrower-initiated personal loan request.
+
+    Raises:
+        ValueError: When `amount` is not positive or the borrower names themselves as lender.
+    """
     if amount <= 0 or borrower_id == lender_id:
-        return None
+        msg = (
+            "A personal loan request needs a positive amount and a lender other than the borrower"
+        )
+        raise ValueError(msg)
     return await _insert_loan_proposal(
         kind=LoanProposalKind.PERSONAL_REQUEST,
         lender_type=LoanLenderType.USER,
@@ -2266,10 +2247,15 @@ async def create_central_bank_loan_request(
     amount: int,
     monthly_rate_bps: int = DEFAULT_LOAN_MONTHLY_RATE_BPS,
     borrower_avatar_url: str = "",
-) -> LoanProposalView | None:
-    """Creates a borrower-initiated central-bank loan request."""
+) -> LoanProposalView:
+    """Creates a borrower-initiated central-bank loan request.
+
+    Raises:
+        ValueError: When `amount` is not positive.
+    """
     if amount <= 0:
-        return None
+        msg = "A central-bank loan request needs a positive amount"
+        raise ValueError(msg)
     return await _insert_loan_proposal(
         kind=LoanProposalKind.CENTRAL_BANK_REQUEST,
         lender_type=LoanLenderType.CENTRAL_BANK,
@@ -2353,7 +2339,7 @@ async def reject_loan_proposal(
         return _loan_proposal_view(proposal=proposal)
 
 
-async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, actor, and central-bank policy
+async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind branches must stay in one transaction
     proposal_id: int,
     actor_id: int,
     actor_name: str,
@@ -2364,32 +2350,8 @@ async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, act
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
     """Accepts a pending loan proposal and opens the loan contract."""
-    async with _current_loan_accept_lock():
-        return await _accept_loan_proposal_locked(
-            proposal_id=proposal_id,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_avatar_url=actor_avatar_url,
-            approver_is_guild_admin=approver_is_guild_admin,
-            guild_id=guild_id,
-            central_bank_exclude_user_ids=central_bank_exclude_user_ids,
-            allow_central_bank_self_approval=allow_central_bank_self_approval,
-        )
-
-
-async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind branches must stay in one transaction
-    proposal_id: int,
-    actor_id: int,
-    actor_name: str,
-    actor_avatar_url: str = "",
-    approver_is_guild_admin: bool = False,
-    guild_id: int | None = None,
-    central_bank_exclude_user_ids: tuple[int, ...] = (),
-    allow_central_bank_self_approval: bool = False,
-) -> LoanProposalAcceptResult | None:
-    """Accepts a loan proposal while the caller holds the acceptance lock."""
-    now = _database_now()
-    async with open_session() as session:
+    async with _loan_accept_lock.get(), open_session() as session:
+        now = _database_now()
         # Acquire SQLite's write lock before reading capacity or proposal state.
         await session.execute(statement=text("BEGIN IMMEDIATE"))
         proposal = await _undecided_proposal_in_session(
@@ -2453,28 +2415,22 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             await session.rollback()
             return None
 
-        await _upsert_user_metadata_in_session(
+        credit_result = await _credit_with_repayment_in_session(
             session=session,
             user_id=proposal.borrower_id,
             name=proposal.borrower_name,
             avatar_url=proposal.borrower_avatar_url,
+            amount=proposal.amount,
             now=now,
         )
-        credit_result = await session.execute(
-            statement=_build_credit_upsert(
-                user_id=proposal.borrower_id,
-                name=proposal.borrower_name,
-                amount=proposal.amount,
-                now=now,
-            )
-        )
-        borrower_balance = credit_result.scalar_one()
         # Prepay MIN_INTEREST_DAYS of interest so borrowers cannot dodge interest
         # by repaying immediately. last_interest_accrued_at points past the
         # prepaid window, so _loan_interest_delta returns 0 until real time
         # catches up and then accrues normally.
-        prepaid_interest = (
-            proposal.amount * proposal.monthly_rate_bps * MIN_INTEREST_DAYS // (10_000 * 30)
+        prepaid_interest = simple_interest(
+            principal=proposal.amount,
+            monthly_rate_bps=proposal.monthly_rate_bps,
+            days=MIN_INTEREST_DAYS,
         )
         prepaid_end = now + timedelta(days=MIN_INTEREST_DAYS)
         contract = LoanContract(
@@ -2505,7 +2461,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             )
         return LoanProposalAcceptResult(
             contract=_loan_contract_view(contract=contract),
-            borrower_balance=borrower_balance,
+            borrower_balance=credit_result.new_balance,
             lender_balance=lender_balance,
             central_bank_available_credit=(
                 central_status.available_credit if central_status is not None else None
@@ -2558,13 +2514,10 @@ async def _pay_lender_side_in_session(
         return None
     # The contract's lender identity dates from acceptance, so an empty one keeps the newer
     # stored name and avatar.
-    await _upsert_user_metadata_in_session(
-        session=session, user_id=contract.lender_id, name="", avatar_url="", now=now
+    credit_result = await _credit_with_repayment_in_session(
+        session=session, user_id=contract.lender_id, name="", avatar_url="", amount=paid, now=now
     )
-    credit_result = await session.execute(
-        statement=_build_credit_upsert(user_id=contract.lender_id, name="", amount=paid, now=now)
-    )
-    return credit_result.scalar_one()
+    return credit_result.new_balance
 
 
 async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs actor identity and contract set

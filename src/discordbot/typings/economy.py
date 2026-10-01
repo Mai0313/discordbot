@@ -58,6 +58,25 @@ def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
     return monthly_rate_bps / 100
 
 
+def simple_interest(principal: int, monthly_rate_bps: int, days: int) -> int:
+    """Returns the simple interest `principal` earns over `days` at a monthly rate in bps.
+
+    A month is 30 days, and the result rounds down.
+    """
+    return principal * monthly_rate_bps * days // (10_000 * 30)
+
+
+def clamped_balance(balance: int, delta: int, allow_negative: bool) -> int:
+    """Returns the balance a manual adjustment of `delta` leaves.
+
+    Unless `allow_negative`, a debit stops at zero and leaves a balance already at or below
+    zero alone; a credit always applies in full.
+    """
+    if allow_negative or delta >= 0:
+        return balance + delta
+    return min(balance, max(balance + delta, 0))
+
+
 def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
     """Applies the VIP 1.2x payout multiplier on a winning player delta.
 
@@ -265,10 +284,6 @@ class JackpotSettlementResult(BaseModel):
     jackpot_depleted: bool = Field(
         default=False,
         description="True when a seeded pool was drained and replenished during this settlement.",
-    )
-    rejected: bool = Field(
-        default=False,
-        description="True when a required full debit could not be applied and no mutation was committed.",
     )
 
 
@@ -502,6 +517,8 @@ __all__ = [
     "apply_vip_blackjack_bonus",
     "central_bank_credit_ceiling",
     "clamp_loan_rate_bps",
+    "clamped_balance",
     "monthly_rate_bps_to_percent",
     "monthly_rate_percent_to_bps",
+    "simple_interest",
 ]

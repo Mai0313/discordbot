@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
+from discordbot.typings.economy import clamped_balance
 from discordbot.services.economy.database import top_n, get_account, adjust_balance
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
@@ -123,11 +124,7 @@ async def modify_balance(
     before = account.balance if account is not None else 0
     effective_name = name or existing_name or str(user_id)
 
-    if allow_negative or delta >= 0:
-        projected_after = before + delta
-    else:
-        # A clamped debit stops at zero and leaves a balance already at or below zero alone.
-        projected_after = min(before, max(before + delta, 0))
+    projected_after = clamped_balance(balance=before, delta=delta, allow_negative=allow_negative)
     projected_applied_delta = projected_after - before
 
     if dry_run or delta == 0:

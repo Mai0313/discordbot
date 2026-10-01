@@ -663,18 +663,6 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
-        if proposal is None:
-            await send_expiring_followup(
-                interaction=interaction,
-                embed=build_error_embed(
-                    title="借款失敗",
-                    description="### 無法建立借款申請",
-                    author_name=user.display_name,
-                    author_icon_url=user_avatar_url,
-                ),
-            )
-            return
-
         embed = build_credit_request_embed(
             borrower=LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
@@ -965,14 +953,6 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
-        if proposal is None:
-            await send_expiring_followup(
-                interaction=interaction,
-                embed=build_error_embed(
-                    title="央行借款失敗", description="### 無法建立央行借款申請"
-                ),
-            )
-            return
         embed = build_central_bank_request_embed(
             borrower=LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
