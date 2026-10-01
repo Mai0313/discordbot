@@ -123,7 +123,7 @@ async def _list_pending_public_messages(
     """Lists the messages still waiting for cleanup, recorded before `tracked_before` if given."""
     # `created_at` is SQLite's own CURRENT_TIMESTAMP: UTC, to the whole second.
     cutoff = (
-        tracked_before.astimezone(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+        tracked_before.astimezone(tz=UTC).strftime(format="%Y-%m-%d %H:%M:%S")
         if tracked_before is not None
         else None
     )
