@@ -119,7 +119,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | `/games dragon_gate`                        | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                                                        |
 | `/games blackjack_history [member] [count]` | Shows a player's recent Blackjack rounds: hands, bets, and results (10 by default, up to 50).                                                              |
 | `/casino`                                   | Shows the casino system's cumulative profit and loss.                                                                                                      |
-| `/pocat`                                    | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                                                          |
+| `/pocat`                                    | Shows the bot player's own wallet: balance plus total earned and spent.                                                                                    |
 | `/memory show\|regenerate\|clear`           | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first.           |
 | `/memory server show`                       | Privately shows what the bot remembers about this server's community; only inside a server the bot is in.                                                  |
 | `/ping`                                     | Checks bot latency.                                                                                                                                        |
