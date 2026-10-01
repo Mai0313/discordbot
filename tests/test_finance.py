@@ -17,7 +17,7 @@ from discordbot.typings.economy import (
     monthly_rate_percent_to_bps,
 )
 from discordbot.cogs.economy.cog import EconomyCogs
-from discordbot.cogs.economy.views import CentralBankLoanDecisionView
+from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.services.economy.database import (
     UserWallet,
     UserAccount,
@@ -44,7 +44,7 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.casting import as_bot, as_message, as_interaction
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
@@ -52,7 +52,7 @@ from tests.helpers.economy import (
     seed_participant,
     open_personal_loan,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.economy_invariants import assert_wallet_consistent
 
 OTHER_GUILD = 777
@@ -205,6 +205,47 @@ async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
     assert accepted is None
     assert stored_status == LoanProposalStatus.REJECTED
     assert await get_balance(user_id=1) == 0
+    assert await get_balance(user_id=2) == 1_000
+
+
+@pytest.mark.parametrize(
+    argnames=("custom_id", "presser_id"),
+    argvalues=[("credit:approve", 2), ("credit:reject", 2), ("credit:cancel", 1)],
+    ids=["lender_approves", "lender_rejects", "borrower_cancels"],
+)
+async def test_a_press_past_the_window_closes_the_panel_as_expired(
+    monkeypatch: pytest.MonkeyPatch, custom_id: str, presser_id: int
+) -> None:
+    """The press that finds a request expired closes its panel, as the view's timeout would.
+
+    Every press restarts the view's own timer, so the view can outlive the request; once a
+    press has expired it, the timeout finds nothing left to expire and leaves the buttons up.
+    """
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.economy.views.schedule_public_message_delete",
+        lambda message, **_kwargs: scheduled.append(message),
+    )
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    await _backdate_proposal(
+        proposal_id=proposal.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS
+    )
+    panel = FakeDiscordMessage()
+    view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
+    view.message = as_message(fake=panel)
+    button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
+    presser = FakeInteraction(user=FakeUser(user_id=presser_id, name="presser"), message=panel)
+
+    await button.callback(as_interaction(fake=presser))
+
+    assert presser.followup.sent == []
+    assert presser.edits[0]["embed"].title == "信貸申請已逾時"
+    assert presser.edits[0]["view"] is None
+    assert view.is_finished()
+    assert scheduled == [panel]
     assert await get_balance(user_id=2) == 1_000
 
 

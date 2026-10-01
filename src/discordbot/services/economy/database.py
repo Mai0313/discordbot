@@ -82,6 +82,7 @@ from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
+    LoanProposalExpiredError,
     JackpotSettlementBatchResult,
     clamped_balance,
     simple_interest,
@@ -1956,9 +1957,12 @@ async def _undecided_proposal_in_session(
 ) -> LoanProposal | None:
     """Loads a pending proposal that is still inside its decision window.
 
-    One whose window has passed is rejected and committed here instead. That one reads as
-    None, as does a proposal that is missing, already decided, or (given `creator_id`)
-    created by someone else.
+    A proposal that is missing, already decided, or (given `creator_id`) created by someone
+    else reads as None.
+
+    Raises:
+        LoanProposalExpiredError: When the window has passed; the proposal is rejected and
+            committed first, so only the call that expired it raises.
     """
     statement = select(LoanProposal).where(
         LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
@@ -1974,7 +1978,7 @@ async def _undecided_proposal_in_session(
     )
     if expired is not None:
         await session.commit()
-        return None
+        raise LoanProposalExpiredError
     return proposal
 
 
@@ -2280,7 +2284,12 @@ async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | N
 
 
 async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView | None:
-    """Cancels a pending proposal created by `actor_id`."""
+    """Cancels a pending proposal created by `actor_id`.
+
+    Raises:
+        LoanProposalExpiredError: When this call found the request past its decision window
+            and rejected it instead.
+    """
     now = _database_now()
     async with open_session() as session:
         proposal = await _undecided_proposal_in_session(
@@ -2301,7 +2310,12 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
 async def reject_loan_proposal(
     proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
 ) -> LoanProposalView | None:
-    """Rejects a pending proposal when `actor_id` is allowed to decide it."""
+    """Rejects a pending proposal when `actor_id` is allowed to decide it.
+
+    Raises:
+        LoanProposalExpiredError: When this call found the request past its decision window
+            and rejected it instead.
+    """
     now = _database_now()
     async with open_session() as session:
         proposal = await _undecided_proposal_in_session(
@@ -2336,7 +2350,12 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
     central_bank_exclude_user_ids: tuple[int, ...] = (),
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
-    """Accepts a pending loan proposal and opens the loan contract."""
+    """Accepts a pending loan proposal and opens the loan contract.
+
+    Raises:
+        LoanProposalExpiredError: When this call found the request past its decision window
+            and rejected it instead.
+    """
     async with _loan_accept_lock.get(), open_session() as session:
         now = _database_now()
         # Acquire SQLite's write lock before reading capacity or proposal state.

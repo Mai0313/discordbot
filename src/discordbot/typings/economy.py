@@ -127,6 +127,10 @@ class LoanLenderType(StrEnum):
     CENTRAL_BANK = "central_bank"
 
 
+class LoanProposalExpiredError(Exception):
+    """Raised by the loan decision that found its request past the window and rejected it."""
+
+
 class LoanProposalKind(StrEnum):
     """Pending loan proposal flow types."""
 
@@ -506,6 +510,7 @@ __all__ = [
     "LoanLenderType",
     "LoanPaymentResult",
     "LoanProposalAcceptResult",
+    "LoanProposalExpiredError",
     "LoanProposalKind",
     "LoanProposalStatus",
     "LoanProposalView",
