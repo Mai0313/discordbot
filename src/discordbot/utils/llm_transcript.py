@@ -19,8 +19,10 @@ import re
 # `\n-# ✏️ ...` / `\n-# 🩹 ...` lines are the memory note `set_memory_note` puts directly
 # above the footer, its marks spelled as in `cogs/gen_reply/status_marks.py`: a later turn
 # re-reads the reply off Discord, and a forget note quotes what the user asked to drop (#865).
+# The first may also open the message: Discord trims leading whitespace, so a reply with no
+# prose starts on its note.
 USAGE_FOOTER_RE = re.compile(
-    r"(?:\n-# (?:✏️|🩹) [^\n]*)*\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$"
+    r"(?:(?:^|\n)-# (?:✏️|🩹) [^\n]*)*\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$"
 )
 
 # A display name (or legacy username) containing an `[id: ...]`-shaped string

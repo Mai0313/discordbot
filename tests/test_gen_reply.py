@@ -1745,7 +1745,18 @@ async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     assert USAGE_FOOTER_RE.sub("", full_reply) == "好喔"
 
 
-async def test_a_memory_note_never_reaches_a_later_turns_history() -> None:
+@pytest.mark.parametrize(
+    ("delta", "expected"),
+    [
+        ("好，我不會再提了<forget-memory>我住在台中</forget-memory>", "好，我不會再提了"),
+        # No prose, so the message Discord stores opens on the note.
+        ("<forget-memory>我住在台中</forget-memory>", ""),
+    ],
+    ids=["with_prose", "note_only"],
+)
+async def test_a_memory_note_never_reaches_a_later_turns_history(
+    delta: str, expected: str
+) -> None:
     """The memory note comes off wherever the bot's own reply is read back.
 
     A gateway turn re-reads the reply off Discord rather than `full_reply`, and the forget line
@@ -1756,10 +1767,7 @@ async def test_a_memory_note_never_reaches_a_later_turns_history() -> None:
     streamer = _streamer(message=message)
     await streamer.stream(
         responses=_stream_events_from(
-            events=[
-                _text_event(delta="好，我不會再提了<forget-memory>我住在台中</forget-memory>"),
-                _completed_event(input_tokens=3, output_tokens=4),
-            ]
+            events=[_text_event(delta=delta), _completed_event(input_tokens=3, output_tokens=4)]
         )
     )
     await memory_report_for(streamer=streamer)(
@@ -1768,10 +1776,11 @@ async def test_a_memory_note_never_reaches_a_later_turns_history() -> None:
     on_screen = message.replies[0].content or ""
     assert "不再記得 我住在台中" in on_screen, "the note never landed, so this proves nothing"
 
+    # Discord trims a message's leading and trailing whitespace before storing it.
     bot_reply = as_message(
-        fake=FakeMessage(content=on_screen, author=FakeAuthor(bot=True, user_id=999))
+        fake=FakeMessage(content=on_screen.strip(), author=FakeAuthor(bot=True, user_id=999))
     )
-    assert await _media_builder().get_cleaned_content(message=bot_reply) == "好，我不會再提了"
+    assert await _media_builder().get_cleaned_content(message=bot_reply) == expected
     spans = [
         *message_link_texts(message=bot_reply, strip_usage_footer=True),
         *authored_link_texts(message=bot_reply),
