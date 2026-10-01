@@ -206,8 +206,8 @@ def print_batch_results(result_path: str | Path) -> None:
 def retrieve_batch(
     batch_id: str,
     *,
-    result_path: str | Path = "batch_dev_results.jsonl",
-    error_path: str | Path = "batch_dev_errors.jsonl",
+    result_path: str | Path = "./data/batch_dev_results.jsonl",
+    error_path: str | Path = "./data/batch_dev_errors.jsonl",
     poll_interval_seconds: int = BATCH_POLL_INTERVAL_SECONDS,
 ) -> None:
     """Polls an existing batch and downloads its output or error files.
@@ -248,7 +248,7 @@ def submit_gen_reply_batch(
     user_prompts: Sequence[str],
     file_path: str | Path | None = None,
     *,
-    request_path: str | Path = "batch_dev_requests.jsonl",
+    request_path: str | Path = "./data/batch_dev_requests.jsonl",
 ) -> str:
     """Submits a Responses API batch using the dev reply prompt.
 
@@ -297,9 +297,9 @@ def gen_reply_batch(  # noqa: PLR0913 -- dev helper keeps file paths explicit at
     user_prompts: Sequence[str],
     file_path: str | Path | None = None,
     *,
-    request_path: str | Path = "batch_dev_requests.jsonl",
-    result_path: str | Path = "batch_dev_results.jsonl",
-    error_path: str | Path = "batch_dev_errors.jsonl",
+    request_path: str | Path = "./data/batch_dev_requests.jsonl",
+    result_path: str | Path = "./data/batch_dev_results.jsonl",
+    error_path: str | Path = "./data/batch_dev_errors.jsonl",
     wait: bool = False,
 ) -> str:
     """Submits a dev reply batch and optionally waits for the result.

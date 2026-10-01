@@ -1,16 +1,17 @@
-"""Local image generation and edit smoke test for the bot image models."""
+"""Local image generation and edit smoke test: drives the bot's own `ImageGenerator.render`."""
 
 import time
-import base64
+import asyncio
 from pathlib import Path
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import to_data_uri
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
+from discordbot.cogs.gen_reply.generation import ImageGenerator
 
 console = Console()
 config = LLMConfig()
@@ -20,7 +21,7 @@ MEDIA_REPLY_MODEL = RuntimeModelCatalog().fast_model
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
-    """Runs the dev image generation or edit flow and writes the PNG result.
+    """Runs the dev image generation or edit flow and writes the PNG result under ./data.
 
     The raw user request is sent straight to the image model (no prompt director), then the
     reply stage answers about the image as the bot would (production also feeds it history
@@ -34,41 +35,26 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
         ValueError: The image operation returned no results.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    generator = ImageGenerator(
+        client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
+        image_model=IMAGE_MODEL,
+    )
 
     start = time.time()
+    image_bytes_list = None
     if image_path is not None:
         path = Path(image_path)
-        source_bytes = path.read_bytes()
+        image_bytes_list = [path.read_bytes()]
         console.print(f"[bold]Editing {path} with {IMAGE_MODEL.name}...[/bold]")
-        result = client.images.edit(
-            image=[source_bytes],
-            prompt=user_prompt,
-            model=IMAGE_MODEL.name,
-            n=1,
-            response_format="b64_json",
-            quality="auto",
-            size="auto",
-            extra_headers={"x-litellm-end-user-id": "image_dev"},
-        )
     else:
         console.print(f"[bold]Generating image with {IMAGE_MODEL.name}...[/bold]")
-        result = client.images.generate(
-            prompt=user_prompt,
-            model=IMAGE_MODEL.name,
-            n=1,
-            response_format="b64_json",
-            quality="auto",
-            size="auto",
-            extra_headers={"x-litellm-end-user-id": "image_dev"},
+    image_bytes = asyncio.run(
+        main=generator.render(
+            prompt=user_prompt, end_user_id="image_dev", image_bytes_list=image_bytes_list
         )
+    )
 
-    if not result.data:
-        raise ValueError("Image operation returned no results")
-    image_b64 = result.data[0].b64_json
-    if image_b64 is None:
-        raise ValueError("Image operation returned no b64_json")
-
-    image_url = to_data_uri(data=base64.b64decode(s=image_b64))
+    image_url = to_data_uri(data=image_bytes)
     reply_responses = client.responses.create(
         model=MEDIA_REPLY_MODEL.name,
         instructions=IMAGE_REPLY_PROMPT,
@@ -96,10 +82,11 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     model_name = IMAGE_MODEL.name
     if "/" in model_name:
         model_name = model_name.split("/")[-1]
-    output_path = Path(
+    output_path = Path("./data") / (
         f"edited_{model_name}.png" if image_path is not None else f"{model_name}.png"
     )
-    output_path.write_bytes(data=base64.b64decode(s=image_b64))
+    output_path.parent.mkdir(exist_ok=True)
+    output_path.write_bytes(data=image_bytes)
 
     end = time.time()
     console.print(f"[green]Saved to {output_path}[/green]")

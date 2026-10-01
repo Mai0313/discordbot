@@ -17,7 +17,7 @@ from google.genai.interactions import (
 from agents.models.openai_responses import OpenAIResponsesModel
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.research.agent import RESEARCH_TOOLS, RESEARCH_AGENT_CONFIG
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 
@@ -26,9 +26,6 @@ if TYPE_CHECKING:
 
 console = Console()
 config = LLMConfig()
-
-# The OpenAI-compatible path takes the proxy's own model aliases.
-AGENT_MODEL = ModelSettings(name="gemini-3.8-flash", effort="minimal")
 
 
 def gen_reply_oai(user_prompt: str) -> RunResult:
@@ -45,7 +42,7 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
         name="Assistant",
         instructions=REPLY_PROMPT,
         model=OpenAIResponsesModel(
-            model=AGENT_MODEL.name,
+            model=RuntimeModelCatalog().slow_model.name,
             openai_client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
         ),
     )

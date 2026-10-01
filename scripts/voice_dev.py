@@ -1,32 +1,43 @@
-"""Local text-to-speech smoke test: turns one line of text into ./speech.mp3."""
+"""Local text-to-speech smoke test: drives the bot's own `VoiceGenerator.generate`.
 
-from openai import OpenAI
+The clip is saved to ./data/speech.wav.
+"""
+
+import asyncio
+from pathlib import Path
+
+from openai import AsyncOpenAI
+import logfire
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.cogs.gen_reply.generation import VoiceGenerator
 
 config = LLMConfig()
 
-TTS_MODEL = RuntimeModelCatalog().tts_model
-
 
 def gen_speech(text: str) -> None:
-    """Synthesizes `text` through LiteLLM and saves the clip to `./speech.mp3`.
+    """Synthesizes `text` as a spoken reply and saves the clip to `./data/speech.wav`.
 
     Args:
-        text (str): The line to speak, sent verbatim.
+        text (str): The reply text to speak.
+
+    Raises:
+        RuntimeError: Synthesis produced no clip; the message names why.
     """
-    client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    audio_responses = client.audio.speech.create(
-        input=text,
-        model=TTS_MODEL.name,
-        voice="Zephyr",
-        instructions="",
-        speed=1.3,
-        extra_headers={"x-litellm-end-user-id": "voice_dev"},
+    generator = VoiceGenerator(
+        client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
+        model_name=RuntimeModelCatalog().tts_model.name,
     )
-    audio_responses.write_to_file("./speech.mp3")
+    clip = asyncio.run(main=generator.generate(text=text, end_user_id="voice_dev"))
+    if clip.audio is None:
+        raise RuntimeError(f"Voice synthesis produced no clip: {clip.outcome}")
+    output_path = Path("./data/speech.wav")
+    output_path.parent.mkdir(exist_ok=True)
+    output_path.write_bytes(data=clip.audio)
 
 
 if __name__ == "__main__":
+    # The generator logs a failed synthesis's cause rather than raising it, so print records here.
+    logfire.configure(send_to_logfire=False)
     gen_speech(text="為何 37 是質數?")
