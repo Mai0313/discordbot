@@ -46,11 +46,8 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 
 # Lifecycle of a persisted review turn, stored in the `status` column.
 MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
-# `last_error` is a bounded blurb, not a full traceback.
-_MAX_ERROR_CHARS = 500
 # One process would need a trillion captured memory events to exhaust its range.
 _TOKEN_BLOCK_SIZE = 1_000_000_000_000
-_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
@@ -180,7 +177,8 @@ async def _reserve_token_block(*, engine: AsyncEngine) -> int:
             statement=select(func.max(MemoryJobRow.token)).where(MemoryJobRow.token > 0)
         )
         block_base = max(clock_high or 0, job_high or 0)
-        if block_base > _SQLITE_MAX_INTEGER - _TOKEN_BLOCK_SIZE:
+        sqlite_max_integer = (1 << 63) - 1
+        if block_base > sqlite_max_integer - _TOKEN_BLOCK_SIZE:
             raise RuntimeError("memory token space exhausted")
         high_watermark = block_base + _TOKEN_BLOCK_SIZE
         stmt = insert(MemoryTokenClockRow).values(id=1, high_watermark=high_watermark)
@@ -273,11 +271,13 @@ async def mark_failed(*, scope: str, token: int, error: str) -> None:
     """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
     token = await _resolve_token(token=token)
     now = _database_now()
+    # `last_error` is a bounded blurb, not a full traceback.
+    max_error_chars = 500
     async with open_session() as session:
         await session.execute(
             statement=update(MemoryJobRow)
             .where(MemoryJobRow.scope == scope, MemoryJobRow.token == token)
-            .values(status="failed", last_error=error[:_MAX_ERROR_CHARS], updated_at=now)
+            .values(status="failed", last_error=error[:max_error_chars], updated_at=now)
         )
         await session.commit()
 

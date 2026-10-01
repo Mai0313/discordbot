@@ -78,11 +78,6 @@ _PARTICIPANT_PREFIX_RE = re.compile(
     r"^[ \t]*(?P<display>.+?) \((?P<username>[^()\n]+)\) \[id: (?P<user_id>\d+)\]:",
     flags=re.MULTILINE,
 )
-# Shortest roster name the gate will match on, split by script. A Latin name also has
-# to land on a word boundary, which a CJK name cannot (there are no spaces), so the CJK
-# floor carries that burden on its own.
-_MIN_LATIN_ROSTER_NAME = 3
-_MIN_OTHER_ROSTER_NAME = 2
 _LATIN_NAME_RE = re.compile(r"^[\w.\- ]+$", flags=re.ASCII)
 # Another participant referenced inside an observation's text (an id token or a raw
 # Discord mention). Such an observation is about a relationship or someone else's
@@ -523,7 +518,12 @@ def participant_names_from_transcript(
 
 def _is_matchable_name(name: str) -> bool:
     """Whether a roster name is distinctive enough to lock an observation on."""
-    floor = _MIN_LATIN_ROSTER_NAME if _LATIN_NAME_RE.match(name) else _MIN_OTHER_ROSTER_NAME
+    # Shortest roster name the gate will match on, split by script. A Latin name also has
+    # to land on a word boundary, which a CJK name cannot (there are no spaces), so the CJK
+    # floor carries that burden on its own.
+    min_latin_name = 3
+    min_other_name = 2
+    floor = min_latin_name if _LATIN_NAME_RE.match(name) else min_other_name
     return len(name) >= floor
 
 

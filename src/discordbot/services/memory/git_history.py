@@ -33,17 +33,6 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 from discordbot.typings.memory import MemoryConfig
 from discordbot.services.memory.store import scope_lock, memory_root
 
-# Consecutive failures before the service stops trying. A repository that is missing,
-# locked by an operator, or out of disk fails every time, and a background task that
-# retries forever just fills the log.
-_MAX_CONSECUTIVE_FAILURES = 5
-
-# Committer identity for the store's own history. Passed per invocation rather than
-# written into the repository so the bot never edits an operator's config, and so a
-# repository created by hand needs no setup beyond `git init`.
-_COMMITTER_NAME = "discordbot"
-_COMMITTER_EMAIL = "discordbot@localhost"
-
 
 class _GitRequest(BaseModel):
     """One queued commit of a single scope's directory."""
@@ -139,7 +128,11 @@ class MemoryGitService(BaseModel):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            if self._failures >= _MAX_CONSECUTIVE_FAILURES:
+            # Consecutive failures before the service stops trying. A repository that is
+            # missing, locked by an operator, or out of disk fails every time, and a
+            # background task that retries forever just fills the log.
+            max_consecutive_failures = 5
+            if self._failures >= max_consecutive_failures:
                 logfire.warn("Memory git history disabled after repeated failures")
                 self.enabled = False
             return
@@ -169,11 +162,13 @@ class MemoryGitService(BaseModel):
             # container hostname carries no domain, so git rejects its own auto-detected
             # `app@<id>.(none)` ident and every commit exits 128. An operator's host-side
             # `git init` cannot supply this: it writes no identity, and a global config
-            # on the host is not visible inside the image.
+            # on the host is not visible inside the image. Passed per invocation rather than
+            # written into the repository so the bot never edits an operator's config, and so
+            # a repository created by hand needs no setup beyond `git init`.
             "-c",
-            f"user.name={_COMMITTER_NAME}",
+            "user.name=discordbot",
             "-c",
-            f"user.email={_COMMITTER_EMAIL}",
+            "user.email=discordbot@localhost",
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
