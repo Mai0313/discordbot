@@ -976,10 +976,9 @@ class ResponseStreamer(BaseModel):
     async def _load_marker_source_images(self) -> list[LoadedMedia]:
         """Best-effort source images from the current and replied-to message.
 
-        Shared by the inline `<generate-image>` edit (which needs only the bytes) and the inline
-        `<generate-video>` reference path (which needs the mime, since omni rejects an image content
-        block with an empty mime). Best-effort: no builder or a load failure simply yields no
-        sources, so the marker falls back to fresh generation.
+        Each source keeps its mime beside the bytes, since omni rejects an image content block
+        with an empty mime. Best-effort: no builder or a load failure simply yields no sources, so
+        the marker falls back to fresh generation.
         """
         if self.input_builder is None:
             return []
@@ -1304,12 +1303,12 @@ async def stream_answer_with_retry(
 ) -> str:
     """Streams one answer turn, re-opening the stream on a transient upstream failure.
 
-    This is the one LLM call the bot re-issues itself. LiteLLM's router applies `num_retries`
-    and its configured fallbacks to the non-streaming proxied paths, which is why the fast
-    one-shots degrade instead of failing (the triage call has no fallback there and degrades in
-    `routing.py` instead), but a provider 5xx that arrives as an SSE error frame mid-stream
-    reaches the client untouched -- and that is the one turn whose failure a user watches
-    happen.
+    This is the one LLM call the bot re-issues itself mid-turn on an error. LiteLLM's router
+    applies `num_retries` and its configured fallbacks to the non-streaming proxied paths, which
+    is why the fast one-shots degrade instead of failing (the triage call has no fallback there
+    and degrades in `routing.py` instead), but a provider 5xx that arrives as an SSE error frame
+    mid-stream reaches the client untouched -- and that is the one turn whose failure a user
+    watches happen.
 
     Re-issuing the request is safe because an answer turn is a pure read: nothing is written
     before the stream completes, and the retry stays on the same client and the same model, so
