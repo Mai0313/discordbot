@@ -153,15 +153,14 @@ def rebuild_conversation(
         The rebuilt messages in transcript order.
 
     Raises:
-        RuntimeError: The interaction names no channel or no user, which Discord never sends,
-            or the bot has no user, which it always has once an interaction can arrive.
+        RuntimeError: The interaction names no channel, which Discord never sends.
     """
     channel = interaction_channel(interaction=interaction)
     user = interaction.user
     bot_user = interaction.client.user
     if user is None or bot_user is None:
-        raise RuntimeError("The interaction names no user, or the bot has none yet")
-    # A `User` rather than `bot.user` itself, which is a `ClientUser` and so not one of the two
+        return []
+    # A `User` rather than `bot_user` itself, which is a `ClientUser` and so not one of the two
     # types `Message.author` may hold. Only the id is ever read off it here.
     state = interaction._state  # noqa: SLF001 -- the connection state the interaction arrived on
     bot_author = User(
