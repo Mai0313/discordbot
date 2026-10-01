@@ -788,17 +788,27 @@ def test_local_write_failure_leaves_no_partial_file(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_stalled_share_page_read_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A read that never got an answer is a come-back-later, never a missing post.
+@pytest.mark.parametrize(
+    argnames="failure",
+    argvalues=[
+        requests.ReadTimeout("stalled"),
+        requests.exceptions.ChunkedEncodingError("connection dropped mid-body"),
+    ],
+    ids=["read-timeout", "cut-off-body"],
+)
+def test_a_stalled_share_page_read_is_retryable(
+    monkeypatch: pytest.MonkeyPatch, failure: requests.RequestException
+) -> None:
+    """A read that never got an answer or got cut off is a come-back-later, never a missing post.
 
     Douyin raises its own classes, so its own fetch is what has to be asked: a synthetic error
     handed to the shared classifier passes whether or not this reader ever raises a retryable one.
     """
 
     def stall(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        """Never answers, the way a stalled read does not."""
+        """Fails the read the way the network did."""
         del url, kwargs
-        raise requests.ReadTimeout("stalled")
+        raise failure
 
     _install_session(monkeypatch=monkeypatch, handler=stall)
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
@@ -859,8 +869,6 @@ def test_a_stalled_media_download_is_retryable_but_not_the_bot_wall(
 
     The download is the request that stalls in practice, so its retries running out is the
     ordinary Douyin failure; reported flat, it would read as a post with nothing showable in it.
-    A body cut off mid-transfer carries no status, so the shared classifier alone would call it
-    final.
     """
 
     def stall(**kwargs: object) -> Path:
