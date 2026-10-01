@@ -2708,6 +2708,41 @@ async def test_a_clear_during_the_tone_call_keeps_the_batch_out_of_detail(
     assert read_tone(scope=USER_SCOPE) == ""
 
 
+async def test_a_failed_tone_call_keeps_the_batch(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tone call that failed keeps the batch, so the next run still offers its tone evidence.
+
+    Retired into `detail.md`, that evidence is out of every later update's reach (#839). An
+    answer that is empty or lacks the header is not a failed call and still retires the batch
+    (`test_pipeline_bad_tone_output_keeps_existing_note`).
+    """
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
+    _stage_tone_observation()
+    writer, fake_client = _writer()
+    tone_answer: ConsolidatedMemory | None = None
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Gives the tone call `tone_answer` and lets every other call through."""
+        del text_format
+        return tone_answer if "<tone_evidence>" in body else _no_change()
+
+    fake_client.responses.answer = answer
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
+    assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 原有偏好"
+
+    consolidation._last_consolidation.clear()
+    tone_answer = _no_change(tone="## 語氣偏好\n* 偏好禮貌")
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+
+    assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
 async def test_a_clear_during_a_compartment_call_writes_nothing_back(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

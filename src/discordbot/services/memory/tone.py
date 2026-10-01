@@ -36,31 +36,38 @@ from discordbot.services.memory.deltas import (
 from discordbot.services.memory.writer import ConsolidationRequest
 
 
-async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> None:
+async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> bool:
     """Rewrites the per-user tone note from the WHOLE batch, in its own call.
 
     It gets a call of its own rather than riding on the `global` compartment's, whose input
     is partitioned by construction. Here the deltas are discarded by CODE — this call cannot
     write a fact anywhere, whatever it returns — which is what makes unpartitioned input safe.
 
-    Best-effort throughout: the note is a small always-read tier and the next
-    consolidation repairs a bad write, so a failure never touches the raw batch.
+    Returns False when the call failed or a clear overtook it, so the caller keeps the raw
+    batch: retired into `detail.md`, its tone evidence is out of every later update's reach.
+    An answer that is empty or lacks `TONE_HEADER` is not a failure, since asking again over
+    the same evidence would only re-derive it: the existing note stands and this returns True,
+    as it does when the call ran or had nothing to do.
     """
     if run.flavor != "user":
-        return
+        return True
     tone_evidence = tone_evidence_from_raw(raw_text=raw_entries)
     if not tone_evidence:
         # No tone signal in this batch is the normal case, and an empty output must
         # never delete the note; only the evidence-complete rebuild may do that.
-        return
+        return True
     result = await run.writer.consolidate(
         request=_tone_request(
             existing_tone=read_tone(scope=run.scope), tone_evidence=tone_evidence, today=run.today
         )
     )
-    if result is None or cleared_since(scope=run.scope, started_at=run.started_at):
-        return
+    if result is None:
+        logfire.warn("Memory tone update call failed; keeping raw batch", scope=run.scope)
+        return False
+    if cleared_since(scope=run.scope, started_at=run.started_at):
+        return False
     _write_tone_result(scope=run.scope, tone_markdown=result.tone_markdown)
+    return True
 
 
 async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
