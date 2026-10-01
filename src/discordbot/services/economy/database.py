@@ -1,10 +1,5 @@
 """Persistent point-balance store for the economy cog.
 
-The engine is a module-level `AsyncEngine` singleton. Putting
-`create_async_engine()` on a per-instance `cached_property` would leak the
-connection pool, dialect cache, and inspector cache for every Discord
-interaction.
-
 Every balance-mutating write path is atomic at the SQLite transaction level.
 Most paths are a single UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a
 conditional `UPDATE ... WHERE ... RETURNING`; multi-row finance paths still roll
@@ -13,11 +8,7 @@ Python and writing the mutated value back would lose an update whenever two
 coroutines race on the same user, and would raise `IntegrityError` when two of
 them insert the same brand-new user.
 
-We use `aiosqlite` so every DB call stays on the event loop. Each operation
-opens an `AsyncSession` bound to the current `_engine`, so tests can
-monkeypatch `_engine` per-test and every subsequent call sees the swap.
-
-VIP bumps the player's winning payout from games and is permanent once set.
+VIP bumps the player's winning Blackjack payout and is permanent once set.
 Admin status gates maintenance-only economy commands and is set out-of-band by a
 direct DB write; `set_admin` exists for that path rather than for a runtime
 caller. Daily casino counters live on `casino_account`, one row per user, which
@@ -30,9 +21,8 @@ server administrator, and anyone can become one by creating a server. The
 per-guild lending pool is a second, looser throttle on top, and `guild_participant`
 is what says whose balance backs which guild.
 
-Shared jackpot pools and the casino ledger live in the same `economy.db` file
-as the per-user rows, so runtime casino and jackpot settlement applies the
-player delta and the house-side mirror in one atomic SQLite transaction.
+Runtime casino and jackpot settlement applies the player delta and the
+house-side mirror in one atomic SQLite transaction.
 """
 
 from time import monotonic
@@ -388,11 +378,11 @@ class CentralBankLedger(Base):
     """Interest the central bank has kept, which it lends out again.
 
     Central-bank principal is minted on approval and burned on repayment, so it
-    nets to nothing. The interest on top used to be burned with it; it is kept
-    here instead and added to the starting capital in `typings/economy.py`, the
-    two together being the bank's own money to lend. The row holds earnings only,
-    never the starting capital, so a database created before it existed starts
-    at zero and needs nothing seeded into it.
+    nets to nothing. The interest on top is kept here and added to the starting
+    capital in `typings/economy.py`, the two together being the bank's own money
+    to lend. The row holds earnings only, never the starting capital, so a
+    database created before it existed starts at zero and needs nothing seeded
+    into it.
 
     Attributes:
         balance: Interest kept and available to lend again.
@@ -1079,9 +1069,8 @@ async def apply_blackjack_settlement(
     else. `player_delta` can carry system-funded bonuses (e.g. five-card 21)
     that credit the player and count as casino payout but must not move the
     `/casino` ledger, so the caller passes `casino_delta` explicitly with those
-    bonuses left out.
-    The player write and the casino mirror live in the same
-    `data/database/economy.db` file and commit as one atomic transaction.
+    bonuses left out. The player write and the casino mirror commit as one
+    atomic transaction.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -1382,9 +1371,8 @@ async def apply_jackpot_settlement_batch(
     this transaction, then credited through the shared income path. Negative
     deltas normally clamp at zero and feed the pool with the actual debit.
     Required-full-debit settlements reject the whole batch instead. If a seeded
-    pool is drained, the same transaction restores its on-the-house seed.
-    Player and jackpot rows live in the same `data/database/economy.db` file,
-    so the whole batch commits as one atomic transaction.
+    pool is drained, the same transaction restores its on-the-house seed. The
+    whole batch commits as one atomic transaction.
 
     Args:
         game_id: Jackpot game identifier (e.g. `"dragon_gate"`).
@@ -2059,10 +2047,9 @@ async def _central_bank_status_in_session(
     cross servers and debt does not follow them, so a loan minted in one guild and
     handed to somebody who takes part in another arrives there as collateral with
     nothing owed against it. Charging only the local participants' debt therefore
-    stops bounding anything the moment three accounts hold accounts in three
-    guilds: measured on this code, 1,000 became 686,826,650,532 in forty rounds of
-    borrow-then-`/give` and was still accelerating. Subtracting the whole bank's
-    outstanding principal is what closes that, at the cost of making the credit
+    stops bounding anything once three accounts take part in three guilds: a
+    borrow-then-`/give` loop among them grows without limit. Subtracting the whole
+    bank's outstanding principal is what closes that, at the cost of making the credit
     budget shared — a guild's own wealth decides how much of the bank it may draw
     on, not how much the bank has.
     """

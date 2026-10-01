@@ -27,7 +27,7 @@ MAX_SINGLE_BET: Final[int] = 1_000_000
 MESSAGE_REWARD_COOLDOWN_SECONDS: Final[float] = 60.0
 # Permanent money sink: the burn on every transfer, in basis points.
 TRANSFER_TAX_BPS: Final[int] = 500
-# VIP perk: 1.2x payout on a winning round.
+# VIP perk: the payout multiplier on a winning round, as a fraction.
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 # The multiplier as command descriptions print it.
@@ -78,7 +78,7 @@ def clamped_balance(balance: int, delta: int, allow_negative: bool) -> int:
 
 
 def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
-    """Applies the VIP 1.2x payout multiplier on a winning player delta.
+    """Applies the VIP payout multiplier on a winning player delta.
 
     The bonus only fires on positive deltas (wins). Pushes and losses pass
     through unchanged so VIP never softens a loss.
