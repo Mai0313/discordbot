@@ -82,10 +82,9 @@ def _media_content(
 
     A `data:` reference therefore never reaches `uri`, whatever it looks like. Recognising the
     shape and falling through on anything else would reintroduce exactly that bug through a
-    narrower door, and two narrow doors are open: the image path hands over whatever MIME
-    Discord reported, parameters and all, where `attachment_mime` would have stripped them, and
-    an empty attachment inlines to a header with no payload at all. Neither is worth sending, so
-    an unusable one is dropped and said out loud instead.
+    narrower door, and one is open: an empty attachment inlines to a header with no payload at
+    all. That is not worth sending, so an unusable reference is dropped and said out loud
+    instead.
     """
     inline_prefix = "data:"
     base64_marker = ";base64"

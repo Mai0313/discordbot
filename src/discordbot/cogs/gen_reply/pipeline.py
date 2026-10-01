@@ -35,9 +35,9 @@ from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_
 from discordbot.cogs.gen_reply.media_reply import MediaReplyRoutes
 from discordbot.cogs.gen_reply.speculation import (
     discard_task,
+    discard_link_tasks,
     run_until_deadline,
     await_deadline_bound_task,
-    drain_deadline_bound_task,
 )
 from discordbot.cogs.gen_reply.status_marks import (
     DONE_EMOJI,
@@ -56,21 +56,6 @@ if TYPE_CHECKING:
 UNROUTED_REPLY = "unrouted"
 
 type LinkTask = asyncio.Task[list[EasyInputMessageParam]]
-
-
-async def discard_link_tasks(
-    *, link_tasks: dict[str, LinkTask], deadline: float | None, message_id: int
-) -> None:
-    """Drains link builds without stealing cancellation from their shared deadline."""
-    if link_tasks and deadline is None:
-        raise RuntimeError("Selected link tasks have no route deadline")
-    if deadline is None:
-        return
-    for name, task in link_tasks.items():
-        await drain_deadline_bound_task(
-            task=task, deadline=deadline, label=name, message_id=message_id
-        )
-    link_tasks.clear()
 
 
 class ReplyPipeline(BaseModel):
@@ -348,9 +333,8 @@ class ReplyPipeline(BaseModel):
                     self.reactions.advance(
                         emoji=IMAGE_EMOJI if route.decision == "IMAGE" else VIDEO_EMOJI
                     )
-                    # `parts_task` is left for the finally backstop — prep awaits it via
-                    # asyncio.shield, so if the handler discards prep on a generation failure the
-                    # shielded upload keeps running and the finally must drain it.
+                    # `parts_task` is left for the finally backstop: a prep discarded before it
+                    # reached its gather never awaited the upload.
                     media_context_task = prep_task
                     prep_task = None
                     await self._dispatch_media(
@@ -389,9 +373,11 @@ class ReplyPipeline(BaseModel):
             for task, label in ((prep_task, "prep"), (parts_task, "parts")):
                 if task is not None:
                     await discard_task(task=task, label=label, message_id=message.id)
-            await discard_link_tasks(
-                link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
-            )
+            # Set before any link build starts, so None means there is nothing to drain.
+            if link_context_deadline is not None:
+                await discard_link_tasks(
+                    link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
+                )
             # One record per triggering message, not per delivered artifact: the inline
             # clips and the media persona reply are all parts of this same turn. A failure
             # is recorded too — someone still talked to the bot — under the route it had

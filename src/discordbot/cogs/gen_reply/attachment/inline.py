@@ -10,7 +10,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import RenderedAttachment
-from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
@@ -45,18 +45,13 @@ class InlineRenderer(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
-        try:
-            loaded = await load_image_bytes(source=source)
-        except Exception as exc:
-            # Broad on purpose: `load_image_bytes` spans a CDN fetch, a PIL decode and a
-            # downscale re-encode, so the type is what names the failing step.
-            logfire.warn(
-                "failed to load image for inline render; dropping",
-                filename=resolve_source_filename(source=source, url_fallback="image.png"),
-                cache_key=loggable_cache_key(cache_key=cache_key),
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+        loaded = await self._load_source_bytes(
+            cache_key=cache_key,
+            filename=resolve_source_filename(source=source, url_fallback="image.png"),
+            load_data=lambda: load_image_bytes(source=source),
+            allow_dead_cache=False,
+        )
+        if loaded is None:
             return None
         image_part = ResponseInputImageParam(
             type="input_image",
@@ -89,18 +84,13 @@ class InlineRenderer(AttachmentRenderer):
                 mime_type=mime_type,
             )
             return None
-        try:
-            loaded = await load_attachment_bytes(attachment=attachment)
-        except Exception as exc:
-            # Broad on purpose: `attachment.read()` surfaces nextcord HTTPException/NotFound,
-            # aiohttp client errors and timeouts; all of them just drop this one part.
-            logfire.warn(
-                "failed to download attachment for inline render; dropping",
-                filename=attachment.filename,
-                url=attachment.url,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+        loaded = await self._load_source_bytes(
+            cache_key=cache_key,
+            filename=attachment.filename,
+            load_data=lambda: load_attachment_bytes(attachment=attachment),
+            allow_dead_cache=False,
+        )
+        if loaded is None:
             return None
         return self._inline_file_part(
             filename=attachment.filename, data=loaded.data, mime_type=mime_type

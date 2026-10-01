@@ -21,7 +21,6 @@ from collections.abc import AsyncIterator
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
@@ -39,7 +38,7 @@ from discordbot.cogs.gen_reply.prompts import (
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
-from discordbot.cogs.gen_reply.files_api import upload_to_files_api
+from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.generation import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
@@ -154,21 +153,21 @@ class MediaReplyRoutes(BaseModel):
         message = self.message
         toolkit = self.toolkit
         started = time.monotonic()
-        replied_to = replied_to_message(message=message)
-        logfire.info(
-            "gen_reply image generation start",
-            message_id=message.id,
-            model=toolkit.runtime_models.image_model.name,
-            has_source_images=replied_to is not None,
-        )
         async with self._delivery_window(context_task=context_task) as window:
             async with window:
                 image_bytes_list = [
                     loaded.data
                     for loaded in await toolkit.input_builder.get_turn_image_sources(
-                        message=message, replied_to=replied_to
+                        message=message, replied_to=replied_to_message(message=message)
                     )
                 ]
+                # Logged once the sources are in, since only they say whether this is an edit.
+                logfire.info(
+                    "gen_reply image generation start",
+                    message_id=message.id,
+                    model=toolkit.runtime_models.image_model.name,
+                    has_source_images=bool(image_bytes_list),
+                )
 
                 # Refine the raw request into a full generation/edit prompt first (best-effort,
                 # raw prompt on disable / failure); the source bytes ride along so an edit prompt
@@ -316,20 +315,20 @@ class MediaReplyRoutes(BaseModel):
         reply then references the full `uri` through the proxy; see `files_api` for why a uri and
         not the clip's own URL.
         """
-        file_uri = await upload_to_files_api(
+        video_part = await upload_as_input_file(
             client=self.toolkit.gemini_client,
             source=video_bytes,
             mime_type="video/mp4",
-            display_name=INLINE_VIDEO_FILENAME,
+            filename=INLINE_VIDEO_FILENAME,
             timeout_seconds=GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS,
         )
-        if file_uri is None:
+        if video_part is None:
             await discard_task(task=context_task, label="prep", message_id=self.message.id)
             return
         await self.answer.stream_media_persona_reply(
             reply=reply,
             context_task=context_task,
             system_prompt=VIDEO_REPLY_PROMPT,
-            focus_part=ResponseInputFileParam(type="input_file", file_id=file_uri),
+            focus_part=video_part,
             media_noun="video",
         )

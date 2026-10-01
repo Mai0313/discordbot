@@ -424,7 +424,6 @@ class AnswerTurn(BaseModel):
             reference=len(context.reference_messages),
             link_blocks=len(context.link_blocks),
             media_parts=count_media_parts(answer_input=answer_input),
-            capabilities=True,
             server_memory=context.server_memory_block is not None,
             user_memory=context.memory_block is not None,
             tone=context.tone_block is not None,

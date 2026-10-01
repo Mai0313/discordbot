@@ -7,7 +7,7 @@ import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import File, Embed, Message, NotFound, HTTPException, AllowedMentions
+from nextcord import File, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from tenacity.wait import wait_fixed, wait_random
@@ -411,6 +411,14 @@ class ResponseStreamer(BaseModel):
                         message_id=self.message.id,
                     )
                     return
+                except Forbidden:
+                    # A refusal repeats on every tick, and the ids are the whole finding.
+                    logfire.warn(
+                        "Channel refused a preview write; stopping preview edits",
+                        channel_id=self.message.channel.id,
+                        message_id=self.message.id,
+                    )
+                    return
                 except Exception as exc:
                     # Broad on purpose: the preview is best-effort and must never break the
                     # stream, but a persistent failure kills the whole live-preview UX, so the
@@ -761,7 +769,7 @@ class ResponseStreamer(BaseModel):
             reasoning_chars=len(self.reasoning_content),
             reply_chars=reply_chars,
             voice_requested=self.markers.voice_requested,
-            image_count=len(self.markers.image_prompts),
+            image_count=self.markers.image_requests,
             music_requested=bool(self.markers.music_prompt),
             video_requested=bool(self.markers.video_prompt),
             memory_lookups=self.memory_lookups.total,
@@ -867,7 +875,9 @@ class ResponseStreamer(BaseModel):
         except Exception as exc:
             # Broad on purpose: the reply may have been deleted, and a footnote is never worth
             # surfacing a failure for.
-            logfire.warn(failure, message_id=self.message.id, error_type=type(exc).__name__)
+            logfire.warn(
+                failure, message_id=self.message.id, error_type=type(exc).__name__, _exc_info=exc
+            )
             return False
         self.stored_content = content
         return True
@@ -976,7 +986,7 @@ class ResponseStreamer(BaseModel):
                 "Inline image source load failed; generating without source pixels",
                 message_id=self.message.id,
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
             return []
 
@@ -993,8 +1003,7 @@ class ResponseStreamer(BaseModel):
         `<generate-image>` and `<generate-video>` in the same reply load them only once; only the raw
         bytes are used here (the edit path needs no mime).
         """
-        prompts = self.markers.image_prompts[:MAX_INLINE_IMAGES]
-        if not prompts:
+        if not self.markers.image_prompts:
             return []
         if self.image_generator is None:
             # Inline image is intentionally off this turn (kill-switch / non-QA route): no hint.
@@ -1003,17 +1012,19 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return []
-        if len(self.markers.image_prompts) > MAX_INLINE_IMAGES:
+        if self.markers.image_requests > MAX_INLINE_IMAGES:
             logfire.info(
                 "Inline image requests exceed the per-reply cap; dropping the extras",
                 message_id=self.message.id,
-                requested=len(self.markers.image_prompts),
+                requested=self.markers.image_requests,
                 cap=MAX_INLINE_IMAGES,
             )
         # Mark the source message with the bot's `image` app emoji while the images render.
         await self.surface.mark(emoji=IMAGE_EMOJI)
         logfire.info(
-            "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
+            "Generating inline image reply",
+            message_id=self.message.id,
+            image_count=len(self.markers.image_prompts),
         )
         # When the user uploaded image(s), feed them so an inline <generate-image> edits them instead of
         # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
@@ -1027,7 +1038,7 @@ class ResponseStreamer(BaseModel):
                     end_user_id=self.message.author.name,
                     image_bytes_list=source_bytes or None,
                 )
-                for prompt in prompts
+                for prompt in self.markers.image_prompts
             )
         )
         candidates: list[MediaItem] = []
@@ -1039,7 +1050,11 @@ class ResponseStreamer(BaseModel):
                 continue
             # A single image keeps `generated.png` to mirror the IMAGE route; multiples need
             # distinct names since Discord collides on duplicate attachment filenames.
-            filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
+            filename = (
+                INLINE_IMAGE_FILENAME
+                if len(self.markers.image_prompts) == 1
+                else f"generated_{index}.png"
+            )
             candidates.append(MediaItem(source=image, filename=filename))
         if dropped:
             await self.surface.hint(emoji=DROPPED_HINT_EMOJI)

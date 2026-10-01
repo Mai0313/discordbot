@@ -61,9 +61,10 @@ class OpenAIFileUploader(FileUploadRenderer):
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str, kind: UploadKind
+        self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
         """Uploads bytes to OpenAI Files API and returns the uploaded handle."""
+        del cache_key
         purpose: OpenAIFilePurpose = "vision" if kind == "image" else "user_data"
         started = time.monotonic()
         logfire.debug(

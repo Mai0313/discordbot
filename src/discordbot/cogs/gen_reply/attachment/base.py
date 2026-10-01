@@ -1,5 +1,6 @@
 """The attachment renderer strategy interface, and the Files API upload renderer built on it."""
 
+import time
 from typing import TYPE_CHECKING, Literal
 from datetime import UTC, datetime, timedelta
 from collections import OrderedDict
@@ -123,9 +124,9 @@ class AttachmentRenderer(BaseModel):
     ) -> LoadedMedia | None:
         """Fetches one source's bytes and mime type, or None when the fetch failed.
 
-        Call it INSIDE the media slot: the fetch is half of what that slot bounds, and holding
-        the slot across the download and the upload alike is what stops concurrent pipelines
-        buffering dozens of files while they queue for an upload.
+        An uploading renderer calls it INSIDE the media slot: the fetch is half of what that slot
+        bounds, and holding the slot across the download and the upload alike is what stops
+        concurrent pipelines buffering dozens of files while they queue for an upload.
 
         The except is broad because `load_data` is caller-supplied and spans a CDN fetch plus a
         PIL decode; any failure must degrade to dropping this one attachment rather than blanking
@@ -140,7 +141,7 @@ class AttachmentRenderer(BaseModel):
             loaded = await load_data()
         except Exception as exc:
             logfire.warn(
-                "failed to load attachment bytes for upload",
+                "failed to load attachment bytes; dropping it",
                 filename=filename,
                 cache_key=loggable_cache_key(cache_key=cache_key),
                 allow_dead_cache=allow_dead_cache,
@@ -159,7 +160,8 @@ class FileUploadRenderer(AttachmentRenderer):
     A provider supplies `_upload_file`, plus its own `render_image`, since how an uploaded image
     is referenced differs per provider. The file render and the upload resolution are shared: a
     history source known dead is skipped, and one media slot spans the download and the upload.
-    A provider with more to decide before uploading overrides `_resolve_file_upload` whole.
+    A provider with more to decide before uploading overrides `_resolve_file_upload` and then
+    defers to it.
     """
 
     async def render_file(
@@ -201,9 +203,18 @@ class FileUploadRenderer(AttachmentRenderer):
         launch dozens of CDN downloads at once and buffer all their bytes while they wait for
         an upload.
         """
+        # The dead-source skip is for history scrollback only (an expired CDN url that
+        # re-fails every turn); current/reference renders never opt in, so one transient
+        # failure on a just-posted attachment is not poisoned for the next reply.
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
+        wait_started = time.monotonic()
         async with media_semaphore.get():
+            logfire.debug(
+                "media slot acquired",
+                cache_key=loggable_cache_key(cache_key=cache_key),
+                wait_seconds=time.monotonic() - wait_started,
+            )
             loaded = await self._load_source_bytes(
                 cache_key=cache_key,
                 filename=filename,
@@ -213,11 +224,18 @@ class FileUploadRenderer(AttachmentRenderer):
             if loaded is None:
                 return None
             return await self._upload_file(
-                filename=filename, data=loaded.data, content_type=loaded.mime_type, kind=kind
+                cache_key=cache_key,
+                filename=filename,
+                data=loaded.data,
+                content_type=loaded.mime_type,
+                kind=kind,
             )
 
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str, kind: UploadKind
+        self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
-        """Uploads one source's bytes, returning the handle or None when the upload failed."""
+        """Uploads one source's bytes, returning the handle or None when the upload failed.
+
+        `cache_key` names the source, for a provider that keeps per-source upload state.
+        """
         raise NotImplementedError

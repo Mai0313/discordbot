@@ -12,8 +12,19 @@ from collections.abc import Awaitable
 import logfire
 
 
+def _report_discarded_failure(*, exc: Exception, label: str, message_id: int) -> None:
+    """Records a speculative task that failed after the turn stopped needing its result."""
+    logfire.warn(
+        "Discarded speculative task failed",
+        task_label=label,
+        error_type=type(exc).__name__,
+        message_id=message_id,
+        _exc_info=exc,
+    )
+
+
 async def discard_task[TaskResultT](
-    *, task: asyncio.Task[TaskResultT], label: str = "speculative", message_id: int | None = None
+    *, task: asyncio.Task[TaskResultT], label: str, message_id: int
 ) -> None:
     """Cancels and drains a speculative task so its exception is retrieved.
 
@@ -29,13 +40,7 @@ async def discard_task[TaskResultT](
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        logfire.warn(
-            "Speculative reply context build failed off-route",
-            task_label=label,
-            error_type=type(exc).__name__,
-            message_id=message_id,
-            _exc_info=exc,
-        )
+        _report_discarded_failure(exc=exc, label=label, message_id=message_id)
 
 
 async def await_deadline_bound_task[DeadlineT](
@@ -52,7 +57,7 @@ async def await_deadline_bound_task[DeadlineT](
 
 
 async def drain_deadline_bound_task[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int | None = None
+    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
 ) -> None:
     """Cancels before a task's deadline or preserves its in-progress deadline cleanup."""
     if not task.done() and asyncio.get_running_loop().time() < deadline:
@@ -70,13 +75,18 @@ async def drain_deadline_bound_task[DeadlineT](
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        logfire.warn(
-            "Speculative reply context build failed off-route",
-            task_label=label,
-            error_type=type(exc).__name__,
-            message_id=message_id,
-            _exc_info=exc,
+        _report_discarded_failure(exc=exc, label=label, message_id=message_id)
+
+
+async def discard_link_tasks[DeadlineT](
+    *, link_tasks: dict[str, asyncio.Task[DeadlineT]], deadline: float, message_id: int
+) -> None:
+    """Drains link builds without stealing cancellation from their shared deadline."""
+    for name, task in link_tasks.items():
+        await drain_deadline_bound_task(
+            task=task, deadline=deadline, label=name, message_id=message_id
         )
+    link_tasks.clear()
 
 
 async def run_until_deadline[DeadlineT](

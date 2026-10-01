@@ -37,7 +37,7 @@ from functools import cached_property
 from pydantic import Field, BaseModel
 
 # Hard cap on inline images per reply: a voice clip plus 9 images exactly fills Discord's
-# 10-attachment ceiling. The prompt tells the model this limit; the streamer enforces it by
+# 10-attachment ceiling. The prompt tells the model this limit; extraction enforces it by
 # dropping any extra blocks so a confused model never blows past the attachment cap. A reply
 # may also carry one music clip and one video clip (each single per reply by design), so a rare
 # voice + music + video + 9 images would be 12 attachments; `MediaDeliveryPlanner.plan`'s
@@ -184,7 +184,14 @@ class InlineMarkers(BaseModel):
     )
     image_prompts: list[str] = Field(
         default_factory=list,
-        description="Every <generate-image> description to generate, in order; empty when none.",
+        description=(
+            "The <generate-image> descriptions to generate, in order, up to MAX_INLINE_IMAGES; "
+            "empty when none."
+        ),
+    )
+    image_requests: int = Field(
+        default=0,
+        description="How many <generate-image> descriptions the reply wrote, past the cap too.",
     )
     music_prompt: str | None = Field(
         default=None,
@@ -217,16 +224,16 @@ class InlineMarkers(BaseModel):
 def extract_inline_markers(*, text: str) -> InlineMarkers:
     """Splits a finished reply into visible text plus its voice / image / music / video requests.
 
-    Image blocks (tags AND content) are removed entirely so the generation prompt never shows
-    in chat; every non-empty one becomes an image request, in order. A `<generate-music>` and a
-    `<generate-video>` block are pulled the same way, but only the first non-empty one of each is
-    kept (one clip per reply by design), as is the first `<deep-research>` brief. Voice tags are
-    stripped but their inner content STAYS in the visible reply, and every wrapped segment is
-    concatenated as the spoken-clip input. An unclosed trailing open (the model forgot to close
-    it) is still pulled so its raw description never leaks, and any stray unpaired tag is
-    scrubbed. The three memory tags are pulled like image blocks, each keeping up to
-    `MAX_MEMORY_NOTES` notes in the order they were written — which is the order the evaluator
-    downstream reads them in.
+    Image blocks (tags AND content) are removed entirely so the generation prompt never shows in
+    chat; every non-empty one is counted, and up to `MAX_INLINE_IMAGES` become image requests, in
+    order. A `<generate-music>` and a `<generate-video>` block are pulled the same way, but only
+    the first non-empty one of each is kept (one clip per reply by design), as is the first
+    `<deep-research>` brief. Voice tags are stripped but their inner content STAYS in the visible
+    reply, and every wrapped segment is concatenated as the spoken-clip input. An unclosed
+    trailing open (the model forgot to close it) is still pulled so its raw description never
+    leaks, and any stray unpaired tag is scrubbed. The three memory tags are pulled like image
+    blocks, each keeping up to `MAX_MEMORY_NOTES` notes in the order they were written — which is
+    the order the evaluator downstream reads them in.
     """
     cleaned = text
     pulled: dict[str, list[str]] = {}
@@ -254,7 +261,8 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
         cleaned_text=cleaned,
         voice_text="\n".join(voice_segments),
         voice_requested=bool(voice_segments),
-        image_prompts=pulled[IMAGE_OPEN],
+        image_prompts=pulled[IMAGE_OPEN][:MAX_INLINE_IMAGES],
+        image_requests=len(pulled[IMAGE_OPEN]),
         music_prompt=next(iter(pulled[MUSIC_OPEN]), None),
         video_prompt=next(iter(pulled[VIDEO_OPEN]), None),
         research_brief=next(iter(pulled[DEEP_RESEARCH_OPEN]), None),

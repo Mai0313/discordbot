@@ -146,11 +146,7 @@ from discordbot.cogs.gen_reply.generation import (
 )
 from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_source
 from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaReplyRoutes
-from discordbot.cogs.gen_reply.speculation import (
-    discard_task,
-    run_until_deadline,
-    await_deadline_bound_task,
-)
+from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
@@ -162,6 +158,7 @@ from discordbot.services.memory.server_prompts import (
 )
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
@@ -1531,6 +1528,36 @@ async def test_streaming_reraises_non_deletion_edit_errors() -> None:
         await _streamer(message=message, reply=reply).stream(responses=_stream_events())
 
 
+async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A channel that refuses the live preview is reported once by id and never asked again."""
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = make_forbidden()
+    streamer = _streamer(
+        message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
+    )
+    streamer.content_started = True
+    streamer.stored_content = "partial answer"
+    warned: list[tuple[str, dict[str, object]]] = []
+
+    def record_warn(message_text: str, **fields: object) -> None:
+        """Keeps every warn record with its fields."""
+        warned.append((message_text, fields))
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.logfire.warn", record_warn)
+
+    await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
+
+    assert warned == [
+        (
+            "Channel refused a preview write; stopping preview edits",
+            {"channel_id": message.channel.id, "message_id": message.id},
+        )
+    ]
+
+
 async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     """Media requested on a since-deleted reply is dropped silently, with no ⚠️ on the source."""
     message = FakeMessage()
@@ -2139,6 +2166,16 @@ def test_extract_inline_markers_caps_memory_notes_per_kind() -> None:
     text = "".join(f"<write-memory>note {index}</write-memory>" for index in range(12))
     markers = extract_inline_markers(text=text)
     assert markers.memory_notes == [f"note {index}" for index in range(MAX_MEMORY_NOTES)]
+
+
+def test_extract_inline_markers_caps_images_but_counts_every_request() -> None:
+    """Extraction keeps the first `MAX_INLINE_IMAGES` descriptions and still counts the rest."""
+    text = "".join(
+        f"<generate-image>image {index}</generate-image>" for index in range(MAX_INLINE_IMAGES + 3)
+    )
+    markers = extract_inline_markers(text=text)
+    assert markers.image_prompts == [f"image {index}" for index in range(MAX_INLINE_IMAGES)]
+    assert markers.image_requests == MAX_INLINE_IMAGES + 3
 
 
 def test_scrub_markers_for_preview_hides_a_streaming_memory_note() -> None:
@@ -3901,6 +3938,29 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
 
 
+class _ImageAttachment(nextcord.Attachment):
+    """A real `Attachment` subclass, so the image loader takes its attachment branch."""
+
+    def __init__(self, content_type: str, payload: bytes) -> None:
+        """Sets only what the loader reads; the slots nextcord fills from a payload stay unset."""
+        self.filename = "pic.gif"
+        self.content_type = content_type
+        self._payload = payload
+
+    async def read(self, *, use_cached: bool = False) -> bytes:
+        """Returns the configured bytes instead of fetching from the CDN."""
+        del use_cached
+        return self._payload
+
+
+async def test_an_image_attachment_mime_is_normalized_before_the_downscale() -> None:
+    """Discord's reported MIME loses its parameters and case, so a GIF still passes through."""
+    loaded = await load_image_bytes(
+        source=_ImageAttachment(content_type="Image/GIF; charset=binary", payload=b"GIF89a")
+    )
+    assert loaded == LoadedMedia(data=b"GIF89a", mime_type="image/gif")
+
+
 @pytest.fixture
 def files_api_poll_unslept(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes the Files API activation poll's backoff return at once."""
@@ -4183,7 +4243,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     errored = _fake_openai_uploader(files=FakeOpenAIFiles(status="error"))
     assert (
         await errored._upload_file(
-            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4202,7 +4262,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     monkeypatch.setattr(boom.client.files, "create", _raise)
     assert (
         await boom._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4263,6 +4323,29 @@ async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
 
     assert rendered is None
     assert clip.read_count == 0
+
+
+async def test_inline_renderer_drops_a_source_that_fails_to_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed fetch drops only that part, and the stateless renderer remembers nothing of it."""
+
+    async def fail(attachment: object) -> LoadedMedia:
+        """Fails the download the way an expired CDN url does."""
+        del attachment
+        raise RuntimeError("cdn expired")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.inline.load_attachment_bytes", fail)
+    renderer = InlineRenderer()
+
+    rendered = await renderer.render_file(
+        attachment=cast("Attachment", FakeAttachment(filename="notes.txt")),
+        cache_key="notes.txt",
+        allow_dead_cache=True,
+    )
+
+    assert rendered is None
+    assert not renderer._dead_sources
 
 
 def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
@@ -4331,7 +4414,7 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     idless = _fake_grok_uploader(files=FakeXAIFiles(file_id=""))
     assert (
         await idless._upload_file(
-            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4347,7 +4430,7 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     monkeypatch.setattr(boom.xai_client.files, "upload", _raise)
     assert (
         await boom._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4376,7 +4459,7 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
     )
     assert (
         await stalled._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4407,7 +4490,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     renderer = GrokFileUploader()
     assert (
         await renderer._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4450,7 +4533,7 @@ async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
     """A response without an expiry still bounds the render cache by the requested TTL."""
     renderer = _fake_grok_uploader(files=FakeXAIFiles(expires_at=None))
     uploaded = await renderer._upload_file(
-        filename="notes.txt", data=b"hello", content_type="text/plain", kind="file"
+        cache_key="k", filename="notes.txt", data=b"hello", content_type="text/plain", kind="file"
     )
     assert uploaded is not None
     assert uploaded.expires_at > datetime.now(tz=UTC) + timedelta(days=29)
@@ -5130,6 +5213,14 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
+    started: list[dict[str, object]] = []
+
+    def record_info(message_text: str, **fields: object) -> None:
+        """Keeps the fields of the route's start record."""
+        if message_text == "gen_reply image generation start":
+            started.append(fields)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.logfire.info", record_info)
     message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes())
@@ -5141,6 +5232,8 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
 
     assert _recorded(cog).images.edit_calls == 1
     assert _recorded(cog).images.generate_calls == 0
+    # The message replies to nothing, yet its own image is what makes this an edit.
+    assert [fields["has_source_images"] for fields in started] == [True]
 
 
 async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
@@ -5368,7 +5461,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
         """Simulates the post-delivery Files-API upload failing."""
         del kwargs
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.upload_to_files_api", _no_upload)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.upload_as_input_file", _no_upload)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=1)  # below the 3-byte fake clip -> oversized
 
@@ -5476,7 +5569,7 @@ _SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENI
         (_SOURCE_UPLOAD_REFUSED, _SOURCE_UPLOAD_REFUSED),
         (
             SimpleNamespace(name=None, uri=None, state=FileState.ACTIVE),
-            RuntimeError("Source video upload returned no file name"),
+            RuntimeError("Files API upload of source.mp4 returned no resource name"),
         ),
         (
             SimpleNamespace(name="files/vid", uri=None, state=FileState.PROCESSING),
@@ -5484,7 +5577,7 @@ _SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENI
         ),
         (
             SimpleNamespace(name="files/vid", uri=None, state=FileState.FAILED),
-            RuntimeError("Source video upload failed: state=FileState.FAILED"),
+            RuntimeError("Files API upload of source.mp4 failed: state=FileState.FAILED"),
         ),
     ],
     ids=["sdk-error", "no-name", "never-active", "failed-state"],
@@ -5886,54 +5979,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         assert contexts == [prepared_context]
         # The route's grade flows end-to-end into the QA answer model.
         assert effort_flags == ["low"]
-
-
-async def test_prepare_reply_context_shields_shared_parts_task(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cancelling the speculative prep must not cancel the shared upload task.
-
-    A media route whose generation fails discards the prep it was handed while the turn still
-    owns `parts_task` and drains it; an unshielded `await parts_task` inside prep would take the
-    upload down with the prep instead.
-    """
-    cog = _cog()
-    release = asyncio.Event()
-
-    async def slow_parts() -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Stands in for an upload still activating when the route is decided."""
-        await release.wait()
-        return ([], [])
-
-    async def fake_history(self: object, *, limit: int) -> list[object]:
-        """Returns empty history so prep parks directly on the shared parts task."""
-        del self, limit
-        return []
-
-    monkeypatch.setattr(ReplyContextBuilder, "fetch_history", fake_history)
-    parts_task = asyncio.create_task(coro=slow_parts())
-    builder = _context_builder(
-        cog=cog,
-        message=as_message(fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))),
-    )
-    prep_task = asyncio.create_task(
-        coro=builder.build(
-            history_limit=100,
-            parts_task=parts_task,
-            recall=builder.plan_recall(),
-            recall_picks=_resolved_picks(),
-        )
-    )
-    # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    await discard_task(task=prep_task)
-
-    assert not parts_task.cancelled()
-    release.set()
-    reference_messages, current_message = await parts_task
-    assert (reference_messages, current_message) == ([], [])
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
@@ -6707,7 +6752,7 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
 
     def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
         """Records the fields of the off-route build failure report."""
-        if message == "Speculative reply context build failed off-route":
+        if message == "Discarded speculative task failed":
             warned.append(kwargs)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.speculation.logfire.warn", record_warn)
@@ -8107,7 +8152,9 @@ async def test_streamer_footer_shows_route_effort() -> None:
     assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
 
 
-async def test_route_classify_carries_decision_and_defaults_qa() -> None:
+async def test_route_classify_carries_decision_and_defaults_qa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The route classifies the reply mode and grades effort; unparsed output falls back to QA."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -8119,11 +8166,17 @@ async def test_route_classify_carries_decision_and_defaults_qa() -> None:
     assert routed.link_context_sources == ["threads", "bilibili"]
     assert routed.effort == "low"
 
+    warned: list[str] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.routing.logfire.warn", _message_recorder(into=warned)
+    )
     _recorded(cog).responses.output_parsed = None
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
     assert fallback.effort == "high"
+    # Nothing raised, so this record is the only trace that the route was never read.
+    assert warned == ["RouteClassification returned no parsed output; defaulting to QA"]
 
 
 async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:

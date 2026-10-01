@@ -205,12 +205,11 @@ class MessageInputBuilder(BaseModel):
     def collect_attachment_sources(self, message: Message) -> list[AttachmentSource]:
         """Classifies every renderable attachment source on a message from metadata.
 
-        One metadata-only pass shared by the text-only marker render, the Files-API
-        upload, the render cache key, and the IMAGE route; does no network or upload
-        work so it is safe to call on the route critical path. Embeds prefer Discord's
-        `proxy_url` (media.discordapp.net) over the origin URL, since sources like the
-        Threads CDN expire and reject requests without specific headers. A forwarded
-        message's media is folded in from `message.snapshots` so a forward is not blank.
+        One metadata-only pass that does no network or upload work, so it is safe to call on the
+        route critical path. Embeds prefer Discord's `proxy_url` (media.discordapp.net) over the
+        origin URL, since sources like the Threads CDN expire and reject requests without
+        specific headers. A forwarded message's media is folded in from `message.snapshots` so a
+        forward is not blank.
         """
         is_own_message = bool(self.bot.user and message.author.id == self.bot.user.id)
         sources = self._sources_from_parts(
@@ -519,7 +518,7 @@ class MessageInputBuilder(BaseModel):
         """Extracts attachment content parts from a message, with a per-message cache.
 
         `sources` are the message's collected sources after the modality gate. `allow_dead_cache`
-        is opt-in for history scrollback only (see `GeminiFileUploader._resolve_file_upload`).
+        is opt-in for history scrollback only (see `FileUploadRenderer._resolve_file_upload`).
         """
         if not sources:
             return []
@@ -675,7 +674,8 @@ class MessageInputBuilder(BaseModel):
                 logfire.warn(
                     "gen_reply failed to render message for routing",
                     message_id=message.id,
-                    _exc_info=True,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
                 )
             else:
                 logfire.warn(

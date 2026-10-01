@@ -113,7 +113,7 @@ FILES_API_READ_TIMEOUT_SECONDS: Final[float] = 10.0
 GROK_FILE_UPLOAD_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # Bound on the whole Files API upload of a generated clip the persona reply then watches:
-# `upload_to_files_api` covers the transfer as well as the ACTIVE poll under this one timeout,
+# `upload_as_input_file` covers the transfer as well as the ACTIVE poll under this one timeout,
 # started once an upload slot is free. Generous relative to an image because video sits in
 # PROCESSING longer, but far under the link-media bound: the clip was just produced here, so it
 # is small and known-good.
