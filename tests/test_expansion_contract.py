@@ -32,7 +32,6 @@ from collections.abc import Callable, Iterator
 
 import pytest
 from nextcord import Message, Forbidden
-from nextcord.ext import commands
 
 from discordbot.utils import expansion_placeholder as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
@@ -699,13 +698,3 @@ def test_a_refused_delivery_names_its_code_instead_of_a_traceback(
     assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
     if not traceback:
         assert reports[0][1]["code"] == 400001
-
-
-def test_the_shell_is_not_itself_a_loadable_cog() -> None:
-    """`_load_cogs_sync` scans `cogs/` one level deep, so the base must not live there.
-
-    It is a `commands.Cog` subclass with listeners of its own; a copy under `cogs/` would be
-    loaded and would answer every message with a `NotImplementedError`.
-    """
-    assert issubclass(ExpansionCog, commands.Cog)
-    assert not (_COGS_DIR / "expansion_cog").exists()

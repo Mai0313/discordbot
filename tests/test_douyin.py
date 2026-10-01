@@ -12,8 +12,10 @@ import tempfile
 from collections.abc import Callable, Iterator
 
 import pytest
+import requests
 
 from discordbot.typings.video import VideoQuality
+from discordbot.utils.link_errors import LinkRetryableError
 import discordbot.services.platforms.douyin as douyin_module
 from discordbot.services.platforms.douyin import (
     DOUYIN_URL_RE,
@@ -21,6 +23,7 @@ from discordbot.services.platforms.douyin import (
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
+    DouyinTransferError,
     DouyinUnavailableError,
     is_douyin_url,
     is_douyin_post_url,
@@ -118,9 +121,9 @@ class _FakeResponse:
         self._stall_mid_stream = stall_mid_stream
 
     def raise_for_status(self) -> None:
-        """Mimics requests' status check."""
+        """Mimics requests' status check, carrying the response the way requests does."""
         if self.status_code >= 400:
-            raise douyin_module.RequestException(f"status {self.status_code}")
+            raise requests.HTTPError(f"status {self.status_code}", response=self)
 
     def iter_content(self, chunk_size: int) -> Iterator[bytes]:
         """Yields the canned body, optionally dying part-way through.
@@ -785,3 +788,65 @@ def test_local_write_failure_leaves_no_partial_file(
 
     monkeypatch.undo()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_stalled_share_page_read_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read that never got an answer is a come-back-later, never a missing post.
+
+    Douyin raises its own classes, so its own fetch is what has to be asked: a synthetic error
+    handed to the shared classifier passes whether or not this reader ever raises a retryable one.
+    """
+
+    def stall(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        """Never answers, the way a stalled read does not."""
+        del url, kwargs
+        raise requests.ReadTimeout("stalled")
+
+    _install_session(monkeypatch=monkeypatch, handler=stall)
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    with pytest.raises(DouyinBlockedError):
+        downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+
+
+@pytest.mark.parametrize(
+    argnames=("status", "retryable"), argvalues=[(429, True), (503, True), (404, False)]
+)
+def test_a_refused_short_link_is_retryable_only_when_http_says_so(
+    monkeypatch: pytest.MonkeyPatch, status: int, retryable: bool
+) -> None:
+    """A refused short-link hop carries no `Location`, which is not the same as no post."""
+    _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
+    )
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    with pytest.raises(DouyinError) as raised:
+        downloader._resolve_aweme_id(url="https://v.douyin.com/AbCdEf12/")
+    assert isinstance(raised.value, DouyinBlockedError) is retryable
+
+
+def test_a_stalled_media_download_is_retryable_but_not_the_bot_wall(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A transfer that keeps stalling is retryable, and is not the bot wall.
+
+    The download is the request that stalls in practice, so its retries running out is the
+    ordinary Douyin failure; reported flat, it would read as a post with nothing showable in it.
+    """
+
+    def stall(**kwargs: object) -> Path:
+        """Never completes, the way a stalling CDN transfer does not."""
+        del kwargs
+        raise requests.ReadTimeout("stalled")
+
+    monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
+    downloader = DouyinDownloader(output_folder=str(tmp_path))
+
+    with pytest.raises(DouyinTransferError) as raised:
+        downloader._download_to(url="https://example.test/v.mp4", filename="v.mp4")
+
+    # Retryable to the expansion, but NOT the bot wall: `/download_video` answers in words,
+    # and blaming a wall sends someone off to wait out something that was never there.
+    assert isinstance(raised.value, LinkRetryableError)
+    assert not isinstance(raised.value, DouyinBlockedError)

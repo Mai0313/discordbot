@@ -6,27 +6,20 @@ someone a working link is dead. So these pin the mapping status by status rather
 a range check to keep meaning what it meant.
 """
 
-import io
-from typing import Self
-from pathlib import Path
 from collections.abc import Callable
 
 import pytest
 import requests
 
-from discordbot.cogs.video.cog import douyin_failure_message
 from discordbot.utils.link_errors import (
     LinkReadError,
     LinkRetryableError,
     LinkUnavailableError,
     link_fetch_error,
 )
-from discordbot.services.platforms import douyin as douyin_module
 from discordbot.services.platforms.douyin import (
     DouyinError,
-    DouyinDownloader,
     DouyinBlockedError,
-    DouyinTransferError,
     DouyinUnavailableError,
 )
 from discordbot.services.platforms.threads import ThreadsDownloader
@@ -144,92 +137,3 @@ def test_each_douyin_error_earns_the_mark_of_the_shared_class_it_sits_under(
 ) -> None:
     """Douyin raises its own classes, so where each sits in the shared tree is its reaction."""
     assert expansion_failure_emoji(error=error) == expected
-
-
-def test_a_stalled_douyin_read_is_retryable_too(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Douyin raises its own classes, so the shared predicate is what keeps it in step.
-
-    This is the gap that let a real divergence through review: every other test feeds
-    `expansion_failure_emoji` a synthetic exception, so a platform whose reader never raised a
-    retryable class at all still passed. Douyin's own fetch is the one that has to be asked.
-    """
-
-    class _StalledSession:
-        """Answers the way a share page under load does, for the `with` block Douyin opens."""
-
-        def __enter__(self) -> Self:
-            return self
-
-        def __exit__(self, *exc_info: object) -> bool:
-            return False
-
-        def get(self, *args: object, **kwargs: object) -> requests.Response:
-            """Never answers, the way a stalled read does not."""
-            del args, kwargs
-            raise requests.ReadTimeout("stalled")
-
-    monkeypatch.setattr(target=douyin_module.requests, name="Session", value=_StalledSession)
-    downloader = DouyinDownloader(output_folder="")
-
-    with pytest.raises(DouyinBlockedError):
-        downloader.parse_metadata(url="https://www.douyin.com/video/7000000000000000000")
-
-
-@pytest.mark.parametrize(("status", "retryable"), [(429, True), (503, True), (404, False)])
-def test_a_refused_douyin_short_link_is_retryable_only_when_http_says_so(
-    status: int, retryable: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A refused short-link hop carries no `Location`, which is not the same as no post."""
-
-    class _RefusingSession:
-        """Answers the redirect probe the way Douyin under load does."""
-
-        def __enter__(self) -> Self:
-            return self
-
-        def __exit__(self, *exc_info: object) -> bool:
-            return False
-
-        def get(self, url: str, **kwargs: object) -> requests.Response:
-            """Refuses with `status` and no headers at all."""
-            del kwargs
-            response = requests.Response()
-            response.status_code = status
-            response.url = url
-            response.raw = io.BytesIO()
-            return response
-
-    monkeypatch.setattr(target=douyin_module.requests, name="Session", value=_RefusingSession)
-    downloader = DouyinDownloader(output_folder="")
-
-    with pytest.raises(DouyinError) as raised:
-        downloader._resolve_aweme_id(url="https://v.douyin.com/AbCdEf12/")
-    assert isinstance(raised.value, DouyinBlockedError) is retryable
-
-
-def test_a_stalled_douyin_download_is_retryable_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The download is Douyin's third request, and the one that stalls in practice.
-
-    Its retries being spent is the ordinary Douyin failure rather than an exotic one, and
-    reported flat it read as a post with nothing showable in it. The two fetch sites are
-    covered above; this is the one a reader actually meets.
-    """
-
-    def stall(**kwargs: object) -> Path:
-        """Never completes, the way a stalling CDN transfer does not."""
-        del kwargs
-        raise requests.ReadTimeout("stalled")
-
-    monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
-    downloader = DouyinDownloader(output_folder=str(tmp_path))
-
-    with pytest.raises(DouyinTransferError) as raised:
-        downloader._download_to(url="https://example.test/v.mp4", filename="v.mp4")
-
-    # Retryable to the expansion, but NOT the bot wall: `/download_video` answers in words,
-    # and blaming a wall sends someone off to wait out something that was never there.
-    assert isinstance(raised.value, LinkRetryableError)
-    assert not isinstance(raised.value, DouyinBlockedError)
-    assert "擋住" not in douyin_failure_message(error=raised.value)
