@@ -113,8 +113,8 @@ def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str
 def parse_identity(identity: str, fallback_owner_id: int) -> MemoryOwner:
     """Splits a rendered identity line into the owner fields stamped onto a fact.
 
-    A line that does not parse keeps the id the scope key already carries and drops the
-    name, which the next online write fills back in.
+    A line that does not parse keeps the id the scope key already carries and takes the
+    whole line, collapsed, as the name.
     """
     match = _IDENTITY_RE.match(identity.strip())
     if match is None:

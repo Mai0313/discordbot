@@ -27,6 +27,8 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
 from discordbot.typings.memory import MemoryWriteSummary
+
+# Imported as a module so a test that swaps one database call on it reaches the calls here.
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.asyncio_locks import (
     KeyedLockManager,
@@ -60,8 +62,8 @@ class MemoryTurn(BaseModel):
     transcript: str = Field(
         ...,
         description=(
-            "The rendered phase-1 input captured for the turn (already folds in the reply), "
-            "so a replay needs no re-render."
+            "The turn payload captured for the turn: the rendered transcript (reply folded "
+            "in) plus its memory notes (`render_turn_payload`), so a replay needs no re-render."
         ),
     )
     writer: SkipValidation[MemoryWriterAI] = Field(

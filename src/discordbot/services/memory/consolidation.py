@@ -357,8 +357,7 @@ async def _consolidate_compartment(
 
     The request carries only the evidence routed to the compartment being written, which is
     what makes "a guild-locked observation cannot reach `global/`" structural rather than a
-    rule the prompt asks the model to follow. The tone note is genuinely cross-compartment and
-    is therefore NOT written here; it has its own call, outside the fan-out.
+    rule the prompt asks the model to follow.
     """
     existing = read_facts(scope=run.scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)

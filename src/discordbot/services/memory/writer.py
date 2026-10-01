@@ -502,8 +502,8 @@ def participant_names_from_transcript(
     The trusted author prefix is the only authorship signal in a rendered transcript,
     so the roster is read from it rather than threaded down from the reply pipeline —
     which also means a resumed job rebuilds the same roster from its stored transcript
-    with no extra column. The bot never carries an author prefix, so it is absent by
-    construction rather than by an exclusion rule.
+    with no extra column. The bot's own message carries that prefix only when it had
+    attachments, and nothing excludes it then: its names join the roster too.
 
     A forged prefix inside someone's message body can only ADD a name, and an extra name
     can only tighten an observation's sharing, so the untrusted position costs nothing.

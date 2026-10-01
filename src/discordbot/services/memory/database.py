@@ -72,7 +72,8 @@ class MemoryJobRow(Base):
         scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
         flavor: ``user`` or ``server`` so the restart sweep picks the matching writer.
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
-        transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
+        transcript: The turn payload, the rendered transcript plus the turn's memory notes
+            (``render_turn_payload``); set to NULL once the turn is ``done``.
         identity: Single-line identity ``parse_identity`` splits into the ``owner_id`` /
             ``owner_name`` stamped on every fact this scope writes; persisted so a resume
             needs no Discord context.
@@ -115,7 +116,7 @@ class MemoryJob(BaseModel):
     flavor: MemoryFlavor = Field(..., description="User or server flavor of the scope.")
     subject: str = Field(..., description="The phase-1 directive naming the review target.")
     transcript: str | None = Field(
-        ..., description="The rendered phase-1 input, or None once the turn is done."
+        ..., description="The turn payload (transcript plus memory notes), or None once done."
     )
     identity: str = Field(..., description="Single-line identity stamped onto the scope's facts.")
     status: MemoryJobStatus = Field(..., description="Lifecycle status of the turn.")

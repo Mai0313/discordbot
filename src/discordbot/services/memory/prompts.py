@@ -163,10 +163,9 @@ SAFETY:
 """
 
 # Appended to PHASE2_PROMPT when a compartment has grown large, and on every rebuild, whose
-# `<existing_facts>` is empty, so its wording has to hold on both. There is no whole-file
-# rewrite to bound any more, so this asks for merging rather than summarizing: the size
-# that matters is the assembled document the reply prompt carries, and the way to shrink
-# it is fewer, denser facts.
+# `<existing_facts>` is empty, so its wording has to hold on both. It asks for merging rather
+# than summarizing: the size that matters is the assembled document the reply prompt carries,
+# and the way to shrink it is fewer, denser facts.
 PHASE2_COMPACTION_BLOCK = f"""
 COMPACTION (this run):
 * When `<existing_facts>` holds facts, this compartment has grown large. Spend this pass merging: fold overlapping facts into one `update` plus `delete`s, condense low-signal ones, and drop what the evidence no longer supports, aiming for roughly {COMPACTION_TARGET_CHARS} characters of stored text in total.

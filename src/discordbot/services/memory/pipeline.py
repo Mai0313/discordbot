@@ -22,6 +22,8 @@ import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import MemoryWriteSummary
+
+# Imported as a module so a test that swaps one database call on it reaches the calls here.
 from discordbot.services.memory import database as memory_db
 from discordbot.services.memory.store import (
     flavor_of,
@@ -189,9 +191,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 
     `remember_notes` and `forget_notes` are the inline memory markers the answer model wrote in
     the reply it just gave. A turn that carried none does nothing at all: no row, no model call,
-    no background task. That is the normal case now, and it is the whole saving over the
-    extraction pass this replaced, which ran on every single reply to find out whether there was
-    anything to find.
+    no background task. That is the normal case.
 
     The transcript is rendered eagerly here (pure, sub-ms, already past the reply)
     so the persisted job and the in-memory replay both carry a plain string and
