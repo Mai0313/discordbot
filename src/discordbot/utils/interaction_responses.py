@@ -15,7 +15,7 @@ from nextcord.ui import View
 from nextcord.ext import commands
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import schedule_public_message_delete
+from discordbot.utils.message_cleanup import track_public_message, schedule_public_message_delete
 
 
 class _MessageOwningView(Protocol):
@@ -62,7 +62,11 @@ async def send_expiring_followup_after_private_defer(
 async def send_loan_request_followup(
     interaction: Interaction[commands.Bot], embed: Embed, view: View
 ) -> None:
-    """Sends a loan request message that owns its cleanup after a terminal state."""
+    """Sends a loan request message that owns its cleanup after a terminal state.
+
+    The message is also recorded at once, since its view dies with the process: a restart's
+    sweep is then the only thing left that can take it down.
+    """
     message = await interaction.followup.send(
         embed=embed,
         view=view,
@@ -70,6 +74,8 @@ async def send_loan_request_followup(
         **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
     )
     cast("_MessageOwningView", view).message = message
+    user_name = interaction.user.name if interaction.user is not None else None
+    await track_public_message(message=message, user_name=user_name)
 
 
 async def send_private_followup(interaction: Interaction[commands.Bot], embed: Embed) -> None:

@@ -2288,6 +2288,31 @@ async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | N
         return expired
 
 
+async def reject_loan_proposals_created_before(cutoff: datetime) -> None:
+    """Rejects every proposal still pending from before `cutoff`.
+
+    A request's decision view lives only in the process that posted it, so one an earlier
+    process left pending can no longer be decided or time out.
+    """
+    async with open_session() as session:
+        result = await session.execute(
+            statement=update(LoanProposal)
+            .where(
+                LoanProposal.status == LoanProposalStatus.PENDING,
+                # SQLite keeps the Taipei wall clock without its offset.
+                LoanProposal.created_at < _as_taipei(dt=cutoff),
+            )
+            .values(status=LoanProposalStatus.REJECTED, updated_at=_database_now())
+            .returning(LoanProposal.id)
+        )
+        proposal_ids = list(result.scalars())
+        await session.commit()
+    if proposal_ids:
+        logfire.info(
+            "Rejected loan requests an earlier process left waiting", proposal_ids=proposal_ids
+        )
+
+
 async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView | None:
     """Cancels a pending proposal created by `actor_id`.
 

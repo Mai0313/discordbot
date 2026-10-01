@@ -1,6 +1,7 @@
 """Tests for public response cleanup helpers."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from collections import Counter
 
 import pytest
@@ -9,6 +10,7 @@ from nextcord.abc import Messageable
 from nextcord.ext import commands
 
 from discordbot.utils import message_cleanup as cleanup_module
+from discordbot.utils.timezone import database_now
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
     PendingPublicMessage,
@@ -126,6 +128,15 @@ class _UnfetchableBotStub:
         return _NonMessageableChannelStub()
 
 
+def _a_later_start() -> datetime:
+    """The start of a process that came after every row recorded so far.
+
+    `created_at` keeps whole seconds, so a row from this very second needs the extra one to
+    fall before it.
+    """
+    return datetime.now(tz=UTC) + timedelta(seconds=1)
+
+
 async def test_delete_public_message_after_waits_then_deletes() -> None:
     """Public response cleanup deletes the message after the configured delay."""
     message = _CleanupMessage()
@@ -171,11 +182,29 @@ async def test_delete_tracked_public_messages_deletes_stale_restart_records() ->
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub()
 
-    await delete_tracked_public_messages(bot=as_bot(fake=bot))
+    await delete_tracked_public_messages(bot=as_bot(fake=bot), tracked_before=_a_later_start())
 
     assert bot.deleted == [(message.channel.id, message.id)]
     assert bot.fetch_calls == [message.channel.id]
     assert await list_pending_public_messages() == []
+
+
+async def test_the_sweep_leaves_what_this_process_recorded() -> None:
+    """Interactions run before `on_ready` spawns the sweep, and what they posted is still live.
+
+    The start is stamped in Taipei as the bot stamps it, while the table keeps UTC.
+    """
+    started_at = database_now()
+    message = FakeDiscordMessage()
+    await track_public_message(message=as_message(fake=message))
+    bot = _BotStub()
+
+    await delete_tracked_public_messages(bot=as_bot(fake=bot), tracked_before=started_at)
+
+    assert bot.fetch_calls == []
+    assert await list_pending_public_messages() == [
+        PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
+    ]
 
 
 async def test_delete_tracked_public_messages_skips_non_messageable_cached_channel() -> None:
@@ -184,7 +213,7 @@ async def test_delete_tracked_public_messages_skips_non_messageable_cached_chann
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub(cached_channel=_NonMessageableChannelStub())
 
-    await delete_tracked_public_messages(bot=as_bot(fake=bot))
+    await delete_tracked_public_messages(bot=as_bot(fake=bot), tracked_before=_a_later_start())
 
     assert bot.deleted == [(message.channel.id, message.id)]
     assert bot.fetch_calls == [message.channel.id]
@@ -196,7 +225,9 @@ async def test_delete_tracked_public_messages_keeps_unresolved_channel_records()
     message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
 
-    await delete_tracked_public_messages(bot=as_bot(fake=_UnfetchableBotStub()))
+    await delete_tracked_public_messages(
+        bot=as_bot(fake=_UnfetchableBotStub()), tracked_before=_a_later_start()
+    )
 
     assert await list_pending_public_messages() == [
         PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
@@ -246,7 +277,7 @@ async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
     bot = _ForbiddenChannelBotStub()
     warns = _recorded_warns(monkeypatch=monkeypatch)
 
-    await delete_tracked_public_messages(bot=as_bot(fake=bot))
+    await delete_tracked_public_messages(bot=as_bot(fake=bot), tracked_before=_a_later_start())
 
     assert bot.fetch_calls == [message.channel.id]
     assert len(warns) == 1, f"expected one report, got {warns}"
@@ -274,7 +305,9 @@ async def test_a_transient_http_failure_keeps_its_traceback(
     await track_public_message(message=as_message(fake=FakeDiscordMessage()))
     warns = _recorded_warns(monkeypatch=monkeypatch)
 
-    await delete_tracked_public_messages(bot=as_bot(fake=_ServerErrorBotStub()))
+    await delete_tracked_public_messages(
+        bot=as_bot(fake=_ServerErrorBotStub()), tracked_before=_a_later_start()
+    )
 
     assert len(warns) == 1
     text, fields = warns[0]

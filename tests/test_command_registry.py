@@ -24,6 +24,7 @@ from nextcord.errors import ApplicationInvokeError
 
 from discordbot import cli
 from discordbot.cli import DiscordBot
+from discordbot.utils.timezone import database_now
 from discordbot.services.economy.database import CreditResult
 
 from tests.helpers.casting import as_message, as_discord_bot
@@ -32,6 +33,7 @@ from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from datetime import datetime
 
     from nextcord import Interaction
     from nextcord.ext import commands
@@ -100,11 +102,11 @@ async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The sweep is the process's own, so nothing later in the first `on_ready` can cost it."""
-    swept: list[object] = []
+    swept: list[tuple[object, datetime]] = []
 
-    async def record_sweep(bot: object) -> None:
-        """Stands in for the sweep, recording which bot it ran for."""
-        swept.append(bot)
+    async def record_sweep(bot: object, tracked_before: datetime) -> None:
+        """Stands in for the sweep, recording which bot it ran for and from when."""
+        swept.append((bot, tracked_before))
 
     async def fail_sync() -> None:
         """Fails the way a Discord outage during the command sync does."""
@@ -114,6 +116,7 @@ async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails
     stub = SimpleNamespace(
         _initial_setup_done=False,
         _startup_tasks=set(),
+        _started_at=database_now(),
         user=FakeUser(user_id=999, bot=True),
         _count_registered_commands=partial(asyncio.sleep, delay=0),
         sync_all_application_commands=fail_sync,
@@ -125,7 +128,8 @@ async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails
     await asyncio.gather(*stub._startup_tasks)
     await DiscordBot.on_ready(bot)
 
-    assert swept == [bot]
+    # The process's start, not `on_ready`'s: whatever ran in between is this process's own.
+    assert swept == [(bot, stub._started_at)]
 
 
 def _reward_bot(**state: object) -> SimpleNamespace:
