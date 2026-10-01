@@ -252,27 +252,20 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             await surface.send_unparented(embed=error_embed, **fresh_spacer)
 
-    async def _run_turn(self, *, surface: TurnSurface, user_prompt: str) -> None:
+    async def _run_turn(self, *, surface: TurnSurface, content: str) -> None:
         """Runs one turn and reports whatever it failed on, whichever entry point started it.
 
         Shared by `on_message` and `/ask` because everything that differs between them is
         already inside the surface: where the answer lands, what history it may read, and
-        whether the source message can be reacted to at all.
+        whether the source message can be reacted to at all. Reading the request is inside the
+        report too, since that is what first builds the toolkit.
         """
         message = surface.message
         reactions = ReactionStatusChain(
             message=message, bot_user=self.bot.user, enabled=surface.interaction is None
         )
         try:
-            await ReplyPipeline(
-                config=self.config,
-                media_delivery=self.media_delivery,
-                usage_recorder=self.usage_recorder,
-                toolkit=self.toolkit,
-                surface=surface,
-                user_prompt=user_prompt,
-                reactions=reactions,
-            ).run()
+            await self._start_turn(surface=surface, content=content, reactions=reactions)
         except Exception as e:
             logfire.error(
                 "gen_reply failed",
@@ -302,7 +295,9 @@ class ReplyGeneratorCogs(commands.Cog):
         finally:
             await reactions.flush()
 
-    async def _start_turn(self, *, surface: TurnSurface, user_prompt: str) -> None:
+    async def _start_turn(
+        self, *, surface: TurnSurface, content: str, reactions: ReactionStatusChain
+    ) -> None:
         """Runs a turn on the request, or answers `?` when the message asks for nothing.
 
         Shared by `on_message` and `/ask`. Everything that differs between them is inside the
@@ -311,9 +306,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Args:
             surface: Where the turn happens.
-            user_prompt: The mention-stripped text of the message.
+            content: The text of the message, mention included.
+            reactions: The turn's status-reaction chain.
         """
         message = surface.message
+        user_prompt = await self.toolkit.input_builder.get_user_prompt(content=content)
         has_attachment = bool(message.attachments or message.stickers)
         # A forward leaves content/attachments/stickers empty and puts the payload in
         # `message.snapshots`, so it must not be gated out as an empty message here, or the
@@ -346,7 +343,15 @@ class ReplyGeneratorCogs(commands.Cog):
             sticker_count=len(message.stickers),
             is_dm=surface.guild_id is None,
         )
-        await self._run_turn(surface=surface, user_prompt=user_prompt)
+        await ReplyPipeline(
+            config=self.config,
+            media_delivery=self.media_delivery,
+            usage_recorder=self.usage_recorder,
+            toolkit=self.toolkit,
+            surface=surface,
+            user_prompt=user_prompt,
+            reactions=reactions,
+        ).run()
 
     @nextcord.slash_command(
         name="ask",
@@ -400,8 +405,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         await interaction.response.defer()
         surface = TurnSurface.for_interaction(interaction=interaction, question=question)
-        user_prompt = await self.toolkit.input_builder.get_user_prompt(content=question)
-        await self._start_turn(surface=surface, user_prompt=user_prompt)
+        await self._run_turn(surface=surface, content=question)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -428,8 +432,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             return
 
-        user_prompt = await self.toolkit.input_builder.get_user_prompt(content=message.content)
-        await self._start_turn(surface=surface, user_prompt=user_prompt)
+        await self._run_turn(surface=surface, content=message.content)
 
 
 def setup(bot: commands.Bot) -> None:

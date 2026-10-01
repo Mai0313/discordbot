@@ -163,7 +163,7 @@ from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaRe
 from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
-from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
+from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.services.memory.server_prompts import (
@@ -6182,6 +6182,27 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=as_message(fake=deleted))
     assert deleted.replies == []
     assert deleted.channel.sent[0].embed is not None
+
+
+async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading the request builds the toolkit, whose client the SDK refuses without a key."""
+    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
+    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
+    cog = ReplyGeneratorCogs(
+        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    )
+    cog.config = LLMConfig.model_construct()
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+
+    await cog.on_message(message=as_message(fake=message))
+
+    notice = message.replies[0].embed
+    assert notice is not None
+    assert notice.title == "Something went wrong"
+    assert notice.footer.text == "OpenAIError"
+    assert message.added_reactions == [FAILED_EMOJI]
 
 
 async def test_an_empty_mention_is_marked_as_well_as_answered() -> None:
