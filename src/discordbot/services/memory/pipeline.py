@@ -220,9 +220,20 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 
 
 def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
-    *, scope: str, subject: str, transcript: str, writer: MemoryWriterAI, identity: str, token: int
+    *,
+    scope: str,
+    subject: str,
+    transcript: str,
+    writer: MemoryWriterAI,
+    identity: str,
+    token: int,
+    status: memory_db.MemoryJobStatus,
 ) -> None:
-    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token."""
+    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token.
+
+    A `failed` row is the one retry its review gets: a refusal fails the same way on every
+    attempt, so retrying at every restart would only send the same request again.
+    """
     enqueue_memory_update(
         turn=MemoryTurn(
             scope=scope,
@@ -231,6 +242,7 @@ def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
             writer=writer,
             identity=identity,
             token=token,
+            retry=status == "failed",
         ),
         run=_run_memory_update,
     )
@@ -262,8 +274,8 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
 
     The reply.db row is written `pending` at the top (awaited, before the lock) so
     a redeploy mid-review resumes this turn; it is marked `done` once phase-1
-    is terminal (staged, no signal, or cleared) and `failed` only
-    when the LLM call itself fails, so the restart sweep retries just that case.
+    is terminal (staged, no signal, cleared, or failed on its retry too) and `failed` only
+    when the LLM call itself fails, so the restart sweep retries just that case, once.
     Consolidation needs no DB row: `raw.md` is its durable, re-entrant queue.
 
     `turn.captured_at` is when the turn was scheduled, and every clear check runs
@@ -356,15 +368,14 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
     for remember, forget in rounds:
         # Written before the round's review runs, and deliberately not undone by its failure:
         # a forget needs no model, and making it wait behind one would let a failed call keep
-        # the bot repeating what it was just asked to drop. A retried row therefore writes it
-        # twice, which costs nothing while nothing was staged before the failure. A merged row
-        # whose earlier rounds did land re-stages them behind their own forget's second copy,
-        # which can then reach them; that takes three waiting turns and a failed review at
-        # once, and is accepted rather than tracked per round.
-        forget_text = render_forget_requests(notes=forget, source=source)
+        # the bot repeating what it was just asked to drop. The attempt a retry repeats already
+        # filed every round's forget, so a retry files one again only once it has re-staged
+        # notes of its own, which that first copy, sitting ahead of them, cannot reach.
+        filing = () if turn.retry and not kept else forget
+        forget_text = render_forget_requests(notes=filing, source=source)
         if forget_text and not cleared_since(scope=scope, started_at=turn.captured_at):
             append_raw_entry(scope=scope, entry_text=forget_text)
-        forget_notes += forget
+        forget_notes += filing
         remember_notes += remember
         if not remember or not reviewed:
             # After a failed review the rest is left to the retry, but not the forgets.
@@ -394,6 +405,16 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
                 ),
             )
             kept.extend(draft.observations)
+    if not reviewed and turn.retry:
+        # Failed on its one retry too, which is what a refusal does on every attempt: close
+        # the row so no later restart sends the same request again.
+        logfire.warn(
+            "Memory note review failed again on its restart retry; notes dropped",
+            scope=scope,
+            flavor=flavor_of(scope=scope),
+        )
+        await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope)
+        return True if forget_notes else None
     if not reviewed:
         # The LLM path itself failed: keep the row (payload intact) so the
         # restart sweep retries it, no extra timeout needed. The cause detail is

@@ -94,6 +94,13 @@ class MemoryTurn(BaseModel):
     report: SkipValidation[MemoryWriteReport | None] = Field(
         default=None, description="Callback reporting what the turn recorded."
     )
+    retry: bool = Field(
+        default=False,
+        description=(
+            "Whether this turn retries a review that already failed: its forgets are "
+            "already filed, and failing again closes the row instead of parking it."
+        ),
+    )
 
 
 # The turn body `enqueue_memory_update` schedules. Injected rather than imported: it lives in
@@ -208,6 +215,9 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
                     "report": _merged_report(
                         newer=turn.report, older=superseded.report, scope=turn.scope
                     ),
+                    # The merged payload opens with the older turn's round, whose forget a
+                    # retry would take as already filed.
+                    "retry": False,
                 }
             )
         by_subject[turn.subject] = turn
