@@ -52,9 +52,15 @@ from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import current_answer_streamer
 from discordbot.cogs.gen_reply.status_marks import (
     IMAGE_EMOJI,
+    MUSIC_EMOJI,
     VIDEO_EMOJI,
     VOICE_EMOJI,
     ANSWER_EMOJI,
+    RETRY_HINT_EMOJI,
+    MEMORY_READ_EMOJI,
+    DROPPED_HINT_EMOJI,
+    MEMORY_WRITE_EMOJI,
+    TIMEOUT_HINT_EMOJI,
 )
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
@@ -75,27 +81,13 @@ CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 ANSWER_RETRY_INTERVAL_SECONDS = 5.0
 ANSWER_RETRY_JITTER_SECONDS = 1.0
 
-# Shown on both retry surfaces, so the reaction on the source message and the notice on the
-# reply read as the same event rather than two unrelated hints.
-RETRY_HINT_EMOJI = "🔁"
-
-# One symbol per memory action, because all three notes stack in the same corner of the same
-# reply and used to share one `<:tag:>`: a reader could not tell "I read this person's memory"
-# from "I wrote this down about you" without parsing the whole sentence, and one did misread
-# the read credit as something the bot had just recorded. Each note also opens on its VERB for
-# the same reason. Plain unicode rather than app emoji because uploading one is not something
-# the bot can do; swapping in a custom `<:name:id>` later is a change to these three lines.
-MEMORY_READ_EMOJI = "📖"
-MEMORY_WRITE_EMOJI = "✏️"
-MEMORY_FORGET_EMOJI = "🩹"
-
 # Written the moment a reply carrying a memory marker lands, and replaced by the outcome once
 # the background review finishes. It exists because that review is seconds to minutes behind the
 # answer and can also end in nothing, which left four different turns — the model marked nothing,
 # the reviewer kept nothing, the review failed, the reply is still working — showing the reader
 # the same empty corner. It costs no extra Discord edit: `_finalize_reply` splices it into the
 # content it was about to write anyway.
-MEMORY_PENDING_NOTE = "-# ✏️ 正在整理記憶⋯"
+MEMORY_PENDING_NOTE = f"-# {MEMORY_WRITE_EMOJI} 正在整理記憶⋯"
 
 # Closes a reply the surface could not carry to its end. Only `/ask` can reach it, and only on an
 # answer past roughly twelve thousand characters; saying so is what keeps it from reading as the
@@ -962,11 +954,11 @@ class ResponseStreamer(BaseModel):
             return None
         if clip.outcome is VoiceOutcome.TIMEOUT:
             # generate() logged the timeout; cue the user that the clip ran out of time.
-            await self.surface.hint(emoji="⏱️")
+            await self.surface.hint(emoji=TIMEOUT_HINT_EMOJI)
             return None
         if clip.audio is None:
             # Any other synthesis failure (most often a policy refusal); generate() logged it.
-            await self.surface.hint(emoji="⚠️")
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
 
@@ -1060,7 +1052,7 @@ class ResponseStreamer(BaseModel):
             filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
             candidates.append(MediaItem(source=image, filename=filename))
         if dropped:
-            await self.surface.hint(emoji="⚠️")
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
         return candidates
 
     async def _build_music_candidate(self) -> MediaItem | None:
@@ -1082,13 +1074,13 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
-        # Mark the source message while the clip renders (no custom app emoji for music yet).
-        await self.surface.mark(emoji="🎵")
+        # Mark the source message while the clip renders.
+        await self.surface.mark(emoji=MUSIC_EMOJI)
         logfire.info("Generating inline music reply", message_id=self.message.id)
         clip = await self.music_generator.generate(user_prompt=self.markers.music_prompt)
         if clip is None:
             # generate() logged the failure/timeout; hint once.
-            await self.surface.hint(emoji="⚠️")
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
             return None
         return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
@@ -1124,7 +1116,7 @@ class ResponseStreamer(BaseModel):
         )
         if video_bytes is None:
             # generate() logged the failure/timeout; hint once.
-            await self.surface.hint(emoji="⚠️")
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
             return None
         return MediaItem(source=video_bytes, filename=INLINE_VIDEO_FILENAME)
 
@@ -1155,7 +1147,7 @@ class ResponseStreamer(BaseModel):
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,
                 )
-                await self.surface.hint(emoji="⚠️")
+                await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
             return
         reply = self.reply
         # The uploaded source images (for editing an inline <generate-image> / grounding an inline <generate-video>)
@@ -1194,7 +1186,7 @@ class ResponseStreamer(BaseModel):
         ):
             return
         if plan.dropped_items:
-            await self.surface.hint(emoji="⚠️")
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
         logfire.info(
             "Generated media attached",
             message_id=self.message.id,
@@ -1252,7 +1244,7 @@ class ResponseStreamer(BaseModel):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self.surface.hint(emoji="⚠️")
+            await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
             return False
         if follow_up is not None:
             try:
@@ -1271,7 +1263,7 @@ class ResponseStreamer(BaseModel):
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
-                await self.surface.hint(emoji="⚠️")
+                await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
                 return False
         return True
 

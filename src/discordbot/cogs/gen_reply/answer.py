@@ -43,12 +43,7 @@ from discordbot.services.memory.writer import (
     server_subject,
     target_centered_memory_messages,
 )
-from discordbot.cogs.gen_reply.streaming import (
-    MEMORY_WRITE_EMOJI,
-    MEMORY_FORGET_EMOJI,
-    ResponseStreamer,
-    stream_answer_with_retry,
-)
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
 from discordbot.services.memory.pipeline import schedule_memory_update
 from discordbot.cogs.gen_reply.references import source_channel_is_public
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
@@ -57,7 +52,11 @@ from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
-from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
+from discordbot.cogs.gen_reply.status_marks import (
+    YOUTUBE_EMOJI,
+    MEMORY_WRITE_EMOJI,
+    MEMORY_FORGET_EMOJI,
+)
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 

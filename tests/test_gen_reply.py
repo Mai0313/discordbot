@@ -153,6 +153,7 @@ from discordbot.cogs.gen_reply.speculation import (
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
+from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.services.memory.server_prompts import (
@@ -3548,10 +3549,10 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
         streamer=streamer, open_stream=open_stream, message_id=message.id
     )
 
-    assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
+    assert RETRY_HINT_EMOJI in message.added_reactions
     reply = cast("FakeReply", streamer.reply)
     assert reply.edits[0] == (
-        f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
+        f"-# {RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
     )
     # And the notice is transient: the finished answer takes the message back.
     assert (reply.content or "").startswith("done")
@@ -3627,7 +3628,7 @@ async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
             streamer=streamer, open_stream=open_stream, message_id=message.id
         )
 
-    assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
+    assert RETRY_HINT_EMOJI in message.added_reactions
     assert message.replies == []
 
 
@@ -5256,8 +5257,8 @@ async def test_handle_image_reply_retries_the_persona_stream_without_captioning_
     assert (delivered.content or "").startswith("done")
     # But nothing announced it: not on the image, and not on the user's message.
     written = [delivered.content or "", *delivered.edits]
-    assert all(streaming_module.RETRY_HINT_EMOJI not in text for text in written)
-    assert streaming_module.RETRY_HINT_EMOJI not in message.added_reactions
+    assert all(RETRY_HINT_EMOJI not in text for text in written)
+    assert RETRY_HINT_EMOJI not in message.added_reactions
 
 
 async def test_handle_image_reply_best_effort_when_reply_fails(
