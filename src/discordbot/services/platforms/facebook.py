@@ -129,7 +129,7 @@ def is_facebook_post_url(*, url: str) -> bool:
         True when the URL names a readable post, whether directly or through a share redirect.
     """
     facebook_url = FacebookURL(raw_url=url)
-    return bool(facebook_url.post_id or facebook_url.is_share_link)
+    return bool(facebook_url.post_id or facebook_url.is_share_link or facebook_url.is_pfbid_link)
 
 
 class FacebookURL(BaseModel):
@@ -137,7 +137,7 @@ class FacebookURL(BaseModel):
 
     Only some of the accepted shapes name their post: a `share/p/<code>` link resolves to one
     through its redirect, which is why `post_id` being empty is not the same as the URL being
-    unreadable (see `is_share_link`).
+    unreadable (see `is_share_link` and `is_pfbid_link`).
     """
 
     raw_url: str = Field(..., description="Original Facebook URL provided by the caller")
@@ -170,7 +170,7 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def post_id(self) -> str:
-        """The post id the URL names, or an empty string when only a redirect can name it."""
+        """The numeric post id the URL names, or an empty string for a share or `pfbid` link."""
         parsed = urlparse(self.raw_url)
         for pattern in (_GROUP_POST_PATH_RE, _NUMERIC_POST_PATH_RE, _PAGE_POST_PATH_RE):
             match = pattern.match(string=parsed.path)
@@ -209,6 +209,20 @@ class FacebookURL(BaseModel):
     def is_share_link(self) -> bool:
         """Whether the URL is the post share form, which names its post only through the redirect."""
         return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
+
+    @computed_field
+    @cached_property
+    def is_pfbid_link(self) -> bool:
+        """Whether the URL names its post by a `pfbid` id, which no story node carries.
+
+        So `post_id` stays empty and the read takes the page's story, as a share link's does.
+        A group feed's `multi_permalinks` is left out: that page serialises several posts.
+        """
+        parsed = urlparse(self.raw_url)
+        values = parse_qs(parsed.query).get("story_fbid")
+        return bool(values and values[0].startswith("pfbid")) or bool(
+            re.match(pattern=r"^/[^/]+/posts/pfbid[0-9A-Za-z]+", string=parsed.path)
+        )
 
 
 class FacebookOutput(LinkableCommentOutput):
@@ -299,8 +313,9 @@ class FacebookDownloader(PlatformDownloader):
             for node in walk(node=payload):
                 if "post_id" not in node or "creation_time" not in node:
                     continue
-                # Empty when a `/share/p/` link landed on a `pfbid` permalink, which names no
-                # numeric id; the page's first story is then the post (2 of 8 links, 2026-10-01).
+                # Empty for a `pfbid` link, pasted or landed on from a `/share/p/` link (2 of 8),
+                # which names no numeric id; the page's first story is then the post, as it was
+                # on all 62 of 74 pasted `pfbid` links that read (2026-10-01).
                 if post_id and str(node.get("post_id")) != post_id:
                     continue
                 if deep_get(
