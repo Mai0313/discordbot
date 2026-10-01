@@ -38,11 +38,7 @@ from nextcord.utils import utcnow
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
-from discordbot.cogs.gen_reply.ask_message import (
-    build_ask_message,
-    interaction_channel,
-    rebuild_conversation,
-)
+from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_conversation
 
 # How many follow-up messages Discord lets a user-installed app POST per interaction while it is
 # not a member of the server (`interactions/receiving-and-responding.mdx:474`, read 2026-08-26).
@@ -165,9 +161,8 @@ class TurnSurface(BaseModel):
         Raises:
             RuntimeError: The interaction names no channel or no user, which Discord never sends.
         """
-        channel = interaction_channel(interaction=interaction)
         return cls(
-            message=build_ask_message(interaction=interaction, question=question, channel=channel),
+            message=build_ask_message(interaction=interaction, question=question),
             interaction=interaction,
             guild_id=interaction.guild_id,
             is_direct_message=interaction.context is InteractionContextType.bot_dm,
@@ -261,12 +256,7 @@ class TurnSurface(BaseModel):
         turns = await load_ask_turns(
             channel_id=self.message.channel.id, user_id=self.message.author.id, limit=limit // 2
         )
-        return rebuild_conversation(
-            turns=turns,
-            interaction=self.interaction,
-            bot=self.interaction.client,
-            channel=interaction_channel(interaction=self.interaction),
-        )
+        return rebuild_conversation(turns=turns, interaction=self.interaction)
 
     async def mark(self, *, emoji: str) -> None:
         """Puts a status or provenance reaction on the source message, where there is one.

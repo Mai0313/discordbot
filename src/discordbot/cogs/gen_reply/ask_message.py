@@ -90,9 +90,7 @@ def resolved_attachment_payloads(
     return list(attachments.values())
 
 
-def build_ask_message(
-    *, interaction: Interaction[commands.Bot], question: str, channel: PartialMessageable
-) -> Message:
+def build_ask_message(*, interaction: Interaction[commands.Bot], question: str) -> Message:
     """Builds the message the pipeline answers, from one `/ask` invocation.
 
     The id is the interaction's own snowflake, so `Message.created_at` is the real moment the
@@ -102,14 +100,14 @@ def build_ask_message(
     Args:
         interaction: The invocation being answered.
         question: The `question` option, verbatim.
-        channel: The channel resolved by `interaction_channel`.
 
     Returns:
         A message carrying the question, its attachment, and the invoking user as its author.
 
     Raises:
-        RuntimeError: The interaction names no user, which Discord never sends.
+        RuntimeError: The interaction names no channel or no user, which Discord never sends.
     """
+    channel = interaction_channel(interaction=interaction)
     user = interaction.user
     if user is None:
         raise RuntimeError("The interaction names no user")
@@ -127,11 +125,7 @@ def build_ask_message(
 
 
 def rebuild_conversation(
-    *,
-    turns: list[AskTurn],
-    interaction: Interaction[commands.Bot],
-    bot: commands.Bot,
-    channel: PartialMessageable,
+    *, turns: list[AskTurn], interaction: Interaction[commands.Bot]
 ) -> list[Message]:
     """Rebuilds stored `/ask` turns as the history messages the renders expect, oldest first.
 
@@ -152,17 +146,21 @@ def rebuild_conversation(
 
     Args:
         turns: The stored exchanges, oldest first.
-        interaction: The current invocation, for the asker's own author object.
-        bot: The bot, for its connection state and its own user.
-        channel: The channel resolved by `interaction_channel`.
+        interaction: The current invocation, for the asker's own author object, the bot's own
+            user and the channel.
 
     Returns:
         The rebuilt messages in transcript order.
+
+    Raises:
+        RuntimeError: The interaction names no channel or no user, which Discord never sends,
+            or the bot has no user, which it always has once an interaction can arrive.
     """
+    channel = interaction_channel(interaction=interaction)
     user = interaction.user
-    bot_user = bot.user
+    bot_user = interaction.client.user
     if user is None or bot_user is None:
-        return []
+        raise RuntimeError("The interaction names no user, or the bot has none yet")
     # A `User` rather than `bot.user` itself, which is a `ClientUser` and so not one of the two
     # types `Message.author` may hold. Only the id is ever read off it here.
     state = interaction._state  # noqa: SLF001 -- the connection state the interaction arrived on
