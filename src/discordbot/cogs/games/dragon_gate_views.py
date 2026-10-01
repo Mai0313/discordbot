@@ -9,7 +9,6 @@ import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
 from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
-from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.cogs.games.lobby import (
     PrepareParticipant,
     RefreshParticipants,
@@ -27,6 +26,7 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGateDirection,
     DragonGateTurnError,
     DragonGateTurnResult,
+    DragonGatePlayerResult,
     DragonGateBetRangeError,
     DragonGateTableFinishedError,
     DragonGatePairChoiceRequiredError,
@@ -58,6 +58,8 @@ if TYPE_CHECKING:
     from random import Random
 
     from nextcord.ext import commands
+
+    from discordbot.typings.games import GameParticipant
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20

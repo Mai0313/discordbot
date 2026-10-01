@@ -304,33 +304,3 @@ class BlackjackDealerStep(BaseModel):
     total_after: int | None = Field(
         default=None, description="Dealer hand total after this action, when applicable."
     )
-
-
-class DragonGatePlayerResult(BaseModel):
-    """Final outcome for one player after a 射龍門 table closes.
-
-    Each bet settles the moment it's placed, so the table close-out has no
-    per-player wager settlement to apply; this model just captures the running
-    totals and whether "逆贏不拿" was triggered for the leaver.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    participant: GameParticipant = Field(..., description="Player identity and ante metadata.")
-    delta: int = Field(
-        ...,
-        description=(
-            "Running win/loss for the table (ante excluded; ante was already pushed into "
-            "the jackpot when the round started)."
-        ),
-    )
-    final_balance: int = Field(
-        ..., description="Player balance after the last settlement event touching this account."
-    )
-    withdrawn: bool = Field(
-        ..., description="True when the player left voluntarily before timeout or pool exhaustion."
-    )
-    refunded_to_pool: int = Field(
-        default=0,
-        description='Amount refunded into the jackpot under "逆贏不拿" when the player left while ahead.',
-    )
