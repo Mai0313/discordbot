@@ -145,7 +145,7 @@ class ResearchProgressStreamer(BaseModel):
                     )
                     return
                 except Forbidden:
-                    # The thread's overwrites changed under the run; the id is the whole finding.
+                    # The channel's permissions changed under the run; the id is the whole finding.
                     logfire.warn(
                         "research thread refused the preview edit; stopping preview edits",
                         message_id=message_id,
