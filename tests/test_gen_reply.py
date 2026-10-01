@@ -3962,7 +3962,7 @@ async def test_an_image_attachment_mime_is_normalized_before_the_downscale() -> 
 
 
 def _transparent_png() -> bytes:
-    """A black square on a transparent 64x64 background, the picture #850 reported."""
+    """A black square on a transparent 64x64 background."""
     image = Image.new(mode="RGBA", size=(64, 64), color=(0, 0, 0, 0))
     image.paste(im=(0, 0, 0, 255), box=(16, 16, 48, 48))
     buffered = BytesIO()
