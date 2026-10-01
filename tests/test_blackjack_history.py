@@ -5,7 +5,6 @@ from datetime import datetime
 
 from discordbot.cogs.games import database as games_database
 from discordbot.typings.games import (
-    Card,
     SettleOutcome,
     GameParticipant,
     BlackjackHistoryHand,
@@ -21,9 +20,9 @@ from discordbot.cogs.games.database import record_blackjack_history, fetch_recen
 from discordbot.cogs.games.blackjack import hand_value
 from discordbot.cogs.games.history_text import _summarize, build_blackjack_history_embed
 
-from tests.helpers.games import seat
+from tests.helpers.games import card, seat
 
-_DEALER_CARDS = [Card(rank="9", suit="♦"), Card(rank="7", suit="♣")]
+_DEALER_CARDS = [card(rank="9", suit="♦"), card(rank="7", suit="♣")]
 _DEALER_TOTAL = 16
 
 
@@ -69,7 +68,7 @@ def _record_view(*, delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecor
         payload=BlackjackHistoryPayload(
             hands=[
                 BlackjackHistoryHand(
-                    cards=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")],
+                    cards=[card(rank="A"), card(rank="K", suit="♥")],
                     total=21,
                     bet=1_000,
                     outcome=outcome,
@@ -86,7 +85,7 @@ def _record_view(*, delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecor
 def _wide_record_view() -> BlackjackHistoryRecord:
     """Builds a worst-case record that maxes out every cell width."""
     big = 999_999_999_999
-    four_cards = [Card(rank="10", suit=suit) for suit in "♠♥♦♣"]
+    four_cards = [card(rank="10", suit=suit) for suit in "♠♥♦♣"]
     hand = BlackjackHistoryHand(
         cards=four_cards, total=40, bet=big, outcome="lose", delta=-big, is_split_hand=True
     )
@@ -124,14 +123,14 @@ async def test_record_and_fetch_roundtrip() -> None:
     human = seat(user_id=1, display_name="alice", bet=1_000, balance_at_start=10_000)
     split_hands = [
         BlackjackHandSettlement(
-            cards=[Card(rank="8", suit="♣"), Card(rank="K", suit="♦")],
+            cards=[card(rank="8", suit="♣"), card(rank="K", suit="♦")],
             bet=1_000,
             outcome="win",
             delta=1_000,
             is_split_hand=True,
         ),
         BlackjackHandSettlement(
-            cards=[Card(rank="8", suit="♦"), Card(rank="9", suit="♥")],
+            cards=[card(rank="8", suit="♦"), card(rank="9", suit="♥")],
             bet=1_000,
             outcome="lose",
             delta=-1_000,
@@ -154,11 +153,7 @@ async def test_record_and_fetch_roundtrip() -> None:
         delta=-2_000,
         hands=[
             BlackjackHandSettlement(
-                cards=[
-                    Card(rank="J", suit="♠"),
-                    Card(rank="Q", suit="♥"),
-                    Card(rank="5", suit="♣"),
-                ],
+                cards=[card(rank="J"), card(rank="Q", suit="♥"), card(rank="5", suit="♣")],
                 bet=2_000,
                 outcome="player_bust",
                 delta=-2_000,
@@ -220,7 +215,7 @@ async def test_recent_ordering_and_limit() -> None:
                     delta=bet,
                     hands=[
                         BlackjackHandSettlement(
-                            cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
+                            cards=[card(rank="10"), card(rank="9", suit="♥")],
                             bet=bet,
                             outcome="win",
                             delta=bet,

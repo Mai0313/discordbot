@@ -41,6 +41,7 @@ from discordbot.cogs.games.blackjack_views import (
 
 from tests.helpers.games import (
     ScheduledDeletes,
+    card,
     seat,
     component_ids,
     component_rows,
@@ -111,8 +112,8 @@ async def test_action_controls_show_on_their_rows_and_leave_once_not_allowed() -
     longer allows leaves the view rather than staying behind disabled.
     """
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="8"), card(rank="8", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     view.sync_buttons()
@@ -126,7 +127,7 @@ async def test_action_controls_show_on_their_rows_and_leave_once_not_allowed() -
     }
     assert all(disabled is False for disabled in _button_states(view=view).values())
 
-    round_state.shoe = [Card(rank="2", suit="♠")]
+    round_state.shoe = [card(rank="2")]
     round_state.hit(user_id=1)
     view.sync_buttons()
 
@@ -137,8 +138,8 @@ async def test_action_controls_show_on_their_rows_and_leave_once_not_allowed() -
 async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> None:
     """During insurance only insure_yes / insure_no are interactive."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="5", suit="♥")],
-        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="9", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="5", suit="♥")],
+        dealer_cards=[card(rank="A", suit="♣"), card(rank="9", suit="♦")],
     )
     round_state.phase = "insurance"
     round_state.insurance_offered = True
@@ -155,8 +156,8 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
 async def test_settled_phase_removes_every_button() -> None:
     """After settlement no controls remain attached to the view."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="K", suit="♣"), Card(rank="7", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="K", suit="♣"), card(rank="7", suit="♦")],
     )
     round_state.phase = "settled"
     view = _make_view(round_state=round_state)
@@ -168,8 +169,8 @@ async def test_settled_phase_removes_every_button() -> None:
 async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None:
     """Insurance buttons join the view for the insurance phase alone and leave it after."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="8"), card(rank="8", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     view.sync_buttons()
@@ -197,8 +198,8 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
 async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -> None:
     """`force_show_hole=True` flips the dealer hole card face-up for peek reveal."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="A", suit="♣"), card(rank="K", suit="♦")],
     )
 
     embeds = build_in_progress_embeds(round_state=round_state, force_show_hole=True)
@@ -224,8 +225,8 @@ def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[seat(display_name="Bob")]
     )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
+    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="7", suit="♥")]
+    round_state.dealer = [card(rank="8", suit="♣"), card(rank="K", suit="♦")]
 
     embeds = build_in_progress_embeds(round_state=round_state)
     dealer_embed = embeds[0]
@@ -241,8 +242,8 @@ def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[seat(display_name="Bob")]
     )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    round_state.dealer = [Card(rank="8", suit="♣")]
+    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="7", suit="♥")]
+    round_state.dealer = [card(rank="8", suit="♣")]
 
     embeds = build_in_progress_embeds(round_state=round_state)
     dealer_embed = embeds[0]
@@ -255,8 +256,8 @@ def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
 def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
     """Blackjack table edits attach one transparent spacer and reference it from every embed."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="K", suit="♣"), Card(rank="9", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="K", suit="♣"), card(rank="9", suit="♦")],
     )
     seat_embeds = build_in_progress_embeds(round_state=round_state)
 
@@ -271,8 +272,8 @@ def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
 async def test_interaction_check_sends_ephemeral_notice_when_settled() -> None:
     """After the round is settled, clicks get an ephemeral notice rather than silent ignore."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="K", suit="♣"), Card(rank="9", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="K", suit="♣"), card(rank="9", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     view._settled = True
@@ -292,8 +293,8 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
     it is told then is the whole of the feature for it.
     """
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="9", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="A", suit="♣"), card(rank="9", suit="♦")],
         player=seat(bet=1),
     )
     round_state.phase = "insurance"
@@ -316,11 +317,11 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
 async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
     """Dealer hits ≤16 and stands on a hard 17 under H17 rules."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     round_state.players[0].hands[0].finished = True
-    round_state.shoe = [Card(rank="6", suit="♠")]
+    round_state.shoe = [card(rank="6")]
     view = _make_view(round_state=round_state)
 
     await view._play_dealer_locked()
@@ -338,8 +339,8 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
 @pytest.mark.parametrize(
     argnames=("dealer_cards", "expected_total"),
     argvalues=[
-        ([Card(rank="K", suit="♣"), Card(rank="7", suit="♦")], 17),
-        ([Card(rank="K", suit="♣"), Card(rank="8", suit="♦")], 18),
+        ([card(rank="K", suit="♣"), card(rank="7", suit="♦")], 17),
+        ([card(rank="K", suit="♣"), card(rank="8", suit="♦")], 18),
     ],
 )
 async def test_play_dealer_stands_on_hard_17_plus(
@@ -347,8 +348,7 @@ async def test_play_dealer_stands_on_hard_17_plus(
 ) -> None:
     """Dealer stands deterministically on any hard 17+ total."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=dealer_cards,
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")], dealer_cards=dealer_cards
     )
     round_state.players[0].hands[0].finished = True
     view = _make_view(round_state=round_state)
@@ -365,11 +365,11 @@ async def test_play_dealer_stands_on_hard_17_plus(
 async def test_play_dealer_hits_soft_17() -> None:
     """Dealer hits soft 17 (H17 rule) instead of standing."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="A", suit="♣"), card(rank="6", suit="♦")],
     )
     round_state.players[0].hands[0].finished = True
-    round_state.shoe = [Card(rank="3", suit="♠")]
+    round_state.shoe = [card(rank="3")]
     view = _make_view(round_state=round_state)
 
     await view._play_dealer_locked()
@@ -386,11 +386,11 @@ async def test_play_dealer_hits_soft_17() -> None:
 async def test_play_dealer_records_nothing_after_a_bust() -> None:
     """A dealer that busts shows the hit that did it and no stand after it."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="10", suit="♣"), card(rank="6", suit="♦")],
     )
     round_state.players[0].hands[0].finished = True
-    round_state.shoe = [Card(rank="K", suit="♠")]
+    round_state.shoe = [card(rank="K")]
     view = _make_view(round_state=round_state)
 
     await view._play_dealer_locked()
@@ -403,8 +403,8 @@ async def test_play_dealer_records_nothing_after_a_bust() -> None:
 async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
     """The bot turn dispatcher is a no-op when no bot is seated."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     assert view.bot_user_id is None
@@ -419,8 +419,8 @@ async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
 async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
     """If the active seat belongs to a human, the bot dispatcher returns immediately."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     view.bot_user_id = 999
@@ -439,8 +439,8 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
 ) -> None:
     """A no-op bot dispatch exits instead of spinning on the same turn."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     view.bot_user_id = 1
@@ -471,9 +471,9 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
         rng=Random(x=0),
         participants=[seat(user_id=1, display_name="Bot"), seat(user_id=2, display_name="Bob")],
     )
-    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    round_state.players[1].hands[0].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
-    round_state.dealer = [Card(rank="A", suit="♣"), Card(rank="9", suit="♦")]
+    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="7", suit="♥")]
+    round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
+    round_state.dealer = [card(rank="A", suit="♣"), card(rank="9", suit="♦")]
     round_state.phase = "insurance"
     round_state.insurance_offered = True
     round_state.players[0].insurance_resolved = True
@@ -494,8 +494,8 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
 async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Consecutive bot-owned decisions wait briefly between message edits."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
     view.bot_user_id = 1
@@ -537,10 +537,10 @@ async def test_bot_action_plays_ev_action() -> None:
         participants=[seat(user_id=1, display_name="Bot"), seat(user_id=2, display_name="Bob")],
     )
     bot_hand = round_state.players[0].hands[0]
-    bot_hand.cards = [Card(rank="10", suit="♠"), Card(rank="6", suit="♥")]
-    round_state.players[1].hands[0].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
-    round_state.dealer = [Card(rank="6", suit="♣"), Card(rank="10", suit="♦")]
-    round_state.shoe = [Card(rank="10", suit="♠")] * 20
+    bot_hand.cards = [card(rank="10"), card(rank="6", suit="♥")]
+    round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
+    round_state.dealer = [card(rank="6", suit="♣"), card(rank="10", suit="♦")]
+    round_state.shoe = [card(rank="10")] * 20
     view = _make_view(round_state=round_state)
     message = FakeDiscordMessage()
 
@@ -563,14 +563,14 @@ async def test_apply_bot_action_routes_known_actions() -> None:
         round_state = _round_with_two_cards(
             # A copy: the hand holds the list itself, so a `hit` would grow the caller's.
             player_cards=list(player_cards),
-            dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+            dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
         )
         view = _make_view(round_state=round_state)
         assert view._apply_bot_action(user_id=1, action=action, allowed=(action,)) is True
         return round_state.players[0]
 
-    stiff = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    pair = [Card(rank="8", suit="♠"), Card(rank="8", suit="♥")]
+    stiff = [card(rank="10"), card(rank="7", suit="♥")]
+    pair = [card(rank="8"), card(rank="8", suit="♥")]
 
     assert len(_apply(action="hit", player_cards=stiff).hands[0].cards) == 3
     assert _apply(action="stand", player_cards=stiff).hands[0].finished is True
@@ -583,8 +583,8 @@ async def test_apply_bot_action_routes_known_actions() -> None:
 async def test_apply_bot_action_reports_a_refused_round_call_as_unapplied() -> None:
     """A `ValueError` out of `BlackjackRound` is caught, so the caller can fall back to a stand."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
 
@@ -596,8 +596,8 @@ async def test_apply_bot_action_reports_a_refused_round_call_as_unapplied() -> N
 async def test_apply_bot_action_rejects_action_not_in_allowed() -> None:
     """Actions not in `allowed` are rejected without raising."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
 
@@ -611,14 +611,14 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     """Settling a round writes the round's remaining shoe back into the channel store."""
     store = BlackjackShoeStore()
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     round_state.shoe = [
-        Card(rank="7", suit="♠"),
-        Card(rank="8", suit="♥"),
-        Card(rank="2", suit="♦"),
-        Card(rank="3", suit="♣"),
+        card(rank="7"),
+        card(rank="8", suit="♥"),
+        card(rank="2", suit="♦"),
+        card(rank="3", suit="♣"),
     ]
     view = BlackjackView(round_state=round_state, owner=seat(), shoe_store=store, channel_id=42)
 
@@ -646,8 +646,8 @@ async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
     """
     await seed_balance(user_id=1, name="alice", amount=100)
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="9", suit="♥")],
+        dealer_cards=[card(rank="10", suit="♣"), card(rank="8", suit="♦")],
         player=seat(bet=50, balance_at_start=100),
         finished=True,
     )
@@ -663,10 +663,10 @@ async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
         message=as_message(fake=FakeDiscordMessage(guild=FakeGuild(guild_id=888))),
         interaction=None,
     )
-    round_state.dealer.append(Card(rank="K", suit="♣"))
+    round_state.dealer.append(card(rank="K", suit="♣"))
     await view.wait_for_background_tasks()
 
-    assert recorded["dealer_cards"] == [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+    assert recorded["dealer_cards"] == [card(rank="10", suit="♣"), card(rank="8", suit="♦")]
     assert recorded["dealer_total"] == 18
     assert recorded["guild_id"] == 888
 
@@ -683,8 +683,8 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     message = FakeDiscordMessage()
     view = _make_view(
         round_state=_round_with_two_cards(
-            player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
-            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+            player_cards=[card(rank="10"), card(rank="Q", suit="♥")],
+            dealer_cards=[card(rank="10", suit="♣"), card(rank="8", suit="♦")],
             player=seat(bet=50, balance_at_start=100),
             finished=True,
         )
@@ -714,8 +714,8 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     message = FakeDiscordMessage()
     view = _make_view(
         round_state=_round_with_two_cards(
-            player_cards=[Card(rank="10", suit="♠"), Card(rank="8", suit="♥")],
-            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="Q", suit="♦")],
+            player_cards=[card(rank="10"), card(rank="8", suit="♥")],
+            dealer_cards=[card(rank="10", suit="♣"), card(rank="Q", suit="♦")],
             player=seat(bet=50, balance_at_start=100),
         )
     )
@@ -759,8 +759,8 @@ async def test_a_table_edit_on_the_way_to_settling_that_fails_is_reported(
     message.edit_failure = failure
     view = _make_view(
         round_state=_round_with_two_cards(
-            player_cards=[Card(rank="10", suit="♠"), Card(rank="8", suit="♥")],
-            dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
+            player_cards=[card(rank="10"), card(rank="8", suit="♥")],
+            dealer_cards=[card(rank="A", suit="♣"), card(rank="K", suit="♦")],
         )
     )
 
@@ -775,11 +775,11 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: Schedule
     """Dealer plays deterministically under H17 (hits below 17, stands on hard 17+)."""
     await seed_balance(user_id=1, name="alice", amount=100)
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
-        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="3", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="7", suit="♥")],
+        dealer_cards=[card(rank="10", suit="♣"), card(rank="3", suit="♦")],
         player=seat(bet=50, balance_at_start=100),
     )
-    round_state.shoe = [Card(rank="5", suit="♣")]
+    round_state.shoe = [card(rank="5", suit="♣")]
 
     message = FakeDiscordMessage()
     view = _make_view(round_state=round_state)
@@ -809,16 +809,16 @@ async def test_a_five_card_twenty_one_still_waits_for_the_dealer_to_play(
     await seed_balance(user_id=1, name="alice", amount=1_000)
     round_state = _round_with_two_cards(
         player_cards=[
-            Card(rank="2", suit="♠"),
-            Card(rank="3", suit="♥"),
-            Card(rank="4", suit="♣"),
-            Card(rank="5", suit="♦"),
-            Card(rank="7", suit="♠"),
+            card(rank="2"),
+            card(rank="3", suit="♥"),
+            card(rank="4", suit="♣"),
+            card(rank="5", suit="♦"),
+            card(rank="7"),
         ],
-        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="6", suit="♦")],
+        dealer_cards=[card(rank="10", suit="♣"), card(rank="6", suit="♦")],
         player=seat(bet=100, balance_at_start=1_000),
     )
-    round_state.shoe = [Card(rank="5", suit="♣")]
+    round_state.shoe = [card(rank="5", suit="♣")]
     view = _make_view(round_state=round_state)
 
     await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
@@ -847,7 +847,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
             casino_balance=-50,
             hands=[
                 BlackjackHandSettlement(
-                    cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
+                    cards=[card(rank="10"), card(rank="Q", suit="♥")],
                     bet=50,
                     outcome="win",
                     delta=50,
@@ -862,8 +862,8 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     message = FakeDiscordMessage()
     view = _make_view(
         round_state=_round_with_two_cards(
-            player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
-            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+            player_cards=[card(rank="10"), card(rank="Q", suit="♥")],
+            dealer_cards=[card(rank="10", suit="♣"), card(rank="8", suit="♦")],
             player=seat(bet=50, balance_at_start=50),
         )
     )
@@ -940,11 +940,11 @@ async def test_a_timeout_waits_for_the_action_in_flight(
     """
     await seed_balance(user_id=1, name="alice", amount=100)
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
-        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+        player_cards=[card(rank="10"), card(rank="2", suit="♥")],
+        dealer_cards=[card(rank="10", suit="♣"), card(rank="8", suit="♦")],
         player=seat(bet=50, balance_at_start=100),
     )
-    round_state.shoe = [Card(rank="5", suit="♣")]
+    round_state.shoe = [card(rank="5", suit="♣")]
     message = FakeDiscordMessage()
     view = _make_view(round_state=round_state)
     view.message = as_message(fake=message)
@@ -983,10 +983,10 @@ def _alice_done_bob_to_act() -> BlackjackRound:
         ],
     )
     alice = round_state.players[0].hands[0]
-    alice.cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    alice.cards = [card(rank="10"), card(rank="7", suit="♥")]
     alice.finished = True
-    round_state.players[1].hands[0].cards = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="7", suit="♦")]
+    round_state.players[1].hands[0].cards = [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
+    round_state.dealer = [card(rank="9", suit="♣"), card(rank="7", suit="♦")]
     round_state.current_player_index = 1
     return round_state
 
@@ -1044,22 +1044,22 @@ async def test_blackjack_view_hit_draws_for_active_split_hand() -> None:
     player = round_state.players[0]
     player.hands = [
         BlackjackHandState(
-            cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
+            cards=[card(rank="10"), card(rank="2", suit="♥")],
             bet=50,
             base_bet=50,
             is_split_hand=True,
             finished=True,
         ),
         BlackjackHandState(
-            cards=[Card(rank="9", suit="♣"), Card(rank="2", suit="♦")],
+            cards=[card(rank="9", suit="♣"), card(rank="2", suit="♦")],
             bet=50,
             base_bet=50,
             is_split_hand=True,
         ),
     ]
-    round_state.dealer = [Card(rank="9", suit="♥"), Card(rank="7", suit="♦")]
+    round_state.dealer = [card(rank="9", suit="♥"), card(rank="7", suit="♦")]
     round_state.current_hand_index = 1
-    round_state.shoe = [Card(rank="5", suit="♣")]
+    round_state.shoe = [card(rank="5", suit="♣")]
 
     message = FakeDiscordMessage()
     view = _make_view(round_state=round_state)
@@ -1083,11 +1083,11 @@ def _five_card_round(last_card: str, dealer_cards: list[Card]) -> BlackjackRound
     """Builds a settled one-seat round whose hand is 2-3-4-5 plus `last_card`."""
     round_state = _round_with_two_cards(
         player_cards=[
-            Card(rank="2", suit="♠"),
-            Card(rank="3", suit="♥"),
-            Card(rank="4", suit="♣"),
-            Card(rank="5", suit="♦"),
-            Card(rank=last_card, suit="♠"),
+            card(rank="2"),
+            card(rank="3", suit="♥"),
+            card(rank="4", suit="♣"),
+            card(rank="5", suit="♦"),
+            card(rank=last_card),
         ],
         dealer_cards=dealer_cards,
         player=seat(bet=10_000, balance_at_start=100_000),
@@ -1100,7 +1100,7 @@ async def test_blackjack_final_embed_shows_five_card_bonus_metadata() -> None:
     """Final Blackjack embeds display five-card outcome and bonus metadata."""
     await seed_balance(user_id=1, name="alice", amount=100_000)
     round_state = _five_card_round(
-        last_card="7", dealer_cards=[Card(rank="10", suit="♣"), Card(rank="9", suit="♦")]
+        last_card="7", dealer_cards=[card(rank="10", suit="♣"), card(rank="9", suit="♦")]
     )
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1124,9 +1124,9 @@ async def test_blackjack_final_embed_shows_five_card_win_without_bonus_metadata(
     round_state = _five_card_round(
         last_card="6",
         dealer_cards=[
-            Card(rank="7", suit="♣"),
-            Card(rank="7", suit="♦"),
-            Card(rank="7", suit="♥"),
+            card(rank="7", suit="♣"),
+            card(rank="7", suit="♦"),
+            card(rank="7", suit="♥"),
         ],
     )
     settlement = await settle_only_seat(round_state=round_state)
@@ -1149,8 +1149,8 @@ async def test_blackjack_final_embed_uses_aggregate_insurance_push_title() -> No
     """Insurance break-even should present as aggregate push in the final title."""
     await seed_balance(user_id=1, name="alice", amount=300)
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="9", suit="♠"), Card(rank="8", suit="♥")],
-        dealer_cards=[Card(rank="K", suit="♣"), Card(rank="A", suit="♦")],
+        player_cards=[card(rank="9"), card(rank="8", suit="♥")],
+        dealer_cards=[card(rank="K", suit="♣"), card(rank="A", suit="♦")],
         player=seat(bet=100, balance_at_start=100),
         finished=True,
     )

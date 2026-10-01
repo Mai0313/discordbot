@@ -23,6 +23,7 @@ from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyV
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
 from tests.helpers.games import (
+    card,
     seat,
     joins_as,
     lobby_button,
@@ -94,9 +95,7 @@ async def test_bot_blackjack_participant_spreads_bet_by_true_count(
     neutral = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=1)
     # A ten-rich stored shoe above the reshuffle threshold gives channel 2 a strongly
     # positive true count.
-    cog._blackjack_shoes.save_shoe(
-        channel_id=2, cards=[Card(rank="10", suit="♠") for _ in range(120)]
-    )
+    cog._blackjack_shoes.save_shoe(channel_id=2, cards=[card(rank="10") for _ in range(120)])
     favorable = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=2)
 
     assert neutral is not None
@@ -201,7 +200,7 @@ def _scripted_blackjack_lobby(
     dealt: list[Card], bot: GameParticipant | None = None
 ) -> BlackjackLobbyView:
     """Builds Alice's Blackjack lobby whose round deals `dealt` first, then fives."""
-    shoe = dealt + [Card(rank="5", suit="♠") for _ in range(100)]
+    shoe = dealt + [card(rank="5") for _ in range(100)]
     return BlackjackLobbyView(
         owner=seat(bet=10, balance_at_start=100),
         requested_bet=10,
@@ -336,9 +335,7 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     reports = _recorded_reports(monkeypatch=monkeypatch)
     bot = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
     # Alice 5 5, the bot 5 5, the dealer's hole 5 and an ace up: the bot owes an insurance call.
-    lobby = _scripted_blackjack_lobby(
-        dealt=[Card(rank="5", suit="♠")] * 5 + [Card(rank="A", suit="♠")], bot=bot
-    )
+    lobby = _scripted_blackjack_lobby(dealt=[card(rank="5")] * 5 + [card(rank="A")], bot=bot)
     message = FakeDiscordMessage()
     lobby.message = as_message(fake=message)
     owner_interaction = _RefusedAfterTheTable(user=FakeUser(user_id=1), message=message)
@@ -458,9 +455,7 @@ async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(
     """A dealer natural under a ten ends the round at the deal, so the start press shows it all."""
     # Alice 5 5, the dealer's hole an ace under a king.
     message = await _start_in_a_shut_out_channel(
-        monkeypatch=monkeypatch,
-        dealt=[Card(rank="5", suit="♠")] * 2
-        + [Card(rank="A", suit="♠"), Card(rank="K", suit="♠")],
+        monkeypatch=monkeypatch, dealt=[card(rank="5")] * 2 + [card(rank="A"), card(rank="K")]
     )
     table = message.edits[0]["view"]
     assert isinstance(table, BlackjackView)
@@ -480,9 +475,7 @@ async def test_a_blackjack_natural_under_an_ace_settles_inside_the_insurance_pre
     """The last insurance call closes the phase on a dealer natural, so its press shows the end."""
     # Alice 5 5, the dealer's hole a king under an ace.
     message = await _start_in_a_shut_out_channel(
-        monkeypatch=monkeypatch,
-        dealt=[Card(rank="5", suit="♠")] * 2
-        + [Card(rank="K", suit="♠"), Card(rank="A", suit="♠")],
+        monkeypatch=monkeypatch, dealt=[card(rank="5")] * 2 + [card(rank="K"), card(rank="A")]
     )
     table = message.edits[-1]["view"]
     assert isinstance(table, BlackjackView)
@@ -510,8 +503,7 @@ async def test_the_bot_plays_its_seat_through_the_press_that_handed_it_the_turn(
     # dealer bound for 17 on a shoe of fives, so the bot draws to 20 before it stands.
     message = await _start_in_a_shut_out_channel(
         monkeypatch=monkeypatch,
-        dealt=[Card(rank="5", suit="♠")] * 4
-        + [Card(rank="6", suit="♠"), Card(rank="A", suit="♠")],
+        dealt=[card(rank="5")] * 4 + [card(rank="6"), card(rank="A")],
         bot=bot,
     )
     table = message.edits[-1]["view"]

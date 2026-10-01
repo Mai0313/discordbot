@@ -12,7 +12,7 @@ import logfire
 from nextcord import Embed, HTTPException
 from nextcord.ui import StringSelect
 
-from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
+from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.typings.economy import (
     JackpotSnapshot,
     JackpotSettlementResult,
@@ -48,6 +48,7 @@ from discordbot.cogs.games.dragon_gate_views import (
 from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import (
+    card,
     seat,
     joins_as,
     lobby_button,
@@ -185,16 +186,16 @@ def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
 
 def test_card_value_uses_ace_low_and_faces_above_ten() -> None:
     """射龍門 compares A as 1 and J/Q/K as 11/12/13."""
-    assert card_value(card=Card(rank="A", suit="♠")) == 1
-    assert card_value(card=Card(rank="J", suit="♠")) == 11
-    assert card_value(card=Card(rank="Q", suit="♠")) == 12
-    assert card_value(card=Card(rank="K", suit="♠")) == 13
+    assert card_value(card=card(rank="A")) == 1
+    assert card_value(card=card(rank="J")) == 11
+    assert card_value(card=card(rank="Q")) == 12
+    assert card_value(card=card(rank="K")) == 13
 
 
 def test_adjacent_non_pair_pillars_are_redealt_without_counting_turn() -> None:
     """Adjacent non-pair pillars have no gate and are skipped before betting."""
-    assert has_open_gate(pillars=[Card(rank="4", suit="♠"), Card(rank="3", suit="♥")]) is False
-    assert has_open_gate(pillars=[Card(rank="7", suit="♠"), Card(rank="7", suit="♥")]) is True
+    assert has_open_gate(pillars=[card(rank="4"), card(rank="3", suit="♥")]) is False
+    assert has_open_gate(pillars=[card(rank="7"), card(rank="7", suit="♥")]) is True
 
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("4", "♠", "3", "♥", "5", "♣", "9", "♦", "7", "♠")),
@@ -1366,8 +1367,8 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     widest_turn = DragonGateTurnResult(
         turn_number=99_999,
         participant=participants[0],
-        pillars=[Card(rank="10", suit="♠"), Card(rank="10", suit="♥")],
-        third_card=Card(rank="10", suit="♦"),
+        pillars=[card(rank="10"), card(rank="10", suit="♥")],
+        third_card=card(rank="10", suit="♦"),
         bet=10**15,
         outcome="pair_pillar_hit",
         delta=-(10**15),
