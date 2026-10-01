@@ -22,7 +22,7 @@ from discordbot.utils.urls import URL_START_ANCHOR
 # and the optional query tail must end on `[A-Za-z0-9_-]` so a link written mid-sentence stops
 # cleanly at a non-ASCII terminator (e.g. zh/ja `...hEc8。`) instead of swallowing punctuation.
 BILIBILI_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://"
+    pattern=rf"{URL_START_ANCHOR}https?://"
     r"(?:"
     r"(?:www\.|m\.)?bilibili\.com/video/(?:BV[0-9A-Za-z]{10}(?![0-9A-Za-z])|av\d+)/?"
     r"|b23\.tv/[A-Za-z0-9]+"
