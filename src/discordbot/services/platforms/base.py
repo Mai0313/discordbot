@@ -126,7 +126,7 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
     )
     reply_branches: list[list[OutputT]] = Field(
         default_factory=list,
-        description="One list per reply branch under the target, each ordered from the direct reply outward, so an item's index in its branch is its nesting depth",
+        description="One list per reply branch under the target, each ordered from the direct reply outward; only on Threads is an item's index its nesting depth, since `thread_branches` appends sibling replies to the same branch",
     )
     selected_comment_id: str = Field(
         default="",

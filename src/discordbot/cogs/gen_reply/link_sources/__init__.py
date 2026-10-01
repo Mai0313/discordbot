@@ -17,8 +17,9 @@ those platforms are the rate-limit sensitive ones.
 `registry.py` holds the instances and says why each entry's `build` is an adapter rather than the
 builder itself.
 
-What the builders share lives here too: the block shapes, the marker defusing, and
-`build_post_context`, the one read-render-upload flow the conversation-shaped post sources run.
+What the builders share lives here too: the block shapes, the marker defusing, the comment lines,
+the clip quality, and `build_post_context`, the read-render-upload flow every conversation-shaped
+post source runs except Threads, whose media step splits one budget across two posts.
 """
 
 import re
@@ -250,11 +251,10 @@ def defuse_markers(*, text: str) -> str:
     and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
     own long-term memory, and what it can reach there survives every later conversation.
 
-    Shared by the sources that carry a DISCUSSION rather than a caption — Threads, Facebook,
-    Instagram and Twitter, each of which hands the model thousands of characters written by
-    strangers. Douyin and Bilibili do not use it: a caption or a video title is one line by its
-    own author, and `tests/test_prompt_guards.py` owns the prompt rule that covers every
-    undefused path.
+    Used by every source that hands the model posts around the linked one as well: its comments,
+    or the post it replies to or quotes. Douyin and Bilibili do not use it: a caption or a video
+    title is one line by its own author, and `tests/test_prompt_guards.py` owns the prompt rule
+    that covers every undefused path.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
 

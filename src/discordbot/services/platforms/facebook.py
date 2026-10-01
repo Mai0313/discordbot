@@ -1,10 +1,9 @@
 """Facebook post URL parsing and page extraction.
 
-Read by the cog that expands a pasted link and by the reply pipeline that reads the post into
-answer context. `base.py` owns the contract both of them are written against.
+`base.py` owns the contract every caller is written against.
 
-This module downloads nothing: both callers work from the image URLs alone, so there is no
-scratch directory anywhere in this feature.
+This module downloads nothing: callers work from the image URLs alone, so there is no scratch
+directory anywhere in this feature.
 
 Two things about this source shape everything below.
 
@@ -76,17 +75,19 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # unreadable), and refusing them later in `is_facebook_post_url` would still hide a post link
 # after them.
 FACEBOOK_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
     r"(?![^/?\s]+/videos/|share/[rv]/)"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
 # The path shapes that name a post on their own. A `share/p/<code>` link names one only through
 # the redirect it answers with, exactly as a Threads share link does.
-_GROUP_POST_PATH_RE = re.compile(r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)")
-_PAGE_POST_PATH_RE = re.compile(r"^/(?:[^/]+)/(?:posts|videos)/(?P<post>[0-9]+)")
-_NUMERIC_POST_PATH_RE = re.compile(r"^/(?:[0-9]+)/posts/(?P<post>[0-9]+)")
-_SHARE_PATH_RE = re.compile(r"^/share/p/[A-Za-z0-9]+")
+_GROUP_POST_PATH_RE = re.compile(
+    pattern=r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)"
+)
+_PAGE_POST_PATH_RE = re.compile(pattern=r"^/(?:[^/]+)/(?:posts|videos)/(?P<post>[0-9]+)")
+_NUMERIC_POST_PATH_RE = re.compile(pattern=r"^/(?:[0-9]+)/posts/(?P<post>[0-9]+)")
+_SHARE_PATH_RE = re.compile(pattern=r"^/share/p/[A-Za-z0-9]+")
 
 # A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
 # every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
@@ -109,7 +110,7 @@ _LOGIN_WALL_PATHS = ("/login", "/checkpoint", "/recover")
 # "the comment this URL names" and "the post this comment hangs off" exact matches rather than
 # guesses. `legacy_fbid` carries the trailing id directly and wins for that half; the decode is
 # the fallback for a node without it, and the only source for the leading one.
-_COMMENT_ID_RE = re.compile(r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
+_COMMENT_ID_RE = re.compile(pattern=r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
 
 
 def is_facebook_post_url(*, url: str) -> bool:
@@ -212,8 +213,8 @@ class FacebookURL(BaseModel):
 class FacebookOutput(LinkableCommentOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
-    Deliberately one type for both, exactly as `ThreadsOutput` and `InstagramOutput` are: a
-    caller that walks one platform's conversation walks the others with the same code. A comment
+    Deliberately one type for both, as on every platform with a conversation: a caller that
+    walks one platform's conversation walks the others with the same code. A comment
     leaves empty the fields it has no version of — it carries no media, no group and no counts
     of its own.
 
@@ -372,7 +373,7 @@ class FacebookDownloader(PlatformDownloader):
     def _comment_branches(
         *, payloads: list[Any], post_url: str, post_id: str
     ) -> list[list[FacebookOutput]]:
-        """Every preloaded comment on THIS post, grouped into branches the way Threads groups replies.
+        """Every preloaded comment on THIS post, grouped into branches by `thread_branches`.
 
         A reply names its own parent in `comment_direct_parent`, so it is threaded behind that
         comment rather than behind whichever one the page happened to serialise before it; a

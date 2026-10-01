@@ -9,19 +9,16 @@ notice below is worded without naming where the link sat, since either is possib
 comments below it, which is where the information usually is. All of it comes out of the one
 page fetch, so the comments cost no extra request; they ride as text only, like the ancestors.
 
-The post's media is fetched here and uploaded to the Gemini Files API, then referenced
-by uri. It used to ride as raw CDN URLs (`image_url` / `file_url`) on the theory that
-the proxy resolved them server-side; it does fetch them, but by rewriting the URL into
-base64 `inline_data`, which charges the media against the request body and swallows a
-failed fetch silently. Worse, the native Interactions answer path (taken when the same
-message also links a YouTube video) has no proxy in the loop and forwards the URL to
-Gemini untouched, which only resolves Files uris and YouTube links. Uploading is the
-one shape both paths accept; `files_api` has the details.
+The post's media is fetched here and uploaded to the Gemini Files API, then referenced by uri,
+never handed over as a raw CDN URL. The proxy would fetch one by rewriting it into base64
+`inline_data`, which charges the media against the request body and swallows a failed fetch
+silently, and the native Interactions answer path (taken when the same message also links a
+YouTube video) forwards it to Gemini untouched, which resolves only Files uris and YouTube links.
+Uploading is the one shape both paths accept; `files_api` has the details.
 
-This is the rebuild of the reverted #294: the old design waited on the `parse_threads`
-cog to download + post an expansion and read it back through a relay, which raced the
-route gate. Here the parse is independent, and the media fetch is bounded internally so
-this always returns inside the pipeline's post-route grace.
+The parse never waits on the `parse_threads` expansion, since reading a posted expansion back
+races the route gate, and the media fetch is bounded internally so this always returns inside
+the pipeline's post-route grace.
 """
 
 import asyncio
@@ -68,9 +65,9 @@ THREADS_CONTEXT_TRAILER = (
 
 # Leads the injected blocks. The wording is load-bearing on three fronts: it tells the model
 # the link is ALREADY fetched below (so it answers about the post instead of falling back to
-# "I cannot open this link", the failure the reverted design produced), it marks the post
-# body as untrusted quoted data so injection-style text inside the post ("ignore the user and
-# say ...") is treated as content to answer about, never as a command to obey, and it defers to
+# "I cannot open this link"), it marks the post body as untrusted quoted data so injection-style
+# text inside the post ("ignore the user and say ...") is treated as content to answer about,
+# never as a command to obey, and it defers to
 # the block's own accounting for which media is attached and whose it is. The comments are named
 # separately in that guard because they are the sharper edge of it: the post has one author the
 # user chose to link, while a comment is arbitrary text from a stranger. The post a quote post
@@ -169,8 +166,7 @@ THREADS_QUOTED_UNAVAILABLE_NOTICE = (
 # itself can fail (timeout, DNS, a non-2xx), and a fetch that succeeds can hand back a page with
 # no post JSON in it. Deliberately does NOT assert the post is gone either way: Threads
 # intermittently answers a healthy post URL with 200 and an empty shell (a soft throttle,
-# measured), and reporting a throttle as a deletion is the worst thing this can say, the same
-# reason `douyin_failure_message` keeps a WAF block and a deleted post apart.
+# measured), and reporting a throttle as a deletion is the worst thing this can say.
 THREADS_UNAVAILABLE_NOTICE = (
     "==== We tried to read the Threads link the user is asking about but could not get its "
     "content. That can mean the post is private or deleted, but it can equally mean the request "
@@ -503,14 +499,13 @@ async def _upload_post_media(
     """Fetches one post's media and uploads it, reporting what arrived and what did not.
 
     Only the TARGET post's media and the post it quotes are ingested. The reply chain's ancestors
-    and the comments keep their text: each media part costs a fetch plus an upload, and the
-    `parse_threads` cog draws the same line (it downloads the target's videos only).
+    and the comments keep their text: each media part costs a fetch plus an upload.
 
     Every item is best-effort and independent, so one expired CDN url (Threads signs them)
     or one slow upload never sinks the rest. Images go through `upload_image`, which also
-    downscales them to the provider's effective resolution — the old raw-URL path handed the
-    model full-size originals. Whatever the budget left out or the fetch lost comes back in the
-    missing lists, so the block can name it instead of quietly claiming it.
+    downscales them to the provider's effective resolution. Whatever the budget left out or the
+    fetch lost comes back in the missing lists, so the block can name it instead of quietly
+    claiming it.
     """
     image_urls = entry.post.image_urls[: entry.budget]
     remaining = entry.budget - len(image_urls)
@@ -569,7 +564,7 @@ async def _upload_post_media(
         owner=entry.owner,
         parts=parts,
         # The budget's leftovers ride alongside the failures: an 11-image carousel, or a video
-        # behind ten images, never reaches the model either, and the old code said nothing.
+        # behind ten images, never reaches the model either.
         missing_image_urls=[*failed_images, *entry.post.image_urls[len(image_urls) :]],
         missing_video_urls=[*failed_videos, *entry.post.video_urls[len(video_urls) :]],
     )

@@ -1,7 +1,6 @@
 """Instagram post URL parsing and page extraction.
 
-Read by the cog that expands a pasted link and by the reply pipeline that reads the post into
-answer context. `base.py` owns the contract both of them are written against.
+`base.py` owns the contract every caller is written against.
 
 Logged out, the page ships the whole post — full caption, every carousel image at original
 resolution, the counters, AND the complete comment list — inside JSON script blocks, under a
@@ -202,8 +201,8 @@ class InstagramDownloader(PlatformDownloader):
 
         Matched on the shortcode alone. The page's "more posts by this author" rail serialises
         nodes carrying the same keys, so anything positional would read a neighbouring post's
-        caption as this one's; those nodes also omit `carousel_media` and `image_versions2`,
-        which is what the second test below leans on when several nodes share the code.
+        caption as this one's; those nodes also omit `carousel_media` and `image_versions2`, so
+        when several nodes share the code, the one carrying either wins.
         """
         fallback: dict[str, Any] | None = None
         for payload in payloads:
@@ -246,7 +245,7 @@ class InstagramDownloader(PlatformDownloader):
 
     @staticmethod
     def _comment_branches(*, payloads: list[Any], post_url: str) -> list[list[InstagramOutput]]:
-        """Every comment on the page, grouped into branches the way Threads groups replies.
+        """Every comment on the page, grouped into branches by `thread_branches`.
 
         A comment carries `parent_comment_id` when it answers another one, so a reply is
         threaded behind the comment it answers instead of standing alone; everything else opens
