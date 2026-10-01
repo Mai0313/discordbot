@@ -38,7 +38,11 @@ from nextcord.utils import utcnow
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
-from discordbot.cogs.gen_reply.ask_message import interaction_channel, rebuild_conversation
+from discordbot.cogs.gen_reply.ask_message import (
+    build_ask_message,
+    interaction_channel,
+    rebuild_conversation,
+)
 
 # How many follow-up messages Discord lets a user-installed app POST per interaction while it is
 # not a member of the server (`interactions/receiving-and-responding.mdx:474`, read 2026-08-26).
@@ -147,16 +151,23 @@ class TurnSurface(BaseModel):
 
     @classmethod
     def for_interaction(
-        cls, *, message: Message, interaction: Interaction[commands.Bot]
+        cls, *, interaction: Interaction[commands.Bot], question: str
     ) -> "TurnSurface":
         """The `/ask` surface: answer through the interaction, read the conversation store.
+
+        The message is synthesized here from the same interaction, so its author and channel are
+        what the conversation store is read and written under.
 
         `bot_dm` is the one interaction context that is a 1:1 DM with the bot; `private_channel`
         covers both a group DM and a DM between two other people, neither of which is one, and
         the channel object cannot tell them apart (it is a `PartialMessageable` for all three).
+
+        Raises:
+            RuntimeError: The interaction names no channel or no user, which Discord never sends.
         """
+        channel = interaction_channel(interaction=interaction)
         return cls(
-            message=message,
+            message=build_ask_message(interaction=interaction, question=question, channel=channel),
             interaction=interaction,
             guild_id=interaction.guild_id,
             is_direct_message=interaction.context is InteractionContextType.bot_dm,
@@ -272,11 +283,8 @@ class TurnSurface(BaseModel):
             ]
             history.reverse()
             return history
-        user = self.interaction.user
-        if user is None or self.interaction.channel_id is None:
-            return []
         turns = await load_ask_turns(
-            channel_id=self.interaction.channel_id, user_id=user.id, limit=limit // 2
+            channel_id=self.message.channel.id, user_id=self.message.author.id, limit=limit // 2
         )
         return rebuild_conversation(
             turns=turns,
@@ -330,13 +338,10 @@ class TurnSurface(BaseModel):
         """
         if self.interaction is None:
             return
-        user = self.interaction.user
-        if user is None or self.interaction.channel_id is None:
-            return
         try:
             await record_ask_turn(
-                channel_id=self.interaction.channel_id,
-                user_id=user.id,
+                channel_id=self.message.channel.id,
+                user_id=self.message.author.id,
                 message_id=self.message.id,
                 question=self.message.content,
                 answer=answer,

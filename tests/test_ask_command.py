@@ -151,11 +151,11 @@ def _interaction(**kwargs: Any) -> Any:  # noqa: ANN401 -- the fake stands in fo
     return _FakeAskInteraction(**kwargs)
 
 
-def _ask_message(*, interaction: Any, question: str = "在幹嘛") -> Message:  # noqa: ANN401 -- see `_interaction`
+def _ask_message(*, interaction: Any) -> Message:  # noqa: ANN401 -- see `_interaction`
     """The message the pipeline would answer for this invocation."""
     return build_ask_message(
         interaction=interaction,
-        question=question,
+        question="在幹嘛",
         channel=interaction_channel(interaction=interaction),
     )
 
@@ -213,9 +213,7 @@ def test_only_a_dm_with_the_bot_counts_as_a_direct_message(
     """
     interaction = _interaction(guild_id=guild_id, context=context)
 
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
     assert surface.guild_id == expected_guild
     assert surface.is_direct_message is expected_direct
@@ -257,10 +255,9 @@ def test_an_ask_turn_reads_memory_scoped_to_where_it_happens(
     compartment the asker has, and would drop a server turn's guild compartment.
     """
     interaction = _interaction(guild_id=guild_id, context=context)
-    message = _ask_message(interaction=interaction)
     builder = ReplyContextBuilder(
         toolkit=_toolkit(interaction=interaction),
-        surface=TurnSurface.for_interaction(message=message, interaction=interaction),
+        surface=TurnSurface.for_interaction(interaction=interaction, question="在幹嘛"),
     )
 
     assert builder.plan_recall().recall_context == expected
@@ -291,8 +288,7 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
         lambda **kwargs: scheduled.append(kwargs),
     )
     interaction = _interaction(guild_id=guild_id, context=context)
-    message = _ask_message(interaction=interaction)
-    surface = TurnSurface.for_interaction(message=message, interaction=interaction)
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     turn = AnswerTurn(
         config=LLMConfig(),
         media_delivery=hosting_off_planner(),
@@ -303,7 +299,7 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     turn._schedule_memory_updates(
         context=ReplyContext(),
         full_reply="好",
-        streamer=ResponseStreamer(message=message, surface=surface),
+        streamer=ResponseStreamer(message=surface.message, surface=surface),
     )
 
     assert [update["subject"] for update in scheduled] == [
@@ -377,9 +373,7 @@ async def test_the_store_keeps_only_its_retention(monkeypatch: pytest.MonkeyPatc
 async def test_the_first_send_edits_the_deferred_response_then_follows_up() -> None:
     """The deferred response is one free message; everything after it spends the budget."""
     interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     assert surface.answer_capacity(has_landed_reply=False) == INTERACTION_FOLLOWUP_LIMIT + 1
 
     await surface.send(content="first")
@@ -394,9 +388,7 @@ async def test_the_first_send_edits_the_deferred_response_then_follows_up() -> N
 async def test_a_follow_up_never_replies_into_a_channel_the_bot_is_not_in() -> None:
     """`previous.reply` is a plain channel send, which is a 403 here and loses the answer's tail."""
     interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
     def _explode(**kwargs: object) -> None:
         """Fails if the chunk ever goes out as a reply to the previous message."""
@@ -438,9 +430,7 @@ def test_an_uncapped_surface_splits_the_whole_answer() -> None:
 async def test_a_dropped_clip_is_written_where_it_cannot_be_reacted() -> None:
     """The ⏱️ / ⚠️ is the only trace a dropped clip leaves, so it must survive having no message."""
     interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
     await surface.hint(emoji="⚠️")
     await surface.hint(emoji="⚠️")
@@ -454,17 +444,12 @@ async def test_a_dropped_clip_is_written_where_it_cannot_be_reacted() -> None:
 async def test_the_surface_records_a_turn_and_replays_it_next_time() -> None:
     """One turn's answer is the next turn's history, since Discord keeps none of it for us."""
     interaction = _interaction()
-    first = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction, question="你叫什麼"), interaction=interaction
-    )
+    first = TurnSurface.for_interaction(interaction=interaction, question="你叫什麼")
     assert await first.fetch_history(limit=500) == []
 
     await first.record_turn(answer="我叫破貓")
 
-    later = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction, question="剛剛說了什麼"),
-        interaction=interaction,
-    )
+    later = TurnSurface.for_interaction(interaction=interaction, question="剛剛說了什麼")
     history = await later.fetch_history(limit=500)
     assert [message.content for message in history] == ["你叫什麼", "我叫破貓"]
     assert [message.author.id for message in history] == [ASKER_ID, BOT_USER_ID]
@@ -573,9 +558,7 @@ class _EditableReply:
 async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> None:
     """It has to show, and it has to stay out of what the bot is later told it said."""
     interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
     reply = _EditableReply()
     streamer = ResponseStreamer(message=surface.message, surface=surface, reply=reply)
@@ -592,9 +575,7 @@ async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> N
 async def test_a_capped_surface_stops_chunking_where_its_budget_ends() -> None:
     """The budget arithmetic, not just the split: five follow-ups and no sixth attempt."""
     interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
     reply = _EditableReply()
     streamer = ResponseStreamer(message=surface.message, surface=surface, reply=reply)
@@ -633,9 +614,7 @@ def _deferred_surface(**kwargs: Any) -> TurnSurface:  # noqa: ANN401 -- forwards
     """The surface `/ask` builds, after the defer that opens the fifteen-minute window."""
     interaction = _interaction(**kwargs)
     interaction.deferred = True
-    return TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    return TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
 
 def test_a_gateway_turn_has_nothing_running_out() -> None:
@@ -660,9 +639,7 @@ def test_a_window_already_gone_leaves_nothing_to_spend() -> None:
     interaction = _interaction()
     interaction.deferred = True
     interaction.created_at = utcnow() - timedelta(minutes=30)
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
     assert surface.delivery_budget_seconds() == 0.0
 
@@ -675,8 +652,6 @@ def test_an_undeferred_invocation_has_nothing_to_spend_either() -> None:
     rather than assuming the deferred one.
     """
     interaction = _interaction()
-    surface = TurnSurface.for_interaction(
-        message=_ask_message(interaction=interaction), interaction=interaction
-    )
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
     assert surface.delivery_budget_seconds() == 0.0

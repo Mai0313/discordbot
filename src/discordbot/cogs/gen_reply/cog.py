@@ -48,7 +48,6 @@ from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
-from discordbot.cogs.gen_reply.ask_message import build_ask_message, interaction_channel
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
 from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
@@ -406,9 +405,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 since there is no message of theirs for it to hang off.
         """
         await interaction.response.defer()
-        channel = interaction_channel(interaction=interaction)
-        message = build_ask_message(interaction=interaction, question=question, channel=channel)
-        surface = TurnSurface.for_interaction(message=message, interaction=interaction)
+        surface = TurnSurface.for_interaction(interaction=interaction, question=question)
         user_prompt = await self.toolkit.input_builder.get_user_prompt(content=question)
         await self._start_turn(surface=surface, user_prompt=user_prompt)
 

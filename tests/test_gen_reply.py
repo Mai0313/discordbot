@@ -7723,7 +7723,13 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
         del self, kwargs
         contexts.append(context)
 
+    async def no_history(self: object, *, limit: int) -> list[Message]:
+        """An `/ask` conversation with nothing before this turn, read without the ask store."""
+        del self, limit
+        return []
+
     monkeypatch.setattr(AnswerTurn, "stream_answer", capture_answer)
+    monkeypatch.setattr(TurnSurface, "fetch_history", no_history)
     _recorded(cog).responses.output_parsed = RecallRouteClassification(
         decision="QA", recall_user_ids=["42"]
     )
@@ -7731,10 +7737,7 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
     message.guild = None
     surface = TurnSurface(
         message=as_message(fake=message),
-        # No user, so the history read is the empty conversation rather than the ask store.
-        interaction=cast(
-            "nextcord.Interaction[commands.Bot]", SimpleNamespace(user=None, channel_id=None)
-        ),
+        interaction=cast("nextcord.Interaction[commands.Bot]", SimpleNamespace()),
         guild_id=1,
     )
 
