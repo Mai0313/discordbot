@@ -95,7 +95,10 @@ async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
 async def test_the_comment_link_names_the_comment_on_the_post_url(
     post_url: str, expected: str
 ) -> None:
-    """The comment card links to the post's URL naming the comment, whatever query it carries."""
+    """The comment card links to the post's URL naming the comment, whatever query it carries.
+
+    Its author line is the commenter's name as parsed, with nothing added.
+    """
     comment = FacebookOutput(comment_id="222", text="linked", author_name="C")
     cog, _ = stub_conversation_cog(
         cog_type=FacebookCogs,
@@ -105,7 +108,9 @@ async def test_the_comment_link_names_the_comment_on_the_post_url(
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert expansion_embeds(message=message)[-1].url == expected
+    comment_embed = expansion_embeds(message=message)[-1]
+    assert comment_embed.author.name == "C"
+    assert comment_embed.url == expected
 
 
 async def test_an_album_counts_the_videos_nothing_linked() -> None:
