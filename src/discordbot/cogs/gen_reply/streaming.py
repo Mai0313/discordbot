@@ -302,8 +302,9 @@ class ResponseStreamer(BaseModel):
         model having been interrupted rather than as the platform running out of room.
         """
         if max_messages is not None:
-            room = max_messages * DISCORD_MESSAGE_LIMIT - len(footer) - len(TRUNCATED_NOTICE)
-            if room > 0 and len(content) > room:
+            capacity = max_messages * DISCORD_MESSAGE_LIMIT
+            room = capacity - len(footer) - len(TRUNCATED_NOTICE)
+            if room > 0 and len(content) + len(footer) > capacity:
                 content = f"{content[:room]}{TRUNCATED_NOTICE}"
         if len(f"{content}{footer}") <= DISCORD_MESSAGE_LIMIT:
             return f"{content}{footer}", []

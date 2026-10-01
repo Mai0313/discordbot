@@ -409,6 +409,15 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
     assert cog.download_video.options["quality"].default in presets
 
 
+def test_every_option_is_described_in_each_locale_the_command_is() -> None:
+    """An option left in English reads wrong under a command named in the caller's language."""
+    cog = VideoCogs(bot=as_bot(fake=object()))
+    command_locales = set(cog.download_video.description_localizations or {})
+
+    for name, option in cog.download_video.options.items():
+        assert set(option.description_localizations or {}) == command_locales, name
+
+
 def test_a_quality_label_names_what_each_downloader_asks_for() -> None:
     """A label naming a resolution names exactly the ones requested, Douyin's where it differs."""
     for label, preset in QUALITY_CHOICES.items():
@@ -512,15 +521,18 @@ async def test_video_deliver_and_download_branches(
     assert "file" not in host_interaction.edits[-1]
     assert host_interaction.followup.sent == []
 
-    # Too big + hosting off: fall back to the "file too large" message.
+    # Too big + hosting off: fall back to the "file too large" message, which names the file's
+    # size and the limit it exceeds as two different numbers.
     big2 = tmp_path / "big2.mp4"
-    big2.write_bytes(data=b"0" * 300)
+    big2.write_bytes(data=b"0" * (3 * 1024 * 1024))
     cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=big2))
-    fail_interaction = FakeInteraction(filesize_limit=200)
+    fail_interaction = FakeInteraction(filesize_limit=2 * 1024 * 1024)
     await VideoCogs.download_video.callback(
         cog, fail_interaction, url="https://x.test", quality="best"
     )
-    assert "檔案大小超過" in fail_interaction.edits[-1]["content"]
+    assert fail_interaction.edits[-1]["content"] == (
+        "-# 下載失敗\n檔案大小 3.0MB，超過上傳上限 2MB"
+    )
 
     cog, _ = _install(monkeypatch=monkeypatch, outcome=RuntimeError("download failed"))
     error_interaction = FakeInteraction()

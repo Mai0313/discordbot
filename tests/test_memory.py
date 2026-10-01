@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import asyncio
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from functools import partial
 import contextlib
 from collections import Counter
@@ -75,7 +76,6 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     drop_released_evidence,
     partition_forget_requests,
-    filter_duplicate_observations,
 )
 from discordbot.services.memory.writer import (
     ToneForget,
@@ -100,7 +100,6 @@ from discordbot.services.memory.prompts import (
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.constants import (
     COMPACTION_TARGET_CHARS,
     COMPACTION_TRIGGER_CHARS,
@@ -836,21 +835,6 @@ def test_redact_secrets_leaves_git_shas_alone() -> None:
     sha = "bae3077" + "a" * 33
     text = f"commit {sha} fixed it"
     assert redact_secrets(text=text) == text
-
-
-def test_filter_duplicate_observations_uses_normalized_key() -> None:
-    existing = (
-        "### stable_preference\n- normalized_key: preference.reply.short\n- summary_zh: 舊訊號"
-    )
-    kept = filter_duplicate_observations(
-        observations=(
-            _observation(summary="重複訊號", normalized_key="preference.reply.short"),
-            _observation(summary="新訊號", normalized_key="preference.reply.zh_tw"),
-        ),
-        existing_text=existing,
-        source=None,
-    )
-    assert [observation.normalized_key for observation in kept] == ["preference.reply.zh_tw"]
 
 
 def test_transcript_from_messages_drops_non_text_parts() -> None:
@@ -1857,10 +1841,10 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
     notices.
     """
 
-    def _blow_up(**kwargs: object) -> str:
-        """Stands in for a store read that fails after the review succeeded."""
+    def _blow_up(**kwargs: object) -> None:
+        """Stands in for a store write that fails after the review succeeded."""
         del kwargs
-        raise RuntimeError("evidence read blew up")
+        raise RuntimeError("raw append blew up")
 
     writer, fake_client = _writer()
     if outcome == "review-failed":
@@ -1868,14 +1852,16 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         # as a review that returned nothing: that one is `kept-nothing`.
         fake_client.responses.raises = RuntimeError("the evaluator call blew up")
     elif outcome == "raised":
-        monkeypatch.setattr(pipeline, "read_evidence", _blow_up)
+        fake_client.responses.output_parsed = _draft("喜歡簡短")
+        monkeypatch.setattr(pipeline, "append_raw_entry", _blow_up)
     else:
         fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, observations=())
     reported, record = _report_recorder()
     _schedule(writer=writer, report=record)
     if outcome == "cleared-mid-flight":
         mark_cleared(scope=USER_SCOPE)
-    await _wait_for_inflight()
+    # Tolerates the `raised` turn's exception, which the task keeps after its callback logs it.
+    await _drain_scope()
 
     assert len(reported) == 1
     assert reported[0] == MemoryWriteSummary()
@@ -2086,13 +2072,12 @@ async def test_a_partly_failed_merge_still_reports_what_it_staged(
     assert reported[0].forgotten == ("別提舊筆電",)
 
 
-async def test_a_correction_lost_to_the_dedupe_is_logged(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """How often a correction's new fact is dropped as a duplicate is measured, not guessed.
+@pytest.mark.usefixtures("memory_isolated_dir")
+async def test_a_correction_under_the_key_it_forgets_is_still_taken_down() -> None:
+    """The new fact of a correction is staged behind its forget, not dropped as already known.
 
-    The dedupe keys on `(normalized_key, source)` against what is already staged, so a new
-    fact that reuses the key of the one its own turn forgets never reaches `raw.md`.
+    Dropping it by its reused key left the forget to delete the old fact with nothing in its
+    place, so the user lost both.
     """
     append_raw_entry(
         scope=USER_SCOPE,
@@ -2102,22 +2087,17 @@ async def test_a_correction_lost_to_the_dedupe_is_logged(
         ),
     )
     writer, fake_client = _writer()
-    # The review files the note under the reused key; no consolidation changes a fact.
     fake_client.responses.answer = _answers(review=_draft("住在台南", normalized_key="fact.city"))
-    logged: list[dict[str, object]] = []
+    reported, record = _report_recorder()
+    _schedule(
+        writer=writer,
+        remember_notes=("使用者住在台南",),
+        forget_notes=("使用者已經不住台中了",),
+        report=record,
+    )
+    await _wait_for_inflight()
 
-    def record(message: str, **fields: object) -> None:
-        """Keeps the one line under test."""
-        if message.startswith("Memory observation dropped as already staged"):
-            logged.append(fields)
-
-    monkeypatch.setattr("discordbot.services.memory.pipeline.logfire.info", record)
-    # An ordinary repeat, with no forget beside it, is what the dedupe is for: not logged.
-    for forget in ((), ("使用者已經不住台中了",)):
-        _schedule(writer=writer, remember_notes=("使用者住在台南",), forget_notes=forget)
-        await _wait_for_inflight()
-
-    assert logged == [{"scope": USER_SCOPE, "user": IDENTITY, "keys": ["fact.city"]}]
+    assert [summary.remembered for summary in reported] == [("住在台南",)]
 
 
 async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises() -> None:
@@ -2680,16 +2660,16 @@ async def test_pipeline_background_failure_is_swallowed(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A turn that raises past the review frees its scope and still replays the turn behind it."""
-    reads: list[str] = []
+    appends: list[str] = []
 
-    def fail_the_first_read(scope: str) -> str:
-        """Fails the first turn after its review succeeded, and reads normally after that."""
-        reads.append(scope)
-        if len(reads) == 1:
-            raise RuntimeError("evidence read blew up")
-        return read_evidence(scope=scope)
+    def fail_the_first_append(scope: str, entry_text: str) -> None:
+        """Fails the first turn after its review succeeded, and appends normally after that."""
+        appends.append(scope)
+        if len(appends) == 1:
+            raise RuntimeError("raw append blew up")
+        append_raw_entry(scope=scope, entry_text=entry_text)
 
-    monkeypatch.setattr(pipeline, "read_evidence", fail_the_first_read)
+    monkeypatch.setattr(pipeline, "append_raw_entry", fail_the_first_append)
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     _schedule(writer=writer, full_reply="第一")
@@ -2961,9 +2941,10 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
 ) -> None:
     """A rebuild that gives up part way still accounts for what its earlier passes took.
 
-    The compartments are rebuilt one at a time, so the failure of a later one leaves the
-    earlier ones already replaced. Reporting the count only on the way out through the
-    success path would lose exactly the runs an operator most needs to hear about.
+    The compartments are rebuilt one at a time, so the failure of a later one comes after the
+    earlier ones removed what they could not read, and putting them back restores only what
+    could be read. Reporting the count only on the way out through the success path would
+    lose exactly the runs an operator most needs to hear about.
     """
     writer, fake_client = _writer()
     broken = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT / f"{'b' * 16}.md"
@@ -2991,6 +2972,122 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
     assert report.result == "failed"
     assert not broken.exists()
     assert report.unreadable_removed == 1
+
+
+_MOVE = _observation(summary="搬到台中", normalized_key="fact.move")
+_JOB = _observation(summary="在工廠上班", normalized_key="fact.job", sharing="source_only")
+
+
+def _stage_forgotten_city() -> None:
+    """Leaves a forgotten fact's evidence behind, as a forget that cited only another key does.
+
+    `global/` holds the cat and no city: the forget already took the city fact, but the
+    `fact.move` observation it never cited is still in `detail.md` for a rebuild to re-derive
+    it from. The guild-42 observation gives the run a second compartment to stop on.
+    """
+    append_detail(
+        scope=USER_SCOPE,
+        text="\n\n".join([
+            _entry("2026-09-01T00:00:00+00:00", _MOVE, _JOB),
+            _forget_entry("2026-09-03T00:00:00+00:00"),
+        ]),
+    )
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, summary="養了一隻貓"))
+
+
+def _stopping_rebuild(stop: str, reached: asyncio.Event) -> MemoryAnswer:
+    """Re-derives the city into `global`, then stops the run where `stop` says.
+
+    `reached` is set once the guild's call is in flight, for a test that stops it from outside.
+    """
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        if text_format is ToneForget:
+            return ToneForget()
+        if "forget_request" in body:
+            if stop == "replay fails":
+                raise TimeoutError
+            city = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+            return ConsolidatedMemory(
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in city)
+            )
+        if "<tone_evidence>" in body:
+            return _no_change()
+        if "fact.job" not in body:
+            return _consolidated(summary="住在台中", text="使用者住在台中", section="fact")
+        if stop == "call fails":
+            raise TimeoutError
+        if stop == "clear":
+            mark_cleared(scope=USER_SCOPE)
+            delete_memory_files(scope=USER_SCOPE)
+        if stop in ("times out", "cancelled"):
+            reached.set()
+            await asyncio.Event().wait()
+        return _consolidated(summary="在工廠上班", text="使用者在工廠上班", section="fact")
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    "stop", ["call fails", "times out", "cancelled", "raises", "replay fails"]
+)
+async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_replaced(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    """Until the replay has run everywhere, a replaced compartment can hold a forgotten fact.
+
+    `global` is rebuilt first and re-derives the city a forget had removed; the run then stops
+    on the guild's call, on writing its result, or in the replay itself. Recall would hand the
+    city back in every server and DM, and nothing but a rebuild that completes would remove it
+    again (#893).
+    """
+    if stop == "times out":
+        monkeypatch.setattr(regeneration, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 0.05)
+    if stop == "raises":
+        real_replace = regeneration._replace_compartment
+
+        def failing_replace(**kwargs: Any) -> int:  # noqa: ANN401 -- a pass-through of the real signature
+            """Fails writing the guild's rebuild, as a full disk would."""
+            if kwargs["compartment"] != GLOBAL_COMPARTMENT:
+                raise OSError("disk full")
+            return real_replace(**kwargs)
+
+        monkeypatch.setattr(regeneration, "_replace_compartment", failing_replace)
+    _stage_forgotten_city()
+    writer, fake_client = _writer()
+    reached = asyncio.Event()
+    fake_client.responses.answer = _stopping_rebuild(stop=stop, reached=reached)
+
+    task = asyncio.create_task(_regenerate(writer=writer))
+    if stop == "cancelled":
+        await reached.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    elif stop == "raises":
+        with pytest.raises(OSError, match="disk full"):
+            await task
+    else:
+        assert (await task).result == "failed"
+    if stop == "times out":
+        # The deadline covers the `global` call too; a timeout landing there proves nothing.
+        assert reached.is_set()
+
+    assert [
+        fact.summary for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    ] == ["養了一隻貓"]
+
+
+async def test_a_rebuild_stopped_by_a_clear_puts_nothing_back(memory_isolated_dir: Path) -> None:
+    """Putting a replaced compartment back is a write, so a clear that stopped the run stops it."""
+    _stage_forgotten_city()
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _stopping_rebuild(stop="clear", reached=asyncio.Event())
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "failed"
+    assert _memory_text() == ""
 
 
 def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:
@@ -4022,41 +4119,6 @@ def test_subjects_round_trip_through_parse() -> None:
     assert parse_subject_source(subject=server_subject(server_id=9)) is None
 
 
-def test_filter_duplicate_observations_pairs_each_key_with_its_own_block_source() -> None:
-    # `fact.b` predates source stamping; the forget request after it carries a `- source:`
-    # line of its own, which must not become `fact.b`'s source.
-    forget = render_forget_requests(notes=("忘掉那件事",), source="dm")
-    text = (
-        "## 2026-01-01T00:00:00.000000+00:00\n"
-        "### stable_preference\n"
-        "- normalized_key: preference.a\n"
-        "- ttl_days: null\n"
-        "- source: guild 1\n"
-        "- sharing: global\n"
-        "- summary_zh: 甲\n"
-        "\n"
-        "### stable_fact\n"
-        "- normalized_key: fact.b\n"
-        "- summary_zh: 沒有 source 行的舊條目\n"
-        "\n"
-        f"## 2026-01-02T00:00:00.000000+00:00\n{forget}"
-    )
-    observations = (
-        _observation(summary="甲", normalized_key="preference.a"),
-        _observation(summary="乙", normalized_key="fact.b"),
-    )
-
-    def kept_keys(source: str | None) -> list[str]:
-        kept = filter_duplicate_observations(
-            observations=observations, existing_text=text, source=source
-        )
-        return [observation.normalized_key for observation in kept]
-
-    assert kept_keys(source="guild 1") == ["fact.b"]
-    assert kept_keys(source=None) == ["preference.a"]
-    assert kept_keys(source="dm") == ["preference.a", "fact.b"]
-
-
 async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
@@ -4208,97 +4270,91 @@ async def test_a_latin_roster_name_typed_against_chinese_still_locks() -> None:
     assert [observation.sharing for observation in draft.observations] == ["source_only"]
 
 
-def test_filter_duplicate_observations_is_source_aware() -> None:
-    existing = (
-        "### stable_preference\n"
-        "- normalized_key: preference.reply.short\n"
-        "- source: guild 111\n"
-        "- sharing: source_only\n"
-        "- summary_zh: 舊訊號"
-    )
-    same_source = filter_duplicate_observations(
-        observations=(_observation(summary="重複", normalized_key="preference.reply.short"),),
-        existing_text=existing,
-        source="guild 111",
-    )
-    assert same_source == ()
-    # The same key re-stated from another guild re-enters raw so consolidation can file
-    # it in that guild's compartment too; key-only dedupe would lock it to the first
-    # source that ever observed it.
-    other_source = filter_duplicate_observations(
-        observations=(_observation(summary="重述", normalized_key="preference.reply.short"),),
-        existing_text=existing,
-        source="guild 222",
-    )
-    assert [observation.normalized_key for observation in other_source] == [
-        "preference.reply.short"
-    ]
-
-
-def test_filter_duplicate_observations_legacy_evidence_pairs_with_none() -> None:
-    legacy = "### stable_preference\n- normalized_key: preference.reply.short\n- summary_zh: 舊"
-    kept_for_none = filter_duplicate_observations(
-        observations=(_observation(summary="重複", normalized_key="preference.reply.short"),),
-        existing_text=legacy,
-        source=None,
-    )
-    assert kept_for_none == ()
-    kept_for_dm = filter_duplicate_observations(
-        observations=(_observation(summary="有來源", normalized_key="preference.reply.short"),),
-        existing_text=legacy,
-        source="dm",
-    )
-    assert len(kept_for_dm) == 1
-
-
-async def test_pipeline_dedupes_against_evidence_already_in_detail(
-    memory_isolated_dir: Path,
+@pytest.mark.usefixtures("memory_isolated_dir")
+async def test_a_restated_fact_is_confirmed_again_when_consolidation_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Evidence a consolidation already retired to `detail.md` still counts as staged."""
+    """A fact the user keeps repeating must not age out behind a fresher one.
+
+    The restatement comes from the same server as evidence already retired to `detail.md`, and
+    consolidation emits nothing for a batch that adds nothing, so only code can renew the date.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(
+            fact_id="a" * 16, keys=("preference.test",), last_confirmed=now - timedelta(days=60)
+        ),
+    )
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(
+            fact_id="b" * 16,
+            summary="職業",
+            text="是工程師",
+            keys=("fact.job",),
+            last_confirmed=now - timedelta(days=1),
+        ),
+    )
     observation = render_memory_observations(
         observations=(_observation(summary="喜歡簡短", normalized_key="preference.test"),),
         source="guild 42",
     )
     append_detail(scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00.000000+00:00\n{observation}")
+    _consolidate_at(monkeypatch=monkeypatch, entries=1)
     writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _draft("喜歡簡短", normalized_key="preference.test")
+    fake_client.responses.answer = _answers(
+        review=_draft("喜歡簡短", normalized_key="preference.test")
+    )
     _schedule(writer=writer)
     await _wait_for_inflight()
-    assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
-    assert read_raw_entries(scope=USER_SCOPE) == ""
+
+    confirmed = {
+        fact.fact_id: fact.last_confirmed >= now
+        for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    }
+    # The restated fact is renewed and kept; the one nobody mentioned keeps its date.
+    assert confirmed == {"a" * 16: True, "b" * 16: False}
 
 
-async def test_pipeline_dedupe_keeps_a_detail_tail_cut_mid_block_to_itself(
+def _member_alias(summary: str) -> MemoryObservation:
+    """Builds one community-nickname observation for member 42."""
+    return _observation(
+        summary=summary,
+        normalized_key="vocab.member_alias.42",
+        category="stable_fact",
+        evidence_kind="stable_fact",
+        durability="permanent",
+        evidence_quote="大家都叫他李董",
+    )
+
+
+async def test_a_members_new_nickname_is_staged_beside_the_one_already_waiting(
     memory_isolated_dir: Path,
 ) -> None:
-    """A detail window that opens inside a block must not lend its fields to a staged one.
+    """Every nickname of one member shares its key, so a new one must not read as already known.
 
-    With no entry header inside the window, the tail starts with fields whose key was cut off.
-    Joined after `raw.md`, its `- source: guild 2` would become the source of the last staged
-    block, so a same-key note from guild 2 would be dropped as already evidenced there.
+    Dropping it left the member's `## 成員稱呼` row without the new nickname for good.
     """
-    append_detail(
-        scope=USER_SCOPE,
-        text=(
-            "## 2026-01-01T00:00:00.000000+00:00\n### stable_fact\n- normalized_key: fact.old\n"
-            f"- evidence_quote: {'長' * MEMORY_DETAIL_CONTEXT_MAX_CHARS}\n"
-            "- source: guild 2\n- sharing: source_only\n- summary_zh: 舊"
-        ),
-    )
+    scope = server_scope(server_id=555)
     append_raw_entry(
-        scope=USER_SCOPE,
+        scope=scope,
         entry_text=render_memory_observations(
-            observations=(_observation(summary="住在台中", normalized_key="fact.city"),),
-            source="guild 1",
+            observations=(_member_alias(summary="社群都叫 [id: 42] 李董"),), source=None
         ),
     )
     # Holds the consolidation back, so the staged batch stays readable in `raw.md`.
-    consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
+    consolidation._last_consolidation[scope] = time.monotonic()
     writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _draft("住在台中", normalized_key="fact.city")
-    _schedule(writer=writer, subject=user_subject(user_id=USER_ID, guild_id=2))
-    await _wait_for_inflight()
-    assert read_raw_entries(scope=USER_SCOPE).count("- source: guild 2") == 1
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(_member_alias(summary="社群都叫 [id: 42] 李董，最近也叫他老李"),),
+    )
+    _schedule(writer=writer, subject=server_subject(server_id=555), scope=scope)
+    task = inflight._inflight_tasks.get(key=scope)
+    assert task is not None
+    await task
+    assert "老李" in read_raw_entries(scope=scope)
 
 
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:

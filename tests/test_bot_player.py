@@ -26,9 +26,7 @@ def test_fallback_action_stands_on_ten_value_pair() -> None:
     """10-value pairs should not be split by the fallback table."""
     action = fallback_action(
         hand_cards=[card(rank="10"), card(rank="K")],
-        hand_total=20,
         dealer_up=card(rank="6"),
-        is_pair_hand=True,
         allowed_actions=("hit", "stand", "split"),
     )
 
@@ -39,9 +37,7 @@ def test_fallback_action_doubles_pair_fives_as_hard_ten() -> None:
     """5/5 is played as hard 10 instead of a split pair."""
     action = fallback_action(
         hand_cards=[card(rank="5"), card(rank="5")],
-        hand_total=10,
         dealer_up=card(rank="6"),
-        is_pair_hand=True,
         allowed_actions=("hit", "stand", "double", "split"),
     )
 
@@ -52,9 +48,7 @@ def test_fallback_action_surrenders_hard_sixteen_against_ten() -> None:
     """Late surrender takes precedence for hard 16 against dealer 10."""
     action = fallback_action(
         hand_cards=[card(rank="10"), card(rank="6")],
-        hand_total=16,
         dealer_up=card(rank="J"),
-        is_pair_hand=False,
         allowed_actions=("hit", "stand", "surrender"),
     )
 
@@ -65,9 +59,7 @@ def test_fallback_action_splits_eights_against_ten() -> None:
     """8/8 remains a split even against a dealer 10."""
     action = fallback_action(
         hand_cards=[card(rank="8"), card(rank="8")],
-        hand_total=16,
         dealer_up=card(rank="10"),
-        is_pair_hand=True,
         allowed_actions=("hit", "stand", "surrender", "split"),
     )
 
@@ -107,17 +99,12 @@ def test_action_uses_ev_recommendation() -> None:
         dealer_cards=[card(rank="6"), dealer_up],
         shoe=[card(rank="10")] * 20,
         allowed_actions=allowed_actions,
-        is_pair_hand=False,
         bet=100,
     )
 
     assert action == "stand"
     table_action = fallback_action(
-        hand_cards=hand_cards,
-        hand_total=16,
-        dealer_up=dealer_up,
-        is_pair_hand=False,
-        allowed_actions=allowed_actions,
+        hand_cards=hand_cards, dealer_up=dealer_up, allowed_actions=allowed_actions
     )
     assert table_action == "hit", "the table must disagree, or this cannot tell the two apart"
 
@@ -141,7 +128,6 @@ def test_action_falls_back_to_the_table_when_the_engine_fails(
         dealer_cards=[card(rank="6"), card(rank="10")],
         shoe=[card(rank="10")] * 20,
         allowed_actions=("hit", "stand"),
-        is_pair_hand=False,
         bet=100,
     )
 

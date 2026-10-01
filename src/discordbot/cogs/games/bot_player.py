@@ -43,15 +43,6 @@ def _dealer_up_value(*, up_card: Card | None) -> int:
     return card_blackjack_value(card=up_card)
 
 
-def _pair_value(*, cards: list[Card]) -> int | None:
-    """Returns the pair value for same-value two-card hands."""
-    if len(cards) != 2:
-        return None
-    first = card_blackjack_value(card=cards[0])
-    second = card_blackjack_value(card=cards[1])
-    return first if first == second else None
-
-
 def _should_surrender(*, hand_total: int, dealer_value: int) -> bool:
     """Returns whether late surrender is the fallback table choice."""
     return (hand_total == 16 and dealer_value in {9, 10, 11}) or (
@@ -139,50 +130,12 @@ def count_adjusted_edge(*, true_count: float) -> float:
     return BOT_TABLE_EDGE + BOT_EDGE_PER_TRUE_COUNT * true_count
 
 
-def _safe_recommend_action(  # noqa: PLR0913 -- thin EV-engine wrapper mirroring its signature.
-    *,
-    hand_cards: list[Card],
-    dealer_cards: list[Card],
-    shoe: list[Card],
-    allowed_actions: tuple[BotAction, ...],
-    doubled: bool,
-    bet: int,
-) -> BotAction | None:
-    """Runs the EV engine, returning None on any failure so a bot turn never crashes."""
-    try:
-        return recommend_action(
-            hand_cards=hand_cards,
-            dealer_cards=dealer_cards,
-            shoe=shoe,
-            allowed_actions=allowed_actions,
-            doubled=doubled,
-            bet=bet,
-        )
-    except Exception as exc:
-        logfire.warn(
-            "Bot EV engine failed; falling back to basic strategy",
-            allowed_actions=allowed_actions,
-            hand_ranks=[card.rank for card in hand_cards],
-            dealer_ranks=[card.rank for card in dealer_cards],
-            shoe_size=len(shoe),
-            doubled=doubled,
-            error_type=type(exc).__name__,
-            _exc_info=exc,
-        )
-        return None
-
-
 def fallback_action(
-    *,
-    hand_cards: list[Card],
-    hand_total: int,
-    dealer_up: Card | None,
-    is_pair_hand: bool,
-    allowed_actions: tuple[BotAction, ...],
+    *, hand_cards: list[Card], dealer_up: Card | None, allowed_actions: tuple[BotAction, ...]
 ) -> BotAction:
     """Classic up-card-only basic-strategy table, used when the EV engine is unavailable.
 
-    Only emits actions listed in `allowed_actions`.
+    Only emits actions listed in `allowed_actions`; a "split" there means the hand is a pair.
     """
     pair_split_dealers: dict[int, frozenset[int]] = {
         11: frozenset(range(2, 12)),
@@ -195,11 +148,9 @@ def fallback_action(
         2: frozenset(range(2, 8)),
     }
     dealer_value = _dealer_up_value(up_card=dealer_up)
-    pair_value = _pair_value(cards=hand_cards) if is_pair_hand else None
-    if (
-        pair_value is not None
-        and "split" in allowed_actions
-        and dealer_value in pair_split_dealers.get(pair_value, frozenset())
+    hand_total = is_soft_total(cards=hand_cards)[1]
+    if "split" in allowed_actions and dealer_value in pair_split_dealers.get(
+        card_blackjack_value(card=hand_cards[0]), frozenset()
     ):
         return "split"
     if "surrender" in allowed_actions and _should_surrender(
@@ -219,36 +170,41 @@ def fallback_action(
     return allowed_actions[0]
 
 
-def choose_bot_action(  # noqa: PLR0913 -- the decision reads the hand, the dealer, and the shoe.
+def choose_bot_action(
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
-    is_pair_hand: bool,
     bet: int,
-    doubled: bool = False,
 ) -> BotAction:
     """Returns the action the bot plays on its active hand.
 
     The EV engine's hole-aware recommendation, or the up-card-only basic-strategy table
     only when the engine is unavailable.
     """
-    ev_action = _safe_recommend_action(
-        hand_cards=hand_cards,
-        dealer_cards=dealer_cards,
-        shoe=shoe,
-        allowed_actions=allowed_actions,
-        doubled=doubled,
-        bet=bet,
-    )
-    if ev_action is not None:
-        return ev_action
+    try:
+        return recommend_action(
+            hand_cards=hand_cards,
+            dealer_cards=dealer_cards,
+            shoe=shoe,
+            allowed_actions=allowed_actions,
+            bet=bet,
+        )
+    # Broad on purpose: whatever breaks the engine, the table still plays the turn.
+    except Exception as exc:
+        logfire.warn(
+            "Bot EV engine failed; falling back to basic strategy",
+            allowed_actions=allowed_actions,
+            hand_ranks=[card.rank for card in hand_cards],
+            dealer_ranks=[card.rank for card in dealer_cards],
+            shoe_size=len(shoe),
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
     return fallback_action(
         hand_cards=hand_cards,
-        hand_total=is_soft_total(cards=hand_cards)[1],
         dealer_up=dealer_up_card(dealer=dealer_cards),
-        is_pair_hand=is_pair_hand,
         allowed_actions=allowed_actions,
     )
 

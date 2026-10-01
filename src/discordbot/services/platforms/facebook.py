@@ -48,6 +48,7 @@ from discordbot.services.platforms.page_json import (
     walk,
     str_of,
     time_of,
+    count_of,
     deep_get,
     fetch_page,
     json_payloads,
@@ -245,24 +246,6 @@ class FacebookConversation(LinkableComments[FacebookOutput]):
 def _text_of(*, value: JsonValue) -> str:
     """Reads a `{"text": ...}` node's string, tolerating the null the page sometimes serves."""
     return str_of(value=value.get("text")) if isinstance(value, dict) else ""
-
-
-def _count_of(*, value: JsonValue) -> int:
-    """Reads a count the page serves as a bare value, a `{"count": n}` wrapper, or "1,017".
-
-    An int rather than the page's own formatted string, so every platform's counters are the
-    same type and whoever renders them picks the formatting once.
-    """
-    if isinstance(value, dict):
-        value = value.get("count")
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        digits = value.replace(",", "").strip()
-        return int(digits) if digits.isdigit() else 0
-    return 0
 
 
 def _comment_ids_of(*, node: dict[str, Any]) -> tuple[str, str]:
@@ -497,9 +480,9 @@ class FacebookDownloader(PlatformDownloader):
             ),
             image_urls=image_urls,
             video_urls=video_urls,
-            like_count=_count_of(value=deep_get(story, "feedback", "reaction_count")),
+            like_count=count_of(value=deep_get(story, "feedback", "reaction_count")),
             comment_count=_comment_total(story=story),
-            share_count=_count_of(value=deep_get(story, "feedback", "share_count")),
+            share_count=count_of(value=deep_get(story, "feedback", "share_count")),
             taken_at=time_of(value=story.get("creation_time")),
         )
         return FacebookConversation(
