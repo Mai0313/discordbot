@@ -1,7 +1,7 @@
 """Local video generation smoke test: drives the bot's own `VideoGenerator.render`.
 
 A source video is edited in place; otherwise any images ride as references and omni infers the
-task; otherwise the prompt alone is rendered. The clip is saved to ./generated.mp4.
+task; otherwise the prompt alone is rendered. The clip is saved to ./data/generated.mp4.
 """
 
 import time
@@ -32,7 +32,7 @@ def _load_media(path: str, fallback_mime: str) -> LoadedMedia:
 def gen_video(
     user_prompt: str, *, image_paths: list[str] | None = None, source_video_path: str | None = None
 ) -> None:
-    """Renders one clip through `VideoGenerator.render` and saves it to generated.mp4.
+    """Renders one clip through `VideoGenerator.render` and saves it to ./data/generated.mp4.
 
     Args:
         user_prompt (str): Prompt (or, in edit mode, the literal edit instruction).
@@ -61,7 +61,8 @@ def gen_video(
             prompt=user_prompt, reference_image_sources=images, source_video=source_video
         )
     )
-    output_path = Path("generated.mp4")
+    output_path = Path("./data/generated.mp4")
+    output_path.parent.mkdir(exist_ok=True)
     output_path.write_bytes(data=video_bytes)
 
     console.print(f"[green]Saved {len(video_bytes)} bytes to {output_path}[/green]")

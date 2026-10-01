@@ -20,7 +20,7 @@ MEDIA_REPLY_MODEL = RuntimeModelCatalog().fast_model
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
-    """Runs the dev image generation or edit flow and writes the PNG result.
+    """Runs the dev image generation or edit flow and writes the PNG result under ./data.
 
     The raw user request is sent straight to the image model (no prompt director), then the
     reply stage answers about the image as the bot would (production also feeds it history
@@ -96,9 +96,10 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     model_name = IMAGE_MODEL.name
     if "/" in model_name:
         model_name = model_name.split("/")[-1]
-    output_path = Path(
+    output_path = Path("./data") / (
         f"edited_{model_name}.png" if image_path is not None else f"{model_name}.png"
     )
+    output_path.parent.mkdir(exist_ok=True)
     output_path.write_bytes(data=base64.b64decode(s=image_b64))
 
     end = time.time()

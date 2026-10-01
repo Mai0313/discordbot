@@ -1,4 +1,6 @@
-"""Local text-to-speech smoke test: turns one line of text into ./speech.mp3."""
+"""Local text-to-speech smoke test: turns one line of text into ./data/speech.mp3."""
+
+from pathlib import Path
 
 from openai import OpenAI
 
@@ -11,7 +13,7 @@ TTS_MODEL = RuntimeModelCatalog().tts_model
 
 
 def gen_speech(text: str) -> None:
-    """Synthesizes `text` through LiteLLM and saves the clip to `./speech.mp3`.
+    """Synthesizes `text` through LiteLLM and saves the clip to `./data/speech.mp3`.
 
     Args:
         text (str): The line to speak, sent verbatim.
@@ -25,7 +27,9 @@ def gen_speech(text: str) -> None:
         speed=1.3,
         extra_headers={"x-litellm-end-user-id": "voice_dev"},
     )
-    audio_responses.write_to_file("./speech.mp3")
+    output_path = Path("./data/speech.mp3")
+    output_path.parent.mkdir(exist_ok=True)
+    audio_responses.write_to_file(file=output_path)
 
 
 if __name__ == "__main__":
