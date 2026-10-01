@@ -14,7 +14,7 @@ from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 from rich.console import Console
 
 from discordbot.typings.economy import clamped_balance
@@ -31,14 +31,18 @@ class BalanceChange(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int
-    name: str
-    before: int
-    requested_delta: int
-    applied_delta: int
-    after: int
-    created: bool
-    dry_run: bool
+    user_id: int = Field(..., description="Discord user ID of the adjusted account.")
+    name: str = Field(..., description="Display name stored on the account.")
+    before: int = Field(..., description="Balance before the adjustment.")
+    requested_delta: int = Field(..., description="Signed amount that was asked for.")
+    applied_delta: int = Field(
+        ..., description="Signed amount actually applied, after any clamp at zero."
+    )
+    after: int = Field(..., description="Balance after the adjustment.")
+    created: bool = Field(
+        ..., description="Whether the adjustment created the account, or would on a dry run."
+    )
+    dry_run: bool = Field(..., description="Whether the change was computed but not written.")
 
 
 class BulkBalanceChange(BaseModel):
@@ -46,10 +50,10 @@ class BulkBalanceChange(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    changes: tuple[BalanceChange, ...]
-    requested_delta: int
-    applied_delta: int
-    dry_run: bool
+    changes: tuple[BalanceChange, ...] = Field(..., description="One summary per account.")
+    requested_delta: int = Field(..., description="Signed amount asked for on each account.")
+    applied_delta: int = Field(..., description="Sum of the amounts actually applied.")
+    dry_run: bool = Field(..., description="Whether the changes were computed but not written.")
 
 
 def _parse_target(value: str) -> BalanceTarget:
