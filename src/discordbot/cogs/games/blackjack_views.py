@@ -879,6 +879,14 @@ class BlackjackView(GameView):
                 self.round_state.take_insurance(user_id=user_id)
             else:
                 self.round_state.decline_insurance(user_id=user_id)
+        except InsuranceBetTooSmallError:
+            # Expected on a 1-point bet, and the seat is still open, so the decline cannot fail.
+            logfire.info(
+                "Bot bet too small to insure; declining",
+                user_id=user_id,
+                bet=bot_player.participant.bet,
+            )
+            self.round_state.decline_insurance(user_id=user_id)
         except ValueError as exc:
             logfire.warn(
                 "Bot insurance action rejected; declining as fallback",
