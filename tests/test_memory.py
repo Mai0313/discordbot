@@ -2961,9 +2961,10 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
 ) -> None:
     """A rebuild that gives up part way still accounts for what its earlier passes took.
 
-    The compartments are rebuilt one at a time, so the failure of a later one leaves the
-    earlier ones already replaced. Reporting the count only on the way out through the
-    success path would lose exactly the runs an operator most needs to hear about.
+    The compartments are rebuilt one at a time, so the failure of a later one comes after the
+    earlier ones removed what they could not read, and putting them back restores only what
+    could be read. Reporting the count only on the way out through the success path would
+    lose exactly the runs an operator most needs to hear about.
     """
     writer, fake_client = _writer()
     broken = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT / f"{'b' * 16}.md"
@@ -2991,6 +2992,122 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
     assert report.result == "failed"
     assert not broken.exists()
     assert report.unreadable_removed == 1
+
+
+_MOVE = _observation(summary="搬到台中", normalized_key="fact.move")
+_JOB = _observation(summary="在工廠上班", normalized_key="fact.job", sharing="source_only")
+
+
+def _stage_forgotten_city() -> None:
+    """Leaves a forgotten fact's evidence behind, as a forget that cited only another key does.
+
+    `global/` holds the cat and no city: the forget already took the city fact, but the
+    `fact.move` observation it never cited is still in `detail.md` for a rebuild to re-derive
+    it from. The guild-42 observation gives the run a second compartment to stop on.
+    """
+    append_detail(
+        scope=USER_SCOPE,
+        text="\n\n".join([
+            _entry("2026-09-01T00:00:00+00:00", _MOVE, _JOB),
+            _forget_entry("2026-09-03T00:00:00+00:00"),
+        ]),
+    )
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, summary="養了一隻貓"))
+
+
+def _stopping_rebuild(stop: str, reached: asyncio.Event) -> MemoryAnswer:
+    """Re-derives the city into `global`, then stops the run where `stop` says.
+
+    `reached` is set once the guild's call is in flight, for a test that stops it from outside.
+    """
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        if text_format is ToneForget:
+            return ToneForget()
+        if "forget_request" in body:
+            if stop == "replay fails":
+                raise TimeoutError
+            city = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+            return ConsolidatedMemory(
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in city)
+            )
+        if "<tone_evidence>" in body:
+            return _no_change()
+        if "fact.job" not in body:
+            return _consolidated(summary="住在台中", text="使用者住在台中", section="fact")
+        if stop == "call fails":
+            raise TimeoutError
+        if stop == "clear":
+            mark_cleared(scope=USER_SCOPE)
+            delete_memory_files(scope=USER_SCOPE)
+        if stop in ("times out", "cancelled"):
+            reached.set()
+            await asyncio.Event().wait()
+        return _consolidated(summary="在工廠上班", text="使用者在工廠上班", section="fact")
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    "stop", ["call fails", "times out", "cancelled", "raises", "replay fails"]
+)
+async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_replaced(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    """Until the replay has run everywhere, a replaced compartment can hold a forgotten fact.
+
+    `global` is rebuilt first and re-derives the city a forget had removed; the run then stops
+    on the guild's call, on writing its result, or in the replay itself. Recall would hand the
+    city back in every server and DM, and nothing but a rebuild that completes would remove it
+    again (#893).
+    """
+    if stop == "times out":
+        monkeypatch.setattr(regeneration, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 0.05)
+    if stop == "raises":
+        real_replace = regeneration._replace_compartment
+
+        def failing_replace(**kwargs: Any) -> int:  # noqa: ANN401 -- a pass-through of the real signature
+            """Fails writing the guild's rebuild, as a full disk would."""
+            if kwargs["compartment"] != GLOBAL_COMPARTMENT:
+                raise OSError("disk full")
+            return real_replace(**kwargs)
+
+        monkeypatch.setattr(regeneration, "_replace_compartment", failing_replace)
+    _stage_forgotten_city()
+    writer, fake_client = _writer()
+    reached = asyncio.Event()
+    fake_client.responses.answer = _stopping_rebuild(stop=stop, reached=reached)
+
+    task = asyncio.create_task(_regenerate(writer=writer))
+    if stop == "cancelled":
+        await reached.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    elif stop == "raises":
+        with pytest.raises(OSError, match="disk full"):
+            await task
+    else:
+        assert (await task).result == "failed"
+    if stop == "times out":
+        # The deadline covers the `global` call too; a timeout landing there proves nothing.
+        assert reached.is_set()
+
+    assert [
+        fact.summary for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    ] == ["養了一隻貓"]
+
+
+async def test_a_rebuild_stopped_by_a_clear_puts_nothing_back(memory_isolated_dir: Path) -> None:
+    """Putting a replaced compartment back is a write, so a clear that stopped the run stops it."""
+    _stage_forgotten_city()
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _stopping_rebuild(stop="clear", reached=asyncio.Event())
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "failed"
+    assert _memory_text() == ""
 
 
 def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:

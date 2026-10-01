@@ -18,6 +18,7 @@ import asyncio
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
+from discordbot.typings.memory import MemoryFact
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
@@ -27,6 +28,7 @@ from discordbot.services.memory.store import (
     clear_raw,
     read_facts,
     scope_lock,
+    write_fact,
     append_detail,
     cleared_since,
     read_evidence,
@@ -121,9 +123,9 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         _regeneration_tasks.pop(key=scope)
     if task.cancelled():
         # Cancelled (e.g. bot shutdown): reading result() would raise
-        # CancelledError out of this callback. A cancel lands only at an await, so
-        # each compartment is either already replaced or untouched, and raw.md is
-        # not yet retired.
+        # CancelledError out of this callback. A cancel before the forget replay has
+        # applied puts back every compartment the rebuild replaced, and raw.md is not
+        # yet retired either way.
         return
     try:
         task.result()
@@ -138,7 +140,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         )
 
 
-async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way a rebuild stops short, a clear included
+async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report per way a rebuild stops short, a clear and a failed forget replay included
     scope: str, writer: MemoryWriterAI, identity: str
 ) -> RegenerationReport:
     """Rebuilds every compartment from cold-tier evidence alone.
@@ -148,10 +150,13 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
     unsatisfying consolidation with another model, and facts it did not re-emit are then
     deleted.
 
-    On an LLM failure the compartment is left exactly as it was, and the raw batch is
+    A run that stops before the forget replay has applied puts every compartment it replaced
+    back to the facts it held, unless the process dies without unwinding: until the replay, a
+    replaced compartment can hold a fact a forget had already removed. The raw batch is
     retired only when every compartment and the tone note rebuilt. The report carries what
-    the run removed unread whichever way it ended, so a rebuild that gave up on its third
-    compartment still accounts for what the first two destroyed.
+    the run removed unread whichever way it ended, since putting a compartment back restores
+    only what could be read, so a rebuild that gave up on its third compartment still
+    accounts for what the first two destroyed.
     """
     started_at = time.monotonic()
     unreadable_removed = 0
@@ -169,6 +174,7 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
         _last_regeneration[scope] = time.monotonic()
         buckets = partition_raw_entries(raw_text=evidence, flavor=run.flavor)
         compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
+        replaced: dict[str, list[MemoryFact]] = {}
         try:
             # The individual calls carry no deadline of their own, so this is the only
             # thing standing between a stuck rebuild and a scope lock held for as long as
@@ -212,10 +218,16 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                         return RegenerationReport(
                             result="failed", unreadable_removed=unreadable_removed
                         )
+                    replaced[compartment] = read_facts(scope=scope, compartment=compartment)
                     unreadable_removed += _replace_compartment(
                         run=run, compartment=compartment, result=result
                     )
-                await _reapply_forgets(run=run, evidence=evidence)
+                if not await _reapply_forgets(run=run, evidence=evidence):
+                    return RegenerationReport(
+                        result="failed", unreadable_removed=unreadable_removed
+                    )
+                # The replay has reached every compartment, so the rebuild stands from here.
+                replaced.clear()
                 # The replay takes the evidence of what it deleted out of both files, so the
                 # tone rebuild and the retirement below must not work from the copies read
                 # before it.
@@ -227,6 +239,8 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                 "Memory regeneration timed out", scope=scope, compartments=len(compartments)
             )
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
+        finally:
+            _restore_compartments(run=run, replaced=replaced)
         if not tone_rebuilt or cleared_since(scope=scope, started_at=started_at):
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         report_injection_size(scope=scope, flavor=run.flavor)
@@ -239,7 +253,30 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
         return RegenerationReport(result="regenerated", unreadable_removed=unreadable_removed)
 
 
-async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> None:
+def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[MemoryFact]]) -> None:
+    """Puts every compartment the run replaced back to the facts it held before the run.
+
+    Only what `read_facts` could read was kept, so a file the replace pass removed unread
+    stays gone and stays counted. Skipped after a clear, which already deleted both
+    generations: writing the old facts back would undo it.
+    """
+    if not replaced or cleared_since(scope=run.scope, started_at=run.started_at):
+        return
+    for compartment, facts in replaced.items():
+        for fact in facts:
+            write_fact(scope=run.scope, fact=fact)
+        prune_compartment(
+            scope=run.scope, compartment=compartment, keep={fact.fact_id for fact in facts}
+        )
+    logfire.info(
+        "Memory regeneration stopped before its forget replay completed; "
+        "replaced compartments restored",
+        scope=run.scope,
+        compartments=sorted(replaced),
+    )
+
+
+async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> bool:
     """Re-runs every forget request in the corpus against the freshly rebuilt facts.
 
     A rebuild derives facts from evidence rather than from the current facts, and the
@@ -255,10 +292,12 @@ async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> None:
     Feeding a forget INTO the rebuild instead would hand a possibly-private sentence to a call
     whose whole job is creating facts.
 
-    Best-effort: the rebuild has already landed by this point, and a failure here leaves a
-    resurrected fact rather than a broken store. The next forget removes it again.
+    Returns False when a replay call failed or was refused. The caller then puts the
+    replaced compartments back rather than keep them: a fact the replay did not reach can be
+    one the user asked to forget, and nothing but a later rebuild that completes would
+    remove it.
     """
-    await apply_forget_buckets(run=run, forgets=evidence)
+    return await apply_forget_buckets(run=run, forgets=evidence)
 
 
 def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
