@@ -9,9 +9,15 @@ from collections.abc import Sequence
 from PIL import Image, ImageDraw
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right, draw_text_center
 from discordbot.typings.economy import LEADERBOARD_SIZE, LeaderboardEntry, LossLeaderboardEntry
 from discordbot.utils.number_text import compact_amount
+from discordbot.cogs.economy.pil_text import (
+    Font,
+    fit_text,
+    load_font,
+    draw_text_right,
+    draw_text_center,
+)
 from discordbot.services.economy.presentation import CURRENCY_NAME
 
 BALANCE_LEADERBOARD_BOARD_FILENAME = "economy_leaderboard.png"
@@ -138,12 +144,11 @@ def _drop_expired_boards(now: float) -> None:
 def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
     """Renders a fixed-column ranking board."""
     rows = spec.rows
-    row_count = max(len(rows), 1)
     height = (
         _BOARD_MARGIN * 2
         + _BOARD_HEADER_HEIGHT
         + _TABLE_HEADER_HEIGHT
-        + row_count * _ROW_HEIGHT
+        + len(rows) * _ROW_HEIGHT
         + _BOARD_FOOTER_HEIGHT
     )
     image = Image.new(mode="RGB", size=(_BOARD_WIDTH, height), color=_BACKGROUND)
@@ -156,12 +161,9 @@ def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
     _draw_table_header(
         draw=draw, fonts=fonts, y=table_top, amount_header=spec.amount_header, accent=spec.accent
     )
-    if rows:
-        for index, row in enumerate(iterable=rows):
-            y = table_top + _TABLE_HEADER_HEIGHT + index * _ROW_HEIGHT
-            _draw_rank_row(draw=draw, fonts=fonts, row=row, accent=spec.accent, y=y)
-    else:
-        _draw_empty_row(draw=draw, fonts=fonts, y=table_top + _TABLE_HEADER_HEIGHT)
+    for index, row in enumerate(iterable=rows):
+        y = table_top + _TABLE_HEADER_HEIGHT + index * _ROW_HEIGHT
+        _draw_rank_row(draw=draw, fonts=fonts, row=row, accent=spec.accent, y=y)
     output = BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
@@ -256,11 +258,3 @@ def _draw_rank_row(
         font=fonts.body,
         fill=_TEXT,
     )
-
-
-def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> None:
-    """Draws an empty-state row."""
-    draw.rectangle(
-        xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=_SURFACE
-    )
-    draw.text(xy=(_RANK_X, y + 16), text="目前沒有排行資料", font=fonts.body, fill=_MUTED)

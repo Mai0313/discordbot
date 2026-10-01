@@ -5,19 +5,6 @@ import logfire
 
 type Font = ImageFont.ImageFont | ImageFont.FreeTypeFont
 
-REGULAR_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "NotoSansCJK-Regular.ttc",
-    "DejaVuSans.ttf",
-)
-BOLD_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "NotoSansCJK-Bold.ttc",
-    "DejaVuSans-Bold.ttf",
-)
-
 # Weights that have already warned. One warn per weight: every render calls load_font several
 # times, and a deployment can be missing only the bold face.
 _WARNED_FALLBACK_WEIGHTS: set[str] = set()
@@ -25,7 +12,21 @@ _WARNED_FALLBACK_WEIGHTS: set[str] = set()
 
 def load_font(size: int, bold: bool) -> Font:
     """Loads a CJK-capable font when available, else the Pillow default."""
-    candidates = BOLD_FONT_CANDIDATES if bold else REGULAR_FONT_CANDIDATES
+    candidates = (
+        (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+            "NotoSansCJK-Bold.ttc",
+            "DejaVuSans-Bold.ttf",
+        )
+        if bold
+        else (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "NotoSansCJK-Regular.ttc",
+            "DejaVuSans.ttf",
+        )
+    )
     for candidate in candidates:
         try:
             return ImageFont.truetype(font=candidate, size=size)
