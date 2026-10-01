@@ -17,7 +17,7 @@ from functools import cached_property
 import contextlib
 
 from google import genai
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 import logfire
 import nextcord
 from nextcord import (
@@ -166,14 +166,22 @@ class ResearchCogs(commands.Cog):
         Brevity is steered by the prompt (not a token cap); on timeout or failure the brief's
         first line is used, and the result is trimmed to Discord's hard name limit as a safety net.
         """
-        raw = await create_text_or_none(
-            client=self.responses_client,
-            model=self.runtime_models.triage_model,
-            instructions=THREAD_TITLE_PROMPT,
-            user_text=brief,
-            end_user_id="deep-research",
-            timeout_seconds=THREAD_TITLE_TIMEOUT_SECONDS,
-        )
+        try:
+            raw = await create_text_or_none(
+                client=self.responses_client,
+                model=self.runtime_models.triage_model,
+                instructions=THREAD_TITLE_PROMPT,
+                user_text=brief,
+                end_user_id="deep-research",
+                timeout_seconds=THREAD_TITLE_TIMEOUT_SECONDS,
+            )
+        # Only building `responses_client` lands here, since the helper absorbs its own call's
+        # failures: the SDK refuses an empty `OPENAI_API_KEY`, and that is the whole finding.
+        except OpenAIError:
+            logfire.info(
+                "no proxy key for the deep research thread title; using the brief's first line"
+            )
+            raw = None
         title = next(
             (line.strip().strip('"') for line in (raw or "").splitlines() if line.strip()), ""
         )

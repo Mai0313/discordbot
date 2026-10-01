@@ -2145,3 +2145,33 @@ async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_end
         )
     ]
     await _assert_owner_released(cog=cog, phase="done")
+
+
+async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_can_be_built(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The title is best-effort: an empty proxy key costs the generated title, not the run."""
+    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
+    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
+    thread = _RunThread()
+    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
+    # The real title generator, which `_launching_cog` stubs out.
+    monkeypatch.delattr(target=cog, name="_generate_thread_name")
+    cog.config.api_key = ""
+    channel = _text_channel()
+    anchor = _Anchor(channel=channel, thread=thread)
+    anchor.create_thread = AsyncMock(return_value=thread)
+    channel.send = AsyncMock(return_value=anchor)
+    interaction = _ResearchInteraction(channel=channel)
+    infos = _recorded(monkeypatch=monkeypatch, level="info")
+
+    await cog.deep_research(as_interaction(fake=interaction), topic="TPU landscape\nand history")
+    await asyncio.gather(*cog._tasks)
+
+    anchor.create_thread.assert_awaited_once_with(name="TPU landscape", auto_archive_duration=1440)
+    assert [edit.get("content") for edit in interaction.edits] == [f"開好了:<#{_THREAD_ID}>"]
+    assert anchor.deleted is False
+    assert (
+        "no proxy key for the deep research thread title; using the brief's first line",
+        {},
+    ) in infos, "an unset key is an unconfigured-feature skip, so it carries no traceback"
