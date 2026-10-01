@@ -44,7 +44,6 @@ import time
 import base64
 from typing import TYPE_CHECKING, Protocol, cast
 import asyncio
-from collections.abc import AsyncIterator
 
 from google import genai
 from openai import AsyncOpenAI, APITimeoutError
@@ -117,27 +116,25 @@ MUSIC_STYLE_DIRECTIVE = (
     "instrumental, follow the description instead."
 )
 
-# Map a returned audio mime type to a Discord-playable file extension. Discord's inline audio
-# player keys off the extension, and `AudioContent.mime_type` can be a non-obvious value
-# (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would yield an unplayable
-# name; fall back to `.mp3` for anything unmapped.
-_AUDIO_MIME_EXTENSIONS = {
-    "audio/mp3": ".mp3",
-    "audio/mpeg": ".mp3",
-    "audio/wav": ".wav",
-    "audio/l16": ".wav",
-    "audio/m4a": ".m4a",
-    "audio/aac": ".m4a",
-    "audio/ogg": ".ogg",
-    "audio/opus": ".ogg",
-    "audio/flac": ".flac",
-    "audio/aiff": ".aiff",
-}
-
 
 def music_filename(*, mime_type: str | None) -> str:
     """The Discord attachment filename for a generated music clip, by its audio mime type."""
-    extension = _AUDIO_MIME_EXTENSIONS.get((mime_type or "").lower(), ".mp3")
+    # Discord's inline audio player keys off the extension, and `AudioContent.mime_type` can be a
+    # non-obvious value (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would
+    # yield an unplayable name; anything unmapped falls back to `.mp3`.
+    audio_mime_extensions = {
+        "audio/mp3": ".mp3",
+        "audio/mpeg": ".mp3",
+        "audio/wav": ".wav",
+        "audio/l16": ".wav",
+        "audio/m4a": ".m4a",
+        "audio/aac": ".m4a",
+        "audio/ogg": ".ogg",
+        "audio/opus": ".ogg",
+        "audio/flac": ".flac",
+        "audio/aiff": ".aiff",
+    }
+    extension = audio_mime_extensions.get((mime_type or "").lower(), ".mp3")
     return f"music{extension}"
 
 
@@ -402,8 +399,8 @@ class PromptGenerator(BaseModel):
 class VoiceGenerator(BaseModel):
     """Best-effort text-to-speech for spoken replies through the LiteLLM proxy.
 
-    Holds the shared async client plus the fixed voice / style / speed config; `generate`
-    renders one reply to a `VoiceClip` carrying the WAV bytes (when produced) plus an outcome
+    Holds the shared async client; `generate` renders one reply with the fixed `TTS_*` voice
+    config to a `VoiceClip` carrying the WAV bytes (when produced) plus an outcome
     (OK / EMPTY / TIMEOUT / ERROR), so the caller both degrades to a text reply and can hint
     why the clip is missing (a timeout vs. any other provider error, e.g. a policy refusal).
 
@@ -421,14 +418,6 @@ class VoiceGenerator(BaseModel):
     # A bare string rather than a `ModelSettings`, since TTS dispatches no effort and offers
     # no tools; the caller reads the name off the catalog's `tts_model`.
     model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
-    voice: str = Field(
-        default=TTS_VOICE, description="Fixed voice timbre name for spoken replies."
-    )
-    style_directive: str = Field(
-        default=TTS_STYLE_DIRECTIVE,
-        description="Style directive prepended to the spoken text (fixes voice age/gender).",
-    )
-    speed: float = Field(default=TTS_SPEED, description="Playback speed passed to the TTS model.")
 
     async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
         """Renders reply text to a VoiceClip, reporting why it ended for best-effort hinting."""
@@ -441,10 +430,10 @@ class VoiceGenerator(BaseModel):
             return VoiceClip(outcome=VoiceOutcome.EMPTY)
         try:
             responses = await self.client.audio.speech.create(
-                input=f"{self.style_directive}\n\n{spoken}",
+                input=f"{TTS_STYLE_DIRECTIVE}\n\n{spoken}",
                 model=self.model_name,
-                voice=self.voice,
-                speed=self.speed,
+                voice=TTS_VOICE,
+                speed=TTS_SPEED,
                 extra_headers={"x-litellm-end-user-id": end_user_id},
                 timeout=VOICE_TIMEOUT_SECONDS,
             )
@@ -452,7 +441,7 @@ class VoiceGenerator(BaseModel):
             logfire.debug(
                 "Voice synthesis succeeded",
                 model=self.model_name,
-                speed=self.speed,
+                speed=TTS_SPEED,
                 end_user_id=end_user_id,
                 text_chars=len(spoken),
                 audio_bytes=len(audio),
@@ -626,11 +615,8 @@ class VideoGenerator(BaseModel):
                 generation_config=generation_config,
                 timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
             )
-        # No `stream=True`, so this is the interaction rather than an event stream: exclude the
-        # stream at runtime, then read the result through the structural `_InteractionResult`
-        # view (its docstring has why naming the genai response class is not enough on its own).
-        if isinstance(interaction, AsyncIterator):
-            raise RuntimeError("Video generation returned an event stream, not an interaction")
+        # No `stream=True`, so this is the interaction rather than an event stream, read through
+        # the structural `_InteractionResult` view (its docstring has why).
         result = cast("_InteractionResult", interaction)
         video = result.output_video
         if result.status != "completed" or video is None or video.uri is None:
@@ -798,9 +784,7 @@ class MusicGenerator(BaseModel):
                     system_instruction=MUSIC_STYLE_DIRECTIVE,
                 )
             # No `stream=True`, so this is the interaction rather than an event stream (read via
-            # `_InteractionResult`, see its docstring); the guard lands in the except -> None path.
-            if isinstance(interaction, AsyncIterator):
-                raise RuntimeError("Music generation returned an event stream, not an interaction")
+            # `_InteractionResult`, see its docstring).
             audio = cast("_InteractionResult", interaction).output_audio
             if audio is None or not audio.data:
                 logfire.warn(
