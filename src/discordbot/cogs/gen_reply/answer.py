@@ -485,12 +485,12 @@ class AnswerTurn(BaseModel):
         # A <deep-research> brief the answer model emitted launches a research thread. Done after
         # the stream (and its single media edit) so it never touches the reply's attachment edit;
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
-        if research_offered and streamer.research_brief:
+        if research_offered and streamer.markers.research_brief:
             await maybe_launch_research(
                 bot=self.toolkit.bot,
                 message=self.message,
                 anchor=streamer.reply,
-                brief=streamer.research_brief,
+                brief=streamer.markers.research_brief,
             )
         # Recorded before the memory review is scheduled, so a conversation the store is meant to
         # carry survives even if the fire-and-forget review below never lands.
@@ -535,8 +535,8 @@ class AnswerTurn(BaseModel):
                 username=message.author.name,
                 user_id=message.author.id,
             ),
-            remember_notes=tuple(streamer.memory_notes),
-            forget_notes=tuple(streamer.forget_notes),
+            remember_notes=tuple(streamer.markers.memory_notes),
+            forget_notes=tuple(streamer.markers.forget_notes),
             report=memory_report_for(streamer=streamer),
         )
         # Server memory learns community-level signal from the whole conversation (no
@@ -562,5 +562,5 @@ class AnswerTurn(BaseModel):
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),
-            remember_notes=tuple(streamer.server_memory_notes),
+            remember_notes=tuple(streamer.markers.server_memory_notes),
         )

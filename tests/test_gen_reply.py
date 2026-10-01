@@ -100,6 +100,7 @@ from discordbot.cogs.gen_reply.context import (
 from discordbot.cogs.gen_reply.markers import (
     MAX_MEMORY_NOTES,
     MAX_INLINE_IMAGES,
+    InlineMarkers,
     extract_inline_markers,
     scrub_markers_for_preview,
 )
@@ -867,9 +868,12 @@ def _install_streamer(
         def __init__(self, **kwargs: object) -> None:
             """Records the constructor kwargs and seeds the marker notes."""
             built.append(kwargs)
-            self.memory_notes = list(memory_notes)
-            self.forget_notes = list(forget_notes)
-            self.server_memory_notes = list(server_memory_notes)
+            self.markers = InlineMarkers(
+                cleaned_text="",
+                memory_notes=list(memory_notes),
+                forget_notes=list(forget_notes),
+                server_memory_notes=list(server_memory_notes),
+            )
 
         async def stream(self, *, responses: object) -> str:
             """Returns the canned reply, or raises it."""

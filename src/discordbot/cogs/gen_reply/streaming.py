@@ -31,6 +31,7 @@ from discordbot.utils.media_delivery import (
 )
 from discordbot.cogs.gen_reply.markers import (
     MAX_INLINE_IMAGES,
+    InlineMarkers,
     extract_inline_markers,
     scrub_markers_for_preview,
 )
@@ -206,13 +207,19 @@ class ResponseStreamer(BaseModel):
         default_factory=MemoryCredits,
         description="Credits for the users whose stored memory was injected, for the footer.",
     )
+    markers: InlineMarkers = Field(
+        default_factory=lambda: InlineMarkers(cleaned_text=""),
+        description=(
+            "What the finished reply's inline markers asked for, extracted once the stream "
+            "ends. The streamer renders the media itself; the research brief and the memory "
+            "notes are the caller's, which launches research only after the reply's one media "
+            "edit and owns whose memory each note is written to. A media persona reply never "
+            "sees the marker instructions, so those stay empty there."
+        ),
+    )
     voice_generator: SkipValidation[VoiceGenerator | None] = Field(
         default=None,
         description="TTS engine for spoken replies; None disables voice for this reply.",
-    )
-    voice_requested: bool = Field(
-        default=False,
-        description="Whether the answer model wrapped a segment in <generate-voice> for this reply.",
     )
     voice_text: str = Field(
         default="",
@@ -221,10 +228,6 @@ class ResponseStreamer(BaseModel):
     image_generator: SkipValidation[ImageGenerator | None] = Field(
         default=None,
         description="Inline-image renderer; None disables inline <generate-image> for this reply.",
-    )
-    image_prompts: list[str] = Field(
-        default_factory=list,
-        description="The <generate-image> descriptions the answer model asked to illustrate, in order.",
     )
     input_builder: SkipValidation[MessageInputBuilder | None] = Field(
         default=None,
@@ -237,32 +240,9 @@ class ResponseStreamer(BaseModel):
         default=None,
         description="Inline-music renderer; None disables inline <generate-music> for this reply.",
     )
-    music_prompt: str | None = Field(
-        default=None,
-        description="The <generate-music> description the answer model asked to score, if any.",
-    )
     video_generator: SkipValidation[VideoGenerator | None] = Field(
         default=None,
         description="Inline-video renderer; None disables inline <generate-video> for this reply.",
-    )
-    video_prompt: str | None = Field(
-        default=None,
-        description="The <generate-video> description the answer model asked to animate, if any.",
-    )
-    research_brief: str | None = Field(
-        default=None,
-        description="The <deep-research> brief the answer model asked to launch, if any.",
-    )
-    memory_notes: list[str] = Field(
-        default_factory=list,
-        description="<write-memory> notes about the message author, for the caller to schedule.",
-    )
-    forget_notes: list[str] = Field(
-        default_factory=list,
-        description="<forget-memory> notes naming what the author wants dropped.",
-    )
-    server_memory_notes: list[str] = Field(
-        default_factory=list, description="<write-server-memory> notes about the community."
     )
     media_delivery: MediaDeliveryPlanner = Field(
         default_factory=lambda: MediaDeliveryPlanner(
@@ -719,27 +699,15 @@ class ResponseStreamer(BaseModel):
         # removed from the reply). Extract them all before the footer is built or anything is
         # written. The <generate-voice> segments stay in the visible text; only they (not the whole
         # reply) feed the spoken clip so the audio matches what is read.
-        markers = extract_inline_markers(text=self.stored_content)
-        self.stored_content = markers.cleaned_text
-        self.voice_requested = markers.voice_requested
-        self.image_prompts = markers.image_prompts
-        self.music_prompt = markers.music_prompt
-        self.video_prompt = markers.video_prompt
-        # The streamer only surfaces the brief; the caller launches the research once the stream
-        # returns, so the launch never touches the reply's one attachment edit.
-        self.research_brief = markers.research_brief
-        # Surfaced for the caller, which owns whose memory each kind is written to; a media
-        # persona reply never sees the marker instructions, so these stay empty there.
-        self.memory_notes = markers.memory_notes
-        self.forget_notes = markers.forget_notes
-        self.server_memory_notes = markers.server_memory_notes
+        self.markers = extract_inline_markers(text=self.stored_content)
+        self.stored_content = self.markers.cleaned_text
         # The spoken clip must not narrate raw Discord markup (a `<@id>` mention reads as a bare
         # snowflake), so the voice input is normalised while the visible reply keeps its markup.
         self.voice_text = (
             speechify_discord_markup(
-                text=markers.voice_text, resolve_name=self._resolve_mention_name
+                text=self.markers.voice_text, resolve_name=self._resolve_mention_name
             )
-            if self.voice_requested
+            if self.markers.voice_requested
             else ""
         )
         # Credit looked-up memory owners on a second -# subtext line. Dedupe while
@@ -800,10 +768,10 @@ class ResponseStreamer(BaseModel):
             url_citations=self._url_citations,
             reasoning_chars=len(self.reasoning_content),
             reply_chars=reply_chars,
-            voice_requested=self.voice_requested,
-            image_count=len(self.image_prompts),
-            music_requested=bool(self.music_prompt),
-            video_requested=bool(self.video_prompt),
+            voice_requested=self.markers.voice_requested,
+            image_count=len(self.markers.image_prompts),
+            music_requested=bool(self.markers.music_prompt),
+            video_requested=bool(self.markers.video_prompt),
             memory_lookups=self.memory_lookups.total,
             chunked=chunked,
         )
@@ -848,7 +816,7 @@ class ResponseStreamer(BaseModel):
         """
         if not self.carries_turn_notices:
             return False
-        if not (self.memory_notes or self.forget_notes):
+        if not (self.markers.memory_notes or self.markers.forget_notes):
             return False
         spliced = len(self.stored_content) + 1 + len(MEMORY_PENDING_NOTE) + footer_chars
         return spliced <= DISCORD_MESSAGE_LIMIT
@@ -892,20 +860,30 @@ class ResponseStreamer(BaseModel):
             if not self._memory_note:
                 return
             updated, line = f"{body}{self._usage_footer}", ""
+        if not await self._edit_reply_text(
+            reply=self.reply,
+            content=updated,
+            failure="Failed to write the memory note onto the reply",
+        ):
+            # The note already on the reply stays recorded, so a later attempt still replaces it
+            # rather than stacking under it.
+            return
+        self._memory_note = line
+
+    async def _edit_reply_text(self, reply: Message, content: str, failure: str) -> bool:
+        """Rewrites the reply's text to `content`, which becomes `stored_content` once it lands.
+
+        Returns False, logged as `failure`, when the edit did not land.
+        """
         try:
-            await self.reply.edit(content=updated, allowed_mentions=AllowedMentions.none())
+            await reply.edit(content=content, allowed_mentions=AllowedMentions.none())
         except Exception as exc:
             # Broad on purpose: the reply may have been deleted, and a footnote is never worth
-            # surfacing a failure for. The note already on the reply stays recorded, so a later
-            # attempt still replaces it rather than stacking under it.
-            logfire.warn(
-                "Failed to write the memory note onto the reply",
-                message_id=self.message.id,
-                error_type=type(exc).__name__,
-            )
-            return
-        self.stored_content = updated
-        self._memory_note = line
+            # surfacing a failure for.
+            logfire.warn(failure, message_id=self.message.id, error_type=type(exc).__name__)
+            return False
+        self.stored_content = content
+        return True
 
     def _resolve_mention_name(self, *, target_id: int) -> str | None:
         """Looks up a member/role/channel display name for the spoken-clip mention rewrite."""
@@ -921,17 +899,6 @@ class ResponseStreamer(BaseModel):
         channel = guild.get_channel(target_id)
         return getattr(channel, "name", None) if channel is not None else None
 
-    async def _hint_media_unavailable(self, *, emoji: str) -> None:
-        """Marks that dropped media (a voice clip, image, song or video) is not silent.
-
-        The reply stays without the attachment and the user gets no message; this best-effort
-        hint is the only signal. On the gateway path it rides on the source message as an
-        independent reaction (no `previous`), so the pipeline's status chain never removes it,
-        and failures are suppressed inside `update_reaction`. A surface with nothing to react to
-        holds it instead, and `_write_hint_line` puts it on the reply once the media step ends.
-        """
-        await self.surface.hint(emoji=emoji)
-
     async def _write_hint_line(self) -> None:
         """Writes the hints a surface without reactions collected, as one line on the reply.
 
@@ -945,7 +912,8 @@ class ResponseStreamer(BaseModel):
             return
         body = self._without_memory_note(text=self.stored_content.removesuffix(self._usage_footer))
         line = f"-# {''.join(hints)}"
-        updated = f"{body}\n{line}{self._memory_note_suffix()}{self._usage_footer}"
+        note = f"\n{self._memory_note}" if self._memory_note else ""
+        updated = f"{body}\n{line}{note}{self._usage_footer}"
         if len(updated) > DISCORD_MESSAGE_LIMIT:
             # Nowhere left to say it. Recorded rather than dropped in silence, since the point of
             # the hint is that a dropped clip never goes unmentioned.
@@ -955,23 +923,12 @@ class ResponseStreamer(BaseModel):
                 hints="".join(hints),
             )
             return
-        try:
-            await self.reply.edit(content=updated, allowed_mentions=AllowedMentions.none())
-        except Exception as exc:
-            # Broad on purpose, for the same reason `set_memory_note` is: the reply may be gone,
-            # and a footnote is never worth surfacing a failure for.
-            logfire.warn(
-                "Failed to write the dropped-media hints onto the reply",
-                message_id=self.message.id,
-                error_type=type(exc).__name__,
-            )
-            return
-        self.stored_content = updated
-        self._hint_line = line
-
-    def _memory_note_suffix(self) -> str:
-        """The memory note as it sits inside the content, or "" when the reply carries none."""
-        return f"\n{self._memory_note}" if self._memory_note else ""
+        if await self._edit_reply_text(
+            reply=self.reply,
+            content=updated,
+            failure="Failed to write the dropped-media hints onto the reply",
+        ):
+            self._hint_line = line
 
     async def _build_voice_candidate(self) -> MediaItem | None:
         """Synthesizes the <generate-voice> segment to a WAV candidate, or None when not delivered.
@@ -981,7 +938,7 @@ class ResponseStreamer(BaseModel):
         The upload-limit decision (attach vs host vs drop) is made by `_attach_generated_media`,
         so an oversized clip is no longer dropped here (there is deliberately no spoken-length cap).
         """
-        if not self.voice_requested:
+        if not self.markers.voice_requested:
             # The expected common path: the answer model wrapped no <generate-voice> segment.
             logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
             return None
@@ -1005,11 +962,11 @@ class ResponseStreamer(BaseModel):
             return None
         if clip.outcome is VoiceOutcome.TIMEOUT:
             # generate() logged the timeout; cue the user that the clip ran out of time.
-            await self._hint_media_unavailable(emoji="⏱️")
+            await self.surface.hint(emoji="⏱️")
             return None
         if clip.audio is None:
             # Any other synthesis failure (most often a policy refusal); generate() logged it.
-            await self._hint_media_unavailable(emoji="⚠️")
+            await self.surface.hint(emoji="⚠️")
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
 
@@ -1054,7 +1011,7 @@ class ResponseStreamer(BaseModel):
         `<generate-image>` and `<generate-video>` in the same reply load them only once; only the raw
         bytes are used here (the edit path needs no mime).
         """
-        prompts = self.image_prompts[:MAX_INLINE_IMAGES]
+        prompts = self.markers.image_prompts[:MAX_INLINE_IMAGES]
         if not prompts:
             return []
         if self.image_generator is None:
@@ -1064,11 +1021,11 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return []
-        if len(self.image_prompts) > MAX_INLINE_IMAGES:
+        if len(self.markers.image_prompts) > MAX_INLINE_IMAGES:
             logfire.info(
                 "Inline image requests exceed the per-reply cap; dropping the extras",
                 message_id=self.message.id,
-                requested=len(self.image_prompts),
+                requested=len(self.markers.image_prompts),
                 cap=MAX_INLINE_IMAGES,
             )
         # Mark the source message with the bot's `image` app emoji while the images render.
@@ -1103,7 +1060,7 @@ class ResponseStreamer(BaseModel):
             filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
             candidates.append(MediaItem(source=image, filename=filename))
         if dropped:
-            await self._hint_media_unavailable(emoji="⚠️")
+            await self.surface.hint(emoji="⚠️")
         return candidates
 
     async def _build_music_candidate(self) -> MediaItem | None:
@@ -1114,7 +1071,7 @@ class ResponseStreamer(BaseModel):
         follows the returned audio mime type so Discord (or the hosted link) renders a player; the
         upload-limit decision (attach vs host) is left to `_attach_generated_media`.
         """
-        if self.music_prompt is None:
+        if self.markers.music_prompt is None:
             # The expected common path: the answer model wrapped no <generate-music> block.
             logfire.debug("Music not requested by the answer model", message_id=self.message.id)
             return None
@@ -1128,10 +1085,10 @@ class ResponseStreamer(BaseModel):
         # Mark the source message while the clip renders (no custom app emoji for music yet).
         await self.surface.mark(emoji="🎵")
         logfire.info("Generating inline music reply", message_id=self.message.id)
-        clip = await self.music_generator.generate(user_prompt=self.music_prompt)
+        clip = await self.music_generator.generate(user_prompt=self.markers.music_prompt)
         if clip is None:
             # generate() logged the failure/timeout; hint once.
-            await self._hint_media_unavailable(emoji="⚠️")
+            await self.surface.hint(emoji="⚠️")
             return None
         return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
@@ -1147,7 +1104,7 @@ class ResponseStreamer(BaseModel):
         The upload-limit decision (attach vs host) is left to `_attach_generated_media`, so a large
         clip is hosted as a URL rather than dropped for size.
         """
-        if self.video_prompt is None:
+        if self.markers.video_prompt is None:
             # The expected common path: the answer model wrapped no <generate-video> block.
             logfire.debug("Video not requested by the answer model", message_id=self.message.id)
             return None
@@ -1163,11 +1120,11 @@ class ResponseStreamer(BaseModel):
         logfire.info("Generating inline video reply", message_id=self.message.id)
         source_images = await source_images_task if source_images_task is not None else []
         video_bytes = await self.video_generator.generate(
-            user_prompt=self.video_prompt, reference_image_sources=source_images or None
+            user_prompt=self.markers.video_prompt, reference_image_sources=source_images or None
         )
         if video_bytes is None:
             # generate() logged the failure/timeout; hint once.
-            await self._hint_media_unavailable(emoji="⚠️")
+            await self.surface.hint(emoji="⚠️")
             return None
         return MediaItem(source=video_bytes, filename=INLINE_VIDEO_FILENAME)
 
@@ -1189,16 +1146,16 @@ class ResponseStreamer(BaseModel):
             return
         if self.reply is None:
             if (
-                self.voice_requested
-                or self.image_prompts
-                or self.music_prompt
-                or self.video_prompt
+                self.markers.voice_requested
+                or self.markers.image_prompts
+                or self.markers.music_prompt
+                or self.markers.video_prompt
             ):
                 logfire.warn(
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,
                 )
-                await self._hint_media_unavailable(emoji="⚠️")
+                await self.surface.hint(emoji="⚠️")
             return
         reply = self.reply
         # The uploaded source images (for editing an inline <generate-image> / grounding an inline <generate-video>)
@@ -1206,8 +1163,8 @@ class ResponseStreamer(BaseModel):
         # per call; both builders await this shared task. None when neither visual marker fired.
         source_images_task = (
             asyncio.ensure_future(self._load_marker_source_images())
-            if (self.image_generator is not None and self.image_prompts)
-            or (self.video_generator is not None and self.video_prompt is not None)
+            if (self.image_generator is not None and self.markers.image_prompts)
+            or (self.video_generator is not None and self.markers.video_prompt is not None)
             else None
         )
         # Build every path concurrently so a slow one never blocks the others: a TTS clip, a music
@@ -1237,7 +1194,7 @@ class ResponseStreamer(BaseModel):
         ):
             return
         if plan.dropped_items:
-            await self._hint_media_unavailable(emoji="⚠️")
+            await self.surface.hint(emoji="⚠️")
         logfire.info(
             "Generated media attached",
             message_id=self.message.id,
@@ -1295,7 +1252,7 @@ class ResponseStreamer(BaseModel):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            await self._hint_media_unavailable(emoji="⚠️")
+            await self.surface.hint(emoji="⚠️")
             return False
         if follow_up is not None:
             try:
@@ -1314,7 +1271,7 @@ class ResponseStreamer(BaseModel):
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
-                await self._hint_media_unavailable(emoji="⚠️")
+                await self.surface.hint(emoji="⚠️")
                 return False
         return True
 
