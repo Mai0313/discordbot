@@ -1551,7 +1551,10 @@ async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
     await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
 
     assert warned == [
-        ("Channel refused a preview write; stopping preview edits", {"message_id": message.id})
+        (
+            "Channel refused a preview write; stopping preview edits",
+            {"channel_id": message.channel.id, "message_id": message.id},
+        )
     ]
 
 

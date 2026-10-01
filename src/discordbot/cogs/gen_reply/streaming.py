@@ -412,10 +412,10 @@ class ResponseStreamer(BaseModel):
                     )
                     return
                 except Forbidden:
-                    # The channel's permissions changed under the turn; the id is the whole
-                    # finding, and every later tick would be refused the same way.
+                    # A refusal repeats on every tick, and the ids are the whole finding.
                     logfire.warn(
                         "Channel refused a preview write; stopping preview edits",
+                        channel_id=self.message.channel.id,
                         message_id=self.message.id,
                     )
                     return
