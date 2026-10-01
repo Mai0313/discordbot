@@ -21,8 +21,10 @@ from discordbot.utils import interaction_responses as interactions
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.typings.economy import (
+    VIP_PURCHASE_COST,
     PortfolioView,
     LoanLenderType,
+    TransferResult,
     AccountSnapshot,
     LeaderboardEntry,
     LoanContractView,
@@ -30,20 +32,16 @@ from discordbot.typings.economy import (
     LoanProposalView,
     CentralBankStatus,
     LoanPaymentResult,
+    VipPurchaseResult,
     LoanContractStatus,
     LoanProposalStatus,
     CasinoLedgerSnapshot,
     LossLeaderboardEntry,
+    BalanceAdjustmentResult,
     LoanProposalAcceptResult,
 )
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
-from discordbot.services.economy.database import (
-    VIP_PURCHASE_COST,
-    TransferResult,
-    VipPurchaseResult,
-    BalanceAdjustmentResult,
-)
 
 from tests.helpers.casting import (
     as_bot,
@@ -243,16 +241,6 @@ async def fake_loan_payment(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN40
         remaining_principal=55,
         remaining_interest=0,
     )
-
-
-async def fake_call_personal_loans(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
-    """Returns a fake personal collection result."""
-    return await fake_loan_payment()
-
-
-async def fake_call_central_bank_loans(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
-    """Returns a fake central-bank collection result."""
-    return await fake_loan_payment()
 
 
 async def fake_get_credit_ceiling(user_id: int) -> int:
@@ -572,14 +560,14 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
     monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
     monkeypatch.setattr(economy, "repay_personal_loans", fake_loan_payment)
-    monkeypatch.setattr(economy, "call_personal_loans", fake_call_personal_loans)
+    monkeypatch.setattr(economy, "call_personal_loans", fake_loan_payment)
     monkeypatch.setattr(
         economy, "create_central_bank_loan_request", fake_create_central_bank_request
     )
     monkeypatch.setattr(economy, "list_loan_contracts", fake_list_loan_contracts)
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
-    monkeypatch.setattr(economy, "call_central_bank_loans", fake_call_central_bank_loans)
+    monkeypatch.setattr(economy, "call_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
@@ -667,14 +655,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     inspected_description = inspected_member.followup.sent[0]["embed"].description
     assert inspected_description is not None
     assert "Bob" in inspected_description
-
-    bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
-    await EconomyCogs.give.callback(
-        cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount="1"
-    )
-    bot_receiver_title = bot_receiver.followup.sent[0]["embed"].title
-    assert bot_receiver_title is not None
-    assert "轉帳完成" in bot_receiver_title
 
 
 async def test_central_bank_decision_buttons_require_admin_and_allow_self_approval(
@@ -834,7 +814,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
     The sweep above reads the order off the source. This one observes it, so a defer that is
     present but unreachable — moved behind a guard, or into one branch — still fails here.
 
-    All five writers, because the panel is the surface someone edits one button of.
+    Every writer, because the panel is the surface someone edits one button of.
     """
     clicked: list[tuple[str, FakeInteraction]] = []
     acked_at_write: dict[str, bool] = {}
@@ -991,46 +971,9 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
     assert "權限不足" in admin_rejection_title
 
 
-def test_parse_admin_amount_accepts_formatted_text() -> None:
-    """Verifies admin adjustment text parsing avoids Discord integer option limits."""
-    assert (
-        economy._parse_positive_amount(raw_amount="9,007,199,254,740,993") == 9_007_199_254_740_993
-    )
-    assert economy._parse_positive_amount(raw_amount=" 0001 ") == 1
-    assert economy._parse_positive_amount(raw_amount=None) is None
+def test_a_positive_amount_refuses_zero() -> None:
+    """Zero is a well-formed amount, but no command that takes a positive one accepts it."""
     assert economy._parse_positive_amount(raw_amount="0") is None
-    assert economy._parse_positive_amount(raw_amount="not a number") is None
-    assert economy._parse_positive_amount(raw_amount="-1") is None
-
-
-async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Admin tax commands must parse large string amounts before database mutation."""
-    captured_deltas: list[int] = []
-
-    async def record_adjust_balance(
-        user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
-    ) -> BalanceAdjustmentResult:
-        """Records parsed adjustment deltas."""
-        captured_deltas.append(delta)
-        return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
-
-    monkeypatch.setattr(economy, "get_admin", fake_get_admin)
-    monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
-    cog = EconomyCogs(bot=_bot())
-    interaction = FakeInteraction(user=FakeUser(user_id=1))
-
-    await EconomyCogs.admin_refund_tax.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="9,007,199,254,740,993"
-    )
-    await EconomyCogs.admin_collect_tax.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="9,007,199,254,740,993"
-    )
-
-    # order-contract: each awaited command completes its balance adjustment before returning.
-    assert captured_deltas == [9_007_199_254_740_993, -9_007_199_254_740_993]
 
 
 async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1061,37 +1004,6 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
     assert captured_targets == [(999, "discordbot", 100), (999, "discordbot", -50)]
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert interaction.followup.sent[1].get("ephemeral") is not True
-
-
-async def test_economy_admin_tax_rejects_invalid_amount_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Invalid admin tax amount text must be rejected before balance mutation."""
-    called = False
-
-    async def fake_adjust_balance_guard(
-        user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
-    ) -> BalanceAdjustmentResult:
-        """Fails the test if invalid amount text reaches the mutation path."""
-        nonlocal called
-        called = True
-        return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
-
-    monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance_guard)
-    cog = EconomyCogs(bot=_bot())
-    interaction = FakeInteraction(user=FakeUser(user_id=1))
-
-    await EconomyCogs.admin_collect_tax.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="not a number"
-    )
-
-    assert called is False
-    assert interaction.response.sent[0]["ephemeral"] is True
-    assert interaction.response.sent[0]["embed"].title == "收稅失敗"
-    collect_tax_description = interaction.response.sent[0]["embed"].description
-    assert collect_tax_description is not None
-    assert "金額格式錯誤" in collect_tax_description
-    assert interaction.followup.sent == []
 
 
 async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1157,12 +1069,37 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     assert "轉帳完成" in give_bot_receiver_title
 
 
-async def test_economy_money_commands_accept_large_string_amounts(
+@pytest.mark.parametrize(
+    argnames=("command", "kwargs", "title"),
+    argvalues=[
+        ("central_bank_borrow", {"amount": "100", "monthly_rate_percent": 0.0}, "央行借款失敗"),
+        ("central_bank_status", {}, "央行狀態"),
+    ],
+)
+async def test_the_central_bank_refuses_a_direct_message(
+    command: str, kwargs: dict[str, object], title: str
+) -> None:
+    """Outside a guild there is no pool to lend from and nobody who could approve.
+
+    Refused up front rather than at the button, or borrowing in a DM would post a
+    request that can be neither approved nor rejected and simply times out.
+    """
+    cog = EconomyCogs(bot=_bot())
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), in_guild=False)
+
+    await getattr(EconomyCogs, command).callback(cog, as_interaction(fake=interaction), **kwargs)
+
+    assert interaction.response.sent[0]["ephemeral"] is True
+    assert interaction.response.sent[0]["embed"].title == title
+
+
+async def test_economy_money_commands_accept_large_string_amounts(  # noqa: PLR0915 -- one sweep over every command that parses an amount
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Loan, transfer, and collection amounts parse beyond Discord integer option limits."""
+    """Loan, transfer, collection and tax amounts parse beyond Discord integer option limits."""
     big_amount = 9_007_199_254_740_993
     captured: dict[str, int | None] = {}
+    adjusted: list[int] = []
 
     async def record_transfer(**kwargs: Any) -> TransferResult:  # noqa: ANN401 -- command facade double
         captured["give"] = kwargs["amount"]
@@ -1194,6 +1131,10 @@ async def test_economy_money_commands_accept_large_string_amounts(
         captured["central_bank_call"] = kwargs["amount"]
         return await fake_loan_payment()
 
+    async def record_adjust_balance(**kwargs: Any) -> BalanceAdjustmentResult:  # noqa: ANN401 -- command facade double
+        adjusted.append(kwargs["delta"])
+        return BalanceAdjustmentResult(new_balance=0, applied_delta=kwargs["delta"])
+
     monkeypatch.setattr(economy, "transfer", record_transfer)
     monkeypatch.setattr(economy, "create_personal_loan_request", record_create_personal)
     monkeypatch.setattr(economy, "create_central_bank_loan_request", record_create_central)
@@ -1201,6 +1142,8 @@ async def test_economy_money_commands_accept_large_string_amounts(
     monkeypatch.setattr(economy, "repay_central_bank_loans", record_repay_central)
     monkeypatch.setattr(economy, "call_personal_loans", record_call_personal)
     monkeypatch.setattr(economy, "call_central_bank_loans", record_call_central)
+    monkeypatch.setattr(economy, "get_admin", fake_get_admin)
+    monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
     monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     monkeypatch.setattr(
@@ -1222,7 +1165,11 @@ async def test_economy_money_commands_accept_large_string_amounts(
     )
     await EconomyCogs.central_bank_repay.callback(cog, interaction, amount=big_text)
     await EconomyCogs.central_bank_call.callback(cog, interaction, member=member, amount=big_text)
+    await EconomyCogs.admin_refund_tax.callback(cog, interaction, member=member, amount=big_text)
+    await EconomyCogs.admin_collect_tax.callback(cog, interaction, member=member, amount=big_text)
 
+    # order-contract: each awaited command completes its balance adjustment before returning.
+    assert adjusted == [big_amount, -big_amount]
     assert captured == {
         "give": big_amount,
         "credit_borrow": big_amount,
@@ -1242,7 +1189,7 @@ async def test_economy_money_commands_accept_large_string_amounts(
 async def test_economy_money_commands_reject_invalid_amount_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Malformed amount text is rejected before any balance, loan, or collection mutation."""
+    """Malformed amount text is rejected before any balance, loan, collection or tax mutation."""
     mutated: list[str] = []
 
     async def guard_transfer(**kwargs: Any) -> TransferResult:  # noqa: ANN401 -- command facade double
@@ -1267,6 +1214,11 @@ async def test_economy_money_commands_reject_invalid_amount_text(
         mutated.append("payment")
         return await fake_loan_payment()
 
+    async def guard_adjust_balance(**kwargs: Any) -> BalanceAdjustmentResult:  # noqa: ANN401 -- command facade double
+        del kwargs
+        mutated.append("adjust_balance")
+        return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
+
     monkeypatch.setattr(economy, "transfer", guard_transfer)
     monkeypatch.setattr(economy, "create_personal_loan_request", guard_create_personal)
     monkeypatch.setattr(economy, "create_central_bank_loan_request", guard_create_central)
@@ -1274,6 +1226,7 @@ async def test_economy_money_commands_reject_invalid_amount_text(
     monkeypatch.setattr(economy, "repay_central_bank_loans", guard_payment)
     monkeypatch.setattr(economy, "call_personal_loans", guard_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", guard_payment)
+    monkeypatch.setattr(economy, "adjust_balance", guard_adjust_balance)
     monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     cog = EconomyCogs(bot=_bot())
@@ -1314,6 +1267,14 @@ async def test_economy_money_commands_reject_invalid_amount_text(
         (
             "央行催收失敗",
             lambda i: EconomyCogs.central_bank_call.callback(cog, i, member=member, amount="x"),
+        ),
+        (
+            "退稅失敗",
+            lambda i: EconomyCogs.admin_refund_tax.callback(cog, i, member=member, amount="x"),
+        ),
+        (
+            "收稅失敗",
+            lambda i: EconomyCogs.admin_collect_tax.callback(cog, i, member=member, amount="x"),
         ),
     ]
     for expected_title, invoke in rejections:

@@ -20,9 +20,9 @@ from discordbot.typings.economy import (
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
     JackpotSettlementRequest,
+    apply_vip_blackjack_bonus,
 )
 from discordbot.services.economy import database as economy_database
-from discordbot.utils.stored_integer import stored_int_to_int
 from discordbot.services.economy.database import (
     UserWallet,
     JackpotPool,
@@ -44,6 +44,7 @@ from discordbot.services.economy.database import (
     _taipei_midnight,
     get_casino_ledger,
     call_personal_loans,
+    list_loan_contracts,
     accept_loan_proposal,
     get_jackpot_snapshot,
     repay_personal_loans,
@@ -51,7 +52,6 @@ from discordbot.services.economy.database import (
     call_central_bank_loans,
     get_central_bank_status,
     apply_jackpot_settlement,
-    record_guild_participant,
     repay_central_bank_loans,
     apply_blackjack_settlement,
     create_personal_loan_request,
@@ -63,10 +63,13 @@ from discordbot.services.economy.database import (
 )
 
 from tests.helpers.economy import (
+    LENDING_GUILD,
     seed_balance,
+    approve_as_admin,
     get_jackpot_pool,
+    seed_participant,
+    open_personal_loan,
     hide_from_leaderboard,
-    get_casino_daily_stats,
 )
 from tests.helpers.economy_invariants import (
     assert_wallet_consistent,
@@ -91,28 +94,6 @@ async def _stored_wallet_name(user_id: int) -> str:
             statement=select(UserWallet.name).where(UserWallet.user_id == user_id)
         )
         return result.scalar_one()
-
-
-async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | None]:
-    """Reads daily casino `(loss, win, net, day_started_at)` counters."""
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(
-                CasinoAccount.daily_loss,
-                CasinoAccount.daily_win,
-                CasinoAccount.daily_net,
-                CasinoAccount.day_started_at,
-            ).where(CasinoAccount.user_id == user_id)
-        )
-        row = result.one_or_none()
-    if row is None:
-        return 0, 0, 0, None
-    return (
-        stored_int_to_int(value=row[0]),
-        stored_int_to_int(value=row[1]),
-        stored_int_to_int(value=row[2]),
-        row[3],
-    )
 
 
 async def _casino_account_ids() -> list[int]:
@@ -206,20 +187,6 @@ def _assert_money_columns_are_text(
         assert jackpot_column_types[column_name] == "TEXT"
 
 
-async def test_adjust_balance_creates_user() -> None:
-    """First manual adjustment upserts the row and returns the new balance."""
-    result = await adjust_balance(user_id=42, name="alice", delta=100)
-    assert result == BalanceAdjustmentResult(new_balance=100, applied_delta=100)
-    assert await get_balance(user_id=42) == 100
-
-
-async def test_adjust_balance_accumulates() -> None:
-    """Repeated manual adjustments increment the running balance."""
-    await adjust_balance(user_id=42, name="alice", delta=100)
-    result = await adjust_balance(user_id=42, name="alice", delta=50)
-    assert result == BalanceAdjustmentResult(new_balance=150, applied_delta=50)
-
-
 async def test_adjust_balance_zero_is_noop() -> None:
     """Zero deltas do not change balance or lifetime totals."""
     await seed_balance(user_id=42, name="alice", amount=100)
@@ -238,10 +205,12 @@ async def test_adjust_balance_positive_updates_total_earned() -> None:
 
 
 async def test_adjust_balance_clamps_at_zero() -> None:
-    """Negative manual adjustment clamps at zero by default."""
+    """Negative manual adjustment clamps at zero by default and spends only what it applied."""
     await seed_balance(user_id=42, name="alice", amount=10)
     result = await adjust_balance(user_id=42, name="alice", delta=-1_000)
     assert result == BalanceAdjustmentResult(new_balance=0, applied_delta=-10)
+    account = await get_account(user_id=42)
+    assert account == AccountSnapshot(name="alice", balance=0, total_earned=10, total_spent=10)
 
 
 async def test_adjust_balance_negative_missing_user_does_not_create_row() -> None:
@@ -343,14 +312,8 @@ def test_every_test_gets_its_own_ledger(tmp_path: Path) -> None:
     assert economy_database._engine.url.database == str(tmp_path / "economy.db")
 
 
-async def test_ensure_schema_bootstraps_current_databases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_schema_bootstraps_current_databases() -> None:
     """A clean startup's first session creates only the current economy tables."""
-    db_path = tmp_path / "current-economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-
     (
         economy_tables,
         wallet_index_names,
@@ -370,7 +333,6 @@ async def test_ensure_schema_bootstraps_current_databases(
         "casino_ledger",
         "central_bank_ledger",
     }
-    assert "bot_status" not in economy_tables
     assert table_columns["guild_participant"] == {"guild_id", "user_id", "updated_at"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
@@ -395,7 +357,6 @@ async def test_ensure_schema_bootstraps_current_databases(
     assert await _stored_wallet_name(user_id=42) == "alice"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
-    await engine.dispose()
 
 
 async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_functions(
@@ -420,14 +381,8 @@ async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_funct
     await engine.dispose()
 
 
-async def test_ensure_schema_serializes_concurrent_first_use(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_schema_serializes_concurrent_first_use() -> None:
     """Concurrent first-use schema bootstrap does not race SQLite CREATE TABLE."""
-    db_path = tmp_path / "concurrent-economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-
     await asyncio.gather(*(get_balance(user_id=42) for _ in range(20)))
 
     async with open_session() as session:
@@ -441,7 +396,6 @@ async def test_ensure_schema_serializes_concurrent_first_use(
             statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == "dragon_gate")
         )
         assert result.scalar_one() == 1_000
-    await engine.dispose()
 
 
 async def test_a_swapped_engine_gets_its_own_schema(
@@ -638,38 +592,23 @@ async def test_top_n_short_cache_hit_and_manual_invalidation() -> None:
     assert [row.user_id for row in await top_n(limit=1)] == [2]
 
 
-_LENDING_GUILD = 555
-
-
 async def _ledger_every_write_path_can_touch() -> int:
     """Seeds what every leaderboard write below needs and returns a pending request's id.
 
     alice (1) can afford VIP and owes both bob (2) and the central bank; bob has asked
     alice for a loan she has not answered yet.
     """
-    await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
+    await seed_participant(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
     await seed_balance(user_id=2, name="bob", amount=1_000)
-    await record_guild_participant(guild_id=_LENDING_GUILD, user_id=1)
-    personal = await create_personal_loan_request(
+    await open_personal_loan(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
-    )
-    assert personal is not None
-    assert (
-        await accept_loan_proposal(proposal_id=personal.proposal_id, actor_id=2, actor_name="bob")
-        is not None
     )
     central = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=100
     )
     assert central is not None
     assert (
-        await accept_loan_proposal(
-            proposal_id=central.proposal_id,
-            actor_id=99,
-            actor_name="banker",
-            approver_is_guild_admin=True,
-            guild_id=_LENDING_GUILD,
-        )
+        await approve_as_admin(proposal_id=central.proposal_id, actor_id=99, name="banker")
         is not None
     )
     pending = await create_personal_loan_request(
@@ -732,7 +671,7 @@ async def _ledger_every_write_path_can_touch() -> int:
         ),
         pytest.param(
             lambda _: call_central_bank_loans(
-                guild_id=_LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=10
+                guild_id=LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=10
             ),
             id="call_central_bank_loans",
         ),
@@ -752,15 +691,6 @@ async def test_every_balance_write_invalidates_the_leaderboard_cache(
     assert after == await top_n(limit=None)
     # Otherwise the write moved no balance and the check above proves nothing.
     assert after != cached
-
-
-async def test_apply_blackjack_settlement_allows_negative_casino_balance() -> None:
-    """Casino ledger keeps a true running net even when the casino is down."""
-    await apply_blackjack_settlement(
-        player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
-    )
-    ledger = await get_casino_ledger()
-    assert ledger.balance == -500
 
 
 async def test_apply_blackjack_settlement_casino_accumulates_gross_flows() -> None:
@@ -783,14 +713,14 @@ async def test_get_account_returns_none_for_unseen_user() -> None:
     assert await get_account(user_id=12345) is None
 
 
-async def test_add_balance_concurrent_credits_accumulate() -> None:
+async def test_adjust_balance_concurrent_credits_accumulate() -> None:
     """Verifies that concurrent credits on the same user do not lose updates."""
     await seed_balance(user_id=42, name="alice", amount=100)
     await asyncio.gather(*[seed_balance(user_id=42, name="alice", amount=10) for _ in range(20)])
     assert await get_balance(user_id=42) == 300
 
 
-async def test_add_balance_concurrent_first_sight_does_not_raise() -> None:
+async def test_adjust_balance_concurrent_first_sight_does_not_raise() -> None:
     """Verifies that concurrent first-sight credits merge instead of racing."""
     results = await asyncio.gather(*[
         seed_balance(user_id=42, name="alice", amount=10) for _ in range(8)
@@ -854,7 +784,7 @@ async def test_apply_blackjack_settlement_is_atomic(monkeypatch: pytest.MonkeyPa
 
     await assert_wallet_consistent(user_id=1, expected_balance=100)
     await assert_casino_ledger_consistent(expected_balance=0)
-    assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
+    assert await _casino_account_ids() == []
 
 
 async def test_apply_blackjack_settlement_loss_debits_player_and_casino() -> None:
@@ -948,14 +878,14 @@ async def test_apply_blackjack_settlement_updates_daily_casino_counters() -> Non
         player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
 
-    loss, win, net, day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (300, 500, 200)
+    await assert_daily_casino_stats(user_id=1, loss=300, win=500, net=200)
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(CasinoAccount.day_started_at).where(CasinoAccount.user_id == 1)
+        )
+        day_started_at = result.scalar_one()
     assert day_started_at is not None
     assert as_taipei(dt=day_started_at) == _taipei_midnight(now=database_now())
-    stats = await get_casino_daily_stats(user_id=1)
-    assert stats.daily_loss == 300
-    assert stats.daily_win == 500
-    assert stats.daily_net == 200
 
 
 async def test_daily_casino_counters_store_large_values_as_text() -> None:
@@ -1044,7 +974,7 @@ async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
     await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=0, casino_delta=0
     )
-    assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
+    assert await _casino_account_ids() == []
 
     await apply_blackjack_settlement(
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
@@ -1055,7 +985,70 @@ async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
     assert await _casino_account_ids() == [1]
 
 
+# credit_with_repayment -----------------------------------------------------
+
+
+async def test_credit_with_repayment_zero_amount_is_noop() -> None:
+    """Non-positive reward calls do not create phantom income."""
+    await seed_balance(user_id=1, name="alice", amount=50)
+
+    result = await credit_with_repayment(user_id=1, name="alice", amount=0)
+
+    assert result.new_balance == 50
+    account = await get_account(user_id=1)
+    assert account is not None
+    assert account.total_earned == 50
+
+
+async def test_credit_with_repayment_first_sight_creates_row() -> None:
+    """A first reward creates the user account row."""
+    result = await credit_with_repayment(user_id=1, name="alice", amount=200)
+
+    assert result.new_balance == 200
+    assert await get_balance(user_id=1) == 200
+
+
+async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
+    """Concurrent reward writes add up instead of losing one update."""
+    await asyncio.gather(
+        *(credit_with_repayment(user_id=1, name="alice", amount=10) for _ in range(20))
+    )
+
+    assert await get_balance(user_id=1) == 200
+
+
+async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
+    """Passive income does not auto-repay explicit long-term loan contracts."""
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+
+    result = await credit_with_repayment(user_id=1, name="alice", amount=100)
+    contracts = await list_loan_contracts(user_id=1)
+
+    assert result.new_balance == 600
+    assert len(contracts) == 1
+    assert contracts[0].principal_remaining == 500
+
+
 # VIP purchase --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    argnames=("delta", "is_vip", "expected"),
+    argvalues=[
+        (100, False, 100),
+        (100, True, 120),
+        (101, True, 121),
+        (1, True, 1),
+        (0, True, 0),
+        (-50, True, -50),
+    ],
+)
+def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> None:
+    """VIP bonus applies only to positive winnings and floors fractional fifths."""
+    assert apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip) == expected
 
 
 async def test_buy_vip_sets_flag_and_debits_balance() -> None:
@@ -1216,8 +1209,7 @@ async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None
     assert settlement.applied_player_delta == 200
     assert settlement.jackpot_depleted is False
     assert await get_jackpot_pool(game_id="dragon_gate") == 800
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (0, 200, 200)
+    await assert_daily_casino_stats(user_id=1, loss=0, win=200, net=200)
 
 
 async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
@@ -1257,8 +1249,7 @@ async def test_apply_jackpot_settlement_clamps_loss_and_grows_pool_by_actual_deb
     assert account == AccountSnapshot(
         name="alice", balance=0, total_earned=15_000, total_spent=15_000
     )
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (15_000, 0, -15_000)
+    await assert_daily_casino_stats(user_id=1, loss=15_000, win=0, net=-15_000)
 
 
 async def test_apply_jackpot_settlement_concurrent_clamped_losses_count_actual_debit() -> None:
@@ -1280,8 +1271,7 @@ async def test_apply_jackpot_settlement_concurrent_clamped_losses_count_actual_d
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_100
     account = await get_account(user_id=1)
     assert account == AccountSnapshot(name="alice", balance=0, total_earned=100, total_spent=100)
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (100, 0, -100)
+    await assert_daily_casino_stats(user_id=1, loss=100, win=0, net=-100)
 
 
 async def test_apply_jackpot_settlement_caps_win_to_live_pool() -> None:

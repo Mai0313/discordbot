@@ -4,8 +4,7 @@ from datetime import UTC, datetime
 
 from discordbot.typings.economy import LoanLenderType, LoanContractView, LoanContractStatus
 from discordbot.cogs.economy.embeds import build_credit_status_embed
-
-_EMBED_DESCRIPTION_LIMIT = 4096
+from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT
 
 
 def _contract(*, contract_id: int, lender_name: str = "lender") -> LoanContractView:
@@ -27,7 +26,7 @@ def _contract(*, contract_id: int, lender_name: str = "lender") -> LoanContractV
     )
 
 
-def test_credit_status_lists_every_contract_past_the_old_ten_cap() -> None:
+def test_credit_status_lists_an_eleventh_contract() -> None:
     """An eleventh contract is on the embed, and nothing claims anything was held back."""
     contracts = [_contract(contract_id=index, lender_name=f"lender{index}") for index in range(11)]
     embed = build_credit_status_embed(contracts=contracts, viewer_id=1)
@@ -45,7 +44,7 @@ def test_credit_status_reports_what_it_could_not_list() -> None:
     ]
     embed = build_credit_status_embed(contracts=contracts, viewer_id=1)
     description = embed.description or ""
-    assert len(description) <= _EMBED_DESCRIPTION_LIMIT
+    assert len(description) <= DISCORD_EMBED_DESCRIPTION_LIMIT
     listed = sum(1 for line in description.split("\n") if line.startswith("欠 "))
     assert f"-# 還有 {len(contracts) - listed} 筆未顯示" in description
 

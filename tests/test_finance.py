@@ -12,9 +12,7 @@ from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
     CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
-    LoanContractView,
     LoanProposalStatus,
-    LoanProposalAcceptResult,
 )
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CentralBankLoanDecisionView
@@ -45,34 +43,16 @@ from discordbot.services.economy.database import (
 )
 
 from tests.helpers.casting import as_bot, as_interaction
-from tests.helpers.economy import seed_balance
+from tests.helpers.economy import (
+    LENDING_GUILD,
+    seed_balance,
+    approve_as_admin,
+    seed_participant,
+    open_personal_loan,
+)
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
-# The guild every central-bank test lends in. Capacity is per guild now, so a borrower who
-# takes part in none of them has no pool to draw on and no administrator who may approve.
-GUILD = 555
 OTHER_GUILD = 777
-
-
-async def _join(user_id: int, name: str, amount: int, guild_id: int = GUILD) -> int:
-    """Seeds a balance and records the user as taking part in `guild_id`."""
-    balance = await seed_balance(user_id=user_id, name=name, amount=amount)
-    await record_guild_participant(guild_id=guild_id, user_id=user_id)
-    return balance
-
-
-async def _approve(
-    proposal_id: int, actor_id: int, name: str, allow_self_approval: bool = False
-) -> LoanProposalAcceptResult | None:
-    """Approves a proposal as a server administrator of `GUILD`."""
-    return await accept_loan_proposal(
-        proposal_id=proposal_id,
-        actor_id=actor_id,
-        actor_name=name,
-        approver_is_guild_admin=True,
-        guild_id=GUILD,
-        allow_central_bank_self_approval=allow_self_approval,
-    )
 
 
 async def _backdate_contract(contract_id: int, days: int) -> None:
@@ -87,23 +67,6 @@ async def _backdate_contract(contract_id: int, days: int) -> None:
             .values(opened_at=opened_at, last_interest_accrued_at=last_accrued_at)
         )
         await session.commit()
-
-
-async def _personal_loan(borrower_id: int, lender_id: int, amount: int) -> LoanContractView:
-    """Opens an accepted personal loan at the default rate and returns its contract."""
-    proposal = await create_personal_loan_request(
-        borrower_id=borrower_id,
-        borrower_name=str(borrower_id),
-        lender_id=lender_id,
-        lender_name=str(lender_id),
-        amount=amount,
-    )
-    assert proposal is not None
-    accepted = await accept_loan_proposal(
-        proposal_id=proposal.proposal_id, actor_id=lender_id, actor_name=str(lender_id)
-    )
-    assert accepted is not None
-    return accepted.contract
 
 
 async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
@@ -286,8 +249,12 @@ async def test_calling_personal_loans_collects_accrued_interest_owed_to_that_len
     """Calling in everything owed includes interest accrued up to now, and no other lender's loan."""
     await seed_balance(user_id=2, name="bob", amount=1_000)
     await seed_balance(user_id=3, name="carol", amount=1_000)
-    from_bob = await _personal_loan(borrower_id=1, lender_id=2, amount=500)
-    from_carol = await _personal_loan(borrower_id=1, lender_id=3, amount=200)
+    from_bob = await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    from_carol = await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=3, lender_name="carol", amount=200
+    )
     await _backdate_contract(contract_id=from_bob.contract_id, days=60)
 
     result = await call_personal_loans(
@@ -341,13 +308,13 @@ async def test_a_loan_payment_keeps_the_lenders_newer_identity(collected_by_lend
 
 async def test_central_bank_loan_approves_against_cap_and_call_clamps_to_balance() -> None:
     """Central bank loans mint on approval and forced collection never drives balance negative."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
     )
     assert proposal is not None
 
-    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    accepted = await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
     assert accepted is not None
     assert accepted.borrower_balance == 1_500
     # Spent back down, so the collection below meets a balance smaller than the debt.
@@ -355,9 +322,9 @@ async def test_central_bank_loan_approves_against_cap_and_call_clamps_to_balance
     await _backdate_contract(contract_id=accepted.contract.contract_id, days=30)
 
     result = await call_central_bank_loans(
-        guild_id=GUILD, borrower_id=1, borrower_name="alice", amount=None
+        guild_id=LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=None
     )
-    status = await get_central_bank_status(guild_id=GUILD)
+    status = await get_central_bank_status(guild_id=LENDING_GUILD)
 
     assert result is not None
     assert result.paid_amount == 500
@@ -375,12 +342,12 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
     guild carries is larger than the participants' own money, so the pool never binds
     and the refusal being checked here would come from the borrower's ceiling instead.
     """
-    await _join(user_id=1, name="alice", amount=6_000_000)
+    await seed_participant(user_id=1, name="alice", amount=6_000_000)
     first = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=6_000_000
     )
     assert first is not None
-    accepted = await _approve(proposal_id=first.proposal_id, actor_id=99, name="banker")
+    accepted = await approve_as_admin(proposal_id=first.proposal_id, actor_id=99, name="banker")
     assert accepted is not None
     assert accepted.central_bank_available_credit == CENTRAL_BANK_BASE_CAPACITY
 
@@ -390,13 +357,15 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
     )
     assert too_large is not None
     assert await get_credit_ceiling(user_id=1) > CENTRAL_BANK_BASE_CAPACITY
-    rejected = await _approve(proposal_id=too_large.proposal_id, actor_id=99, name="banker")
+    rejected = await approve_as_admin(
+        proposal_id=too_large.proposal_id, actor_id=99, name="banker"
+    )
     assert rejected is None
 
 
 async def test_central_bank_concurrent_approvals_do_not_exceed_capacity() -> None:
     """Concurrent central-bank approvals serialize capacity consumption."""
-    await _join(user_id=1, name="alice", amount=6_000_000)
+    await seed_participant(user_id=1, name="alice", amount=6_000_000)
     first = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=8_000_000
     )
@@ -407,11 +376,11 @@ async def test_central_bank_concurrent_approvals_do_not_exceed_capacity() -> Non
     assert second is not None
 
     first_result, second_result = await asyncio.gather(
-        _approve(proposal_id=first.proposal_id, actor_id=99, name="banker"),
-        _approve(proposal_id=second.proposal_id, actor_id=98, name="banker2"),
+        approve_as_admin(proposal_id=first.proposal_id, actor_id=99, name="banker"),
+        approve_as_admin(proposal_id=second.proposal_id, actor_id=98, name="banker2"),
     )
     accepted_results = [result for result in (first_result, second_result) if result is not None]
-    status = await get_central_bank_status(guild_id=GUILD)
+    status = await get_central_bank_status(guild_id=LENDING_GUILD)
 
     assert len(accepted_results) == 1
     assert status.outstanding_principal == 8_000_000
@@ -422,50 +391,29 @@ async def test_central_bank_concurrent_approvals_do_not_exceed_capacity() -> Non
 
 async def test_central_bank_self_approval_requires_explicit_flag() -> None:
     """Central bank self-approval stays blocked unless the caller explicitly opts in."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     blocked = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=100
     )
     assert blocked is not None
-    assert await _approve(proposal_id=blocked.proposal_id, actor_id=1, name="alice") is None
+    assert (
+        await approve_as_admin(proposal_id=blocked.proposal_id, actor_id=1, name="alice") is None
+    )
 
     allowed = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=100
     )
     assert allowed is not None
-    accepted = await _approve(
+    accepted = await approve_as_admin(
         proposal_id=allowed.proposal_id, actor_id=1, name="alice", allow_self_approval=True
     )
     assert accepted is not None
     assert accepted.borrower_balance == 1_100
 
 
-async def test_forced_collection_without_amount_includes_accrued_interest() -> None:
-    """Calling all owed accrues interest before deciding the collection amount."""
-    await _join(user_id=1, name="alice", amount=1_000)
-    proposal = await create_central_bank_loan_request(
-        borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
-    )
-    assert proposal is not None
-    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
-    assert accepted is not None
-    await _backdate_contract(contract_id=accepted.contract.contract_id, days=30)
-
-    result = await call_central_bank_loans(
-        guild_id=GUILD, borrower_id=1, borrower_name="alice", amount=None
-    )
-
-    assert result is not None
-    assert result.paid_amount == 515
-    assert result.interest_paid == 15
-    assert result.principal_paid == 500
-    assert result.closed_contract_ids == (accepted.contract.contract_id,)
-    assert await get_balance(user_id=1) == 985
-
-
 async def test_calling_central_bank_loans_collects_accrued_interest_on_every_contract() -> None:
     """Calling in everything owed sums each contract's interest accrued up to now, so none stays open."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     first = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
     )
@@ -474,15 +422,17 @@ async def test_calling_central_bank_loans_collects_accrued_interest_on_every_con
     )
     assert first is not None
     assert second is not None
-    from_first = await _approve(proposal_id=first.proposal_id, actor_id=99, name="banker")
-    from_second = await _approve(proposal_id=second.proposal_id, actor_id=99, name="banker")
+    from_first = await approve_as_admin(proposal_id=first.proposal_id, actor_id=99, name="banker")
+    from_second = await approve_as_admin(
+        proposal_id=second.proposal_id, actor_id=99, name="banker"
+    )
     assert from_first is not None
     assert from_second is not None
     await _backdate_contract(contract_id=from_first.contract.contract_id, days=60)
     await _backdate_contract(contract_id=from_second.contract.contract_id, days=60)
 
     result = await call_central_bank_loans(
-        guild_id=GUILD, borrower_id=1, borrower_name="alice", amount=None
+        guild_id=LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=None
     )
 
     assert result is not None
@@ -498,12 +448,12 @@ async def test_calling_central_bank_loans_collects_accrued_interest_on_every_con
 
 async def test_central_bank_repayment_pays_interest_first_and_the_bank_keeps_it() -> None:
     """A voluntary repayment settles interest before principal, and only the principal is burned."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
     )
     assert proposal is not None
-    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    accepted = await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
     assert accepted is not None
 
     result = await repay_central_bank_loans(borrower_id=1, borrower_name="alice", amount=100)
@@ -513,19 +463,19 @@ async def test_central_bank_repayment_pays_interest_first_and_the_bank_keeps_it(
     assert result.remaining_principal == 415
     assert result.lender_balance is None
     assert await get_balance(user_id=1) == 1_400
-    status = await get_central_bank_status(guild_id=GUILD)
+    status = await get_central_bank_status(guild_id=LENDING_GUILD)
     assert status.outstanding_principal == 415
     assert status.ledger_balance == 15
 
 
 async def test_portfolio_counts_interest_accrued_since_the_last_write() -> None:
     """Net worth subtracts the interest accrued up to now, not only what approval prepaid."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
     )
     assert proposal is not None
-    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    accepted = await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
     assert accepted is not None
     await _backdate_contract(contract_id=accepted.contract.contract_id, days=60)
 
@@ -546,14 +496,17 @@ async def test_a_borrower_cannot_owe_more_than_their_own_ceiling() -> None:
     Borrowing lowers it by exactly what was borrowed, so it cannot be walked upward by
     re-borrowing against the balance the previous loan minted.
     """
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     assert await get_credit_ceiling(user_id=1) == 2_000
 
     first = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=2_000, monthly_rate_bps=0
     )
     assert first is not None
-    assert await _approve(proposal_id=first.proposal_id, actor_id=99, name="banker") is not None
+    assert (
+        await approve_as_admin(proposal_id=first.proposal_id, actor_id=99, name="banker")
+        is not None
+    )
     # Balance is now 3,000 against 2,000 of debt, and the ceiling is spent rather than tripled.
     assert await get_balance(user_id=1) == 3_000
     assert await get_credit_ceiling(user_id=1) == 0
@@ -562,7 +515,9 @@ async def test_a_borrower_cannot_owe_more_than_their_own_ceiling() -> None:
         borrower_id=1, borrower_name="alice", amount=1, monthly_rate_bps=0
     )
     assert second is not None
-    assert await _approve(proposal_id=second.proposal_id, actor_id=99, name="banker") is None
+    assert (
+        await approve_as_admin(proposal_id=second.proposal_id, actor_id=99, name="banker") is None
+    )
 
 
 async def test_handing_a_minted_balance_to_a_second_account_runs_the_pool_down() -> None:
@@ -575,8 +530,8 @@ async def test_handing_a_minted_balance_to_a_second_account_runs_the_pool_down()
     which takes it out of the bounding job entirely: measured, 1,000 became 301,314 in
     eight rounds of borrow-then-`/give` and was still accelerating.
     """
-    await _join(user_id=1, name="alice", amount=1_000)
-    await _join(user_id=2, name="bob", amount=0)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=2, name="bob", amount=0)
 
     holder, partner = 1, 2
     for _ in range(40):
@@ -586,7 +541,10 @@ async def test_handing_a_minted_balance_to_a_second_account_runs_the_pool_down()
                 borrower_id=holder, borrower_name=str(holder), amount=ceiling, monthly_rate_bps=0
             )
             assert proposal is not None
-            if await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="admin") is None:
+            if (
+                await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="admin")
+                is None
+            ):
                 break
         balance = await get_balance(user_id=holder)
         if balance > 0:
@@ -601,7 +559,7 @@ async def test_handing_a_minted_balance_to_a_second_account_runs_the_pool_down()
     else:  # pragma: no cover -- only reached if the pool never refuses
         pytest.fail("the lending pool never ran out")
 
-    status = await get_central_bank_status(guild_id=GUILD)
+    status = await get_central_bank_status(guild_id=LENDING_GUILD)
     assert status.available_credit < CENTRAL_BANK_BASE_CAPACITY
     minted = await get_balance(user_id=1) + await get_balance(user_id=2)
     assert minted < CENTRAL_BANK_BASE_CAPACITY
@@ -656,8 +614,8 @@ async def test_minting_is_bounded_when_each_account_holds_its_own_guild() -> Non
 
 async def test_a_fully_leveraged_guild_has_no_capacity_left() -> None:
     """The base capacity is spent by lending rather than standing under it."""
-    await _join(user_id=1, name="alice", amount=CENTRAL_BANK_BASE_CAPACITY * 2)
-    opening = await get_central_bank_status(guild_id=GUILD)
+    await seed_participant(user_id=1, name="alice", amount=CENTRAL_BANK_BASE_CAPACITY * 2)
+    opening = await get_central_bank_status(guild_id=LENDING_GUILD)
     assert opening.available_credit == CENTRAL_BANK_BASE_CAPACITY * 3
 
     proposal = await create_central_bank_loan_request(
@@ -667,9 +625,12 @@ async def test_a_fully_leveraged_guild_has_no_capacity_left() -> None:
         monthly_rate_bps=0,
     )
     assert proposal is not None
-    assert await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="admin") is not None
+    assert (
+        await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="admin")
+        is not None
+    )
 
-    assert (await get_central_bank_status(guild_id=GUILD)).available_credit == 0
+    assert (await get_central_bank_status(guild_id=LENDING_GUILD)).available_credit == 0
 
 
 async def test_an_untaxed_personal_loan_cannot_refill_the_ceiling() -> None:
@@ -679,14 +640,17 @@ async def test_an_untaxed_personal_loan_cannot_refill_the_ceiling() -> None:
     minted balance to an account whose own ceiling looks untouched, and the pair doubles
     what they can mint every round at no cost.
     """
-    await _join(user_id=1, name="alice", amount=1_000)
-    await _join(user_id=2, name="bob", amount=0)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=2, name="bob", amount=0)
 
     minted = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=2_000, monthly_rate_bps=0
     )
     assert minted is not None
-    assert await _approve(proposal_id=minted.proposal_id, actor_id=99, name="banker") is not None
+    assert (
+        await approve_as_admin(proposal_id=minted.proposal_id, actor_id=99, name="banker")
+        is not None
+    )
 
     handover = await create_personal_loan_request(
         borrower_id=2,
@@ -710,22 +674,22 @@ async def test_an_untaxed_personal_loan_cannot_refill_the_ceiling() -> None:
 
 async def test_central_bank_keeps_its_interest_and_lends_it_again() -> None:
     """Repaid interest is kept and adds to what the bank can lend; principal still disappears."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
     )
     assert proposal is not None
-    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    accepted = await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
     assert accepted is not None
-    assert (await get_central_bank_status(guild_id=GUILD)).ledger_balance == 0
+    assert (await get_central_bank_status(guild_id=LENDING_GUILD)).ledger_balance == 0
 
     result = await call_central_bank_loans(
-        guild_id=GUILD, borrower_id=1, borrower_name="alice", amount=None
+        guild_id=LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=None
     )
 
     assert result is not None
     assert result.interest_paid == 15
-    assert (await get_central_bank_status(guild_id=GUILD)).ledger_balance == 15
+    assert (await get_central_bank_status(guild_id=LENDING_GUILD)).ledger_balance == 15
     # A guild nobody takes part in lends on the bank's own capital alone, which now
     # includes the interest it just kept.
     nobody_here = await get_central_bank_status(guild_id=999)
@@ -738,12 +702,12 @@ async def test_forced_collection_refuses_a_borrower_from_another_guild() -> None
     Approval is a server administrator's now and anyone can create a server to become one,
     so without this scope an administrator anywhere could sweep any borrower's balance.
     """
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
     )
     assert proposal is not None
-    accepted = await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+    accepted = await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
     assert accepted is not None
     await _backdate_contract(contract_id=accepted.contract.contract_id, days=30)
 
@@ -758,7 +722,7 @@ async def test_forced_collection_refuses_a_borrower_from_another_guild() -> None
 
 async def test_approval_needs_a_guild_and_an_administrator() -> None:
     """Neither half of the approval gate is optional, and a DM has neither."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     without_guild = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=100
     )
@@ -779,7 +743,7 @@ async def test_approval_needs_a_guild_and_an_administrator() -> None:
             actor_id=99,
             actor_name="banker",
             approver_is_guild_admin=False,
-            guild_id=GUILD,
+            guild_id=LENDING_GUILD,
         )
         is None
     )
@@ -790,7 +754,7 @@ async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() 
 
     Without it no central-bank request could be turned down, since nobody is named to decide one.
     """
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=100
     )
@@ -806,24 +770,27 @@ async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() 
         if getattr(child, "custom_id", "") == "central_bank:reject"
     )
     admin = FakeInteraction(
-        user=FakeUser(user_id=99, name="banker"), guild_id=GUILD, administrator=True
+        user=FakeUser(user_id=99, name="banker"), guild_id=LENDING_GUILD, administrator=True
     )
 
     await reject_button.callback(as_interaction(fake=admin))
 
     assert admin.followup.sent == []
     assert admin.edits[0]["embed"].title == "🏛️ 央行申請已拒絕"
-    assert await _approve(proposal_id=proposal.proposal_id, actor_id=99, name="banker") is None
+    assert (
+        await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
+        is None
+    )
     assert await get_balance(user_id=1) == 1_000
 
 
 async def test_a_request_over_the_ceiling_is_refused_before_anyone_is_asked() -> None:
     """The ceiling is checked at request time too, so no unanswerable panel is posted."""
-    await _join(user_id=1, name="alice", amount=1_000)
+    await seed_participant(user_id=1, name="alice", amount=1_000)
     assert await get_credit_ceiling(user_id=1) == 2_000
 
     cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
-    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), guild_id=GUILD)
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), guild_id=LENDING_GUILD)
     await EconomyCogs.central_bank_borrow.callback(
         cog, as_interaction(fake=interaction), amount="2001", monthly_rate_percent=0.0
     )
@@ -833,36 +800,12 @@ async def test_a_request_over_the_ceiling_is_refused_before_anyone_is_asked() ->
     assert "view" not in interaction.followup.sent[0]
 
 
-@pytest.mark.parametrize(
-    ("command", "kwargs", "title"),
-    [
-        ("central_bank_borrow", {"amount": "100", "monthly_rate_percent": 0.0}, "央行借款失敗"),
-        ("central_bank_status", {}, "央行狀態"),
-    ],
-)
-async def test_the_central_bank_refuses_a_direct_message(
-    command: str, kwargs: dict[str, object], title: str
-) -> None:
-    """Outside a guild there is no pool to lend from and nobody who could approve.
-
-    Refused up front rather than at the button, or borrowing in a DM would post a
-    request that can be neither approved nor rejected and simply times out.
-    """
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
-    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), in_guild=False)
-
-    await getattr(EconomyCogs, command).callback(cog, as_interaction(fake=interaction), **kwargs)
-
-    assert interaction.response.sent[0]["ephemeral"] is True
-    assert interaction.response.sent[0]["embed"].title == title
-
-
 async def test_each_guild_lends_against_its_own_participants() -> None:
     """One wallet backs every guild its owner takes part in, and no others."""
-    await _join(user_id=1, name="alice", amount=6_000_000)
-    await _join(user_id=2, name="bob", amount=4_000_000, guild_id=OTHER_GUILD)
+    await seed_participant(user_id=1, name="alice", amount=6_000_000)
+    await seed_participant(user_id=2, name="bob", amount=4_000_000, guild_id=OTHER_GUILD)
 
-    here = await get_central_bank_status(guild_id=GUILD)
+    here = await get_central_bank_status(guild_id=LENDING_GUILD)
     there = await get_central_bank_status(guild_id=OTHER_GUILD)
     nowhere = await get_central_bank_status(guild_id=999)
 
