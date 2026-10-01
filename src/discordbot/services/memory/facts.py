@@ -45,9 +45,10 @@ _ID_TOKEN_RE = re.compile(pattern=r"\[id:\s*(?P<user_id>\d+)\]")
 # The nickname table's heading, rendered and parsed back from this one string.
 _MEMBER_ALIAS_HEADING = "成員稱呼"
 # The nickname table's section of a rendered server document, up to the next `## ` heading
-# or the end of the document.
+# or the end of the document. The heading must open a block, as every rendered heading does:
+# a profile fact renders as a bare line, so one reading `## 成員稱呼` would open a table too.
 _MEMBER_ALIAS_SECTION_RE = re.compile(
-    pattern=rf"^##\s*{re.escape(pattern=_MEMBER_ALIAS_HEADING)}\s*$(?P<body>.*?)(?=^##\s|\Z)",
+    pattern=rf"(?:\A|(?<=\n\n))##\s*{re.escape(pattern=_MEMBER_ALIAS_HEADING)}\s*$(?P<body>.*?)(?=^##\s|\Z)",
     flags=re.MULTILINE | re.DOTALL,
 )
 
@@ -270,20 +271,25 @@ def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_ch
 def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
     """Renders one fact as its document line.
 
-    The profile is a paragraph rather than a bullet, a recent-context line carries a
-    code-stamped date, and an alias row has every id token stripped from its body before the
-    real `subject_id` is appended — so the id can never be hallucinated (or injected by a
-    member) onto the wrong person, and the table stays parseable by the allowlist reader.
+    Every body is collapsed to one line, since the `## 成員稱呼` table is parsed back out of the
+    render and a line break would let any fact forge a heading or a row of it. The profile is
+    a paragraph rather than a bullet, a recent-context line carries a code-stamped date, and an
+    alias row has every id token stripped from its body before the real `subject_id` is
+    appended — so the id can never be hallucinated (or injected by a member) onto the wrong
+    person, and the table stays parseable by the allowlist reader.
     """
-    body = " ".join(fact.text.split()) if section == "profile" else fact.text.strip()
+    body = " ".join(fact.text.split())
     if section == "profile":
         return body
     if section == "recent":
         return f"* [{fact.last_confirmed.date().isoformat()}] {body}"
     if section == "member_alias" and fact.subject_id is not None:
         # Stripped, not escaped: the row's whole meaning is the name-to-id mapping, and
-        # the only id that may appear in it is the one code stamped.
-        return f"* {_ID_TOKEN_RE.sub('', body).strip()}[id: {fact.subject_id}]"
+        # the only id that may appear in it is the one code stamped. Repeated, because
+        # removing an inner token can complete an outer one around it.
+        while _ID_TOKEN_RE.search(string=body):
+            body = _ID_TOKEN_RE.sub(repl="", string=body)
+        return f"* {body.strip()}[id: {fact.subject_id}]"
     return f"* {body}"
 
 
