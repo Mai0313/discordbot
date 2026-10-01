@@ -4,6 +4,7 @@
 a failed transfer means (worth retrying, or worth reporting) differs per source.
 """
 
+import os
 from pathlib import Path
 
 import requests
@@ -43,8 +44,9 @@ def stream_to_file(
 
     Deliberately does NOT create the parent directory: whoever hands one over makes it once, up
     front. A caller that gives up mid-download cannot stop the worker thread (`asyncio.to_thread`
-    abandons it), so it removes the scratch dir instead and the open below fails. A `mkdir` here
-    would undo that between two files and quietly rebuild a directory nobody will clean up.
+    abandons it), so it removes the scratch dir instead: a file not yet opened fails its open, and
+    the one being written stops at its next chunk. A `mkdir` here would undo that between two
+    files and quietly rebuild a directory nobody will clean up.
 
     `max_bytes` is a fail-fast guard, not a policy: it exists so a caller whose downstream would
     reject the file anyway (the Files API caps a single upload at 2 GB) finds out from the
@@ -82,6 +84,9 @@ def stream_to_file(
                 for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
                     if not chunk:
                         continue
+                    # A removed scratch dir unlinks this file without failing its writes.
+                    if os.fstat(fd=handle.fileno()).st_nlink == 0:
+                        raise FileNotFoundError(f"{filepath} was removed mid-download")
                     written += len(chunk)
                     if max_bytes is not None and written > max_bytes:
                         raise DownloadTooLargeError(f"Media at {url} exceeds {max_bytes} bytes")

@@ -932,8 +932,8 @@ class ThreadsDownloader(PlatformDownloader):
     def download_media(self, url: str, filename: str) -> Path:
         """Downloads media from the given URL to the output folder.
 
-        `output_folder` is the caller's to create and `stream_to_file` never recreates it, which
-        is what turns its removal into the stop signal a cancellation could not deliver.
+        `output_folder` is the caller's to create, and removing it is the stop signal a
+        cancellation could not deliver (`stream_to_file` has how).
 
         Args:
             url: The URL of the media to download.

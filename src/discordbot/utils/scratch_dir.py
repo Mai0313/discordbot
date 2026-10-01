@@ -5,7 +5,7 @@ the caller's give-up, and a directory of its own is what keeps that overshoot fr
 concurrent request's files or piling up in the system temp dir. What the directory is FOR past
 that depends on the writer, so do not read one into another. A writer that opens into a folder it
 never rebuilds (`services/platforms/file_downloads.py::stream_to_file`) takes the removal as its
-stop signal, since its next open fails; a file it already has open streams on to its end. yt-dlp
+stop signal: its next open fails, and the file it has open stops at its next chunk. yt-dlp
 re-creates its output dir per DASH format and so cannot; its worker is stopped with a
 `threading.Event` and a bounded join instead
 (`services/platforms/ytdlp.py::download_with_stop_signal`), and reaches the removal as a live
