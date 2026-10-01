@@ -70,13 +70,7 @@ _COMMUTATIVE_COMPARISONS = (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)
 
 
 class OrderAssertion(BaseModel):
-    """One exact recorder-order assertion without a documented contract.
-
-    Attributes:
-        test_name: Name of the test function holding the assertion.
-        lineno: 1-indexed line the assertion starts on.
-        recorders: Recorder names the assertion compares in order.
-    """
+    """One exact recorder-order assertion without a documented contract."""
 
     model_config = ConfigDict(frozen=True)
 
