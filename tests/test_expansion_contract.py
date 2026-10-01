@@ -524,6 +524,7 @@ async def test_an_expansion_that_delivers_nothing_leaves_only_its_mark(
         expected,
     ]
     assert placeholder_withdrawn(message=staged.message)
+    assert not staged.message.suppressed  # nothing was delivered, so the link keeps its preview
 
 
 @pytest.mark.parametrize("cog", _COGS, ids=_cog_id)

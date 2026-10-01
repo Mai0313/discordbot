@@ -27,9 +27,15 @@ from discordbot.services.platforms.douyin import (
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTransferError,
+    DouyinUnavailableError,
 )
 from discordbot.services.platforms.threads import ThreadsDownloader
 from discordbot.services.platforms.facebook import FacebookDownloader
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+    expansion_failure_emoji,
+)
 from discordbot.services.platforms.instagram import InstagramDownloader
 
 
@@ -122,6 +128,22 @@ def test_a_refused_page_leaves_each_reader_as_a_retryable_error(
 
     with pytest.raises(LinkRetryableError):
         downloader._fetch_page(url="https://example.test/p/1")  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.parametrize(
+    argnames=("error", "expected"),
+    argvalues=[
+        (DouyinBlockedError("bot wall"), EXPANSION_RETRY_LATER_EMOJI),
+        (DouyinUnavailableError("filtered"), EXPANSION_UNREADABLE_EMOJI),
+        (DouyinError("unreadable"), EXPANSION_UNREADABLE_EMOJI),
+    ],
+    ids=["blocked", "gone", "unreadable"],
+)
+def test_each_douyin_error_earns_the_mark_of_the_shared_class_it_sits_under(
+    error: DouyinError, expected: str
+) -> None:
+    """Douyin raises its own classes, so where each sits in the shared tree is its reaction."""
+    assert expansion_failure_emoji(error=error) == expected
 
 
 def test_a_stalled_douyin_read_is_retryable_too(monkeypatch: pytest.MonkeyPatch) -> None:

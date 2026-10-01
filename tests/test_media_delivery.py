@@ -350,20 +350,24 @@ def test_cleanup_never_touches_foreign_files(tmp_path: Path) -> None:
 
 
 def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
-    """A hex-named symlink pointing at a foreign file is skipped, so the target is never deleted."""
+    """A hex-named symlink is never a candidate, however old and large the file it points at.
+
+    The link itself is what is asserted: unlinking a symlink never touches its target, so a
+    surviving target would hold whether the reaper skipped the link or removed it.
+    """
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()
     foreign = tmp_path / "foreign.mp4"
     foreign.write_bytes(b"x" * 999)
+    _age(foreign, seconds=99999)  # past both the retention cutoff and the eviction grace
     link = serve_dir / ("0" * 32 + ".mp4")
     link.symlink_to(foreign)
     service = _service(serve_dir=serve_dir, max_bytes=1, retention_hours=0.0001)
 
     service.run_maintenance(now=time.time())
 
-    assert (
-        foreign.exists()
-    )  # a symlink is not a regular file, so it (and its target) are untouched
+    assert link.is_symlink()
+    assert foreign.exists()
 
 
 def test_enforce_cap_disabled_when_max_bytes_zero(tmp_path: Path) -> None:

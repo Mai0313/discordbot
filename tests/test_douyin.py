@@ -15,7 +15,7 @@ import pytest
 
 from discordbot.cogs.video import cog as video
 from discordbot.typings.video import VideoQuality
-from discordbot.cogs.video.cog import VideoCogs
+from discordbot.cogs.video.cog import VideoCogs, douyin_failure_message
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 import discordbot.services.platforms.douyin as douyin_module
 from discordbot.services.platforms.douyin import (
@@ -25,6 +25,7 @@ from discordbot.services.platforms.douyin import (
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
+    DouyinTransferError,
     DouyinUnavailableError,
     is_douyin_url,
     is_douyin_post_url,
@@ -910,48 +911,25 @@ async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
     assert "檔案無法下載" not in content
 
 
-async def test_cog_reports_a_blocked_request_as_retryable_not_deleted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A bot wall must not be reported as a deleted post; the link is fine, the site is not."""
-    cog, _stub = _install_cog(monkeypatch=monkeypatch, outcome=DouyinBlockedError("challenge"))
-    interaction = FakeInteraction()
+@pytest.mark.parametrize(
+    argnames=("error", "expected"),
+    argvalues=[
+        (DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST"), "-# 這則貼文已被刪除或設為私人"),
+        (DouyinBlockedError("challenge"), "-# 抖音暫時擋住了請求，請稍後再試"),
+        (DouyinTransferError("read timed out"), "-# 這次檔案沒抓完,稍後再試一次"),
+        (TimeoutError(), "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"),
+        (DouyinError("boom"), "-# 檔案無法下載"),
+        (OSError(28, "No space left on device"), "-# 檔案無法下載"),
+    ],
+    ids=["gone", "blocked", "transfer", "stalled", "douyin", "other"],
+)
+def test_each_douyin_failure_gets_its_own_wording(error: Exception, expected: str) -> None:
+    """Only a filtered post may read as deleted, and only a bot wall as Douyin refusing.
 
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
-
-    content = interaction.edits[-1]["content"]
-    assert "稍後再試" in content
-    assert "刪除" not in content
-
-
-async def test_cog_reports_an_unavailable_post(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A filtered post gets its own message rather than a generic download failure."""
-    cog, _stub = _install_cog(
-        monkeypatch=monkeypatch, outcome=DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST")
-    )
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
-
-    assert "已被刪除或設為私人" in interaction.edits[-1]["content"]
-
-
-async def test_cog_falls_back_to_a_generic_message_on_other_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Any other Douyin failure still leaves the user with a message, never a silent no-op."""
-    cog, _stub = _install_cog(monkeypatch=monkeypatch, outcome=DouyinError("boom"))
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
-
-    assert "檔案無法下載" in interaction.edits[-1]["content"]
+    Exact strings, because the retryable three all end in a "try again later" that a substring
+    check cannot tell apart.
+    """
+    assert douyin_failure_message(error=error) == expected
 
 
 async def test_cog_reports_a_non_douyin_error_instead_of_hanging(

@@ -16,7 +16,11 @@ from discordbot.typings.video import VideoQuality
 from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
 from discordbot.services.platforms import ytdlp as downloader_module
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.services.platforms.ytdlp import VideoDownloader, DownloadStoppedError
+from discordbot.services.platforms.ytdlp import (
+    DownloadResult,
+    VideoDownloader,
+    DownloadStoppedError,
+)
 from discordbot.services.platforms.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
@@ -533,38 +537,17 @@ def test_a_quality_label_names_what_each_downloader_asks_for() -> None:
             assert f"{douyin}p on Douyin" in label, label
 
 
-class DownloadResultStub:
-    """Context manager stub for a downloaded video file."""
-
-    def __init__(self, filename: Path) -> None:
-        """Stores the fake downloaded filename."""
-        self.filename = filename
-
-    def __enter__(self) -> Self:
-        """Returns the fake download result."""
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Leaves the fake downloaded file on disk for assertions."""
-        return
-
-
 class DownloaderStub:
     """Fake downloader that returns queued download results."""
 
-    def __init__(self, results: list[DownloadResultStub]) -> None:
+    def __init__(self, results: list[DownloadResult]) -> None:
         """Initializes queued results and recorded calls."""
         self.results = results
         self.calls: list[dict[str, str]] = []
 
     def download(
         self, url: str, quality: str, stop_signal: threading.Event | None = None
-    ) -> DownloadResultStub:
+    ) -> DownloadResult:
         """Records the download request and returns the next queued result.
 
         `stop_signal` is accepted and ignored: the real downloader takes it so a caller can
@@ -581,7 +564,7 @@ class _RaiseDownloader:
 
     def download(
         self, url: str, quality: str, stop_signal: threading.Event | None = None
-    ) -> DownloadResultStub:
+    ) -> DownloadResult:
         """Raises a deterministic download failure, taking the signature the command calls."""
         raise RuntimeError("download failed")
 
@@ -605,21 +588,24 @@ async def test_video_deliver_and_download_branches(
     big = tmp_path / "big.mp4"
     big.write_bytes(data=b"0" * 300)
 
-    interaction = FakeInteraction()
-    await cog._deliver(
-        interaction=as_interaction(fake=interaction),
-        file_size_mb=1.25,
-        file_path=small,
-        url="https://source.test/video",
+    # Fits: attached natively, under its size and source lines.
+    monkeypatch.setattr(
+        video,
+        "VideoDownloader",
+        lambda output_folder: DownloaderStub(results=[DownloadResult(filename=small)]),
     )
-    success_content = interaction.edits[-1]["content"]
-    assert isinstance(success_content, str)
-    assert success_content == "-# 檔案大小: 1.2MB\n-# 來源: <https://source.test/video>"
-    assert interaction.edits[-1]["file"] is not None
+    interaction = FakeInteraction()
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://source.test/video", quality="best"
+    )
+    assert interaction.edits[-1]["content"] == (
+        "-# 檔案大小: 0.0MB\n-# 來源: <https://source.test/video>"
+    )
+    assert interaction.edits[-1]["file"].filename == "small.mp4"
     assert interaction.followup.sent == []
 
     # Too big for native upload + hosting on: post the URL, no 480p retry, no attachment.
-    downloader = DownloaderStub(results=[DownloadResultStub(filename=big)])
+    downloader = DownloaderStub(results=[DownloadResult(filename=big)])
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
     host_interaction = FakeInteraction(filesize_limit=200)
     await VideoCogs.download_video.callback(
@@ -645,7 +631,7 @@ async def test_video_deliver_and_download_branches(
     monkeypatch.setattr(
         video,
         "VideoDownloader",
-        lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big2)]),
+        lambda output_folder: DownloaderStub(results=[DownloadResult(filename=big2)]),
     )
     await VideoCogs.download_video.callback(
         cog, fail_interaction, url="https://x.test", quality="best"
@@ -681,7 +667,7 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
 
         def download(
             self, url: str, quality: str, stop_signal: threading.Event | None = None
-        ) -> DownloadResultStub:
+        ) -> DownloadResult:
             """Outlasts the command's bound by two orders of magnitude unless told to stop."""
             del url, quality
             deadline = time.monotonic() + 5.0

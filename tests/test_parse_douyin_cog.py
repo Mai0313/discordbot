@@ -11,15 +11,9 @@ import pytest
 from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
-from discordbot.services.platforms.douyin import (
-    DouyinError,
-    DouyinMetadata,
-    DouyinBlockedError,
-    DouyinUnavailableError,
-)
+from discordbot.services.platforms.douyin import DouyinMetadata
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
-    EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
 )
 
@@ -50,10 +44,10 @@ class _StubOptions(TypedDict, total=False):
 
 
 def _cog(
-    bot_id: int = 999, **downloader_kwargs: Unpack[_StubOptions]
+    **downloader_kwargs: Unpack[_StubOptions],
 ) -> tuple[DouyinCogs, dict[str, StubDouyinDownloader]]:
     """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
-    cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
+    cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
     cog.media_delivery = hosting_off_planner()
     made: dict[str, StubDouyinDownloader] = {}
 
@@ -88,7 +82,9 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
 
     assert message.suppressed
     delivered = expansion_payload(message=message)
-    assert delivered["files"]
+    # By name: the caption card's embed spacer rides as a file too, so a bare non-empty check
+    # would pass a card that lost its clip.
+    assert "1.mp4" in [file.filename for file in delivered["files"]]
     assert delivered["embeds"][0].description == "caption"
     assert delivered["embeds"][0].author.name == "somebody"
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
@@ -105,45 +101,6 @@ async def test_a_message_without_a_link_is_ignored() -> None:
 
     assert message.reactions == []
     assert made == {}
-
-
-async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
-    """A WAF block is retryable and the link is fine, so it gets its own reaction.
-
-    The reaction is the only thing keeping the two apart now that a failure says nothing in
-    the channel, which is what makes ⏱️ load-bearing rather than decorative: ⚠️ means the
-    post could not be read, ⏱️ means the request was refused and the same link works later.
-    Every expansion cog answers with the same marks, so the reader learns them once.
-    """
-    cog, _ = _cog(download_error=DouyinBlockedError("bot wall"))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
-    assert placeholder_withdrawn(message=message)
-
-
-async def test_a_deleted_post_is_marked_failed_without_a_message() -> None:
-    """A post Douyin refuses to serve leaves the same reaction and nothing else."""
-    cog, _ = _cog(download_error=DouyinUnavailableError("filtered"))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
-    assert placeholder_withdrawn(message=message)
-
-
-async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
-    """A failure before the download reaches the user as a reaction and nothing else."""
-    cog, _ = _cog(parse_error=DouyinError("unreadable"))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
-    assert placeholder_withdrawn(message=message)
 
 
 async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
@@ -164,22 +121,6 @@ async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
     content = _reply_body(message=message)
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
-
-
-async def test_an_unhostable_oversize_clip_is_refused() -> None:
-    """With hosting off there is nothing to link, so the post is refused with a reaction.
-
-    The size the refusal used to quote is logged instead: an expansion that delivers nothing
-    leaves nothing behind, the same as a post that could not be read.
-    """
-    cog, _ = _cog()
-    message = _message(filesize_limit=4)
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
-    assert placeholder_withdrawn(message=message)
-    assert not message.suppressed  # nothing was delivered, so the source keeps its own preview
 
 
 async def test_a_capped_gallery_reports_what_it_left_out() -> None:
