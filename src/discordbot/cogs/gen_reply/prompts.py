@@ -184,7 +184,7 @@ Wording does not decide it. A casual-sounding message that really wants somethin
 # Appended to ROUTE_PROMPT only while the inline-image renderer is active, since QA cannot draw
 # without it.
 ROUTE_INLINE_IMAGE_SECTION = """
-The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
+For `decision`: the bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
 """
 
 # Appended to ROUTE_PROMPT only on a turn that offers optional recall candidates, together with the

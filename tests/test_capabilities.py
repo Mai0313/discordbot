@@ -705,7 +705,7 @@ def test_capabilities_doc_offers_no_plain_reply_as_a_way_to_reach_me() -> None:
 
 
 def test_capabilities_doc_promises_the_ask_clock_only_where_it_is_kept() -> None:
-    """Only an image or a video asked for on its own is kept inside `/ask`'s window (#845).
+    """Only an image or a video asked for on its own is kept inside `/ask`'s window.
 
     A clip added to an answer and an answer stream that hangs can still outlive the token
     (#628). This document is the answer model's only account of `/ask`, so a line saying

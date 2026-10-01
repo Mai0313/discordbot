@@ -7807,7 +7807,7 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
 async def test_the_route_hears_that_qa_draws_only_while_the_answer_can(
     inline_image_enabled: bool,
 ) -> None:
-    """The route is told QA draws inline exactly when the answer is offered the marker (#845).
+    """The route is told QA draws inline exactly when the answer is offered the marker.
 
     With `INLINE_IMAGE_ENABLED` off the answer is never handed `INLINE_IMAGE_INSTRUCTION`, so a
     route still told QA draws keeps a picture request on a path that cannot make one. With it on
