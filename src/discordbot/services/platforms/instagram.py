@@ -49,11 +49,11 @@ from discordbot.services.platforms.base import (
 )
 from discordbot.services.platforms.page_json import (
     BROWSER_HEADERS,
-    JsonValue,
     FetchedPage,
     walk,
     str_of,
     time_of,
+    count_of,
     deep_get,
     fetch_page,
     json_payloads,
@@ -89,11 +89,6 @@ _MEDIA_TYPE_VIDEO = 2
 
 # Where a fetch lands when Instagram will not show the post logged out.
 _LOGIN_WALL_PATHS = ("/accounts/login", "/challenge", "/accounts/suspended")
-
-
-def _int_of(*, value: JsonValue) -> int:
-    """An integer field, or zero when the page served something else."""
-    return value if isinstance(value, int) else 0
 
 
 def is_instagram_post_url(*, url: str) -> bool:
@@ -273,7 +268,7 @@ class InstagramDownloader(PlatformDownloader):
                     url=post_url,
                     author_name=str_of(value=deep_get(node, "user", "username")),
                     author_icon_url=str_of(value=deep_get(node, "user", "profile_pic_url")),
-                    like_count=_int_of(value=node.get("comment_like_count")),
+                    like_count=count_of(value=node.get("comment_like_count")),
                     taken_at=time_of(value=node.get("created_at")),
                     comment_id=comment_id,
                 )
@@ -330,8 +325,8 @@ class InstagramDownloader(PlatformDownloader):
             author_icon_url=str_of(value=deep_get(media, "user", "profile_pic_url")),
             image_urls=image_urls,
             video_urls=video_urls,
-            like_count=_int_of(value=media.get("like_count")),
-            comment_count=_int_of(value=media.get("comment_count")),
+            like_count=count_of(value=media.get("like_count")),
+            comment_count=count_of(value=media.get("comment_count")),
             taken_at=time_of(value=media.get("taken_at")),
         )
         return InstagramConversation(

@@ -144,6 +144,24 @@ def str_of(*, value: JsonValue) -> str:
     return value if isinstance(value, str) else ""
 
 
+def count_of(*, value: JsonValue) -> int:
+    """Reads a count the page serves as a bare value, a `{"count": n}` wrapper, or "1,017".
+
+    An int rather than the page's own formatted string, so every platform's counters are the
+    same type and whoever renders them picks the formatting once. Zero for anything else.
+    """
+    if isinstance(value, dict):
+        value = value.get("count")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        digits = value.replace(",", "").strip()
+        return int(digits) if digits.isdigit() else 0
+    return 0
+
+
 def time_of(*, value: JsonValue) -> datetime | None:
     """A unix timestamp as an aware datetime, or None when the page omitted it."""
     return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None
