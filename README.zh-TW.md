@@ -42,7 +42,7 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功
 
 ```mermaid
 flowchart TD
-    U(["tag bot · DM · /ask"]) --> UP & RT & CX
+    U(["tag bot · DM · /ask"]) --> UP & RT
 
     UP["上傳附件"]
     RT["路由 + 思考強度 + 記憶挑選"]

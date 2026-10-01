@@ -42,7 +42,7 @@ Every mention, DM, and `/ask` runs the same pipeline. Exactly one triage call si
 
 ```mermaid
 flowchart TD
-    U(["@mention · DM · /ask"]) --> UP & RT & CX
+    U(["@mention · DM · /ask"]) --> UP & RT
 
     UP["Upload attachments"]
     RT["Route + effort + recall"]

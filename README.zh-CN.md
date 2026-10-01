@@ -42,7 +42,7 @@
 
 ```mermaid
 flowchart TD
-    U(["标记机器人 · DM · /ask"]) --> UP & RT & CX
+    U(["标记机器人 · DM · /ask"]) --> UP & RT
 
     UP["上传附件"]
     RT["路由 + 思考强度 + 记忆挑选"]
