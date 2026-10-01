@@ -1318,8 +1318,8 @@ def test_a_forget_releases_only_older_evidence_its_compartment_holds() -> None:
 
     Something said after it is a restatement the user chose to make, the same key filed for
     another server is not this forget's to take, and the requests themselves stay for
-    `/memory regenerate` to replay. An older request does not move the cutoff back: a rebuild
-    replays every request the scope ever made, and the oldest would spare nearly everything.
+    `/memory regenerate` to replay. An older request does not move the cutoff back: one pass
+    cannot tell which of its requests deleted which fact.
     """
     city = _observation(summary="住在台中", normalized_key="fact.city", sharing="source_only")
     job = _observation(summary="在工廠上班", normalized_key="fact.job", sharing="source_only")
@@ -1599,6 +1599,116 @@ async def test_each_forget_reaches_only_what_came_before_it(memory_isolated_dir:
     detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
     assert "2026-09-01" not in detail
     assert "2026-09-03" in detail
+
+
+async def test_a_rebuild_keeps_a_fact_restated_after_its_forget(memory_isolated_dir: Path) -> None:
+    """A rebuild takes the evidence one forget at a time, as consolidation took it (#870).
+
+    Rebuilt from all of it and only then handed the forget, the city came back from the
+    restatement and the forget deleted it again, on every later rebuild too.
+    """
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", _CITY),
+        _forget_entry("2026-09-02T00:00:00+00:00"),
+        _entry("2026-09-03T00:00:00+00:00", _CITY),
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    fake_client.responses.answer = _consolidation_stage(calls=calls)
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    # order-contract: the forget splits the rebuild, so a restatement after it is merged in after it.
+    assert calls == ["observe", "forget", "observe"]
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.summary for fact in facts] == [_CITY.summary_zh]
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "2026-09-01" not in detail
+    assert "2026-09-03" in detail
+
+
+async def test_a_rebuild_takes_each_forget_against_only_what_came_before_it(
+    memory_isolated_dir: Path,
+) -> None:
+    """A later forget about something else must not let an older one reach a restatement.
+
+    Replayed together, the two forgets deleted the restated city, and the newer one's stamp
+    took the restatement's evidence with it, leaving nothing to rebuild the city from (#870).
+    """
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", _CITY),
+        _forget_entry("2026-09-02T00:00:00+00:00"),
+        _entry("2026-09-03T00:00:00+00:00", _CITY),
+        _forget_entry("2026-09-04T00:00:00+00:00", note="使用者不想再提工作的事"),
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _consolidation_stage(calls=[])
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "2026-09-01" not in detail
+    assert "2026-09-03" in detail
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.summary for fact in facts] == [_CITY.summary_zh]
+
+
+async def test_a_refused_pass_after_a_forget_fails_the_rebuild_and_puts_back_what_it_replaced(
+    memory_isolated_dir: Path,
+) -> None:
+    """The pass merging what came after a forget keeps the mass-delete guard.
+
+    It is shown the rebuilt facts but not the evidence behind them, so it may not wipe them. A
+    refusal stops the run before it stands: the compartment gets back what it held before the
+    run, and `raw.md` is kept.
+    """
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, summary="舊事實"))
+    rebuilt = [
+        _observation(summary=f"事實{index}", normalized_key=f"fact.k{index}") for index in range(5)
+    ]
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", *rebuilt),
+        _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
+        _entry(
+            "2026-09-03T00:00:00+00:00", _observation(summary="新事實", normalized_key="fact.new")
+        ),
+    )
+    writer, fake_client = _writer()
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Rebuilds the five facts, then deletes all of them on the pass after the forget."""
+        if text_format is ToneForget:
+            return ToneForget()
+        if "forget_request" in body or "<tone_evidence>" in body:
+            return _no_change()
+        if "fact.new" in body:
+            return ConsolidatedMemory(
+                deltas=tuple(
+                    make_delta(action="delete", fact_id=fact.fact_id)
+                    for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+                )
+            )
+        return ConsolidatedMemory(
+            deltas=tuple(
+                make_delta(
+                    section="fact",
+                    summary=observation.summary_zh,
+                    text=observation.summary_zh,
+                    from_keys=(observation.normalized_key,),
+                )
+                for observation in rebuilt
+            )
+        )
+
+    fake_client.responses.answer = answer
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "failed"
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.summary for fact in facts] == ["舊事實"]
+    assert count_raw_entries(scope=USER_SCOPE) == 3
 
 
 async def test_a_forget_still_runs_when_the_pass_before_it_fails(

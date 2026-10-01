@@ -198,9 +198,8 @@ def drop_released_evidence(
     it routes to one of those compartments, carries one of its keys as `normalized_key`, and
     predates the newest forget request copied there: something said after every forget is a
     restatement, not what was forgotten. The newest, because one pass cannot tell which of its
-    requests deleted which fact, and a rebuild's replay carries every request the scope ever
-    made, so the oldest would leave nearly everything standing. Forget requests themselves
-    stay, since `/memory regenerate` replays them.
+    requests deleted which fact, and its requests were made back to back, with nothing said
+    between them. Forget requests themselves stay, since `/memory regenerate` replays them.
 
     Returns `text` itself when nothing matched, so the caller can skip the rewrite.
     """

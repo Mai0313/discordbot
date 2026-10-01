@@ -37,7 +37,12 @@ from discordbot.services.memory.store import (
     list_compartments,
     prune_compartment,
 )
-from discordbot.services.memory.deltas import apply_deltas, partition_raw_entries
+from discordbot.services.memory.deltas import (
+    apply_deltas,
+    forget_segments,
+    partition_raw_entries,
+    render_existing_facts,
+)
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidatedMemory
 from discordbot.services.memory.inflight import memory_semaphore
 from discordbot.services.memory.constants import MEMORY_REGENERATION_COOLDOWN_SECONDS
@@ -123,7 +128,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         _regeneration_tasks.pop(key=scope)
     if task.cancelled():
         # Cancelled (e.g. bot shutdown): reading result() would raise
-        # CancelledError out of this callback. A cancel before the forget replay has
+        # CancelledError out of this callback. A cancel before the last forget replay has
         # applied puts back every compartment the rebuild replaced, and raw.md is not
         # yet retired either way.
         return
@@ -148,9 +153,11 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
     The existing facts are deliberately NOT fed to the model: the rebuild distills the
     detail tail window plus any unconsumed raw entries from scratch, e.g. to redo an
     unsatisfying consolidation with another model, and facts it did not re-emit are then
-    deleted.
+    deleted. The corpus is taken one forget at a time in recorded order, as consolidation takes
+    a batch: what came before a forget is rebuilt, the forget replayed, and what came after
+    merged into the facts this run rebuilt, so a restatement survives the forget it followed.
 
-    A run that stops before the forget replay has applied puts every compartment it replaced
+    A run that stops before its last forget replay has applied puts every compartment it replaced
     back to the facts it held, unless the process dies without unwinding: until the replay, a
     replaced compartment can hold a fact a forget had already removed. The raw batch is
     retired only when every compartment and the tone note rebuilt. The report carries what
@@ -180,53 +187,45 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
             # thing standing between a stuck rebuild and a scope lock held for as long as
             # the client will keep one compartment's request alive.
             async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-                for compartment in compartments:
-                    raw_bucket = buckets.get(compartment, "")
-                    if not raw_bucket and not read_facts(scope=scope, compartment=compartment):
-                        # A leftover directory with nothing to distil and nothing to keep:
-                        # the model would be handed an empty corpus and could only answer
-                        # with an empty batch, so the prune alone reaches the same state.
-                        # It also removes the emptied directory, which is what stops the
-                        # leftover costing another call — and another way to fail the
-                        # compartments that do have something — on every later rebuild.
-                        unreadable_removed += _prune_rebuilt_compartment(
-                            scope=scope, compartment=compartment, keep=set()
-                        )
-                        continue
-                    result = await writer.consolidate(
-                        flavor=run.flavor,
-                        request=compartment_request(
+                # One forget at a time, in the order they were recorded, as consolidation takes
+                # a batch: a forget reaches only the facts made from what came before it, and
+                # what was said after it is a restatement it must not reach.
+                for index, (observations, forgets) in enumerate(
+                    forget_segments(raw_text=evidence)
+                ):
+                    segment = partition_raw_entries(raw_text=observations, flavor=run.flavor)
+                    # The first pass touches every compartment, so one with nothing left to
+                    # rebuild from is emptied; a later one only those it has evidence for.
+                    for compartment in (
+                        compartments if index == 0 else global_first(compartments=set(segment))
+                    ):
+                        raw_bucket = segment.get(compartment, "")
+                        if not raw_bucket and not read_facts(scope=scope, compartment=compartment):
+                            # A leftover directory with nothing to distil and nothing to keep:
+                            # the model would be handed an empty corpus and could only answer
+                            # with an empty batch, so the prune alone reaches the same state.
+                            # It also removes the emptied directory, which is what stops the
+                            # leftover costing another call — and another way to fail the
+                            # compartments that do have something — on every later rebuild.
+                            unreadable_removed += _prune_rebuilt_compartment(
+                                scope=scope, compartment=compartment, keep=set()
+                            )
+                            continue
+                        removed = await _rebuild_compartment(
                             run=run,
                             compartment=compartment,
-                            existing_facts="",
-                            parts=CompartmentInput(
-                                raw_entries=raw_bucket, recent_detail="", global_reference=""
-                            ),
-                            compact=True,
-                        ),
-                    )
-                    if result is None:
-                        logfire.warn(
-                            "Memory regeneration LLM call failed; "
-                            "this and later compartments left untouched",
-                            scope=scope,
-                            compartment=compartment,
+                            raw_bucket=raw_bucket,
+                            replaced=replaced,
                         )
+                        if removed is None:
+                            return RegenerationReport(
+                                result="failed", unreadable_removed=unreadable_removed
+                            )
+                        unreadable_removed += removed
+                    if not await _reapply_forgets(run=run, forgets=forgets):
                         return RegenerationReport(
                             result="failed", unreadable_removed=unreadable_removed
                         )
-                    if cleared_since(scope=scope, started_at=started_at):
-                        return RegenerationReport(
-                            result="failed", unreadable_removed=unreadable_removed
-                        )
-                    replaced[compartment] = read_facts(scope=scope, compartment=compartment)
-                    unreadable_removed += _replace_compartment(
-                        run=run, compartment=compartment, result=result
-                    )
-                if not await _reapply_forgets(run=run, evidence=evidence):
-                    return RegenerationReport(
-                        result="failed", unreadable_removed=unreadable_removed
-                    )
                 # The replay has reached every compartment, so the rebuild stands from here.
                 replaced.clear()
                 # The replay takes the evidence of what it deleted out of both files, so the
@@ -254,6 +253,60 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
         return RegenerationReport(result="regenerated", unreadable_removed=unreadable_removed)
 
 
+async def _rebuild_compartment(
+    run: ConsolidationRun, compartment: str, raw_bucket: str, replaced: dict[str, list[MemoryFact]]
+) -> int | None:
+    """Rebuilds one compartment from one segment's evidence; None means the run stops here.
+
+    The compartment's first pass replaces it from that evidence alone, recording what it held
+    for `_restore_compartments`. A later pass merges the segment into what this run rebuilt, as
+    consolidation merges a batch: shown no earlier evidence, so a fact-writing call never sees
+    what a forget left behind, and never compacting, since it could not check a fact against
+    evidence it was not shown. Returns how many unreadable files the replace removed.
+    """
+    rebuilt = compartment in replaced
+    existing = read_facts(scope=run.scope, compartment=compartment) if rebuilt else []
+    result = await run.writer.consolidate(
+        flavor=run.flavor,
+        request=compartment_request(
+            run=run,
+            compartment=compartment,
+            existing_facts=render_existing_facts(facts=existing),
+            parts=CompartmentInput(raw_entries=raw_bucket, recent_detail="", global_reference=""),
+            compact=not existing,
+        ),
+    )
+    if result is None:
+        logfire.warn(
+            "Memory regeneration LLM call failed; this and later compartments left untouched",
+            scope=run.scope,
+            compartment=compartment,
+        )
+        return None
+    if cleared_since(scope=run.scope, started_at=run.started_at):
+        return None
+    if not rebuilt:
+        replaced[compartment] = read_facts(scope=run.scope, compartment=compartment)
+        return _replace_compartment(run=run, compartment=compartment, result=result)
+    outcome = apply_deltas(
+        scope=run.scope,
+        compartment=compartment,
+        flavor=run.flavor,
+        deltas=result.deltas,
+        owner=run.owner,
+        allow_mass_delete=False,
+    )
+    if not outcome.applied:
+        logfire.warn(
+            "Memory regeneration batch refused",
+            scope=run.scope,
+            compartment=compartment,
+            reason=outcome.rejected,
+        )
+        return None
+    return 0
+
+
 def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[MemoryFact]]) -> None:
     """Puts every compartment the run replaced back to the facts it held before the run.
 
@@ -277,8 +330,8 @@ def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[Memory
     )
 
 
-async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> bool:
-    """Re-runs every forget request in the corpus against the freshly rebuilt facts.
+async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
+    """Re-runs one segment's forget requests against the facts rebuilt from what came before.
 
     A rebuild derives facts from evidence rather than from the current facts, and the
     observation a forget was aimed at can still be sitting in `detail.md` verbatim: the forget
@@ -298,7 +351,7 @@ async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> bool:
     one the user asked to forget, and nothing but a later rebuild that completes would
     remove it.
     """
-    return await apply_forget_buckets(run=run, forgets=evidence)
+    return await apply_forget_buckets(run=run, forgets=forgets)
 
 
 def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
