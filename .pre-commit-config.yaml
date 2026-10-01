@@ -138,7 +138,7 @@ repos:
       - id: gitleaks
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.20
+    rev: 0.12.21
     hooks:
       - id: uv-sync
         args: ["--all-groups"]
