@@ -384,7 +384,10 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             # After a failed review the rest is left to the retry, but not the forgets.
             continue
         draft = await turn.writer.evaluate(
-            subject=turn.subject, transcript=transcript, notes=remember
+            flavor=flavor_of(scope=scope),
+            subject=turn.subject,
+            transcript=transcript,
+            notes=remember,
         )
         if cleared_since(scope=scope, started_at=turn.captured_at):
             # Cleared while this update was in flight; dropping the result beats

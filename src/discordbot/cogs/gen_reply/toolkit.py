@@ -100,7 +100,7 @@ class ReplyToolkit(BaseModel):
 
     @cached_property
     def image_generator(self) -> ImageGenerator:
-        """The image renderer shared by the IMAGE route and the `<generate-image>` marker.
+        """The image renderer, which edits when handed source images and generates otherwise.
 
         Returns:
             A generator bound to the proxy client and the image deployment.
@@ -122,7 +122,7 @@ class ReplyToolkit(BaseModel):
 
     @cached_property
     def video_generator(self) -> VideoGenerator:
-        """The video renderer shared by the VIDEO route and the `<generate-video>` marker.
+        """The video renderer.
 
         Returns:
             A generator bound to the DIRECT-to-Google Gemini client and the video model
@@ -167,24 +167,11 @@ class ReplyToolkit(BaseModel):
 
     @cached_property
     def memory_writer(self) -> MemoryWriterAI:
-        """The per-user memory writing service.
+        """The memory writing service, for a user scope and a server scope alike.
 
         Returns:
             A writer bound to the proxy client and the memory deployments.
         """
         return MemoryWriterAI(
-            client=self.openai_client, model=self.runtime_models.memory_writer_model
-        )
-
-    @cached_property
-    def server_memory_writer(self) -> MemoryWriterAI:
-        """The per-server (bot self) memory writing service.
-
-        Returns:
-            A writer sharing the per-user model and client but driving the server-flavor
-            prompts, so the bot builds community-level memory per guild through the same
-            engine.
-        """
-        return MemoryWriterAI.for_server(
             client=self.openai_client, model=self.runtime_models.memory_writer_model
         )

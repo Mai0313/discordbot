@@ -3,8 +3,8 @@
 Rebuilds one scope, or a batch of them, through `regenerate_scope_memory` — the same
 pure-evidence path `/memory regenerate` runs, which distills the detail tail window plus
 any unconsumed raw entries and never reads the existing facts. That function resolves the
-flavor's sections and partitioning itself, but its prompts ride on the writer it is handed,
-so this script decides which scopes it is pointed at and hands each flavor its own writer.
+flavor's sections, partitioning and prompts itself, so this script only decides which scopes
+it is pointed at.
 
 The target is a scope key or one of three collective words::
 
@@ -62,7 +62,6 @@ from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.memory import MemoryFlavor
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import (
@@ -255,9 +254,7 @@ async def _regen_one(
     return _ScopeRow(scope=scope, result=result, counts=counts, unreadable_removed=removed)
 
 
-async def _rebuild_batch(
-    writers: dict[MemoryFlavor, MemoryWriterAI], scopes: list[str]
-) -> list[_ScopeRow]:
+async def _rebuild_batch(writer: MemoryWriterAI, scopes: list[str]) -> list[_ScopeRow]:
     """Rebuilds every scope concurrently, advancing one bar over the whole batch.
 
     The bar counts finished scopes out of total rather than tracking any one of them,
@@ -276,10 +273,7 @@ async def _rebuild_batch(
         console=console,
     ) as progress:
         task = progress.add_task("[green]rebuilding", total=len(scopes))
-        pending = [
-            _regen_one(writer=writers[flavor_of(scope=scope)], scope=scope, semaphore=semaphore)
-            for scope in scopes
-        ]
+        pending = [_regen_one(writer=writer, scope=scope, semaphore=semaphore) for scope in scopes]
         for landing in asyncio.as_completed(pending):
             row = await landing
             rows[row.scope] = row
@@ -342,12 +336,9 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
         return
     config = LLMConfig()
     client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
-    writers: dict[MemoryFlavor, MemoryWriterAI] = {
-        "user": MemoryWriterAI(client=client, model=model),
-        "server": MemoryWriterAI.for_server(client=client, model=model),
-    }
+    writer = MemoryWriterAI(client=client, model=model)
     console.print(f"Rebuilding with [bold]{model.name}[/bold] (effort: {model.effort})")
-    _report(rows=await _rebuild_batch(writers=writers, scopes=scopes))
+    _report(rows=await _rebuild_batch(writer=writer, scopes=scopes))
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

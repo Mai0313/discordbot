@@ -72,7 +72,7 @@ class MemoryJobRow(Base):
 
     Attributes:
         scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
-        flavor: ``user`` or ``server`` so the restart sweep picks the matching writer.
+        flavor: ``user`` or ``server``, the scope's flavor (``flavor_of``).
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
         transcript: The turn payload, the rendered transcript plus the turn's memory notes
             (``render_turn_payload``); set to NULL once the turn is ``done``.

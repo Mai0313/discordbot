@@ -57,9 +57,10 @@ async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> bool:
         # never delete the note; only the evidence-complete rebuild may do that.
         return True
     result = await run.writer.consolidate(
+        flavor=run.flavor,
         request=_tone_request(
             existing_tone=read_tone(scope=run.scope), tone_evidence=tone_evidence, today=run.today
-        )
+        ),
     )
     if result is None:
         logfire.warn("Memory tone update call failed; keeping raw batch", scope=run.scope)
@@ -88,9 +89,10 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
         None
         if not tone_evidence
         else await run.writer.consolidate(
+            flavor=run.flavor,
             # No `existing_tone`: this pass saw the whole corpus, so it rewrites the note
             # from the evidence rather than merging into what is already there.
-            request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=run.today)
+            request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=run.today),
         )
     )
     if tone_evidence and result is None:

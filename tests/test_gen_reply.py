@@ -8250,12 +8250,8 @@ async def test_handle_message_reply_server_memory_gating(
             assert update["subject"] == f"target_user_id: 1\nsource: {user_source}"
         if update["scope"] == server_scope_value:
             assert update["subject"] == "target_server_id: 1"
-            assert update["writer"] is cog.toolkit.server_memory_writer
+            assert update["writer"] is cog.toolkit.memory_writer
             assert update["identity"] == "Test Guild [id: 1]"
-            assert (
-                cog.toolkit.server_memory_writer.evaluator_prompt is SERVER_PHASE1_EVALUATOR_PROMPT
-            )
-            assert cog.toolkit.server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
 
 
 async def _drain_memory_turns(scopes: tuple[str, ...]) -> None:
@@ -8886,12 +8882,10 @@ def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
+    """on_ready resume re-enqueues persisted jobs and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
-    user_sentinel = object()
-    server_sentinel = object()
-    cog.toolkit.__dict__["memory_writer"] = user_sentinel
-    cog.toolkit.__dict__["server_memory_writer"] = server_sentinel
+    writer_sentinel = object()
+    cog.toolkit.__dict__["memory_writer"] = writer_sentinel
 
     user_job_scope = user_scope(user_id=1)
     server_job_scope = server_scope(server_id=2)
@@ -8950,9 +8944,9 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
 
     assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
     by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
-    assert by_scope[user_job_scope]["writer"] is user_sentinel
+    assert by_scope[user_job_scope]["writer"] is writer_sentinel
     assert by_scope[user_job_scope]["token"] == 11
-    assert by_scope[server_job_scope]["writer"] is server_sentinel
+    assert by_scope[server_job_scope]["writer"] is writer_sentinel
     # The row's status decides whether the resumed review is its one retry.
     assert by_scope[user_job_scope]["status"] == "failed"
     assert by_scope[server_job_scope]["status"] == "pending"

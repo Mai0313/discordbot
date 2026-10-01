@@ -194,6 +194,7 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
                         )
                         continue
                     result = await writer.consolidate(
+                        flavor=run.flavor,
                         request=compartment_request(
                             run=run,
                             compartment=compartment,
@@ -202,7 +203,7 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
                                 raw_entries=raw_bucket, recent_detail="", global_reference=""
                             ),
                             compact=True,
-                        )
+                        ),
                     )
                     if result is None:
                         logfire.warn(

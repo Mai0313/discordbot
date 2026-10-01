@@ -1,11 +1,11 @@
 """LLM review and consolidation for long-term memory, in either flavor.
 
-The phase prompts ride on `MemoryWriterAI` as fields, so the per-user and the
-per-server memory share every gate, renderer and redaction here.
+Each call is handed its scope's flavor, which picks the phase prompt, so the per-user and
+the per-server memory share every gate, renderer and redaction here.
 """
 
 import re
-from typing import TYPE_CHECKING, Self, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
@@ -15,6 +15,7 @@ from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.memory import (
     TONE_HEADER,
     FORGET_REQUEST_CATEGORY,
+    MemoryFlavor,
     MemorySection,
     MemorySharing,
     MemoryCategory,
@@ -315,10 +316,7 @@ class ConsolidationRequest(BaseModel):
 
 
 class MemoryWriterAI(BaseModel):
-    """Runs the memory LLM calls with best-effort fallbacks.
-
-    The phase prompts are instance fields, and default to the per-user ones.
-    """
+    """Runs the memory LLM calls with best-effort fallbacks, for a scope of either flavor."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -333,25 +331,9 @@ class MemoryWriterAI(BaseModel):
             "memory writing into a silent no-op."
         ),
     )
-    evaluator_prompt: str = Field(
-        default=PHASE1_EVALUATOR_PROMPT, description="Instructions for the evaluator call."
-    )
-    consolidate_prompt: str = Field(
-        default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
-    )
-
-    @classmethod
-    def for_server(cls, client: AsyncOpenAI, model: ModelSettings) -> Self:
-        """Builds the writer for a server scope, which differs from a user one only in its prompts."""
-        return cls(
-            client=client,
-            model=model,
-            evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
-            consolidate_prompt=SERVER_PHASE2_PROMPT,
-        )
 
     async def evaluate(
-        self, subject: str, transcript: str, notes: tuple[str, ...]
+        self, flavor: MemoryFlavor, subject: str, transcript: str, notes: tuple[str, ...]
     ) -> RawMemoryDraft | None:
         """Turns the answer model's own memory notes into validated observations.
 
@@ -361,10 +343,11 @@ class MemoryWriterAI(BaseModel):
         each note against the transcript it came from, and authoring the structured fields a raw
         entry needs — which is why the evaluator prompt carries the field rules.
 
-        `subject` is the leading directive naming the memory's target (`target_user_id: <id>` or
-        `target_server_id: <id>`). The server flavor deliberately parses to no target user, which
-        leaves the roster empty too: a server memory has no single subject for the sharing gate
-        to protect, and its observations carry no sharing field at all.
+        `flavor` is the scope's, and picks the evaluator prompt. `subject` is the leading directive
+        naming the memory's target (`target_user_id: <id>` or `target_server_id: <id>`). The server
+        flavor deliberately parses to no target user, which leaves the roster empty too: a server
+        memory has no single subject for the sharing gate to protect, and its observations carry
+        no sharing field at all.
 
         `<forget-memory>` notes do NOT come through here. A forget is an instruction to
         consolidation rather than something to store, so it needs none of the fields this call
@@ -381,7 +364,9 @@ class MemoryWriterAI(BaseModel):
             else ()
         )
         draft = await self._parse(
-            instructions=self.evaluator_prompt,
+            instructions=(
+                SERVER_PHASE1_EVALUATOR_PROMPT if flavor == "server" else PHASE1_EVALUATOR_PROMPT
+            ),
             user_text=(
                 f"{subject}\n\n"
                 f"Conversation transcript:\n{transcript}\n\n"
@@ -394,8 +379,13 @@ class MemoryWriterAI(BaseModel):
             return None
         return _validated_draft(draft=draft, target_user_id=target_user_id, roster=roster)
 
-    async def consolidate(self, request: ConsolidationRequest) -> ConsolidatedMemory | None:
-        """Returns one compartment's consolidation deltas, or None when the LLM path fails."""
+    async def consolidate(
+        self, flavor: MemoryFlavor, request: ConsolidationRequest
+    ) -> ConsolidatedMemory | None:
+        """Returns one compartment's consolidation deltas, or None when the LLM path fails.
+
+        `flavor` is the scope's, and picks the consolidation prompt.
+        """
         sections = ", ".join(request.allowed_sections)
         blocks = [
             f"today: {request.today}",
@@ -410,11 +400,8 @@ class MemoryWriterAI(BaseModel):
         if request.emit_tone:
             blocks.append(_tagged(tag="existing_tone", body=request.existing_tone))
             blocks.append(_tagged(tag="tone_evidence", body=request.tone_evidence))
-        instructions = (
-            self.consolidate_prompt + PHASE2_COMPACTION_BLOCK
-            if request.compact
-            else self.consolidate_prompt
-        )
+        prompt = SERVER_PHASE2_PROMPT if flavor == "server" else PHASE2_PROMPT
+        instructions = prompt + PHASE2_COMPACTION_BLOCK if request.compact else prompt
         result = await self._parse(
             instructions=instructions,
             user_text="\n\n".join(blocks),
