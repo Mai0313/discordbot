@@ -6,10 +6,14 @@ import asyncio
 import pytest
 from scripts import regen_memories as regen_script
 
+from discordbot.typings.memory import MemoryOwner
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
+    read_tone,
+    read_facts,
     user_scope,
+    write_fact,
     write_tone,
     server_scope,
     compartment_dir,
@@ -22,6 +26,8 @@ from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
+
+from tests.helpers.memory import make_fact
 
 if TYPE_CHECKING:
     from discordbot.services.memory.writer import MemoryWriterAI
@@ -73,7 +79,7 @@ def test_a_scope_key_targets_only_itself(target: str) -> None:
 
 
 def test_a_scope_with_nothing_on_disk_is_refused() -> None:
-    """A mistyped id fails loudly instead of reporting itself as rebuilding empty."""
+    """A mistyped id fails loudly instead of passing itself off as a skipped scope."""
     _seed(scope=_USER)
     with pytest.raises(SystemExit):
         regen_script._scopes_for_target(target=_OTHER_USER)
@@ -141,17 +147,43 @@ async def test_the_stop_the_bot_warning_fires_on_every_target(
     assert ("commit data/memories first" in output) is expects_store_line
 
 
-async def test_the_dry_run_flags_a_scope_with_nothing_left_to_rebuild_from(
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_a_scope_with_no_evidence_is_reported_as_skipped_and_kept(
+    dry_run: bool, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The rebuild never touches such a scope, so neither report may call it emptied."""
+    write_fact(scope=_USER, fact=make_fact(owner=MemoryOwner(owner_id=111, owner_name="Alice")))
+    write_tone(scope=_USER, content="## 語氣偏好\n- 簡短")
+    monkeypatch.setattr(regen_script.console, "input", lambda *args, **kwargs: "y")
+    monkeypatch.setattr(regen_script, "AsyncOpenAI", lambda **kwargs: object())
+
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=_USER, dry_run=dry_run
+    )
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "SKIPPED" in output
+    assert "REBUILDS EMPTY" not in output
+    assert "EMPTY GLOBAL" not in output
+    # The note says the memory is kept, so the same run must have kept it.
+    assert read_facts(scope=_USER, compartment=GLOBAL_COMPARTMENT)
+    assert read_tone(scope=_USER) == "## 語氣偏好\n- 簡短"
+
+
+async def test_the_dry_run_skips_only_the_scopes_the_rebuild_skips(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The loud note has to reach the preview, not only the run that already rewrote."""
-    write_tone(scope=_USER, content="## 語氣偏好\n- 簡短")
+    """Evidence holding no observation is still rebuilt, from nothing, so the scope empties."""
+    write_fact(scope=_USER, fact=make_fact(owner=MemoryOwner(owner_id=111, owner_name="Alice")))
+    append_raw_entry(scope=_USER, entry_text="### forget_request\n- summary_zh: 忘記回覆偏好")
+
     await regen_script._regen_all(
         model=ModelSettings(name="test-model", effort="low"), target=_USER, dry_run=True
     )
+
     output = " ".join(capsys.readouterr().out.split())
     assert "REBUILDS EMPTY" in output
-    assert "EMPTY GLOBAL" not in output
+    assert "SKIPPED" not in output
 
 
 async def test_the_dry_run_names_files_a_rebuild_cannot_account_for(
@@ -283,7 +315,7 @@ async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> N
 @pytest.mark.parametrize(
     ("result", "buckets", "expected"),
     [
-        ("no_evidence", {}, "REBUILDS EMPTY"),
+        ("no_evidence", {"global": 1}, "SKIPPED"),
         ("dry-run", {}, "REBUILDS EMPTY"),
         ("dry-run", {"global": 0}, "REBUILDS EMPTY"),
         ("regenerated", {"g/1": 3}, "EMPTY GLOBAL"),
@@ -295,3 +327,21 @@ def test_loss_note_flags_the_two_expected_losses(
 ) -> None:
     """The dry run says which scopes rebuild empty or lose their cross-server compartment."""
     assert regen_script._loss_note(result=result, buckets=buckets).startswith(expected)
+
+
+@pytest.mark.parametrize("buckets", [{}, {"global": 0}])
+def test_a_rebuild_that_kept_no_fact_is_not_reported_as_having_no_evidence(
+    buckets: dict[str, int],
+) -> None:
+    """Evidence that yields no fact is still evidence; only a skipped scope had none."""
+    note = regen_script._loss_note(result="regenerated", buckets=buckets)
+    assert note.startswith("REBUILDS EMPTY")
+    assert "no evidence" not in note
+
+
+@pytest.mark.parametrize(
+    "result", ["failed", "error: ValueError: invalid literal for int() with base 10: '111.bak'"]
+)
+def test_a_rebuild_that_stopped_short_is_not_reported_as_rebuilt_empty(result: str) -> None:
+    """It may have stopped before distilling anything, so its empty counts prove nothing."""
+    assert regen_script._loss_note(result=result, buckets={}) == ""
