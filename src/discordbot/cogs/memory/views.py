@@ -179,9 +179,8 @@ class _OriginBoundView(LoggedView):
         """Disables the buttons once the view goes idle; nothing else happens.
 
         Inert cleanup: the ephemeral response may already be dismissed or gone, and there
-        is nothing left to degrade. Broad on purpose: nextcord runs `on_timeout` in a bare
-        `create_task`, so a narrower filter would let an aiohttp transport error escape
-        into a task that cannot handle it.
+        is nothing left to degrade. Broad on purpose: a narrower filter would let an aiohttp
+        transport error escape and be logged as an error, which for inert cleanup is noise.
         """
         if self._origin is None:
             return

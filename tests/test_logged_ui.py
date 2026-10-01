@@ -1,16 +1,17 @@
-"""A failing button, select or modal reaches `./data/logs` instead of nextcord's stderr print.
+"""A failing button, select, modal or view timeout reaches `./data/logs` instead of stderr.
 
-Each test drives nextcord's own dispatch (`_scheduled_task`), which is what catches the raise
-and hands it to `on_error`, so a callback called directly would prove nothing here.
+Each test drives nextcord's own dispatch (`_scheduled_task`, `_dispatch_timeout`), which is what
+decides where the raise goes, so a callback called directly would prove nothing here.
 """
 
 from typing import Any, cast
+import asyncio
 import sqlite3
 
 import pytest
 import nextcord
 from nextcord import ButtonStyle, Interaction
-from nextcord.ui import Button
+from nextcord.ui import View, Button
 from nextcord.ext import commands
 from sqlalchemy.exc import OperationalError
 
@@ -19,7 +20,7 @@ from discordbot.cogs.economy.views import CreditLoanDecisionView
 from discordbot.cogs.games.interactions import GameView
 from discordbot.cogs.games.dragon_gate_views import DragonGateView, DragonGateBetModal
 
-from tests.helpers.casting import as_interaction, make_not_found
+from tests.helpers.casting import as_message, as_interaction, make_not_found
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs
 
@@ -116,3 +117,36 @@ async def test_a_game_view_keeps_its_own_failure_line(monkeypatch: pytest.Monkey
 
     assert [message for message, _fields in logged] == ["Probe game control failed"]
     assert logged[0][1]["item_label"] == "probe"
+
+
+async def _run_dispatched_timeout(view: View) -> None:
+    """Fires nextcord's own timeout dispatch and waits out the task it hands `on_timeout` to."""
+    view._dispatch_timeout()
+    (timeout,) = [
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == f"discord-ui-view-timeout-{view.id}"
+    ]
+    await timeout
+
+
+async def test_a_failing_loan_timeout_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An expiry whose ledger write failed leaves a line naming the view and its message."""
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
+    error = OperationalError("reject", None, sqlite3.OperationalError("database is locked"))
+
+    async def locked(**_kwargs: object) -> None:
+        """Stands in for the ledger write losing its lock."""
+        raise error
+
+    monkeypatch.setattr("discordbot.cogs.economy.views.reject_expired_loan_proposal", locked)
+    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view.message = as_message(fake=FakeDiscordMessage())
+    await _run_dispatched_timeout(view=view)
+
+    assert len(logged) == 1
+    message, fields = logged[0]
+    assert message == "View timeout failed"
+    assert fields["view"] == "CreditLoanDecisionView"
+    assert fields["message_id"] == 1
+    assert fields["_exc_info"] is error

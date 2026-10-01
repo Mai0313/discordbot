@@ -1,4 +1,4 @@
-"""Guards every `View` and `Modal` subclass against two nextcord traps that fail silently."""
+"""Guards every `View` and `Modal` subclass against three nextcord traps that fail silently."""
 
 from __future__ import annotations
 
@@ -98,4 +98,29 @@ def test_no_view_or_modal_leaves_a_failure_to_nextcords_stderr_print() -> None:
     assert not offenders, (
         "views or modals on nextcord's stderr on_error, subclass "
         f"utils/logged_ui.py's LoggedView or LoggedModal instead: {offenders}"
+    )
+
+
+def test_no_view_timeout_leaves_a_failure_to_asyncios_stderr_print() -> None:
+    """A raising `on_timeout` reaches no `on_error`: nothing awaits the task nextcord runs it in.
+
+    Only the logging wrapper `LoggedView` puts around an override keeps such a failure out of
+    asyncio's stderr print, at every depth below it.
+    """
+    _import_every_module()
+    overriding = [
+        cls
+        for cls in _subclasses(base=View)
+        if cls.__module__.startswith("discordbot.") and cls.on_timeout is not View.on_timeout
+    ]
+    offenders = sorted(
+        f"{cls.__module__}.{cls.__qualname__}"
+        for cls in overriding
+        if not hasattr(cls.on_timeout, "__wrapped__")
+    )
+
+    assert overriding, "the sweep found no on_timeout override"
+    assert not offenders, (
+        "views whose on_timeout failure reaches only stderr, subclass "
+        f"utils/logged_ui.py's LoggedView instead: {offenders}"
     )
