@@ -424,8 +424,8 @@ class ResearchCogs(commands.Cog):
         async def _persist(interaction_id: str) -> None:
             await db.set_interaction(thread_id=thread.id, interaction_id=interaction_id)
 
-        # The agent run and the delivery are separate steps: both stay broad (a fire-and-forget task
-        # has nobody to raise to) but each names what actually failed.
+        # Broad: a fire-and-forget task has nobody to raise to. The delivery's own guard sits in
+        # `_finish`, which a resumed run shares.
         try:
             result = await stream_antigravity(
                 client=self.interactions_client,
@@ -445,19 +445,9 @@ class ResearchCogs(commands.Cog):
             )
             await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
             return
-        try:
-            await self._finish(
-                thread=thread, owner_id=owner_id, result=result, agent=agent, status=status
-            )
-        except Exception as exc:
-            logfire.error(
-                "research delivery failed",
-                thread_id=thread.id,
-                agent=agent,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
+        await self._finish(
+            thread=thread, owner_id=owner_id, result=result, agent=agent, status=status
+        )
 
     async def _fail_run(
         self, *, thread: "Thread", owner_id: int, status: Message | None, failure: Exception | str
@@ -479,12 +469,25 @@ class ResearchCogs(commands.Cog):
         await self._release(thread_id=thread.id, phase=phase)
 
     async def _release(self, *, thread_id: int, phase: db.ResearchPhase) -> None:
-        """Ends a run: records its terminal phase and lets QA answer in its thread again.
+        """Ends a run: lets QA answer in its thread again and records its terminal phase.
 
-        The recorded phase is what frees the owner's one-research slot.
+        The recorded phase is what frees the owner's one-research slot. Every caller has already
+        decided how the run ended, so a failed write is logged, never raised: a raise would read
+        as the run failing, or cut off the steps that tell the thread how it ended.
         """
-        await db.set_phase(thread_id=thread_id, phase=phase)
         self._active_threads.discard(thread_id)
+        try:
+            await db.set_phase(thread_id=thread_id, phase=phase)
+        # Broad: whatever the store raised, the row stays `researching` and nothing here can
+        # end it, so every failure is the same finding.
+        except Exception as exc:
+            logfire.error(
+                "failed to record how a research run ended",
+                thread_id=thread_id,
+                phase=phase,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     async def _finish(
         self,
@@ -498,24 +501,38 @@ class ResearchCogs(commands.Cog):
         """Delivers a terminal result, records its phase, and releases the thread.
 
         On a completed run the opening status message is spent by `deliver_report`, which edits the
-        report's first chunk into it; any other terminal status ends the run as a failure.
+        report's first chunk into it. Any other terminal status, or a delivery that raises before
+        any of the report lands, ends the run as a failure.
         """
         if not result.ok:
             await self._fail_run(
                 thread=thread, owner_id=owner_id, status=status, failure=result.status
             )
             return
-        footer = _usage_footer(
-            agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
-        )
-        await deliver_report(
-            thread=thread,
-            status=status,
-            owner_id=owner_id,
-            result=result,
-            footer=footer,
-            media_delivery=self.media_delivery,
-        )
+        try:
+            footer = _usage_footer(
+                agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
+            )
+            await deliver_report(
+                thread=thread,
+                status=status,
+                owner_id=owner_id,
+                result=result,
+                footer=footer,
+                media_delivery=self.media_delivery,
+            )
+        # Broad: a run task has nobody to raise to. Every write `deliver_report` makes is guarded,
+        # so whatever it raises came before any of the report landed, and the run ends failed.
+        except Exception as exc:
+            logfire.error(
+                "research delivery failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            await self._fail_run(thread=thread, owner_id=owner_id, status=status, failure=exc)
+            return
         await self._release(thread_id=thread.id, phase="done")
 
     async def _finalize_status(

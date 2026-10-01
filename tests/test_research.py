@@ -1652,19 +1652,30 @@ async def test_every_exit_of_a_launched_run_records_its_phase_and_frees_the_owne
     await _assert_owner_released(cog=cog, phase=phase)
 
 
+@pytest.mark.parametrize("resumed", [False, True], ids=["launched", "resumed"])
 async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, resumed: bool
 ) -> None:
-    cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
+    thread = _RunThread()
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_settling_client(status="completed"), thread=thread
+    )
     cog.media_delivery = cast(
         "MediaDeliveryPlanner", SimpleNamespace(plan=AsyncMock(side_effect=OSError("host down")))
     )
-    thread = _RunThread()
 
-    await _launch_run(cog=cog, thread=thread)
+    if resumed:
+        await _resume_run(cog=cog)
+    else:
+        await _launch_run(cog=cog, thread=thread)
 
     await _assert_owner_released(cog=cog, phase="failed")
-    assert thread.writes[-1]["content"] == "-# Research failed (Antigravity)"
+    assert [write["content"] for write in thread.writes] == [
+        "-# Researching... (Antigravity)",
+        "<@300> ⚠️",
+        "-# Research failed (Antigravity)",
+    ]
+    _assert_pings_only_the_owner(write=thread.writes[1])
 
 
 def _lock_reply_db(
@@ -1677,6 +1688,88 @@ def _lock_reply_db(
 
     monkeypatch.setattr(target=rdb, name=call, value=_locked)
     return _recorded(monkeypatch=monkeypatch, level="error")
+
+
+# What `_release` logs when the store refuses a run's terminal phase.
+_UNRECORDED = "failed to record how a research run ended"
+
+
+@pytest.mark.parametrize("resumed", [False, True], ids=["launched", "resumed"])
+async def test_a_delivered_report_stays_delivered_when_its_phase_write_fails(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, resumed: bool
+) -> None:
+    errors = _lock_reply_db(monkeypatch=monkeypatch, call="set_phase")
+    thread = _RunThread()
+    cog = _running_cog(
+        monkeypatch=monkeypatch, client=_settling_client(status="completed"), thread=thread
+    )
+
+    if resumed:
+        await _resume_run(cog=cog)
+    else:
+        await _launch_run(cog=cog, thread=thread)
+
+    # The status line became the report, and nothing followed it.
+    assert [str(write["content"]).split("\n")[0] for write in thread.writes] == [
+        "-# Researching... (Antigravity)",
+        "# Report",
+    ]
+    assert [(message, fields.get("phase")) for message, fields in errors] == [
+        (_UNRECORDED, "done")
+    ]
+    assert errors[0][1].get("_exc_info") is not None
+    assert cog._active_threads == set()
+
+
+@pytest.mark.parametrize(
+    ("settles", "writes", "logged"),
+    [
+        (
+            "cancelled",
+            ["-# Researching... (Antigravity)", "<@300> ⚠️", "-# Research failed (Antigravity)"],
+            [(_UNRECORDED, "cancelled")],
+        ),
+        (
+            RuntimeError("quota"),
+            ["-# Researching... (Antigravity)", "<@300> ⚠️", "-# Research failed (Antigravity)"],
+            [("research failed", None), (_UNRECORDED, "failed")],
+        ),
+        (
+            None,
+            [
+                "-# Research failed (Antigravity)",
+                "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
+            ],
+            [(_UNRECORDED, "failed")],
+        ),
+    ],
+    ids=["cancelled", "create_fails", "resume_lost"],
+)
+async def test_a_failed_run_whose_phase_write_fails_still_tells_its_owner_and_frees_its_thread(
+    research_isolated_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+    settles: str | Exception | None,
+    writes: list[str],
+    logged: list[tuple[str, str | None]],
+) -> None:
+    errors = _lock_reply_db(monkeypatch=monkeypatch, call="set_phase")
+    thread = _RunThread()
+    if settles is None:
+        # A resumed row whose interaction id was never stored has nothing to re-attach to.
+        cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
+        await _resume_run(cog=cog, stored_id=False)
+    else:
+        client = (
+            _failing_client(error=settles)
+            if isinstance(settles, Exception)
+            else _settling_client(status=settles)
+        )
+        cog = _running_cog(monkeypatch=monkeypatch, client=client)
+        await _launch_run(cog=cog, thread=thread)
+
+    assert [write["content"] for write in thread.writes] == writes
+    assert [(message, fields.get("phase")) for message, fields in errors] == logged
+    assert cog._active_threads == set()
 
 
 @pytest.mark.parametrize("call", ["active_thread_for_owner", "insert_session"])
