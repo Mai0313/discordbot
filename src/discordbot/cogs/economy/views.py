@@ -5,7 +5,7 @@ from typing import ClassVar
 import logfire
 import nextcord
 from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interaction
-from nextcord.ui import View, Button
+from nextcord.ui import Button
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
@@ -14,6 +14,7 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
     LoanProposalExpiredError,
 )
+from discordbot.utils.logged_ui import LoggedView
 from discordbot.cogs.economy.embeds import (
     REPAY_COLOR,
     CENTRAL_BANK_COLOR,
@@ -50,7 +51,7 @@ def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
     return interaction.permissions.administrator
 
 
-class LoanDecisionViewBase(View):
+class LoanDecisionViewBase(LoggedView):
     """Shared terminal behavior for public loan-decision views.
 
     A subclass declares the wording and color of its own panels below, its approved panel, and

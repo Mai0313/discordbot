@@ -1,11 +1,11 @@
-"""Guards view button and select callbacks against shadowing the base `View` API."""
+"""Guards every `View` and `Modal` subclass against two nextcord traps that fail silently."""
 
 from __future__ import annotations
 
 from pkgutil import walk_packages
 from importlib import import_module
 
-from nextcord.ui import View
+from nextcord.ui import View, Modal
 
 # Namespace import: the package object itself is the input, for its `__path__`.
 import discordbot
@@ -33,10 +33,10 @@ def test_the_module_walk_reaches_a_nested_subpackage() -> None:
     assert "discordbot.cogs.gen_reply.link_sources.threads" in walked
 
 
-def _view_subclasses() -> set[type[View]]:
-    """Collects every `View` subclass reachable from the imported package."""
-    found: set[type[View]] = set()
-    pending: list[type[View]] = list(View.__subclasses__())
+def _subclasses[T](base: type[T]) -> set[type[T]]:
+    """Collects every subclass of `base` reachable from the imported package."""
+    found: set[type[T]] = set()
+    pending: list[type[T]] = list(base.__subclasses__())
     while pending:
         cls = pending.pop()
         if cls in found:
@@ -58,7 +58,7 @@ def test_no_view_callback_shadows_the_base_view_api() -> None:
     reserved = set(dir(View))
     callbacks = [
         (cls, callback)
-        for cls in _view_subclasses()
+        for cls in _subclasses(base=View)
         if cls.__module__.startswith("discordbot.")
         for callback in getattr(cls, "__view_children_items__", ())
     ]
@@ -72,3 +72,30 @@ def test_no_view_callback_shadows_the_base_view_api() -> None:
     # sweep and pass it.
     assert callbacks, "the sweep found no view callbacks"
     assert not offenders, f"view callbacks shadowing the base View API: {offenders}"
+
+
+def test_no_view_or_modal_leaves_a_failure_to_nextcords_stderr_print() -> None:
+    """A raising callback reaches only its own view's or modal's `on_error`.
+
+    nextcord dispatches a press or a submit outside `Client._run_event`, so `DiscordBot.on_error`
+    never sees it, and the default `on_error` prints to `sys.stderr`, which `./data/logs` does
+    not tee: a view or modal still on that default fails without a trace.
+    """
+    _import_every_module()
+    swept = [
+        (base, cls)
+        for base in (View, Modal)
+        for cls in _subclasses(base=base)
+        if cls.__module__.startswith("discordbot.")
+    ]
+    offenders = sorted(
+        f"{cls.__module__}.{cls.__qualname__}"
+        for base, cls in swept
+        if cls.on_error is base.on_error
+    )
+
+    assert {base for base, _cls in swept} == {View, Modal}, "the sweep missed a base"
+    assert not offenders, (
+        "views or modals on nextcord's stderr on_error, subclass "
+        f"utils/logged_ui.py's LoggedView or LoggedModal instead: {offenders}"
+    )
