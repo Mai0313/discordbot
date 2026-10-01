@@ -40,14 +40,14 @@ FACT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 # code-stamped `subject_id`, and `parse_member_alias_table` takes the FIRST match on a line,
 # so a body that carries its own would silently win — and that body is distilled from
 # messages anyone in the server can write.
-_ID_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]")
+_ID_TOKEN_RE = re.compile(pattern=r"\[id:\s*(?P<user_id>\d+)\]")
 
 # The nickname table's heading, rendered and parsed back from this one string.
 _MEMBER_ALIAS_HEADING = "成員稱呼"
 # The nickname table's section of a rendered server document, up to the next `## ` heading
 # or the end of the document.
 _MEMBER_ALIAS_SECTION_RE = re.compile(
-    rf"^##\s*{re.escape(_MEMBER_ALIAS_HEADING)}\s*$(?P<body>.*?)(?=^##\s|\Z)",
+    pattern=rf"^##\s*{re.escape(pattern=_MEMBER_ALIAS_HEADING)}\s*$(?P<body>.*?)(?=^##\s|\Z)",
     flags=re.MULTILINE | re.DOTALL,
 )
 
@@ -289,18 +289,18 @@ def parse_member_alias_table(memory: str) -> dict[int, str]:
     caller putting a label where a mention could fire escapes it there. The first row naming
     an id wins, and a document without the section yields an empty map.
     """
-    section = _MEMBER_ALIAS_SECTION_RE.search(memory)
+    section = _MEMBER_ALIAS_SECTION_RE.search(string=memory)
     if section is None:
         return {}
     rows: dict[int, str] = {}
     for line in section.group("body").splitlines():
-        match = _ID_TOKEN_RE.search(line)
+        match = _ID_TOKEN_RE.search(string=line)
         if match is None:
             continue
         user_id = int(match.group("user_id"))
         if user_id in rows:
             continue
-        rows[user_id] = _ID_TOKEN_RE.sub("", line).strip().lstrip("*").strip()
+        rows[user_id] = _ID_TOKEN_RE.sub(repl="", string=line).strip().lstrip("*").strip()
     return rows
 
 
