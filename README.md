@@ -38,7 +38,7 @@ Ask it to animate that same picture and it returns a short video.
 
 ## How a reply happens
 
-Every mention, DM, and `/ask` runs the same pipeline. Exactly one triage call sits on the critical path and picks the route; everything else is either prepared in parallel before that decision lands or runs after the answer text is already on screen.
+Every mention, DM, and `/ask` runs the same pipeline. Exactly one triage call sits on the critical path and picks the route; the uploads and the reply context build alongside it, and a linked post is fetched only once the route asks for it.
 
 ```mermaid
 flowchart TD
@@ -48,7 +48,8 @@ flowchart TD
     RT["Route + effort + recall"]
     CX["History · memory · tone"]
 
-    UP & RT & CX --> R{"Route"}
+    RT --> R{"Route"}
+    UP & RT --> CX --> YT & QS & I2 & V2
 
     R -->|QA| L{"Linked Threads, Facebook, Instagram,<br/>Twitter, Douyin or Bilibili post"}
     L -->|"the user is asking about it"| LF["Fetch the post, upload its media"]
@@ -66,7 +67,7 @@ flowchart TD
     Q2 --> OUT(["Reply on screen"])
     I2 --> OUT
     V2 --> OUT
-    OUT -.-> MM["Background: memory review"]
+    Q2 -.->|"memory marker"| MM["Background: memory review"]
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
@@ -89,7 +90,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 - **Bilibili Q&A**: mention the bot with a Bilibili video link and it watches the video and answers about it. A bare link is not auto-expanded; `/download_video` still downloads the file.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
-- **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each round as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
+- **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each table while its wallet is above zero, as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
 - **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do and it answers from a single English capability reference, translated into whatever language you asked in.
 
 ## Commands
