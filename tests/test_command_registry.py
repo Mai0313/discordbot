@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import inspect
-from pathlib import Path
 from functools import partial
 
 import pytest
@@ -31,6 +30,8 @@ from tests.helpers.casting import as_message, as_discord_bot
 from tests.helpers.discord_mocks import FakeUser
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from nextcord import Interaction
     from nextcord.ext import commands
     from nextcord.errors import ApplicationError
@@ -144,27 +145,57 @@ def _reward_bot(**state: object) -> SimpleNamespace:
     return bot
 
 
-def test_cli_load_cogs_sync_discovers_exactly_the_cog_directories(tmp_path: Path) -> None:
-    """Verifies synchronous cog loading discovers exactly the cog directories."""
+def _load_cogs_from(root: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], bool]]:
+    """Runs `_load_cogs_sync` over the `cogs/` tree under `root`, recording what it loads."""
     loaded: list[tuple[list[str], bool]] = []
 
     def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
         """Records modules passed to load_extensions."""
         loaded.append((modules, stop_at_error))
 
+    monkeypatch.setattr(target=cli, name="__file__", value=str(root / "cli.py"))
     bot = SimpleNamespace(load_extensions=record_load_extensions)
     cli.DiscordBot._load_cogs_sync(as_discord_bot(fake=bot))
-    assert loaded[0][1] is True
-    # An exact set, not a membership check: a discovery rule that grew a nested helper
-    # package or lost a cog would still contain any single name you happened to test for.
-    cogs_dir = Path(cli.__file__).resolve().parent / "cogs"
-    expected = {
-        f"discordbot.cogs.{entry.name}.cog"
-        for entry in cogs_dir.iterdir()
-        if entry.is_dir() and (entry / "cog.py").is_file()
-    }
-    assert set(loaded[0][0]) == expected
-    assert "discordbot.cogs.template.cog" in expected
+    return loaded
+
+
+def _cog_entry(path: Path, files: tuple[str, ...]) -> None:
+    """Creates one directory under `cogs/` holding the named empty files."""
+    path.mkdir(parents=True)
+    for name in files:
+        (path / name).touch()
+
+
+def test_cli_load_cogs_sync_loads_each_cog_directory_and_skips_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory holding `__init__.py` and `cog.py` loads; a plain file or `_` entry does not.
+
+    The scan stays one level deep, so a cog's own helper subpackage is never handed to the
+    loader, and one exact call pins both the list and `stop_at_error`.
+    """
+    cogs = tmp_path / "cogs"
+    _cog_entry(path=cogs / "beta", files=("__init__.py", "cog.py"))
+    _cog_entry(path=cogs / "alpha", files=("__init__.py", "cog.py", "views.py"))
+    _cog_entry(path=cogs / "alpha" / "helpers", files=("__init__.py",))
+    _cog_entry(path=cogs / "_draft", files=("__init__.py",))
+    _cog_entry(path=cogs / "__pycache__", files=())
+    (cogs / "stray.py").touch()
+
+    loaded = _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
+
+    assert loaded == [(["discordbot.cogs.alpha.cog", "discordbot.cogs.beta.cog"], True)]
+
+
+@pytest.mark.parametrize(argnames="present", argvalues=["__init__.py", "cog.py"])
+def test_cli_load_cogs_sync_refuses_a_directory_that_is_not_a_cog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, present: str
+) -> None:
+    """A cog directory missing either file stops boot instead of silently never loading."""
+    _cog_entry(path=tmp_path / "cogs" / "half_moved", files=(present,))
+
+    with pytest.raises(RuntimeError, match="half_moved is under cogs/ but is not a cog"):
+        _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
 
 
 async def test_cli_message_reward_pays_a_member_and_never_the_bot(
