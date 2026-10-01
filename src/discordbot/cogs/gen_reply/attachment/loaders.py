@@ -25,7 +25,7 @@ async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedi
         file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
         return LoadedMedia(data=file_bytes, mime_type="image/jpeg")
     if isinstance(source, Attachment):
-        content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
+        content_type = attachment_mime(attachment=source) or "image/png"
     else:
         content_type = guess_type(source.url)[0] or "image/png"
     file_bytes = await source.read()

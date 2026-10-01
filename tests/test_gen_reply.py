@@ -158,6 +158,7 @@ from discordbot.services.memory.server_prompts import (
 )
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
+from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
@@ -3905,6 +3906,29 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     )
     parts = await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
+
+
+class _ImageAttachment(nextcord.Attachment):
+    """A real `Attachment` subclass, so the image loader takes its attachment branch."""
+
+    def __init__(self, content_type: str, payload: bytes) -> None:
+        """Sets only what the loader reads; the slots nextcord fills from a payload stay unset."""
+        self.filename = "pic.gif"
+        self.content_type = content_type
+        self._payload = payload
+
+    async def read(self, *, use_cached: bool = False) -> bytes:
+        """Returns the configured bytes instead of fetching from the CDN."""
+        del use_cached
+        return self._payload
+
+
+async def test_an_image_attachment_mime_is_normalized_before_the_downscale() -> None:
+    """Discord's reported MIME loses its parameters and case, so a GIF still passes through."""
+    loaded = await load_image_bytes(
+        source=_ImageAttachment(content_type="Image/GIF; charset=binary", payload=b"GIF89a")
+    )
+    assert loaded == LoadedMedia(data=b"GIF89a", mime_type="image/gif")
 
 
 @pytest.fixture
