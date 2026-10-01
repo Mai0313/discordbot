@@ -69,13 +69,15 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # group-home URLs that are not posts at all. `is_facebook_post_url` makes
 # that call on the parsed URL instead, where the query is readable. The tail class is ASCII URL
 # characters ending on one that a real id or query value ends on, so a link written mid-sentence
-# in Chinese or Japanese is matched without swallowing the terminator. The one path refused here
-# is a `/<page>/videos/` page, for the reason `fb.watch` is: logged out it carries no post
-# (2026-09-30), and refusing it later in `is_facebook_post_url` would still hide a post link
-# after it.
+# in Chinese or Japanese is matched without swallowing the terminator. The paths refused here
+# are a `/<page>/videos/` page and the video (`/share/v/`) and reel (`/share/r/`) share forms,
+# for the reason `fb.watch` is: logged out they carry no post (`/videos/` checked 2026-09-30;
+# all 35 share links of those two forms the bot met from 2026-09-27 to 09-30 read as
+# unreadable), and refusing them later in `is_facebook_post_url` would still hide a post link
+# after them.
 FACEBOOK_URL_RE = re.compile(
     rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
-    r"(?![^/?\s]+/videos/)"
+    r"(?![^/?\s]+/videos/|share/[rv]/)"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
@@ -84,7 +86,7 @@ FACEBOOK_URL_RE = re.compile(
 _GROUP_POST_PATH_RE = re.compile(r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)")
 _PAGE_POST_PATH_RE = re.compile(r"^/(?:[^/]+)/(?:posts|videos)/(?P<post>[0-9]+)")
 _NUMERIC_POST_PATH_RE = re.compile(r"^/(?:[0-9]+)/posts/(?P<post>[0-9]+)")
-_SHARE_PATH_RE = re.compile(r"^/share/(?:p|v|r)/[A-Za-z0-9]+")
+_SHARE_PATH_RE = re.compile(r"^/share/p/[A-Za-z0-9]+")
 
 # A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
 # every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
@@ -203,7 +205,7 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def is_share_link(self) -> bool:
-        """Whether the URL is a share form, which names its post only through the redirect."""
+        """Whether the URL is the post share form, which names its post only through the redirect."""
         return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
 
 
