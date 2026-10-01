@@ -370,7 +370,10 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         # a forget needs no model, and making it wait behind one would let a failed call keep
         # the bot repeating what it was just asked to drop. The attempt a retry repeats already
         # filed every round's forget, so a retry files one again only once it has re-staged
-        # notes of its own, which that first copy, sitting ahead of them, cannot reach.
+        # notes of its own, which that first copy, sitting ahead of them, cannot reach. The
+        # second copy can in turn reach what that attempt staged from the forget's own round on;
+        # that takes three merged turns and a review failing after that round, and is accepted
+        # rather than tracked per round.
         filing = () if turn.retry and not kept else forget
         forget_text = render_forget_requests(notes=filing, source=source)
         if forget_text and not cleared_since(scope=scope, started_at=turn.captured_at):
