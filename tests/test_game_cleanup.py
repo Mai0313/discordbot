@@ -29,62 +29,25 @@ from tests.helpers.casting import (
     make_server_error,
     make_invalid_webhook_token,
 )
-from tests.helpers.discord_mocks import FakeInteraction
+from tests.helpers.discord_mocks import FakeGuild, FakeInteraction, FakeDiscordMessage
 
 
-class _DeletableMessageStub:
-    """Minimal message stub that records deletion."""
+class _CleanupMessage(FakeDiscordMessage):
+    """`FakeDiscordMessage` whose channel has a name and whose delete is counted or refused."""
 
-    def __init__(
-        self,
-        message_id: int = 123,
-        channel_id: int = 456,
-        guild_name: str | None = None,
-        channel_name: str | None = None,
-    ) -> None:
-        """Initializes message and channel IDs for cleanup tracking."""
-        self.id = message_id
-        guild = _GuildStub(name=guild_name) if guild_name is not None else None
-        self.guild = guild
-        self.channel = _ChannelStub(channel_id=channel_id, name=channel_name, guild=guild)
+    def __init__(self, guild: FakeGuild | None = None, channel_name: str | None = None) -> None:
+        """Names the channel; setting `delete_failure` makes every later delete raise it."""
+        super().__init__(guild=guild)
+        self.channel.name = channel_name
+        self.delete_failure: Exception | None = None
         self.delete_calls = 0
 
     async def delete(self) -> None:
-        """Records a Discord message deletion."""
+        """Counts a delete, or raises `delete_failure` when set."""
+        if self.delete_failure is not None:
+            raise self.delete_failure
         self.delete_calls += 1
-
-
-class _AlreadyDeletedMessageStub:
-    """Message stub that behaves like Discord already removed it."""
-
-    def __init__(self) -> None:
-        """Initializes a message identity that will fail deletion."""
-        self.id = 789
-        self.channel = _ChannelStub(channel_id=456)
-
-    async def delete(self) -> None:
-        """Raises the same exception nextcord raises for missing messages."""
-        raise make_not_found()
-
-
-class _ChannelStub:
-    """Minimal channel shape for persistent cleanup identity."""
-
-    def __init__(
-        self, channel_id: int, name: str | None = None, guild: "_GuildStub | None" = None
-    ) -> None:
-        """Stores the Discord channel identity."""
-        self.id = channel_id
-        self.name = name
-        self.guild = guild
-
-
-class _GuildStub:
-    """Minimal guild shape for persistent cleanup readability."""
-
-    def __init__(self, name: str) -> None:
-        """Stores the Discord guild name."""
-        self.name = name
+        await super().delete()
 
 
 class _FetchedMessageStub:
@@ -165,7 +128,7 @@ class _UnfetchableBotStub:
 
 async def test_delete_public_message_after_waits_then_deletes() -> None:
     """Public response cleanup deletes the message after the configured delay."""
-    message = _DeletableMessageStub()
+    message = _CleanupMessage()
 
     await delete_public_message_after(message=as_message(fake=message), delay=0)
 
@@ -174,12 +137,10 @@ async def test_delete_public_message_after_waits_then_deletes() -> None:
 
 async def test_track_public_message_persists_message_identity() -> None:
     """Public response tracking stores IDs plus readable guild/channel names."""
-    message = _DeletableMessageStub(
-        message_id=10, channel_id=20, guild_name="Mai Server", channel_name="casino"
-    )
+    message = _CleanupMessage(guild=FakeGuild(guild_name="Mai Server"), channel_name="casino")
     expected = PendingPublicMessage(
-        channel_id=20,
-        message_id=10,
+        channel_id=message.channel.id,
+        message_id=message.id,
         guild_name="Mai Server",
         channel_name="casino",
         user_name="alice",
@@ -195,7 +156,7 @@ async def test_track_public_message_persists_message_identity() -> None:
 
 async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
     """Successful TTL cleanup removes the persisted restart record."""
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    message = _CleanupMessage()
     await track_public_message(message=as_message(fake=message))
 
     await delete_public_message_after(message=as_message(fake=message), delay=0)
@@ -206,39 +167,39 @@ async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
 
 async def test_delete_tracked_public_messages_deletes_stale_restart_records() -> None:
     """Startup cleanup deletes persisted Discord messages and clears the records."""
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub()
 
     await delete_tracked_public_messages(bot=as_bot(fake=bot))
 
-    assert bot.deleted == [(20, 10)]
-    assert bot.fetch_calls == [20]
+    assert bot.deleted == [(message.channel.id, message.id)]
+    assert bot.fetch_calls == [message.channel.id]
     assert await list_pending_public_messages() == []
 
 
 async def test_delete_tracked_public_messages_skips_non_messageable_cached_channel() -> None:
     """A cached channel that is not Messageable is re-resolved through fetch_channel."""
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub(cached_channel=_NonMessageableChannelStub())
 
     await delete_tracked_public_messages(bot=as_bot(fake=bot))
 
-    assert bot.deleted == [(20, 10)]
-    assert bot.fetch_calls == [20]
+    assert bot.deleted == [(message.channel.id, message.id)]
+    assert bot.fetch_calls == [message.channel.id]
     assert await list_pending_public_messages() == []
 
 
 async def test_delete_tracked_public_messages_keeps_unresolved_channel_records() -> None:
     """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
 
     await delete_tracked_public_messages(bot=as_bot(fake=_UnfetchableBotStub()))
 
     assert await list_pending_public_messages() == [
-        PendingPublicMessage(channel_id=20, message_id=10)
+        PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
     ]
 
 
@@ -280,18 +241,18 @@ async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
     than something to diagnose. Sixteen lines of identical stack per record per boot is what
     the carve-out in `.github/CONTRIBUTING.md#logging` exists to stop.
     """
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
     bot = _ForbiddenChannelBotStub()
     warns = _recorded_warns(monkeypatch=monkeypatch)
 
     await delete_tracked_public_messages(bot=as_bot(fake=bot))
 
-    assert bot.fetch_calls == [20]
+    assert bot.fetch_calls == [message.channel.id]
     assert len(warns) == 1, f"expected one report, got {warns}"
     text, fields = warns[0]
     assert "cannot read" in text
-    assert fields == {"channel_id": 20, "message_id": 10}, (
+    assert fields == {"channel_id": message.channel.id, "message_id": message.id}, (
         "a permission the bot cannot earn needs the ids and no traceback"
     )
 
@@ -301,8 +262,7 @@ async def test_a_transient_http_failure_keeps_its_traceback(
 ) -> None:
     """The carve-out is for `Forbidden` alone; a 5xx is still something to look at.
 
-    Both used to share one `except HTTPException`, so dropping the traceback there would have
-    taken it from every transport failure too.
+    One `except HTTPException` for both would drop the traceback from every transport failure.
     """
 
     class _ServerErrorBotStub(_ForbiddenChannelBotStub):
@@ -311,8 +271,7 @@ async def test_a_transient_http_failure_keeps_its_traceback(
             self.fetch_calls.append(channel_id)
             raise make_server_error()
 
-    message = _DeletableMessageStub(message_id=11, channel_id=21)
-    await track_public_message(message=as_message(fake=message))
+    await track_public_message(message=as_message(fake=FakeDiscordMessage()))
     warns = _recorded_warns(monkeypatch=monkeypatch)
 
     await delete_tracked_public_messages(bot=as_bot(fake=_ServerErrorBotStub()))
@@ -325,27 +284,23 @@ async def test_a_transient_http_failure_keeps_its_traceback(
 
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
     """A message someone deleted first is cleaned up all the same, restart record included."""
-    await delete_public_message_after(
-        message=as_message(fake=_AlreadyDeletedMessageStub()), delay=0
-    )
+    message = _CleanupMessage()
+    message.delete_failure = make_not_found()
+
+    await delete_public_message_after(message=as_message(fake=message), delay=0)
 
     assert await list_pending_public_messages() == []
 
 
 async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
     """A delete Discord refuses reports failure and leaves the record for the restart sweep."""
+    message = _CleanupMessage()
+    message.delete_failure = make_forbidden(message="Missing Permissions")
+    await track_public_message(message=as_message(fake=message))
 
-    class _UndeletableMessageStub(_AlreadyDeletedMessageStub):
-        async def delete(self) -> None:
-            """Refuses the way Discord refuses a delete the bot lacks the permission for."""
-            raise make_forbidden(message="Missing Permissions")
-
-    message = as_message(fake=_UndeletableMessageStub())
-    await track_public_message(message=message)
-
-    assert await delete_public_message(message=message) is False
+    assert await delete_public_message(message=as_message(fake=message)) is False
     assert await list_pending_public_messages() == [
-        PendingPublicMessage(channel_id=456, message_id=789)
+        PendingPublicMessage(channel_id=message.channel.id, message_id=message.id)
     ]
 
 
@@ -361,19 +316,15 @@ async def test_a_refused_delete_is_reported_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch, failure: Exception, text: str, traceback: bool
 ) -> None:
     """The delete gets the same carve-out as the sweep's fetch; a 5xx keeps its traceback."""
-
-    class _UndeletableMessageStub(_AlreadyDeletedMessageStub):
-        async def delete(self) -> None:
-            """Fails the way Discord fails the delete."""
-            raise failure
-
+    message = _CleanupMessage()
+    message.delete_failure = failure
     warns = _recorded_warns(monkeypatch=monkeypatch)
 
-    assert await delete_public_message(message=as_message(fake=_UndeletableMessageStub())) is False
+    assert await delete_public_message(message=as_message(fake=message)) is False
     assert [
-        (text in message, fields["message_id"], fields["channel_id"], "_exc_info" in fields)
-        for message, fields in warns
-    ] == [(True, 789, 456, traceback)]
+        (text in logged, fields["message_id"], fields["channel_id"], "_exc_info" in fields)
+        for logged, fields in warns
+    ] == [(True, message.id, message.channel.id, traceback)]
 
 
 @pytest.mark.parametrize(
@@ -408,7 +359,7 @@ async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
             name=level,
             value=lambda message, level=level, **fields: reports.append((level, fields)),
         )
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    message = _CleanupMessage()
     press = FakeInteraction()
     press.expired = expired
     press.delete_failure = failure
@@ -446,7 +397,7 @@ async def test_schedule_public_message_delete_uses_default_ttl(
         fake_delete_public_message_after,
     )
 
-    schedule_public_message_delete(message=as_message(fake=_DeletableMessageStub()))
+    schedule_public_message_delete(message=as_message(fake=FakeDiscordMessage()))
     await asyncio.sleep(delay=0)
 
     assert scheduled_delay == PUBLIC_MESSAGE_TTL_SECONDS
