@@ -407,15 +407,18 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None], run: TurnRunner)
     if not by_subject:
         _pending_updates.pop(key=scope)
         return
-    # Oldest source first (dicts keep insertion order), and only one: each replay ends in
-    # this same callback, which picks up the next one.
-    pending = by_subject.pop(next(iter(by_subject)))
-    if not by_subject:
-        _pending_updates.pop(key=scope)
-    if cleared_since(scope=scope, started_at=pending.captured_at):
-        # The durable clear tombstone owns the privacy guarantee. This remains a
-        # best-effort cleanup for store-level clears that only stamped the process.
-        _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token), scope=scope)
-        _release_pending_report(pending=pending)
+    # Oldest source first (dicts keep insertion order), and only one replayed: each replay ends
+    # in this same callback, which picks up the next one. A dropped turn starts nothing, so the
+    # walk goes on past it, or every source behind it would wait with nothing in flight.
+    while by_subject:
+        pending = by_subject.pop(next(iter(by_subject)))
+        if not by_subject:
+            _pending_updates.pop(key=scope)
+        if cleared_since(scope=scope, started_at=pending.captured_at):
+            # The durable clear tombstone owns the privacy guarantee. This remains a
+            # best-effort cleanup for store-level clears that only stamped the process.
+            _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token), scope=scope)
+            _release_pending_report(pending=pending)
+            continue
+        enqueue_memory_update(turn=pending, run=run)
         return
-    enqueue_memory_update(turn=pending, run=run)

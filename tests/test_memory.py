@@ -3575,6 +3575,58 @@ async def test_pipeline_drops_pending_replay_after_clear(memory_isolated_dir: Pa
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
+@pytest.mark.parametrize(
+    "dm_after_the_clear", [False, True], ids=["dm-during-the-clear", "dm-after-the-clear"]
+)
+async def test_a_cleared_waiting_turn_does_not_end_the_replay(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, dm_after_the_clear: bool
+) -> None:
+    """Dropping one cleared waiting turn must still settle every other source's turn (#872).
+
+    Each replay is started by the previous one's done-callback, so a dropped turn that ended the
+    walk left the next source waiting with nothing in flight, its reply at `正在整理記憶⋯`. A turn
+    captured after the clear belongs to the new memory and still runs (#401).
+    """
+    _consolidate_at(monkeypatch=monkeypatch, entries=10)
+    writer, fake_client = _writer()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def first_call_waits(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del body, text_format
+        started.set()
+        await release.wait()
+        return _draft("私訊說的")
+
+    fake_client.responses.answer = first_call_waits
+    _schedule(writer=writer)
+    await started.wait()
+    guild_reports, guild_report = _report_recorder()
+    dm_reports, dm_report = _report_recorder()
+    schedule_dm = partial(
+        _schedule,
+        writer=writer,
+        subject=user_subject(user_id=USER_ID, guild_id=None),
+        report=dm_report,
+    )
+    _schedule(writer=writer, report=guild_report)
+    if not dm_after_the_clear:
+        schedule_dm()
+    # Stands in for the clear's closing stamp, which every turn deferred during the clear predates.
+    mark_cleared(scope=USER_SCOPE)
+    if dm_after_the_clear:
+        schedule_dm()
+    release.set()
+    await _drain_scope()
+    await _wait_for_persisted_writes()
+
+    assert inflight._pending_updates.get(key=USER_SCOPE) is None
+    assert guild_reports == [MemoryWriteSummary()]
+    assert len(dm_reports) == 1
+    assert bool(dm_reports[0].remembered) is dm_after_the_clear
+    assert count_raw_entries(scope=USER_SCOPE) == int(dm_after_the_clear)
+
+
 # ---------------------------------------------------------------------------
 # two-tier detail store
 # ---------------------------------------------------------------------------
