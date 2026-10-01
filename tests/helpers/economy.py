@@ -17,8 +17,8 @@ from discordbot.services.economy.database import (
     create_personal_loan_request,
 )
 
-# The guild central-bank tests lend in. Capacity is per guild, so a borrower who takes part
-# in none has no pool to draw on and no administrator who may approve.
+# The guild central-bank tests lend in. Only its participants' balances back its pool, and a
+# forced collection there reaches only a participant.
 LENDING_GUILD = 555
 
 

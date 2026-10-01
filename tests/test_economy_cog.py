@@ -826,7 +826,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
         return await fake_accept_loan_proposal()
 
     async def resolve_and_note(**_kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
-        """Same, for the three writes that close a proposal without moving money."""
+        """Same, for the writes that close a proposal without moving money."""
         custom_id, interaction = clicked[-1]
         acked_at_write[custom_id] = interaction.response.deferred
         return await fake_cancel_loan_proposal(proposal_id=1, actor_id=1)
@@ -842,6 +842,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
     buttons = [
         (central, "central_bank:approve"),
         (central, "central_bank:reject"),
+        (central, "central_bank:cancel"),
         (credit, "credit:approve"),
         (credit, "credit:reject"),
         (credit, "credit:cancel"),
