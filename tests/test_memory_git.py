@@ -67,19 +67,34 @@ async def test_a_scope_change_becomes_one_commit(memory_repository: Path) -> Non
     assert _git(memory_repository, "status", "--porcelain") == ""
 
 
-async def test_an_unchanged_scope_makes_no_commit(memory_repository: Path) -> None:
+async def test_an_unchanged_scope_makes_no_commit(
+    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The status guard is required, not an optimization: `git add` on a never-tracked,
     now-absent path exits 128, and an empty commit would fail too.
     """
+    warned: list[str] = []
+    monkeypatch.setattr(
+        "discordbot.services.memory.git_history.logfire.warn",
+        lambda message, **_: warned.append(message),
+    )
+    changed = user_scope(user_id=111)
+    (memory_repository / changed / "global").mkdir(parents=True)
+    (memory_repository / changed / "global" / "a.md").write_text("fact", encoding="utf-8")
     service = MemoryGitService()
     service.start()
     service.enqueue(scope=user_scope(user_id=999), reason="update")
-    # Nothing observable happens, so give the worker real time to do the wrong thing.
-    await asyncio.sleep(0.3)
+    # The single worker takes requests in order, so once the changed scope's commit lands,
+    # the unchanged one ahead of it has been handled.
+    service.enqueue(scope=changed, reason="update")
+    await _wait_for(check=lambda: "update 111" in _git(memory_repository, "log", "--format=%s"))
     await service.stop()
-    assert _git(memory_repository, "log", "--format=%s").strip() == "baseline"
+    assert _git(memory_repository, "log", "--format=%s").splitlines() == [
+        "chore(memory): update 111",
+        "baseline",
+    ]
     # Skipped by the guard, not by a failed `git add`, which would leave no commit either.
-    assert service._failures == 0
+    assert warned == []
     assert service.enabled
 
 

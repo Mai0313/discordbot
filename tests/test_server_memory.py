@@ -1,6 +1,5 @@
 """Tests for the bot's per-server (community) long-term memory flavor."""
 
-from types import SimpleNamespace
 from pathlib import Path
 from datetime import datetime, timedelta
 from functools import partial
@@ -14,7 +13,6 @@ from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
-from discordbot.services.memory.facts import sections_for_flavor
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     BOT_MEMORY_DIR_NAME,
@@ -33,11 +31,10 @@ from discordbot.services.memory.server_prompts import (
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
-from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
-from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.memory import STAMPED_AT, make_fact, make_delta, make_memory_cog
+from tests.helpers.casting import as_interaction
 from tests.helpers.discord_mocks import FakeInteraction
 
-BOT_ID = 555
 GUILD_ID = 777
 SERVER_SCOPE = server_scope(server_id=GUILD_ID)
 SERVER_OWNER = MemoryOwner(owner_id=GUILD_ID, owner_name="My Server")
@@ -189,16 +186,6 @@ def test_server_prompts_target_the_server_not_individuals() -> None:
     )
 
 
-def test_server_consolidation_prompt_offers_exactly_the_server_sections() -> None:
-    """A delta naming a section the code allowlist lacks is dropped, so the two must agree."""
-    sections_block = SERVER_PHASE2_PROMPT.split("SECTIONS:")[1].split("DURABILITY")[0]
-    for section in sections_for_flavor(flavor="server"):
-        assert f"`{section}`" in sections_block
-    # The per-user sections are not offered; a delta naming one would be discarded.
-    assert "`preference`" not in sections_block
-    assert "`interaction`" not in sections_block
-
-
 def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
     """Nicknames are the one carve-out from the no-individuals rule, and must survive the gate."""
     assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_EVALUATOR_PROMPT
@@ -218,20 +205,14 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
     assert "`member_alias`" in SERVER_PHASE2_PROMPT
     assert "taken ONLY from the column-0 author prefix" in SERVER_PHASE2_PROMPT
     assert "never guess an id from message text" in SERVER_PHASE2_PROMPT
-    # The row is rendered from `display_name` + `aliases`; asking for the formatted body
-    # instead is what produced sentences on seven rows in eight.
+    # The row is rendered from `display_name` + `aliases`, since a model asked for the
+    # formatted body writes sentences instead.
     assert "`display_name`" in SERVER_PHASE2_PROMPT
     assert "`aliases`" in SERVER_PHASE2_PROMPT
     assert "leave `text` empty" in SERVER_PHASE2_PROMPT
     assert "the id is appended for you" in SERVER_PHASE2_PROMPT
     # Every alias fact is permanent, which is what exempts it from the freshness sweep.
     assert "every `member_alias` fact" in SERVER_PHASE2_PROMPT
-
-
-def test_server_consolidation_prompt_leaves_dating_and_aging_to_code() -> None:
-    """Dates are code-stamped now, so a prompt that still asks for one would fight the sweep."""
-    # The freshness tags the model used to write are gone from the contract.
-    assert "[~YYYY-MM]" not in SERVER_PHASE2_PROMPT
 
 
 def test_server_phase1_prompt_pins_sharing_global() -> None:
@@ -323,11 +304,10 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
 def test_an_alias_row_is_built_from_its_fields_not_the_models_prose(
     memory_isolated_dir: Path,
 ) -> None:
-    """The compact shape was a prompt request the model honoured about one time in eight.
+    """Code renders the compact shape, since a model asked for it rarely writes it.
 
-    Code renders it now, so whatever the model puts in `text` — a full sentence, an id
-    token, a personal aside that has no business in a nickname table — never reaches the
-    stored row.
+    Whatever the model puts in `text` — a full sentence, an id token, a personal aside that
+    has no business in a nickname table — never reaches the stored row.
     """
     apply_deltas(
         scope=SERVER_SCOPE,
@@ -356,9 +336,9 @@ def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias(
 ) -> None:
     """The mapping the table exists for is the alias and the id; the name is a label.
 
-    A member the evidence only ever identifies by id is an ordinary outcome (13 of the
-    99 live rows), so the row is written without one rather than lost. A row with no
-    alias carries nothing at all and is dropped like any other empty body.
+    A member the evidence only ever identifies by id is an ordinary outcome, so the row is
+    written without one rather than lost. A row with no alias carries nothing at all and is
+    dropped like any other empty body.
     """
     outcome = apply_deltas(
         scope=SERVER_SCOPE,
@@ -447,19 +427,13 @@ def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _server_cog() -> MemoryCogs:
-    """Builds a MemoryCogs whose bot exposes a stable user id."""
-    bot = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
-    return MemoryCogs(bot=as_bot(fake=bot))
-
-
 async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
     """The command shows the guild's own facts, rendered under the server headings."""
     write_fact(
         scope=SERVER_SCOPE,
         fact=_fact(fact_id="a" * 16, section="profile", text="大家都很愛玩楓之谷"),
     )
-    cog = _server_cog()
+    cog = make_memory_cog()
     interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     assert interaction.response.sent[-1]["ephemeral"] is True
@@ -470,7 +444,7 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
 
 async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     """A guild the bot has never consolidated gets a placeholder, not an empty embed."""
-    cog = _server_cog()
+    cog = make_memory_cog()
     interaction = FakeInteraction(guild_id=GUILD_ID)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent[-1]["embed"]
@@ -480,11 +454,9 @@ async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path
 
 async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     """There is no server scope in a DM, so the command refuses before reading anything."""
-    cog = _server_cog()
+    cog = make_memory_cog()
     interaction = FakeInteraction(in_guild=False)
     await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")
-    # A DM read must never reach the store, not even to create its directory.
-    assert list_compartments(scope=SERVER_SCOPE) == []

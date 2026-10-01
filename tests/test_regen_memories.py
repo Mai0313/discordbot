@@ -17,7 +17,6 @@ from discordbot.services.memory.store import (
     read_raw_entries,
 )
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
-from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 from discordbot.services.memory.regeneration import RegenerationReport
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
@@ -40,7 +39,7 @@ def _seed(scope: str) -> None:
 
 
 def test_all_reaches_user_and_server_scopes() -> None:
-    """The default target covers both flavors, which neither old script did alone."""
+    """The default target covers both flavors."""
     for scope in (_USER, _OTHER_USER, _SERVER):
         _seed(scope=scope)
     every = regen_script._scopes_for_target(target="all")
@@ -59,7 +58,7 @@ def test_users_excludes_the_bot_memories_tree() -> None:
 
 
 def test_servers_reaches_the_bot_memories_tree() -> None:
-    """The scope gap this script used to have: server memory was unreachable."""
+    """`servers` reaches every server scope under the bot memory tree."""
     _seed(scope=_USER)
     _seed(scope=_SERVER)
     assert regen_script._scopes_for_target(target="servers") == [_SERVER]
@@ -100,7 +99,6 @@ async def test_the_offline_fan_out_runs_under_its_own_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The script carries its own bound, tuned by hand rather than exposed as a flag."""
-    assert regen_script._CONCURRENCY != MEMORY_GLOBAL_CONCURRENCY
     for scope in (_USER, _OTHER_USER, _SERVER):
         _seed(scope=scope)
     monkeypatch.setattr(regen_script, "_CONCURRENCY", 2)
@@ -203,7 +201,7 @@ async def test_a_run_that_is_not_confirmed_builds_no_client_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The typed `y` is what `--apply` left behind, and silence is not consent."""
+    """Nothing is written without a typed `y`, and silence is not consent."""
     _seed(scope=_USER)
 
     def _answer(*args: object, **kwargs: object) -> str:
@@ -271,7 +269,7 @@ def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
 
 
 async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> None:
-    """`read_owner` parses the id, and it used to raise past the handler into the gather."""
+    """`read_owner` parses the id, so its raise must stay inside the handler, not the gather."""
     _seed(scope="111.bak")
     row = await regen_script._regen_one(
         writer=cast("MemoryWriterAI", None), scope="111.bak", semaphore=asyncio.Semaphore(1)

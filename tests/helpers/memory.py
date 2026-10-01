@@ -1,10 +1,12 @@
-"""Builders for the memory store's stored facts and consolidation deltas, and a row reader.
+"""Builders for the memory store's stored facts and consolidation deltas, a row reader, and
+the `/memory` cog.
 
 Every default is an ordinary per-user preference, so a test names only the fields it is about.
 A fact carries no default owner: the owner is what a scope's stored identity is read back from,
 so each test module binds its own.
 """
 
+from types import SimpleNamespace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -16,6 +18,7 @@ from discordbot.typings.memory import (
     MemoryDurability,
     MemoryDeltaAction,
 )
+from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.services.memory.facts import node_type_for
 from discordbot.services.memory.store import GLOBAL_COMPARTMENT
 from discordbot.services.memory.writer import MemoryFactDelta
@@ -25,6 +28,8 @@ from discordbot.services.memory.database import (
     open_session,
     _row_to_model,
 )
+
+from tests.helpers.casting import as_bot
 
 # The moment a built fact was written and last confirmed, unless a test ages it on purpose.
 STAMPED_AT = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
@@ -99,3 +104,12 @@ async def get_job(scope: str) -> MemoryJob | None:
         )
         row = result.scalars().one_or_none()
         return _row_to_model(row=row) if row is not None else None
+
+
+def make_memory_cog() -> MemoryCogs:
+    """Builds a MemoryCogs instance around a stub bot.
+
+    `get_guild` answers None so a guild compartment's heading falls back to its id, the
+    same way it would for a server the bot has since left.
+    """
+    return MemoryCogs(bot=as_bot(fake=SimpleNamespace(get_guild=lambda _guild_id: None)))

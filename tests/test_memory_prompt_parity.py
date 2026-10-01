@@ -13,12 +13,17 @@ code applies to both flavors' consolidation output alike.
 
 These are anchors, not prose freezes. Reword a rule in both prompts and update the anchor with it;
 the test exists to make a rule vanishing from ONE of them loud.
+
+Each consolidation prompt's section list is held to its flavor's code allowlist as well, since
+a delta naming a section the code lacks is dropped.
 """
 
 import re
 
 import pytest
 
+from discordbot.typings.memory import MemoryFlavor
+from discordbot.services.memory.facts import sections_for_flavor
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
@@ -84,3 +89,15 @@ def test_both_consolidation_prompts_carry_the_same_rule(rule: str) -> None:
 
     for flavor, prompt in (("per-user", PHASE2_PROMPT), ("per-server", SERVER_PHASE2_PROMPT)):
         assert wanted in _normalized(text=prompt), f"{flavor} consolidation prompt lost: {rule}"
+
+
+@pytest.mark.parametrize(
+    ("flavor", "prompt"), [("user", PHASE2_PROMPT), ("server", SERVER_PHASE2_PROMPT)]
+)
+def test_each_consolidation_prompt_offers_exactly_its_flavors_sections(
+    flavor: MemoryFlavor, prompt: str
+) -> None:
+    """A section the prompt offers and the code lacks is dropped; one it omits is never written."""
+    block = prompt.split("SECTIONS:", maxsplit=1)[1].split("\n\n", maxsplit=1)[0]
+    offered = re.findall(pattern=r"^\* `([a-z_]+)`:", string=block, flags=re.MULTILINE)
+    assert set(offered) == sections_for_flavor(flavor=flavor)
