@@ -1,10 +1,10 @@
 """Where one turn's messages go, and what conversation it continues.
 
-Every reply the pipeline writes used to be a reply to a message in a channel the bot is a member
-of. `/ask` has neither half: a user-installed app is not in the channel it was invoked in, so it
-cannot send there, cannot read the history, and cannot react. All it holds is an interaction
-token, which buys unlimited edits of one original response plus a small number of follow-ups, and
-only for as long as Discord keeps that token alive.
+A gateway reply is a reply to a message in a channel the bot is a member of. `/ask` has neither
+half: a user-installed app is not in the channel it was invoked in, so it cannot send there,
+cannot read the history, and cannot react. All it holds is an interaction token, which buys
+unlimited edits of one original response plus a small number of follow-ups, and only for as long
+as Discord keeps that token alive.
 
 `TurnSurface` is that difference, and only that difference. It carries the turn's message, and
 `for_message` reproduces the gateway behaviour exactly, so the `on_message` path answers as it
@@ -29,7 +29,7 @@ Three notes on what it deliberately does not paper over:
 from typing import Any
 
 import logfire
-from nextcord import File, Embed, Message, DMChannel, ClientUser, Interaction, AllowedMentions
+from nextcord import File, Embed, Message, DMChannel, Interaction, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from nextcord.enums import InteractionContextType
@@ -38,7 +38,11 @@ from nextcord.utils import utcnow
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
-from discordbot.cogs.gen_reply.ask_message import interaction_channel, rebuild_conversation
+from discordbot.cogs.gen_reply.ask_message import (
+    build_ask_message,
+    interaction_channel,
+    rebuild_conversation,
+)
 
 # How many follow-up messages Discord lets a user-installed app POST per interaction while it is
 # not a member of the server (`interactions/receiving-and-responding.mdx:474`, read 2026-08-26).
@@ -147,16 +151,23 @@ class TurnSurface(BaseModel):
 
     @classmethod
     def for_interaction(
-        cls, *, message: Message, interaction: Interaction[commands.Bot]
+        cls, *, interaction: Interaction[commands.Bot], question: str
     ) -> "TurnSurface":
         """The `/ask` surface: answer through the interaction, read the conversation store.
+
+        The message is synthesized here from the same interaction, so its author and channel are
+        what the conversation store is read and written under.
 
         `bot_dm` is the one interaction context that is a 1:1 DM with the bot; `private_channel`
         covers both a group DM and a DM between two other people, neither of which is one, and
         the channel object cannot tell them apart (it is a `PartialMessageable` for all three).
+
+        Raises:
+            RuntimeError: The interaction names no channel or no user, which Discord never sends.
         """
+        channel = interaction_channel(interaction=interaction)
         return cls(
-            message=message,
+            message=build_ask_message(interaction=interaction, question=question, channel=channel),
             interaction=interaction,
             guild_id=interaction.guild_id,
             is_direct_message=interaction.context is InteractionContextType.bot_dm,
@@ -204,23 +215,12 @@ class TurnSurface(BaseModel):
         Returns:
             The message that landed.
         """
-        if self.interaction is not None:
-            return await self.send(
-                content=content,
-                embed=embed,
-                file=file,
-                files=files,
-                allowed_mentions=allowed_mentions,
-            )
-        return await self.message.channel.send(
-            **_payload(
-                content=content,
-                embed=embed,
-                file=file,
-                files=files,
-                allowed_mentions=allowed_mentions,
-            )
+        payload = _payload(
+            content=content, embed=embed, file=file, files=files, allowed_mentions=allowed_mentions
         )
+        if self.interaction is not None:
+            return await self.send(**payload)
+        return await self.message.channel.send(**payload)
 
     async def follow_up(
         self, *, previous: Message, content: str, allowed_mentions: AllowedMentions | None = None
@@ -235,27 +235,13 @@ class TurnSurface(BaseModel):
         Returns:
             The message carrying this chunk.
         """
-        if self.interaction is None:
-            return await previous.reply(
-                **_payload(
-                    content=content,
-                    embed=None,
-                    file=None,
-                    files=None,
-                    allowed_mentions=allowed_mentions,
-                )
-            )
-        self._followups_spent += 1
-        return await self.interaction.followup.send(
-            **_payload(
-                content=content,
-                embed=None,
-                file=None,
-                files=None,
-                allowed_mentions=allowed_mentions,
-            ),
-            wait=True,
+        payload = _payload(
+            content=content, embed=None, file=None, files=None, allowed_mentions=allowed_mentions
         )
+        if self.interaction is None:
+            return await previous.reply(**payload)
+        self._followups_spent += 1
+        return await self.interaction.followup.send(**payload, wait=True)
 
     async def fetch_history(self, *, limit: int) -> list[Message]:
         """The conversation before this turn, oldest first and at most `limit` messages.
@@ -272,11 +258,8 @@ class TurnSurface(BaseModel):
             ]
             history.reverse()
             return history
-        user = self.interaction.user
-        if user is None or self.interaction.channel_id is None:
-            return []
         turns = await load_ask_turns(
-            channel_id=self.interaction.channel_id, user_id=user.id, limit=limit // 2
+            channel_id=self.message.channel.id, user_id=self.message.author.id, limit=limit // 2
         )
         return rebuild_conversation(
             turns=turns,
@@ -285,7 +268,7 @@ class TurnSurface(BaseModel):
             channel=interaction_channel(interaction=self.interaction),
         )
 
-    async def mark(self, *, emoji: str, bot_user: ClientUser | None = None) -> None:
+    async def mark(self, *, emoji: str) -> None:
         """Puts a status or provenance reaction on the source message, where there is one.
 
         Refused rather than attempted on `/ask`: the synthesized message names nothing Discord
@@ -295,7 +278,7 @@ class TurnSurface(BaseModel):
         """
         if self.interaction is not None:
             return
-        await update_reaction(message=self.message, bot_user=bot_user, emoji=emoji)
+        await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
     async def hint(self, *, emoji: str) -> None:
         """Records that something best-effort was dropped, so it is never silent.
@@ -330,13 +313,10 @@ class TurnSurface(BaseModel):
         """
         if self.interaction is None:
             return
-        user = self.interaction.user
-        if user is None or self.interaction.channel_id is None:
-            return
         try:
             await record_ask_turn(
-                channel_id=self.interaction.channel_id,
-                user_id=user.id,
+                channel_id=self.message.channel.id,
+                user_id=self.message.author.id,
                 message_id=self.message.id,
                 question=self.message.content,
                 answer=answer,

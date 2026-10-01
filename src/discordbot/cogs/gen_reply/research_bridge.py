@@ -27,11 +27,16 @@ def can_launch_research(*, message: Message) -> bool:
     return has_research_permissions(channel=message.channel, member=message.guild.me)
 
 
+def _research_cog(*, bot: commands.Bot) -> commands.Cog | None:
+    """The loaded ResearchCogs cog, or None when it is not loaded."""
+    # Read defensively because the test bots are plain namespaces with no `get_cog`.
+    get_cog = getattr(bot, "get_cog", None)
+    return get_cog("ResearchCogs") if callable(get_cog) else None
+
+
 def in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:
     """Whether a channel id is a research thread the ResearchCogs cog is actively driving."""
-    get_cog = getattr(bot, "get_cog", None)
-    cog = get_cog("ResearchCogs") if callable(get_cog) else None
-    checker = getattr(cog, "is_research_thread", None)
+    checker = getattr(_research_cog(bot=bot), "is_research_thread", None)
     return bool(checker(channel_id=channel_id)) if checker is not None else False
 
 
@@ -43,9 +48,7 @@ async def maybe_launch_research(
     `anchor` is the bot's own reply message; the research thread hangs off it (more intuitive than
     the user's message), falling back to the user's message inside the cog when it is None.
     """
-    get_cog = getattr(bot, "get_cog", None)
-    cog = get_cog("ResearchCogs") if callable(get_cog) else None
-    launcher = getattr(cog, "launch", None)
+    launcher = getattr(_research_cog(bot=bot), "launch", None)
     if launcher is None:
         return
     # Best-effort boundary: the research launch must never break an already-delivered reply, so

@@ -48,8 +48,7 @@ from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
-from discordbot.cogs.gen_reply.ask_message import build_ask_message, interaction_channel
-from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI
+from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
 from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
@@ -76,8 +75,9 @@ class _MessageLogFields(TypedDict):
 def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
     """Standard Discord identifying fields for correlating one reply's logs.
 
-    The pipeline-entry log carries the full set; every downstream log carries only
-    `message_id` as the correlation key, so a whole turn reconstructs by grepping it.
+    The cog's arrival records and `gen_reply failed` carry the full set; every other log of the
+    turn carries only `message_id` as the correlation key, so a whole turn reconstructs by
+    grepping it.
     `user_name` is the stable handle, `display_name` the per-guild nickname;
     `guild_id` / `guild_name` are None in a DM.
 
@@ -231,11 +231,11 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _deliver_failure_notice(self, *, surface: TurnSurface, error_embed: Embed) -> None:
         """Shows the turn's failure, on the reply it was streaming into where there is one.
 
-        Half the turns that fail here already painted something (23 of 46 in one 2026-08-21 log),
-        and left beside that reply the embed reads as unrelated while the reply itself, carrying
-        no usage footer, reads as an answer that merely stopped. So the streamer is asked first
-        and takes the error onto its own message. Everything it turns down -- every failure
-        before the answer, and a retry notice already withdrawn -- gets a fresh message here.
+        Half the turns that fail here already painted something, and left beside that reply the
+        embed reads as unrelated while the reply itself, carrying no usage footer, reads as an
+        answer that merely stopped. So the streamer is asked first and takes the error onto its
+        own message. Everything it turns down -- every failure before the answer, and a retry
+        notice already withdrawn -- gets a fresh message here.
 
         Through the surface rather than `message.reply`, because on the `/ask` route a failure
         before the first content delta is the whole of what the user ever sees: there is no
@@ -340,7 +340,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.debug(
                 "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
             )
-            await surface.mark(emoji="❓", bot_user=self.bot.user)
+            await surface.mark(emoji=EMPTY_PROMPT_EMOJI)
             await surface.send(content="?")
             return
 
@@ -406,9 +406,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 since there is no message of theirs for it to hang off.
         """
         await interaction.response.defer()
-        channel = interaction_channel(interaction=interaction)
-        message = build_ask_message(interaction=interaction, question=question, channel=channel)
-        surface = TurnSurface.for_interaction(message=message, interaction=interaction)
+        surface = TurnSurface.for_interaction(interaction=interaction, question=question)
         user_prompt = await self.toolkit.input_builder.get_user_prompt(content=question)
         await self._start_turn(surface=surface, user_prompt=user_prompt)
 

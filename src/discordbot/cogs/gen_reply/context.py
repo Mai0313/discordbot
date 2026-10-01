@@ -312,14 +312,13 @@ class ReplyContextBuilder(BaseModel):
             media_capped=sum(over_budget.values()),
             message_id=self.message.id,
         )
-        # Names the block and stops there. The old wording invited the model to answer FROM the
-        # history ("that might be helpful for answering"), which competed with the Reference
-        # Message's own claim to be the primary context and lost the reply's subject to whatever
-        # in the window read as the most answerable thing. Where the subject may come from is a
-        # behaviour rule, so it lives in `REPLY_PROMPT` at developer authority instead. Keeping it
-        # out of here also keeps it out of the two other calls this render feeds, neither of which
-        # is answering a question: the media persona reply, and the memory review transcript,
-        # whose first message is this header verbatim.
+        # Names the block and stops there. Wording that invites the model to answer FROM the
+        # history competes with the Reference Message's own claim to be the primary context and
+        # loses the reply's subject to whatever in the window reads as the most answerable thing.
+        # Where the subject may come from is a behaviour rule, so it lives in `REPLY_PROMPT` at
+        # developer authority instead. Keeping it out of here also keeps it out of every other
+        # call this render feeds, none of which is answering a question; the memory review
+        # transcript opens with this header verbatim.
         header = system_block(text="==== Chat History: earlier messages in this channel. ====")
         return [header, *processed]
 
@@ -540,8 +539,8 @@ class ReplyContextBuilder(BaseModel):
 
         # The message author's tone-preference note is read directly for that one author
         # (their own preference for how the bot should sound, cross-server safe by
-        # construction) and injected on every reply with no selection phase, including one
-        # that runs with user memory off. One file read, no extra LLM call.
+        # construction) and injected on every reply with no selection phase. One file read, no
+        # extra LLM call.
         author_tone = read_tone(scope=user_scope(user_id=self.message.author.id))
         tone_block = render_tone_block(tone=author_tone) if author_tone else None
 

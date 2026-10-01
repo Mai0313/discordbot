@@ -396,7 +396,7 @@ class AnswerTurn(BaseModel):
             # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
-            await self.surface.mark(emoji=YOUTUBE_EMOJI, bot_user=self.toolkit.bot.user)
+            await self.surface.mark(emoji=YOUTUBE_EMOJI)
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
