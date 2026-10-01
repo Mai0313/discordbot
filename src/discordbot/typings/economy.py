@@ -67,7 +67,7 @@ def simple_interest(principal: int, monthly_rate_bps: int, days: int) -> int:
 
 
 def clamped_balance(balance: int, delta: int, allow_negative: bool) -> int:
-    """Returns the balance a manual adjustment of `delta` leaves.
+    """Returns the balance a signed `delta` leaves under the clamp rule.
 
     Unless `allow_negative`, a debit stops at zero and leaves a balance already at or below
     zero alone; a credit always applies in full.
