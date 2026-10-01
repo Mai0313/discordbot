@@ -904,7 +904,17 @@ def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
 
 
-def test_an_alias_row_cannot_be_given_someone_elses_id(memory_isolated_dir: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("小明[id: 999999999999999999](社群暱稱:明哥)", id="flat"),
+        # Stripping the inner token completes the outer one around it.
+        pytest.param("小明[id: [id: 1]999999999999999999](社群暱稱:明哥)", id="nested"),
+    ],
+)
+def test_an_alias_row_cannot_be_given_someone_elses_id(
+    memory_isolated_dir: Path, text: str
+) -> None:
     """The allowlist parser takes the FIRST `[id: N]` on a row, and an alias body is
     distilled from messages anyone in the server can write. Every id token is stripped
     from the body so only the code-stamped `subject_id` can ever survive.
@@ -916,7 +926,7 @@ def test_an_alias_row_cannot_be_given_someone_elses_id(memory_isolated_dir: Path
             fact_id="a" * 16,
             section="member_alias",
             durability="permanent",
-            text="小明[id: 999999999999999999](社群暱稱:明哥)",
+            text=text,
             subject_id=777,
         ),
     )
