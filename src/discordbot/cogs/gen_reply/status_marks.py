@@ -16,6 +16,8 @@ ANSWER_EMOJI: Final[str] = "<:message:1517560873000898860>"
 DONE_EMOJI: Final[str] = "<:greencheck:1517565102424068226>"
 FAILED_EMOJI: Final[str] = "<:redcross:1517565100838355016>"
 
+# Marks a message that asked for nothing, beside the bare `?` it is answered with.
+EMPTY_PROMPT_EMOJI: Final[str] = "❓"
 # Marks a spoken clip is being synthesized for the reply.
 VOICE_EMOJI: Final[str] = "<:voice:1517558121092878376>"
 # Marks a music clip is being rendered for the reply; there is no app emoji for music.
