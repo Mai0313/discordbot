@@ -166,10 +166,10 @@ class DouyinTransferError(DouyinError, LinkRetryableError):
 
     A read that stalled, never connected or was cut off part-way, or a Douyin 5xx, plus a media
     download whose retries all ran out, a CDN 429 included. Both earn the same reaction, since
-    the reader's next move is the same either way. They are separate classes because
-    `/download_video` and the AI reply answer with words rather than a mark, and telling
-    someone Douyin is refusing their requests when a read simply stalled sends them off to
-    wait out a wall that was never there.
+    the reader's next move is the same either way. They are separate classes because a caller
+    that answers in words rather than a mark must not tell someone Douyin is refusing their
+    requests when a read simply stalled: that sends them off to wait out a wall that was never
+    there.
     """
 
 

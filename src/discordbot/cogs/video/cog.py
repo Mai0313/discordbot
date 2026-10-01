@@ -53,7 +53,7 @@ _DOWNLOAD_FAILED = "-# 檔案無法下載"
 def douyin_failure_message(error: Exception) -> str:
     """Maps a Douyin failure to the message a user should see.
 
-    A bot wall, a missing post, a transfer that never finished and a stall are kept apart on
+    A bot wall, a missing post, a request that never got through and a stall are kept apart on
     purpose. Reporting any of them as a deleted post is the single worst outcome this feature
     can produce: it sends someone off to re-check a link that is perfectly fine. Only
     `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording,
