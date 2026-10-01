@@ -40,7 +40,7 @@ BROWSER_HEADERS: Final[dict[str, str]] = {
 }
 
 JSON_SCRIPT_RE: Final[re.Pattern[str]] = re.compile(
-    r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL
+    pattern=r'<script type="application/json"[^>]*>(.*?)</script>', flags=re.DOTALL
 )
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the

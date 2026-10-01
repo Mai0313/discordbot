@@ -267,7 +267,8 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
 # a tag added there cannot be missed here. Case-insensitive because the extraction is, and a
 # defusing pass stricter than what it defends against is no defence at all.
 _MARKER_TAG_RE = re.compile(
-    rf"</?({'|'.join(re.escape(name) for name in MARKER_TAG_NAMES)})>", flags=re.IGNORECASE
+    pattern=rf"</?({'|'.join(re.escape(pattern=name) for name in MARKER_TAG_NAMES)})>",
+    flags=re.IGNORECASE,
 )
 
 

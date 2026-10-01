@@ -68,7 +68,7 @@ _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 # characters ending on one a real shortcode or query value ends on, so a link written straight
 # after Chinese or Japanese text is matched without swallowing the terminator.
 INSTAGRAM_URL_RE = re.compile(
-    rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*instagram\.com/"
+    pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*instagram\.com/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
@@ -76,12 +76,12 @@ INSTAGRAM_URL_RE = re.compile(
 # is Instagram's base64url alphabet. `/reels/audio/<id>/` is a sound page rather than a post and
 # is refused here, since it otherwise parses with `audio` as the shortcode.
 _POST_PATH_RE = re.compile(
-    r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?!audio/)(?P<code>[A-Za-z0-9_-]+)"
+    pattern=r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?!audio/)(?P<code>[A-Za-z0-9_-]+)"
 )
 
 # A comment permalink hangs off the post path. It is parsed but never fetched: see the module
 # docstring for what that URL answers with.
-_COMMENT_PATH_RE = re.compile(r"/c/(?P<comment>[0-9]+)")
+_COMMENT_PATH_RE = re.compile(pattern=r"/c/(?P<comment>[0-9]+)")
 
 
 # Instagram's own media-type enum, as it appears on both a post and a carousel child.
