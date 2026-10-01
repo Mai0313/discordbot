@@ -80,14 +80,14 @@ Transfers and boards:
 
 Loans between members:
 
-- `/credit borrow` — ask another member for a loan; the lender accepts or rejects it with a button, and it is rejected automatically after 180 seconds
+- `/credit borrow` — ask another member for a loan; the lender accepts or rejects it with a button, and it is rejected automatically after 180 seconds, or at once if I restart before then
 - `/credit repay` — repay a lender
 - `/credit call` — collect from someone who borrowed from you
 - `/credit status` — every active personal contract you are on, as borrower or lender
 
 Central bank:
 
-- `/central_bank borrow` — request a loan from the central bank; a server administrator approves or rejects it with a button, and it is rejected automatically after 180 seconds
+- `/central_bank borrow` — request a loan from the central bank; a server administrator approves or rejects it with a button, and it is rejected automatically after 180 seconds, or at once if I restart before then
 - `/central_bank repay` — repay your central-bank loan
 - `/central_bank call` — server administrators only: forced collection, and only from someone who takes part in this server
 - `/central_bank status` — how much the central bank can still lend in this server

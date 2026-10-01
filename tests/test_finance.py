@@ -3,10 +3,12 @@
 from types import SimpleNamespace
 import asyncio
 from datetime import timedelta
+from functools import partial
 
 import pytest
 from sqlalchemy import text, select, update
 
+from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
@@ -44,7 +46,7 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.casting import as_bot, as_message, as_discord_bot, as_interaction
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
@@ -247,6 +249,53 @@ async def test_a_press_past_the_window_closes_the_panel_as_expired(
     assert view.is_finished()
     assert scheduled == [panel]
     assert await get_balance(user_id=2) == 1_000
+
+
+async def test_a_restart_rejects_the_requests_an_earlier_process_left_waiting() -> None:
+    """Their decision views died with that process, so nothing else would ever decide them.
+
+    One posted since this process started still has its view, and one already decided keeps
+    its outcome.
+    """
+    waiting = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    withdrawn = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=500
+    )
+    await cancel_loan_proposal(proposal_id=withdrawn.proposal_id, actor_id=1)
+    # Posted ten seconds before the restart, well inside its decision window.
+    for proposal in (waiting, withdrawn):
+        await _backdate_proposal(proposal_id=proposal.proposal_id, seconds=10)
+    started_at = database_now()
+    fresh = await create_central_bank_loan_request(
+        borrower_id=3, borrower_name="carol", amount=500
+    )
+
+    async def stop_after_the_startup_sweeps() -> None:
+        """Ends `on_ready` at the command sync, which everything after needs a live bot for."""
+        raise RuntimeError("stop")
+
+    stub = SimpleNamespace(
+        _initial_setup_done=False,
+        _startup_tasks=set(),
+        _started_at=started_at,
+        user=FakeUser(user_id=999, bot=True),
+        _count_registered_commands=partial(asyncio.sleep, delay=0),
+        sync_all_application_commands=stop_after_the_startup_sweeps,
+    )
+    with pytest.raises(RuntimeError, match="stop"):
+        await DiscordBot.on_ready(as_discord_bot(fake=stub))
+    await asyncio.gather(*stub._startup_tasks)
+
+    async with open_session() as session:
+        result = await session.execute(statement=select(LoanProposal.id, LoanProposal.status))
+        statuses = dict(result.tuples().all())
+    assert statuses == {
+        waiting.proposal_id: LoanProposalStatus.REJECTED,
+        withdrawn.proposal_id: LoanProposalStatus.CANCELED,
+        fresh.proposal_id: LoanProposalStatus.PENDING,
+    }
 
 
 async def test_only_the_named_lender_can_turn_a_request_down() -> None:

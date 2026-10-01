@@ -2,6 +2,7 @@
 
 from typing import Final
 import asyncio
+from datetime import UTC, datetime
 
 import logfire
 from nextcord import Message, NotFound, Forbidden, Interaction, HTTPException
@@ -43,6 +44,7 @@ DELETE FROM pending_game_message WHERE message_id = :message_id
 _LIST_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
 SELECT channel_id, message_id, guild_name, channel_name, user_name
 FROM pending_game_message
+WHERE :tracked_before IS NULL OR created_at < :tracked_before
 ORDER BY created_at ASC, message_id ASC
 """
 
@@ -115,10 +117,21 @@ async def _forget_public_message(message_id: int) -> None:
         )
 
 
-async def _list_pending_public_messages() -> list[PendingPublicMessage]:
-    """Lists all messages still waiting for cleanup."""
+async def _list_pending_public_messages(
+    tracked_before: datetime | None,
+) -> list[PendingPublicMessage]:
+    """Lists the messages still waiting for cleanup, recorded before `tracked_before` if given."""
+    # `created_at` is SQLite's own CURRENT_TIMESTAMP: UTC, to the whole second.
+    cutoff = (
+        tracked_before.astimezone(tz=UTC).strftime(format="%Y-%m-%d %H:%M:%S")
+        if tracked_before is not None
+        else None
+    )
     async with _database.open_session(engine=_engine) as session:
-        result = await session.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL))
+        result = await session.execute(
+            statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL),
+            params={"tracked_before": cutoff},
+        )
         return [PendingPublicMessage.model_validate(obj=dict(row)) for row in result.mappings()]
 
 
@@ -168,10 +181,16 @@ async def forget_public_message(message_id: int) -> None:
         )
 
 
-async def list_pending_public_messages() -> list[PendingPublicMessage]:
-    """Returns public messages left over from a previous process."""
+async def list_pending_public_messages(
+    tracked_before: datetime | None = None,
+) -> list[PendingPublicMessage]:
+    """Returns the public messages still waiting for cleanup.
+
+    Args:
+        tracked_before: Only rows recorded before this moment; every row when omitted.
+    """
     try:
-        return await _list_pending_public_messages()
+        return await _list_pending_public_messages(tracked_before=tracked_before)
     # Unlike a single lost bookkeeping row, an empty list disables the whole restart sweep for
     # this process, so every stale message stays on screen.
     except Exception as exc:
@@ -278,9 +297,15 @@ async def delete_public_message(
     return True
 
 
-async def delete_tracked_public_messages(bot: commands.Bot) -> None:
-    """Deletes persisted public responses left by an earlier bot process."""
-    records = await list_pending_public_messages()
+async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: datetime) -> None:
+    """Deletes persisted public responses left by an earlier bot process.
+
+    Args:
+        bot: The bot whose channels hold the messages.
+        tracked_before: When this process started. Interactions run before `on_ready` does, so
+            a row recorded since is a message this process still owns, a live view included.
+    """
+    records = await list_pending_public_messages(tracked_before=tracked_before)
     deleted_count = 0
     for record in records:
         try:

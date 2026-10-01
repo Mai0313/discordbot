@@ -42,6 +42,7 @@ from discordbot.typings.economy import (
 )
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.utils.message_cleanup import list_pending_public_messages
 
 from tests.helpers.casting import (
     as_bot,
@@ -54,9 +55,12 @@ from tests.helpers.casting import (
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
+    from typing import Unpack
     from collections.abc import Callable, Awaitable
 
     from nextcord.ext import commands
+
+    from tests.helpers.discord_mocks import DiscordPayload
 
 
 def _bot() -> commands.Bot:
@@ -690,6 +694,54 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     inspected_description = inspected_member.followup.sent[0]["embed"].description
     assert inspected_description is not None
     assert "Bob" in inspected_description
+
+
+@pytest.mark.parametrize(
+    argnames=("command", "kwargs"),
+    argvalues=[
+        (
+            "credit_borrow",
+            {
+                "member": FakeUser(user_id=2, name="bob"),
+                "amount": "100",
+                "monthly_rate_percent": 3.0,
+            },
+        ),
+        ("central_bank_borrow", {"amount": "100", "monthly_rate_percent": 3.0}),
+    ],
+    ids=["credit", "central_bank"],
+)
+async def test_a_loan_request_panel_is_recorded_for_the_restart_sweep(
+    monkeypatch: pytest.MonkeyPatch, command: str, kwargs: dict[str, object]
+) -> None:
+    """Its buttons die with the process, so a restart's sweep must be able to take it down."""
+    monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
+    monkeypatch.setattr(
+        economy, "create_central_bank_loan_request", fake_create_central_bank_request
+    )
+    monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), slash_command=True)
+    send_followup = interaction.followup.send
+
+    async def send_with_an_id_of_its_own(**payload: Unpack[DiscordPayload]) -> FakeDiscordMessage:
+        """Numbers each followup, since every fake message is otherwise id 1."""
+        message = await send_followup(**payload)
+        message.id = 100 + len(interaction.followup.sent)
+        return message
+
+    monkeypatch.setattr(interaction.followup, "send", send_with_an_id_of_its_own)
+
+    await getattr(EconomyCogs, command).callback(
+        EconomyCogs(bot=_bot()), as_interaction(fake=interaction), **kwargs
+    )
+
+    view = interaction.followup.sent[-1]["view"]
+    assert isinstance(view, views.LoanDecisionViewBase)
+    assert view.message is not None
+    assert [record.message_id for record in await list_pending_public_messages()] == [
+        view.message.id
+    ]
 
 
 async def test_central_bank_decision_buttons_require_admin_and_allow_self_approval(

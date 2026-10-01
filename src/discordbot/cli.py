@@ -18,11 +18,16 @@ from nextcord.errors import ApplicationError
 from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
+from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
 from discordbot.utils.message_cleanup import delete_tracked_public_messages
-from discordbot.services.economy.database import credit_with_repayment, record_guild_participant
+from discordbot.services.economy.database import (
+    credit_with_repayment,
+    record_guild_participant,
+    reject_loan_proposals_created_before,
+)
 
 
 class DiscordBot(commands.Bot):
@@ -51,6 +56,9 @@ class DiscordBot(commands.Bot):
         # boot with ExtensionFailed.
         self._load_cogs_sync()
         self._initial_setup_done = False
+        # Taken before the gateway connects: everything an earlier process recorded falls before
+        # it, and nothing this one records can, the interactions run ahead of `on_ready` included.
+        self._started_at = database_now()
         self._startup_tasks: set[asyncio.Task[None]] = set()
         # Process-local per-user cooldown for the flat message reward, so it
         # cannot be farmed by spamming. Resets on restart by design.
@@ -190,9 +198,16 @@ class DiscordBot(commands.Bot):
         # process sweeps what a previous one left rather than any one cog. Spawned ahead of the
         # command sync so a raise there cannot skip it.
         spawn_tracked(
-            coro=delete_tracked_public_messages(bot=self),
+            coro=delete_tracked_public_messages(bot=self, tracked_before=self._started_at),
             tasks=self._startup_tasks,
             name="delete-stale-public-responses",
+        )
+        # A loan request's decision view died with the process that posted it, so nothing else
+        # will ever decide one that process left waiting.
+        spawn_tracked(
+            coro=reject_loan_proposals_created_before(cutoff=self._started_at),
+            tasks=self._startup_tasks,
+            name="reject-stale-loan-requests",
         )
 
         logfire.info(
