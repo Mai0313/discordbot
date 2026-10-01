@@ -6,6 +6,7 @@ the real endpoint would take the whole deployment down with it.
 """
 
 import json
+import shutil
 from typing import IO, Any, Self
 from pathlib import Path
 import tempfile
@@ -690,6 +691,41 @@ def test_a_download_never_recreates_a_removed_output_folder(
     with pytest.raises(FileNotFoundError):
         downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
     assert not scratch.exists()  # nothing re-created it behind the caller's back
+
+
+def test_a_removed_output_folder_stops_a_download_already_streaming(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A scratch dir removed mid-transfer stops the file already being written, too.
+
+    Failing the next open stops only the next file, and a lone clip has none: an open handle
+    keeps taking writes after the removal, so the abandoned worker would pull the whole clip
+    into a deleted file.
+    """
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    pulled: list[int] = []
+
+    class _RemovedMidStream(_FakeResponse):
+        """Removes the scratch dir after the first chunk, the way a caller giving up would."""
+
+        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+            """Yields five chunks, recording each one pulled."""
+            for index in range(5):
+                if index == 1:
+                    shutil.rmtree(path=scratch)
+                pulled.append(index)
+                yield b"x" * chunk_size
+
+    calls = _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _RemovedMidStream()
+    )
+    downloader = DouyinDownloader(output_folder=scratch.as_posix())
+
+    with pytest.raises(FileNotFoundError):
+        downloader._download_to(url="https://cdn.test/clip.mp4", filename="clip.mp4")
+    assert pulled == [0, 1]  # nothing read past the chunk that arrived after the removal
+    assert len(calls) == 1  # a removal is not a stall worth retrying
 
 
 def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
