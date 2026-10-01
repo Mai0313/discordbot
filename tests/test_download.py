@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 
 import pytest
+from nextcord import Locale
 from requests.exceptions import RequestException
 
 from discordbot.cogs.video import cog as video
@@ -407,6 +408,14 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
 
     cog = VideoCogs(bot=as_bot(fake=object()))
     assert cog.download_video.options["quality"].default in presets
+
+
+def test_every_option_is_described_in_each_locale_the_command_is() -> None:
+    """An option left in English reads wrong under a command named in the caller's language."""
+    cog = VideoCogs(bot=as_bot(fake=object()))
+
+    for name, option in cog.download_video.options.items():
+        assert set(option.description_localizations or {}) == {Locale.zh_TW, Locale.ja}, name
 
 
 def test_a_quality_label_names_what_each_downloader_asks_for() -> None:

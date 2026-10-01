@@ -114,10 +114,18 @@ class VideoCogs(commands.Cog):
         interaction: Interaction[commands.Bot],
         url: str = SlashOption(
             description="Video URL, or the share text containing it (YouTube, Instagram, X, Douyin, etc.)",
+            description_localizations={
+                Locale.zh_TW: "影片連結,或含有連結的分享文字 (YouTube, Instagram, X, 抖音 等)",
+                Locale.ja: "動画のリンク、またはそれを含む共有テキスト (YouTube, Instagram, X, 抖音 など)",
+            },
             required=True,
         ),
         quality: VideoQuality = SlashOption(
             description="Video quality (higher quality = larger file size)",
+            description_localizations={
+                Locale.zh_TW: "影片畫質 (畫質越高,檔案越大)",
+                Locale.ja: "動画の画質 (高画質ほどファイルサイズが大きくなります)",
+            },
             required=False,
             default="best",
             choices=QUALITY_CHOICES,
