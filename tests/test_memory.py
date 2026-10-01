@@ -3048,18 +3048,31 @@ def _stopping_rebuild(stop: str, reached: asyncio.Event) -> MemoryAnswer:
     return answer
 
 
-@pytest.mark.parametrize("stop", ["call fails", "times out", "cancelled", "replay fails"])
+@pytest.mark.parametrize(
+    "stop", ["call fails", "times out", "cancelled", "raises", "replay fails"]
+)
 async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_replaced(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, stop: str
 ) -> None:
     """Until the replay has run everywhere, a replaced compartment can hold a forgotten fact.
 
     `global` is rebuilt first and re-derives the city a forget had removed; the run then stops
-    on the guild's call or in the replay itself. Recall would hand the city back in every
-    server and DM, and nothing but a rebuild that completes would remove it again (#893).
+    on the guild's call, on writing its result, or in the replay itself. Recall would hand the
+    city back in every server and DM, and nothing but a rebuild that completes would remove it
+    again (#893).
     """
     if stop == "times out":
         monkeypatch.setattr(regeneration, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 0.05)
+    if stop == "raises":
+        real_replace = regeneration._replace_compartment
+
+        def failing_replace(**kwargs: Any) -> int:  # noqa: ANN401 -- a pass-through of the real signature
+            """Fails writing the guild's rebuild, as a full disk would."""
+            if kwargs["compartment"] != GLOBAL_COMPARTMENT:
+                raise OSError("disk full")
+            return real_replace(**kwargs)
+
+        monkeypatch.setattr(regeneration, "_replace_compartment", failing_replace)
     _stage_forgotten_city()
     writer, fake_client = _writer()
     reached = asyncio.Event()
@@ -3070,6 +3083,9 @@ async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_r
         await reached.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
+            await task
+    elif stop == "raises":
+        with pytest.raises(OSError, match="disk full"):
             await task
     else:
         assert (await task).result == "failed"

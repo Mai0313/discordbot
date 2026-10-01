@@ -269,7 +269,8 @@ def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[Memory
             scope=run.scope, compartment=compartment, keep={fact.fact_id for fact in facts}
         )
     logfire.info(
-        "Memory regeneration stopped before its forget replay; replaced compartments restored",
+        "Memory regeneration stopped before its forget replay completed; "
+        "replaced compartments restored",
         scope=run.scope,
         compartments=sorted(replaced),
     )
