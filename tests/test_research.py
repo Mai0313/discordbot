@@ -365,6 +365,7 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
         terminal=_terminal_interaction(),
     )
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
 
     async def _persist(_interaction_id: str) -> None:
         return None
@@ -382,6 +383,11 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
     # The bound's worth of re-attaches that made no progress, plus the one that gave up.
     assert len(client.aio.interactions.stream_get_calls) == agent.MAX_STREAM_RECONNECTS + 1
     assert result.ok is True
+    assert [
+        (fields["interaction_id"], fields["error_type"])
+        for message, fields in warns
+        if message == "research stream failed; polling for the terminal result"
+    ] == [("int_9", "RuntimeError")]
 
 
 async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> None:
@@ -551,6 +557,69 @@ async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
     assert streamer._editor_task is None  # the cadence editor is always stopped in finally
 
 
+class _FailingStatusMessage:
+    """A status message every edit of which fails with `error`, counting the attempts."""
+
+    id = 7
+
+    def __init__(self, *, error: Exception, attempts_seen: int = 1) -> None:
+        """Initializes the failure and the attempt count that sets `seen`."""
+        self.error = error
+        self.attempts = 0
+        self.attempts_seen = attempts_seen
+        self.seen = asyncio.Event()
+
+    async def edit(self, **_kwargs: object) -> NoReturn:
+        """Fails the edit the way Discord does."""
+        self.attempts += 1
+        if self.attempts >= self.attempts_seen:
+            self.seen.set()
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("failure", "level"),
+    [(make_not_found(message="Unknown Message"), "info"), (make_forbidden(), "warn")],
+    ids=["status_deleted", "shut_out"],
+)
+async def test_a_status_message_that_can_no_longer_be_edited_stops_the_preview(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str
+) -> None:
+    """Neither failure clears on a retry, so the editor stops at once and says why, untraced."""
+    status = _FailingStatusMessage(error=failure)
+    streamer = ResearchProgressStreamer(
+        status=status, label="Antigravity", reasoning="thinking", preview_interval_seconds=0.01
+    )
+    records = {name: _recorded(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")}
+
+    await asyncio.wait_for(streamer._preview_editor(), timeout=5)
+
+    assert status.attempts == 1
+    assert [(name, fields) for name, found in records.items() for _, fields in found] == [
+        (level, {"message_id": 7})
+    ]
+
+
+async def test_a_failing_preview_edit_is_logged_once_and_the_editor_keeps_going(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient failure may clear, so the editor retries, but the log names it only once."""
+    status = _FailingStatusMessage(error=make_server_error(), attempts_seen=3)
+    streamer = ResearchProgressStreamer(
+        status=status, label="Antigravity", reasoning="thinking", preview_interval_seconds=0.01
+    )
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+
+    streamer._ensure_editor_started()
+    await asyncio.wait_for(status.seen.wait(), timeout=5)
+    await streamer._stop_editor()
+
+    assert [(message, fields["error_type"]) for message, fields in warns] == [
+        ("research preview edit failed; continuing the run", "HTTPException")
+    ]
+    assert warns[0][1]["_exc_info"] is not None
+
+
 # ----- research module helpers --------------------------------------------------------------
 
 
@@ -707,6 +776,8 @@ async def test_a_legacy_planning_row_no_longer_blocks_its_owner(
 
 class _FakeStatusMessage:
     """Records `edit` calls on the opening status message."""
+
+    id = 2
 
     def __init__(self) -> None:
         self.edits: list[dict[str, object]] = []
@@ -1388,6 +1459,8 @@ _THREAD_ID = 50
 class _RunStatus:
     """A run's opening status message, whose edits land in its thread's write log."""
 
+    id = 2
+
     def __init__(self, *, thread: "_RunThread") -> None:
         """Binds the status to the thread whose write log and failure it shares."""
         self.thread = thread
@@ -1689,9 +1762,14 @@ async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
     monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
     thread = _RunThread()
     cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
 
     await _resume_run(cog=cog)
 
+    # The same failure a fresh run reports at `error`: the report it was waiting for is lost.
+    assert [(message, fields["error_type"]) for message, fields in errors] == [
+        ("research resume failed", "RuntimeError")
+    ]
     assert [write["content"] for write in thread.writes] == [
         "-# Researching... (Antigravity)",
         "-# Research failed (Antigravity)",

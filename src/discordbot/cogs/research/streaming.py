@@ -17,11 +17,10 @@ coupled to the QA reply) nor extract a shared base from it.
 import time
 from typing import TYPE_CHECKING
 import asyncio
-import contextlib
 from collections.abc import AsyncIterator
 
 import logfire
-from nextcord import Message, AllowedMentions
+from nextcord import Message, NotFound, Forbidden, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 
@@ -70,6 +69,7 @@ class ResearchProgressStreamer(BaseModel):
     _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
     _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
     _displayed: str = PrivateAttr(default="")
+    _preview_error_logged: bool = PrivateAttr(default=False)
 
     def _feed(self, *, event: "InteractionSSEEvent") -> None:
         """Accumulates one event's thought-summary text; ignores every other event/delta.
@@ -129,14 +129,40 @@ class ResearchProgressStreamer(BaseModel):
         Stops via the event rather than task cancellation so an in-flight Discord write always
         lands before `deliver_report` reuses the same status message (a cancel could orphan it).
         """
+        message_id = self.status.id if self.status is not None else None
         while True:
             try:
                 await asyncio.wait_for(
                     self._editor_stop.wait(), timeout=self.preview_interval_seconds
                 )
             except TimeoutError:
-                with contextlib.suppress(Exception):
+                try:
                     await self._write_preview_snapshot()
+                except NotFound:
+                    logfire.info(
+                        "research status message deleted; stopping preview edits",
+                        message_id=message_id,
+                    )
+                    return
+                except Forbidden:
+                    # The thread's overwrites changed under the run; the id is the whole finding.
+                    logfire.warn(
+                        "research thread refused the preview edit; stopping preview edits",
+                        message_id=message_id,
+                    )
+                    return
+                except Exception as exc:
+                    # Broad: the preview is best-effort and must never end the run. A failed write
+                    # leaves the snapshot unadvanced, so the same error repeats every tick and only
+                    # the first is logged.
+                    if not self._preview_error_logged:
+                        self._preview_error_logged = True
+                        logfire.warn(
+                            "research preview edit failed; continuing the run",
+                            message_id=message_id,
+                            error_type=type(exc).__name__,
+                            _exc_info=exc,
+                        )
             else:
                 return
 
@@ -155,7 +181,7 @@ class ResearchProgressStreamer(BaseModel):
         try:
             await self._editor_task
         except Exception as exc:
-            # Broad: the editor already suppresses its own Discord writes, so anything here is
+            # Broad: the editor already catches its own Discord write failures, so anything here is
             # unexpected; swallowing keeps the preview best-effort. Catching Exception rather than
             # BaseException keeps cancellation propagating, as the stop-by-event contract needs.
             logfire.warn(

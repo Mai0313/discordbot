@@ -649,8 +649,13 @@ class ResearchCogs(commands.Cog):
                 interaction_id=session.interaction_id,
                 streamer=streamer,
             )
-        except Exception:
-            logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
+        except Exception as exc:
+            logfire.error(
+                "research resume failed",
+                thread_id=session.thread_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             await self._abandon_resume(session=session, thread=thread, status=status)
             return
         if thread is None:
