@@ -159,11 +159,15 @@ class MemoryCogs(commands.Cog):
     async def memory_server_show(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the bot's consolidated memory of the current server, paginated."""
         if interaction.guild is None:
-            # Per-server memory only exists inside a guild; there is no scope in DMs.
+            # Server memory is shown only where the bot is a member. A user install also runs this
+            # in servers the bot was never added to, which carry a guild id but resolve no guild.
+            description = (
+                "我沒有被加進這個伺服器，這個指令只能在我所在的伺服器裡使用。"
+                if interaction.guild_id is not None
+                else "這個指令只能在伺服器裡使用。"
+            )
             embed = Embed(
-                title=_SERVER_MEMORY_TITLE,
-                description="這個指令只能在伺服器裡使用。",
-                color=DISCORD_YELLOW,
+                title=_SERVER_MEMORY_TITLE, description=description, color=DISCORD_YELLOW
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return

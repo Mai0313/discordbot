@@ -516,3 +516,18 @@ async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     embed = interaction.response.sent[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")
+
+
+async def test_memory_server_show_refuses_a_server_the_bot_is_not_in(
+    memory_isolated_dir: Path,
+) -> None:
+    """A user install reaches servers the bot was never added to; the refusal says so."""
+    write_fact(scope=SERVER_SCOPE, fact=_fact(fact_id="a" * 16, text="大家都很愛玩楓之谷"))
+    cog = make_memory_cog()
+    interaction = FakeInteraction(guild_id=GUILD_ID)
+    interaction.guild = None
+    await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
+    embed = interaction.response.sent[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert "沒有被加進這個伺服器" in (embed.description or "")
+    assert "楓之谷" not in (embed.description or "")
