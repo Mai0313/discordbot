@@ -7,8 +7,9 @@ import asyncio
 
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
-from nextcord.ui import View, Modal, Button, TextInput, StringSelect
+from nextcord.ui import View, Button, TextInput, StringSelect
 
+from discordbot.utils.logged_ui import LoggedModal
 from discordbot.cogs.games.lobby import (
     PrepareParticipant,
     RefreshParticipants,
@@ -886,7 +887,7 @@ class DragonGateView(GameView):
         await self._send_notice(interaction=interaction, content=content)
 
 
-class DragonGateBetModal(Modal):
+class DragonGateBetModal(LoggedModal):
     """Modal for entering an exact 射龍門 bet amount."""
 
     def __init__(self, view: DragonGateView, minimum: int, maximum: int) -> None:

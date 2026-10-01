@@ -1,6 +1,6 @@
 """Shared helpers for game view interactions."""
 
-from typing import Any, Self, Unpack, ClassVar, TypedDict
+from typing import Any, Unpack, ClassVar, TypedDict
 import asyncio
 
 import logfire
@@ -8,6 +8,7 @@ from nextcord import Embed, Message, NotFound, Forbidden, Interaction, HTTPExcep
 from nextcord.ui import Item, View, Button
 from nextcord.ext import commands
 
+from discordbot.utils.logged_ui import LoggedView
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import report_press_failure, schedule_public_message_delete
@@ -27,7 +28,7 @@ class _FinalRenderFailureFields(TypedDict, total=False):
     reason: str
 
 
-class GameView(View):
+class GameView(LoggedView):
     """Failure logging, private notices and button disabling, shared by every game view.
 
     A subclass names its two log lines: `interaction_failure_log` for a control whose callback
@@ -36,17 +37,6 @@ class GameView(View):
 
     interaction_failure_log: ClassVar[str]
     notice_failure_log: ClassVar[str]
-
-    async def on_error(
-        self, error: Exception, item: Item[Self], interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Logs a control's failure instead of letting nextcord only print it to stderr."""
-        logfire.error(
-            self.interaction_failure_log,
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
 
     async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
         """Sends a private notice to the interacting user; a refusal is logged, never raised."""

@@ -6,10 +6,11 @@ import contextlib
 import logfire
 import nextcord
 from nextcord import Embed, ButtonStyle, Interaction
-from nextcord.ui import View, Button
+from nextcord.ui import Button
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.utils.logged_ui import LoggedView
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -156,7 +157,7 @@ def build_clear_cancelled_embed() -> Embed:
     )
 
 
-class _OriginBoundView(View):
+class _OriginBoundView(LoggedView):
     """A view that remembers the interaction it was sent on, so a timeout can reach it.
 
     Both memory views are ephemeral, which is why they need this: there is no message
