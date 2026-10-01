@@ -8,8 +8,10 @@ its own replies.
 
 import re
 
-# Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
-# bot-authored messages before feeding them back as `role=assistant` history.
+from discordbot.utils.model_pricing import get_token_rates
+
+# Strips the usage footer `render_usage_footer` renders from bot-authored messages before
+# feeding them back as `role=assistant` history.
 # Without this, the model performs in-context learning on its own past footers
 # and starts hallucinating fake "-# model · ⬆ ... ⬇ ... · $... · ..." lines into
 # fresh replies. Anchored on the `\n\n-# ` separator plus the ⬆/⬇ token-count
@@ -36,6 +38,29 @@ _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 # to end-of-body so a forward of someone else's words is never recorded as the forwarder's
 # own fact (forwarded text is always appended last, so the marker is the suffix boundary).
 FORWARDED_MESSAGE_MARKER = "[forwarded message]"
+
+
+def render_usage_footer(
+    model_name: str, label: str, input_tokens: int, output_tokens: int
+) -> tuple[str, float]:
+    """Renders the usage footer's model, token-count and cost line.
+
+    Its `⬆` / `⬇` icons are what `USAGE_FOOTER_RE` anchors on.
+
+    Args:
+        model_name: The model the tokens are priced as. Kept apart from `label` because a name
+            the price table does not know prices at zero, so pricing a label that carries
+            anything beyond the bare name (a reasoning effort) would show `$0.00000000`.
+        label: What the line shows as the model.
+        input_tokens: Input tokens the request reported.
+        output_tokens: Output tokens the request reported.
+
+    Returns:
+        The line, and the cost in dollars it shows.
+    """
+    input_rate, output_rate = get_token_rates(model_name=model_name)
+    cost = input_rate * input_tokens + output_rate * output_tokens
+    return f"-# {label} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}", cost
 
 
 def sanitize_identity(value: str) -> str:

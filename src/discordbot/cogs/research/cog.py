@@ -54,7 +54,7 @@ from discordbot.cogs.research.agent import (
     resume_research_stream,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
-from discordbot.utils.model_pricing import get_token_rates
+from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs.research.delivery import deliver_report, owner_allowed_mentions
@@ -532,8 +532,11 @@ class ResearchCogs(commands.Cog):
             )
             return
         try:
-            footer = _usage_footer(
-                agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
+            footer, _ = render_usage_footer(
+                model_name=agent,
+                label=agent,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
             )
             await deliver_report(
                 thread=thread,
@@ -816,20 +819,6 @@ class ResearchCogs(commands.Cog):
             # and a failed run's cleanup must still run around this post.
             logfire.warn(failed, thread_id=thread.id, error_type=type(exc).__name__, _exc_info=exc)
             return None
-
-
-def _usage_footer(*, agent: str, input_tokens: int, output_tokens: int) -> str:
-    """Builds the usage footer (full model name, tokens, cost) for a result.
-
-    Its `⬆` / `⬇` line is the shape `utils/llm_transcript.py::USAGE_FOOTER_RE` strips back out of
-    the bot's own history.
-
-    No memory-lookup line: research never reads memory. The agent string is the full model name;
-    rates come from the shared LiteLLM pricing table, so an unpriced preview agent shows $0.
-    """
-    input_rate, output_rate = get_token_rates(model_name=agent)
-    cost = input_rate * input_tokens + output_rate * output_tokens
-    return f"-# {agent} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}"
 
 
 def _failure_text(*, status: str) -> str:

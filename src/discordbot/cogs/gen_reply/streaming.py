@@ -18,9 +18,9 @@ from discordbot.typings.media import LoadedMedia
 from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
-from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
+from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -689,10 +689,16 @@ class ResponseStreamer(BaseModel):
 
     async def _finalize_reply(self) -> str:
         """Writes the usage footer and final reply once the stream is consumed."""
-        # The model the stream reports having answered from, which is not always the one that
-        # was dispatched: a LiteLLM fallback shows up here and nowhere else.
-        input_rate, output_rate = get_token_rates(model_name=self.model_name)
-        cost = input_rate * self.input_tokens + output_rate * self.output_tokens
+        # Priced as the model the stream reports having answered from, which is not always the
+        # one that was dispatched: a LiteLLM fallback shows up here and nowhere else.
+        usage_line, cost = render_usage_footer(
+            model_name=self.model_name,
+            label=f"{self.model_name} ({self.model_effort})"
+            if self.model_effort
+            else self.model_name,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+        )
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
         # The answer model may wrap <generate-voice> segments (spoken aloud, kept in the reply) plus
@@ -728,12 +734,8 @@ class ResponseStreamer(BaseModel):
             )
         elif names:
             memory_line = f"\n-# {MEMORY_READ_EMOJI} 讀了 {', '.join(names)} 的記憶"
-        # Footer format must stay matchable by `utils/llm_transcript.py::USAGE_FOOTER_RE`; the
-        # ⬆/⬇ icons are its anchor.
-        model_label = (
-            f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name
-        )
-        usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f}{memory_line}"
+        # `utils/llm_transcript.py::USAGE_FOOTER_RE` anchors on the blank line opening the footer.
+        usage_footer = f"\n\n{usage_line}{memory_line}"
 
         reply_chars = len(self.stored_content)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
