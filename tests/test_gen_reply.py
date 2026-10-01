@@ -6216,6 +6216,18 @@ async def test_an_empty_mention_is_marked_as_well_as_answered() -> None:
     assert [reply.content for reply in message.replies] == ["?"]
 
 
+async def test_an_empty_mention_deleted_before_its_answer_gets_nothing() -> None:
+    """A `?` answers nothing once its message is gone, so no error notice lands instead."""
+    cog = _cog()
+    message = FakeMessage(content="<@999>", author=FakeAuthor(user_id=1))
+    message.reply_error = make_invalid_form_body()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.added_reactions == ["❓"]
+    assert message.channel.sent == []
+
+
 async def test_a_reply_records_the_route_it_took(
     monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:

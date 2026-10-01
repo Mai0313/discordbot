@@ -331,7 +331,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
             )
             await surface.mark(emoji=EMPTY_PROMPT_EMOJI)
-            await surface.send(content="?")
+            try:
+                await surface.send(content="?")
+            except HTTPException as exc:
+                # A `?` means nothing without its message, so it is not sent unparented.
+                if not is_reply_target_gone(error=exc):
+                    raise
+                logfire.info("gen_reply empty prompt's message is gone", message_id=message.id)
             return
 
         logfire.info(
