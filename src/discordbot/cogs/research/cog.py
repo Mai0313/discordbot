@@ -72,9 +72,6 @@ THREAD_NAME_MAX = 90
 # How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
 # a word each of them spells for itself.
 type StartOutcome = Literal["started", "exists", "unsupported", "forbidden", "error"]
-# What either entry point answers for a `forbidden` or an `error` launch.
-FORBIDDEN_REPLY = "我在這個頻道的權限不夠,開不了研究串"
-ERROR_REPLY = "開研究串失敗了,等等再試一次"
 # The opening status line a fresh or a resumed run posts before its live view takes over.
 RESEARCHING_STATUS = f"{RESEARCHING_PREFIX} ({RESEARCH_LABEL})"
 # What that status line ends as when the run it announced ends without a report.
@@ -86,6 +83,22 @@ def _fallback_thread_name(*, brief: str) -> str:
     first_line = next((line.strip() for line in brief.splitlines() if line.strip()), "")
     title = first_line or "深度研究"
     return title[:THREAD_NAME_MAX]
+
+
+def _launch_reply(*, outcome: StartOutcome, thread_id: int | None) -> str:
+    """What either entry point tells the requester about a launch that ended with `outcome`.
+
+    `thread_id` is the run's thread for `started` and the owner's running one for `exists`.
+    """
+    if outcome == "started":
+        return f"開好了:<#{thread_id}>"
+    if outcome == "exists":
+        return f"你已經有一個深度研究在進行了:<#{thread_id}>"
+    if outcome == "unsupported":
+        return "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)"
+    if outcome == "forbidden":
+        return "我在這個頻道的權限不夠,開不了研究串"
+    return "開研究串失敗了,等等再試一次"
 
 
 def _terminal_phase(*, status: str) -> db.ResearchPhase:
@@ -179,21 +192,13 @@ class ResearchCogs(commands.Cog):
         """
         if not self.config.deep_research_available:
             return
-        outcome, existing = await self._start_for(
+        outcome, thread_id = await self._start_for(
             owner_id=message.author.id, brief=brief, anchor=anchor or message
         )
-        if outcome == "exists" and existing is not None:
-            content = f"你已經有一個深度研究在進行了:<#{existing}>"
-        elif outcome == "unsupported":
-            content = "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)"
-        elif outcome == "forbidden":
-            content = FORBIDDEN_REPLY
-        elif outcome == "error":
-            content = ERROR_REPLY
-        else:
+        if outcome == "started":
             return
         try:
-            await message.reply(content=content)
+            await message.reply(content=_launch_reply(outcome=outcome, thread_id=thread_id))
         except Forbidden:
             # The server's overwrites decide who may post here; the ids are the whole finding.
             logfire.warn(
@@ -257,8 +262,7 @@ class ResearchCogs(commands.Cog):
             return
         if interaction.user is None or not isinstance(interaction.channel, TextChannel):
             await interaction.response.send_message(
-                content="深度研究只能在伺服器的一般文字頻道開喔(私訊或討論串裡開不了 thread)",
-                ephemeral=True,
+                content=_launch_reply(outcome="unsupported", thread_id=None), ephemeral=True
             )
             return
         # Read for the bot's own member, whose token every later write uses, so a channel it cannot
@@ -266,7 +270,9 @@ class ResearchCogs(commands.Cog):
         if not has_research_permissions(
             channel=interaction.channel, member=interaction.channel.guild.me
         ):
-            await interaction.response.send_message(content=FORBIDDEN_REPLY, ephemeral=True)
+            await interaction.response.send_message(
+                content=_launch_reply(outcome="forbidden", thread_id=None), ephemeral=True
+            )
             return
         await interaction.response.defer(ephemeral=True)
         # Anchor the thread on a bot message so the same message-based create_thread path is reused.
@@ -285,25 +291,20 @@ class ResearchCogs(commands.Cog):
                 channel_id=interaction.channel.id,
                 owner_id=interaction.user.id,
             )
-            await interaction.edit_original_message(content=FORBIDDEN_REPLY)
+            await interaction.edit_original_message(
+                content=_launch_reply(outcome="forbidden", thread_id=None)
+            )
             return
-        outcome, existing = await self._start_for(
+        outcome, thread_id = await self._start_for(
             owner_id=interaction.user.id, brief=topic, anchor=anchor
         )
-        if outcome == "started" and existing is not None:
-            await interaction.edit_original_message(content=f"開好了:<#{existing}>")
-        elif outcome == "exists" and existing is not None:
+        if outcome != "started":
+            # Inert cleanup: the anchor announced a run that is not happening.
             with contextlib.suppress(Exception):
                 await anchor.delete()
-            await interaction.edit_original_message(content=f"你已經有一個在進行了:<#{existing}>")
-        elif outcome == "forbidden":
-            with contextlib.suppress(Exception):
-                await anchor.delete()
-            await interaction.edit_original_message(content=FORBIDDEN_REPLY)
-        else:
-            with contextlib.suppress(Exception):
-                await anchor.delete()
-            await interaction.edit_original_message(content=ERROR_REPLY)
+        await interaction.edit_original_message(
+            content=_launch_reply(outcome=outcome, thread_id=thread_id)
+        )
 
     async def _start_for(  # noqa: PLR0911 -- one early outcome per way a launch stops short
         self, *, owner_id: int, brief: str, anchor: "Message"

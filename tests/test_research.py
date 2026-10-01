@@ -1155,6 +1155,28 @@ async def test_a_marker_launch_says_so_when_the_thread_is_refused(
     ]
 
 
+async def test_both_entry_points_name_the_owners_running_research_alike(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second launch points at the running thread in one wording, however it was asked for."""
+    await _seed_researching(thread_id=_THREAD_ID, owner_id=_OWNER_ID)
+    channel = _text_channel()
+    request = _Anchor(channel=channel)
+    slash_anchor = _Anchor(channel=channel)
+    channel.send = AsyncMock(return_value=slash_anchor)
+    interaction = _ResearchInteraction(channel=channel)
+    interaction.user = FakeUser(user_id=_OWNER_ID)
+    cog = _launching_cog(monkeypatch=monkeypatch)
+
+    await cog.launch(message=as_message(fake=request), brief="b")
+    await cog.deep_research(as_interaction(fake=interaction), topic="topic")
+
+    running = f"你已經有一個深度研究在進行了:<#{_THREAD_ID}>"
+    assert [reply.get("content") for reply in request.replies] == [running]
+    assert [edit.get("content") for edit in interaction.edits] == [running]
+    assert slash_anchor.deleted is True
+
+
 async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
     research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
