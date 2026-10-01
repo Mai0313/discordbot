@@ -245,12 +245,12 @@ class FacebookOutput(LinkableCommentOutput):
 
 
 class FacebookConversation(LinkableComments[FacebookOutput]):
-    """One Facebook post and the discussion under it, shaped like `ThreadsConversation`.
+    """One Facebook post and the discussion under it.
 
     What the three inherited fields mean on Facebook. `chain` always has exactly one element —
-    Facebook serves no ancestor posts — and is a list only so `target` means the same here as it
-    does on Threads. `reply_branches` holds one branch per top-level comment, and what the page
-    preloads is a handful of a much longer thread, which is the one thing a caller must not
+    Facebook serves no ancestor posts — and is a list only so `target` means the same here as on
+    every other platform. `reply_branches` holds one branch per top-level comment, and what the
+    page preloads is a handful of a much longer thread, which is the one thing a caller must not
     present as the whole discussion. `selected_comment_id` is whatever a `?comment_id=` URL named.
     """
 
