@@ -15,25 +15,12 @@ from nextcord import Embed
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import SettleOutcome, BlackjackHistoryRecord, BlackjackHistoryPayload
+from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT
 from discordbot.cogs.games.presentation import PUSH_COLOR, delta_color
 
-# Embed description hard limit is 4096; keep headroom for the title, summary
-# line, code fences, and a possible truncation note.
-_DESCRIPTION_BUDGET: Final[int] = 3800
-_PLAYER_CELL_CAP: Final[int] = 26
-_DEALER_CELL_CAP: Final[int] = 16
-
-_RESULT_TAGS: Final[dict[SettleOutcome, str]] = {
-    "win": "WIN",
-    "lose": "LOSE",
-    "push": "PUSH",
-    "blackjack": "BJ",
-    "five_card_win": "5CARD",
-    "five_card_twenty_one": "5C21",
-    "player_bust": "BUST",
-    "dealer_bust": "WIN",
-    "surrender": "SUR",
-}
+# What the table's code block may take of the description, leaving room for the summary line
+# above it and the truncation note below it.
+_DESCRIPTION_BUDGET: Final[int] = DISCORD_EMBED_DESCRIPTION_LIMIT - 296
 
 
 class _HistorySummary(BaseModel):
@@ -100,14 +87,25 @@ def _dealer_cell(payload: BlackjackHistoryPayload) -> str:
 
 def _build_rows(records: Sequence[BlackjackHistoryRecord]) -> list[_Row]:
     """Pre-formats every record into a padding-ready row."""
+    result_tags: dict[SettleOutcome, str] = {
+        "win": "WIN",
+        "lose": "LOSE",
+        "push": "PUSH",
+        "blackjack": "BJ",
+        "five_card_win": "5CARD",
+        "five_card_twenty_one": "5C21",
+        "player_bust": "BUST",
+        "dealer_bust": "WIN",
+        "surrender": "SUR",
+    }
     return [
         _Row(
             when=record.created_at.strftime("%m/%d %H:%M"),
-            player=_truncate(text=_hand_cell(payload=record.payload), width=_PLAYER_CELL_CAP),
-            dealer=_truncate(text=_dealer_cell(payload=record.payload), width=_DEALER_CELL_CAP),
+            player=_truncate(text=_hand_cell(payload=record.payload), width=26),
+            dealer=_truncate(text=_dealer_cell(payload=record.payload), width=16),
             bet=f"{record.bet:,}",
             pnl=_signed(value=record.delta),
-            tag=_RESULT_TAGS.get(record.outcome, record.outcome.upper()),
+            tag=result_tags.get(record.outcome, record.outcome.upper()),
         )
         for record in records
     ]

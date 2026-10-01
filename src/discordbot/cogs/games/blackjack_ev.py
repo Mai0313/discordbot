@@ -85,9 +85,6 @@ def build_shoe_value_counts(*, shoe: list[Card]) -> tuple[int, ...]:
     return tuple(counts)
 
 
-_CARDS_PER_DECK: Final[int] = 52
-
-
 def compute_true_count(*, shoe: list[Card]) -> float:
     """Returns the Hi-Lo true count of the cards already dealt out of a shoe.
 
@@ -104,7 +101,7 @@ def compute_true_count(*, shoe: list[Card]) -> float:
     low_remaining = counts[0] + counts[1] + counts[2] + counts[3] + counts[4]
     high_remaining = counts[_TEN_BUCKET] + counts[_ACE_BUCKET]
     running_count = high_remaining - low_remaining
-    decks_remaining = len(shoe) / _CARDS_PER_DECK
+    decks_remaining = len(shoe) / 52
     return running_count / decks_remaining if decks_remaining > 0 else 0.0
 
 

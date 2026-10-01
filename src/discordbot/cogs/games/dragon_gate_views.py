@@ -913,14 +913,3 @@ class DragonGateBetModal(Modal):
     async def callback(self, interaction: Interaction[commands.Bot]) -> None:
         """Submits the custom bet amount back to the active table view."""
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
-
-
-__all__ = [
-    "DRAGON_GATE_ACTION_TIMEOUT_SECONDS",
-    "DragonGateBetModal",
-    "DragonGateLobbyView",
-    "DragonGateView",
-    "build_dragon_gate_final_embed",
-    "build_dragon_gate_in_progress_embed",
-    "build_dragon_gate_lobby_embed",
-]

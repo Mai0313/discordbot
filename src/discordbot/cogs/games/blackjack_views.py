@@ -1221,13 +1221,3 @@ class BlackjackView(GameView):
         """
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))
-
-
-__all__: list[str] = [
-    "MAX_BLACKJACK_PLAYERS",
-    "BlackjackLobbyView",
-    "BlackjackView",
-    "build_blackjack_lobby_embed",
-    "build_final_embeds",
-    "build_in_progress_embeds",
-]
