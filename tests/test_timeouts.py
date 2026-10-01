@@ -21,7 +21,7 @@ collection drew, and each is named here so the exclusion stays a decision someon
 import ast
 from pathlib import Path
 
-from tests.helpers.source_tree import PACKAGE, python_modules
+from tests.helpers.source_tree import PACKAGE, called_name, python_modules
 
 _TIMEOUTS_MODULE = PACKAGE / "typings" / "timeouts.py"
 
@@ -88,18 +88,9 @@ def _carries_a_bound(name: str) -> bool:
     return lowered in _TIMEOUT_KEYWORDS or lowered.endswith(_BOUND_NAME_SUFFIXES)
 
 
-def _called_name(node: ast.Call) -> str:
-    """The bare function name of a call, `asyncio.timeout(...)` reading as `timeout`."""
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
-    if isinstance(node.func, ast.Name):
-        return node.func.id
-    return ""
-
-
 def _call_offences(node: ast.Call) -> list[tuple[int, str]]:
     """Bounds passed to a call, as `(line, what)` pairs."""
-    called = _called_name(node)
+    called = called_name(node=node.func)
     position = _DEADLINE_POSITIONS.get(called)
     found: list[tuple[int, str]] = []
     if position is not None and len(node.args) > position and _is_number(node.args[position]):

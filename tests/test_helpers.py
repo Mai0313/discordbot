@@ -4,8 +4,6 @@ The redesigned suite leans on these extractors and invariant asserts, so they
 are pinned here against the real production renderers and database helpers.
 """
 
-from importlib import import_module
-
 from openai.types.responses import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.cogs.gen_reply.recall import (
@@ -139,24 +137,14 @@ def test_request_index_finds_the_answer() -> None:
     ]
 
 
-def test_every_link_source_block_is_known_to_the_helpers() -> None:
-    """Each registered source's top-level separators and notices are all in the table.
+def test_the_table_names_the_timeout_notice_each_source_injects() -> None:
+    """The table finds a timeout notice by its constant's name; the registry wires the one sent.
 
-    A text the table lacks reads as "no block", so `assert not has_link_context_block(...)` would
-    pass on a request that carries one. A `----` notice is a section inside a post's own block,
-    not a block of its own, so it is left out.
+    `has_timeout_notice` reads the table, so a source whose registry entry injects another text
+    would leave `assert not has_timeout_notice(...)` passing on a request that carries one.
     """
-    assert set(LINK_SOURCE_BLOCKS) == {source.name for source in LINK_CONTEXT_SOURCES}
-    for name, blocks in LINK_SOURCE_BLOCKS.items():
-        module = import_module(name=f"discordbot.cogs.gen_reply.link_sources.{name}")
-        shipped = {
-            value
-            for key, value in vars(module).items()
-            if key.endswith(("_SEPARATOR", "_NOTICE"))
-            and isinstance(value, str)
-            and value.startswith("====")
-        }
-        assert shipped == set(blocks.separators + blocks.notices), name
+    for source in LINK_CONTEXT_SOURCES:
+        assert LINK_SOURCE_BLOCKS[source.name].timeout_notice == source.timeout_notice, source.name
 
 
 # --- economy_invariants ------------------------------------------------------

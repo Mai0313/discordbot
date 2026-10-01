@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import inspect
-from pathlib import Path
 from functools import partial
 
 import pytest
@@ -29,8 +28,11 @@ from discordbot.services.economy.database import CreditResult
 
 from tests.helpers.casting import as_message, as_discord_bot
 from tests.helpers.discord_mocks import FakeUser
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from nextcord import Interaction
     from nextcord.ext import commands
     from nextcord.errors import ApplicationError
@@ -144,41 +146,77 @@ def _reward_bot(**state: object) -> SimpleNamespace:
     return bot
 
 
-def test_cli_load_cogs_sync_discovers_exactly_the_cog_directories(tmp_path: Path) -> None:
-    """Verifies synchronous cog loading discovers exactly the cog directories."""
+def _load_cogs_from(root: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], bool]]:
+    """Runs `_load_cogs_sync` over the `cogs/` tree under `root`, recording what it loads."""
     loaded: list[tuple[list[str], bool]] = []
 
     def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
         """Records modules passed to load_extensions."""
         loaded.append((modules, stop_at_error))
 
+    monkeypatch.setattr(target=cli, name="__file__", value=str(root / "cli.py"))
     bot = SimpleNamespace(load_extensions=record_load_extensions)
     cli.DiscordBot._load_cogs_sync(as_discord_bot(fake=bot))
-    assert loaded[0][1] is True
-    # An exact set, not a membership check: a discovery rule that grew a nested helper
-    # package or lost a cog would still contain any single name you happened to test for.
-    cogs_dir = Path(cli.__file__).resolve().parent / "cogs"
-    expected = {
-        f"discordbot.cogs.{entry.name}.cog"
-        for entry in cogs_dir.iterdir()
-        if entry.is_dir() and (entry / "cog.py").is_file()
-    }
-    assert set(loaded[0][0]) == expected
-    assert "discordbot.cogs.template.cog" in expected
+    return loaded
 
 
-async def test_cli_message_reward_pays_a_member_and_never_the_bot(
-    monkeypatch: pytest.MonkeyPatch,
+def _cog_entry(path: Path, files: tuple[str, ...]) -> None:
+    """Creates one directory under `cogs/` holding the named empty files."""
+    path.mkdir(parents=True)
+    for name in files:
+        (path / name).touch()
+
+
+def test_cli_load_cogs_sync_loads_each_cog_directory_and_skips_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A member's message earns the base reward; the bot's own message earns nothing."""
-    rewards: list[dict[str, Any]] = []
+    """A directory holding `__init__.py` and `cog.py` loads; a plain file or `_` entry does not.
+
+    The scan stays one level deep, so a cog's own helper subpackage is never handed to the
+    loader, and one exact call pins both the list and `stop_at_error`.
+    """
+    cogs = tmp_path / "cogs"
+    _cog_entry(path=cogs / "beta", files=("__init__.py", "cog.py"))
+    _cog_entry(path=cogs / "alpha", files=("__init__.py", "cog.py", "views.py"))
+    _cog_entry(path=cogs / "alpha" / "helpers", files=("__init__.py",))
+    _cog_entry(path=cogs / "_draft", files=("__init__.py",))
+    _cog_entry(path=cogs / "__pycache__", files=())
+    (cogs / "stray.py").touch()
+
+    loaded = _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
+
+    assert loaded == [(["discordbot.cogs.alpha.cog", "discordbot.cogs.beta.cog"], True)]
+
+
+@pytest.mark.parametrize(argnames="present", argvalues=["__init__.py", "cog.py"])
+def test_cli_load_cogs_sync_refuses_a_directory_that_is_not_a_cog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, present: str
+) -> None:
+    """A cog directory missing either file stops boot instead of silently never loading."""
+    _cog_entry(path=tmp_path / "cogs" / "half_moved", files=(present,))
+
+    with pytest.raises(RuntimeError, match="half_moved is under cogs/ but is not a cog"):
+        _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
+
+
+@pytest.fixture
+def rewards(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every credit the message reward asks for, recorded instead of paid."""
+    recorded: list[dict[str, Any]] = []
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records base reward arguments and returns a fake credit result."""
-        rewards.append(kwargs)
-        return CreditResult(new_balance=5_000)
+        recorded.append(kwargs)
+        return CreditResult(new_balance=10)
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    return recorded
+
+
+async def test_cli_message_reward_pays_a_member_and_never_the_bot(
+    rewards: list[dict[str, Any]],
+) -> None:
+    """A member's message earns the base reward; the bot's own message earns nothing."""
     bot = _reward_bot()
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
     await cli.DiscordBot.on_message(
@@ -193,16 +231,9 @@ async def test_cli_message_reward_pays_a_member_and_never_the_bot(
 
 
 async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
-    monkeypatch: pytest.MonkeyPatch,
+    rewards: list[dict[str, Any]],
 ) -> None:
     """A second message within the cooldown earns nothing; a later one earns again."""
-    rewards: list[dict[str, Any]] = []
-
-    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
-        rewards.append(kwargs)
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     bot = _reward_bot()
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
@@ -217,16 +248,9 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
 
 
 async def test_cli_message_reward_cooldown_prunes_expired_users(
-    monkeypatch: pytest.MonkeyPatch,
+    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Expired per-user cooldown slots are dropped lazily on later messages."""
-    rewards: list[dict[str, Any]] = []
-
-    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
-        rewards.append(kwargs)
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
     bot = _reward_bot(_message_reward_at={1: 900.0, 2: 975.0})
 
@@ -310,17 +334,11 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
 
     This is the only command-error surface the bot actually has: it registers no prefix
     commands and never passes `command_prefix`, so nextcord defaults it to `()` and
-    `get_context` can never resolve one — which is why the `on_command_*` pair that used to
-    live here could not fire. nextcord's own default prints to `sys.stderr`, which
-    `_TeeStream` does not tee, so before this the traceback reached no file at all.
+    `get_context` can never resolve one, which leaves no `on_command_*` handler able to fire.
+    nextcord's own default prints to `sys.stderr`, which `_TeeStream` does not tee, so without
+    this override the traceback reaches no file at all.
     """
-    logged: list[dict[str, Any]] = []
-
-    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the unhandled-command-error log."""
-        logged.append(kwargs)
-
-    monkeypatch.setattr(cli.logfire, "error", record_error)
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True))
     interaction = SimpleNamespace(
         application_command=SimpleNamespace(qualified_name="demo"),
@@ -332,9 +350,10 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
         cast("Interaction[commands.Bot]", interaction),
         cast("ApplicationError", ApplicationInvokeError(ValueError("boom"))),
     )
-    assert logged[-1]["error_type"] == "ValueError"
-    assert logged[-1]["command"] == "demo"
-    assert logged[-1]["guild_id"] == 1
+    _message, fields = logged[-1]
+    assert fields["error_type"] == "ValueError"
+    assert fields["command"] == "demo"
+    assert fields["guild_id"] == 1
 
 
 async def test_cli_reports_an_exception_from_any_event_handler(
@@ -346,13 +365,7 @@ async def test_cli_reports_an_exception_from_any_event_handler(
     listener into `on_error`, whose default prints to `sys.stderr` — untee'd, so an
     `on_message` or an expansion cog's `on_ready` sweep that raised left no line at all.
     """
-    logged: list[dict[str, Any]] = []
-
-    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the unhandled-event log."""
-        logged.append(kwargs)
-
-    monkeypatch.setattr(cli.logfire, "error", record_error)
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     try:
         raise ValueError("boom")
     except ValueError:
@@ -362,8 +375,9 @@ async def test_cli_reports_an_exception_from_any_event_handler(
             as_discord_bot(fake=SimpleNamespace()), "on_message", SimpleNamespace()
         )
 
-    assert logged[-1]["event_method"] == "on_message"
-    assert isinstance(logged[-1]["_exc_info"], ValueError)
+    _message, fields = logged[-1]
+    assert fields["event_method"] == "on_message"
+    assert isinstance(fields["_exc_info"], ValueError)
 
 
 async def test_cli_counts_registered_commands_and_survives_a_failed_read(
@@ -374,13 +388,7 @@ async def test_cli_counts_registered_commands_and_survives_a_failed_read(
     It is a diagnostic taken on the way into the sync, so a read that fails costs a log
     field rather than the boot.
     """
-    warned: list[dict[str, Any]] = []
-
-    def record_warn(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the could-not-read warning."""
-        warned.append(kwargs)
-
-    monkeypatch.setattr(cli.logfire, "warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     async def two_registered(**_kwargs: Any) -> list[object]:  # noqa: ANN401 -- nextcord's own signature
         """Stands in for Discord answering with two registered commands."""

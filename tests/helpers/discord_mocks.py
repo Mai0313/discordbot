@@ -34,7 +34,6 @@ class DiscordPayload(TypedDict, total=False):
     allowed_mentions: AllowedMentions
     mention_author: bool
     attachments: list[Attachment]
-    message_id: int
 
 
 class OriginalEditPayload(TypedDict, total=False):
@@ -82,7 +81,6 @@ class FakeResponse:
         self.deferred_ephemeral = False
         self.sent: list[DiscordPayload] = []
         self.edited: list[DiscordPayload] = []
-        self.modals: list[object] = []
 
     async def defer(self, ephemeral: bool = False) -> None:
         """Records that the interaction response was deferred."""
@@ -98,8 +96,8 @@ class FakeResponse:
         self.edited.append(kwargs)
 
     async def send_modal(self, modal: object) -> None:
-        """Records a modal opened in response to the interaction."""
-        self.modals.append(modal)
+        """Accepts a modal opened in response to the interaction."""
+        del modal
 
     def is_done(self) -> bool:
         """Returns whether the fake response has already been used."""
@@ -107,21 +105,16 @@ class FakeResponse:
 
 
 class FakeFollowup:
-    """Interaction followup stub that records sends and edits."""
+    """Interaction followup stub that records sends."""
 
     def __init__(self) -> None:
-        """Initializes recorded followup sends and edits."""
+        """Initializes recorded followup sends."""
         self.sent: list[DiscordPayload] = []
-        self.edited: list[DiscordPayload] = []
 
     async def send(self, **kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
         """Records the followup payload and returns a fake message."""
         self.sent.append(kwargs)
         return FakeDiscordMessage()
-
-    async def edit_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records a followup message edit payload."""
-        self.edited.append(kwargs)
 
 
 class FakeDiscordMessage:
@@ -251,7 +244,6 @@ class FakeInteraction:
         guild_id: int = 100,
         guild_name: str = "test guild",
         channel_id: int = 200,
-        locale: str = "zh-TW",
         administrator: bool = False,
         custom_id: str | None = None,
     ) -> None:
@@ -277,7 +269,6 @@ class FakeInteraction:
         self.guild_id: int | None = guild_id if in_guild else None
         self.permissions = SimpleNamespace(administrator=administrator)
         self.channel_id = channel_id
-        self.locale = locale
         self.response = FakeResponse()
         self.followup = FakeFollowup()
         self.edit_failure: Exception | None = None

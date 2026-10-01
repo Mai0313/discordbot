@@ -29,16 +29,17 @@ from io import StringIO
 import ast
 from copy import deepcopy
 from typing import TYPE_CHECKING
-from pathlib import Path
 import tokenize
 from itertools import combinations
 
 from pydantic import Field, BaseModel, ConfigDict
 
+from tests.helpers.source_tree import REPO_ROOT, called_name
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-_TESTS = Path(__file__).resolve().parent
+_TESTS = REPO_ROOT / "tests"
 _MUTATING_METHODS = frozenset({"__iadd__", "append", "extend", "insert"})
 _ORDER_INDEPENDENT_CALLS = frozenset({
     "Counter",
@@ -70,13 +71,7 @@ _COMMUTATIVE_COMPARISONS = (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)
 
 
 class OrderAssertion(BaseModel):
-    """One exact recorder-order assertion without a documented contract.
-
-    Attributes:
-        test_name: Name of the test function holding the assertion.
-        lineno: 1-indexed line the assertion starts on.
-        recorders: Recorder names the assertion compares in order.
-    """
+    """One exact recorder-order assertion without a documented contract."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -91,22 +86,13 @@ class OrderAssertion(BaseModel):
     )
 
 
-def _called_name(node: ast.expr) -> str:
-    """Returns the bare name of a call target, or an empty string for another expression."""
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return ""
-
-
 def _is_list_initializer(node: ast.expr | None) -> bool:
     """Whether an assignment creates a list that can record test-double calls."""
     if isinstance(node, (ast.List, ast.ListComp)):
         return True
     if isinstance(node, ast.IfExp):
         return _is_list_initializer(node.body) and _is_list_initializer(node.orelse)
-    return isinstance(node, ast.Call) and _called_name(node.func) == "list"
+    return isinstance(node, ast.Call) and called_name(node=node.func) == "list"
 
 
 def _list_assignment_names(target: ast.expr, value: ast.expr | None) -> set[str]:
@@ -464,7 +450,7 @@ def _normalizer_encodes_positions(node: ast.AST, *, recorders: set[str]) -> bool
             return True
         if (
             isinstance(child, ast.Call)
-            and _called_name(child.func) not in safe_nested_calls
+            and called_name(node=child.func) not in safe_nested_calls
             and _referenced_recorders(child, recorders=recorders)
         ):
             return True
@@ -478,8 +464,8 @@ class _RecorderExpressionVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         """Skips calls that deliberately remove or ignore order."""
-        if _called_name(
-            node.func
+        if called_name(
+            node=node.func
         ) in _ORDER_INDEPENDENT_CALLS and not _normalizer_encodes_positions(
             node, recorders=self.recorders
         ):
@@ -643,7 +629,7 @@ def _keyed_sort(node: ast.Call) -> bool:
     `sorted([calls[0], calls[1]], key=len)` really does depend on which record arrived first.
     Every other member of `_ORDER_ERASING_CALLS` reduces to something a tie cannot leak through.
     """
-    return _called_name(node.func) == "sorted" and any(
+    return called_name(node=node.func) == "sorted" and any(
         keyword.arg in (None, "key") for keyword in node.keywords
     )
 
@@ -706,7 +692,7 @@ class _PositionCanonicalizer(ast.NodeTransformer):
     def visit_Call(self, node: ast.Call) -> ast.expr:
         """Normalizes a literal container handed to a call that discards its order."""
         self.generic_visit(node)
-        if _called_name(node.func) in _ORDER_ERASING_CALLS and not _keyed_sort(node):
+        if called_name(node=node.func) in _ORDER_ERASING_CALLS and not _keyed_sort(node):
             for argument in node.args:
                 if isinstance(argument, (ast.List, ast.Set, ast.Tuple)):
                     argument.elts = _sorted_by_dump(argument.elts)
@@ -776,7 +762,7 @@ def _pinned_recorder_lengths(
             for call, expected in (operands, operands[::-1]):
                 if not (
                     isinstance(call, ast.Call)
-                    and _called_name(call.func) == "len"
+                    and called_name(node=call.func) == "len"
                     and len(call.args) == 1
                     and isinstance(call.args[0], ast.Name)
                     and call.args[0].id in recorders

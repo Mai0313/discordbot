@@ -56,11 +56,19 @@ def test_no_view_callback_shadows_the_base_view_api() -> None:
     """
     _import_every_module()
     reserved = set(dir(View))
-    offenders = sorted(
-        f"{cls.__module__}.{cls.__qualname__}.{callback.__name__}"
+    callbacks = [
+        (cls, callback)
         for cls in _view_subclasses()
         if cls.__module__.startswith("discordbot.")
         for callback in getattr(cls, "__view_children_items__", ())
+    ]
+    offenders = sorted(
+        f"{cls.__module__}.{cls.__qualname__}.{callback.__name__}"
+        for cls, callback in callbacks
         if callback.__name__ in reserved
     )
+
+    # The callbacks are read off a private nextcord attribute, so a rename there would empty the
+    # sweep and pass it.
+    assert callbacks, "the sweep found no view callbacks"
     assert not offenders, f"view callbacks shadowing the base View API: {offenders}"

@@ -4,24 +4,14 @@ import asyncio
 
 import pytest
 
-from discordbot.utils import asyncio_locks
 from discordbot.utils.asyncio_locks import spawn_tracked
 
-
-def _recorded_errors(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
-    """Captures what the spawner reports."""
-    errors: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        target=asyncio_locks.logfire,
-        name="error",
-        value=lambda message, **fields: errors.append((message, fields)),
-    )
-    return errors
+from tests.helpers.logfire_capture import capture_logs
 
 
 async def test_a_task_is_held_until_it_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
     """The owner's set is the strong reference, and a clean finish reports nothing."""
-    errors = _recorded_errors(monkeypatch=monkeypatch)
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
     release = asyncio.Event()
     tasks: set[asyncio.Task[None]] = set()
 
@@ -41,7 +31,7 @@ async def test_an_escaped_failure_is_logged_with_the_task_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failure the coroutine did not handle lands in the log instead of `sys.stderr`."""
-    errors = _recorded_errors(monkeypatch=monkeypatch)
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
     tasks: set[asyncio.Task[None]] = set()
 
     async def fail() -> None:
@@ -64,7 +54,7 @@ async def test_a_cancelled_task_is_released_quietly(monkeypatch: pytest.MonkeyPa
     the loop's exception handler rather than to anything the test awaits, so that handler is
     what has to stay silent.
     """
-    errors = _recorded_errors(monkeypatch=monkeypatch)
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
     loop = asyncio.get_running_loop()
     loop_errors: list[dict[str, object]] = []
     previous_handler = loop.get_exception_handler()
