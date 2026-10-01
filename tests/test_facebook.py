@@ -263,7 +263,7 @@ def test_a_url_that_names_no_post_is_refused(url: str) -> None:
 
 
 def test_an_fb_watch_link_does_not_shadow_a_post_link_after_it() -> None:
-    """Every caller acts on the first match alone, so an `fb.watch` link must not take it."""
+    """Logged out an `fb.watch` link carries no post, so it must not take the first match."""
     match = FACEBOOK_URL_RE.search(string=f"see https://fb.watch/72TEK5emY-/ and {_PERMALINK}")
 
     assert match is not None
