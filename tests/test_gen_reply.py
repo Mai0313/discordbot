@@ -1528,6 +1528,33 @@ async def test_streaming_reraises_non_deletion_edit_errors() -> None:
         await _streamer(message=message, reply=reply).stream(responses=_stream_events())
 
 
+async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A channel that refuses the live preview is reported once by id and never asked again."""
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = make_forbidden()
+    streamer = _streamer(
+        message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
+    )
+    streamer.content_started = True
+    streamer.stored_content = "partial answer"
+    warned: list[tuple[str, dict[str, object]]] = []
+
+    def record_warn(message_text: str, **fields: object) -> None:
+        """Keeps every warn record with its fields."""
+        warned.append((message_text, fields))
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.logfire.warn", record_warn)
+
+    await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
+
+    assert warned == [
+        ("Channel refused a preview write; stopping preview edits", {"message_id": message.id})
+    ]
+
+
 async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     """Media requested on a since-deleted reply is dropped silently, with no ⚠️ on the source."""
     message = FakeMessage()
@@ -5183,6 +5210,14 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
+    started: list[dict[str, object]] = []
+
+    def record_info(message_text: str, **fields: object) -> None:
+        """Keeps the fields of the route's start record."""
+        if message_text == "gen_reply image generation start":
+            started.append(fields)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.logfire.info", record_info)
     message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes())
@@ -5194,6 +5229,8 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
 
     assert _recorded(cog).images.edit_calls == 1
     assert _recorded(cog).images.generate_calls == 0
+    # The message replies to nothing, yet its own image is what makes this an edit.
+    assert [fields["has_source_images"] for fields in started] == [True]
 
 
 async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
@@ -8112,7 +8149,9 @@ async def test_streamer_footer_shows_route_effort() -> None:
     assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
 
 
-async def test_route_classify_carries_decision_and_defaults_qa() -> None:
+async def test_route_classify_carries_decision_and_defaults_qa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The route classifies the reply mode and grades effort; unparsed output falls back to QA."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -8124,11 +8163,17 @@ async def test_route_classify_carries_decision_and_defaults_qa() -> None:
     assert routed.link_context_sources == ["threads", "bilibili"]
     assert routed.effort == "low"
 
+    warned: list[str] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.routing.logfire.warn", _message_recorder(into=warned)
+    )
     _recorded(cog).responses.output_parsed = None
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
     assert fallback.effort == "high"
+    # Nothing raised, so this record is the only trace that the route was never read.
+    assert warned == ["RouteClassification returned no parsed output; defaulting to QA"]
 
 
 async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:

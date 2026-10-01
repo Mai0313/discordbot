@@ -674,7 +674,8 @@ class MessageInputBuilder(BaseModel):
                 logfire.warn(
                     "gen_reply failed to render message for routing",
                     message_id=message.id,
-                    _exc_info=True,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
                 )
             else:
                 logfire.warn(

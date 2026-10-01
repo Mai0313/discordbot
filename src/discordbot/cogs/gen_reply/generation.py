@@ -197,7 +197,7 @@ class ImageGenerator(BaseModel):
 
         async def _dispatch() -> str | None:
             if image_bytes_list:
-                result = await self.client.images.edit(
+                responses = await self.client.images.edit(
                     image=image_bytes_list,
                     prompt=prompt or "Edit or refine according to the attached content.",
                     model=self.image_model.name,
@@ -208,7 +208,7 @@ class ImageGenerator(BaseModel):
                     extra_headers={"x-litellm-end-user-id": end_user_id},
                 )
             else:
-                result = await self.client.images.generate(
+                responses = await self.client.images.generate(
                     prompt=prompt,
                     model=self.image_model.name,
                     n=1,
@@ -217,7 +217,7 @@ class ImageGenerator(BaseModel):
                     size="auto",
                     extra_headers={"x-litellm-end-user-id": end_user_id},
                 )
-            return result.data[0].b64_json if result.data else None
+            return responses.data[0].b64_json if responses.data else None
 
         for attempt in range(2):
             image_b64 = await _dispatch()
@@ -570,27 +570,30 @@ class VideoGenerator(BaseModel):
 
         started = time.monotonic()
         async with asyncio.timeout(delay=VIDEO_RENDER_TIMEOUT_SECONDS):
-            interaction = await self.client.aio.interactions.create(
-                model=self.video_model.name,
-                input=content,
-                response_format=response_format,
-                generation_config=generation_config,
-                timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
+            # No `stream=True`, so this is the interaction rather than an event stream, read
+            # through the structural `_InteractionResult` view (its docstring has why).
+            responses = cast(
+                "_InteractionResult",
+                await self.client.aio.interactions.create(
+                    model=self.video_model.name,
+                    input=content,
+                    response_format=response_format,
+                    generation_config=generation_config,
+                    timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
+                ),
             )
-        # No `stream=True`, so this is the interaction rather than an event stream, read through
-        # the structural `_InteractionResult` view (its docstring has why).
-        result = cast("_InteractionResult", interaction)
-        video = result.output_video
-        if result.status != "completed" or video is None or video.uri is None:
+        video = responses.output_video
+        if responses.status != "completed" or video is None or video.uri is None:
             logfire.warn(
                 "gen_reply video generation failed",
                 model=self.video_model.name,
-                status=str(result.status),
+                status=str(responses.status),
                 task=task_label,
-                note=result.output_text,
+                note=responses.output_text,
             )
             raise RuntimeError(
-                f"Video generation failed: status={result.status} note={result.output_text!r}"
+                f"Video generation failed: status={responses.status} "
+                f"note={responses.output_text!r}"
             )
         logfire.debug(
             "gen_reply video job done",
@@ -612,17 +615,28 @@ class VideoGenerator(BaseModel):
         task (image_to_video / reference_to_video); otherwise it is plain text. `render` already
         bounds itself with `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
         """
+        started = time.monotonic()
         try:
-            return await self.render(
+            video = await self.render(
                 prompt=user_prompt, reference_image_sources=reference_image_sources or []
             )
-        except Exception:
+        except Exception as exc:
+            # Broad on purpose: the inline-marker boundary must degrade to "reply without a
+            # video" whether the render timed out, was refused, or the download failed.
             logfire.warn(
                 "Inline video generation failed; replying without video",
                 model=self.video_model.name,
-                _exc_info=True,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
             return None
+        logfire.info(
+            "gen_reply inline video generated",
+            elapsed_seconds=time.monotonic() - started,
+            model=self.video_model.name,
+            video_bytes=len(video),
+        )
+        return video
 
     async def _download_output_video(self, *, uri: str) -> bytes:
         """Downloads a URI-delivered clip, retrying while its Files entry finalizes; raises past the bound.
@@ -726,14 +740,14 @@ class MusicGenerator(BaseModel):
         # already-ready voice / images alongside it.
         try:
             async with asyncio.timeout(delay=MUSIC_RENDER_TIMEOUT_SECONDS):
-                interaction = await self.client.aio.interactions.create(
+                responses = await self.client.aio.interactions.create(
                     model=self.music_model.name,
                     input=user_prompt,
                     system_instruction=MUSIC_STYLE_DIRECTIVE,
                 )
             # No `stream=True`, so this is the interaction rather than an event stream (read via
             # `_InteractionResult`, see its docstring).
-            audio = cast("_InteractionResult", interaction).output_audio
+            audio = cast("_InteractionResult", responses).output_audio
             if audio is None or not audio.data:
                 logfire.warn(
                     "Inline music generation returned no audio; replying without music",

@@ -85,8 +85,16 @@ class RouteClassifier(BaseModel):
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": self.message.author.name},
                 )
-            parsed = responses.output_parsed
-            route = parsed if parsed is not None else RouteClassification(decision="QA")
+            route = responses.output_parsed
+            if route is None:
+                # A response with no message output, or whose message is a refusal, parses to
+                # None rather than raising, so neither except below sees it.
+                logfire.warn(
+                    "RouteClassification returned no parsed output; defaulting to QA",
+                    message_id=self.message.id,
+                    model=triage_model.name,
+                )
+                route = RouteClassification(decision="QA")
         except ValidationError as exc:
             # `responses.parse` validates before `output_parsed` is reachable, so an empty /
             # safety-filtered response and a genuine schema mismatch both land here; the

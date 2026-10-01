@@ -153,21 +153,21 @@ class MediaReplyRoutes(BaseModel):
         message = self.message
         toolkit = self.toolkit
         started = time.monotonic()
-        replied_to = replied_to_message(message=message)
-        logfire.info(
-            "gen_reply image generation start",
-            message_id=message.id,
-            model=toolkit.runtime_models.image_model.name,
-            has_source_images=replied_to is not None,
-        )
         async with self._delivery_window(context_task=context_task) as window:
             async with window:
                 image_bytes_list = [
                     loaded.data
                     for loaded in await toolkit.input_builder.get_turn_image_sources(
-                        message=message, replied_to=replied_to
+                        message=message, replied_to=replied_to_message(message=message)
                     )
                 ]
+                # Logged once the sources are in, since only they say whether this is an edit.
+                logfire.info(
+                    "gen_reply image generation start",
+                    message_id=message.id,
+                    model=toolkit.runtime_models.image_model.name,
+                    has_source_images=bool(image_bytes_list),
+                )
 
                 # Refine the raw request into a full generation/edit prompt first (best-effort,
                 # raw prompt on disable / failure); the source bytes ride along so an edit prompt

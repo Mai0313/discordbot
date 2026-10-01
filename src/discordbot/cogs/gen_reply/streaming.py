@@ -7,7 +7,7 @@ import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import File, Embed, Message, NotFound, HTTPException, AllowedMentions
+from nextcord import File, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from tenacity.wait import wait_fixed, wait_random
@@ -408,6 +408,14 @@ class ResponseStreamer(BaseModel):
                     # _write_final_message. Nothing to repair, so stop previewing.
                     logfire.info(
                         "Reply deleted while streaming; stopping preview edits",
+                        message_id=self.message.id,
+                    )
+                    return
+                except Forbidden:
+                    # The channel's permissions changed under the turn; the id is the whole
+                    # finding, and every later tick would be refused the same way.
+                    logfire.warn(
+                        "Channel refused a preview write; stopping preview edits",
                         message_id=self.message.id,
                     )
                     return
@@ -867,7 +875,9 @@ class ResponseStreamer(BaseModel):
         except Exception as exc:
             # Broad on purpose: the reply may have been deleted, and a footnote is never worth
             # surfacing a failure for.
-            logfire.warn(failure, message_id=self.message.id, error_type=type(exc).__name__)
+            logfire.warn(
+                failure, message_id=self.message.id, error_type=type(exc).__name__, _exc_info=exc
+            )
             return False
         self.stored_content = content
         return True
@@ -976,7 +986,7 @@ class ResponseStreamer(BaseModel):
                 "Inline image source load failed; generating without source pixels",
                 message_id=self.message.id,
                 error_type=type(exc).__name__,
-                _exc_info=True,
+                _exc_info=exc,
             )
             return []
 
