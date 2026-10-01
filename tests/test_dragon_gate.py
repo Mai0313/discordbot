@@ -12,13 +12,7 @@ import logfire
 from nextcord import Embed, HTTPException
 from nextcord.ui import StringSelect
 
-from discordbot.cogs.games import interactions as game_interactions
-from discordbot.typings.games import (
-    Card,
-    GameParticipant,
-    DragonGatePlayerResult,
-    RefreshParticipantsResult,
-)
+from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
 from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
@@ -48,7 +42,16 @@ from discordbot.cogs.games.dragon_gate_views import (
 )
 from discordbot.services.economy.presentation import amount_code
 
-from tests.helpers.games import seat, component_ids, component_rows, attached_button
+from tests.helpers.games import (
+    seat,
+    joins_as,
+    lobby_button,
+    component_ids,
+    component_rows,
+    everyone_stays,
+    attached_button,
+    record_scheduled_deletes,
+)
 from tests.helpers.casting import (
     as_message,
     as_interaction,
@@ -66,7 +69,6 @@ if TYPE_CHECKING:
 
     from _typeshed import SupportsLenAndGetItem
 
-    from discordbot.cogs.games.lobby import PrepareParticipant
 
 T = TypeVar("T")
 
@@ -221,14 +223,7 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
         return state.balances.get(user_id, state.initial_balance)
 
     monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
-    monkeypatch.setattr(
-        "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: None,
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: None,
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
 
 
 def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
@@ -447,23 +442,9 @@ async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
 
     Raising would also skip the deletion behind it, leaving the table up until a restart sweeps it.
     """
-    scheduled: list[tuple[object, str | None]] = []
-    monkeypatch.setattr(
-        game_interactions,
-        "schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append((
-            message,
-            user_name,
-        )),
-    )
-
-    class _RefusingMessage:
-        id = 7
-
-        async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
-            raise failure
-
-    message = _RefusingMessage()
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    message = FakeDiscordMessage()
+    message.edit_failure = failure
     landed = await publish_final_table(
         message=as_message(fake=message),
         embeds=[Embed(title="settled")],
@@ -474,7 +455,7 @@ async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
     )
 
     assert landed is False
-    assert scheduled == [(message, "alice")]
+    assert (scheduled.messages, scheduled.user_names) == ([message], ["alice"])
 
 
 @pytest.mark.parametrize(
@@ -494,11 +475,7 @@ async def test_a_final_render_the_press_cannot_make_goes_through_the_channel(
 
     So any failure of the press is recorded and the render retried through the channel.
     """
-    monkeypatch.setattr(
-        game_interactions,
-        "schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: None,
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     reports: list[tuple[str, dict[str, object]]] = []
     for level in ("info", "warn"):
         monkeypatch.setattr(
@@ -573,27 +550,16 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
-        """Returns Bob when the join interaction is accepted."""
-        assert interaction.user.id == 2
-        return bob
-
-    async def refresh_participants(
-        participants: list[GameParticipant],
-    ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
-        return RefreshParticipantsResult(participants=participants)
-
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        prepare_participant=cast("PrepareParticipant", prepare_participant),
-        refresh_participants=refresh_participants,
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
         initial_jackpot=state.jackpot,
     )
     view.message = as_message(fake=message)
 
-    join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
+    join_button = lobby_button(view=view, label="加入")
     await join_button.callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
@@ -602,13 +568,13 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     assert isinstance(join_embed, Embed)
     assert isinstance(join_embed.description, str)
 
-    leave_button = next(child for child in view.children if getattr(child, "label", "") == "離開")
+    leave_button = lobby_button(view=view, label="離開")
     await leave_button.callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
     assert view.participants == [owner]
 
-    start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
+    start_button = lobby_button(view=view, label="開始")
     other_interaction = FakeInteraction(user=FakeUser(user_id=2), message=message)
     await start_button.callback(as_interaction(fake=other_interaction))
     assert other_interaction.response.sent
@@ -636,17 +602,6 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     bob = _participant(user_id=2, display_name="Bob")
     message = FakeDiscordMessage()
 
-    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
-        """Returns Bob when the join interaction is accepted."""
-        assert interaction.user.id == 2
-        return bob
-
-    async def refresh_participants(
-        participants: list[GameParticipant],
-    ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
-        return RefreshParticipantsResult(participants=participants)
-
     async def rejected_ante_batch(
         game_id: str, settlements: Sequence[JackpotSettlementRequest]
     ) -> JackpotSettlementBatchResult:
@@ -663,25 +618,22 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     monkeypatch.setattr(
         "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", rejected_ante_batch
     )
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: None,
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
 
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        prepare_participant=cast("PrepareParticipant", prepare_participant),
-        refresh_participants=refresh_participants,
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
         initial_jackpot=100_000,
     )
     view.message = as_message(fake=message)
 
-    join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
+    join_button = lobby_button(view=view, label="加入")
     await join_button.callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
-    start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
+    start_button = lobby_button(view=view, label="開始")
     await start_button.callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
     )
@@ -710,11 +662,7 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
 
     Left marked started, the lobby would refuse every press and skip its own timeout cleanup.
     """
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(message),
-    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     batches: list[list[JackpotSettlementRequest]] = []
 
     async def recording_batch(
@@ -735,34 +683,23 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
         )
     pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
-    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
-        """Seats Bob."""
-        del interaction
-        return bob
-
-    async def refresh_participants(
-        participants: list[GameParticipant],
-    ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
-        return RefreshParticipantsResult(participants=participants)
-
     message = FakeDiscordMessage()
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        prepare_participant=cast("PrepareParticipant", prepare_participant),
-        refresh_participants=refresh_participants,
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
         initial_jackpot=pool_before,
     )
     view.message = as_message(fake=message)
-    join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
+    join_button = lobby_button(view=view, label="加入")
     await join_button.callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
 
     owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
     owner_start.edit_failure = failure
-    start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
+    start_button = lobby_button(view=view, label="開始")
     # Only a refusal is answered in place; any other failure still reaches the view's on_error.
     with contextlib.suppress(HTTPException):
         await start_button.callback(as_interaction(fake=owner_start))
@@ -778,7 +715,7 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
     }
     assert not view.is_finished()
     await view.on_timeout()
-    assert scheduled == [message]
+    assert scheduled.messages == [message]
 
 
 async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_plays_its_table(
@@ -795,36 +732,24 @@ async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_play
     state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
-    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
-        """Seats Bob."""
-        del interaction
-        return bob
-
-    async def refresh_participants(
-        participants: list[GameParticipant],
-    ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
-        return RefreshParticipantsResult(participants=participants)
-
     message = FakeDiscordMessage()
     message.edit_failure = make_forbidden(message="Missing Access")
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
-        prepare_participant=cast("PrepareParticipant", prepare_participant),
-        refresh_participants=refresh_participants,
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
         initial_jackpot=state.jackpot,
     )
     view.message = as_message(fake=message)
-    buttons = {getattr(child, "label", ""): child for child in view.children}
 
-    await buttons["加入"].callback(
+    await lobby_button(view=view, label="加入").callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
     assert isinstance(message.edits[-1]["view"], DragonGateLobbyView)
 
     owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
-    await buttons["開始"].callback(as_interaction(fake=owner_start))
+    await lobby_button(view=view, label="開始").callback(as_interaction(fake=owner_start))
     table = message.edits[-1]["view"]
     assert isinstance(table, DragonGateView)
     assert owner_start.followup.sent == []
@@ -1059,10 +984,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         return 500_000
 
     monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
-    monkeypatch.setattr(
-        "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: None,
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
@@ -1423,39 +1345,23 @@ async def test_a_dragon_gate_table_left_to_time_out_in_a_shut_out_channel_closes
     bob = _participant(user_id=2, display_name="Bob")
     state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
-    )
-
-    async def prepare_participant(interaction: FakeInteraction) -> GameParticipant | None:
-        """Seats Bob."""
-        del interaction
-        return bob
-
-    async def refresh_participants(
-        participants: list[GameParticipant],
-    ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
-        return RefreshParticipantsResult(participants=participants)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
     message.edit_failure = make_forbidden(message="Missing Access")
     lobby = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
-        prepare_participant=cast("PrepareParticipant", prepare_participant),
-        refresh_participants=refresh_participants,
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
         initial_jackpot=state.jackpot,
     )
     lobby.message = as_message(fake=message)
-    buttons = {getattr(child, "label", ""): child for child in lobby.children}
-    await buttons["加入"].callback(
+    await lobby_button(view=lobby, label="加入").callback(
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
     )
     press = FakeInteraction(user=FakeUser(user_id=1), message=message)
-    await buttons["開始"].callback(as_interaction(fake=press))
+    await lobby_button(view=lobby, label="開始").callback(as_interaction(fake=press))
     table = message.edits[-1]["view"]
     assert isinstance(table, DragonGateView)
     if last != "start":
@@ -1478,7 +1384,7 @@ async def test_a_dragon_gate_table_left_to_time_out_in_a_shut_out_channel_closes
     await table.on_timeout()
 
     assert (press.edits[-1]["view"] is None) is not expired, "the settled table landed via it"
-    assert scheduled == [press], "the delete rides the same press"
+    assert scheduled.interactions == [press], "the delete rides the same press"
 
 
 def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:
@@ -1523,14 +1429,7 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     """
     longest_name = "w" * 32
     participants = [
-        GameParticipant(
-            user_id=index,
-            account_name=longest_name,
-            display_name=longest_name,
-            bet=ANTE,
-            balance_at_start=10**15,
-            is_allin=False,
-        )
+        _participant(user_id=index, display_name=longest_name, balance=10**15)
         for index in range(1, DRAGON_GATE_VISIBLE_PLAYER_LINES + 1)
     ]
     round_state = DragonGateRound.from_participants(

@@ -1,16 +1,20 @@
-"""Builders the games tests share: cards, seats, settlement, and the controls a view shows."""
+"""Builders the games tests share: cards, seats, lobbies, settlement, and a view's controls."""
 
 from typing import Any
 
+import pytest
+from nextcord import Interaction
 from nextcord.ui import View, Button
+from nextcord.ext import commands
 
-from discordbot.typings.games import Card, GameParticipant, BlackjackPlayerSettlement
-from discordbot.cogs.games.blackjack import (
-    CARD_RANKS,
-    SHOE_DECK_COUNT,
-    BlackjackRound,
-    dealer_must_hit,
+from discordbot.typings.games import (
+    Card,
+    GameParticipant,
+    BlackjackPlayerSettlement,
+    RefreshParticipantsResult,
 )
+from discordbot.cogs.games.lobby import PrepareParticipant
+from discordbot.cogs.games.blackjack import BlackjackRound
 from discordbot.cogs.games.settlement import settle_blackjack_player
 
 
@@ -33,44 +37,70 @@ def seat(
     )
 
 
+def joins_as(participant: GameParticipant) -> PrepareParticipant:
+    """Builds a lobby join hook that seats `participant` whoever presses 加入."""
+
+    async def prepare_participant(interaction: Interaction[commands.Bot]) -> GameParticipant:
+        del interaction
+        return participant
+
+    return prepare_participant
+
+
+async def everyone_stays(participants: list[GameParticipant]) -> RefreshParticipantsResult:
+    """Lobby start hook that leaves every participant seated."""
+    return RefreshParticipantsResult(participants=participants)
+
+
+def lobby_button(view: View, label: str) -> Button[Any]:
+    """Returns the lobby control labelled `label`, failing the test when it is absent."""
+    for child in view.children:
+        if isinstance(child, Button) and child.label == label:
+            return child
+    raise AssertionError(f"no lobby button {label!r}")
+
+
+class ScheduledDeletes:
+    """What the games handed to the public-message cleanup, recorded in place of a deletion."""
+
+    def __init__(self) -> None:
+        """Initializes one list per argument, in call order."""
+        self.messages: list[object] = []
+        self.user_names: list[str | None] = []
+        self.interactions: list[object | None] = []
+
+    def __call__(
+        self,
+        message: object,
+        delay: float = 180,
+        user_name: str | None = None,
+        interaction: object | None = None,
+    ) -> None:
+        """Records one scheduled deletion."""
+        del delay
+        self.messages.append(message)
+        self.user_names.append(user_name)
+        self.interactions.append(interaction)
+
+
+def record_scheduled_deletes(monkeypatch: pytest.MonkeyPatch) -> ScheduledDeletes:
+    """Replaces the public-message cleanup the games reach with a recorder, for this test.
+
+    Every module that imports the scheduler holds its own reference, so each is patched.
+    """
+    scheduled = ScheduledDeletes()
+    for module in (
+        "discordbot.cogs.games.interactions",
+        "discordbot.cogs.games.lobby",
+        "discordbot.utils.interaction_responses",
+    ):
+        monkeypatch.setattr(f"{module}.schedule_public_message_delete", scheduled)
+    return scheduled
+
+
 async def settle_only_seat(round_state: BlackjackRound) -> BlackjackPlayerSettlement:
     """Settles a one-seat round's player against the ledger and returns the settlement."""
     return await settle_blackjack_player(round_state=round_state, player=round_state.players[0])
-
-
-def longest_hand_the_dealer_must_draw_on() -> int:
-    """Returns the most cards an H17 dealer can hold while the rules still make it draw.
-
-    Searched rather than reasoned out, because it is not the number anyone reaches by hand:
-    eleven aces and a five is hard 16 and twelve cards, where a hand of small cards runs out
-    sooner and a hand of aces stands early on the soft total. A rules change re-derives it.
-    """
-    per_shoe = 4 * SHOE_DECK_COUNT
-
-    def must_draw(counts: dict[str, int]) -> bool:
-        return dealer_must_hit(
-            cards=[card(rank=rank) for rank, held in counts.items() for _ in range(held)]
-        )
-
-    longest = 0
-    seen: set[tuple[tuple[str, int], ...]] = set()
-    # A hand is its multiset: `must_draw` cannot read an order, so one ordering settles them all.
-    stack: list[dict[str, int]] = [{}]
-    while stack:
-        counts = stack.pop()
-        key = tuple(sorted(counts.items()))
-        if key in seen:
-            continue
-        seen.add(key)
-        held = sum(counts.values())
-        # The dealer's own first two cards are dealt, not drawn, so they are unconstrained.
-        if held >= 2 and not must_draw(counts=counts):
-            continue
-        longest = max(longest, held)
-        for rank in CARD_RANKS:
-            if counts.get(rank, 0) < per_shoe:
-                stack.append({**counts, rank: counts.get(rank, 0) + 1})
-    return longest
 
 
 def component_ids(view: View) -> set[str]:

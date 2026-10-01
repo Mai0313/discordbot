@@ -10,13 +10,10 @@ the bot's decisions come from the EV engine, so both are asserted exactly.
 from random import Random
 from typing import Any, Literal, cast
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import Interaction
 from nextcord.ui import Button
 
-from discordbot.cogs.games import interactions as game_interactions
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import (
     BotAction,
@@ -33,6 +30,7 @@ from discordbot.cogs.games.blackjack import (
     BlackjackPlayerHand,
 )
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
+from discordbot.cogs.games.interactions import table_edit_kwargs
 from discordbot.cogs.games.presentation import settlement_metadata
 from discordbot.services.economy.database import get_balance, get_casino_ledger
 from discordbot.cogs.games.blackjack_views import (
@@ -42,11 +40,13 @@ from discordbot.cogs.games.blackjack_views import (
 )
 
 from tests.helpers.games import (
+    ScheduledDeletes,
     seat,
     component_ids,
     component_rows,
     attached_button,
     settle_only_seat,
+    record_scheduled_deletes,
 )
 from tests.helpers.casting import (
     as_message,
@@ -89,21 +89,9 @@ def _make_view(round_state: BlackjackRound) -> BlackjackView:
 
 
 @pytest.fixture
-def scheduled_cleanups(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+def scheduled_cleanups(monkeypatch: pytest.MonkeyPatch) -> ScheduledDeletes:
     """Records each table the view hands to the public-message cleanup instead of scheduling it."""
-    scheduled: list[object] = []
-
-    def record(
-        message: object,
-        delay: float = 180,
-        user_name: str | None = None,
-        interaction: object | None = None,
-    ) -> None:
-        del delay, user_name, interaction
-        scheduled.append(message)
-
-    monkeypatch.setattr(game_interactions, "schedule_public_message_delete", record)
-    return scheduled
+    return record_scheduled_deletes(monkeypatch=monkeypatch)
 
 
 def _button_states(view: BlackjackView) -> dict[str, bool]:
@@ -376,7 +364,7 @@ def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
     )
     seat_embeds = build_in_progress_embeds(round_state=round_state)
 
-    payload = blackjack_views.table_edit_kwargs(embeds=seat_embeds, view=None)
+    payload = table_edit_kwargs(embeds=seat_embeds, view=None)
 
     assert payload["attachments"] == []
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
@@ -384,9 +372,7 @@ def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
         assert embed.image.url == embed_spacer_url()
 
 
-async def test_interaction_check_sends_ephemeral_notice_when_settled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_interaction_check_sends_ephemeral_notice_when_settled() -> None:
     """After the round is settled, clicks get an ephemeral notice rather than silent ignore."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
@@ -394,27 +380,15 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
     )
     view = _make_view(round_state=round_state)
     view._settled = True
+    press = FakeInteraction()
 
-    notices: list[str] = []
-
-    async def _fake_notice(
-        *, interaction: Interaction[Any], content: str, log_message: str
-    ) -> None:
-        notices.append(content)
-
-    monkeypatch.setattr("discordbot.cogs.games.interactions.send_ephemeral_notice", _fake_notice)
-
-    interaction = MagicMock()
-    interaction.user.id = 1
-    allowed = await view.interaction_check(interaction=interaction)
+    allowed = await view.interaction_check(interaction=as_interaction(fake=press))
 
     assert allowed is False
-    assert notices == ["這局已經結束, 等下一局吧"]
+    assert press.response.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
 
 
-async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
     """A 1-point seat's half-bet rounds to zero, and no newer table will change that.
 
     The insurance buttons belong to the table rather than to a seat — every undecided player
@@ -429,24 +403,18 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh(
     round_state.phase = "insurance"
     round_state.insurance_offered = True
     view = _make_view(round_state=round_state)
-
-    notices: list[str] = []
-
-    async def _fake_notice(
-        *, interaction: Interaction[Any], content: str, log_message: str
-    ) -> None:
-        notices.append(content)
-
-    monkeypatch.setattr("discordbot.cogs.games.interactions.send_ephemeral_notice", _fake_notice)
-    monkeypatch.setattr(BlackjackView, "_edit_in_progress_locked", AsyncMock(return_value=None))
+    message = FakeDiscordMessage()
+    press = FakeInteraction(message=message)
 
     decided = await view._take_insurance_locked(
-        interaction=MagicMock(), message=MagicMock(), user_id=1
+        interaction=as_interaction(fake=press), message=as_message(fake=message), user_id=1
     )
 
     assert decided is False
     assert round_state.players[0].insurance_bet == 0
-    assert notices == ["你的下注太小，一半不到 1 點，這局沒有保險可買"]
+    assert press.response.sent == [
+        {"content": "你的下注太小，一半不到 1 點，這局沒有保險可買", "ephemeral": True}
+    ]
 
 
 async def test_play_dealer_hits_below_17_then_stands_on_hard_17() -> None:
@@ -544,9 +512,12 @@ async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
     )
     view = _make_view(round_state=round_state)
     assert view.bot_user_id is None
-    press = MagicMock()
-    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=press)
-    assert press.edit_original_message.called is False
+    message = FakeDiscordMessage()
+    press = FakeInteraction(message=message)
+    await view._maybe_play_bot_turn_locked(
+        message=as_message(fake=message), interaction=as_interaction(fake=press)
+    )
+    assert press.edits == []
 
 
 async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
@@ -557,10 +528,13 @@ async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
     )
     view = _make_view(round_state=round_state)
     view.bot_user_id = 999
-    press = MagicMock()
-    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=press)
+    message = FakeDiscordMessage()
+    press = FakeInteraction(message=message)
+    await view._maybe_play_bot_turn_locked(
+        message=as_message(fake=message), interaction=as_interaction(fake=press)
+    )
     # The human's hand is untouched because the bot never acts on a human seat.
-    assert press.edit_original_message.called is False
+    assert press.edits == []
     assert len(round_state.players[0].hands[0].cards) == 2
 
 
@@ -581,8 +555,12 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
         calls += 1
 
     monkeypatch.setattr(view, "_dispatch_bot_action_locked", no_op_dispatch)
+    message = FakeDiscordMessage()
 
-    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=MagicMock())
+    await view._maybe_play_bot_turn_locked(
+        message=as_message(fake=message),
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
+    )
 
     assert calls == 1
 
@@ -640,14 +618,18 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(view, "_dispatch_bot_action_locked", fake_dispatch)
     monkeypatch.setattr(blackjack_views.asyncio, "sleep", fake_sleep)
+    message = FakeDiscordMessage()
 
-    await view._maybe_play_bot_turn_locked(message=MagicMock(), interaction=MagicMock())
+    await view._maybe_play_bot_turn_locked(
+        message=as_message(fake=message),
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
+    )
 
     assert dispatch_calls == 2
     assert sleep_calls == [blackjack_views.BOT_TURN_EDIT_DELAY_SECONDS]
 
 
-async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_bot_action_plays_ev_action() -> None:
     """The bot plays the EV engine's hole-aware action where the up-card table would not.
 
     Hard 16 against a 10 with Surrender on offer is a surrender by the table, but the hole is a
@@ -664,10 +646,12 @@ async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> No
     round_state.dealer = [Card(rank="6", suit="♣"), Card(rank="10", suit="♦")]
     round_state.shoe = [Card(rank="10", suit="♠")] * 20
     view = _make_view(round_state=round_state)
-    monkeypatch.setattr(view, "_edit_in_progress_locked", AsyncMock())
+    message = FakeDiscordMessage()
 
     await view._dispatch_bot_action_locked(
-        message=MagicMock(), active=round_state.players[0], interaction=MagicMock()
+        message=as_message(fake=message),
+        active=round_state.players[0],
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
     )
 
     assert bot_hand.finished is True
@@ -741,8 +725,6 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
         Card(rank="3", suit="♣"),
     ]
     view = BlackjackView(round_state=round_state, owner=seat(), shoe_store=store, channel_id=42)
-    view.message = MagicMock()
-    monkeypatch.setattr(view, "_safe_edit_view_locked", AsyncMock())
 
     async def _stop_after_save(**_kwargs: object) -> None:
         raise RuntimeError("stop after shoe save")
@@ -751,7 +733,7 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     monkeypatch.setattr(blackjack_views, "settle_blackjack_player", _stop_after_save)
 
     with pytest.raises(RuntimeError, match="stop after shoe save"):
-        await view.finalize(message=view.message, interaction=None)
+        await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
 
     # The store holds a decoupled copy of the round's remaining shoe.
     assert store.shoes.get(42) == round_state.shoe
@@ -759,7 +741,7 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
 
 
 async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
-    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: list[object]
+    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: ScheduledDeletes
 ) -> None:
     """The round history records the dealer hand as it stood when the round settled.
 
@@ -797,7 +779,7 @@ async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
 
 
 async def test_blackjack_view_finalizes_once_when_called_concurrently(
-    scheduled_cleanups: list[object],
+    scheduled_cleanups: ScheduledDeletes,
 ) -> None:
     """Concurrent finalization attempts must not pay out one Blackjack hand twice."""
     await seed_balance(user_id=1, name="alice", amount=100)
@@ -824,11 +806,11 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     await view.wait_for_background_tasks()
     assert len(message.edits) == 2
     assert message.edits[1]["view"] is None
-    assert scheduled_cleanups == [message]
+    assert scheduled_cleanups.messages == [message]
 
 
 async def test_blackjack_view_timeout_auto_stands_and_settles(
-    scheduled_cleanups: list[object],
+    scheduled_cleanups: ScheduledDeletes,
 ) -> None:
     """A player who walks away is treated as standing and the wager resolves."""
     await seed_balance(user_id=1, name="alice", amount=100)
@@ -853,7 +835,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     await view.wait_for_background_tasks()
     assert len(message.edits) == 2
     assert message.edits[1]["view"] is None
-    assert scheduled_cleanups == [message]
+    assert scheduled_cleanups.messages == [message]
 
 
 @pytest.mark.parametrize(
@@ -893,7 +875,7 @@ async def test_a_table_edit_on_the_way_to_settling_that_fails_is_reported(
     assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)] * 3
 
 
-async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: list[object]) -> None:
+async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: ScheduledDeletes) -> None:
     """Dealer plays deterministically under H17 (hits below 17, stands on hard 17+)."""
     await seed_balance(user_id=1, name="alice", amount=100)
     round_state = _round_with_two_cards(
@@ -918,11 +900,11 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: list[obj
     description = cast("str", final_embeds[0].description)
     assert "-# 動作: 規則: 13 hit 抽 5♣ → 18；規則: 18 stand" in description.splitlines()
     await view.wait_for_background_tasks()
-    assert scheduled_cleanups == [message]
+    assert scheduled_cleanups.messages == [message]
 
 
 async def test_a_five_card_twenty_one_still_waits_for_the_dealer_to_play(
-    scheduled_cleanups: list[object],
+    scheduled_cleanups: ScheduledDeletes,
 ) -> None:
     """過五關 wins whatever the dealer holds, except at 21, where the dealer still plays.
 
@@ -950,7 +932,7 @@ async def test_a_five_card_twenty_one_still_waits_for_the_dealer_to_play(
     assert await get_balance(user_id=1) == 1_100
 
 
-async def test_blackjack_view_dealer_hits_soft_17(scheduled_cleanups: list[object]) -> None:
+async def test_blackjack_view_dealer_hits_soft_17(scheduled_cleanups: ScheduledDeletes) -> None:
     """Soft 17 forces a hit under the H17 rule."""
     await seed_balance(user_id=1, name="alice", amount=100)
     round_state = _round_with_two_cards(
@@ -973,11 +955,11 @@ async def test_blackjack_view_dealer_hits_soft_17(scheduled_cleanups: list[objec
     description = cast("str", final_embeds[0].description)
     assert "規則: 17 hit" in description
     await view.wait_for_background_tasks()
-    assert scheduled_cleanups == [message]
+    assert scheduled_cleanups.messages == [message]
 
 
 async def test_blackjack_view_locks_actions_while_finalizing(
-    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: list[object]
+    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: ScheduledDeletes
 ) -> None:
     """A late Hit cannot mutate a hand that is already finalizing from Stand."""
     settlement_started = asyncio.Event()
@@ -1042,7 +1024,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     await view.wait_for_background_tasks()
     assert len(message.edits) == 2
     assert message.edits[1]["view"] is None
-    assert scheduled_cleanups == [message]
+    assert scheduled_cleanups.messages == [message]
 
 
 class _HeldEditInteraction(FakeInteraction):
@@ -1077,7 +1059,9 @@ class _ContendedLock(asyncio.Lock):
         return await super().acquire()
 
 
-async def test_a_timeout_waits_for_the_action_in_flight(scheduled_cleanups: list[object]) -> None:
+async def test_a_timeout_waits_for_the_action_in_flight(
+    scheduled_cleanups: ScheduledDeletes,
+) -> None:
     """A timeout that lands mid-action settles after it, so the settled table is what stays up.
 
     The Hit is held inside its table edit when the timeout fires. Settling underneath it would
@@ -1116,7 +1100,7 @@ async def test_a_timeout_waits_for_the_action_in_flight(scheduled_cleanups: list
     assert [str(card) for card in round_state.players[0].hands[0].cards] == ["10♠", "2♥", "5♣"]
     assert await get_balance(user_id=1) == 50
     assert message.edits[-1]["view"] is None
-    assert scheduled_cleanups == [message]
+    assert scheduled_cleanups.messages == [message]
 
 
 def _alice_done_bob_to_act() -> BlackjackRound:

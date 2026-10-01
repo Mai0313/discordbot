@@ -7,10 +7,17 @@ from itertools import count
 
 from discordbot.cogs.games.shoe import RESHUFFLE_THRESHOLD_CARDS, BlackjackShoeStore
 from discordbot.typings.economy import MAX_SINGLE_BET
-from discordbot.cogs.games.blackjack import BlackjackRound, can_split, is_five_card_win
+from discordbot.cogs.games.blackjack import (
+    CARD_RANKS,
+    SHOE_DECK_COUNT,
+    BlackjackRound,
+    can_split,
+    dealer_must_hit,
+    is_five_card_win,
+)
 from discordbot.cogs.games.blackjack_views import MAX_BLACKJACK_PLAYERS
 
-from tests.helpers.games import card, seat, longest_hand_the_dealer_must_draw_on
+from tests.helpers.games import card, seat
 
 
 def test_first_take_builds_a_fresh_shoe() -> None:
@@ -82,6 +89,41 @@ def test_older_round_does_not_clobber_a_newer_shoe() -> None:
     assert store.shoes[5] == newer
 
 
+def _longest_hand_the_dealer_must_draw_on() -> int:
+    """Returns the most cards an H17 dealer can hold while the rules still make it draw.
+
+    Searched rather than reasoned out, because it is not the number anyone reaches by hand:
+    eleven aces and a five is hard 16 and twelve cards, where a hand of small cards runs out
+    sooner and a hand of aces stands early on the soft total. A rules change re-derives it.
+    """
+    per_shoe = 4 * SHOE_DECK_COUNT
+
+    def must_draw(counts: dict[str, int]) -> bool:
+        return dealer_must_hit(
+            cards=[card(rank=rank) for rank, held in counts.items() for _ in range(held)]
+        )
+
+    longest = 0
+    seen: set[tuple[tuple[str, int], ...]] = set()
+    # A hand is its multiset: `must_draw` cannot read an order, so one ordering settles them all.
+    stack: list[dict[str, int]] = [{}]
+    while stack:
+        counts = stack.pop()
+        key = tuple(sorted(counts.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        held = sum(counts.values())
+        # The dealer's own first two cards are dealt, not drawn, so they are unconstrained.
+        if held >= 2 and not must_draw(counts=counts):
+            continue
+        longest = max(longest, held)
+        for rank in CARD_RANKS:
+            if counts.get(rank, 0) < per_shoe:
+                stack.append({**counts, rank: counts.get(rank, 0) + 1})
+    return longest
+
+
 def test_the_reshuffle_threshold_outlasts_the_longest_round_a_full_table_can_deal() -> None:
     """A round that starts at the threshold never draws past the end of its shoe.
 
@@ -103,7 +145,7 @@ def test_the_reshuffle_threshold_outlasts_the_longest_round_a_full_table_can_dea
     assert not any(
         can_split(hand=hand, balance_remaining=MAX_SINGLE_BET) for hand in split_hands
     ), "a split hand could split again, so a seat can hold more than two hands"
-    dealer_cards = longest_hand_the_dealer_must_draw_on() + 1
+    dealer_cards = _longest_hand_the_dealer_must_draw_on() + 1
 
     longest_round = MAX_BLACKJACK_PLAYERS * len(split_hands) * cards_per_hand + dealer_cards
 

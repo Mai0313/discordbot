@@ -11,10 +11,9 @@ import nextcord
 from nextcord import Embed, Interaction, HTTPException
 
 from discordbot.utils import message_cleanup as cleanup_module
-from discordbot.utils import interaction_responses
 from discordbot.cogs.games import cog as games
 from discordbot.cogs.games import blackjack_views
-from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
+from discordbot.typings.games import GameParticipant
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import JackpotSnapshot
@@ -23,7 +22,14 @@ from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed
 from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
-from tests.helpers.games import seat, attached_button
+from tests.helpers.games import (
+    seat,
+    joins_as,
+    lobby_button,
+    everyone_stays,
+    attached_button,
+    record_scheduled_deletes,
+)
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -41,13 +47,6 @@ def _cog() -> GamesCogs:
     return GamesCogs(
         bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     )
-
-
-def ignore_scheduled_public_message(
-    message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
-) -> None:
-    """Ignores cleanup scheduling in command smoke tests."""
-    return
 
 
 async def fake_game_balance(user_id: int) -> int:
@@ -145,11 +144,8 @@ def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
     assert cleanup_module._engine.url.database == str(tmp_path / "game_cleanup.db")
 
 
-async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies game commands create lobby views with patched dependencies."""
-    monkeypatch.setattr(
-        interaction_responses, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each game command opens its lobby as a public followup carrying the width spacer."""
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = _cog()
@@ -188,9 +184,7 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
 
-    start_button = next(
-        child for child in lobby_view.children if getattr(child, "label", "") == "開始"
-    )
+    start_button = lobby_button(view=lobby_view, label="開始")
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(as_interaction(fake=other_interaction))
 
@@ -203,29 +197,17 @@ async def _nobody_joins(interaction: Interaction[Any]) -> GameParticipant | None
     raise AssertionError(interaction)
 
 
-async def _everyone_stays(participants: list[GameParticipant]) -> RefreshParticipantsResult:
-    """Lobby start hook that leaves every participant seated."""
-    return RefreshParticipantsResult(participants=participants)
-
-
 def _scripted_blackjack_lobby(
     dealt: list[Card], bot: GameParticipant | None = None
 ) -> BlackjackLobbyView:
     """Builds Alice's Blackjack lobby whose round deals `dealt` first, then fives."""
     shoe = dealt + [Card(rank="5", suit="♠") for _ in range(100)]
     return BlackjackLobbyView(
-        owner=GameParticipant(
-            user_id=1,
-            account_name="alice",
-            display_name="Alice",
-            bet=10,
-            balance_at_start=100,
-            is_allin=False,
-        ),
+        owner=seat(bet=10, balance_at_start=100),
         requested_bet=10,
         rng=Random(x=0),  # noqa: S311 -- the scripted shoe decides the deal
         prepare_participant=_nobody_joins,
-        refresh_participants=_everyone_stays,
+        refresh_participants=everyone_stays,
         bot_user_id=None if bot is None else bot.user_id,
         extra_initial_participants=None if bot is None else [bot],
         shoe_store=BlackjackShoeStore(shoes={7: shoe}),
@@ -262,11 +244,7 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     logged without a traceback, and a deleted lobby is a routine outcome rather than a degraded
     one.
     """
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(message),
-    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     reports = _recorded_reports(monkeypatch=monkeypatch)
     # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
     lobby = _scripted_blackjack_lobby(dealt=[])
@@ -274,7 +252,7 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     lobby.message = as_message(fake=message)
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
     owner_interaction.edit_failure = failure
-    start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
+    start_button = lobby_button(view=lobby, label="開始")
 
     await start_button.callback(as_interaction(fake=owner_interaction))
 
@@ -283,7 +261,7 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     assert reports == [(level, {"channel_id": 200, "message_id": 1, "code": failure.code})]
     assert not lobby.is_finished()
     await lobby.on_timeout()
-    assert scheduled == [message]
+    assert scheduled.messages == [message]
 
 
 @pytest.mark.parametrize(
@@ -299,11 +277,7 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
     monkeypatch: pytest.MonkeyPatch, failure: HTTPException, level: str, traceback: bool
 ) -> None:
     """Nothing awaits a timeout, so its failure is logged here at the level its cause earns."""
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(message),
-    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     reports = _recorded_reports(monkeypatch=monkeypatch)
     lobby = _scripted_blackjack_lobby(dealt=[])
     message = FakeDiscordMessage()
@@ -313,7 +287,7 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
     await lobby.on_timeout()
 
     assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
-    assert scheduled == [message]
+    assert scheduled.messages == [message]
 
 
 @pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
@@ -324,26 +298,18 @@ async def test_a_lobby_someone_joined_times_out_through_the_join_in_a_shut_out_c
 
     So the timeout closes it and schedules its delete through that token while it lives.
     """
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
-    )
-    bob = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
-
-    async def seat_bob(interaction: Interaction[Any]) -> GameParticipant:
-        del interaction
-        return bob
-
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     lobby = _scripted_blackjack_lobby(dealt=[])
-    lobby.prepare_participant = seat_bob
+    lobby.prepare_participant = joins_as(
+        participant=seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
+    )
     message = FakeDiscordMessage()
     message.edit_failure = make_forbidden(message="Missing Access")
     lobby.message = as_message(fake=message)
     join = FakeInteraction(
         user=FakeUser(user_id=2, name="bob", display_name="Bob"), message=message
     )
-    join_button = next(child for child in lobby.children if getattr(child, "label", "") == "加入")
+    join_button = lobby_button(view=lobby, label="加入")
     await join_button.callback(as_interaction(fake=join))
     join.expired = expired
 
@@ -351,7 +317,7 @@ async def test_a_lobby_someone_joined_times_out_through_the_join_in_a_shut_out_c
 
     embed = join.edits[-1]["embed"]
     assert (embed.description == "Lobby 已逾時") is not expired
-    assert scheduled == [join]
+    assert scheduled.interactions == [join]
 
 
 async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
@@ -368,14 +334,7 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
             self.edit_failure = make_forbidden(message="Missing Access")
 
     reports = _recorded_reports(monkeypatch=monkeypatch)
-    bot = GameParticipant(
-        user_id=999,
-        account_name="dealer",
-        display_name="Dealer",
-        bet=10,
-        balance_at_start=100,
-        is_allin=False,
-    )
+    bot = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
     # Alice 5 5, the bot 5 5, the dealer's hole 5 and an ace up: the bot owes an insurance call.
     lobby = _scripted_blackjack_lobby(
         dealt=[Card(rank="5", suit="♠")] * 5 + [Card(rank="A", suit="♠")], bot=bot
@@ -383,7 +342,7 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     message = FakeDiscordMessage()
     lobby.message = as_message(fake=message)
     owner_interaction = _RefusedAfterTheTable(user=FakeUser(user_id=1), message=message)
-    start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
+    start_button = lobby_button(view=lobby, label="開始")
 
     with pytest.raises(nextcord.Forbidden):
         await start_button.callback(as_interaction(fake=owner_interaction))
@@ -401,10 +360,7 @@ async def _start_in_a_shut_out_channel(
     The lobby went up on the slash command's token, so it shows in a channel the server shut the
     bot out of afterwards. Returns the lobby message, whose `edits` hold only what landed.
     """
-    monkeypatch.setattr(
-        "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: None,
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(blackjack_views, "PEEK_REVEAL_DELAY_SECONDS", 0)
     monkeypatch.setattr(blackjack_views, "BOT_TURN_EDIT_DELAY_SECONDS", 0)
     await seed_balance(user_id=1, name="alice", amount=100)
@@ -415,7 +371,7 @@ async def _start_in_a_shut_out_channel(
     message.edit_failure = make_forbidden(message="Missing Access")
     lobby.message = as_message(fake=message)
     owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
-    start_button = next(child for child in lobby.children if getattr(child, "label", "") == "開始")
+    start_button = lobby_button(view=lobby, label="開始")
 
     await start_button.callback(as_interaction(fake=owner_start))
 
@@ -440,11 +396,7 @@ async def test_a_blackjack_lobby_in_a_channel_the_bot_was_shut_out_of_still_deal
     table = message.edits[-1]["view"]
     assert isinstance(table, BlackjackView)
     stale_double = attached_button(view=table, custom_id="bj:double")
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
-    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
 
     await attached_button(view=table, custom_id="bj:hit").callback(
         as_interaction(fake=_alice_press(message=message))
@@ -461,7 +413,7 @@ async def test_a_blackjack_lobby_in_a_channel_the_bot_was_shut_out_of_still_deal
 
     assert {"view": table} in message.edits, "the controls went dead before the dealer played"
     assert message.edits[-1]["view"] is None, "the settled table replaced the live one"
-    assert scheduled == [stand]
+    assert scheduled.interactions == [stand]
 
 
 @pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
@@ -485,21 +437,16 @@ async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_t
         press = _alice_press(message=message)
         await attached_button(view=table, custom_id="bj:hit").callback(as_interaction(fake=press))
     press.expired = expired
-    scheduled: list[tuple[object, object]] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None, interaction=None: scheduled.append((
-            message,
-            interaction,
-        )),
-    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     reports = _recorded_reports(monkeypatch=monkeypatch)
 
     await table.on_timeout()
     await table.wait_for_background_tasks()
 
     assert (press.edits[-1]["view"] is None) is not expired, "the settled table landed via it"
-    assert scheduled == [(message, press)], "the delete rides the same press"
+    assert (scheduled.messages, scheduled.interactions) == ([message], [press]), (
+        "the delete rides the same press"
+    )
     assert [(level, "_exc_info" in fields) for level, fields in reports] == (
         [("warn", False), ("warn", False)] if expired else []
     )
@@ -558,14 +505,7 @@ async def test_the_bot_plays_its_seat_through_the_press_that_handed_it_the_turn(
     Every move it makes runs inside a human press still holding the round lock, so it edits the
     table through that press; through the channel, a shut-out table stalls on its first move.
     """
-    bot = GameParticipant(
-        user_id=999,
-        account_name="dealer",
-        display_name="Dealer",
-        bet=10,
-        balance_at_start=100,
-        is_allin=False,
-    )
+    bot = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
     # Alice 5 5, the bot 5 5, the dealer's hole a 6 under an ace: insurance, no natural, and a
     # dealer bound for 17 on a shoe of fives, so the bot draws to 20 before it stands.
     message = await _start_in_a_shut_out_channel(
@@ -599,8 +539,8 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     """Verifies owner over-betting clamps the shared Blackjack lobby bet."""
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns distinct balances for owner, joining player, and the bot."""
-        return {1: 300, 2: 50_000_000, 999: 0}[user_id]
+        """Returns distinct balances for the owner and the joining player."""
+        return {1: 300, 2: 50_000_000}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
@@ -614,9 +554,7 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     assert lobby_view.participants[0].bet == 300
     assert lobby_view.participants[0].is_allin is True
 
-    join_button = next(
-        child for child in lobby_view.children if getattr(child, "label", "") == "加入"
-    )
+    join_button = lobby_button(view=lobby_view, label="加入")
     join_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     join_interaction.message = as_message(fake=FakeDiscordMessage())
     await join_button.callback(as_interaction(fake=join_interaction))
@@ -639,22 +577,8 @@ async def test_refresh_participants_preserves_existing_blackjack_wagers(
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
     cog = _cog()
-    owner = GameParticipant(
-        user_id=1,
-        account_name="alice",
-        display_name="Alice",
-        bet=300,
-        balance_at_start=300,
-        is_allin=True,
-    )
-    bot_player = GameParticipant(
-        user_id=999,
-        account_name="dealer",
-        display_name="Dealer",
-        bet=125,
-        balance_at_start=1_000,
-        is_allin=False,
-    )
+    owner = seat(bet=300, balance_at_start=300)
+    bot_player = seat(user_id=999, display_name="Dealer", bet=125, balance_at_start=1_000)
 
     refreshed = await cog._refresh_participants(participants=[owner, bot_player], mode="clamp")
 
@@ -708,7 +632,7 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
 
     async def balance_by_user(user_id: int) -> int:
         """Returns a large owner balance that exceeds the single-bet cap."""
-        return {1: 300_000_000_000_000, 2: 500_000_000_000_000, 999: 0}[user_id]
+        return {1: 300_000_000_000_000}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
@@ -726,9 +650,7 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
 
 async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies zero means all in, not a zero-stake table."""
-    monkeypatch.setattr(
-        interaction_responses, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
     cog = _cog()
@@ -747,9 +669,7 @@ async def test_dragon_gate_rejects_empty_balance_with_spacer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies the Dragon Gate insufficient-balance response keeps uniform width."""
-    monkeypatch.setattr(
-        interaction_responses, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
     cog = _cog()
@@ -776,9 +696,7 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     lobby_view = owner_interaction.followup.sent[-1]["view"]
     assert isinstance(lobby_view, DragonGateLobbyView)
 
-    start_button = next(
-        child for child in lobby_view.children if getattr(child, "label", "") == "開始"
-    )
+    start_button = lobby_button(view=lobby_view, label="開始")
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(as_interaction(fake=other_interaction))
 
