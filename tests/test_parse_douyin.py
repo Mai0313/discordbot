@@ -16,12 +16,14 @@ from discordbot.services.platforms.douyin import (
     DouyinMetadata,
     DouyinBlockedError,
     DouyinTooLargeError,
+    DouyinTransferError,
     DouyinUnavailableError,
 )
 from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
+    DOUYIN_TRANSFER_NOTICE,
     DOUYIN_CONTEXT_SEPARATOR,
     DOUYIN_UNREADABLE_NOTICE,
     DOUYIN_UNAVAILABLE_NOTICE,
@@ -169,6 +171,24 @@ async def test_a_blocked_read_is_never_reported_as_a_missing_post(
     assert block_separator(blocks=blocks) != DOUYIN_UNAVAILABLE_NOTICE
 
 
+async def test_a_read_that_did_not_go_through_is_never_called_a_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled or dropped read is as retryable as a block, but nothing refused it.
+
+    Telling the user Douyin blocked them sends them off to wait out a wall that was never
+    there, and the unreadable notice would drop the advice to try again.
+    """
+    _stub_douyin(monkeypatch, parse_error=DouyinTransferError("read timed out"))
+
+    blocks = await _build()
+
+    assert len(blocks) == 1
+    assert block_separator(blocks=blocks) == DOUYIN_TRANSFER_NOTICE
+    assert "block" not in DOUYIN_TRANSFER_NOTICE
+    assert "deleted" not in DOUYIN_TRANSFER_NOTICE.split("NOT")[0]
+
+
 async def test_a_deleted_post_gets_the_unavailable_notice(monkeypatch: pytest.MonkeyPatch) -> None:
     """A post Douyin refuses to serve is reported as deleted or private."""
     _stub_douyin(monkeypatch, parse_error=DouyinUnavailableError("filtered"))
@@ -183,7 +203,7 @@ async def test_any_other_failure_never_claims_the_post_is_deleted(
 ) -> None:
     """A failure that says nothing about the post must not be reported as a deleted one.
 
-    An unresolvable link, a transport error or a changed payload shape all surface as a bare
+    An unresolvable link, a 403 or a 404, or a changed payload shape all surface as a bare
     `DouyinError`; asserting the post is gone would send the user off to re-check a link that
     is very likely fine. Only Douyin explicitly filtering the post out earns that wording.
     """

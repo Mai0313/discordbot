@@ -155,16 +155,21 @@ class DouyinUnavailableError(DouyinError, LinkUnavailableError):
 
 
 class DouyinBlockedError(DouyinError, LinkRetryableError):
-    """A bot wall answered instead of the post. Retryable: the post itself is fine."""
+    """Douyin refused the request: a bot wall, or a 429 on the share page or a short link.
+
+    Retryable: the post itself is fine.
+    """
 
 
 class DouyinTransferError(DouyinError, LinkRetryableError):
-    """A media transfer never finished. Retryable, and NOT the bot wall `DouyinBlockedError` is.
+    """A request never got through. Retryable, and NOT the refusal `DouyinBlockedError` is.
 
-    Both earn the same reaction, since the reader's next move is the same either way. They are
-    separate classes because `/download_video` answers with words rather than a mark, and
-    telling someone Douyin is refusing their requests when a CDN read simply stalled sends
-    them off to wait out a wall that was never there.
+    A read that stalled, never connected or was cut off part-way, or a Douyin 5xx, plus a media
+    download whose retries all ran out, a CDN 429 included. Both earn the same reaction, since
+    the reader's next move is the same either way. They are separate classes because a caller
+    that answers in words rather than a mark must not tell someone Douyin is refusing their
+    requests when a read simply stalled: that sends them off to wait out a wall that was never
+    there.
     """
 
 
@@ -175,14 +180,16 @@ class DouyinTooLargeError(DouyinError):
 def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError:
     """Wraps a failed Douyin request in the class that says whether it is worth retrying.
 
-    A bot wall is not the only thing Douyin refuses with: a 429, a 5xx or a connection that
-    never answered or dropped part-way through the body all mean the same "come back later"
-    the WAF does, and reporting one as a missing post is what this module's docstring calls
-    the worst failure it can produce.
+    A 429, a 5xx or a connection that never answered or dropped part-way through the body all
+    mean "come back later", and reporting one as a missing post is what this module's
+    docstring calls the worst failure it can produce. Only the 429 is Douyin refusing us,
+    though; the rest are no wall, so they say the request did not get through.
     """
-    if is_retryable_fetch_failure(error=error):
+    if not is_retryable_fetch_failure(error=error):
+        return DouyinError(message)
+    if error.response is not None and error.response.status_code == 429:
         return DouyinBlockedError(message)
-    return DouyinError(message)
+    return DouyinTransferError(message)
 
 
 class DouyinMetadata(BaseModel):
@@ -498,7 +505,8 @@ class DouyinDownloader(PlatformDownloader):
             The absolute redirect target, or an empty string when the URL does not redirect.
 
         Raises:
-            DouyinBlockedError: If Douyin refused the probe or it never got an answer.
+            DouyinBlockedError: If Douyin refused the probe with a 429.
+            DouyinTransferError: If the probe never got an answer or Douyin's server failed it.
             DouyinError: If the probe failed any other way.
         """
         try:
@@ -538,7 +546,8 @@ class DouyinDownloader(PlatformDownloader):
             The `videoInfoRes` object from the page's `_ROUTER_DATA`.
 
         Raises:
-            DouyinBlockedError: If a bot wall answered instead of the post.
+            DouyinBlockedError: If a bot wall or a 429 answered instead of the post.
+            DouyinTransferError: If the read never finished or Douyin's server failed it.
             DouyinError: If the page could not be fetched or its structure changed.
         """
         with _PAYLOAD_CACHE_LOCK:

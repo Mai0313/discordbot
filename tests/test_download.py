@@ -674,7 +674,7 @@ async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
     argvalues=[
         (DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST"), "-# 這則貼文已被刪除或設為私人"),
         (DouyinBlockedError("challenge"), "-# 抖音暫時擋住了請求，請稍後再試"),
-        (DouyinTransferError("read timed out"), "-# 這次檔案沒抓完,稍後再試一次"),
+        (DouyinTransferError("read timed out"), "-# 這次沒有抓到,稍後再試一次"),
         (TimeoutError(), "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"),
         (DouyinError("boom"), "-# 檔案無法下載"),
         (OSError(28, "No space left on device"), "-# 檔案無法下載"),
