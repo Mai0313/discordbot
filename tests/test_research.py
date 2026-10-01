@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:
-    """A planner whose host is off, so report files attach natively exactly as before hosting."""
+    """A planner whose host is off, so report files attach natively."""
     return MediaDeliveryPlanner(
         media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
     )
@@ -603,16 +603,14 @@ async def _only_resumable(*, thread_id: int) -> rdb.PersistentResearchSession | 
 
 
 async def test_session_round_trip(research_isolated_db: None) -> None:
-    await rdb.upsert_session(
+    await rdb.insert_session(
         thread_id=1,
         owner_id=99,
         channel_id=7,
         guild_id=5,
         source_message_id=3,
         agent="antigravity-preview-09-2026",
-        interaction_id=None,
         brief="研究 X",
-        phase="researching",
     )
     session = await _only_resumable(thread_id=1)
     assert session is not None
@@ -622,16 +620,14 @@ async def test_session_round_trip(research_isolated_db: None) -> None:
 
 
 async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
-    await rdb.upsert_session(
+    await rdb.insert_session(
         thread_id=2,
         owner_id=1,
         channel_id=1,
         guild_id=1,
         source_message_id=1,
         agent="antigravity-preview-09-2026",
-        interaction_id=None,
         brief="b",
-        phase="researching",
     )
     await rdb.set_interaction(thread_id=2, interaction_id="int_abc")
     session = await _only_resumable(thread_id=2)
@@ -644,16 +640,14 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
 
 
 async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: None) -> None:
-    await rdb.upsert_session(
+    await rdb.insert_session(
         thread_id=10,
         owner_id=500,
         channel_id=1,
         guild_id=1,
         source_message_id=1,
         agent="antigravity-preview-09-2026",
-        interaction_id=None,
         brief="b",
-        phase="researching",
     )
     assert await rdb.active_thread_for_owner(owner_id=500) == 10
     await rdb.set_phase(thread_id=10, phase="done")
@@ -669,17 +663,17 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
         (22, "done"),
     )
     for thread_id, phase in seeded:
-        await rdb.upsert_session(
+        await rdb.insert_session(
             thread_id=thread_id,
             owner_id=thread_id,
             channel_id=1,
             guild_id=1,
             source_message_id=1,
             agent="antigravity-preview-09-2026",
-            interaction_id="int_x",
             brief="b",
-            phase=phase,
         )
+        await rdb.set_interaction(thread_id=thread_id, interaction_id="int_x")
+        await rdb.set_phase(thread_id=thread_id, phase=phase)
     resumable = await rdb.list_resumable()
     assert {session.thread_id for session in resumable} == {20}
 
@@ -821,9 +815,8 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
 async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -> None:
     """Host-off contract: md + png that each fit but jointly exceed the limit BOTH attach natively.
 
-    Pre-fold-in `_final_files` attached each file independently with no combined-body check. Routing
-    both through one `plan()` call would have fired the planner's combined-peel and dropped the
-    larger (the report), so delivery decides each attachment on its own to keep host-off parity.
+    Routing both through one `plan()` call would fire the planner's combined-peel and drop the
+    larger (the report), so delivery decides each attachment on its own.
     """
     status = _FakeStatusMessage()
     thread = _FakeThread()
@@ -955,17 +948,17 @@ async def _seed_researching(
 
     `stored_id=False` is a launch that restarted before its interaction id was persisted.
     """
-    await rdb.upsert_session(
+    await rdb.insert_session(
         thread_id=thread_id,
         owner_id=owner_id,
         channel_id=1,
         guild_id=1,
         source_message_id=1,
         agent=agent,
-        interaction_id=f"int_{thread_id}" if stored_id else None,
         brief="b",
-        phase="researching",
     )
+    if stored_id:
+        await rdb.set_interaction(thread_id=thread_id, interaction_id=f"int_{thread_id}")
 
 
 async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
@@ -1591,7 +1584,7 @@ def _lock_reply_db(
     return _recorded(monkeypatch=monkeypatch, level="error")
 
 
-@pytest.mark.parametrize("call", ["active_thread_for_owner", "upsert_session"])
+@pytest.mark.parametrize("call", ["active_thread_for_owner", "insert_session"])
 async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails(
     research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, call: str
 ) -> None:
@@ -1607,8 +1600,8 @@ async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails
 
     assert [edit.get("content") for edit in interaction.edits] == ["開研究串失敗了,等等再試一次"]
     assert anchor.deleted is True
-    # Only the upsert comes after the thread is opened, and a thread with no row is not a run.
-    assert thread.deleted is (call == "upsert_session")
+    # Only the insert comes after the thread is opened, and a thread with no row is not a run.
+    assert thread.deleted is (call == "insert_session")
     assert thread.writes == []
     assert cog._active_threads == set()
     assert not cog._tasks
@@ -1620,7 +1613,7 @@ async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails
 async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fails(
     research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, refused: bool
 ) -> None:
-    _lock_reply_db(monkeypatch=monkeypatch, call="upsert_session")
+    _lock_reply_db(monkeypatch=monkeypatch, call="insert_session")
     warns = _recorded(monkeypatch=monkeypatch, level="warn")
     thread = _RunThread(error=make_forbidden(message="Missing Permissions") if refused else None)
     anchor = _Anchor(channel=_text_channel(), thread=thread)

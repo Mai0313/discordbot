@@ -37,13 +37,15 @@ from nextcord.ext import commands
 
 from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
+
+# Imported as a module so a test that swaps one store call on it reaches this cog.
 from discordbot.cogs.research import database as db
 from discordbot.typings.colors import DISCORD_RED
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.typings.research import RESEARCH_THREAD_PERMISSIONS
+from discordbot.typings.research import has_research_permissions
 from discordbot.typings.timeouts import THREAD_TITLE_TIMEOUT_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.research.agent import (
@@ -56,7 +58,7 @@ from discordbot.utils.model_pricing import get_token_rates
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs.research.delivery import deliver_report, owner_allowed_mentions
-from discordbot.cogs.research.streaming import ResearchProgressStreamer
+from discordbot.cogs.research.streaming import RESEARCHING_PREFIX, ResearchProgressStreamer
 
 if TYPE_CHECKING:
     import asyncio
@@ -66,9 +68,6 @@ if TYPE_CHECKING:
 RESEARCH_LABEL = "Antigravity"
 # Discord thread names cap at 100 chars; keep margin (a hard-limit safety trim, not length control).
 THREAD_NAME_MAX = 90
-# The bot's `dino` app emoji, reacted onto the source message when deep research is launched so
-# the activation reads as distinct from the normal QA pipeline reactions.
-DINO_EMOJI = "<:dino:1517560319281594570>"
 
 # How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
 # a word each of them spells for itself.
@@ -77,7 +76,7 @@ type StartOutcome = Literal["started", "exists", "unsupported", "forbidden", "er
 FORBIDDEN_REPLY = "我在這個頻道的權限不夠,開不了研究串"
 ERROR_REPLY = "開研究串失敗了,等等再試一次"
 # The opening status line a fresh or a resumed run posts before its live view takes over.
-RESEARCHING_STATUS = f"-# Researching... ({RESEARCH_LABEL})"
+RESEARCHING_STATUS = f"{RESEARCHING_PREFIX} ({RESEARCH_LABEL})"
 # What that status line ends as when the run it announced ends without a report.
 RESEARCH_FAILED_STATUS = f"-# Research failed ({RESEARCH_LABEL})"
 
@@ -264,8 +263,9 @@ class ResearchCogs(commands.Cog):
             return
         # Read for the bot's own member, whose token every later write uses, so a channel it cannot
         # run in is refused before a title call and an anchor ping are spent on it.
-        permissions = interaction.channel.permissions_for(interaction.channel.guild.me)
-        if not permissions >= RESEARCH_THREAD_PERMISSIONS:
+        if not has_research_permissions(
+            channel=interaction.channel, member=interaction.channel.guild.me
+        ):
             await interaction.response.send_message(content=FORBIDDEN_REPLY, ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
@@ -358,16 +358,14 @@ class ResearchCogs(commands.Cog):
                 return "error", None
             agent = self.runtime_models.antigravity_model.name
             try:
-                await db.upsert_session(
+                await db.insert_session(
                     thread_id=thread.id,
                     owner_id=owner_id,
                     channel_id=anchor.channel.id,
                     guild_id=anchor.guild.id,
                     source_message_id=anchor.id,
                     agent=agent,
-                    interaction_id=None,
                     brief=brief,
-                    phase="researching",
                 )
             except Exception as exc:
                 # Broad, as above. A thread with no row is never run, so the one just opened is
@@ -401,10 +399,11 @@ class ResearchCogs(commands.Cog):
                     )
                 return "error", None
             self._active_threads.add(thread.id)
-        # Mark the source message so the deep-research activation is visually distinct from the
-        # normal QA pipeline reactions (best-effort).
-        with contextlib.suppress(Exception):
-            await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
+        # Mark the source message with the bot's `dino` app emoji so the deep-research activation
+        # is visually distinct from the normal QA pipeline reactions (best-effort).
+        await update_reaction(
+            message=anchor, bot_user=self.bot.user, emoji="<:dino:1517560319281594570>"
+        )
         spawn_tracked(
             coro=self._run_research(thread=thread, owner_id=owner_id, brief=brief, agent=agent),
             tasks=self._tasks,
@@ -557,7 +556,7 @@ class ResearchCogs(commands.Cog):
         exc: Exception | None = None,
         reason: str | None = None,
     ) -> None:
-        """Posts the real failure reason as an error embed pinging the owner (mirrors gen_reply).
+        """Posts the real failure reason as an error embed pinging the owner.
 
         Pass `exc` for an exception path (the friendly error + its type are shown so the cause is
         fixable) or `reason` for a non-completed terminal status.
@@ -635,12 +634,7 @@ class ResearchCogs(commands.Cog):
         # stored; there is nothing to resume. End the old status line and tell the thread so the
         # owner is not left staring at `Researching...` forever.
         if session.interaction_id is None:
-            await self._release(thread_id=session.thread_id, phase="failed")
-            if thread is not None:
-                await self._finalize_status(
-                    status=status, thread=thread, content=RESEARCH_FAILED_STATUS
-                )
-            await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
+            await self._abandon_resume(session=session, thread=thread, status=status)
             return
         # Give the resumed run the same live reasoning view as a fresh one, on a line of its own
         # when none survived the restart; a fetch miss leaves status None so the streamer's editor
@@ -656,12 +650,7 @@ class ResearchCogs(commands.Cog):
             )
         except Exception:
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
-            await self._release(thread_id=session.thread_id, phase="failed")
-            if thread is not None:
-                await self._finalize_status(
-                    status=status, thread=thread, content=RESEARCH_FAILED_STATUS
-                )
-            await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
+            await self._abandon_resume(session=session, thread=thread, status=status)
             return
         if thread is None:
             await self._release(
@@ -676,14 +665,21 @@ class ResearchCogs(commands.Cog):
             status=status,
         )
 
-    async def _notify_resume_failed(self, *, thread: "Thread | None", owner_id: int) -> None:
-        """Tells a thread its interrupted research could not be resumed after a restart (best-effort)."""
+    async def _abandon_resume(
+        self,
+        session: db.PersistentResearchSession,
+        thread: "Thread | None",
+        status: Message | None,
+    ) -> None:
+        """Records a run a restart could not re-attach to as failed, and tells its thread so."""
+        await self._release(thread_id=session.thread_id, phase="failed")
         if thread is None:
             return
+        await self._finalize_status(status=status, thread=thread, content=RESEARCH_FAILED_STATUS)
         await self._safe_send(
             thread=thread,
-            content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
-            allowed_mentions=owner_allowed_mentions(owner_id=owner_id),
+            content=f"<@{session.owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
+            allowed_mentions=owner_allowed_mentions(owner_id=session.owner_id),
         )
 
     async def _find_prior_status(self, *, thread: "Thread") -> Message | None:
@@ -699,7 +695,7 @@ class ResearchCogs(commands.Cog):
             # holds the thread's oldest messages, the run's first post among them.
             async for message in thread.history(after=thread):
                 if message.author == self.bot.user and message.content.startswith(
-                    "-# Researching..."
+                    RESEARCHING_PREFIX
                 ):
                     return message
         except Forbidden:
@@ -763,6 +759,7 @@ class ResearchCogs(commands.Cog):
         """
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
+            # Two calls: none of nextcord's `send` overloads accepts `embed=None`.
             if embed is None:
                 return await thread.send(content=content, allowed_mentions=mentions)
             return await thread.send(content=content, embed=embed, allowed_mentions=mentions)
@@ -777,7 +774,10 @@ class ResearchCogs(commands.Cog):
 
 
 def _usage_footer(*, agent: str, input_tokens: int, output_tokens: int) -> str:
-    """Builds the gen_reply-style usage footer (full model name, tokens, cost) for a result.
+    """Builds the usage footer (full model name, tokens, cost) for a result.
+
+    Its `⬆` / `⬇` line is the shape `utils/llm_transcript.py::USAGE_FOOTER_RE` strips back out of
+    the bot's own history.
 
     No memory-lookup line: research never reads memory. The agent string is the full model name;
     rates come from the shared LiteLLM pricing table, so an unpriced preview agent shows $0.
