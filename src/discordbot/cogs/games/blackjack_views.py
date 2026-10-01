@@ -377,7 +377,6 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
                 delta=settlement.delta,
                 new_balance=settlement.new_balance,
                 is_allin=player.participant.is_allin,
-                base_delta=settlement.base_delta,
                 vip_bonus=settlement.vip_bonus,
                 five_card_bonus=settlement.five_card_bonus,
             )

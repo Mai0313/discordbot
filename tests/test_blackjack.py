@@ -980,7 +980,6 @@ async def test_settle_blackjack_player_updates_player_and_casino() -> None:
     settlement = await settle_only_seat(round_state=round_state)
 
     assert settlement.delta == 50
-    assert settlement.payout == 50
     assert settlement.new_balance == 150
     assert settlement.casino_balance == -50
     ledger = await get_casino_ledger()

@@ -86,34 +86,6 @@ class RefreshParticipantsResult(BaseModel):
     )
 
 
-class WagerSettlement(BaseModel):
-    """Database-backed settlement result for a finished wager."""
-
-    model_config = ConfigDict(frozen=True)
-
-    delta: int = Field(..., description="Net point change for the round.")
-    payout: int = Field(
-        ..., description="Positive player credit from the round, excluding losses and pushes."
-    )
-    new_balance: int = Field(
-        ..., description="Player balance after applying the signed round delta."
-    )
-    casino_balance: int = Field(
-        ..., description="Casino ledger balance after applying the casino-side settlement."
-    )
-    base_delta: int | None = Field(
-        default=None,
-        description=(
-            "Net point change before any VIP payout bonus; None only when a settlement is "
-            "constructed without bonus details."
-        ),
-    )
-    vip_bonus: int = Field(default=0, description="Extra points added by the VIP payout bonus.")
-    is_vip: bool = Field(
-        default=False, description="Whether the VIP perk was active for this settlement."
-    )
-
-
 class BlackjackHandSettlement(BaseModel):
     """Per-hand result for one sub-hand of a Blackjack player.
 
@@ -163,13 +135,27 @@ class BlackjackInsuranceSettlement(BaseModel):
     )
 
 
-class BlackjackPlayerSettlement(WagerSettlement):
+class BlackjackPlayerSettlement(BaseModel):
     """Aggregated Blackjack settlement for one participant.
 
     Combines every sub-hand result plus any insurance side bet into a
     single point delta and the one database write that backs it.
     """
 
+    model_config = ConfigDict(frozen=True)
+
+    delta: int = Field(..., description="Net point change for the round.")
+    new_balance: int = Field(
+        ..., description="Player balance after applying the signed round delta."
+    )
+    casino_balance: int = Field(
+        ..., description="Casino ledger balance after applying the casino-side settlement."
+    )
+    base_delta: int = Field(..., description="Net point change before any VIP payout bonus.")
+    vip_bonus: int = Field(default=0, description="Extra points added by the VIP payout bonus.")
+    is_vip: bool = Field(
+        default=False, description="Whether the VIP perk was active for this settlement."
+    )
     outcome: SettleOutcome = Field(
         ...,
         description=(
@@ -370,5 +356,4 @@ __all__ = [
     "ParticipantPreparationResult",
     "RefreshParticipantsResult",
     "SettleOutcome",
-    "WagerSettlement",
 ]

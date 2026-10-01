@@ -379,23 +379,6 @@ def surrender_loss(bet: int) -> int:
     return (bet + 1) // 2
 
 
-def _settle_split_twenty_one(
-    hand: BlackjackHandState, dealer: list[Card]
-) -> tuple[SettleOutcome, int]:
-    """Resolves a split-derived two-card 21 without treating it as natural Blackjack."""
-    dealer_total = hand_value(cards=dealer)
-    if is_blackjack(cards=dealer):
-        outcome: SettleOutcome = "lose"
-        delta = -hand.bet
-    elif dealer_total == 21:
-        outcome, delta = "push", 0
-    elif is_bust(cards=dealer):
-        outcome, delta = "dealer_bust", hand.bet
-    else:
-        outcome, delta = "win", hand.bet
-    return outcome, delta
-
-
 def _settle_regular_hand(
     hand: BlackjackHandState, dealer: list[Card]
 ) -> tuple[SettleOutcome, int]:
@@ -431,9 +414,8 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
 
     Surrender short-circuits to a half-bet refund. `is_five_card_win` also
     matches a five-card 21, so the 21 is tested first or the hand would settle
-    as a plain five-card win and lose the bonus that label carries.
-    Split-derived two-card 21 is handled before natural Blackjack so it never
-    receives the natural Blackjack payout.
+    as a plain five-card win and lose the bonus that label carries. A split
+    hand's two-card 21 is not a natural, so it settles as an ordinary 21.
 
     Args:
         hand: Finished sub-hand to settle.
@@ -458,8 +440,6 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
         return "five_card_twenty_one", delta
     if is_five_card_win(cards=hand.cards):
         return "five_card_win", hand.bet
-    if hand.is_split_hand and is_blackjack(cards=hand.cards):
-        return _settle_split_twenty_one(hand=hand, dealer=dealer)
     return _settle_regular_hand(hand=hand, dealer=dealer)
 
 

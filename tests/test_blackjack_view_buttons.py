@@ -213,9 +213,7 @@ async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -
 
 def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
     """A VIP-boosted win shows the total delta and the VIP bonus inside it."""
-    metadata = settlement_metadata(
-        delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
-    )
+    metadata = settlement_metadata(delta=150, new_balance=1_150, is_allin=False, vip_bonus=50)
 
     assert metadata == "-# 本局 `+150` · VIP加成 `+50` · 餘額 `1,150`"
 
@@ -842,9 +840,9 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         return BlackjackPlayerSettlement(
             outcome="win",
             delta=50,
-            payout=50,
             new_balance=150,
             casino_balance=-50,
+            base_delta=50,
             hands=[
                 BlackjackHandSettlement(
                     cards=[card(rank="10"), card(rank="Q", suit="♥")],

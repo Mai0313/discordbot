@@ -73,13 +73,8 @@ def lobby_participant_line(
     return f"**{index}. {display_name}**{bet_suffix}"
 
 
-def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several optional bonus facets
-    delta: int,
-    new_balance: int,
-    is_allin: bool,
-    base_delta: int | None = None,
-    vip_bonus: int = 0,
-    five_card_bonus: int = 0,
+def settlement_metadata(
+    delta: int, new_balance: int, is_allin: bool, vip_bonus: int = 0, five_card_bonus: int = 0
 ) -> str:
     """Renders the small-text settlement metadata line.
 
@@ -87,7 +82,6 @@ def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several o
         delta: Player net point change for the round.
         new_balance: Player balance after settlement.
         is_allin: Whether the wager consumed the full balance.
-        base_delta: Player net point change before player-facing bonuses.
         vip_bonus: Extra points added by the VIP payout bonus.
         five_card_bonus: System-funded bonus from five-card 21.
 
@@ -96,7 +90,7 @@ def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several o
         before the balance when the round was all-in.
     """
     segments = [f"本局 {amount_code(amount=delta, signed=True, compact=True)}"]
-    if vip_bonus > 0 and base_delta is not None:
+    if vip_bonus > 0:
         segments.append(f"VIP加成 {amount_code(amount=vip_bonus, signed=True, compact=True)}")
     if five_card_bonus > 0:
         segments.append(
