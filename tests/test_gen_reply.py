@@ -47,6 +47,7 @@ from discordbot.typings.emojis import (
 from discordbot.typings.memory import (
     MemoryFact,
     MemoryOwner,
+    MemoryCredits,
     MemorySection,
     MemoryDurability,
     MemoryWriteSummary,
@@ -64,6 +65,7 @@ from discordbot.typings.timeouts import (
     INTERACTION_DELIVERY_MARGIN_SECONDS,
 )
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
+from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import MediaItem, MediaHostingService, MediaDeliveryPlanner
@@ -8375,6 +8377,40 @@ async def test_streamer_footer_shows_route_effort() -> None:
 
     assert f"\n\n-# {TEST_LLM_MODEL} (low) · ⬆ 12 ⬇ 34" in result
     assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
+
+
+async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The footer prices the bare model name while showing it with its effort, byte for byte.
+
+    Pricing the label instead would find no rates and print `$0.00000000`.
+    """
+    rates = {
+        TEST_LLM_MODEL: ModelPriceEntry(input_cost_per_token=1e-6, output_cost_per_token=2e-6)
+    }
+    monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
+    message = FakeMessage()
+
+    result = await _streamer(
+        message=message,
+        model_effort="high",
+        memory_lookups=MemoryCredits(named=("Tester (tester)",)),
+    ).stream(
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="hello"),
+                _completed_event(input_tokens=1234, output_tokens=567),
+            ]
+        )
+    )
+
+    # 1,234 in at $1e-6 plus 567 out at $2e-6.
+    assert result == (
+        f"hello\n\n-# {TEST_LLM_MODEL} (high) · ⬆ 1,234 ⬇ 567 · $0.00236800"
+        "\n-# 📖 讀了 Tester (tester) 的記憶"
+    )
+    assert message.replies[0].content == result
 
 
 async def test_route_classify_carries_decision_and_defaults_qa(

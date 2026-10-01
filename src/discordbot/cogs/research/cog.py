@@ -54,7 +54,8 @@ from discordbot.cogs.research.agent import (
     resume_research_stream,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
-from discordbot.utils.model_pricing import get_token_rates
+from discordbot.utils.discord_errors import is_reply_target_gone
+from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs.research.delivery import deliver_report, owner_allowed_mentions
@@ -217,8 +218,7 @@ class ResearchCogs(commands.Cog):
         # Broad on purpose: the launch has already ended, and anything raised here would reach
         # `research_bridge`, which reports it as a dropped brief.
         except Exception as exc:
-            # A reply to a message that is already gone comes back as 50035, not only as NotFound.
-            if isinstance(exc, HTTPException) and (isinstance(exc, NotFound) or exc.code == 50035):
+            if isinstance(exc, HTTPException) and is_reply_target_gone(error=exc):
                 logfire.info(
                     "deep research's request is gone before it could say why it did not start",
                     message_id=message.id,
@@ -532,8 +532,11 @@ class ResearchCogs(commands.Cog):
             )
             return
         try:
-            footer = _usage_footer(
-                agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
+            footer, _ = render_usage_footer(
+                model_name=agent,
+                label=agent,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
             )
             await deliver_report(
                 thread=thread,
@@ -571,7 +574,8 @@ class ResearchCogs(commands.Cog):
                 await status.edit(content=content, allowed_mentions=AllowedMentions.none())
                 return
             except Forbidden:
-                # The thread's overwrites changed under the run; the id is the whole finding.
+                # The bot's permissions in the parent channel, which the thread inherits, changed
+                # under the run; the id is the whole finding.
                 logfire.warn("research thread refused the status edit", thread_id=thread.id)
             except Exception as exc:
                 # Broad: any Discord failure is recoverable by the fallback send below.
@@ -816,20 +820,6 @@ class ResearchCogs(commands.Cog):
             # and a failed run's cleanup must still run around this post.
             logfire.warn(failed, thread_id=thread.id, error_type=type(exc).__name__, _exc_info=exc)
             return None
-
-
-def _usage_footer(*, agent: str, input_tokens: int, output_tokens: int) -> str:
-    """Builds the usage footer (full model name, tokens, cost) for a result.
-
-    Its `⬆` / `⬇` line is the shape `utils/llm_transcript.py::USAGE_FOOTER_RE` strips back out of
-    the bot's own history.
-
-    No memory-lookup line: research never reads memory. The agent string is the full model name;
-    rates come from the shared LiteLLM pricing table, so an unpriced preview agent shows $0.
-    """
-    input_rate, output_rate = get_token_rates(model_name=agent)
-    cost = input_rate * input_tokens + output_rate * output_tokens
-    return f"-# {agent} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}"
 
 
 def _failure_text(*, status: str) -> str:

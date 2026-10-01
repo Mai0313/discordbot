@@ -309,7 +309,7 @@ def report_expansion_delivery_failure(
 
     Only the placeholder's own disappearance is routine. On an edit 50035 is a rejected body
     rather than a message that went away, so it is a defect here and
-    `send_expansion_placeholder`'s 50035 branch must not be copied down.
+    `utils/discord_errors.py::is_reply_target_gone` must not be used.
 
     Args:
         error: What the delivery raised.
