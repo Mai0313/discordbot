@@ -494,10 +494,8 @@ def read_tone(scope: str) -> str:
     """Returns the per-user tone-preference note, or "" when there is none.
 
     Read on every reply for the message author and injected as a low-authority
-    context block, so it is a plain short markdown note with no header to strip.
-    Cross-server safe by construction: consolidation writes only persona-independent
-    delivery qualities here, never facts, which is why it is the one tier that sits
-    outside the compartment tree.
+    context block, so it is a plain short markdown note with no header to strip. It is
+    the one tier outside the compartment tree.
     """
     return _read_text(path=_tone_path(scope=scope)).strip()
 

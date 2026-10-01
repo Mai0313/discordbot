@@ -78,11 +78,6 @@ _PARTICIPANT_PREFIX_RE = re.compile(
     r"^[ \t]*(?P<display>.+?) \((?P<username>[^()\n]+)\) \[id: (?P<user_id>\d+)\]:",
     flags=re.MULTILINE,
 )
-# Shortest roster name the gate will match on, split by script. A Latin name also has
-# to land on a word boundary, which a CJK name cannot (there are no spaces), so the CJK
-# floor carries that burden on its own.
-_MIN_LATIN_ROSTER_NAME = 3
-_MIN_OTHER_ROSTER_NAME = 2
 _LATIN_NAME_RE = re.compile(r"^[\w.\- ]+$", flags=re.ASCII)
 # Another participant referenced inside an observation's text (an id token or a raw
 # Discord mention). Such an observation is about a relationship or someone else's
@@ -384,7 +379,6 @@ class MemoryWriterAI(BaseModel):
             else ()
         )
         draft = await self._parse(
-            model=self.model,
             instructions=self.evaluator_prompt,
             user_text=(
                 f"{subject}\n\n"
@@ -420,7 +414,6 @@ class MemoryWriterAI(BaseModel):
             else self.consolidate_prompt
         )
         result = await self._parse(
-            model=self.model,
             instructions=instructions,
             user_text="\n\n".join(blocks),
             text_format=ConsolidatedMemory,
@@ -445,7 +438,6 @@ class MemoryWriterAI(BaseModel):
         land in the note. None means the LLM path failed.
         """
         return await self._parse(
-            model=self.model,
             instructions=TONE_FORGET_PROMPT,
             user_text="\n\n".join([
                 _tagged(tag="forget_requests", body=forgets),
@@ -457,12 +449,7 @@ class MemoryWriterAI(BaseModel):
         )
 
     async def _parse(
-        self,
-        model: ModelSettings,
-        instructions: str,
-        user_text: str,
-        text_format: type[_OutputT],
-        end_user_label: str,
+        self, instructions: str, user_text: str, text_format: type[_OutputT], end_user_label: str
     ) -> _OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
@@ -477,7 +464,7 @@ class MemoryWriterAI(BaseModel):
         """
         return await parse_responses_or_none(
             client=self.client,
-            model=model,
+            model=self.model,
             instructions=instructions,
             user_text=user_text,
             end_user_id=end_user_label,
@@ -515,8 +502,8 @@ def participant_names_from_transcript(
     The trusted author prefix is the only authorship signal in a rendered transcript,
     so the roster is read from it rather than threaded down from the reply pipeline —
     which also means a resumed job rebuilds the same roster from its stored transcript
-    with no extra column. The bot never carries an author prefix, so it is absent by
-    construction rather than by an exclusion rule.
+    with no extra column. The bot's own message carries that prefix only when it had
+    attachments, and nothing excludes it then: its names join the roster too.
 
     A forged prefix inside someone's message body can only ADD a name, and an extra name
     can only tighten an observation's sharing, so the untrusted position costs nothing.
@@ -531,7 +518,12 @@ def participant_names_from_transcript(
 
 def _is_matchable_name(name: str) -> bool:
     """Whether a roster name is distinctive enough to lock an observation on."""
-    floor = _MIN_LATIN_ROSTER_NAME if _LATIN_NAME_RE.match(name) else _MIN_OTHER_ROSTER_NAME
+    # Shortest roster name the gate will match on, split by script. A Latin name also has
+    # to land on a word boundary, which a CJK name cannot (there are no spaces), so the CJK
+    # floor carries that burden on its own.
+    min_latin_name = 3
+    min_other_name = 2
+    floor = min_latin_name if _LATIN_NAME_RE.match(name) else min_other_name
     return len(name) >= floor
 
 
@@ -751,7 +743,7 @@ def redact_secrets(text: str) -> str:
 
 
 def _validated_draft(
-    draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...] = ()
+    draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...]
 ) -> RawMemoryDraft:
     """Applies deterministic high-precision gates to model observations."""
     observations: list[MemoryObservation] = []
@@ -779,7 +771,7 @@ def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
 
 
 def _sanitize_observation(
-    observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...] = ()
+    observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...]
 ) -> MemoryObservation:
     """Normalizes text, keys, TTL, and sharing fields before validation."""
     category = observation.category

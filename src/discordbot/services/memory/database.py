@@ -46,11 +46,8 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 
 # Lifecycle of a persisted review turn, stored in the `status` column.
 MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
-# `last_error` is a bounded blurb, not a full traceback.
-_MAX_ERROR_CHARS = 500
 # One process would need a trillion captured memory events to exhaust its range.
 _TOKEN_BLOCK_SIZE = 1_000_000_000_000
-_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
@@ -75,7 +72,8 @@ class MemoryJobRow(Base):
         scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
         flavor: ``user`` or ``server`` so the restart sweep picks the matching writer.
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
-        transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
+        transcript: The turn payload, the rendered transcript plus the turn's memory notes
+            (``render_turn_payload``); set to NULL once the turn is ``done``.
         identity: Single-line identity ``parse_identity`` splits into the ``owner_id`` /
             ``owner_name`` stamped on every fact this scope writes; persisted so a resume
             needs no Discord context.
@@ -118,7 +116,7 @@ class MemoryJob(BaseModel):
     flavor: MemoryFlavor = Field(..., description="User or server flavor of the scope.")
     subject: str = Field(..., description="The phase-1 directive naming the review target.")
     transcript: str | None = Field(
-        ..., description="The rendered phase-1 input, or None once the turn is done."
+        ..., description="The turn payload (transcript plus memory notes), or None once done."
     )
     identity: str = Field(..., description="Single-line identity stamped onto the scope's facts.")
     status: MemoryJobStatus = Field(..., description="Lifecycle status of the turn.")
@@ -180,7 +178,8 @@ async def _reserve_token_block(*, engine: AsyncEngine) -> int:
             statement=select(func.max(MemoryJobRow.token)).where(MemoryJobRow.token > 0)
         )
         block_base = max(clock_high or 0, job_high or 0)
-        if block_base > _SQLITE_MAX_INTEGER - _TOKEN_BLOCK_SIZE:
+        sqlite_max_integer = (1 << 63) - 1
+        if block_base > sqlite_max_integer - _TOKEN_BLOCK_SIZE:
             raise RuntimeError("memory token space exhausted")
         high_watermark = block_base + _TOKEN_BLOCK_SIZE
         stmt = insert(MemoryTokenClockRow).values(id=1, high_watermark=high_watermark)
@@ -273,11 +272,13 @@ async def mark_failed(*, scope: str, token: int, error: str) -> None:
     """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
     token = await _resolve_token(token=token)
     now = _database_now()
+    # `last_error` is a bounded blurb, not a full traceback.
+    max_error_chars = 500
     async with open_session() as session:
         await session.execute(
             statement=update(MemoryJobRow)
             .where(MemoryJobRow.scope == scope, MemoryJobRow.token == token)
-            .values(status="failed", last_error=error[:_MAX_ERROR_CHARS], updated_at=now)
+            .values(status="failed", last_error=error[:max_error_chars], updated_at=now)
         )
         await session.commit()
 

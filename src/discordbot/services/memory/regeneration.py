@@ -243,10 +243,10 @@ async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> None:
     A rebuild derives facts from evidence rather than from the current facts, and the
     observation a forget was aimed at can still be sitting in `detail.md` verbatim: the forget
     pass takes out only the evidence of a fact it actually deleted, so a forget that found
-    nothing to delete, or ran before that pass existed, left it there. So the rebuild
-    re-creates exactly what the user asked to have removed, and without this
-    `/memory regenerate` would quietly undo those forgets. The replay then takes that evidence
-    out as the incremental pass does, so the next rebuild no longer sees it.
+    nothing to delete left it there. So the rebuild re-creates exactly what the user asked to
+    have removed, and without this `/memory regenerate` would quietly undo those forgets. The
+    replay then takes that evidence out as the incremental pass does, so the next rebuild no
+    longer sees it.
 
     Replaying the requests afterwards fixes that without weakening anything: each runs as its
     own `deletes_only` call, so the forget's own sentence still cannot be written anywhere.

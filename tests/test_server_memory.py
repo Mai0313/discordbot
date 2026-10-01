@@ -13,6 +13,7 @@ from discordbot.cogs.gen_reply.recall import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
+from discordbot.services.memory.facts import parse_member_alias_table
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     BOT_MEMORY_DIR_NAME,
@@ -262,6 +263,19 @@ def test_rendered_server_document_feeds_the_allowlist_its_member_ids(
     assert allowlist_ids_from_server_memory(memory=document) == {
         4242: "小李(社群暱稱:李董)",
         9001: "阿明(社群暱稱:明哥、明神)",
+    }
+
+
+def test_the_alias_table_reads_back_raw_and_recall_escapes_it(memory_isolated_dir: Path) -> None:
+    """The store parses its own table back unescaped; the ping guard belongs to the reader."""
+    write_fact(
+        scope=SERVER_SCOPE,
+        fact=_alias_fact(fact_id="a" * 16, text="@everyone(社群暱稱:全員)", subject_id=4242),
+    )
+    document = _server_document()
+    assert parse_member_alias_table(memory=document) == {4242: "@everyone(社群暱稱:全員)"}
+    assert allowlist_ids_from_server_memory(memory=document) == {
+        4242: "@\u200beveryone(社群暱稱:全員)"
     }
 
 

@@ -156,12 +156,16 @@ def _is_forget_request(block: str) -> bool:
 def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...]:
     """Which compartments one forget request is copied into.
 
-    A forget can only sensibly name a fact its speaker could see, and what they can see is
-    exactly what `compartments_for_reading` injects: in a guild, the shared compartment plus
-    that guild's own; in the owner's own DMs, everything, since their whole memory is readable
-    there. Copying wider would let a forget spoken in one guild reach a fact stored for
-    another, and copying narrower would leave the ordinary case, forgetting something the bot
-    just told them, unable to reach a fact that happens to live in `global/`.
+    A forget can only sensibly name a fact its speaker could see, so the copy follows the
+    `source` stamp: under `guild <id>`, the shared compartment plus that guild's own; under
+    `dm`, everything, since the owner's own DMs read their whole memory. Copying wider would let
+    a forget spoken in one guild reach a fact stored for another, and copying narrower would
+    leave the ordinary case, forgetting something the bot just told them, unable to reach a
+    fact that happens to live in `global/`.
+
+    The stamp is coarser than the read side: `dm` also stamps an `/ask` turn in a group DM or
+    someone else's DM, where the reply read only `global`, and a forget spoken there is still
+    copied everywhere.
 
     A `source` that is neither of those shapes falls open to every compartment rather than to
     none, so a stamping change cannot silently drop a user's forget on the floor. Code writes
@@ -277,11 +281,8 @@ def _is_released(
 def tone_evidence_from_raw(raw_text: str) -> str:
     """Returns the whole batch's tone-bearing observations, ignoring compartments.
 
-    Tone is the one tier that is cross-server safe by construction, so it must not be
-    partitioned: nearly half of all observations are `source_only`, and a bucket-gated
-    tone note would simply stop updating for those conversations. Each line carries its
-    `evidence_kind` and then the summary, oldest-first — the note's "a later stated
-    preference wins" rule has no other clock.
+    Each line carries its `evidence_kind` and then the summary, oldest-first — the note's "a
+    later stated preference wins" rule has no other clock.
 
     The kind is what tells a preference the user stated apart from one inferred off their
     own behaviour, and the note is a merge of many batches, so without it every bullet reads

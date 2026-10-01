@@ -72,7 +72,6 @@ _last_consolidation: dict[str, float] = {}
 # Consecutive refused consolidation batches per (scope, compartment); `_record_rejection`
 # owns what the count is for and when it escalates.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
-_MAX_QUIET_REJECTIONS = 3
 
 
 def needs_consolidation(scope: str) -> bool:
@@ -358,8 +357,7 @@ async def _consolidate_compartment(
 
     The request carries only the evidence routed to the compartment being written, which is
     what makes "a guild-locked observation cannot reach `global/`" structural rather than a
-    rule the prompt asks the model to follow. The tone note is genuinely cross-compartment and
-    is therefore NOT written here; it has its own call, outside the fan-out.
+    rule the prompt asks the model to follow.
     """
     existing = read_facts(scope=run.scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)
@@ -430,7 +428,8 @@ def _record_rejection(scope: str, compartment: str, outcome: DeltaOutcome, store
     # escalation this exists for would never fire.
     count = _consecutive_rejections.get((scope, compartment), 0) + 1
     _consecutive_rejections[(scope, compartment)] = count
-    log = logfire.error if count >= _MAX_QUIET_REJECTIONS else logfire.warn
+    max_quiet_rejections = 3
+    log = logfire.error if count >= max_quiet_rejections else logfire.warn
     log(
         "Memory consolidation batch refused; keeping raw batch",
         scope=scope,

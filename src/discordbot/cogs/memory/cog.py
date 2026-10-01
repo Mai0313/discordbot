@@ -46,13 +46,8 @@ from discordbot.services.memory.regeneration import (
     schedule_memory_regeneration,
 )
 
-_SUCCESS_EMBED_COLOR = DISCORD_GREEN
-_WARN_EMBED_COLOR = DISCORD_YELLOW
-
-_MEMORY_TITLE = "🧠 我對你的記憶"
 _SERVER_MEMORY_TITLE = "🧠 我對這個伺服器的記憶"
 _REGEN_TITLE = "🔄 記憶重建"
-_REGEN_COOLDOWN_DESCRIPTION = "記憶重建剛執行過，請稍後再試。"
 
 # `/memory show` is the owner reading their own store, so it is not bound by what a
 # reply prompt can carry; the pager splits whatever comes back. Kept finite only so a
@@ -129,7 +124,7 @@ class MemoryCogs(commands.Cog):
         await self._show_memory(
             interaction=interaction,
             scope=scope,
-            title=_MEMORY_TITLE,
+            title="🧠 我對你的記憶",
             empty_description="目前還沒有任何記憶，多跟我聊聊，我會慢慢認識你。",
             pending_template=(
                 "我已經記下 {count} 筆對你的觀察，正在整理成長期記憶，"
@@ -166,7 +161,7 @@ class MemoryCogs(commands.Cog):
             embed = Embed(
                 title=_SERVER_MEMORY_TITLE,
                 description="這個指令只能在伺服器裡使用。",
-                color=_WARN_EMBED_COLOR,
+                color=DISCORD_YELLOW,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -282,8 +277,8 @@ class MemoryCogs(commands.Cog):
         if regeneration_on_cooldown(scope=scope):
             embed = Embed(
                 title=_REGEN_TITLE,
-                description=_REGEN_COOLDOWN_DESCRIPTION,
-                color=_WARN_EMBED_COLOR,
+                description="記憶重建剛執行過，請稍後再試。",
+                color=DISCORD_YELLOW,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -294,7 +289,7 @@ class MemoryCogs(commands.Cog):
             embed = Embed(
                 title=_REGEN_TITLE,
                 description="目前還沒有足夠的觀察記錄可以重建記憶，多跟我聊聊吧。",
-                color=_WARN_EMBED_COLOR,
+                color=DISCORD_YELLOW,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -312,10 +307,10 @@ class MemoryCogs(commands.Cog):
         )
         if scheduled:
             description = "已排程重建記憶，整理完成後可以用 `/memory show` 查看。"
-            color = _SUCCESS_EMBED_COLOR
+            color = DISCORD_GREEN
         else:
             description = "記憶正在重建中，完成後可以用 `/memory show` 查看。"
-            color = _WARN_EMBED_COLOR
+            color = DISCORD_YELLOW
         embed = Embed(title=_REGEN_TITLE, description=description, color=color)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
