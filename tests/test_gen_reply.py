@@ -1983,17 +1983,18 @@ async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> Non
     assert "⚠️" in message.added_reactions
 
 
-async def test_a_refused_media_attach_is_never_logged_as_attached(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("refused", [False, True], ids=["attached", "refused"])
+async def test_only_a_landed_media_attach_is_logged_as_attached(
+    monkeypatch: pytest.MonkeyPatch, refused: bool
 ) -> None:
     """The step's closing line says the media landed, so a refused edit must not reach it.
 
-    Discord refused the edit (403, 400001) for inline music in a guild that limits uploads, and
-    each refusal was followed in `data/logs` by "Generated media attached" (#720).
+    Discord refuses the edit for inline music in a guild that limits uploads.
     """
     message = FakeMessage()
     reply = FakeReply()
-    reply.edit_error = RuntimeError("file uploads are limited here")
+    if refused:
+        reply.edit_error = RuntimeError("file uploads are limited here")
     streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
     logged: list[str] = []
 
@@ -2011,8 +2012,8 @@ async def test_a_refused_media_attach_is_never_logged_as_attached(
 
     await streamer._attach_generated_media()
 
-    assert "⚠️" in message.added_reactions
-    assert "Generated media attached" not in logged
+    assert ("⚠️" in message.added_reactions) is refused
+    assert ("Generated media attached" in logged) is not refused
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -3940,14 +3941,22 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
     """
     message = FakeMessage()
     streamer = _streamer(message=cast("Message", message))
+    published: list[object] = []
+
+    async def events() -> AsyncIterator[SimpleNamespace]:
+        """Notes which streamer the failure path would find while the answer is in flight."""
+        yield _text_event(delta="done")
+        published.append(streaming_module.current_answer_streamer.get())
+        yield _completed_event(input_tokens=1, output_tokens=2)
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
-        return _stream_events_from(events=[_text_event(delta="done"), _completed_event(1, 2)])
+        return cast("AsyncIterator[ResponseStreamEvent]", events())
 
     await stream_answer_with_retry(
         streamer=streamer, open_stream=open_stream, message_id=message.id
     )
 
+    assert published == [streamer]
     assert streaming_module.current_answer_streamer.get() is None
 
 
@@ -5066,9 +5075,10 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert _recorded(cog).responses.create_streams[-1] is True
     assert _recorded(cog).responses.create_tools[-1] is None
 
+    streams_before = _recorded(cog).responses.create_streams.count(True)
     built = _install_streamer(monkeypatch=monkeypatch)
     await _run_pipeline(cog=cog, message=message)
-    assert _recorded(cog).responses.create_streams[-1] is True
+    assert _recorded(cog).responses.create_streams.count(True) == streams_before + 1
     assert built[-1]["message"] is message
 
 
@@ -6196,7 +6206,9 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=ReplyContext()))
     failed = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=failed))
-    assert failed.replies[0].content is None
+    notice = failed.replies[0].embed
+    assert notice is not None
+    assert notice.title == "Something went wrong"
 
     # Source deleted before the error embed lands: it falls back to an unparented send.
     deleted = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
