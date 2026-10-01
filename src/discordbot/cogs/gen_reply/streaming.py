@@ -761,7 +761,7 @@ class ResponseStreamer(BaseModel):
             reasoning_chars=len(self.reasoning_content),
             reply_chars=reply_chars,
             voice_requested=self.markers.voice_requested,
-            image_count=len(self.markers.image_prompts),
+            image_count=self.markers.image_requests,
             music_requested=bool(self.markers.music_prompt),
             video_requested=bool(self.markers.video_prompt),
             memory_lookups=self.memory_lookups.total,
@@ -993,8 +993,7 @@ class ResponseStreamer(BaseModel):
         `<generate-image>` and `<generate-video>` in the same reply load them only once; only the raw
         bytes are used here (the edit path needs no mime).
         """
-        prompts = self.markers.image_prompts[:MAX_INLINE_IMAGES]
-        if not prompts:
+        if not self.markers.image_prompts:
             return []
         if self.image_generator is None:
             # Inline image is intentionally off this turn (kill-switch / non-QA route): no hint.
@@ -1003,17 +1002,19 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return []
-        if len(self.markers.image_prompts) > MAX_INLINE_IMAGES:
+        if self.markers.image_requests > MAX_INLINE_IMAGES:
             logfire.info(
                 "Inline image requests exceed the per-reply cap; dropping the extras",
                 message_id=self.message.id,
-                requested=len(self.markers.image_prompts),
+                requested=self.markers.image_requests,
                 cap=MAX_INLINE_IMAGES,
             )
         # Mark the source message with the bot's `image` app emoji while the images render.
         await self.surface.mark(emoji=IMAGE_EMOJI)
         logfire.info(
-            "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
+            "Generating inline image reply",
+            message_id=self.message.id,
+            image_count=len(self.markers.image_prompts),
         )
         # When the user uploaded image(s), feed them so an inline <generate-image> edits them instead of
         # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
@@ -1027,7 +1028,7 @@ class ResponseStreamer(BaseModel):
                     end_user_id=self.message.author.name,
                     image_bytes_list=source_bytes or None,
                 )
-                for prompt in prompts
+                for prompt in self.markers.image_prompts
             )
         )
         candidates: list[MediaItem] = []
@@ -1039,7 +1040,11 @@ class ResponseStreamer(BaseModel):
                 continue
             # A single image keeps `generated.png` to mirror the IMAGE route; multiples need
             # distinct names since Discord collides on duplicate attachment filenames.
-            filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
+            filename = (
+                INLINE_IMAGE_FILENAME
+                if len(self.markers.image_prompts) == 1
+                else f"generated_{index}.png"
+            )
             candidates.append(MediaItem(source=image, filename=filename))
         if dropped:
             await self.surface.hint(emoji=DROPPED_HINT_EMOJI)

@@ -2137,6 +2137,16 @@ def test_extract_inline_markers_caps_memory_notes_per_kind() -> None:
     assert markers.memory_notes == [f"note {index}" for index in range(MAX_MEMORY_NOTES)]
 
 
+def test_extract_inline_markers_caps_images_but_counts_every_request() -> None:
+    """Extraction keeps the first `MAX_INLINE_IMAGES` descriptions and still counts the rest."""
+    text = "".join(
+        f"<generate-image>image {index}</generate-image>" for index in range(MAX_INLINE_IMAGES + 3)
+    )
+    markers = extract_inline_markers(text=text)
+    assert markers.image_prompts == [f"image {index}" for index in range(MAX_INLINE_IMAGES)]
+    assert markers.image_requests == MAX_INLINE_IMAGES + 3
+
+
 def test_scrub_markers_for_preview_hides_a_streaming_memory_note() -> None:
     """A half-streamed memory tag must not flicker into the live preview.
 
