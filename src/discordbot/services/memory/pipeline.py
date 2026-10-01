@@ -286,7 +286,7 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
         if settled or turn.report is None:
             return
         settled = True
-        await report_writes(report=turn.report, summary=summary)
+        await report_writes(report=turn.report, summary=summary, scope=turn.scope)
 
     try:
         if cleared_since(scope=turn.scope, started_at=turn.captured_at):

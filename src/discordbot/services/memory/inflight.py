@@ -205,7 +205,9 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
                     "transcript": _merged_payload(
                         newer=turn.transcript, older=superseded.transcript
                     ),
-                    "report": _merged_report(newer=turn.report, older=superseded.report),
+                    "report": _merged_report(
+                        newer=turn.report, older=superseded.report, scope=turn.scope
+                    ),
                 }
             )
         by_subject[turn.subject] = turn
@@ -243,7 +245,9 @@ def drop_pending_updates(scope: str) -> None:
         _release_pending_report(pending=dropped)
 
 
-async def report_writes(report: MemoryWriteReport, summary: MemoryWriteSummary) -> None:
+async def report_writes(
+    report: MemoryWriteReport, summary: MemoryWriteSummary, scope: str
+) -> None:
     """Hands the caller what this turn recorded, never letting the report cost the write.
 
     The write is already durable by the time this runs, so a Discord edit that fails, or a
@@ -260,6 +264,7 @@ async def report_writes(report: MemoryWriteReport, summary: MemoryWriteSummary) 
         # whose failure would otherwise be logged as the memory update having failed.
         logfire.warn(
             "Reporting a memory write back to the reply failed",
+            scope=scope,
             error_type=type(exc).__name__,
             _exc_info=exc,
         )
@@ -287,7 +292,7 @@ def _merged_payload(newer: str, older: str) -> str:
 
 
 def _merged_report(
-    newer: MemoryWriteReport | None, older: MemoryWriteReport | None
+    newer: MemoryWriteReport | None, older: MemoryWriteReport | None, scope: str
 ) -> MemoryWriteReport | None:
     """Answers both replies when one turn's notes are merged into another's.
 
@@ -309,8 +314,8 @@ def _merged_report(
 
     async def both(summary: MemoryWriteSummary) -> None:
         """Reports one merged outcome to every reply whose notes went into it."""
-        await report_writes(report=older, summary=summary)
-        await report_writes(report=newer, summary=summary)
+        await report_writes(report=older, summary=summary, scope=scope)
+        await report_writes(report=newer, summary=summary, scope=scope)
 
     return both
 
@@ -360,7 +365,9 @@ def _release_pending_report(pending: MemoryTurn) -> None:
     if pending.report is None:
         return
     _spawn_db(
-        coro=report_writes(report=pending.report, summary=MemoryWriteSummary()),
+        coro=report_writes(
+            report=pending.report, summary=MemoryWriteSummary(), scope=pending.scope
+        ),
         scope=pending.scope,
     )
 
