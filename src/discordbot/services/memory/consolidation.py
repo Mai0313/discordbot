@@ -165,9 +165,10 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
     timeout, and compartments run sequentially, so neither the worst-case lock hold nor the
     per-scope proxy load scales with the compartment count.
 
-    The raw batch is retired only when every compartment applied. A retry re-runs the
-    ones that already landed, which is safe because a delta is an upsert keyed by an id
-    the model echoes back and, failing that, by the evidence keys the fact carries.
+    The raw batch is retired only when every compartment applied and the tone call answered.
+    A retry re-runs the ones that already landed, which is safe because a delta is an upsert
+    keyed by an id the model echoes back and, failing that, by the evidence keys the fact
+    carries.
     """
     raw_entries = read_raw_entries(scope=run.scope)
     try:
@@ -214,8 +215,8 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
         return
     if cleared_since(scope=run.scope, started_at=run.started_at):
         return
-    await update_tone_note(run=run, raw_entries=raw_entries)
-    if cleared_since(scope=run.scope, started_at=run.started_at):
+    tone_updated = await update_tone_note(run=run, raw_entries=raw_entries)
+    if not tone_updated or cleared_since(scope=run.scope, started_at=run.started_at):
         return
     # Age every compartment, not just the ones this batch touched: a guild the user has
     # stopped visiting otherwise keeps its `recent` facts forever and hands them back on
