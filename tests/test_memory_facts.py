@@ -253,37 +253,50 @@ def test_reads_are_cached_until_a_write_lands(memory_isolated_dir: Path) -> None
     )
 
 
+_BOTH_FLAVORS = (user_scope(user_id=111), server_scope(server_id=500))
+
+
 @pytest.mark.parametrize(
-    "write_tier",
+    ("write_tier", "scopes"),
     [
-        pytest.param(lambda scope: append_raw_entry(scope=scope, entry_text="- 觀察"), id="raw"),
+        pytest.param(
+            lambda scope: append_raw_entry(scope=scope, entry_text="- 觀察"),
+            _BOTH_FLAVORS,
+            id="raw",
+        ),
         pytest.param(
             lambda scope: append_detail(
                 scope=scope,
                 text="## 2026-07-01T00:00:00+00:00\n### stable_fact\n- normalized_key: a",
             ),
+            _BOTH_FLAVORS,
             id="detail",
         ),
+        # A server scope has no tone tier.
         pytest.param(
-            lambda scope: write_tone(scope=scope, content="## 語氣偏好\n* 簡短"), id="tone"
+            lambda scope: write_tone(scope=scope, content="## 語氣偏好\n* 簡短"),
+            (user_scope(user_id=111),),
+            id="tone",
         ),
-        pytest.param(lambda scope: write_fact(scope=scope, fact=_fact()), id="fact"),
+        pytest.param(
+            lambda scope: write_fact(scope=scope, fact=_fact()), _BOTH_FLAVORS, id="fact"
+        ),
     ],
 )
 def test_iter_scopes_finds_a_scope_holding_one_tier_and_skips_dot_dirs(
-    memory_isolated_dir: Path, write_tier: Callable[[str], None]
+    memory_isolated_dir: Path, write_tier: Callable[[str], None], scopes: tuple[str, ...]
 ) -> None:
-    """Any one tier on disk makes a scope, of either flavor, and the git directory never is one.
+    """Any one tier its flavor can hold makes a scope, and the git directory never is one.
 
     `detail.md` alone counts: it is what a rebuild reconstructs everything from, and a scope
     that has gone quiet since its last consolidation holds nothing else — which is the steady
     state for a server, not an edge case.
     """
-    write_tier(user_scope(user_id=111))
-    write_tier(server_scope(server_id=500))
+    for scope in scopes:
+        write_tier(scope)
     (memory_isolated_dir / ".git").mkdir(parents=True, exist_ok=True)
     (memory_isolated_dir / ".git" / "raw.md").write_text("## 2026-01-01T00:00:00+00:00\n")
-    assert iter_scopes() == ["111", "bot_memories/500"]
+    assert iter_scopes() == list(scopes)
 
 
 def test_iter_scopes_ignores_a_scope_whose_only_file_is_unreadable(
