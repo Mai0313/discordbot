@@ -831,6 +831,28 @@ def test_redact_secrets_masks_token_shapes() -> None:
     assert redacted.count("[REDACTED_SECRET]") >= 8
 
 
+@pytest.mark.parametrize("kind", ["jwt", "jwt-signature-ending-in-dash", "discord"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        pytest.param("我的token是{value}喔", id="chinese-both-sides"),
+        pytest.param("我的token是{value} ok", id="chinese-before"),
+        pytest.param("token: {value}喔", id="chinese-after"),
+    ],
+)
+def test_redact_secrets_masks_a_token_typed_against_chinese(kind: str, template: str) -> None:
+    """A token glued to Chinese is still a token (#904), down to a trailing `-`."""
+    # Joined at runtime so secret scanners do not flag the test fixture itself.
+    jwt = ".".join(["eyJmYWtlIjoidGVzdCJ9"] * 2 + ["RkFLRV9TSUdOQVRVUkVfRkFLRQ"])
+    token = {
+        "jwt": jwt,
+        "jwt-signature-ending-in-dash": jwt + "-",
+        "discord": ".".join(["FAKE" * 6, "FAKExx", "FAKE" * 7]),
+    }[kind]
+    redacted = redact_secrets(text=template.format(value=token))
+    assert redacted == template.format(value="[REDACTED_SECRET]")
+
+
 def test_redact_secrets_leaves_git_shas_alone() -> None:
     sha = "bae3077" + "a" * 33
     text = f"commit {sha} fixed it"
