@@ -8,9 +8,9 @@ continuations.
 
 Rendering turns a compartment's files back into a Traditional Chinese document. That
 rendered shape is a CONTRACT rather than presentation: the ``## 成員稱呼`` table is parsed
-back out of it downstream, and the reply prompts are told to read it. Section keys are
-ASCII so the structured LLM schema stays English; the headings below are the only place
-the two vocabularies meet.
+back out of it (`parse_member_alias_table`), and the reply prompts are told to read it.
+Section keys are ASCII so the structured LLM schema stays English; the headings below are
+the only place the two vocabularies meet.
 """
 
 import re
@@ -37,10 +37,19 @@ _HEADER_LINE_RE = re.compile(r"^(?P<key>[a-z_]+):[ ]?(?P<value>.*)$")
 # carry a path separator, a dot, or anything else the filesystem reads structurally.
 FACT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 # An `[id: N]` token anywhere in a fact body. Alias rows get theirs appended from the
-# code-stamped `subject_id`, and the allowlist parser takes the FIRST match on a line,
+# code-stamped `subject_id`, and `parse_member_alias_table` takes the FIRST match on a line,
 # so a body that carries its own would silently win — and that body is distilled from
 # messages anyone in the server can write.
-_ID_TOKEN_RE = re.compile(r"\[id:\s*\d+\]")
+_ID_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]")
+
+# The nickname table's heading, rendered and parsed back from this one string.
+_MEMBER_ALIAS_HEADING = "成員稱呼"
+# The nickname table's section of a rendered server document, up to the next `## ` heading
+# or the end of the document.
+_MEMBER_ALIAS_SECTION_RE = re.compile(
+    rf"^##\s*{re.escape(_MEMBER_ALIAS_HEADING)}\s*$(?P<body>.*?)(?=^##\s|\Z)",
+    flags=re.MULTILINE | re.DOTALL,
+)
 
 # Rendered headings per flavor, in document order. The tuples double as the per-flavor
 # section allowlist: a delta naming a section absent here is dropped.
@@ -57,7 +66,7 @@ _SERVER_SECTION_HEADINGS: tuple[tuple[MemorySection, str], ...] = (
     ("culture", "社群文化"),
     ("topic", "常見話題"),
     ("fact", "重要事實"),
-    ("member_alias", "成員稱呼"),
+    ("member_alias", _MEMBER_ALIAS_HEADING),
     ("recent", "近期脈絡"),
 )
 
@@ -271,6 +280,28 @@ def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
         # the only id that may appear in it is the one code stamped.
         return f"* {_ID_TOKEN_RE.sub('', body).strip()}[id: {fact.subject_id}]"
     return f"* {body}"
+
+
+def parse_member_alias_table(memory: str) -> dict[int, str]:
+    """Reads the `## 成員稱呼` table back out of a rendered server memory document.
+
+    Maps each row's `[id: USER_ID]` to the row minus its id token and bullet, unescaped: a
+    caller putting a label where a mention could fire escapes it there. The first row naming
+    an id wins, and a document without the section yields an empty map.
+    """
+    section = _MEMBER_ALIAS_SECTION_RE.search(memory)
+    if section is None:
+        return {}
+    rows: dict[int, str] = {}
+    for line in section.group("body").splitlines():
+        match = _ID_TOKEN_RE.search(line)
+        if match is None:
+            continue
+        user_id = int(match.group("user_id"))
+        if user_id in rows:
+            continue
+        rows[user_id] = _ID_TOKEN_RE.sub("", line).strip().lstrip("*").strip()
+    return rows
 
 
 def _split_front_matter(text: str) -> tuple[dict[str, str] | None, str]:

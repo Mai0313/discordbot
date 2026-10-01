@@ -18,8 +18,6 @@ deliberate exception — persona-independent delivery preferences are cross-serv
 construction, so they live outside the tree.
 """
 
-import re
-
 from nextcord import User, Member
 from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
@@ -27,6 +25,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.utils.llm_transcript import sanitize_identity
+from discordbot.services.memory.facts import parse_member_alias_table
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     user_scope,
@@ -162,14 +161,6 @@ def build_recall_allowlist(
     return allowed
 
 
-# Pulls the `## 成員稱呼` nickname-table section out of a server memory file, then each
-# member row's `[id: USER_ID]`. The section ends at the next `## ` heading or end of file.
-_MEMBER_ALIAS_SECTION_RE = re.compile(
-    r"^##\s*成員稱呼\s*$(?P<body>.*?)(?=^##\s|\Z)", flags=re.MULTILINE | re.DOTALL
-)
-_MEMBER_ALIAS_ID_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]")
-
-
 def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     """Parses askable user ids out of a server memory's `## 成員稱呼` nickname table.
 
@@ -179,20 +170,10 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     id token becomes the label, escaped so a stored name can never inject a ping.
     Returns an empty map when the section is absent.
     """
-    section = _MEMBER_ALIAS_SECTION_RE.search(memory)
-    if section is None:
-        return {}
-    allowed: dict[int, str] = {}
-    for line in section.group("body").splitlines():
-        match = _MEMBER_ALIAS_ID_RE.search(line)
-        if match is None:
-            continue
-        user_id = int(match.group("user_id"))
-        if user_id in allowed:
-            continue
-        label = _MEMBER_ALIAS_ID_RE.sub("", line).strip().lstrip("*").strip()
-        allowed[user_id] = escape_mentions(label) or str(user_id)
-    return allowed
+    return {
+        user_id: escape_mentions(label) or str(user_id)
+        for user_id, label in parse_member_alias_table(memory=memory).items()
+    }
 
 
 def widen_allowlist_with_aliases(*, allowed: dict[int, RecallCandidate], memory: str) -> None:
