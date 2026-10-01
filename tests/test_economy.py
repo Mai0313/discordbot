@@ -832,6 +832,7 @@ async def test_apply_blackjack_settlement_loss_clamps_player_and_casino_to_avail
 
     assert result.player_balance == 0
     assert result.casino_balance == 25
+    assert result.applied_player_delta == -25
     account = await get_account(user_id=1)
     assert account is not None
     assert account.total_spent == 25

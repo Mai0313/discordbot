@@ -144,7 +144,10 @@ class BlackjackPlayerSettlement(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    delta: int = Field(..., description="Net point change for the round.")
+    delta: int = Field(
+        ...,
+        description="Net point change actually applied for the round; a loss may be smaller than the rules' amount when the wallet cannot cover it.",
+    )
     new_balance: int = Field(
         ..., description="Player balance after applying the signed round delta."
     )

@@ -315,6 +315,10 @@ class RoundSettlementResult(BaseModel):
     casino_balance: int = Field(
         ..., description="Casino system ledger balance after the round settlement."
     )
+    applied_player_delta: int = Field(
+        ...,
+        description="Signed player delta that was actually applied; a loss may be smaller than requested when the balance clamps at zero.",
+    )
 
 
 class TransferResult(BaseModel):

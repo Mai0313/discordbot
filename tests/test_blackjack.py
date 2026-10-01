@@ -1018,6 +1018,28 @@ async def test_settle_blackjack_player_double_doubles_loss_when_dealer_higher() 
     assert settlement.new_balance == 100
 
 
+async def test_settle_blackjack_player_reports_only_what_a_short_wallet_paid() -> None:
+    """A loss the wallet can no longer cover settles as what it collected, not as the bet.
+
+    Bets are not taken when a round starts, so the wallet can be short by settlement (the
+    same balance at two tables, or a transfer mid-round); the seat and its history row show
+    this delta.
+    """
+    await seed_balance(user_id=1, name="alice", amount=30)
+    round_state = _finished_round(bet=100)
+    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="6", suit="♥")]
+    round_state.dealer = [card(rank="10", suit="♣"), card(rank="9", suit="♦")]
+
+    settlement = await settle_only_seat(round_state=round_state)
+
+    assert settlement.outcome == "lose"
+    assert settlement.delta == -30
+    assert settlement.new_balance == 0
+    assert settlement.casino_balance == 30
+    await assert_wallet_consistent(user_id=1, expected_balance=0)
+    await assert_casino_ledger_consistent(expected_balance=30)
+
+
 def _split_hands(second: Card) -> list[BlackjackHandState]:
     """Builds a finished split of eights: an 8-K hand and an 8 with `second`."""
     return [
