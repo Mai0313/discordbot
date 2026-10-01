@@ -28,6 +28,7 @@ from discordbot.services.economy.database import CreditResult
 
 from tests.helpers.casting import as_message, as_discord_bot
 from tests.helpers.discord_mocks import FakeUser
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -198,18 +199,24 @@ def test_cli_load_cogs_sync_refuses_a_directory_that_is_not_a_cog(
         _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
 
 
-async def test_cli_message_reward_pays_a_member_and_never_the_bot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A member's message earns the base reward; the bot's own message earns nothing."""
-    rewards: list[dict[str, Any]] = []
+@pytest.fixture
+def rewards(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every credit the message reward asks for, recorded instead of paid."""
+    recorded: list[dict[str, Any]] = []
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records base reward arguments and returns a fake credit result."""
-        rewards.append(kwargs)
-        return CreditResult(new_balance=5_000)
+        recorded.append(kwargs)
+        return CreditResult(new_balance=10)
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    return recorded
+
+
+async def test_cli_message_reward_pays_a_member_and_never_the_bot(
+    rewards: list[dict[str, Any]],
+) -> None:
+    """A member's message earns the base reward; the bot's own message earns nothing."""
     bot = _reward_bot()
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
     await cli.DiscordBot.on_message(
@@ -224,16 +231,9 @@ async def test_cli_message_reward_pays_a_member_and_never_the_bot(
 
 
 async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
-    monkeypatch: pytest.MonkeyPatch,
+    rewards: list[dict[str, Any]],
 ) -> None:
     """A second message within the cooldown earns nothing; a later one earns again."""
-    rewards: list[dict[str, Any]] = []
-
-    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
-        rewards.append(kwargs)
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     bot = _reward_bot()
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
@@ -248,16 +248,9 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
 
 
 async def test_cli_message_reward_cooldown_prunes_expired_users(
-    monkeypatch: pytest.MonkeyPatch,
+    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Expired per-user cooldown slots are dropped lazily on later messages."""
-    rewards: list[dict[str, Any]] = []
-
-    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
-        rewards.append(kwargs)
-        return CreditResult(new_balance=10)
-
-    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
     bot = _reward_bot(_message_reward_at={1: 900.0, 2: 975.0})
 
@@ -345,13 +338,7 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
     live here could not fire. nextcord's own default prints to `sys.stderr`, which
     `_TeeStream` does not tee, so before this the traceback reached no file at all.
     """
-    logged: list[dict[str, Any]] = []
-
-    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the unhandled-command-error log."""
-        logged.append(kwargs)
-
-    monkeypatch.setattr(cli.logfire, "error", record_error)
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True))
     interaction = SimpleNamespace(
         application_command=SimpleNamespace(qualified_name="demo"),
@@ -363,9 +350,10 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
         cast("Interaction[commands.Bot]", interaction),
         cast("ApplicationError", ApplicationInvokeError(ValueError("boom"))),
     )
-    assert logged[-1]["error_type"] == "ValueError"
-    assert logged[-1]["command"] == "demo"
-    assert logged[-1]["guild_id"] == 1
+    _message, fields = logged[-1]
+    assert fields["error_type"] == "ValueError"
+    assert fields["command"] == "demo"
+    assert fields["guild_id"] == 1
 
 
 async def test_cli_reports_an_exception_from_any_event_handler(
@@ -377,13 +365,7 @@ async def test_cli_reports_an_exception_from_any_event_handler(
     listener into `on_error`, whose default prints to `sys.stderr` — untee'd, so an
     `on_message` or an expansion cog's `on_ready` sweep that raised left no line at all.
     """
-    logged: list[dict[str, Any]] = []
-
-    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the unhandled-event log."""
-        logged.append(kwargs)
-
-    monkeypatch.setattr(cli.logfire, "error", record_error)
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     try:
         raise ValueError("boom")
     except ValueError:
@@ -393,8 +375,9 @@ async def test_cli_reports_an_exception_from_any_event_handler(
             as_discord_bot(fake=SimpleNamespace()), "on_message", SimpleNamespace()
         )
 
-    assert logged[-1]["event_method"] == "on_message"
-    assert isinstance(logged[-1]["_exc_info"], ValueError)
+    _message, fields = logged[-1]
+    assert fields["event_method"] == "on_message"
+    assert isinstance(fields["_exc_info"], ValueError)
 
 
 async def test_cli_counts_registered_commands_and_survives_a_failed_read(
@@ -405,13 +388,7 @@ async def test_cli_counts_registered_commands_and_survives_a_failed_read(
     It is a diagnostic taken on the way into the sync, so a read that fails costs a log
     field rather than the boot.
     """
-    warned: list[dict[str, Any]] = []
-
-    def record_warn(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the could-not-read warning."""
-        warned.append(kwargs)
-
-    monkeypatch.setattr(cli.logfire, "warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     async def two_registered(**_kwargs: Any) -> list[object]:  # noqa: ANN401 -- nextcord's own signature
         """Stands in for Discord answering with two registered commands."""
