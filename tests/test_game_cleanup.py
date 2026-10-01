@@ -32,6 +32,24 @@ from tests.helpers.casting import (
 from tests.helpers.discord_mocks import FakeGuild, FakeInteraction, FakeDiscordMessage
 
 
+class _CleanupMessage(FakeDiscordMessage):
+    """`FakeDiscordMessage` whose channel has a name and whose delete is counted or refused."""
+
+    def __init__(self, guild: FakeGuild | None = None, channel_name: str | None = None) -> None:
+        """Names the channel; setting `delete_failure` makes every later delete raise it."""
+        super().__init__(guild=guild)
+        self.channel.name = channel_name
+        self.delete_failure: Exception | None = None
+        self.delete_calls = 0
+
+    async def delete(self) -> None:
+        """Counts a delete, or raises `delete_failure` when set."""
+        if self.delete_failure is not None:
+            raise self.delete_failure
+        self.delete_calls += 1
+        await super().delete()
+
+
 class _FetchedMessageStub:
     """Fetched message returned by a fake channel for startup cleanup."""
 
@@ -110,16 +128,16 @@ class _UnfetchableBotStub:
 
 async def test_delete_public_message_after_waits_then_deletes() -> None:
     """Public response cleanup deletes the message after the configured delay."""
-    message = FakeDiscordMessage()
+    message = _CleanupMessage()
 
     await delete_public_message_after(message=as_message(fake=message), delay=0)
 
-    assert message.deleted is True
+    assert message.delete_calls == 1
 
 
 async def test_track_public_message_persists_message_identity() -> None:
     """Public response tracking stores IDs plus readable guild/channel names."""
-    message = FakeDiscordMessage(guild=FakeGuild(guild_name="Mai Server"), channel_name="casino")
+    message = _CleanupMessage(guild=FakeGuild(guild_name="Mai Server"), channel_name="casino")
     expected = PendingPublicMessage(
         channel_id=message.channel.id,
         message_id=message.id,
@@ -138,12 +156,12 @@ async def test_track_public_message_persists_message_identity() -> None:
 
 async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
     """Successful TTL cleanup removes the persisted restart record."""
-    message = FakeDiscordMessage()
+    message = _CleanupMessage()
     await track_public_message(message=as_message(fake=message))
 
     await delete_public_message_after(message=as_message(fake=message), delay=0)
 
-    assert message.deleted is True
+    assert message.delete_calls == 1
     assert await list_pending_public_messages() == []
 
 
@@ -266,7 +284,7 @@ async def test_a_transient_http_failure_keeps_its_traceback(
 
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
     """A message someone deleted first is cleaned up all the same, restart record included."""
-    message = FakeDiscordMessage()
+    message = _CleanupMessage()
     message.delete_failure = make_not_found()
 
     await delete_public_message_after(message=as_message(fake=message), delay=0)
@@ -276,7 +294,7 @@ async def test_delete_public_message_after_ignores_already_deleted_message() -> 
 
 async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
     """A delete Discord refuses reports failure and leaves the record for the restart sweep."""
-    message = FakeDiscordMessage()
+    message = _CleanupMessage()
     message.delete_failure = make_forbidden(message="Missing Permissions")
     await track_public_message(message=as_message(fake=message))
 
@@ -298,7 +316,7 @@ async def test_a_refused_delete_is_reported_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch, failure: Exception, text: str, traceback: bool
 ) -> None:
     """The delete gets the same carve-out as the sweep's fetch; a 5xx keeps its traceback."""
-    message = FakeDiscordMessage()
+    message = _CleanupMessage()
     message.delete_failure = failure
     warns = _recorded_warns(monkeypatch=monkeypatch)
 
@@ -341,7 +359,7 @@ async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
             name=level,
             value=lambda message, level=level, **fields: reports.append((level, fields)),
         )
-    message = FakeDiscordMessage()
+    message = _CleanupMessage()
     press = FakeInteraction()
     press.expired = expired
     press.delete_failure = failure
@@ -350,7 +368,10 @@ async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
         message=as_message(fake=message), delay=0, interaction=as_interaction(fake=press)
     )
 
-    assert (press.original_deleted, message.deleted) == (through_token, not through_token)
+    assert (press.original_deleted, message.delete_calls) == (
+        through_token,
+        0 if through_token else 1,
+    )
     assert Counter((level, "_exc_info" in fields) for level, fields in reports) == Counter(report)
     assert await list_pending_public_messages() == []
 

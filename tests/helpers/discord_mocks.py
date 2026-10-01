@@ -126,21 +126,18 @@ class FakeDiscordMessage:
         author: FakeUser | None = None,
         content: str = "",
         guild: FakeGuild | SimpleNamespace | None = None,
-        channel_name: str | None = None,
     ) -> None:
         """Initializes the fields a listener reads and the message mutation records.
 
         `guild` defaults to None, which a real message carries only in a DM. Setting
-        `edit_failure` or `delete_failure` makes every later edit or delete raise it, the way
-        Discord refuses one.
+        `edit_failure` makes every later edit raise it, the way Discord refuses one.
         """
         self.author = author or FakeUser()
         self.content = content
         self.guild = guild
         self.id = 1
-        self.channel = SimpleNamespace(id=2, name=channel_name)
+        self.channel = SimpleNamespace(id=2)
         self.edit_failure: Exception | None = None
-        self.delete_failure: Exception | None = None
         self.edits: list[DiscordPayload] = []
         self.reactions: list[str] = []
         self.removed: list[tuple[str, FakeUser]] = []
@@ -178,9 +175,7 @@ class FakeDiscordMessage:
         return posted
 
     async def delete(self) -> None:
-        """Records message deletion, or raises `delete_failure` when set."""
-        if self.delete_failure is not None:
-            raise self.delete_failure
+        """Records message deletion."""
         self.deleted = True
 
 
