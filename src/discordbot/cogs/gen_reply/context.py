@@ -527,11 +527,10 @@ class ReplyContextBuilder(BaseModel):
 
         Runs speculatively as its own task concurrent with routing: everything here only reads
         (channel history, memory files), so a turn that fails before consuming it can discard it
-        safely. `parts_task`
-        carries the answer-path reference/current renders (uploaded files). `recall_picks` is
-        the route's optional recall picks, which the pipeline resolves as soon as the route
-        returns; it is awaited only after the history and uploads, which almost always outlast
-        the route.
+        safely. `parts_task` carries the answer-path reference/current renders (uploaded files).
+        `recall_picks` is the route's optional recall picks, which the pipeline resolves as soon
+        as the route returns; it is awaited only after the history and uploads, which almost
+        always outlast the route.
         """
         build_started = time.monotonic()
 

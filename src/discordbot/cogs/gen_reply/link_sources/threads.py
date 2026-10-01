@@ -152,9 +152,9 @@ THREADS_QUOTED_POST_GUARD = (
 )
 
 # Used when the post IS a quote post but Threads served a placeholder instead of the quoted post.
-# That is an ordinary outcome, not an exotic one (15 of 96 quote relations measured), and the
-# placeholder carries no author and no shortcode, so there is not even a permalink to offer. The
-# wording refuses both silences: never "the post quotes nothing", never a guess at what it said.
+# That is an ordinary outcome, not an exotic one, and the placeholder carries no author and no
+# shortcode, so there is not even a permalink to offer. The wording refuses both silences: never
+# "the post quotes nothing", never a guess at what it said.
 THREADS_QUOTED_UNAVAILABLE_NOTICE = (
     "---- The linked post is a quote post, but Threads did not serve the post it quotes: the "
     "payload came back as a placeholder carrying no author, text or media, which means that "
@@ -822,8 +822,7 @@ async def build_threads_context_messages(
         target = chain[-1]
         if target.quoted_unavailable:
             # A routine user-driven outcome (a removed remote post), so info, not warn. Logged
-            # because it is common — measured at 15 of 96 live quote relations — and otherwise
-            # leaves no trace.
+            # because it is common and otherwise leaves no trace.
             logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
         text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
         media = IngestedMedia()

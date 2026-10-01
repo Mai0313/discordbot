@@ -153,9 +153,9 @@ class InstagramURL(BaseModel):
 class InstagramOutput(LinkableCommentOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
-    Deliberately one type for both, exactly as `ThreadsOutput` is: a caller that walks a
-    Threads conversation walks this one with the same code. A comment simply leaves the fields
-    a comment has no version of empty — it carries no media of its own and no comment count.
+    Deliberately one type for both, so a caller that walks any platform's conversation walks
+    this one with the same code. A comment simply leaves the fields a comment has no version of
+    empty — it carries no media of its own and no comment count.
 
     Two inherited fields mean something narrower here. `url` is the POST's permalink even on a
     comment, since a comment permalink is not fetchable (see the module docstring) and would only
@@ -245,8 +245,7 @@ class InstagramDownloader(PlatformDownloader):
         A comment carries `parent_comment_id` when it answers another one, so a reply is
         threaded behind the comment it answers instead of standing alone; everything else opens
         its own branch. On a public post this really is the whole discussion rather than a
-        preload — measured against a post reporting 11 comments, 11 came back — which is the
-        one place this source has more to give than Facebook's.
+        preload — measured against a post reporting 11 comments, 11 came back.
 
         A comment is recognised by carrying both `comment_like_count` and `text`, which no other
         node on the page does.

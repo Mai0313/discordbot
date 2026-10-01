@@ -198,7 +198,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # The regex matches the host, not the path, so a profile or group home page would
         # otherwise spend a full ~950KB page fetch to establish there is no post.
         url_filter=is_facebook_post_url,
-        # Opts in for the reason Threads does: what it reads includes the comments under the
+        # Reads a link the user only replied to: what it reads includes the comments under the
         # post, which the `parse_facebook` expansion deliberately does not show, so asking the
         # bot about someone else's linked post has something to answer from.
         search_replied_to_message=True,
@@ -212,8 +212,8 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # The regex matches the host, not the path, so a profile or the home page would
         # otherwise spend a full page fetch to establish there is no post.
         url_filter=is_instagram_post_url,
-        # Opts in for the reason Threads and Facebook do: what it reads is the comment section,
-        # which the `parse_instagram` expansion deliberately does not show.
+        # Reads a link the user only replied to: what it reads is the comment section, which the
+        # `parse_instagram` expansion deliberately does not show.
         search_replied_to_message=True,
         build=_build_instagram_link_context,
         timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,

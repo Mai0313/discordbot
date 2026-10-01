@@ -499,8 +499,8 @@ class AnswerTurn(BaseModel):
 
         Whose memory a note lands in is decided HERE, from the message, and the marker body
         never gets a say: the author for the two personal tags and the guild for the server
-        one. That is what keeps the compartment boundary structural now that the model, not a
-        separate extraction pass, is the one proposing what to write.
+        one. That is what keeps the compartment boundary structural while the answer model is
+        the one proposing what to write.
 
         Both calls are unconditional; `schedule_memory_update` itself is what turns a turn that
         marked nothing into a no-op, so the gating that matters stays in one place.
