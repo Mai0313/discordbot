@@ -3218,6 +3218,27 @@ async def test_memory_regenerate_command_schedules_in_background(
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
 
 
+async def test_memory_regenerate_command_rebuilds_under_the_per_user_prompt(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command rebuilds only the caller's own scope, so only the per-user prompt runs."""
+    cog = make_memory_cog()
+    fake_client = FakeMemoryClient()
+    monkeypatch.setitem(cog.__dict__, "client", fake_client)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+
+    await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=_interaction()))
+    task = regeneration._regeneration_tasks.get(key=USER_SCOPE)
+    assert task is not None
+    await task
+
+    rebuilt = {
+        instructions.removesuffix(PHASE2_COMPACTION_BLOCK)
+        for instructions in fake_client.responses.parse_instructions
+    }
+    assert rebuilt == {PHASE2_PROMPT}
+
+
 async def test_memory_regenerate_without_a_proxy_key_answers_the_command(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

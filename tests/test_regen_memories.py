@@ -1,5 +1,6 @@
 """Tests for the offline memory regeneration script."""
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
 
@@ -20,7 +21,11 @@ from discordbot.services.memory.store import (
     append_raw_entry,
     read_raw_entries,
 )
-from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
+from discordbot.services.memory.prompts import (
+    PHASE2_PROMPT,
+    PHASE1_EVALUATOR_PROMPT,
+    PHASE2_COMPACTION_BLOCK,
+)
 from discordbot.services.memory.regeneration import RegenerationReport
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
@@ -282,6 +287,38 @@ async def test_a_server_scope_rebuilds_under_the_server_prompts(
         _USER: (PHASE1_EVALUATOR_PROMPT, PHASE2_PROMPT),
         _SERVER: (SERVER_PHASE1_EVALUATOR_PROMPT, SERVER_PHASE2_PROMPT),
     }
+
+
+@pytest.mark.parametrize(
+    ("target", "prompt"),
+    [(_USER, PHASE2_PROMPT), (_SERVER, SERVER_PHASE2_PROMPT)],
+    ids=["user", "server"],
+)
+async def test_each_scope_rebuilds_under_its_own_flavors_prompt(
+    monkeypatch: pytest.MonkeyPatch, target: str, prompt: str
+) -> None:
+    """A rebuild reaches the model only under the consolidation prompt of its scope's flavor."""
+    _seed(scope=_USER)
+    _seed(scope=_SERVER)
+    instructions: list[str] = []
+
+    async def parse(**kwargs: object) -> SimpleNamespace:
+        """Records the call's instructions and answers with nothing usable."""
+        instructions.append(str(kwargs["instructions"]))
+        return SimpleNamespace(output_parsed=None, status="completed", incomplete_details=None)
+
+    monkeypatch.setattr(regen_script.console, "input", lambda *args, **kwargs: "y")
+    monkeypatch.setattr(
+        regen_script,
+        "AsyncOpenAI",
+        lambda **kwargs: SimpleNamespace(responses=SimpleNamespace(parse=parse)),
+    )
+
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=target, dry_run=False
+    )
+
+    assert {text.removesuffix(PHASE2_COMPACTION_BLOCK) for text in instructions} == {prompt}
 
 
 def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
