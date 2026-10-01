@@ -57,7 +57,7 @@ _OutputT = TypeVar("_OutputT", bound=BaseModel)
 # stay shape-specific on purpose: a bare-hex rule would also eat git SHAs,
 # which are common non-secret content in a developer Discord. The prompts
 # instruct the model to redact anything token-like as the generic backstop.
-# The dotted shapes anchor on ASCII word characters, not `\b`, which counts
+# The dotted shapes anchor their start on ASCII word characters, not `\b`, which counts
 # Chinese as a word character and misses a token typed straight against it (#904).
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
@@ -68,12 +68,8 @@ _SECRET_PATTERNS = (
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),
-    re.compile(
-        r"(?<![A-Za-z0-9_])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_])"
-    ),
-    re.compile(
-        r"(?<![A-Za-z0-9_])[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}(?![A-Za-z0-9_])"
-    ),
+    re.compile(r"(?<![A-Za-z0-9_])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}"),
 )
 
 _AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
