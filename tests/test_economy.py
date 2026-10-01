@@ -1,5 +1,6 @@
 """Tests for the economy persistence layer."""
 
+from types import SimpleNamespace
 from typing import Any, cast
 import asyncio
 from pathlib import Path
@@ -8,7 +9,7 @@ from collections.abc import Callable, Awaitable
 
 import pytest
 from sqlalchemy import text, select, update
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei, database_now
 from discordbot.typings.economy import (
@@ -48,6 +49,7 @@ from discordbot.services.economy.database import (
     accept_loan_proposal,
     get_jackpot_snapshot,
     repay_personal_loans,
+    _commit_balance_write,
     credit_with_repayment,
     call_central_bank_loans,
     get_central_bank_status,
@@ -590,6 +592,21 @@ async def test_top_n_short_cache_hit_and_manual_invalidation() -> None:
     assert [row.user_id for row in await top_n(limit=1)] == [1]
     invalidate_economy_leaderboard_cache()
     assert [row.user_id for row in await top_n(limit=1)] == [2]
+
+
+async def test_a_balance_write_clears_the_leaderboard_caches_only_once_committed() -> None:
+    """A clear before the commit lets a read in between cache the rows the write replaces."""
+    await top_n(limit=None)
+    cached_at_commit: list[bool] = []
+
+    async def commit() -> None:
+        """Notes whether the leaderboard rows were still cached when the write committed."""
+        cached_at_commit.append(bool(economy_database._top_n_cache))
+
+    await _commit_balance_write(session=cast("AsyncSession", SimpleNamespace(commit=commit)))
+
+    assert cached_at_commit == [True]
+    assert economy_database._top_n_cache == {}
 
 
 async def _ledger_every_write_path_can_touch() -> int:

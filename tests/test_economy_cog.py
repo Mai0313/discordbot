@@ -1070,6 +1070,86 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.parametrize(
+    argnames=("receiver_id", "reason"),
+    argvalues=[(1, "### 不能轉給自己"), (2, "### 餘額不足")],
+    ids=["self-transfer", "insufficient-balance"],
+)
+async def test_a_refused_transfer_is_a_public_expiring_embed(
+    monkeypatch: pytest.MonkeyPatch, receiver_id: int, reason: str
+) -> None:
+    """`/give` defers publicly before it can know the transfer fails, so its refusal is public too.
+
+    The channel already saw the attempt, so the refusal lands there and is cleaned up with it.
+    """
+
+    async def refuse_transfer(**_kwargs: object) -> None:
+        """Stands in for a sender who cannot cover the amount."""
+        return
+
+    monkeypatch.setattr(economy, "transfer", refuse_transfer)
+    monkeypatch.setattr(economy, "get_balance", fake_get_balance)
+    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+
+    await EconomyCogs.give.callback(
+        EconomyCogs(bot=_bot()),
+        as_interaction(fake=interaction),
+        member=FakeUser(user_id=receiver_id, name="bob"),
+        amount="1000",
+    )
+
+    assert interaction.response.deferred is True
+    assert interaction.response.deferred_ephemeral is False
+    assert interaction.followup.sent[0].get("ephemeral") is not True
+    assert reason in (interaction.followup.sent[0]["embed"].description or "")
+    assert len(scheduled) == 1
+
+
+@pytest.mark.parametrize(
+    argnames=("command", "kwargs"),
+    argvalues=[
+        ("central_bank_borrow", {"amount": "100", "monthly_rate_percent": 3.0}),
+        ("central_bank_repay", {"amount": "50"}),
+        ("central_bank_call", {"member": FakeUser(user_id=2, name="bob"), "amount": "0"}),
+        ("central_bank_status", {}),
+    ],
+    ids=["borrow", "repay", "call", "status"],
+)
+async def test_only_the_caller_is_recorded_as_taking_part_in_the_guild(
+    monkeypatch: pytest.MonkeyPatch, command: str, kwargs: dict[str, object]
+) -> None:
+    """A `/central_bank` caller takes part in the guild; a `member:` target never does.
+
+    Recording the target would hand their whole balance to this server's lending pool without
+    their knowledge.
+    """
+    recorded: list[tuple[int, int]] = []
+
+    async def record_participant(guild_id: int, user_id: int) -> None:
+        """Records who was enrolled in which guild."""
+        recorded.append((guild_id, user_id))
+
+    monkeypatch.setattr(economy, "record_guild_participant", record_participant)
+    monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
+    monkeypatch.setattr(
+        economy, "create_central_bank_loan_request", fake_create_central_bank_request
+    )
+    monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
+    monkeypatch.setattr(economy, "call_central_bank_loans", fake_loan_payment)
+    monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
+    monkeypatch.setattr(
+        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
+    )
+    interaction = FakeInteraction(user=FakeUser(user_id=1), guild_id=321, administrator=True)
+
+    await getattr(EconomyCogs, command).callback(
+        EconomyCogs(bot=_bot()), as_interaction(fake=interaction), **kwargs
+    )
+
+    assert recorded == [(321, 1)]
+
+
+@pytest.mark.parametrize(
     argnames=("command", "kwargs", "title"),
     argvalues=[
         ("central_bank_borrow", {"amount": "100", "monthly_rate_percent": 0.0}, "央行借款失敗"),

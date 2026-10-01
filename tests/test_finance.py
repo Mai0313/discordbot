@@ -10,9 +10,11 @@ from sqlalchemy import text, select, update
 from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
+    MAX_LOAN_MONTHLY_RATE_BPS,
     CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanProposalStatus,
+    monthly_rate_percent_to_bps,
 )
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CentralBankLoanDecisionView
@@ -51,6 +53,7 @@ from tests.helpers.economy import (
     open_personal_loan,
 )
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.economy_invariants import assert_wallet_consistent
 
 OTHER_GUILD = 777
 
@@ -114,8 +117,8 @@ async def test_personal_loan_request_accepts_and_repay_allocates_interest_first(
     assert result.principal_paid == 85
     assert result.remaining_principal == 415
     assert result.remaining_interest == 0
-    assert await get_balance(user_id=1) == 400
-    assert await get_balance(user_id=2) == 600
+    await assert_wallet_consistent(user_id=1, expected_balance=400)
+    await assert_wallet_consistent(user_id=2, expected_balance=600)
 
 
 async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
@@ -265,8 +268,8 @@ async def test_calling_personal_loans_collects_accrued_interest_owed_to_that_len
     # 15 prepaid at acceptance, plus 15 accrued over the 30 days past the prepaid window.
     assert (result.paid_amount, result.interest_paid, result.principal_paid) == (530, 30, 500)
     assert result.closed_contract_ids == (from_bob.contract_id,)
-    assert await get_balance(user_id=1) == 700 - 530
-    assert await get_balance(user_id=2) == 500 + 530
+    await assert_wallet_consistent(user_id=1, expected_balance=700 - 530)
+    await assert_wallet_consistent(user_id=2, expected_balance=500 + 530)
     remaining = await list_loan_contracts(user_id=1)
     assert [contract.contract_id for contract in remaining] == [from_carol.contract_id]
     assert remaining[0].principal_remaining == 200
@@ -332,6 +335,7 @@ async def test_central_bank_loan_approves_against_cap_and_call_clamps_to_balance
     assert result.principal_paid == 485
     assert result.remaining_principal == 15
     assert result.borrower_balance == 0
+    await assert_wallet_consistent(user_id=1, expected_balance=0)
     assert status.outstanding_principal == 15
 
 
@@ -462,7 +466,7 @@ async def test_central_bank_repayment_pays_interest_first_and_the_bank_keeps_it(
     assert (result.paid_amount, result.interest_paid, result.principal_paid) == (100, 15, 85)
     assert result.remaining_principal == 415
     assert result.lender_balance is None
-    assert await get_balance(user_id=1) == 1_400
+    await assert_wallet_consistent(user_id=1, expected_balance=1_400)
     status = await get_central_bank_status(guild_id=LENDING_GUILD)
     assert status.outstanding_principal == 415
     assert status.ledger_balance == 15
@@ -814,3 +818,24 @@ async def test_each_guild_lends_against_its_own_participants() -> None:
     assert there.total_positive_user_balance == 4_000_000
     assert nowhere.participant_count == 0
     assert nowhere.available_credit == CENTRAL_BANK_BASE_CAPACITY
+
+
+@pytest.mark.parametrize(
+    argnames=("monthly_rate_percent", "expected_bps"),
+    argvalues=[(3.0, 300), (0.0, 0), (100.0, 10_000), (150.0, 10_000), (-1.0, 0)],
+)
+def test_a_monthly_rate_percent_converts_to_bps_inside_the_allowed_range(
+    monthly_rate_percent: float, expected_bps: int
+) -> None:
+    """A percent becomes basis points, clamped into the range a loan may carry."""
+    assert monthly_rate_percent_to_bps(monthly_rate_percent=monthly_rate_percent) == expected_bps
+
+
+async def test_a_loan_request_stores_a_rate_past_the_maximum_as_the_maximum() -> None:
+    """The ledger clamps a rate itself rather than trusting the caller to have converted it."""
+    proposal = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=100, monthly_rate_bps=20_000
+    )
+
+    assert proposal is not None
+    assert proposal.monthly_rate_bps == MAX_LOAN_MONTHLY_RATE_BPS

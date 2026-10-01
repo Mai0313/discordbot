@@ -6,7 +6,7 @@ from scripts import modify_balance as modify_balance_script
 from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
 from discordbot.services.economy.database import get_account, adjust_balance
 
-from tests.helpers.economy import seed_balance
+from tests.helpers.economy import seed_balance, hide_from_leaderboard
 
 
 def test_parse_args_accepts_all_target() -> None:
@@ -18,16 +18,16 @@ def test_parse_args_accepts_all_target() -> None:
 
 
 async def test_modify_all_balances_updates_existing_accounts_only() -> None:
-    """Bulk adjustment updates only accounts already present in the DB."""
+    """Bulk adjustment updates every account already in the DB, one hidden from the boards too."""
     await seed_balance(user_id=1, name="alice", amount=100)
     await seed_balance(user_id=2, name="bob", amount=200)
+    await hide_from_leaderboard(user_id=2)
 
     result = await modify_balance_script.modify_all_balances(delta=50_000)
 
     assert len(result.changes) == 2
     assert result.applied_delta == 100_000
     assert all(not change.created for change in result.changes)
-    assert await get_account(user_id=3) is None
 
     alice = await get_account(user_id=1)
     bob = await get_account(user_id=2)
