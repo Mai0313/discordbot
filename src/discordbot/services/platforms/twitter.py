@@ -387,8 +387,6 @@ class _TweetResult(_TwitterPayload):
         default="", alias="__typename", description="`Tweet` or `TweetTombstone`"
     )
 
-    model_config = {"populate_by_name": True}
-
 
 def _body_text(*, tweet: _Tweet) -> str:
     """The post body: the trailing media link removed, and every other link expanded.
@@ -484,10 +482,6 @@ class TwitterDownloader(PlatformDownloader):
     back as a URL.
     """
 
-    timeout: float = Field(
-        default=TWITTER_PAGE_TIMEOUT_SECONDS, description="Per-request timeout in seconds."
-    )
-
     def _fetch_tweet(self, *, status_id: str) -> dict[str, Any]:
         """Fetches one post's payload.
 
@@ -501,7 +495,7 @@ class TwitterDownloader(PlatformDownloader):
                 _SYNDICATION_URL,
                 params={"id": status_id, "lang": "en", "token": _REQUEST_TOKEN},
                 headers=_REQUEST_HEADERS,
-                timeout=self.timeout,
+                timeout=TWITTER_PAGE_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
         except requests.RequestException as error:

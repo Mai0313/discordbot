@@ -258,6 +258,15 @@ class LinkedInlineMedia(MediaContainer):
     caption: Caption | None = Field(default=None, description="Linked media caption")
 
 
+def _isolate(value: object, handler: ValidatorFunctionWrapHandler, message: str) -> object | None:
+    """Validates `value`, or logs `message` and drops it to None when it fails the schema."""
+    try:
+        return handler(value)
+    except ValidationError:
+        logfire.warn(message, _exc_info=True)
+        return None
+
+
 class ShareInfo(_ThreadsModel):
     """Represents what a post quotes or reposts.
 
@@ -306,14 +315,11 @@ class ShareInfo(_ThreadsModel):
         the quote is the most disposable thing in the payload, and losing only it degrades to
         exactly the pre-quote-post behaviour.
         """
-        try:
-            return handler(value)
-        except ValidationError:
-            logfire.warn(
-                "A quoted Threads post no longer matches the parser schema; dropping just it",
-                _exc_info=True,
-            )
-            return None
+        return _isolate(
+            value=value,
+            handler=handler,
+            message="A quoted Threads post no longer matches the parser schema; dropping just it",
+        )
 
 
 class PostEdge(_ThreadsModel):
@@ -331,14 +337,11 @@ class PostEdge(_ThreadsModel):
         ancestor costs the target itself. Same isolation `_isolate_quoted_post` gives a quote,
         one level up.
         """
-        try:
-            return handler(value)
-        except ValidationError:
-            logfire.warn(
-                "A Threads post no longer matches the parser schema; dropping just it",
-                _exc_info=True,
-            )
-            return None
+        return _isolate(
+            value=value,
+            handler=handler,
+            message="A Threads post no longer matches the parser schema; dropping just it",
+        )
 
 
 class PostConnection(_ThreadsModel):
@@ -385,14 +388,11 @@ class ThreadEdge(_ThreadsModel):
         the connection, and the connection is the whole of the page's replies, so one bad branch
         would cost all of them. That is coarser than the per-branch loss this replaced.
         """
-        try:
-            return handler(value)
-        except ValidationError:
-            logfire.warn(
-                "A Threads reply branch no longer matches the parser schema; dropping just it",
-                _exc_info=True,
-            )
-            return None
+        return _isolate(
+            value=value,
+            handler=handler,
+            message="A Threads reply branch no longer matches the parser schema; dropping just it",
+        )
 
 
 class ThreadConnection(_ThreadsModel):

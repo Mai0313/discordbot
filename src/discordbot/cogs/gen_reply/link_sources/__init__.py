@@ -34,6 +34,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
 from discordbot.services.platforms.base import (
@@ -43,6 +44,13 @@ from discordbot.services.platforms.base import (
     LinkableCommentOutput,
 )
 from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
+
+# Resolution asked for a clip the model reads: the lowest preset. The model samples frames at its
+# own media resolution, so extra source pixels buy it nothing while costing download and upload
+# time on the reply's critical path, which on long-form video scales with duration first (and
+# anonymous Bilibili access mostly tops out around 480p regardless). Deliberately below what the
+# bot asks for a clip it posts to Discord, where a human watching does notice.
+AI_INGEST_QUALITY: VideoQuality = "low"
 
 
 def system_block(*, text: str) -> EasyInputMessageParam:

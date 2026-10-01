@@ -26,7 +26,6 @@ this always returns inside the pipeline's post-route grace.
 
 import asyncio
 from pathlib import Path
-import tempfile
 
 from google import genai
 import logfire
@@ -239,13 +238,8 @@ def _renderable_branch(*, branch: list[ThreadsOutput]) -> list[ThreadsOutput]:
     sits would orphan the replies underneath that name it as who they answer. Only the trailing
     ones are safe to drop, so that is all this drops.
     """
-
-    def has_content(post: ThreadsOutput) -> bool:
-        """Whether the comment has anything worth a section."""
-        return bool(post.text or post.image_urls or post.video_urls)
-
     end = len(branch)
-    while end and not has_content(post=branch[end - 1]):
+    while end and not branch[end - 1].is_readable:
         end -= 1
     return branch[:end]
 
@@ -815,7 +809,8 @@ async def build_threads_context_messages(
     """
     try:
         with logfire.span("gen_reply threads context"):
-            downloader = ThreadsDownloader(output_folder=tempfile.gettempdir())
+            # No output folder because `parse_metadata` writes nothing.
+            downloader = ThreadsDownloader(output_folder="")
             conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
     # Broad on purpose: a parse error must degrade to the unavailable notice rather than break
     # the reply pipeline, which relies on this builder never raising.
