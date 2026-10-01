@@ -153,6 +153,20 @@ async def test_a_non_post_link_is_left_alone() -> None:
         assert made == [], content
 
 
+async def test_a_non_post_link_does_not_hide_a_post_after_it() -> None:
+    """A refused link is skipped, so the post after it is still expanded (#854)."""
+    live_room = "https://live.douyin.com/123456"
+    assert DouyinCogs.URL_PATTERN.search(string=live_room) is not None
+    cog, made = _cog()
+    message = _message(content=f"{live_room} 跟這篇 {_URL}")
+
+    await cog.on_message(message=as_message(fake=message))
+
+    (stub,) = made
+    assert [call["url"] for call in stub.download_calls] == [_URL]
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
 def _stall_every_read(*, cog: DouyinCogs, release: threading.Event) -> None:
     """Points the cog at a downloader whose every call holds its worker thread until `release`.
 

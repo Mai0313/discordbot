@@ -14,7 +14,7 @@ from nextcord import Message
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
-from discordbot.cogs.gen_reply.link_sources import LinkContextSource
+from discordbot.cogs.gen_reply.link_sources import LinkUrlFilter, LinkContextSource
 
 
 def replied_to_message(*, message: Message) -> Message | None:
@@ -83,12 +83,18 @@ def authored_link_texts(*, message: Message) -> list[str]:
     return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
 
 
-def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
-    """First match of a URL pattern across one message's already-rendered text spans."""
+def _first_url_match(
+    pattern: re.Pattern[str], texts: list[str], url_filter: LinkUrlFilter | None
+) -> re.Match[str] | None:
+    """First match of a URL pattern across one message's already-rendered text spans.
+
+    A match `url_filter` refuses is skipped rather than ending the scan, so a link the source
+    cannot read never hides one after it that it can.
+    """
     for text in texts:
-        match = pattern.search(string=text)
-        if match:
-            return match
+        for match in pattern.finditer(string=text):
+            if url_filter is None or url_filter(url=match.group(0)):
+                return match
     return None
 
 
@@ -104,25 +110,23 @@ def link_url_for_source(*, source: LinkContextSource, message: Message) -> str |
 
     A source's `url_filter` rejects a matched link it cannot read (e.g. a Douyin profile or
     live room, whose regex matches the host, not the path), which would only spend a
-    rate-limited request to say so. It applies to the chosen match alone: a rejected link
-    drops the source rather than sending the scan hunting for a second URL.
+    rate-limited request to say so. A rejected link is skipped as if it were not there, so it
+    neither hides a readable link after it nor stops the fallback to the replied-to message.
     """
     match = _first_url_match(
         pattern=source.url_pattern,
         texts=message_link_texts(message=message, strip_usage_footer=False),
+        url_filter=source.url_filter,
     )
     if match is None and source.search_replied_to_message:
         replied_to = replied_to_message(message=message)
         if replied_to is not None:
             match = _first_url_match(
-                pattern=source.url_pattern, texts=authored_link_texts(message=replied_to)
+                pattern=source.url_pattern,
+                texts=authored_link_texts(message=replied_to),
+                url_filter=source.url_filter,
             )
-    if match is None:
-        return None
-    url = match.group(0)
-    if source.url_filter is not None and not source.url_filter(url=url):
-        return None
-    return url
+    return match.group(0) if match else None
 
 
 def _youtube_url_in_message(*, message: Message, strip_usage_footer: bool) -> str | None:
@@ -130,6 +134,7 @@ def _youtube_url_in_message(*, message: Message, strip_usage_footer: bool) -> st
     match = _first_url_match(
         pattern=YOUTUBE_URL_RE,
         texts=message_link_texts(message=message, strip_usage_footer=strip_usage_footer),
+        url_filter=None,
     )
     return match.group(0) if match else None
 

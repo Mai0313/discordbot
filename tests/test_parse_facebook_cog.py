@@ -80,6 +80,21 @@ async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
     assert message.reactions == []
 
 
+async def test_a_url_that_names_no_post_does_not_hide_a_post_after_it() -> None:
+    """A refused link is skipped, and the first post after it is the one expanded (#854)."""
+    profile = "https://www.facebook.com/NASA"
+    later_post = "https://www.facebook.com/NASA/posts/1234567890"
+    assert FacebookCogs.URL_PATTERN.search(string=profile) is not None
+    assert FacebookCogs.url_is_expandable(url=later_post)
+    cog, stub = stub_conversation_cog(cog_type=FacebookCogs, outcome=facebook_post())
+    message = _message(content=f"{profile} 跟這篇 {FACEBOOK_URL} 還有 {later_post}")
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert stub.seen == [FACEBOOK_URL]
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
 @pytest.mark.parametrize(
     argnames=("post_url", "expected"),
     argvalues=[

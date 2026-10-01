@@ -57,8 +57,7 @@ from discordbot.services.platforms.page_json import (
 # Every host Facebook serves posts on, so `FacebookURL.clean_url` aims a fetch from any of them at
 # `www`, where the payload actually is. `fb.com` is a short form its own share sheet emits.
 # `fb.watch` is deliberately absent here and from `FACEBOOK_URL_RE`: logged out, its links redirect
-# to a `/<page>/videos/<id>` page the reader finds no post in (2026-09-30), and since every caller
-# acts on the first match alone, claiming one would hide a readable post link after it.
+# to a `/<page>/videos/<id>` page the reader finds no post in (2026-09-30).
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
@@ -73,8 +72,7 @@ _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 # are a `/<page>/videos/` page and the video (`/share/v/`) and reel (`/share/r/`) share forms,
 # for the reason `fb.watch` is: logged out they carry no post (`/videos/` checked 2026-09-30;
 # all 35 share links of those two forms the bot met from 2026-09-27 to 09-30 read as
-# unreadable), and refusing them later in `is_facebook_post_url` would still hide a post link
-# after them.
+# unreadable).
 FACEBOOK_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
     r"(?![^/?\s]+/videos/|share/[rv]/)"

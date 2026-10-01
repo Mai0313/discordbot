@@ -115,6 +115,19 @@ async def test_a_profile_url_is_ignored_silently() -> None:
     assert message.reactions == []
 
 
+async def test_a_profile_url_does_not_hide_a_post_after_it() -> None:
+    """A refused link is skipped, so the post after it is still expanded (#854)."""
+    profile = "https://www.instagram.com/c_cylynn/"
+    assert InstagramCogs.URL_PATTERN.search(string=profile) is not None
+    cog, stub = stub_conversation_cog(cog_type=InstagramCogs, outcome=instagram_post())
+    message = _message(content=f"{profile} 跟這篇 {INSTAGRAM_URL}")
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert stub.seen == [INSTAGRAM_URL]
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
 async def test_the_video_link_points_at_the_post_not_the_expiring_cdn_url() -> None:
     """`video_versions[0].url` is signed and dies within days; the embed carrying it does not."""
     clip = "https://instagram.example/clip.mp4?oe=DEADBEEF"

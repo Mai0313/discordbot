@@ -3152,6 +3152,55 @@ def test_link_url_for_source_prefers_the_current_message() -> None:
     assert found == own_url
 
 
+@pytest.mark.parametrize(
+    ("name", "refused"),
+    [
+        ("facebook", "https://www.facebook.com/NASA"),
+        ("instagram", "https://www.instagram.com/nasa/"),
+        ("douyin", "https://live.douyin.com/123456"),
+    ],
+)
+def test_link_url_for_source_skips_a_link_the_source_refuses(name: str, refused: str) -> None:
+    """A profile or live-room link ahead of a post must not cost the answer the post (#854)."""
+    source = _link_source(name=name)
+    assert source.url_pattern.search(string=refused) is not None
+    message = FakeMessage(content=f"<@999> {refused} 跟這篇 {SAMPLE_POST_URLS[name]}")
+
+    found = link_url_for_source(source=source, message=as_message(fake=message))
+    assert found == SAMPLE_POST_URLS[name]
+
+
+def test_link_url_for_source_falls_back_past_a_link_the_source_refuses() -> None:
+    """A message holding only refused links still reads the replied-to post (#854)."""
+    referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['facebook']}")
+    message = FakeMessage(content="<@999> 這個粉專 https://www.facebook.com/NASA 發的這篇在講什麼")
+    message.reference = FakeReference(resolved=referenced)
+
+    found = link_url_for_source(
+        source=_link_source(name="facebook"), message=as_message(fake=message)
+    )
+    assert found == SAMPLE_POST_URLS["facebook"]
+
+
+@pytest.mark.parametrize(
+    ("name", "refused"),
+    [
+        ("facebook", "https://www.facebook.com/NASA"),
+        ("instagram", "https://www.instagram.com/nasa/"),
+    ],
+)
+def test_link_url_for_source_skips_a_refused_link_in_the_replied_to_message(
+    name: str, refused: str
+) -> None:
+    """One hop up, a refused link must not hide the post after it either (#854)."""
+    referenced = FakeMessage(content=f"{refused} 跟這篇 {SAMPLE_POST_URLS[name]}")
+    message = FakeMessage(content="<@999> 這篇在講什麼")
+    message.reference = FakeReference(resolved=referenced)
+
+    found = link_url_for_source(source=_link_source(name=name), message=as_message(fake=message))
+    assert found == SAMPLE_POST_URLS[name]
+
+
 @pytest.mark.parametrize("name", ["douyin", "bilibili", "twitter"])
 def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(name: str) -> None:
     """Three sources never widen to the replied-to message, for two different reasons.

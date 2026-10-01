@@ -363,7 +363,7 @@ class LinkContextSource(BaseModel):
         examples=["douyin"],
     )
     url_pattern: SkipValidation[re.Pattern[str]] = Field(
-        ..., description="The first match in the scanned message selects the URL to read."
+        ..., description="The first match `url_filter` accepts selects the URL to read."
     )
     url_filter: SkipValidation[LinkUrlFilter | None] = Field(
         default=None, description="Optional post-match guard; None accepts every pattern match."

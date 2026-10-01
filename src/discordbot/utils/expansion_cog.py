@@ -380,7 +380,7 @@ class ExpansionCog[ParsedT](commands.Cog):
     """The platform's display name, for log messages."""
 
     URL_PATTERN: ClassVar[re.Pattern[str]]
-    """The first match in a message selects the link to expand."""
+    """The first match `url_is_expandable` accepts selects the link to expand."""
 
     PLACEHOLDER_TEXT: ClassVar[str]
     """The line shown under the link until the card replaces it."""
@@ -490,7 +490,10 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Expands the first link this cog's pattern matches.
+        """Expands the first link this cog's pattern matches and `url_is_expandable` accepts.
+
+        A refused match is skipped rather than ending the scan, so a profile link ahead of a
+        post never hides the post.
 
         Args:
             message: The message that was sent.
@@ -498,12 +501,15 @@ class ExpansionCog[ParsedT](commands.Cog):
         if message.author.bot:
             return
 
-        match = self.URL_PATTERN.search(string=message.content)
-        if not match:
-            return
-
-        url = match.group(0)
-        if not self.url_is_expandable(url=url):
+        url = next(
+            (
+                match.group(0)
+                for match in self.URL_PATTERN.finditer(string=message.content)
+                if self.url_is_expandable(url=match.group(0))
+            ),
+            None,
+        )
+        if url is None:
             return
 
         # A link addressed to the bot is gen_reply's to answer about, not ours to expand.
