@@ -5,10 +5,11 @@ and the block accessors live here once rather than in each platform's two test f
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Unpack, TypedDict
 from pathlib import Path
 from datetime import UTC, datetime
 import tempfile
+from collections.abc import Callable
 
 import pytest
 from nextcord import Embed
@@ -134,11 +135,16 @@ class StubConversationDownloader:
         return self.outcome
 
 
+def stub_bot() -> commands.Bot:
+    """A bot whose user a test can mention as `<@BOT_USER_ID>`."""
+    return as_bot(fake=SimpleNamespace(user=FakeUser(user_id=BOT_USER_ID, bot=True)))
+
+
 def stub_conversation_cog[CogT: commands.Cog](
     *, cog_type: type[CogT], outcome: PlatformConversation[Any] | Exception
 ) -> tuple[CogT, StubConversationDownloader]:
     """Builds a Facebook, Instagram or Twitter expansion cog reading from a stub downloader."""
-    cog = cog_type(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=BOT_USER_ID, bot=True))))
+    cog = cog_type(bot=stub_bot())
     stub = StubConversationDownloader(outcome=outcome)
     cog.__dict__["downloader_factory"] = lambda: stub
     return cog, stub
@@ -157,6 +163,21 @@ def hosting_off_planner() -> MediaDeliveryPlanner:
     """
     return MediaDeliveryPlanner(
         media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
+    )
+
+
+def hosting_planner(serve_dir: Path) -> MediaDeliveryPlanner:
+    """A delivery planner hosting into `serve_dir`, which it serves as `https://media.test/`.
+
+    The serve dir must already exist: the bot never creates one, so a missing one is a planner
+    that cannot host.
+    """
+    return MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
+            )
+        )
     )
 
 
@@ -179,10 +200,9 @@ class StubDouyinDownloader:
         self.parse_error = parse_error
         self.download_error = download_error
         self.total_images = total_images
-        self.download_calls = 0
-        self.received_post: DouyinMetadata | None = None
+        self.download_calls: list[dict[str, Any]] = []
 
-    def parse_metadata(self, url: str) -> DouyinMetadata:
+    def parse_metadata(self, *, url: str) -> DouyinMetadata:
         """Returns the canned post, or raises the canned parse failure."""
         del url
         if self.parse_error is not None:
@@ -197,14 +217,21 @@ class StubDouyinDownloader:
         max_bytes: int | None = None,
         post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
-        """Writes the canned files into the scratch dir, or raises the canned failure."""
-        del url, quality, max_images, max_bytes
-        self.download_calls += 1
-        self.received_post = post
+        """Records the request, then writes the canned files into the scratch dir or raises.
+
+        At most `max_images` files are written, as the real gallery download caps itself.
+        """
+        self.download_calls.append({
+            "url": url,
+            "quality": quality,
+            "max_images": max_images,
+            "max_bytes": max_bytes,
+            "post": post,
+        })
         if self.download_error is not None:
             raise self.download_error
         written: list[Path] = []
-        for name, payload in self.files:
+        for name, payload in self.files[:max_images]:
             path = Path(self.output_folder) / name
             path.write_bytes(payload)
             written.append(path)
@@ -212,6 +239,34 @@ class StubDouyinDownloader:
         return DouyinDownload(
             is_photo=source.is_photo, filenames=written, total_images=self.total_images
         )
+
+
+class StubDouyinOptions(TypedDict, total=False):
+    """Canned per-stage outcomes for every `StubDouyinDownloader` a test stages."""
+
+    post: DouyinMetadata | None
+    files: list[tuple[str, bytes]] | None
+    parse_error: Exception | None
+    download_error: Exception | None
+    total_images: int
+
+
+def stub_douyin_downloads(
+    made: list[StubDouyinDownloader], **canned: Unpack[StubDouyinOptions]
+) -> Callable[..., StubDouyinDownloader]:
+    """Stands in for the DouyinDownloader class, keeping every stub it builds in `made`.
+
+    The Douyin link-source builder builds one to read the post and another to download it, so
+    `made` keeps every stub; each serves the same canned outcomes.
+    """
+
+    def factory(output_folder: str) -> StubDouyinDownloader:
+        """Builds the stub one read gets."""
+        stub = StubDouyinDownloader(output_folder=output_folder, **canned)
+        made.append(stub)
+        return stub
+
+    return factory
 
 
 def serve_conversation(

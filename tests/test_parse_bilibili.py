@@ -1,12 +1,12 @@
 """Tests for the Bilibili-context builder that feeds linked videos to the answer model."""
 
 import time
-from typing import Any
 import asyncio
 from pathlib import Path
 import threading
 
 import pytest
+from openai.types.responses import EasyInputMessageParam
 
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.services.platforms.ytdlp import VideoMetadata, DownloadResult, VideoDownloader
@@ -20,8 +20,8 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
     build_bilibili_context_messages,
 )
 
-from tests.helpers.casting import step_dicts, make_stub_gemini_client
-from tests.helpers.link_sources import FakeUploads
+from tests.helpers.casting import make_stub_gemini_client
+from tests.helpers.link_sources import FakeUploads, block_body, block_parts, block_separator
 
 _URL = "https://www.bilibili.com/video/BV1jpK86hEc8"
 
@@ -84,19 +84,14 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
     return resolved_uploads, recorded
 
 
-async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any]]:
-    """Runs the builder with the flags most tests share.
-
-    The blocks are `EasyInputMessageParam`s, whose `content` is a union the assertions below
-    index into part by part; `step_dicts` is what lets them read as plain JSON.
-    """
-    blocks = await build_bilibili_context_messages(
+async def _build(gemini: bool = True, ingest: bool = True) -> list[EasyInputMessageParam]:
+    """Runs the builder with the flags most tests share."""
+    return await build_bilibili_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,
         gemini_client=make_stub_gemini_client(),
         allow_media_ingest=ingest,
     )
-    return step_dicts(steps=blocks)
 
 
 async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
@@ -107,8 +102,8 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_CONTEXT_SEPARATOR
-    parts = blocks[1]["content"]
+    assert block_separator(blocks=blocks) == BILIBILI_CONTEXT_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert parts[0]["type"] == "input_text"
     assert "一支B站影片" in parts[0]["text"]
     assert "某個UP主" in parts[0]["text"]
@@ -142,7 +137,7 @@ async def test_metadata_failure_never_claims_the_video_is_deleted(
     blocks = await _build()
 
     assert len(blocks) == 1
-    assert blocks[0]["content"][0]["text"] == BILIBILI_UNREADABLE_NOTICE
+    assert block_separator(blocks=blocks) == BILIBILI_UNREADABLE_NOTICE
     assert "does NOT mean the video is deleted" in BILIBILI_UNREADABLE_NOTICE
 
 
@@ -154,8 +149,8 @@ async def test_a_too_long_video_skips_the_download(monkeypatch: pytest.MonkeyPat
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TOO_LONG_SEPARATOR
-    assert "一支B站影片" in blocks[1]["content"][0]["text"]
+    assert block_separator(blocks=blocks) == BILIBILI_TOO_LONG_SEPARATOR
+    assert "一支B站影片" in block_body(blocks=blocks)
     assert recorded["downloads"] == []
     assert uploads.calls == []
 
@@ -166,7 +161,7 @@ async def test_a_live_stream_skips_the_download(monkeypatch: pytest.MonkeyPatch)
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TOO_LONG_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TOO_LONG_SEPARATOR
     assert recorded["downloads"] == []
 
 
@@ -180,8 +175,8 @@ async def test_a_failed_download_still_supplies_the_text(monkeypatch: pytest.Mon
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
-    parts = blocks[1]["content"]
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     assert "一支B站影片" in parts[0]["text"]
 
@@ -196,7 +191,7 @@ async def test_an_oversize_file_is_not_uploaded(monkeypatch: pytest.MonkeyPatch)
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -206,7 +201,7 @@ async def test_a_failed_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyPa
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
 
 
 async def test_the_kill_switch_skips_the_media_but_keeps_the_text(
@@ -217,7 +212,7 @@ async def test_the_kill_switch_skips_the_media_but_keeps_the_text(
 
     blocks = await _build(ingest=False)
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert recorded["downloads"] == []
     assert uploads.calls == []
 
@@ -228,13 +223,11 @@ async def test_a_missing_key_reads_the_text_instead_of_raising(
     """No key means no client to upload with, which is a text-only read, not a failure."""
     uploads, _ = _stub_bilibili(monkeypatch)
 
-    blocks = step_dicts(
-        steps=await build_bilibili_context_messages(
-            url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
-        )
+    blocks = await build_bilibili_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
     )
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -244,7 +237,7 @@ async def test_a_non_gemini_answer_model_skips_the_upload(monkeypatch: pytest.Mo
 
     blocks = await _build(gemini=False)
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -268,7 +261,7 @@ async def test_the_description_is_trimmed_to_its_budget(monkeypatch: pytest.Monk
 
     blocks = await _build()
 
-    text = blocks[1]["content"][0]["text"]
+    text = block_body(blocks=blocks)
     assert "宣" * MAX_BILIBILI_DESCRIPTION_CHARS in text
     assert "宣" * (MAX_BILIBILI_DESCRIPTION_CHARS + 1) not in text
 
@@ -278,16 +271,14 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
     _stub_bilibili(monkeypatch, metadata=_metadata(webpage_url=_URL))
     short_url = "https://b23.tv/abc123X"
 
-    blocks = step_dicts(
-        steps=await build_bilibili_context_messages(
-            url=short_url,
-            answer_model_is_gemini=True,
-            gemini_client=make_stub_gemini_client(),
-            allow_media_ingest=True,
-        )
+    blocks = await build_bilibili_context_messages(
+        url=short_url,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
     )
 
-    text = blocks[1]["content"][0]["text"]
+    text = block_body(blocks=blocks)
     assert short_url in text
     assert _URL in text
 
@@ -309,7 +300,7 @@ async def test_a_link_resolving_to_a_non_video_page_gets_the_neutral_notice(
     blocks = await _build()
 
     assert len(blocks) == 1
-    assert blocks[0]["content"][0]["text"] == BILIBILI_UNREADABLE_NOTICE
+    assert block_separator(blocks=blocks) == BILIBILI_UNREADABLE_NOTICE
     assert recorded["downloads"] == []
     assert uploads.calls == []
 
@@ -330,7 +321,7 @@ async def test_a_bangumi_redirected_single_video_is_still_ingested(
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_CONTEXT_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_CONTEXT_SEPARATOR
     assert recorded["downloads"] == [bilibili_builder.AI_INGEST_QUALITY]
     assert len(uploads.calls) == 1
 
@@ -360,7 +351,7 @@ async def test_the_media_step_timeout_degrades_to_the_text(
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -377,7 +368,7 @@ async def test_a_raising_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyP
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
 
 
 async def test_a_cancelled_build_signals_the_download_to_stop(
@@ -438,7 +429,7 @@ async def test_the_bilibili_bound_is_never_held_twice_on_one_path(
 
     blocks = await asyncio.wait_for(_build(), timeout=5.0)
 
-    assert blocks[0]["content"][0]["text"] == BILIBILI_CONTEXT_SEPARATOR
+    assert block_separator(blocks=blocks) == BILIBILI_CONTEXT_SEPARATOR
 
 
 async def test_the_fetch_bound_is_released_before_the_upload(
@@ -489,18 +480,16 @@ async def test_the_fetch_bound_is_released_before_the_upload(
 
         # A different link, ingesting media of its own, must take the bound and get all the
         # way through while the first build sits in its upload.
-        other = step_dicts(
-            steps=await asyncio.wait_for(
-                build_bilibili_context_messages(
-                    url="https://www.bilibili.com/video/av170001",
-                    answer_model_is_gemini=True,
-                    gemini_client=make_stub_gemini_client(),
-                    allow_media_ingest=True,
-                ),
-                timeout=5.0,
-            )
+        other = await asyncio.wait_for(
+            build_bilibili_context_messages(
+                url="https://www.bilibili.com/video/av170001",
+                answer_model_is_gemini=True,
+                gemini_client=make_stub_gemini_client(),
+                allow_media_ingest=True,
+            ),
+            timeout=5.0,
         )
-        assert other[0]["content"][0]["text"] == BILIBILI_CONTEXT_SEPARATOR
+        assert block_separator(blocks=other) == BILIBILI_CONTEXT_SEPARATOR
     finally:
         release.set()
         await asyncio.wait_for(slow, timeout=5.0)

@@ -10,18 +10,9 @@ from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 
-def test_every_registered_source_has_a_marker() -> None:
-    """A source the router can select is a source the pipeline will try to mark."""
-    registered = {source.name for source in LINK_CONTEXT_SOURCES}
-
-    assert registered <= set(LINK_SOURCE_EMOJIS)
-
-
-def test_no_marker_names_a_source_that_is_gone() -> None:
-    """The other direction, so a removed source does not leave its emoji behind."""
-    registered = {source.name for source in LINK_CONTEXT_SOURCES}
-
-    assert set(LINK_SOURCE_EMOJIS) <= registered
+def test_the_markers_name_exactly_the_registered_sources() -> None:
+    """Every source the router can select has a marker, and no marker outlives its source."""
+    assert set(LINK_SOURCE_EMOJIS) == {source.name for source in LINK_CONTEXT_SOURCES}
 
 
 def test_every_marker_is_a_custom_emoji_reference() -> None:

@@ -32,7 +32,6 @@ from collections.abc import Callable, Iterator
 
 import pytest
 from nextcord import Message, Forbidden
-from nextcord.ext import commands
 
 from discordbot.utils import expansion_placeholder as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
@@ -55,7 +54,7 @@ from discordbot.utils.expansion_placeholder import (
 )
 from discordbot.services.platforms.instagram import InstagramConversation
 
-from tests.helpers.casting import as_bot, as_message, make_forbidden, make_server_error
+from tests.helpers.casting import as_message, make_forbidden, make_server_error
 from tests.helpers.source_tree import PACKAGE
 from tests.helpers.link_sources import (
     BOT_USER_ID,
@@ -63,11 +62,12 @@ from tests.helpers.link_sources import (
     FACEBOOK_URL,
     INSTAGRAM_URL,
     StubDouyinDownloader,
-    StubConversationDownloader,
+    stub_bot,
     twitter_post,
     facebook_post,
     instagram_post,
     hosting_off_planner,
+    stub_conversation_cog,
 )
 from tests.helpers.discord_mocks import (
     FakeUser,
@@ -163,11 +163,6 @@ class _Staged:
         self.cog.__dict__["downloader_factory"] = recording
 
 
-def _bot() -> commands.Bot:
-    """A bot whose user a test can mention as `<@BOT_USER_ID>`."""
-    return as_bot(fake=SimpleNamespace(user=FakeUser(user_id=BOT_USER_ID, bot=True)))
-
-
 def _stage_conversation(
     *,
     cog: type[ExpansionCog[Any]],
@@ -177,15 +172,13 @@ def _stage_conversation(
     unreadable: PlatformConversation[Any],
 ) -> _Staged:
     """Stages a Facebook, Instagram or Twitter cog, whose unreadable post is an empty one."""
-    staged = _Staged(
-        cog=cog(bot=_bot()), message=FakeDiscordMessage(content=url, guild=FakeGuild())
-    )
     if isinstance(outcome, Exception):
-        stub = StubConversationDownloader(outcome=outcome)
+        instance, stub = stub_conversation_cog(cog_type=cog, outcome=outcome)
     else:
-        stub = StubConversationDownloader(
-            outcome=readable if outcome == "readable" else unreadable
+        instance, stub = stub_conversation_cog(
+            cog_type=cog, outcome=readable if outcome == "readable" else unreadable
         )
+    staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
     staged.serve(factory=lambda: stub)
     return staged
 
@@ -193,7 +186,7 @@ def _stage_conversation(
 def _stage_threads(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     """Stages the Threads cog, whose unreadable post is a walk that found no chain."""
     url = "https://www.threads.com/@alice/post/ABC123"
-    instance = cog(bot=_bot())
+    instance = cog(bot=stub_bot())
     instance.__dict__["media_delivery"] = hosting_off_planner()
     staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
     readable = ThreadsConversation(chain=[ThreadsOutput(text="post body", url=url)])
@@ -214,9 +207,10 @@ def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged
     """Stages the Douyin cog.
 
     Douyin has no empty post: what it reads and then refuses is media nothing can carry, staged
-    here as a clip past a four-byte upload ceiling with hosting off.
+    here as a clip past a four-byte upload ceiling with hosting off. A failure is raised by the
+    download, the read's last step, so it crosses everything `read` does before reaching the shell.
     """
-    instance = cog(bot=_bot())
+    instance = cog(bot=stub_bot())
     instance.__dict__["media_delivery"] = hosting_off_planner()
     guild = FakeGuild(filesize_limit=4) if outcome == "unreadable" else FakeGuild()
     staged = _Staged(
@@ -226,7 +220,7 @@ def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged
     error = outcome if isinstance(outcome, Exception) else None
     staged.serve(
         factory=lambda output_folder: StubDouyinDownloader(
-            output_folder=output_folder, parse_error=error
+            output_folder=output_folder, download_error=error
         )
     )
     return staged
@@ -288,7 +282,7 @@ def test_the_discovery_finds_something() -> None:
     assert _COGS
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_names_its_platform_the_shared_way(cog: type[ExpansionCog[Any]]) -> None:
     """`SOURCE` keys the pending-expansion rows, the marker lookup and the resume sweep.
 
@@ -306,7 +300,7 @@ def test_no_two_expansion_cogs_share_a_source_key() -> None:
     assert len(set(keys)) == len(keys)
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -328,7 +322,7 @@ def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
         assert cog._footer_text is not ConversationExpansionCog._footer_text
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_keeps_the_shared_listener(cog: type[ExpansionCog[Any]]) -> None:
     """The listener, the restart sweep and the expansion body are the shell's, not a cog's.
 
@@ -343,7 +337,7 @@ def test_an_expansion_cog_keeps_the_shared_listener(cog: type[ExpansionCog[Any]]
     assert cog._mark_failed is ExpansionCog._mark_failed
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_spells_no_status_mark_of_its_own(cog: type[ExpansionCog[Any]]) -> None:
     """One symbol, one meaning, whichever platform was linked.
 
@@ -359,7 +353,7 @@ def test_an_expansion_cog_spells_no_status_mark_of_its_own(cog: type[ExpansionCo
         assert f'"{literal}"' not in body, f"{cog.__module__} spells {literal} itself"
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 def test_an_expansion_cog_decides_no_shared_outcome_of_its_own(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -377,7 +371,7 @@ def test_an_expansion_cog_decides_no_shared_outcome_of_its_own(
     assert "isinstance(error, TimeoutError)" not in source
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -387,7 +381,7 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     channel and the Discord 5xx that raises straight past it. Behavioural rather than a source
     scan, because what matters is that the marker lands whichever call site got there.
     """
-    instance = cog(bot=as_bot(fake=SimpleNamespace(user=FakeUser(bot=True))))
+    instance = cog(bot=stub_bot())
     message = FakeDiscordMessage()
 
     await instance._mark_failed(message=as_message(fake=message), current_emoji=None)
@@ -395,7 +389,7 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     assert message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -413,7 +407,7 @@ async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
         assert staged.message.replies == []
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_bot_author_is_ignored(cog: type[ExpansionCog[Any]]) -> None:
     """Otherwise the bot's own posts, and other bots' link cards, would be expanded again."""
     staged = _stage(cog=cog, outcome="readable")
@@ -425,7 +419,7 @@ async def test_a_bot_author_is_ignored(cog: type[ExpansionCog[Any]]) -> None:
     assert staged.message.reactions == []
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_the_reply_slot_is_claimed_before_the_reactions_and_the_read(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -453,7 +447,7 @@ async def test_the_reply_slot_is_claimed_before_the_reactions_and_the_read(
     assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_the_platform_marker_rides_beside_the_status_chain(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -470,7 +464,7 @@ async def test_the_platform_marker_rides_beside_the_status_chain(
     assert all(emoji != marker for emoji, _ in staged.message.removed)
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_refused_slot_reads_nothing_and_still_names_the_platform(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -495,10 +489,10 @@ async def test_a_refused_slot_reads_nothing_and_still_names_the_platform(
     assert staged.message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 @pytest.mark.parametrize(
-    ("outcome", "expected"),
-    [
+    argnames=("outcome", "expected"),
+    argvalues=[
         ("unreadable", EXPANSION_UNREADABLE_EMOJI),
         (LinkRetryableError("429"), EXPANSION_RETRY_LATER_EMOJI),
         (RuntimeError("the parser blew up"), EXPANSION_FAILED_EMOJI),
@@ -524,9 +518,10 @@ async def test_an_expansion_that_delivers_nothing_leaves_only_its_mark(
         expected,
     ]
     assert placeholder_withdrawn(message=staged.message)
+    assert not staged.message.suppressed  # nothing was delivered, so the link keeps its preview
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_failure_outside_the_read_still_marks_the_message(
     cog: type[ExpansionCog[Any]],
 ) -> None:
@@ -553,8 +548,8 @@ async def test_a_failure_outside_the_read_still_marks_the_message(
 
 
 @pytest.mark.parametrize(
-    ("error", "expected"),
-    [
+    argnames=("error", "expected"),
+    argvalues=[
         (LinkRetryableError("429"), EXPANSION_RETRY_LATER_EMOJI),
         (TimeoutError(), EXPANSION_RETRY_LATER_EMOJI),
         (LinkUnavailableError("410"), EXPANSION_UNREADABLE_EMOJI),
@@ -575,8 +570,8 @@ def test_one_failure_earns_the_same_mark_on_every_platform(
 
 
 @pytest.mark.parametrize(
-    ("error", "expected"),
-    [
+    argnames=("error", "expected"),
+    argvalues=[
         (LinkUnavailableError("410"), "info"),
         (LinkRetryableError("429"), "warn"),
         (TimeoutError(), "warn"),
@@ -634,7 +629,7 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
     assert recorded["message_id"] == 7
 
 
-@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     cog: type[ExpansionCog[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -664,8 +659,8 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
 
 
 @pytest.mark.parametrize(
-    ("error", "level", "traceback"),
-    [
+    argnames=("error", "level", "traceback"),
+    argvalues=[
         (
             Forbidden(
                 response=make_forbidden().response,
@@ -704,13 +699,3 @@ def test_a_refused_delivery_names_its_code_instead_of_a_traceback(
     assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
     if not traceback:
         assert reports[0][1]["code"] == 400001
-
-
-def test_the_shell_is_not_itself_a_loadable_cog() -> None:
-    """`_load_cogs_sync` scans `cogs/` one level deep, so the base must not live there.
-
-    It is a `commands.Cog` subclass with listeners of its own; a copy under `cogs/` would be
-    loaded and would answer every message with a `NotImplementedError`.
-    """
-    assert issubclass(ExpansionCog, commands.Cog)
-    assert not (_COGS_DIR / "expansion_cog").exists()

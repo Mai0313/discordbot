@@ -12,26 +12,22 @@ import tempfile
 from collections.abc import Callable, Iterator
 
 import pytest
+import requests
 
-from discordbot.cogs.video import cog as video
 from discordbot.typings.video import VideoQuality
-from discordbot.cogs.video.cog import VideoCogs
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.utils.link_errors import LinkRetryableError
 import discordbot.services.platforms.douyin as douyin_module
 from discordbot.services.platforms.douyin import (
     DOUYIN_URL_RE,
     DouyinError,
-    DouyinDownload,
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
+    DouyinTransferError,
     DouyinUnavailableError,
     is_douyin_url,
     is_douyin_post_url,
 )
-
-from tests.helpers.casting import as_bot, make_media_hosting_config
-from tests.helpers.discord_mocks import FakeInteraction
 
 # These downloaders are only ever asked to parse, never to write, so the folder is inert.
 _SCRATCH_DIR = tempfile.gettempdir()
@@ -125,9 +121,9 @@ class _FakeResponse:
         self._stall_mid_stream = stall_mid_stream
 
     def raise_for_status(self) -> None:
-        """Mimics requests' status check."""
+        """Mimics requests' status check, carrying the response the way requests does."""
         if self.status_code >= 400:
-            raise douyin_module.RequestException(f"status {self.status_code}")
+            raise requests.HTTPError(f"status {self.status_code}", response=self)
 
     def iter_content(self, chunk_size: int) -> Iterator[bytes]:
         """Yields the canned body, optionally dying part-way through.
@@ -678,7 +674,7 @@ def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bo
     assert is_douyin_post_url(url=url) is expected
 
 
-def test_download_creates_the_output_folder_once(
+def test_a_download_never_recreates_a_removed_output_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """`_download_to` must not re-create the output folder per file.
@@ -687,24 +683,15 @@ def test_download_creates_the_output_folder_once(
     mid-download; re-creating it per file would silently strand every later image there
     forever. Failing the open instead turns the removal into the stop signal.
     """
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
-        return _FakeResponse(body=b"image-bytes")
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    scratch = tmp_path / "gone"
+    _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(body=b"image-bytes")
+    )
+    scratch = tmp_path / "gone"  # the scratch dir a cancelled caller has already removed
     downloader = DouyinDownloader(output_folder=scratch.as_posix())
-    post = downloader.parse_metadata(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
 
-    # Stand in for the rmtree a cancelled caller performs between two files.
-    scratch.mkdir()
-    scratch.rmdir()
     with pytest.raises(FileNotFoundError):
         downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
     assert not scratch.exists()  # nothing re-created it behind the caller's back
-    assert post.is_photo
 
 
 def test_failed_gallery_leaves_no_images_behind(
@@ -794,220 +781,63 @@ def test_local_write_failure_leaves_no_partial_file(
     assert list(tmp_path.iterdir()) == []
 
 
-class _StubDouyinDownloader:
-    """Downloader stub returning a canned result or raising a canned error."""
+def test_a_stalled_share_page_read_is_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read that never got an answer is a come-back-later, never a missing post.
 
-    def __init__(self, outcome: DouyinDownload | BaseException) -> None:
-        """Stores what the next download call should produce."""
-        self.outcome = outcome
-        self.calls: list[dict[str, Any]] = []
-
-    def download(self, url: str, quality: str, max_images: int | None = None) -> DouyinDownload:
-        """Records the request and returns the canned result, or raises."""
-        self.calls.append({"url": url, "quality": quality, "max_images": max_images})
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
-        return self.outcome
-
-
-def _install_cog(
-    monkeypatch: pytest.MonkeyPatch, outcome: DouyinDownload | BaseException
-) -> tuple[VideoCogs, _StubDouyinDownloader]:
-    """Builds a VideoCogs wired to a stub Douyin downloader."""
-    cog = VideoCogs(bot=as_bot(fake=object()))
-    stub = _StubDouyinDownloader(outcome=outcome)
-    monkeypatch.setattr(video, "DouyinDownloader", lambda output_folder: stub)
-    return cog, stub
-
-
-async def test_cog_routes_douyin_away_from_ytdlp(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A Douyin link must never reach the yt-dlp downloader, whose extractor cannot serve it."""
-    clip = tmp_path / f"{_VIDEO_ID}.mp4"
-    clip.write_bytes(b"0" * 128)
-    cog, stub = _install_cog(
-        monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
-    )
-
-    def _fail(output_folder: str) -> None:
-        raise AssertionError("yt-dlp must not be used for a Douyin URL")
-
-    monkeypatch.setattr(video, "VideoDownloader", _fail)
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url="https://v.douyin.com/NdlfIZPcgz4", quality="best"
-    )
-
-    assert stub.calls[0]["url"] == "https://v.douyin.com/NdlfIZPcgz4"
-    # The gallery cap is applied at download time, not after.
-    assert stub.calls[0]["max_images"] == video.DISCORD_ATTACHMENT_LIMIT
-    assert "來源" in interaction.edits[-1]["content"]
-
-
-async def test_cog_states_how_many_gallery_images_were_omitted(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A capped gallery says so; silently sending a partial set would mislead the user."""
-    images = []
-    for index in range(3):
-        image = tmp_path / f"{_PHOTO_ID}_{index}.jpg"
-        image.write_bytes(b"0" * 16)
-        images.append(image)
-
-    cog, _stub = _install_cog(
-        monkeypatch=monkeypatch,
-        outcome=DouyinDownload(is_photo=True, filenames=images, total_images=48),
-    )
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/note/{_PHOTO_ID}", quality="best"
-    )
-
-    content = interaction.edits[-1]["content"]
-    assert "已省略 45 張圖片" in content
-    assert len(interaction.edits[-1]["files"]) == 3
-
-
-async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A gallery hosted in full must post every URL, not just the first one.
-
-    The bare-URL reply exists so a lone oversize video renders an inline player; sending a gallery
-    down that path would silently discard every image past the first, plus the omitted-count note.
+    Douyin raises its own classes, so its own fetch is what has to be asked: a synthetic error
+    handed to the shared classifier passes whether or not this reader ever raises a retryable one.
     """
-    serve_dir = tmp_path / "serve"
-    serve_dir.mkdir()
-    images = []
-    for index in range(3):
-        image = tmp_path / f"{_PHOTO_ID}_{index}.jpg"
-        image.write_bytes(bytes([index]) * 4096)  # distinct bytes so hosting cannot dedup them
-        images.append(image)
 
-    cog, _stub = _install_cog(
-        monkeypatch=monkeypatch,
-        outcome=DouyinDownload(is_photo=True, filenames=images, total_images=len(images)),
-    )
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=serve_dir.as_posix()
-            )
-        )
-    )
-    interaction = FakeInteraction(filesize_limit=1024)
+    def stall(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        """Never answers, the way a stalled read does not."""
+        del url, kwargs
+        raise requests.ReadTimeout("stalled")
 
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/note/{_PHOTO_ID}", quality="best"
-    )
+    _install_session(monkeypatch=monkeypatch, handler=stall)
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
-    content = interaction.edits[-1]["content"]
-    hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
-    assert len(hosted) == len(images)
-    assert "檔案無法下載" not in content
+    with pytest.raises(DouyinBlockedError):
+        downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
 
 
-async def test_cog_reports_a_blocked_request_as_retryable_not_deleted(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    argnames=("status", "retryable"), argvalues=[(429, True), (503, True), (404, False)]
+)
+def test_a_refused_short_link_is_retryable_only_when_http_says_so(
+    monkeypatch: pytest.MonkeyPatch, status: int, retryable: bool
 ) -> None:
-    """A bot wall must not be reported as a deleted post; the link is fine, the site is not."""
-    cog, _stub = _install_cog(monkeypatch=monkeypatch, outcome=DouyinBlockedError("challenge"))
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
+    """A refused short-link hop carries no `Location`, which is not the same as no post."""
+    _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
     )
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
-    content = interaction.edits[-1]["content"]
-    assert "稍後再試" in content
-    assert "刪除" not in content
-
-
-async def test_cog_reports_an_unavailable_post(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A filtered post gets its own message rather than a generic download failure."""
-    cog, _stub = _install_cog(
-        monkeypatch=monkeypatch, outcome=DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST")
-    )
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
-
-    assert "已被刪除或設為私人" in interaction.edits[-1]["content"]
+    with pytest.raises(DouyinError) as raised:
+        downloader._resolve_aweme_id(url="https://v.douyin.com/AbCdEf12/")
+    assert isinstance(raised.value, DouyinBlockedError) is retryable
 
 
-async def test_cog_falls_back_to_a_generic_message_on_other_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Any other Douyin failure still leaves the user with a message, never a silent no-op."""
-    cog, _stub = _install_cog(monkeypatch=monkeypatch, outcome=DouyinError("boom"))
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
-
-    assert "檔案無法下載" in interaction.edits[-1]["content"]
-
-
-async def test_cog_reports_a_non_douyin_error_instead_of_hanging(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A failure that is not a DouyinError must not escape and strand the placeholder.
-
-    The Douyin branch runs before the command's own try block, and the bot's application-command
-    error handler only logs, so an escaping exception would leave the user looking at
-    "正在下載影片..." indefinitely.
-    """
-    cog, _stub = _install_cog(
-        monkeypatch=monkeypatch, outcome=OSError(28, "No space left on device")
-    )
-    interaction = FakeInteraction()
-
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
-
-    assert "檔案無法下載" in interaction.edits[-1]["content"]
-
-
-async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
+def test_a_stalled_media_download_is_retryable_but_not_the_bot_wall(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """An oversize clip is delivered as a hosted URL, the fallback the README advertises.
+    """A transfer that keeps stalling is retryable, and is not the bot wall.
 
-    Uses a real hosting service because the bug this guards against only appears once hosting
-    actually moves the source file out of the download folder.
+    The download is the request that stalls in practice, so its retries running out is the
+    ordinary Douyin failure; reported flat, it would read as a post with nothing showable in it.
     """
-    serve_dir = tmp_path / "serve"
-    serve_dir.mkdir()
-    clip = tmp_path / f"{_VIDEO_ID}.mp4"
-    clip.write_bytes(b"0" * 4096)
 
-    cog, _stub = _install_cog(
-        monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
-    )
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=serve_dir.as_posix()
-            )
-        )
-    )
-    interaction = FakeInteraction(filesize_limit=1024)
+    def stall(**kwargs: object) -> Path:
+        """Never completes, the way a stalling CDN transfer does not."""
+        del kwargs
+        raise requests.ReadTimeout("stalled")
 
-    await VideoCogs.download_video.callback(
-        cog, interaction, url=f"https://www.douyin.com/video/{_VIDEO_ID}", quality="best"
-    )
+    monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
+    downloader = DouyinDownloader(output_folder=str(tmp_path))
 
-    content = interaction.edits[-1]["content"]
-    # Asserted per line rather than as a substring: the URL has to start its own line for Discord
-    # to render it, so an anywhere-in-the-body match would accept a message Discord would not link.
-    assert any(line.startswith("https://media.test/") for line in content.splitlines())
-    assert "檔案無法下載" not in content
-    # The file really was hosted, so discarding the URL would have lost a completed upload.
-    assert list(serve_dir.glob("*.mp4"))
+    with pytest.raises(DouyinTransferError) as raised:
+        downloader._download_to(url="https://example.test/v.mp4", filename="v.mp4")
+
+    # Retryable to the expansion, but NOT the bot wall: `/download_video` answers in words,
+    # and blaming a wall sends someone off to wait out something that was never there.
+    assert isinstance(raised.value, LinkRetryableError)
+    assert not isinstance(raised.value, DouyinBlockedError)

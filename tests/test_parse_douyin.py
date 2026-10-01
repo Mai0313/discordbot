@@ -1,11 +1,12 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
-from typing import Any
+from typing import Unpack
 import asyncio
 from pathlib import Path
 import threading
 
 import pytest
+from openai.types.responses import EasyInputMessageParam
 
 from discordbot.services.platforms import douyin as douyin_fetch
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
@@ -13,7 +14,6 @@ from discordbot.services.platforms.douyin import (
     DouyinError,
     DouyinDownload,
     DouyinMetadata,
-    DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
     DouyinUnavailableError,
@@ -29,8 +29,17 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
     build_douyin_context_messages,
 )
 
-from tests.helpers.casting import step_dicts, make_stub_gemini_client
-from tests.helpers.link_sources import FakeUploads, race_every_scratch_teardown
+from tests.helpers.casting import make_stub_gemini_client
+from tests.helpers.link_sources import (
+    FakeUploads,
+    StubDouyinOptions,
+    StubDouyinDownloader,
+    block_body,
+    block_parts,
+    block_separator,
+    stub_douyin_downloads,
+    race_every_scratch_teardown,
+)
 
 _URL = "https://v.douyin.com/abc123"
 
@@ -47,70 +56,37 @@ def _post(is_photo: bool = False, images: int = 0) -> DouyinMetadata:
     )
 
 
-def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder can hit
+def _stub_douyin(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    post: DouyinMetadata | None = None,
-    files: list[str] | None = None,
-    parse_error: Exception | None = None,
-    download_error: Exception | None = None,
     uploads: FakeUploads | None = None,
-) -> tuple[FakeUploads, dict[str, object]]:
-    """Stubs the downloader and the Files API upload so no network or SDK is touched."""
-    resolved_post = post or _post()
-    recorded: dict[str, object] = {}
+    **canned: Unpack[StubDouyinOptions],
+) -> tuple[FakeUploads, list[StubDouyinDownloader]]:
+    """Stubs the downloader and the Files API upload so no network or SDK is touched.
 
-    def fake_parse_metadata(self: DouyinDownloader, *, url: str) -> DouyinMetadata:
-        """Returns the canned post, or raises the canned parse failure."""
-        del url
-        if parse_error is not None:
-            raise parse_error
-        return resolved_post
-
-    def fake_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
-        self: DouyinDownloader,
-        url: str,
-        quality: str = "best",
-        max_images: int | None = None,
-        max_bytes: int | None = None,
-        post: DouyinMetadata | None = None,
-    ) -> DouyinDownload:
-        """Writes canned files into the builder's scratch dir, or raises."""
-        del url
-        recorded["quality"] = quality
-        recorded["max_images"] = max_images
-        recorded["max_bytes"] = max_bytes
-        recorded["post"] = post
-        if download_error is not None:
-            raise download_error
-        names = files if files is not None else [f"{resolved_post.aweme_id}.mp4"]
-        written: list[Path] = []
-        for name in names[: max_images or len(names)]:
-            path = Path(self.output_folder) / name
-            path.write_bytes(b"media-bytes")
-            written.append(path)
-        return DouyinDownload(is_photo=resolved_post.is_photo, filenames=written)
-
-    monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=fake_parse_metadata)
-    monkeypatch.setattr(target=DouyinDownloader, name="download", value=fake_download)
+    The post defaults to `_post()`, whose clip is `777.mp4`.
+    """
+    canned.setdefault("post", _post())
+    canned.setdefault("files", [("777.mp4", b"media-bytes")])
+    made: list[StubDouyinDownloader] = []
+    monkeypatch.setattr(
+        target=douyin_builder,
+        name="DouyinDownloader",
+        value=stub_douyin_downloads(made=made, **canned),
+    )
     resolved_uploads = uploads or FakeUploads()
     monkeypatch.setattr(douyin_builder, "upload_as_input_file", resolved_uploads)
-    return resolved_uploads, recorded
+    return resolved_uploads, made
 
 
-async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any]]:
-    """Runs the builder with the flags most tests share.
-
-    The blocks are `EasyInputMessageParam`s, whose `content` is a union the assertions below
-    index into part by part; `step_dicts` is what lets them read as plain JSON.
-    """
-    blocks = await build_douyin_context_messages(
+async def _build(gemini: bool = True, ingest: bool = True) -> list[EasyInputMessageParam]:
+    """Runs the builder with the flags most tests share."""
+    return await build_douyin_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,
         gemini_client=make_stub_gemini_client(),
         allow_media_ingest=ingest,
     )
-    return step_dicts(steps=blocks)
 
 
 async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
@@ -121,12 +97,12 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     A Douyin CDN url is unusable to both backends anyway (the play endpoint needs a mobile
     User-Agent), so the upload is the only shape that works, not merely the tidier one.
     """
-    uploads, recorded = _stub_douyin(monkeypatch)
+    uploads, made = _stub_douyin(monkeypatch)
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_CONTEXT_SEPARATOR
-    parts = blocks[1]["content"]
+    assert block_separator(blocks=blocks) == DOUYIN_CONTEXT_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert parts[0]["type"] == "input_text"
     assert "一段影片的說明" in parts[0]["text"]
     assert "某個作者" in parts[0]["text"]
@@ -143,34 +119,38 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     assert filename.endswith(".mp4")
     # A fail-fast Content-Length guard, not a quality lever: the resolution is chosen separately
     # by `quality=AI_INGEST_QUALITY`, deliberately below what the human-facing expansion posts.
-    assert recorded["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
-    assert recorded["quality"] == douyin_builder.AI_INGEST_QUALITY
+    (call,) = made[-1].download_calls
+    assert call["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
+    assert call["quality"] == douyin_builder.AI_INGEST_QUALITY
 
 
 async def test_the_parsed_post_is_handed_to_the_download(monkeypatch: pytest.MonkeyPatch) -> None:
     """The caption is parsed once and reused, so the post is never resolved twice."""
-    _, recorded = _stub_douyin(monkeypatch)
+    post = _post()
+    _, made = _stub_douyin(monkeypatch, post=post)
 
     await _build()
 
-    assert isinstance(recorded["post"], DouyinMetadata)
+    (call,) = made[-1].download_calls
+    assert call["post"] is post
 
 
 async def test_a_gallery_is_capped_and_uploaded_as_images(monkeypatch: pytest.MonkeyPatch) -> None:
     """A photo post rides as image parts, capped so a huge gallery cannot blow the budget."""
-    uploads, recorded = _stub_douyin(
+    uploads, made = _stub_douyin(
         monkeypatch,
         post=_post(is_photo=True, images=20),
-        files=[f"777_{index}.jpg" for index in range(20)],
+        files=[(f"777_{index}.jpg", b"media-bytes") for index in range(20)],
     )
 
     blocks = await _build()
 
-    assert recorded["max_images"] == MAX_DOUYIN_INGEST_IMAGES
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    (call,) = made[-1].download_calls
+    assert call["max_images"] == MAX_DOUYIN_INGEST_IMAGES
+    media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert len(media) == MAX_DOUYIN_INGEST_IMAGES
     assert all(mime == "image/jpeg" for _source, mime, _name in uploads.calls)
-    assert "photo gallery" in blocks[1]["content"][0]["text"]
+    assert "photo gallery" in block_body(blocks=blocks)
 
 
 async def test_a_blocked_read_is_never_reported_as_a_missing_post(
@@ -185,8 +165,8 @@ async def test_a_blocked_read_is_never_reported_as_a_missing_post(
     blocks = await _build()
 
     assert len(blocks) == 1
-    assert blocks[0]["content"][0]["text"] == DOUYIN_BLOCKED_NOTICE
-    assert blocks[0]["content"][0]["text"] != DOUYIN_UNAVAILABLE_NOTICE
+    assert block_separator(blocks=blocks) == DOUYIN_BLOCKED_NOTICE
+    assert block_separator(blocks=blocks) != DOUYIN_UNAVAILABLE_NOTICE
 
 
 async def test_a_deleted_post_gets_the_unavailable_notice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,7 +175,7 @@ async def test_a_deleted_post_gets_the_unavailable_notice(monkeypatch: pytest.Mo
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_UNAVAILABLE_NOTICE
+    assert block_separator(blocks=blocks) == DOUYIN_UNAVAILABLE_NOTICE
 
 
 async def test_any_other_failure_never_claims_the_post_is_deleted(
@@ -211,8 +191,8 @@ async def test_any_other_failure_never_claims_the_post_is_deleted(
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_UNREADABLE_NOTICE
-    assert blocks[0]["content"][0]["text"] != DOUYIN_UNAVAILABLE_NOTICE
+    assert block_separator(blocks=blocks) == DOUYIN_UNREADABLE_NOTICE
+    assert block_separator(blocks=blocks) != DOUYIN_UNAVAILABLE_NOTICE
     assert "deleted" not in DOUYIN_UNREADABLE_NOTICE.split("does NOT")[0]
 
 
@@ -228,8 +208,8 @@ async def test_a_failed_download_still_supplies_the_caption(
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
-    parts = blocks[1]["content"]
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
+    parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     assert "一段影片的說明" in parts[0]["text"]
 
@@ -240,7 +220,7 @@ async def test_an_oversize_clip_degrades_to_the_caption(monkeypatch: pytest.Monk
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
 
 
 async def test_a_failed_upload_degrades_to_the_caption(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -249,7 +229,7 @@ async def test_a_failed_upload_degrades_to_the_caption(monkeypatch: pytest.Monke
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
 
 
 async def test_the_kill_switch_skips_the_media_but_keeps_the_caption(
@@ -260,7 +240,7 @@ async def test_the_kill_switch_skips_the_media_but_keeps_the_caption(
 
     blocks = await _build(ingest=False)
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -270,13 +250,11 @@ async def test_a_missing_key_reads_the_caption_instead_of_raising(
     """No key means no client to upload with, which is a text-only read, not a failure."""
     uploads, _ = _stub_douyin(monkeypatch)
 
-    blocks = step_dicts(
-        steps=await build_douyin_context_messages(
-            url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
-        )
+    blocks = await build_douyin_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
     )
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -286,7 +264,7 @@ async def test_a_non_gemini_answer_model_skips_the_upload(monkeypatch: pytest.Mo
 
     blocks = await _build(gemini=False)
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -307,10 +285,9 @@ async def test_a_raced_scratch_teardown_keeps_the_clip_the_build_already_uploade
 ) -> None:
     """A failing removal must not throw away media the model was about to watch.
 
-    The builder returns its parts from inside the scratch directory's own `with`, so before
-    #561 a raised cleanup discarded a finished result: the clip was downloaded and uploaded,
-    and the block still came out as the text-only one, telling the model it had not watched
-    the post it was holding. `scratch_directory` reports the removal instead of raising it.
+    The builder returns its parts from inside the scratch directory's own `with`, so a raised
+    cleanup would discard a finished result: the clip downloaded and uploaded, and the block
+    still the text-only one, telling the model it had not watched the post it was holding.
     """
     _stub_douyin(monkeypatch)
     removed = race_every_scratch_teardown(monkeypatch)
@@ -318,8 +295,8 @@ async def test_a_raced_scratch_teardown_keeps_the_clip_the_build_already_uploade
     blocks = await _build()
 
     assert removed  # the teardown really ran and really failed
-    assert blocks[0]["content"][0]["text"] == DOUYIN_CONTEXT_SEPARATOR
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    assert block_separator(blocks=blocks) == DOUYIN_CONTEXT_SEPARATOR
+    media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert [part["file_id"] for part in media] == ["https://files.test/777.mp4"]
 
 
@@ -340,24 +317,20 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
     removed = race_every_scratch_teardown(monkeypatch)
     release = threading.Event()
 
-    def blocking_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
-        self: DouyinDownloader,
-        url: str,
-        quality: str = "best",
-        max_images: int | None = None,
-        max_bytes: int | None = None,
-        post: DouyinMetadata | None = None,
-    ) -> DouyinDownload:
-        """Blocks the worker thread the way a stalling CDN read does.
+    class _StallingDownloader(StubDouyinDownloader):
+        """Reads the post, then stalls its download the way a stalling CDN read does."""
 
-        Released by the test rather than slept out: `asyncio.to_thread` cannot cancel this, so
-        a fixed sleep would be charged to the event loop's own shutdown join at teardown.
-        """
-        del url, quality, max_images, max_bytes, post
-        release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
-        raise AssertionError("should have been abandoned")
+        def download(self, *args: object, **kwargs: object) -> DouyinDownload:
+            """Blocks the worker thread until the test releases it.
 
-    monkeypatch.setattr(target=DouyinDownloader, name="download", value=blocking_download)
+            Released by the test rather than slept out: `asyncio.to_thread` cannot cancel this,
+            so a fixed sleep would be charged to the event loop's own shutdown join at teardown.
+            """
+            del args, kwargs
+            release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
+            raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(target=douyin_builder, name="DouyinDownloader", value=_StallingDownloader)
 
     try:
         with pytest.raises(TimeoutError):
@@ -394,7 +367,7 @@ async def test_the_douyin_bound_is_never_held_twice_on_one_path(
 
     blocks = await asyncio.wait_for(_build(), timeout=5.0)
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_CONTEXT_SEPARATOR
+    assert block_separator(blocks=blocks) == DOUYIN_CONTEXT_SEPARATOR
 
 
 async def test_the_fetch_bound_is_released_before_the_upload(
@@ -438,18 +411,16 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         await asyncio.wait_for(started.wait(), timeout=5.0)
 
         # A different link must get through while the first build sits in its upload.
-        other = step_dicts(
-            steps=await asyncio.wait_for(
-                build_douyin_context_messages(
-                    url="https://v.douyin.com/other",
-                    answer_model_is_gemini=True,
-                    gemini_client=make_stub_gemini_client(),
-                    allow_media_ingest=False,
-                ),
-                timeout=5.0,
-            )
+        other = await asyncio.wait_for(
+            build_douyin_context_messages(
+                url="https://v.douyin.com/other",
+                answer_model_is_gemini=True,
+                gemini_client=make_stub_gemini_client(),
+                allow_media_ingest=False,
+            ),
+            timeout=5.0,
         )
-        assert other[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+        assert block_separator(blocks=other) == DOUYIN_TEXT_ONLY_SEPARATOR
     finally:
         release.set()
         await asyncio.wait_for(slow, timeout=5.0)
