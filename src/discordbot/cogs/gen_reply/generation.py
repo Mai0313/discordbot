@@ -168,7 +168,7 @@ class VoiceClip(BaseModel):
 
 
 class ImageGenerator(BaseModel):
-    """Image render shared by the router IMAGE route and the QA-route `<generate-image>` marker.
+    """Image render through the LiteLLM proxy, in a raising and a best-effort form.
 
     Holds the shared client and the image model. `render` is the raising primitive (edits when
     source bytes are present, else generates); `generate` is the best-effort inline wrapper that

@@ -9,8 +9,8 @@ from discordbot.utils.urls import URL_START_ANCHOR
 # Files API upload — unlike YouTube, Gemini cannot fetch a Bilibili page server-side).
 # Matches the watchable forms only: `/video/BV.../` and `/video/av.../` pages plus `b23.tv`
 # share short links. Live rooms (`live.bilibili.com`), user spaces (`space.bilibili.com`),
-# moments (`t.bilibili.com`) and `/bangumi/` pages never match, so unlike `DOUYIN_URL_RE` no
-# separate post-URL guard is needed on top. A `b23.tv` short link CAN still resolve to one of
+# moments (`t.bilibili.com`) and `/bangumi/` pages never match, so no separate post-URL guard is
+# needed on top. A `b23.tv` short link CAN still resolve to one of
 # those — and yt-dlp reads a space or collection SUCCESSFULLY as a playlist rather than
 # failing — so the context builder rejects a playlist-shaped result whose resolved canonical
 # URL falls outside this regex with its neutral notice (playlist-shaped only: a single

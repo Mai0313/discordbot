@@ -90,8 +90,7 @@ _SHARE_PATH_RE = re.compile(pattern=r"^/share/p/[A-Za-z0-9]+")
 
 # A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
 # every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
-# both are minted per share, so echoing them names whoever sent the link to the channel — the
-# same trap `services/platforms/threads.py` documents for the `?xmt=` token.
+# both are minted per share, so echoing them names whoever sent the link to the channel.
 _COMMENT_ID_PARAM = "comment_id"
 _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 
