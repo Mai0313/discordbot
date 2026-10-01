@@ -47,11 +47,6 @@ console = Console()
 # tail is reported as a count so a truncated table never reads as the whole population.
 _TOP_ROWS = 10
 
-# Width of the inline share bars. Sized so the widest table still fits an 80-column
-# terminal: past that rich takes the space back out of the bar itself, which is the one
-# column that means nothing once it is cropped.
-_BAR_WIDTH = 16
-
 
 def _month_files(directory: Path, month: str | None) -> list[Path]:
     """Returns the month files to read, oldest first.
@@ -101,7 +96,11 @@ def _bar(value: int, peak: int) -> str:
     """Renders `value` as a block bar scaled against the largest value in its column."""
     if peak <= 0:
         return ""
-    filled = round(value / peak * _BAR_WIDTH)
+    # Sized so the widest table still fits an 80-column terminal: past that rich takes the
+    # space back out of the bar itself, which is the one column that means nothing once it is
+    # cropped.
+    bar_width = 16
+    filled = round(value / peak * bar_width)
     # A feature that was used never renders as an empty cell, however far behind the peak
     # it is: an empty bar and a zero count would otherwise look the same at a glance.
     return "█" * filled if filled else "▏"

@@ -25,11 +25,6 @@ if TYPE_CHECKING:
         ApplicationCommandInteractionDataOption,
     )
 
-_SUBCOMMAND_TYPES = (
-    ApplicationCommandOptionType.sub_command.value,
-    ApplicationCommandOptionType.sub_command_group.value,
-)
-
 
 def command_path(data: "ApplicationCommandInteractionData") -> str:
     """The full invoked path (`memory server show`) read out of the interaction payload.
@@ -44,10 +39,14 @@ def command_path(data: "ApplicationCommandInteractionData") -> str:
     name = data.get("name")
     if not name:
         return ""
+    subcommand_types = (
+        ApplicationCommandOptionType.sub_command.value,
+        ApplicationCommandOptionType.sub_command_group.value,
+    )
     parts = [name]
     options = cast("list[ApplicationCommandInteractionDataOption]", data.get("options") or [])
     while options:
-        nested = next((option for option in options if option["type"] in _SUBCOMMAND_TYPES), None)
+        nested = next((option for option in options if option["type"] in subcommand_types), None)
         if nested is None:
             break
         parts.append(nested["name"])
