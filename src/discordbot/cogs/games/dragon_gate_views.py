@@ -406,7 +406,7 @@ class DragonGateView(GameView):
         self.round_state = round_state
         self.owner = owner
         self.message: Message | None = None
-        # The last press that edited the table; the timeout's edit and delete ride its token.
+        # The last press acknowledged on the table; the timeout's edit and delete ride its token.
         self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False

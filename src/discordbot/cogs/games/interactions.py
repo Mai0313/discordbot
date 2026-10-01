@@ -37,9 +37,30 @@ class GameView(LoggedView):
 
     interaction_failure_log: ClassVar[str]
     notice_failure_log: ClassVar[str]
+    # The game's public message and the last press acknowledged on it; a timeout's edit and
+    # delete ride that press's token while it lives.
+    message: Message | None
+    last_press: Interaction[commands.Bot] | None
+
+    def _keep_press(self, interaction: Interaction[commands.Bot]) -> None:
+        """Makes a press acknowledged on the game message the one a timeout closes it through.
+
+        nextcord restarts the view's timer on every press, a refused one included, so only the
+        newest press holds a token sure to outlive that timer and the cleanup after it.
+        """
+        self.message = interaction.message or self.message
+        self.last_press = interaction
 
     async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private notice to the interacting user; a refusal is logged, never raised."""
+        """Acknowledges the press on the game message, then sends the user a private notice.
+
+        Acknowledging first makes the notice a followup, so the press's own token still reaches
+        the game message (`_keep_press`). A refused notice is logged, never raised; a failed
+        acknowledgement raises like any press's defer.
+        """
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         await send_ephemeral_notice(
             interaction=interaction, content=content, log_message=self.notice_failure_log
         )
@@ -77,8 +98,8 @@ async def edit_game_message(
 
     A press's own token edits the message its control sits on whatever the channel allows, where
     the channel endpoint answers 403 once the server shuts the bot out. An edit no press
-    triggered, a timeout's, rides the last press that edited the message, so only a message with
-    no live press left has only the channel. That press must be one answered on the message
+    triggered, a timeout's, rides the last press acknowledged on the message, so only a message
+    with no live press left has only the channel. That press must be one answered on the message
     itself: a press answered with a private notice holds a token for that notice instead. A
     token that fails hands the edit to the channel too, since only the channel tells a message
     already gone from a token that cannot reach it.
@@ -103,8 +124,8 @@ async def publish_final_table(
 ) -> bool:
     """Shows a settled table's final embeds with no controls, then schedules its deletion.
 
-    `interaction` is the press that settled the table or, on a timeout, the last press that
-    edited it; the render and the deletion both go through it while its token lives
+    `interaction` is the press that settled the table or, on a timeout, the last press
+    acknowledged on it; the render and the deletion both go through it while its token lives
     (`edit_game_message`). Never raises: settlement is already committed when this runs, so a
     render that fails is logged (`failure_fields` ride the warning) and the deletion is
     scheduled regardless.

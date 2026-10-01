@@ -565,7 +565,7 @@ class BlackjackView(GameView):
         self._channel_id = channel_id
         self._shoe_generation = shoe_generation
         self.message: Message | None = None
-        # The last press that edited the table; the timeout's edits and delete ride its token.
+        # The last press acknowledged on the table; the timeout's edits and delete ride its token.
         self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
