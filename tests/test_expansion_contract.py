@@ -207,7 +207,8 @@ def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged
     """Stages the Douyin cog.
 
     Douyin has no empty post: what it reads and then refuses is media nothing can carry, staged
-    here as a clip past a four-byte upload ceiling with hosting off.
+    here as a clip past a four-byte upload ceiling with hosting off. A failure is raised by the
+    download, the read's last step, so it crosses everything `read` does before reaching the shell.
     """
     instance = cog(bot=stub_bot())
     instance.__dict__["media_delivery"] = hosting_off_planner()
@@ -219,7 +220,7 @@ def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged
     error = outcome if isinstance(outcome, Exception) else None
     staged.serve(
         factory=lambda output_folder: StubDouyinDownloader(
-            output_folder=output_folder, parse_error=error
+            output_folder=output_folder, download_error=error
         )
     )
     return staged

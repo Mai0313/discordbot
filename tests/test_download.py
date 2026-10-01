@@ -485,7 +485,7 @@ async def test_video_deliver_and_download_branches(
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()
     small = tmp_path / "small.mp4"
-    small.write_bytes(data=b"0" * 100)
+    small.write_bytes(data=b"0" * (300 * 1024))
     big = tmp_path / "big.mp4"
     big.write_bytes(data=b"0" * 300)
 
@@ -496,7 +496,7 @@ async def test_video_deliver_and_download_branches(
         cog, interaction, url="https://source.test/video", quality="best"
     )
     assert interaction.edits[-1]["content"] == (
-        "-# 檔案大小: 0.0MB\n-# 來源: <https://source.test/video>"
+        "-# 檔案大小: 0.3MB\n-# 來源: <https://source.test/video>"
     )
     assert interaction.edits[-1]["file"].filename == "small.mp4"
     assert interaction.followup.sent == []
@@ -594,7 +594,7 @@ async def test_cog_routes_douyin_away_from_ytdlp(
     def _fail(output_folder: str) -> None:
         raise AssertionError("yt-dlp must not be used for a Douyin URL")
 
-    monkeypatch.setattr(video, "VideoDownloader", _fail)
+    monkeypatch.setattr(target=video, name="VideoDownloader", value=_fail)
     interaction = FakeInteraction()
 
     await VideoCogs.download_video.callback(
@@ -682,23 +682,31 @@ def test_each_douyin_failure_gets_its_own_wording(error: Exception, expected: st
     assert douyin_failure_message(error=error) == expected
 
 
-async def test_cog_reports_a_non_douyin_error_instead_of_hanging(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    argnames="error",
+    argvalues=[
+        OSError(28, "No space left on device"),
+        DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST"),
+    ],
+    ids=["other", "gone"],
+)
+async def test_cog_answers_a_failed_douyin_download_instead_of_hanging(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    """A failure that is not a DouyinError must not escape and strand the placeholder.
+    """A failed Douyin download answers with its own wording, never an escaping exception.
 
     The Douyin branch runs before the command's own try block, and the bot's application-command
     error handler only logs, so an escaping exception would leave the user looking at
     "正在下載影片..." indefinitely.
     """
-    cog, _stub = _install(monkeypatch=monkeypatch, outcome=OSError(28, "No space left on device"))
+    cog, _stub = _install(monkeypatch=monkeypatch, outcome=error)
     interaction = FakeInteraction()
 
     await VideoCogs.download_video.callback(
         cog, interaction, url=_DOUYIN_VIDEO_URL, quality="best"
     )
 
-    assert "檔案無法下載" in interaction.edits[-1]["content"]
+    assert interaction.edits[-1]["content"] == douyin_failure_message(error=error)
 
 
 async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(

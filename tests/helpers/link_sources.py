@@ -256,8 +256,8 @@ def stub_douyin_downloads(
 ) -> Callable[..., StubDouyinDownloader]:
     """Stands in for the DouyinDownloader class, keeping every stub it builds in `made`.
 
-    The real class is built once per scratch dir, so a caller reading a post and then
-    downloading it builds two; each stub here serves the same canned outcomes.
+    The Douyin link-source builder builds one to read the post and another to download it, so
+    `made` keeps every stub; each serves the same canned outcomes.
     """
 
     def factory(output_folder: str) -> StubDouyinDownloader:
