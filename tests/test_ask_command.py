@@ -9,6 +9,7 @@ built over a connection state, on a channel the bot is not a member of. Everythi
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from datetime import datetime, timedelta
+from collections.abc import Callable, Awaitable
 
 import pytest
 from nextcord import Message, Attachment, ChannelType, PartialMessageable
@@ -19,7 +20,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import ask_store
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.recall import RecallContext
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
@@ -33,7 +33,8 @@ from discordbot.cogs.gen_reply.ask_message import (
     rebuild_conversation,
 )
 
-from tests.helpers.casting import as_bot, make_media_hosting_config
+from tests.helpers.casting import as_bot
+from tests.helpers.link_sources import hosting_off_planner
 
 if TYPE_CHECKING:
     from nextcord.types.message import Attachment as AttachmentPayload
@@ -294,9 +295,7 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     surface = TurnSurface.for_interaction(message=message, interaction=interaction)
     turn = AnswerTurn(
         config=LLMConfig(),
-        media_delivery=MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
-        ),
+        media_delivery=hosting_off_planner(),
         toolkit=_toolkit(interaction=interaction),
         surface=surface,
     )
@@ -484,19 +483,27 @@ async def test_a_gateway_turn_records_nothing(ask_isolated_db: None) -> None:
     assert await load_ask_turns(channel_id=CHANNEL_ID, user_id=ASKER_ID, limit=10) == []
 
 
+def _ask_cog(run_turn: Callable[..., Awaitable[None]]) -> ReplyGeneratorCogs:
+    """A cog whose `/ask` gets as far as handing `run_turn` the turn, and no further."""
+    cog = ReplyGeneratorCogs(
+        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
+    )
+    cog.__dict__["toolkit"] = SimpleNamespace(
+        input_builder=SimpleNamespace(get_user_prompt=_echo_prompt)
+    )
+    cog.__dict__["_run_turn"] = run_turn
+    return cog
+
+
 async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
     """The token dies after three seconds, and every phase of a turn is slower than that."""
-    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
-    toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
     ran: list[tuple[TurnSurface, str]] = []
 
     async def _run_turn(*, surface: TurnSurface, user_prompt: str) -> None:
         """Records the turn the command would have run."""
         ran.append((surface, user_prompt))
 
-    cog.__dict__["toolkit"] = toolkit
-    cog.__dict__["_run_turn"] = _run_turn
+    cog = _ask_cog(run_turn=_run_turn)
     interaction = _interaction()
 
     await cog.ask(interaction, question="在幹嘛", attachment=None)
@@ -511,17 +518,13 @@ async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
 
 async def test_ask_answers_a_blank_question_without_running_a_turn() -> None:
     """A whitespace-only option would otherwise route on nothing at all."""
-    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
-    toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
 
     async def _never(*, surface: TurnSurface, user_prompt: str) -> None:
         """Fails if a blank question ever reaches the pipeline."""
         del surface, user_prompt
         raise AssertionError("a blank question must not run a turn")
 
-    cog.__dict__["toolkit"] = toolkit
-    cog.__dict__["_run_turn"] = _never
+    cog = _ask_cog(run_turn=_never)
     interaction = _interaction()
 
     await cog.ask(interaction, question="   ", attachment=None)
@@ -535,17 +538,13 @@ async def test_ask_answers_an_attachment_sent_without_a_question() -> None:
     The attachment reaches the turn only through the synthesized message, so that message is
     what the empty-prompt check has to read.
     """
-    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
-    toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
     ran: list[tuple[TurnSurface, str]] = []
 
     async def _run_turn(*, surface: TurnSurface, user_prompt: str) -> None:
         """Records the turn the command would have run."""
         ran.append((surface, user_prompt))
 
-    cog.__dict__["toolkit"] = toolkit
-    cog.__dict__["_run_turn"] = _run_turn
+    cog = _ask_cog(run_turn=_run_turn)
     interaction = _interaction()
     interaction.data = {"resolved": {"attachments": {"9": _CAT_PNG}}}
 

@@ -52,7 +52,6 @@ from discordbot.typings.models import (
 )
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
-from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import (
     ANSWER_STREAM_MAX_ATTEMPTS,
     INTERACTION_DELIVERY_MARGIN_SECONDS,
@@ -189,7 +188,7 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
 )
 from tests.helpers.usage_log import usage_records
-from tests.helpers.link_sources import SAMPLE_POST_URLS
+from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_off_planner
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
 # stays off the live store.
@@ -856,14 +855,18 @@ def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
 
 
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
-    """Builds a ReplyGeneratorCogs instance with a fake client."""
-    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
-    cog.config = LLMConfig()
+    """Builds a ReplyGeneratorCogs over fake clients, with nothing read from the environment.
+
+    The config is every field's declared default, so a checkout's `.env` cannot decide a test,
+    and the planner never hosts, so an oversize item cannot reach a live serve directory; a test
+    about either sets it on the cog.
+    """
+    cog = ReplyGeneratorCogs(
+        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
+    )
+    cog.config = LLMConfig.model_construct()
+    cog.__dict__["media_delivery"] = hosting_off_planner()
     cog.__dict__["openai_client"] = FakeClient()
-    # `__new__` skips `__init__`, so the pipeline's usage record needs its recorder wired
-    # here; the autouse `usage_log_isolated_dir` fixture keeps it off the live file.
-    cog.usage_recorder = UsageRecorder()
     toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="")
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
@@ -5578,9 +5581,6 @@ async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> Non
     route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
     """
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
-    )
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
     # The native attach of an oversized file 400s on real Discord; the fake raises it on reply.
@@ -6058,11 +6058,11 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     expected_prep: list[int],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
+    cog = _cog()
     # A deployment where every route can run: VIDEO needs a Gemini key, while the QA video
     # marker's switch is off to show it gates only the marker, never the route.
-    monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
-    monkeypatch.setenv(name="INLINE_VIDEO_ENABLED", value="false")
-    cog = _cog()
+    cog.config.gemini_api_key = "test-key"
+    cog.config.inline_video_enabled = False
     # Distinctive non-fallback grade so the effort reaching the answer model is checked to
     # be the graded value, not the "high" default a failed parse would also produce.
     _recorded(cog).responses.output_parsed = RouteClassification(decision=route, effort="low")
@@ -8803,8 +8803,6 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
 ) -> None:
     """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
-    cog._tasks = set()
-    cog._resume_started = False
     user_sentinel = object()
     server_sentinel = object()
     cog.toolkit.__dict__["memory_writer"] = user_sentinel
@@ -8878,8 +8876,6 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
 async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """on_ready guards the resume so a gateway reconnect does not re-sweep."""
     cog = _cog(bot_user_id=999)
-    cog._tasks = set()
-    cog._resume_started = False
     calls = 0
 
     async def fake_resume_memory() -> None:
