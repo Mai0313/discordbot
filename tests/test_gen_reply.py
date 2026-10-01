@@ -971,8 +971,7 @@ def _expiring_surface(*, message: Message, seconds_left: float) -> TurnSurface:
     """A `/ask` surface with `seconds_left` of useful time before its token runs out.
 
     Only `expires_at` is modelled, because the media routes read the interaction for nothing
-    else and a route that reaches this bound never gets as far as sending. The fuller invocation
-    fake, including the deferred-versus-undeferred window, lives in `tests/test_ask_command.py`.
+    else and a route that reaches this bound never gets as far as sending.
     """
     return TurnSurface(
         message=message,
@@ -1369,8 +1368,7 @@ async def test_streaming_counts_only_url_citation_annotations() -> None:
 async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output() -> None:
     """The Interactions path reports grounding in another shape, so it must not log a zero.
 
-    A zero here would read as an ungrounded answer, which is exactly the reading CLAUDE.md
-    records three separate investigations getting wrong.
+    A zero here would read as an ungrounded answer.
     """
     streamer = _streamer(message=FakeMessage(), backend="interactions")
 
@@ -3068,9 +3066,9 @@ def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(na
 def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message() -> None:
     """The bot's own Threads expansion is not a trigger, because its first permalink is wrong.
 
-    `parse_threads._build_embeds` renders the reply chain root-first with one permalink per
-    post, so a first-match scan of that message would fetch the thread's top post rather than
-    the one the human linked. One hop out only what the author actually typed counts.
+    The Threads expansion renders the reply chain root-first with one permalink per post, so a
+    first-match scan of that message would fetch the thread's top post rather than the one the
+    human linked. One hop out only what the author actually typed counts.
     """
     root_url = "https://www.threads.com/@a/post/ROOT111"
     expansion = FakeMessage(content="")  # an expansion posts embeds with no content of its own
@@ -4242,7 +4240,7 @@ def test_the_file_api_kill_switch_inlines_gemini_attachments(
 async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
     """A clip the renderer cannot carry is dropped on its MIME type, before the download.
 
-    Reachable only since the kill-switch paired this renderer with a Gemini answer model:
+    The kill-switch pairs this renderer with a Gemini answer model, and
     `_supported_sources` gates on the slow model, so video passes, and a dropped part keeps
     the WHOLE message out of the render cache. Downloading here would therefore re-fetch the
     clip on every single reply, only to throw it away each time.
@@ -4553,8 +4551,8 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     ).render_reference_message()
     # One header plus one message, and the grandparent these fakes nest is not among them.
     # Discord never nests `referenced_message`, so a real parent's own `.reference.resolved` is
-    # always None and only a fake can offer a second link at all; the walk that used to follow
-    # one went with #593. This assertion is what makes a re-added walk fail here.
+    # always None and only a fake can offer a second link at all. This assertion is what makes a
+    # walk that follows one fail here.
     assert len(reference) == 2
     assert reference[0]["role"] == "system"
     assert "grandparent" not in str(reference[1]["content"])
@@ -4734,10 +4732,10 @@ def _document_post(index: int, count: int) -> FakeMessage:
 def test_history_media_budget_is_not_spent_by_files_that_will_be_dropped() -> None:
     """An attachment the modality gate drops must not cost an older post its images.
 
-    The newest post is exempt from the cap and is what sets the running total, so a post of
-    `MAX_HISTORY_MEDIA_PARTS` office documents used to record the budget full while nothing was
-    uploaded — and every older message was then refused, leaving the turn with no media at all
-    and nothing in the logs saying the budget had been spent on nothing (#660).
+    The newest post is exempt from the cap and is what sets the running total, so counting a post
+    of `MAX_HISTORY_MEDIA_PARTS` office documents would record the budget full while nothing was
+    uploaded, and every older message would then be refused, leaving the turn with no media at
+    all and nothing in the logs saying the budget had been spent on nothing.
     """
     posts = [_image_post(index=0, count=4), _document_post(index=1, count=MAX_HISTORY_MEDIA_PARTS)]
 
@@ -6906,12 +6904,11 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it() -> None:
     """The history separator is a label; where the subject may come from is a developer rule.
 
-    The old separator read "Chat History that might be helpful for answering", an invitation
-    that competed with the Reference Message's own claim to be the primary context. Behaviour
-    rules belong in `instructions`, which outranks anything in `input`, so the rule moved there
-    and the separator kept only the naming. This render also feeds the media persona reply and
-    the memory review's transcript, neither of which is answering a question, which is the
-    second reason the rule cannot live on the block itself.
+    A separator inviting an answer from the history would compete with the Reference Message's
+    own claim to be the primary context. Behaviour rules belong in `instructions`, which
+    outranks anything in `input`, so the separator carries only the naming. This render also
+    feeds the media persona reply and the memory review's transcript, neither of which is
+    answering a question, which is the second reason the rule cannot live on the block itself.
     """
     cog = _cog()
 
@@ -6956,9 +6953,9 @@ def test_only_the_replied_to_message_claims_the_current_message_is_about_it() ->
     """The one Reference Message block claims the Current Message, and nothing competes with it.
 
     A reply renders exactly one of these (`replied_to_message`), so the attachment sentence has
-    no sibling. The `An earlier message in the reply thread` wording that used to ride an
-    ancestor block went with #593 and must not come back: a second block asserting it is what
-    the Current Message is about is the ambiguity this sentence exists to remove.
+    no sibling. An ancestor block's `An earlier message in the reply thread` wording must not
+    come back: a second block asserting it is what the Current Message is about is the
+    ambiguity this sentence exists to remove.
     """
     header = reference_header(
         ref=as_message(fake=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4)))
@@ -7261,12 +7258,12 @@ def test_recall_user_memories_enforces_allowlist() -> None:
 def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row() -> None:
     """A member named only by the nickname table is counted, not named and not id-dropped.
 
-    The row is community prose the model reads; it can never be the public footer credit
-    (#463). Nothing else here can name them either: the guild member cache is empty for an
-    absent member, and the identity the store stamps belongs to whichever guild's
-    consolidation last wrote that fact, so it would put another server's nickname in this
-    channel. The bare id that used to fill the gap read as a memory the bot had just
-    written rather than as a person it had read, so the count is what the footer gets.
+    The row is community prose the model reads; it can never be the public footer credit.
+    Nothing else here can name them either: the guild member cache is empty for an absent
+    member, and the identity the store stamps belongs to whichever guild's consolidation last
+    wrote that fact, so it would put another server's nickname in this channel. A bare id would
+    read as a memory the bot had just written rather than as a person it had read, so the
+    count is what the footer gets.
     """
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
 
@@ -7678,8 +7675,8 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory() ->
     """The oblique-reference offer must not be gated on the deterministic lookup finding something.
 
     A conversation where nobody present has a stored fact is exactly the one the code-resolved
-    path has nothing to contribute to, so gating the offer on it switched the feature off in
-    the case it exists for (#663). Nothing downstream needs a non-empty starting list: the
+    path has nothing to contribute to, so gating the offer on it would switch the feature off
+    in the case it exists for. Nothing downstream needs a non-empty starting list: the
     picked memories build the block from scratch.
     """
     cog = _cog()
@@ -7795,10 +7792,10 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     Reads the user-visible reply text (the feature's small, real output surface): the single-owner
     credit, the collapse to "等 N 人" past two owners, repeat-pick de-duplication, and the
     no-credit case. Two of them also pin that the `## 成員稱呼` row never reaches this line
-    from either side it used to (#463) — an absent
-    member is counted into the "等 N 人" total and never named at all, a participant is named by
-    their Discord label. The line opens on 讀了 because the write notes share this corner of the
-    reply and a reader has to be able to tell them apart at a glance.
+    from either side: an absent member is counted into the "等 N 人" total and never named at
+    all, a participant is named by their Discord label. The line opens on 讀了 because the
+    write notes share this corner of the reply and a reader has to be able to tell them apart
+    at a glance.
     """
     cog = _cog()
     for uid in seeded_ids:
@@ -7949,7 +7946,7 @@ def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
     # The conversation label leads and the table row rides behind it on the same line.
     assert allowed[123].prompt_label.startswith("Mai (mai9999)")
     assert "李董" in allowed[123].prompt_label
-    # The footer credit stays the short Discord label; the row never reaches it (#463).
+    # The footer credit stays the short Discord label; the row never reaches it.
     assert allowed[123].credit_label == "Mai (mai9999)"
 
 
@@ -8117,7 +8114,7 @@ async def test_route_classify_carries_decision_and_defaults_qa() -> None:
 
 
 async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:
-    """An attachment or a URL is graded by the model, not settled in code (#493)."""
+    """An attachment or a URL is graded by the model, not settled in code."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(decision="QA", effort="low")
 
@@ -8128,8 +8125,8 @@ async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:
     with_url = FakeMessage(content="這篇 https://example.test/post", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=with_url)).effort == "low"
 
-    # Both reached the model: #491's code-decided "high" for these graded a sticker-only
-    # reaction as if it hid something to read, and bought nothing the prompt does not already
+    # Both reached the model: a code-decided "high" for these would grade a sticker-only
+    # reaction as if it hid something to read, and buys nothing the prompt does not already
     # deliver on its own.
     assert len(_recorded(cog).responses.parse_models) == 2
 
@@ -8241,7 +8238,7 @@ async def test_an_unparseable_route_falls_back_to_a_plain_high_effort_qa(
 async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A provider outage on the triage call costs the route, not the reply (#742).
+    """A provider outage on the triage call costs the route, not the reply.
 
     The same plain high-effort QA as an answer outside the schema. A refusal keeps raising, so a
     defect in the request is not buried under a turn that looks routed.
