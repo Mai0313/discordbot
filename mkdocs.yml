@@ -20,6 +20,7 @@ nav:
                   - boards: Reference/discordbot/cogs/economy/boards.md
                   - cog: Reference/discordbot/cogs/economy/cog.md
                   - embeds: Reference/discordbot/cogs/economy/embeds.md
+                  - pil_text: Reference/discordbot/cogs/economy/pil_text.md
                   - views: Reference/discordbot/cogs/economy/views.md
               - games:
                   - blackjack: Reference/discordbot/cogs/games/blackjack.md
@@ -162,6 +163,7 @@ nav:
               - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
               - avatars: Reference/discordbot/utils/avatars.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
+              - discord_errors: Reference/discordbot/utils/discord_errors.md
               - douyin_delivery: Reference/discordbot/utils/douyin_delivery.md
               - expansion_cog: Reference/discordbot/utils/expansion_cog.md
               - expansion_placeholder: Reference/discordbot/utils/expansion_placeholder.md
@@ -176,7 +178,6 @@ nav:
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
-              - pil_text: Reference/discordbot/utils/pil_text.md
               - reactions: Reference/discordbot/utils/reactions.md
               - scratch_dir: Reference/discordbot/utils/scratch_dir.md
               - sqlite_config: Reference/discordbot/utils/sqlite_config.md
