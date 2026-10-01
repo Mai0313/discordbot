@@ -78,9 +78,9 @@ FACEBOOK_URL_RE = re.compile(
 )
 
 # The path shapes that name a post on their own. A `share/p/<code>` link names one only through
-# the redirect it answers with, exactly as a Threads share link does. The video (`share/v/`) and
-# reel (`share/r/`) share forms are left out: logged out they carry no post (all 35 the bot met
-# from 2026-09-27 to 09-30 read as unreadable).
+# the redirect it answers with. The video (`share/v/`) and reel (`share/r/`) share forms are left
+# out: logged out they carry no post (all 35 the bot met from 2026-09-27 to 09-30 read as
+# unreadable).
 _GROUP_POST_PATH_RE = re.compile(
     pattern=r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)"
 )
@@ -245,12 +245,12 @@ class FacebookOutput(LinkableCommentOutput):
 
 
 class FacebookConversation(LinkableComments[FacebookOutput]):
-    """One Facebook post and the discussion under it, shaped like `ThreadsConversation`.
+    """One Facebook post and the discussion under it.
 
     What the three inherited fields mean on Facebook. `chain` always has exactly one element —
-    Facebook serves no ancestor posts — and is a list only so `target` means the same here as it
-    does on Threads. `reply_branches` holds one branch per top-level comment, and what the page
-    preloads is a handful of a much longer thread, which is the one thing a caller must not
+    Facebook serves no ancestor posts — and is a list only so `target` means the same here as on
+    every other platform. `reply_branches` holds one branch per top-level comment, and what the
+    page preloads is a handful of a much longer thread, which is the one thing a caller must not
     present as the whole discussion. `selected_comment_id` is whatever a `?comment_id=` URL named.
     """
 

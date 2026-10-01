@@ -184,16 +184,15 @@ class AnswerTurn(BaseModel):
     ) -> None:
         """Best-effort: streams a persona reply onto an already-delivered generated image/video.
 
-        Shared by the IMAGE and VIDEO routes' post-delivery reply. `reply` is the delivered media
-        message (native attachment) or None when the media was hosted as a separate URL; the
-        persona-base message is built from it INSIDE the protected flow (`persona_base_reply`), so
-        a base-creation or streaming failure is swallowed here instead of surfacing to the outer
-        error path, and a fresh hosted-case base that never received content is deleted (never an
-        orphan). Builds the answer-path input, appends the just-made media as the focus, and
-        streams onto the base (its content edits keep an attached media), seeding the memory
-        labels so the footer matches the QA path. Consumes the speculative `context_task`
-        (awaited here so its build overlaps generation); any failure leaves the delivered media
-        untouched.
+        `reply` is the delivered media message (native attachment) or None when the media was
+        hosted as a separate URL; the persona-base message is built from it INSIDE the protected
+        flow (`persona_base_reply`), so a base-creation or streaming failure is swallowed here
+        instead of surfacing to the outer error path, and a fresh hosted-case base that never
+        received content is deleted (never an orphan). Builds the answer-path input, appends the
+        just-made media as the focus, and streams onto the base (its content edits keep an
+        attached media), seeding the memory labels so the footer matches the QA path. Consumes
+        the speculative `context_task` (awaited here so its build overlaps generation); any
+        failure leaves the delivered media untouched.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None

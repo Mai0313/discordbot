@@ -111,8 +111,8 @@ def is_instagram_post_url(*, url: str) -> bool:
 class InstagramURL(BaseModel):
     """Parses and normalises an Instagram post URL.
 
-    Unlike a Threads or Facebook share link, every accepted spelling names its post directly, so
-    there is no redirect to resolve and `shortcode` is empty only when the URL is not a post.
+    Every accepted spelling names its post directly, so there is no redirect to resolve and
+    `shortcode` is empty only when the URL is not a post.
     """
 
     raw_url: str = Field(..., description="Original Instagram URL provided by the caller")
@@ -137,11 +137,10 @@ class InstagramURL(BaseModel):
         """The bare post URL: the fetchable form, and the one safe to publish back.
 
         Everything else goes. The query carries `stkn`, a per-share token naming whoever passed
-        the link on (Facebook's `rdid` by another name), plus `img_index` and `utm_source`; the
-        `/c/<id>/` segment has to go too, because that URL answers with a page carrying no post
-        payload at all. The author handle is dropped with them: `/p/<code>/` and
-        `/<user>/p/<code>/` return the same page, and the shorter one cannot go stale when a
-        handle changes.
+        the link on, plus `img_index` and `utm_source`; the `/c/<id>/` segment has to go too,
+        because that URL answers with a page carrying no post payload at all. The author handle
+        is dropped with them: `/p/<code>/` and `/<user>/p/<code>/` return the same page, and the
+        shorter one cannot go stale when a handle changes.
         """
         match = _POST_PATH_RE.match(string=urlparse(self.raw_url).path)
         if not match:
@@ -168,13 +167,13 @@ class InstagramOutput(LinkableCommentOutput):
 
 
 class InstagramConversation(LinkableComments[InstagramOutput]):
-    """One Instagram post and the discussion under it, shaped like `ThreadsConversation`.
+    """One Instagram post and the discussion under it.
 
     What the three inherited fields mean on Instagram. `chain` always has exactly one element —
-    Instagram serves no ancestor posts — and is a list only so `target` means the same here as it
-    does on Threads. `reply_branches` holds one branch per top-level comment, and unlike Facebook
-    that is the WHOLE comment list rather than a preload. `selected_comment_id` is whatever a
-    `/c/<id>/` permalink named.
+    Instagram serves no ancestor posts — and is a list only so `target` means the same here as on
+    every other platform. `reply_branches` holds one branch per top-level comment, and that is the
+    WHOLE comment list rather than a preload. `selected_comment_id` is whatever a `/c/<id>/`
+    permalink named.
     """
 
 

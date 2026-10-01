@@ -141,7 +141,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def media_delivery(self) -> MediaDeliveryPlanner:
-        """The cached media-delivery planner shared by the IMAGE / VIDEO routes and QA streamer.
+        """The media-delivery planner, built on first use and kept for the life of the process.
 
         Returns:
             A planner that decides which media attach natively and which are hosted as a public
