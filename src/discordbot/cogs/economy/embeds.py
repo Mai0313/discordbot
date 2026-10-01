@@ -27,6 +27,7 @@ from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
 )
+from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT
 from discordbot.services.economy.presentation import (
     CURRENCY_NAME,
     amount_code,
@@ -48,9 +49,9 @@ ERROR_COLOR = DISCORD_RED
 LEADERBOARD_TITLE = f"🏆 {CURRENCY_NAME} Top {LEADERBOARD_SIZE}"
 LOSS_LEADERBOARD_TITLE = f"💸 今日輸局累計 {CURRENCY_NAME}"
 
-# Embed description hard limit is 4096; the headroom is what lets the credit-status
-# remainder line be strictly additive, so closing the list can never cost a contract.
-_CREDIT_STATUS_DESCRIPTION_BUDGET = 3800
+# The headroom under the description limit is what lets the credit-status remainder line be
+# strictly additive, so closing the list can never cost a contract.
+_CREDIT_STATUS_DESCRIPTION_BUDGET = DISCORD_EMBED_DESCRIPTION_LIMIT - 296
 
 
 class TransferParticipant(BaseModel):
@@ -144,21 +145,6 @@ def _payment_summary_text(result: LoanPaymentResult) -> str:
         f"剩餘本金 {amount_code(amount=result.remaining_principal, compact=True)}\n"
         f"剩餘利息 {amount_code(amount=result.remaining_interest, compact=True)}\n"
         f"借方餘額 {amount_code(amount=result.borrower_balance, compact=True)}"
-    )
-
-
-def _credit_request_footer() -> str:
-    """Formats the personal credit request button hint."""
-    return (
-        f"貸方可用下方按鈕批准或拒絕，發起者可取消，{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
-    )
-
-
-def _central_bank_request_footer() -> str:
-    """Formats the central-bank request button hint."""
-    return (
-        f"伺服器管理員可用下方按鈕批准或拒絕，發起者可取消，"
-        f"{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
     )
 
 
@@ -411,7 +397,9 @@ def build_credit_request_embed(
         value=_loan_terms_text(amount=amount, monthly_rate_bps=monthly_rate_bps),
         inline=False,
     )
-    embed.set_footer(text=_credit_request_footer())
+    embed.set_footer(
+        text=f"貸方可用下方按鈕批准或拒絕，發起者可取消，{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
+    )
     return embed
 
 
@@ -430,7 +418,12 @@ def build_central_bank_request_embed(
         value=_loan_terms_text(amount=amount, monthly_rate_bps=monthly_rate_bps),
         inline=False,
     )
-    embed.set_footer(text=_central_bank_request_footer())
+    embed.set_footer(
+        text=(
+            f"伺服器管理員可用下方按鈕批准或拒絕，發起者可取消，"
+            f"{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
+        )
+    )
     return embed
 
 

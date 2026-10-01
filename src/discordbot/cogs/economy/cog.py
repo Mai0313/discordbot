@@ -22,6 +22,7 @@ from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.economy.views import (
     CreditLoanDecisionView,
     CentralBankLoanDecisionView,
+    is_guild_admin,
     central_bank_exclude_user_ids,
 )
 from discordbot.cogs.economy.boards import (
@@ -544,8 +545,6 @@ class EconomyCogs(commands.Cog):
 
         embed = build_pocat_embed(
             name=name,
-            # `ClientUser` is not a guild member, so there is no per-guild avatar
-            # for `guild_avatar_url` to find here.
             avatar_url=bot_user.display_avatar.url,
             balance=balance,
             total_earned=total_earned,
@@ -663,18 +662,6 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
-        if proposal is None:
-            await send_expiring_followup(
-                interaction=interaction,
-                embed=build_error_embed(
-                    title="借款失敗",
-                    description="### 無法建立借款申請",
-                    author_name=user.display_name,
-                    author_icon_url=user_avatar_url,
-                ),
-            )
-            return
-
         embed = build_credit_request_embed(
             borrower=LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
@@ -738,7 +725,7 @@ class EconomyCogs(commands.Cog):
         # while a SQLite writer waits out lock contention for longer, so acking on the result
         # lets a committed settlement reach its owner as "the application did not respond".
         # Ephemeral because the failure below is private and this ack is what the caller sees
-        # while it runs; the success is a public followup either way.
+        # while it runs.
         await interaction.response.defer(ephemeral=True)
         result = await repay_personal_loans(
             borrower_id=user.id,
@@ -965,14 +952,6 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
-        if proposal is None:
-            await send_expiring_followup(
-                interaction=interaction,
-                embed=build_error_embed(
-                    title="央行借款失敗", description="### 無法建立央行借款申請"
-                ),
-            )
-            return
         embed = build_central_bank_request_embed(
             borrower=LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
@@ -1096,7 +1075,7 @@ class EconomyCogs(commands.Cog):
                 interaction=interaction, embed=build_invalid_amount_embed(title="央行催收失敗")
             )
             return
-        if interaction.guild_id is None or not interaction.permissions.administrator:
+        if interaction.guild_id is None or not is_guild_admin(interaction=interaction):
             await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,

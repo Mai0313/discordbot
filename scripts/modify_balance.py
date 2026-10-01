@@ -14,9 +14,10 @@ from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 from rich.console import Console
 
+from discordbot.typings.economy import clamped_balance
 from discordbot.services.economy.database import top_n, get_account, adjust_balance
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
@@ -30,14 +31,18 @@ class BalanceChange(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int
-    name: str
-    before: int
-    requested_delta: int
-    applied_delta: int
-    after: int
-    created: bool
-    dry_run: bool
+    user_id: int = Field(..., description="Discord user ID of the adjusted account.")
+    name: str = Field(..., description="Display name stored on the account.")
+    before: int = Field(..., description="Balance before the adjustment.")
+    requested_delta: int = Field(..., description="Signed amount that was asked for.")
+    applied_delta: int = Field(
+        ..., description="Signed amount actually applied, after any clamp at zero."
+    )
+    after: int = Field(..., description="Balance after the adjustment.")
+    created: bool = Field(
+        ..., description="Whether the adjustment created the account, or would on a dry run."
+    )
+    dry_run: bool = Field(..., description="Whether the change was computed but not written.")
 
 
 class BulkBalanceChange(BaseModel):
@@ -45,10 +50,10 @@ class BulkBalanceChange(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    changes: tuple[BalanceChange, ...]
-    requested_delta: int
-    applied_delta: int
-    dry_run: bool
+    changes: tuple[BalanceChange, ...] = Field(..., description="One summary per account.")
+    requested_delta: int = Field(..., description="Signed amount asked for on each account.")
+    applied_delta: int = Field(..., description="Sum of the amounts actually applied.")
+    dry_run: bool = Field(..., description="Whether the changes were computed but not written.")
 
 
 def _parse_target(value: str) -> BalanceTarget:
@@ -123,11 +128,7 @@ async def modify_balance(
     before = account.balance if account is not None else 0
     effective_name = name or existing_name or str(user_id)
 
-    if allow_negative or delta >= 0:
-        projected_after = before + delta
-    else:
-        # A clamped debit stops at zero and leaves a balance already at or below zero alone.
-        projected_after = min(before, max(before + delta, 0))
+    projected_after = clamped_balance(balance=before, delta=delta, allow_negative=allow_negative)
     projected_applied_delta = projected_after - before
 
     if dry_run or delta == 0:
