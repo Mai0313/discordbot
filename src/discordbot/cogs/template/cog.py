@@ -1,7 +1,8 @@
 """Small utility cog for ping and simple message-trigger reactions."""
 
+import logfire
 import nextcord
-from nextcord import Embed, Locale, Message, Interaction
+from nextcord import Embed, Locale, Message, Forbidden, Interaction
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_GREEN
@@ -34,12 +35,20 @@ class TemplateCogs(commands.Cog):
         if message.author.bot:
             return
 
-        if message.content.lower() == "debug":
-            await message.add_reaction("🤬")
-        if message.content.lower() == "可愛捏":
-            await message.add_reaction("↖️")
-        if message.content.lower() == "可爱捏":
-            await message.add_reaction("↖️")
+        try:
+            if message.content.lower() == "debug":
+                await message.add_reaction("🤬")
+            if message.content.lower() == "可愛捏":
+                await message.add_reaction("↖️")
+            if message.content.lower() == "可爱捏":
+                await message.add_reaction("↖️")
+        except Forbidden:
+            # The channel's permissions decide who may react; the ids are the whole finding.
+            logfire.warn(
+                "Discord refused a trigger reaction",
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
 
     @nextcord.slash_command(
         name="ping",
