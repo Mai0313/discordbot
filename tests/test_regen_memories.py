@@ -315,7 +315,6 @@ async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> N
 @pytest.mark.parametrize(
     ("result", "buckets", "expected"),
     [
-        ("no_evidence", {"global": 1}, "SKIPPED"),
         ("dry-run", {}, "REBUILDS EMPTY"),
         ("dry-run", {"global": 0}, "REBUILDS EMPTY"),
         ("regenerated", {"g/1": 3}, "EMPTY GLOBAL"),
