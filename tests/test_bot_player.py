@@ -81,8 +81,8 @@ def test_insurance_makes_one_call_whichever_face_down_card_lies_in_the_hole(
     """Each face-down card takes the hole in turn, and the call never changes (#860).
 
     The hole is dealt out of the shoe, so the shoe alone is ten-poorer under a ten-value hole
-    and ten-richer under any other: priced from it, the bot insured exactly when insurance lost.
-    Insurance turns +EV only past a third.
+    and ten-richer under any other, so a call priced from it alone flips toward the losing side
+    near a third. Insurance turns +EV only past a third.
     """
     face_down = [card(rank=rank) for rank in face_down_ranks]
     for index, hole in enumerate(face_down):
