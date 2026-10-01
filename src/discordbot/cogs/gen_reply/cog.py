@@ -75,8 +75,9 @@ class _MessageLogFields(TypedDict):
 def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
     """Standard Discord identifying fields for correlating one reply's logs.
 
-    The pipeline-entry log carries the full set; every downstream log carries only
-    `message_id` as the correlation key, so a whole turn reconstructs by grepping it.
+    The records the cog writes when a turn arrives or fails carry the full set; every log inside
+    the pipeline carries only `message_id` as the correlation key, so a whole turn reconstructs
+    by grepping it.
     `user_name` is the stable handle, `display_name` the per-guild nickname;
     `guild_id` / `guild_name` are None in a DM.
 
@@ -230,11 +231,11 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _deliver_failure_notice(self, *, surface: TurnSurface, error_embed: Embed) -> None:
         """Shows the turn's failure, on the reply it was streaming into where there is one.
 
-        Half the turns that fail here already painted something (23 of 46 in one 2026-08-21 log),
-        and left beside that reply the embed reads as unrelated while the reply itself, carrying
-        no usage footer, reads as an answer that merely stopped. So the streamer is asked first
-        and takes the error onto its own message. Everything it turns down -- every failure
-        before the answer, and a retry notice already withdrawn -- gets a fresh message here.
+        Half the turns that fail here already painted something, and left beside that reply the
+        embed reads as unrelated while the reply itself, carrying no usage footer, reads as an
+        answer that merely stopped. So the streamer is asked first and takes the error onto its
+        own message. Everything it turns down -- every failure before the answer, and a retry
+        notice already withdrawn -- gets a fresh message here.
 
         Through the surface rather than `message.reply`, because on the `/ask` route a failure
         before the first content delta is the whole of what the user ever sees: there is no

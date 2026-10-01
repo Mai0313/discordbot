@@ -1,10 +1,10 @@
 """Where one turn's messages go, and what conversation it continues.
 
-Every reply the pipeline writes used to be a reply to a message in a channel the bot is a member
-of. `/ask` has neither half: a user-installed app is not in the channel it was invoked in, so it
-cannot send there, cannot read the history, and cannot react. All it holds is an interaction
-token, which buys unlimited edits of one original response plus a small number of follow-ups, and
-only for as long as Discord keeps that token alive.
+A gateway reply is a reply to a message in a channel the bot is a member of. `/ask` has neither
+half: a user-installed app is not in the channel it was invoked in, so it cannot send there,
+cannot read the history, and cannot react. All it holds is an interaction token, which buys
+unlimited edits of one original response plus a small number of follow-ups, and only for as long
+as Discord keeps that token alive.
 
 `TurnSurface` is that difference, and only that difference. It carries the turn's message, and
 `for_message` reproduces the gateway behaviour exactly, so the `on_message` path answers as it

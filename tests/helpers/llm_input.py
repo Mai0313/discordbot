@@ -1,12 +1,11 @@
 """Structural extractors over recorded Responses API inputs.
 
 The reply pipeline records each ``responses.create`` call's ``input`` (a
-``ResponseInputParam`` list of role/content items). Tests used to assert on
-these by serializing the whole list with ``str(...)`` and substring-matching a
-magic sentinel, which is brittle and coupling to incidental ordering. These
-helpers walk the role/content structure instead, keyed on the production block
-headers and the ``[id: N]`` markers the memory blocks emit, so a test asserts on
-*which user's memory reached which role* rather than on an arbitrary literal.
+``ResponseInputParam`` list of role/content items). These helpers walk that
+role/content structure, keyed on the production block headers and the
+``[id: N]`` markers the memory blocks emit, so a test asserts on *which user's
+memory reached which role* rather than substring-matching a sentinel in the
+serialized list, which breaks on incidental ordering.
 
 The block-header anchors are derived from the production renderers and the
 link-source separators at import time, so a wording change in ``recall.py``

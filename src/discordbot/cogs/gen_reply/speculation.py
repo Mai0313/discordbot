@@ -17,11 +17,11 @@ async def discard_task[TaskResultT](
 ) -> None:
     """Cancels and drains a speculative task so its exception is retrieved.
 
-    The except is deliberately broad: this drains unrelated subsystems (prep, parts), so
-    anything they can raise must be swallowed here rather than surfacing on
-    a route that already decided it does not need the result. `label` names which one failed,
-    since the tasks are otherwise indistinguishable at this point. A link-context build is drained
-    by `drain_deadline_bound_task` instead, which must not steal its own deadline's cancellation.
+    The except is deliberately broad: this drains unrelated subsystems, so anything they can
+    raise must be swallowed here rather than surfacing on a route that already decided it does
+    not need the result. `label` names which one failed, since the tasks are otherwise
+    indistinguishable at this point. A link-context build is drained by
+    `drain_deadline_bound_task` instead, which must not steal its own deadline's cancellation.
     """
     task.cancel()
     try:

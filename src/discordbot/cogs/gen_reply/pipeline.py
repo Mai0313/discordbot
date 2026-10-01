@@ -256,7 +256,7 @@ class ReplyPipeline(BaseModel):
                 "gen_reply watch_video requested but no YouTube URL was found",
                 message_id=message.id,
             )
-        # Total time from pipeline start to answer dispatch (the user's 'router stage').
+        # Total time from pipeline start to answer dispatch.
         logfire.info(
             "gen_reply pre-answer latency",
             elapsed_seconds=time.monotonic() - pipeline_started,
@@ -337,10 +337,8 @@ class ReplyPipeline(BaseModel):
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
                     # Persistent markers (added directly, not via the status chain) naming which
-                    # linked post was read, the same ones an expansion cog adds when it expands a
-                    # link instead. Added once every builder is started so the REST calls never
-                    # sit between two of them. Bilibili has no expansion cog, so this is the only
-                    # path that ever marks one.
+                    # linked post was read. Added once every builder is started so the REST calls
+                    # never sit between two of them.
                     for source_name in link_tasks:
                         await self.surface.mark(emoji=LINK_SOURCE_EMOJIS[source_name])
                 if route.decision in ("IMAGE", "VIDEO"):
