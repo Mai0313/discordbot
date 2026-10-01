@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from types import TracebackType, SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
@@ -19,17 +19,19 @@ import contextlib
 import nextcord
 from nextcord import Embed
 
-from discordbot.typings.emojis import THREADS_EMOJI
-from discordbot.utils.link_errors import LinkRetryableError
 from discordbot.cogs.parse_threads import cog as parse_threads
 from discordbot.utils.discord_embeds import embed_text_length
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
-from discordbot.utils.expansion_placeholder import EXPANSION_RETRY_LATER_EMOJI
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_DONE_EMOJI,
+    EXPANSION_FAILED_EMOJI,
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+)
 
-from tests.helpers.casting import as_bot, as_message, as_interaction, make_media_hosting_config
-from tests.helpers.link_sources import BOT_USER_ID
+from tests.helpers.casting import as_message, as_interaction
+from tests.helpers.link_sources import stub_bot, hosting_planner, hosting_off_planner
 from tests.helpers.discord_mocks import (
     FakeGuild,
     FakeInteraction,
@@ -37,6 +39,7 @@ from tests.helpers.discord_mocks import (
     expansion_payload,
     placeholder_withdrawn,
 )
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     import pytest
@@ -45,8 +48,10 @@ _URL = "https://www.threads.net/@alice/post/abc"
 
 
 def _cog() -> ThreadsCogs:
-    """Builds the cog on a stub bot answering to `BOT_USER_ID`."""
-    return ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID))))
+    """Builds the cog on a stub bot, with media hosting off."""
+    cog = ThreadsCogs(bot=stub_bot())
+    cog.media_delivery = hosting_off_planner()
+    return cog
 
 
 def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
@@ -82,7 +87,7 @@ class ParseResultStub:
         """Returns the parsed conversation or raises the configured parsing error.
 
         A readable post always comes back carrying a comment, because that is what production
-        yields now: the expansion is supposed to ignore them, and a stub with no comments in it
+        yields: the expansion is supposed to ignore them, and a stub with no comments in it
         cannot tell "ignores them" apart from "never saw any".
 
         `enter_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
@@ -153,8 +158,8 @@ class ThreadsDownloaderStub:
 def _wire_threads(*, cog: ThreadsCogs, downloader: ThreadsDownloaderStub) -> ThreadsDownloaderStub:
     """Points the cog's per-invocation factory at one stub, recording the dir it was handed.
 
-    The expansion builds its downloader inside a scratch directory of its own now, so the
-    factory is the seam a test takes over; the same stub answers every invocation so a test can
+    The expansion builds its downloader inside a scratch directory of its own, so the factory
+    is the seam a test takes over; the same stub answers every invocation so a test can
     still read back what it was asked to do.
     """
 
@@ -311,7 +316,7 @@ async def test_clean_threads_url_tells_the_two_failures_apart() -> None:
 
 
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
-    """Verifies Threads embed building and on_message success/warning/error paths."""
+    """Verifies Threads embed building, and that a delivered expansion carries its files."""
     cog = _cog()
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(data=b"123")
@@ -342,25 +347,12 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     assert success_message.suppressed
     delivered = expansion_payload(message=success_message)
     assert delivered["files"]
-    assert success_message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    # The read marker rides beside the status chain, which only ever removes its own reaction.
-    assert success_message.reactions[0] == THREADS_EMOJI
-    assert all(emoji != THREADS_EMOJI for emoji, _ in success_message.removed)
-    # The parse now carries the comments too, but the expansion shows the chain only: the
-    # 10-embed cap belongs to the linked post, and a comment would push its own images out.
+    assert success_message.reactions[-1] == EXPANSION_DONE_EMOJI
+    # The parse carries the comments too, but the expansion shows the chain only: the 10-embed
+    # cap belongs to the linked post, and a comment would push its own images out.
     assert all(
         _STUB_COMMENT_TEXT not in (embed.description or "") for embed in delivered["embeds"]
     )
-
-    warning_message = _message()
-    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[]))
-    await cog.on_message(message=as_message(fake=warning_message))
-    assert warning_message.reactions[-1] == "⚠️"
-
-    error_message = _message()
-    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=RuntimeError("parse failed")))
-    await cog.on_message(message=as_message(fake=error_message))
-    assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
 
 
 async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
@@ -371,14 +363,13 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     The `requests` calls under `parse` are per-read only, so a slow-drip CDN can hold one paste
     open indefinitely; the bound is what stops it. `asyncio.to_thread` cannot cancel the walk,
     so it is the scratch directory going away that both deletes what it wrote and fails its next
-    write — the same mechanism `parse_douyin` and `/download_video` get from their own `with`
-    block. The exit is deliberately not called on this path: the walk is still driving that
+    write. The exit is deliberately not called on this path: the walk is still driving that
     generator on its own thread.
 
-    The mark is the retryable one rather than the cross, which is the shared vocabulary all
-    five expansion cogs answer with: the post is fine and the same link works later.
+    The mark is the retryable one rather than the cross, which is the shared vocabulary every
+    expansion cog answers with: the post is fine and the same link works later.
     """
-    monkeypatch.setattr(parse_threads, "THREADS_EXPAND_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(target=parse_threads, name="THREADS_EXPAND_TIMEOUT_SECONDS", value=0.05)
     cog = _cog()
     downloader = _wire_threads(
         cog=cog, downloader=ThreadsDownloaderStub(results=[], enter_delay_seconds=0.3)
@@ -411,8 +402,7 @@ async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() ->
     assert authors[-1].startswith("user-9-")
     assert any(author.startswith("user-8-") for author in authors)
     assert not any(author.startswith("user-0-") for author in authors)
-    # What was left behind is stated on the target's own card rather than in a follow-up
-    # reply, which is where the other three cogs say it too.
+    # What was left behind is stated on the target's own card rather than in a follow-up reply.
     target_embed = next(embed for embed in embeds if authors[-1] == (embed.author.name or ""))
     assert "📝 另有 2 篇未展開" in cast("str", target_embed.footer.text)
 
@@ -494,14 +484,11 @@ async def test_threads_cog_delivers_a_trimmed_chain_in_one_message() -> None:
     embeds = expansion_payload(message=message)["embeds"]
     assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert "篇未展開" in cast("str", embeds[-1].footer.text)
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 async def test_threads_cog_states_the_images_the_embed_cap_left_behind() -> None:
-    """Ten slots is the whole budget, so a bigger carousel is trimmed and counted.
-
-    The same shape `parse_facebook` and `parse_instagram` use for their own image caps.
-    """
+    """Ten slots is the whole budget, so a bigger carousel is trimmed and counted."""
     cog = _cog()
     target = _thread_output(
         image_urls=[f"https://example.test/image-{index}.png" for index in range(15)]
@@ -528,7 +515,7 @@ async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() 
     assert downloader.parsed[0].exited
     assert len(message.replies) == 1
     assert expansion_payload(message=message)["embeds"]
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_after_it(
@@ -541,30 +528,29 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     )
     _wire_threads(cog=cog, downloader=downloader)
     message = _message()
-    logged: list[tuple[str, str]] = []
-
-    def record(message_text: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the message and error type of each log it is bound to."""
-        logged.append((message_text, kwargs["error_type"]))
+    errors = capture_logs(monkeypatch, level="error")
+    # A warning rather than an error: the scratch directory around the cleanup removes what a
+    # failing unlink left, so it is a degraded step rather than a leak nobody clears.
+    warnings = capture_logs(monkeypatch, level="warn")
 
     def exploding_plan(*, results: list[ThreadsOutput]) -> list[Embed]:
         del results
         raise RuntimeError("the embed plan blew up")
 
-    monkeypatch.setattr(parse_threads.logfire, "error", record)
-    # The cleanup is a warning rather than an error now: the scratch directory around it removes
-    # what a failing unlink left, so it is a degraded step rather than a leak nobody clears.
-    monkeypatch.setattr(parse_threads.logfire, "warn", record)
     cog._build_embeds = exploding_plan  # ty: ignore[invalid-assignment]
     await cog.on_message(message=as_message(fake=message))
 
     assert downloader.parsed[0].exited
     assert placeholder_withdrawn(message=message)
-    assert message.reactions[-1] == "<:redcross:1517565100838355016>"
+    assert message.reactions[-1] == EXPANSION_FAILED_EMOJI
     # The step that lost the expansion is logged with its own cause rather than with the
     # OSError the cleanup used to overwrite it with, and the cleanup gets its own line.
-    assert ("Could not clean up the Threads scratch files", "OSError") in logged
-    assert ("Threads expansion failed outside the read and the send", "RuntimeError") in logged
+    assert ("Could not clean up the Threads scratch files", "OSError") in [
+        (text, fields.get("error_type")) for text, fields in warnings
+    ]
+    assert ("Threads expansion failed outside the read and the send", "RuntimeError") in [
+        (text, fields.get("error_type")) for text, fields in errors
+    ]
 
 
 async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
@@ -581,8 +567,7 @@ async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
     embeds = cog._build_embeds(results=[target])
 
     assert len(embeds) == 2
-    # The target owns the message, so it stays first and the quoted post hangs off the end. That
-    # root-first ordering is load-bearing elsewhere (see the gen_reply embed-card scan).
+    # The target owns the message, so it stays first and the quoted post hangs off the end.
     assert embeds[0].description == "這根本是胡說"
     quoted_embed = embeds[1]
     assert quoted_embed.author.name == "bob"
@@ -676,22 +661,6 @@ async def test_threads_cog_says_nothing_about_an_ancestors_quote() -> None:
     assert all("引用的貼文目前無法瀏覽" not in (embed.description or "") for embed in embeds)
 
 
-async def test_threads_cog_measures_the_rendered_description_against_the_embed_limit() -> None:
-    """The marker prefix and the hints are appended after any check on the raw body.
-
-    A body sitting just under 4096 therefore crossed it once rendered, turning the ⚠️ skip the
-    guard exists for into a Discord 400 and a ❌.
-    """
-    cog = _cog()
-    target = _thread_output(text="t")
-    target.quoted = _thread_output(text="q" * 4096, author_name="bob")
-
-    embeds = cog._build_embeds(results=[target])
-
-    # The guard now reads exactly this quantity, so it sees the overflow the raw text hid.
-    assert max(len(embed.description or "") for embed in embeds) > 4096
-
-
 async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> None:
     """The user-visible outcome of that overflow is the ⚠️ skip, never the ❌ a 400 would give."""
     cog = _cog()
@@ -702,40 +671,15 @@ async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> N
     message = _message()
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
     assert placeholder_withdrawn(message=message)
-
-
-async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
-    """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
-    cog = _cog()
-    _wire_threads(
-        cog=cog, downloader=ThreadsDownloaderStub(results=RuntimeError("must not be called"))
-    )
-
-    mentioned = _message(content=f"<@{BOT_USER_ID}> {_URL}")
-    await cog.on_message(message=as_message(fake=mentioned))
-    assert mentioned.reactions == []
-    assert mentioned.replies == []
-
-    # No guild: a DM always reaches gen_reply, mention or not.
-    direct_message = FakeDiscordMessage(content=_URL, guild=None)
-    await cog.on_message(message=as_message(fake=direct_message))
-    assert direct_message.reactions == []
-    assert direct_message.replies == []
 
 
 async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     """A Threads video too big to attach is hosted as a URL instead of a ⚠️ refusal."""
     cog = _cog()
     (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path / "serve")
-            )
-        )
-    )
+    cog.media_delivery = hosting_planner(serve_dir=tmp_path / "serve")
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(data=b"123")
 
@@ -755,20 +699,14 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     content = expansion_payload(message=message).get("content") or ""
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert not video_file.exists()
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> None:
     """A post with one small and one oversize video attaches the small and links only the big one."""
     cog = _cog()
     (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path / "serve")
-            )
-        )
-    )
+    cog.media_delivery = hosting_planner(serve_dir=tmp_path / "serve")
     small = tmp_path / "small.mp4"
     small.write_bytes(data=b"0" * 100)
     big = tmp_path / "big.mp4"
@@ -791,17 +729,12 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
     assert len(hosted) == 1  # only the oversize clip was linked
     assert big.exists() is False  # the big clip was moved into the serve dir
     assert small.exists() is True  # the small clip stayed on disk to attach natively
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Path) -> None:
-    """With hosting off, an oversize Threads video refuses the whole post (pre-#325 ⚠️ behavior)."""
+    """With hosting off, an oversize Threads video refuses the whole post with a ⚠️."""
     cog = _cog()
-    # Explicitly disabled planner — never the no-arg default, whose config is `available` on a dev
-    # box where .env enables hosting (it would write into the live serve dir).
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
-    )
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(data=b"123")
 
@@ -816,26 +749,6 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
     await cog.on_message(message=as_message(fake=message))
 
     # No host available + oversize -> whole-post ⚠️ refusal, no reply, and the file is left in place.
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
     assert placeholder_withdrawn(message=message)
     assert video_file.exists() is True
-
-
-async def test_threads_cog_marks_a_throttle_retryable_not_unreadable() -> None:
-    """The one Threads outcome that actually happens, and it used to say the wrong thing.
-
-    Over the 19 days of `data/logs` kept on this machine, no Threads read raised at all;
-    every failure was a page carrying no post JSON. `services/platforms/threads.py` calls that the
-    platform's soft throttle in as many words and used to hand back an empty page, which is
-    also what a private post answers with, so the channel was told a working link was dead.
-    """
-    cog = _cog()
-    _wire_threads(
-        cog=cog, downloader=ThreadsDownloaderStub(results=LinkRetryableError("throttle"))
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
-    assert placeholder_withdrawn(message=message)

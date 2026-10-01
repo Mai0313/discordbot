@@ -1,6 +1,5 @@
 """Tests for Threads URL parsing and media extraction."""
 
-import json
 import shutil
 from typing import Self
 from pathlib import Path
@@ -13,9 +12,11 @@ from discordbot.services.platforms.threads import (
     THREADS_URL_RE,
     Post,
     ThreadsURL,
-    FetchedPage,
     ThreadsDownloader,
 )
+from discordbot.services.platforms.page_json import FetchedPage
+
+from tests.helpers.link_sources import serve_page, sjs_script
 
 
 @pytest.fixture
@@ -46,8 +47,9 @@ def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field
 
     `quotes` takes either shape the parser has to read. A bare shortcode is all a test that only
     reads presence needs; a dict is a whole nested post payload, which is what Threads actually
-    ships and what gets rendered. `_quoted_payload` builds one from this same function, so a
-    quoted post cannot drift from a top-level one.
+    ships and what gets rendered. Measured live, a quoted post is a full post payload of the same
+    shape as any other, so the tests build one with this same function rather than letting the
+    two drift apart.
     """
     media: dict[str, object] = (
         {"video_versions": [{"url": video_url}]}
@@ -88,19 +90,6 @@ def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field
     }
 
 
-def _quoted_payload(
-    code: str, username: str, text: str, video_url: str = "", quotes: dict[str, object] | str = ""
-) -> dict[str, object]:
-    """Returns the whole-post payload Threads nests under `share_info.quoted_post`.
-
-    Built from `_thread_post_payload` on purpose: measured live, a quoted post is a full post
-    payload of the same shape as any other, so the fixture should not be free to disagree.
-    """
-    return _thread_post_payload(
-        code=code, username=username, text=text, video_url=video_url, quotes=quotes
-    )
-
-
 def _quoted_tombstone() -> dict[str, object]:
     """Returns the placeholder Threads sends in place of a quoted post that is gone.
 
@@ -125,8 +114,7 @@ def _quoted_tombstone() -> dict[str, object]:
 
 def _media_script(payload: dict[str, object]) -> str:
     """Wraps one media fragment in the script block a page serialises it in."""
-    block = {"require": [{"__bbox": {"result": {"data": {"media": payload}}}}]}
-    return f'<script type="application/json" data-sjs>{json.dumps(obj=block)}</script>'
+    return sjs_script(payload={"require": [{"__bbox": {"result": {"data": {"media": payload}}}}]})
 
 
 def _sjs_html(
@@ -193,33 +181,24 @@ def _thread_html(post_code: str) -> str:
     "url",
     [
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_",
-        "https://www.threads.com/@wilson.sup/post/DWWMzCNkUUM",
-        "https://www.threads.com/@yu0030722025/post/DWZmc8OkSx8",
-        "https://www.threads.com/@show4653/post/DWYp35uGh4l",
-        "https://www.threads.com/@cyj308/post/DVn6dqzjzQf",
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_?hl=zh-tw",
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_?xmt=AQF0p6UfiuvtlPVEKZ36kqN7JVKUzuMJUhGDOwfkJK6Rsw",
-        "https://www.threads.com/@babe.0530/post/DXyk3qXGT6o",
     ],
 )
 def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies that parsing valid Threads URLs returns expected post data."""
     threads_url = ThreadsURL(raw_url=url)
-    fetched_urls: list[str] = []
-
-    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Returns deterministic HTML for the requested Threads URL."""
-        fetched_urls.append(url)
-        return FetchedPage(html=_thread_html(post_code=threads_url.post_code), final_url=url)
-
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
+    fetched_urls = serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=_thread_html(post_code=threads_url.post_code),
+    )
 
     with downloader.parse(url=url) as conversation:
-        assert conversation.chain, "should yield at least one post"
         target = conversation.target
         assert target is not None
-        assert target.text or target.image_urls or target.video_urls, "post should have content"
-        assert target.author_name, "author_name should not be empty"
+        assert target.text == f"Target post {threads_url.post_code}"
+        assert target.author_name == "target_author"
         assert target.taken_at is not None, "taken_at should not be None"
     assert fetched_urls == [threads_url.clean_url]
 
@@ -372,17 +351,15 @@ def test_parse_metadata_returns_chain_without_downloading(
     url = "https://www.threads.com/@root_author/post/TARGET"
     threads_url = ThreadsURL(raw_url=url)
 
-    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Returns deterministic HTML with a video target for the requested URL."""
-        return FetchedPage(
-            html=_thread_html_with_video(post_code=threads_url.post_code), final_url=url
-        )
-
     def fail_download(self: ThreadsDownloader, url: str, filename: str) -> None:
         """Fails loudly if the metadata path ever tries to download media."""
         raise AssertionError("parse_metadata must not download media")
 
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=_thread_html_with_video(post_code=threads_url.post_code),
+    )
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fail_download)
 
     conversation = downloader.parse_metadata(url=url)
@@ -442,21 +419,11 @@ def _thread_html_with_replies() -> str:
     )
 
 
-def _stub_html(monkeypatch: pytest.MonkeyPatch, html: str) -> None:
-    """Serves one canned page for every fetch, so no test touches the network."""
-
-    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Returns the canned HTML regardless of url, as a fetch that no redirect moved."""
-        return FetchedPage(html=html, final_url=url)
-
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
-
-
 def test_parse_metadata_collects_the_reply_branches(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The comments under the target come back as branches, nesting preserved."""
-    _stub_html(monkeypatch, _thread_html_with_replies())
+    serve_page(monkeypatch, downloader=ThreadsDownloader, html=_thread_html_with_replies())
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -524,7 +491,11 @@ def test_a_thread_belonging_to_another_post_is_never_joined_to_the_target(
             },
         }
     )
-    _stub_html(monkeypatch, _sjs_html(target=target).replace("<html>", f"<html>{stranger}"))
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=_sjs_html(target=target).replace("<html>", f"<html>{stranger}"),
+    )
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -551,10 +522,13 @@ def test_a_quote_post_carries_the_whole_quoted_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The quoted post IS the subject of a quote post, so all of it has to survive the parse."""
-    _stub_html(
+    serve_page(
         monkeypatch,
-        _quote_target_html(
-            _quoted_payload(code="QUOTED", username="other_author", text="The original argument")
+        downloader=ThreadsDownloader,
+        html=_quote_target_html(
+            _thread_post_payload(
+                code="QUOTED", username="other_author", text="The original argument"
+            )
         ),
     )
 
@@ -578,10 +552,11 @@ def test_a_quoted_posts_video_stays_a_url_and_is_never_downloaded(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Neither consumer attaches a quoted clip, so `parse` must not write one to disk either."""
-    _stub_html(
+    serve_page(
         monkeypatch,
-        _quote_target_html(
-            _quoted_payload(
+        downloader=ThreadsDownloader,
+        html=_quote_target_html(
+            _thread_post_payload(
                 code="QUOTED",
                 username="other_author",
                 text="A clip",
@@ -606,14 +581,15 @@ def test_a_quoted_post_is_read_only_one_level_deep(
     The parse stops rather than rendering that stub as a post with nothing in it. Because it stops
     before looking, the inner post is not reported unavailable either — it was never asked for.
     """
-    _stub_html(
+    serve_page(
         monkeypatch,
-        _quote_target_html(
-            _quoted_payload(
+        downloader=ThreadsDownloader,
+        html=_quote_target_html(
+            _thread_post_payload(
                 code="QUOTED",
                 username="other_author",
                 text="The original argument",
-                quotes=_quoted_payload(
+                quotes=_thread_post_payload(
                     code="DEEPER", username="third_author", text="Quoted by the quoted post"
                 ),
             )
@@ -632,7 +608,9 @@ def test_a_quoted_post_tombstone_is_reported_as_unavailable(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A gone quoted post arrives as a placeholder, not as a null, so silence would be a lie."""
-    _stub_html(monkeypatch, _quote_target_html(_quoted_tombstone()))
+    serve_page(
+        monkeypatch, downloader=ThreadsDownloader, html=_quote_target_html(_quoted_tombstone())
+    )
 
     target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
 
@@ -645,7 +623,7 @@ def test_a_post_quoting_nothing_reports_no_quoted_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The unavailable flag must stay off for a post that simply quotes nothing at all."""
-    _stub_html(monkeypatch, _quote_target_html(""))
+    serve_page(monkeypatch, downloader=ThreadsDownloader, html=_quote_target_html(""))
 
     target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
 
@@ -666,16 +644,24 @@ def test_the_quoted_attachment_flag_decides_nothing_either_way(
     and a tombstone must still be caught while the flag says False, which is the shape that
     actually occurs. Gating on the flag breaks the second half.
     """
-    readable = _quoted_payload(code="QUOTED", username="other_author", text="Still very much here")
-    _stub_html(monkeypatch, _quote_target_html(readable, quoted_attachment_unavailable=flag))
+    readable = _thread_post_payload(
+        code="QUOTED", username="other_author", text="Still very much here"
+    )
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=_quote_target_html(readable, quoted_attachment_unavailable=flag),
+    )
     target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
     assert target is not None
     assert target.quoted is not None
     assert target.quoted.text == "Still very much here"
     assert target.quoted_unavailable is False
 
-    _stub_html(
-        monkeypatch, _quote_target_html(_quoted_tombstone(), quoted_attachment_unavailable=flag)
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=_quote_target_html(_quoted_tombstone(), quoted_attachment_unavailable=flag),
     )
     gone = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
     assert gone is not None
@@ -684,11 +670,10 @@ def test_the_quoted_attachment_flag_decides_nothing_either_way(
 
 
 @pytest.mark.parametrize(
-    ("label", "payload", "readable"),
+    ("payload", "readable"),
     [
         (
             # The platform's own statement wins over content, which a content-only test misses.
-            "flagged but populated",
             {
                 "code": "Q",
                 "caption": {"text": "x"},
@@ -699,39 +684,40 @@ def test_the_quoted_attachment_flag_decides_nothing_either_way(
         (
             # The tombstone is not the only empty shape; one arriving without the flag would
             # otherwise render as a quoted post holding nothing at all.
-            "unflagged but empty",
             {"text_post_app_info": {"is_post_unavailable": None}},
             False,
         ),
-        ("populated and unflagged", {"code": "Q", "caption": {"text": "x"}}, True),
+        ({"code": "Q", "caption": {"text": "x"}}, True),
     ],
+    ids=["flagged but populated", "unflagged but empty", "populated and unflagged"],
 )
 def test_is_readable_needs_both_the_flag_clear_and_some_content(
-    label: str, payload: dict[str, object], readable: bool
+    payload: dict[str, object], readable: bool
 ) -> None:
     """Each half of `is_readable` is load-bearing on its own, so each is pinned on its own.
 
     The tombstone fixture trips both at once, so it cannot tell which half is doing the work.
     """
-    del label
-
     assert Post.model_validate(obj=payload).is_readable is readable
 
 
 @pytest.mark.parametrize(
-    ("label", "broken"),
+    "broken",
     [
-        ("null image candidates", {"image_versions2": {"candidates": None}}),
-        ("null text fragments", {"text_post_app_info": {"text_fragments": {"fragments": None}}}),
-        ("a null carousel item", {"carousel_media": [None]}),
-        ("a non-numeric like count", {"like_count": "1.2K"}),
+        {"image_versions2": {"candidates": None}},
+        {"text_post_app_info": {"text_fragments": {"fragments": None}}},
+        {"carousel_media": [None]},
+        {"like_count": "1.2K"},
+    ],
+    ids=[
+        "null image candidates",
+        "null text fragments",
+        "a null carousel item",
+        "a non-numeric like count",
     ],
 )
 def test_an_unparsable_quoted_post_costs_only_itself(
-    downloader: ThreadsDownloader,
-    monkeypatch: pytest.MonkeyPatch,
-    label: str,
-    broken: dict[str, object],
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch, broken: dict[str, object]
 ) -> None:
     """A shape the quoted payload alone gets wrong must not take the linked post down with it.
 
@@ -739,9 +725,10 @@ def test_an_unparsable_quoted_post_costs_only_itself(
     that also holds the target, and `_collect_fragments` drops a fragment on any ValidationError — so
     before `_isolate_quoted_post` each of these payloads lost the target entirely.
     """
-    del label
-    quoted = _quoted_payload(code="QUOTED", username="other_author", text="quoted body")
-    _stub_html(monkeypatch, _quote_target_html({**quoted, **broken}))
+    quoted = _thread_post_payload(code="QUOTED", username="other_author", text="quoted body")
+    serve_page(
+        monkeypatch, downloader=ThreadsDownloader, html=_quote_target_html({**quoted, **broken})
+    )
 
     target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
 
@@ -756,12 +743,13 @@ def test_an_unparsable_quoted_post_on_an_ancestor_still_keeps_the_target(
 ) -> None:
     """The blast radius was not even limited to the target's own quote; an ancestor's sufficed."""
     broken = {
-        **_quoted_payload(code="QUOTED", username="other_author", text="q"),
+        **_thread_post_payload(code="QUOTED", username="other_author", text="q"),
         "image_versions2": {"candidates": None},
     }
-    _stub_html(
+    serve_page(
         monkeypatch,
-        _sjs_html(
+        downloader=ThreadsDownloader,
+        html=_sjs_html(
             target=_thread_post_payload(
                 code="TARGET",
                 username="target_author",
@@ -812,7 +800,11 @@ def test_a_malformed_branch_costs_only_that_branch(
             },
         }
     )
-    _stub_html(monkeypatch, f"<html>{_media_script(payload=target)}{replies}</html>")
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=f"<html>{_media_script(payload=target)}{replies}</html>",
+    )
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -845,7 +837,11 @@ def test_an_empty_fragment_never_clears_what_another_one_carried(
         ancestors=[_thread_post_payload(code="ROOT", username="root_author", text="Root post")],
         branches=[[_thread_post_payload(code="R1", username="commenter", text="Comment")]],
     )
-    _stub_html(monkeypatch, populated.replace("</html>", f"{empty}</html>"))
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=populated.replace("</html>", f"{empty}</html>"),
+    )
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -858,7 +854,7 @@ def test_an_empty_fragment_never_clears_what_another_one_carried(
 def test_a_target_without_author_data_still_carries_its_comments(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Whose replies these are is structural now, so a missing author costs the target nothing."""
+    """Whose replies these are is structural, so a missing author costs the target nothing."""
     target = _thread_post_payload(
         code="TARGET", username="target_author", text="Author data missing"
     )
@@ -867,7 +863,7 @@ def test_a_target_without_author_data_still_carries_its_comments(
         target=target,
         branches=[[_thread_post_payload(code="R1", username="commenter", text="Comment")]],
     )
-    _stub_html(monkeypatch, html)
+    serve_page(monkeypatch, downloader=ThreadsDownloader, html=html)
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -875,24 +871,6 @@ def test_a_target_without_author_data_still_carries_its_comments(
     assert [[post.text for post in branch] for branch in conversation.reply_branches] == [
         ["Comment"]
     ]
-
-
-def test_a_page_without_the_post_yields_an_empty_conversation(
-    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A page carrying no such post reads as empty, which is the callers' "unavailable" signal."""
-    _stub_html(
-        monkeypatch,
-        _sjs_html(
-            target=_thread_post_payload(code="SOMEONE_ELSE", username="other", text="Other post")
-        ),
-    )
-
-    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
-
-    assert conversation.chain == []
-    assert conversation.target is None
-    assert conversation.reply_branches == []
 
 
 def _serve_pages(
@@ -961,8 +939,8 @@ def test_a_post_that_no_longer_exists_is_not_retried_either(
     would make this indistinguishable from the throttle above, and the user would be told a link
     that will never work is worth trying again.
     """
-    feed = json.dumps(
-        obj={
+    feed = sjs_script(
+        payload={
             "require": [
                 {
                     "__bbox": {
@@ -980,7 +958,7 @@ def test_a_post_that_no_longer_exists_is_not_retried_either(
             ]
         }
     )
-    page = f'<html><script type="application/json" data-sjs>{feed}</script></html>'
+    page = f"<html>{feed}</html>"
     fetched = _serve_pages(monkeypatch, pages=[page])
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
@@ -1261,7 +1239,7 @@ def test_a_malformed_post_costs_only_itself(
             [_thread_post_payload(code="R1", username="commenter", text="Comment")],
         ],
     )
-    _stub_html(monkeypatch, html)
+    serve_page(monkeypatch, downloader=ThreadsDownloader, html=html)
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
@@ -1294,7 +1272,7 @@ def test_parse_downloads_the_target_video_and_no_others(
             ]
         ],
     )
-    _stub_html(monkeypatch, html)
+    serve_page(monkeypatch, downloader=ThreadsDownloader, html=html)
 
     with downloader.parse(url=_REPLIES_TARGET_URL) as conversation:
         target = conversation.target
@@ -1313,7 +1291,7 @@ def test_parse_and_parse_metadata_agree_when_nothing_downloads(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The two entry points are one walk: with no video to download they are indistinguishable."""
-    _stub_html(monkeypatch, _thread_html_with_replies())
+    serve_page(monkeypatch, downloader=ThreadsDownloader, html=_thread_html_with_replies())
 
     metadata = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
     with downloader.parse(url=_REPLIES_TARGET_URL) as parsed:

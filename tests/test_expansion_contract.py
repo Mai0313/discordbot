@@ -14,7 +14,8 @@ having read this file.
 
 The shell's behaviour is run here too, once per cog, through the cog's own read with only its
 downloader staged: when the listener stays quiet, what order the slot and the marks go on in, and
-what a failure leaves behind. A cog's own test file holds what its card does and none of this.
+what a failure leaves behind. A cog's card is tested outside this file, and nothing here is
+tested again there.
 Staging is the other thing written down per cog, in `_STAGES`, so a new cog also fails those tests
 until it says how its downloader is stood in for.
 

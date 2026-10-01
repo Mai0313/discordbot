@@ -1,12 +1,11 @@
 """Tests for Facebook URL parsing and post extraction.
 
-Every test replaces `FacebookDownloader._fetch_page`, the one seam that touches the network,
-the same way `tests/test_threads.py` does. The fixture HTML mirrors the real page's shape
-closely enough to exercise the walk: the story is buried under a route-dependent key, repeated,
-and surrounded by the module-loader blocks the real page is mostly made of.
+Every test replaces `FacebookDownloader._fetch_page`, the one seam that touches the network.
+The fixture HTML mirrors the real page's shape closely enough to exercise the walk: the story is
+buried under a route-dependent key, repeated, and surrounded by the module-loader blocks the real
+page is mostly made of.
 """
 
-import json
 import base64
 from typing import Any
 
@@ -15,11 +14,12 @@ import pytest
 from discordbot.services.platforms.facebook import (
     FACEBOOK_URL_RE,
     FacebookURL,
-    FetchedPage,
     FacebookOutput,
     FacebookDownloader,
     is_facebook_post_url,
 )
+
+from tests.helpers.link_sources import serve_page, sjs_script
 
 _POST_ID = "1730774811333135"
 _GROUP_ID = "1176671326743489"
@@ -136,17 +136,15 @@ def _page(
             ]
         ]
     }
-    blocks = [json.dumps(obj=payload)]
+    blocks: list[dict[str, Any]] = [payload]
     if isinstance(story_nodes, list) and len(story_nodes) > 1:
         for extra in story_nodes[1:]:
-            blocks.append(json.dumps(obj={"require": [{"__bbox": {"data": {"node": extra}}}]}))
+            blocks.append({"require": [{"__bbox": {"data": {"node": extra}}}]})
     if comments:
-        blocks.append(json.dumps(obj={"comment_rendering_instance": {"comments": comments}}))
+        blocks.append({"comment_rendering_instance": {"comments": comments}})
     if groups:
-        blocks.append(json.dumps(obj={"data": {"groups": groups}}))
-    scripts = "".join(
-        f'<script type="application/json" data-sjs>{block}</script>' for block in blocks
-    )
+        blocks.append({"data": {"groups": groups}})
+    scripts = "".join(sjs_script(payload=block) for block in blocks)
     # A block that does not parse, which the walk must skip rather than fail on.
     return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
 
@@ -155,13 +153,7 @@ def _downloader(
     monkeypatch: pytest.MonkeyPatch, *, html: str, final_url: str = _PERMALINK
 ) -> FacebookDownloader:
     """A downloader whose only network call is replaced with canned HTML."""
-
-    def fake_fetch_page(self: FacebookDownloader, *, url: str) -> FetchedPage:
-        """Serves the canned page regardless of the URL asked for."""
-        del self, url
-        return FetchedPage(html=html, final_url=final_url)
-
-    monkeypatch.setattr(target=FacebookDownloader, name="_fetch_page", value=fake_fetch_page)
+    serve_page(monkeypatch, downloader=FacebookDownloader, html=html, final_url=final_url)
     return FacebookDownloader()
 
 
@@ -245,6 +237,8 @@ def test_clean_url_keeps_the_comment_the_url_singles_out() -> None:
         "https://www.facebook.com/marketplace/item/123456/",
         "https://www.facebook.com/share/r/17h4SsC2p1",
         "https://www.facebook.com/share/v/1AbCdEfGhJ/",
+        # `id` is kept but never READ as a post id, or every profile link would look like a post.
+        "https://www.facebook.com/profile.php?id=100077759593577",
     ],
 )
 def test_a_url_that_names_no_post_is_refused(url: str) -> None:
@@ -309,12 +303,16 @@ def test_a_post_is_read_with_its_text_images_and_counts(monkeypatch: pytest.Monk
 
 def test_the_permalink_is_preferred_over_the_pasted_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """What gets published back into the channel must never carry the sharer's tokens."""
-    downloader = _downloader(monkeypatch, html=_page())
+    fetched = serve_page(
+        monkeypatch, downloader=FacebookDownloader, html=_page(), final_url=_PERMALINK
+    )
 
-    post = _parse(downloader, f"{_SHARE_URL}?rdid=abc")
+    post = _parse(FacebookDownloader(), f"{_SHARE_URL}?rdid=abc")
 
     assert post.url == _PERMALINK
     assert "rdid" not in post.url
+    # The fetch drops the tokens too, rather than carrying them to Facebook.
+    assert fetched == [_SHARE_URL.rstrip("/")]
 
 
 def test_a_comment_id_url_selects_that_comment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -544,9 +542,3 @@ def test_clean_url_keeps_the_owner_id_a_permalink_needs() -> None:
     )
 
     assert "id=100077759593577" in parsed.clean_url
-    assert parsed.post_id == _POST_ID
-
-
-def test_a_profile_url_is_not_a_post_despite_carrying_an_id() -> None:
-    """`id` is kept but never READ as a post id, or every profile link would look like a post."""
-    assert not is_facebook_post_url(url="https://www.facebook.com/profile.php?id=100077759593577")

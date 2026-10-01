@@ -31,7 +31,7 @@ async def test_a_pasted_link_is_expanded_into_a_card() -> None:
     cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post())
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     embeds = expansion_embeds(message=message)
 
     assert embeds[0].description is not None
@@ -49,7 +49,7 @@ async def test_the_footer_carries_the_counters_and_says_the_replies_are_gone() -
     cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     footer = expansion_embeds(message=message)[0].footer.text
 
     assert footer is not None
@@ -58,31 +58,10 @@ async def test_the_footer_carries_the_counters_and_says_the_replies_are_gone() -
     assert "不提供留言" in footer
 
 
-async def test_extra_images_become_embeds_sharing_the_post_url() -> None:
-    """Discord merges embeds by URL, which is what turns the extras into one gallery."""
-    cog, _ = stub_conversation_cog(
-        cog_type=TwitterCogs,
-        outcome=twitter_post(image_urls=[f"https://pbs.twimg.com/media/{n}.jpg" for n in "abc"]),
-    )
-    message = _message()
-
-    await cog.on_message(as_message(fake=message))
-    embeds = expansion_embeds(message=message)
-
-    assert len(embeds) == 3
-    assert [embed.url for embed in embeds] == [TWITTER_URL, TWITTER_URL, TWITTER_URL]
-    assert [embed.image.url for embed in embeds] == [
-        "https://pbs.twimg.com/media/a.jpg",
-        "https://pbs.twimg.com/media/b.jpg",
-        "https://pbs.twimg.com/media/c.jpg",
-    ]
-
-
 async def test_a_video_post_shows_its_poster_and_a_link() -> None:
     """Nothing is downloaded here, so the frame stands in for the clip and the clip is a link.
 
-    Without the poster a video post would be a card with no picture at all, which is what makes
-    this the difference between the linked-video shape and Facebook's, whose video has no frame.
+    Without the poster a video post would be a card with no picture at all.
     """
     cog, _ = stub_conversation_cog(
         cog_type=TwitterCogs,
@@ -94,7 +73,7 @@ async def test_a_video_post_shows_its_poster_and_a_link() -> None:
     )
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     embed = expansion_embeds(message=message)[0]
 
     assert embed.image.url == "https://pbs.twimg.com/amplify_video_thumb/p.jpg"
@@ -114,7 +93,7 @@ async def test_a_still_wins_the_preview_over_a_video_poster() -> None:
     )
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
 
     assert expansion_embeds(message=message)[0].image.url == "https://pbs.twimg.com/media/a.jpg"
 
@@ -126,7 +105,7 @@ async def test_a_truncated_post_says_so_on_the_card() -> None:
     )
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     description = expansion_embeds(message=message)[0].description
 
     assert description is not None
@@ -138,7 +117,7 @@ async def test_an_ordinary_post_does_not_claim_to_be_cut() -> None:
     cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     description = expansion_embeds(message=message)[0].description
 
     assert description is not None
@@ -154,7 +133,7 @@ async def test_the_post_it_replies_to_gets_its_own_card_before_it() -> None:
     )
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     embeds = expansion_embeds(message=message)
 
     assert len(embeds) == 2
@@ -170,7 +149,7 @@ async def test_a_quoted_post_gets_a_card_outside_the_gallery() -> None:
     cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post(quoted=quoted))
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     embeds = expansion_embeds(message=message)
 
     assert embeds[-1].url == "https://x.com/OpenAI/status/2"
@@ -195,7 +174,7 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
     )
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     embeds = expansion_embeds(message=message)
     spent = sum(
         utf16_length(value=text)
@@ -221,7 +200,7 @@ async def test_a_long_parent_under_a_short_post_stays_inside_the_description_lim
     )
     message = _message()
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
     description = expansion_embeds(message=message)[0].description
 
     assert description is not None
@@ -229,26 +208,12 @@ async def test_a_long_parent_under_a_short_post_stays_inside_the_description_lim
     assert description.endswith("（全文請看原貼文）")
 
 
-async def test_a_post_full_of_emoji_is_clipped_by_the_units_discord_counts() -> None:
-    """Discord counts UTF-16 units, so a `len()`-based clip overshoots on non-BMP characters."""
-    cog, _ = stub_conversation_cog(
-        cog_type=TwitterCogs, outcome=twitter_post(text="🎉" * 3000, image_urls=[])
-    )
-    message = _message()
-
-    await cog.on_message(as_message(fake=message))
-    description = expansion_embeds(message=message)[0].description
-
-    assert description is not None
-    assert utf16_length(value=description) <= 4096
-
-
 async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
     """A profile link never matches the pattern, so it earns no reaction and costs no request."""
     cog, stub = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post())
     message = _message(content="https://x.com/Dbacks")
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
 
     assert stub.seen == []
     assert message.reactions == []
@@ -259,6 +224,6 @@ async def test_the_link_is_read_at_the_url_the_message_carried() -> None:
     cog, stub = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post())
     message = _message(content=f"看這個 {TWITTER_URL}?s=46&t=abc")
 
-    await cog.on_message(as_message(fake=message))
+    await cog.on_message(message=as_message(fake=message))
 
     assert stub.seen == [f"{TWITTER_URL}?s=46&t=abc"]

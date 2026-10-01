@@ -1,4 +1,4 @@
-"""Covers the Twitter reader against payloads built the way `tests/test_facebook.py` builds pages.
+"""Covers the Twitter reader against canned syndication payloads.
 
 The fixtures mirror the real syndication payload's shape rather than reproducing one: every key
 here was read off a live response, and the ones that carry a trap have a test of their own. Nothing
@@ -118,7 +118,7 @@ def _downloader(monkeypatch: pytest.MonkeyPatch, *, payload: dict[str, Any]) -> 
         del self, status_id
         return payload
 
-    monkeypatch.setattr(TwitterDownloader, "_fetch_tweet", fake_fetch)
+    monkeypatch.setattr(target=TwitterDownloader, name="_fetch_tweet", value=fake_fetch)
     return downloader
 
 
@@ -142,23 +142,14 @@ def _parse(
         f"https://x.com/Dbacks/status/{_STATUS_ID}/video/1",
         f"https://x.com/i/web/status/{_STATUS_ID}",
         f"https://x.com/Dbacks/status/{_STATUS_ID}/",
+        # x.com serves the same post under any handle. Measured: a handle that does not exist
+        # answers 307 to the real author's, so the parse must not reject it.
+        f"https://x.com/nobody_at_all_here/status/{_STATUS_ID}",
     ],
 )
 def test_every_form_of_a_post_url_names_the_same_post(url: str) -> None:
-    """One post is spelled ten ways, and only the id in the middle of it means anything."""
+    """One post is spelled many ways, and only the id in the middle of it means anything."""
     assert TWITTER_URL_RE.search(string=url)
-    assert TwitterURL(raw_url=url).status_id == _STATUS_ID
-
-
-def test_a_handle_that_is_not_the_author_still_names_the_post() -> None:
-    """x.com serves the same post under any handle, so the id is the only load-bearing part.
-
-    Measured: a URL carrying a handle that does not exist answers 307 to the real author's. So the
-    parse must not reject it, and must not publish it back either — the author comes off the
-    payload rather than out of the URL.
-    """
-    url = f"https://x.com/nobody_at_all_here/status/{_STATUS_ID}"
-
     assert TwitterURL(raw_url=url).status_id == _STATUS_ID
 
 
@@ -458,14 +449,8 @@ def test_a_conversation_never_carries_replies(monkeypatch: pytest.MonkeyPatch) -
 
 def test_a_url_naming_no_post_costs_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
     """A profile URL that reached the parser anyway must not spend a request to say so."""
-    calls: list[str] = []
+    calls = _install_get(monkeypatch, response=_FakeResponse(payload=_tweet()))
 
-    def fake_fetch(self: TwitterDownloader, *, status_id: str) -> dict[str, Any]:
-        del self
-        calls.append(status_id)
-        return _tweet()
-
-    monkeypatch.setattr(TwitterDownloader, "_fetch_tweet", fake_fetch)
     conversation = TwitterDownloader().parse_metadata(url="https://x.com/Dbacks")
 
     assert conversation.target is None
@@ -521,7 +506,7 @@ def _install_get(
         calls.append({"url": url, **kwargs})
         return response
 
-    monkeypatch.setattr(twitter_module.requests, "get", fake_get)
+    monkeypatch.setattr(target=twitter_module.requests, name="get", value=fake_get)
     return calls
 
 

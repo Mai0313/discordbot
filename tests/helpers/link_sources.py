@@ -4,6 +4,7 @@ Both read the same posts through the same downloaders, so the canned posts, the 
 and the block accessors live here once rather than in each platform's two test files.
 """
 
+import json
 from types import SimpleNamespace
 from typing import Any, Unpack, TypedDict
 from pathlib import Path
@@ -24,6 +25,7 @@ from discordbot.services.platforms.twitter import TwitterOutput, TwitterConversa
 from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramConversation
+from discordbot.services.platforms.page_json import FetchedPage
 
 from tests.helpers.casting import as_bot, make_media_hosting_config
 from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage, expansion_payload
@@ -288,6 +290,38 @@ def serve_conversation(
         return outcome
 
     monkeypatch.setattr(target=downloader, name="parse_metadata", value=parse_metadata)
+
+
+def sjs_script(payload: object) -> str:
+    """Wraps one JSON payload in the `data-sjs` script block a post page serialises it in."""
+    return f'<script type="application/json" data-sjs>{json.dumps(obj=payload)}</script>'
+
+
+def serve_page(
+    monkeypatch: pytest.MonkeyPatch,
+    downloader: type[PlatformDownloader],
+    html: str,
+    final_url: str | None = None,
+) -> list[str]:
+    """Points a page reader's one network call at canned HTML.
+
+    The fetch lands on `final_url` when one is given, the way a redirect leaves it, and otherwise
+    where it was asked to go.
+
+    Returns:
+        Every URL the reader fetched, in order, so a test can tell which form of a link it asked
+        for.
+    """
+    fetched: list[str] = []
+
+    def fetch_page(self: PlatformDownloader, *, url: str) -> FetchedPage:
+        """Records the URL asked for, then answers with the canned page."""
+        del self
+        fetched.append(url)
+        return FetchedPage(html=html, final_url=final_url or url)
+
+    monkeypatch.setattr(target=downloader, name="_fetch_page", value=fetch_page)
+    return fetched
 
 
 def accept_image_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> None:

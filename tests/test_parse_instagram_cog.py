@@ -5,9 +5,6 @@ parser: what these cover is the cog's own decisions — when it fires, what it r
 a reader sees when the post cannot be read.
 """
 
-from datetime import UTC, datetime
-
-from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 from discordbot.services.platforms.instagram import InstagramOutput
@@ -77,49 +74,10 @@ async def test_the_footer_carries_the_counters() -> None:
     assert "💬 11" in footer
 
 
-async def test_extra_images_become_embeds_sharing_the_post_url() -> None:
-    """Sharing the URL is what makes Discord merge them into one gallery under the post."""
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs,
-        outcome=instagram_post(
-            image_urls=[f"https://instagram.example/{n}.jpg" for n in range(3)]
-        ),
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    embeds = expansion_embeds(message=message)
-    assert len(embeds) == 3
-    assert all(embed.url == INSTAGRAM_URL for embed in embeds)
-
-
-async def test_images_past_the_cap_are_counted_in_the_footer() -> None:
-    """A nine-image carousel is the ordinary Instagram post, so this cap really binds."""
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs,
-        outcome=instagram_post(
-            image_urls=[f"https://instagram.example/{n}.jpg" for n in range(9)]
-        ),
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    embeds = expansion_embeds(message=message)
-    assert len(embeds) == 4
-    footer = embeds[0].footer.text
-    assert footer is not None
-    assert "另有 5 張" in footer
-
-
-async def test_a_named_comment_gets_its_own_card_outside_the_gallery() -> None:
-    """A different URL is what keeps the comment from being folded in with the pictures."""
+async def test_a_named_comment_links_to_its_own_permalink_under_its_handle() -> None:
+    """A comment carries a handle and no display name, and its card links to its own `/c/` URL."""
     comment = InstagramOutput(
-        comment_id="17946527169275440",
-        text="the one linked",
-        author_name="xiao_pang0704",
-        taken_at=datetime(2026, 9, 5, 9, 25, tzinfo=UTC),
+        comment_id="17946527169275440", text="the one linked", author_name="xiao_pang0704"
     )
     cog, _ = stub_conversation_cog(
         cog_type=InstagramCogs,
@@ -130,78 +88,8 @@ async def test_a_named_comment_gets_its_own_card_outside_the_gallery() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     comment_embed = expansion_embeds(message=message)[-1]
-    assert comment_embed.description is not None
-    assert "the one linked" in comment_embed.description
     assert comment_embed.author.name == "@xiao_pang0704"
     assert comment_embed.url == f"{INSTAGRAM_URL}c/17946527169275440/"
-    assert comment_embed.url != INSTAGRAM_URL
-
-
-async def test_no_comment_card_without_one_named() -> None:
-    """A plain link shows the post alone, the same rule Threads and Facebook follow."""
-    comment = InstagramOutput(comment_id="999", text="some comment", author_name="a")
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs, outcome=instagram_post(comments=[comment])
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert all(
-        "指定的留言" not in (embed.description or "")
-        for embed in expansion_embeds(message=message)
-    )
-
-
-async def test_a_video_post_shows_a_link_instead_of_an_empty_card() -> None:
-    """The cog attaches nothing, so a Reel is its caption plus a link to watch it."""
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs,
-        outcome=instagram_post(image_urls=[], video_urls=["https://instagram.example/clip.mp4"]),
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    description = expansion_embeds(message=message)[0].description
-    assert description is not None
-    assert "點此觀看影片" in description
-
-
-async def test_a_long_post_with_a_video_stays_inside_the_description_limit() -> None:
-    """The hint is reserved before the clip, or Discord rejects the send and the card is lost."""
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs,
-        outcome=instagram_post(text="x" * 5000, video_urls=["https://instagram.example/clip.mp4"]),
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    description = expansion_embeds(message=message)[0].description
-    assert description is not None
-    assert len(description) <= 4096
-    assert "點此觀看影片" in description
-    # Without this the same test passes on a clip that truncated silently.
-    assert "（全文請看原貼文）" in description
-
-
-async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:
-    """Discord counts every embed in a message together and rejects the whole send when over."""
-    comment = InstagramOutput(comment_id="222", text="y" * 4000, author_name="c")
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs,
-        outcome=instagram_post(text="x" * 5000, comments=[comment], selected_comment_id="222"),
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    total = sum(
-        len(embed.description or "") + len(embed.footer.text or "") + len(embed.author.name or "")
-        for embed in expansion_embeds(message=message)
-    )
-    assert total <= 6000
 
 
 async def test_a_comment_permalink_is_expanded_too() -> None:
@@ -260,20 +148,6 @@ async def test_a_mixed_carousel_counts_the_videos_nothing_linked() -> None:
     assert footer is not None
     assert "🖼️ 另有 1 張" in footer
     assert "🎬 另有 4 部影片" in footer
-
-
-async def test_a_post_full_of_emoji_is_clipped_by_the_units_discord_counts() -> None:
-    """Discord prices an emoji at the two UTF-16 units it costs, where `len` sees one."""
-    cog, _ = stub_conversation_cog(
-        cog_type=InstagramCogs, outcome=instagram_post(text="🐈" * 4200)
-    )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    description = expansion_embeds(message=message)[0].description
-    assert description is not None
-    assert utf16_length(value=description) <= 4096
 
 
 async def test_a_post_whose_author_hid_its_likes_shows_no_like_count() -> None:

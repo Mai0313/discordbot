@@ -1,22 +1,21 @@
 """Tests for Instagram URL parsing and post extraction.
 
-Every test replaces `InstagramDownloader._fetch_page`, the one seam that touches the network,
-the same way the Threads and Facebook tests do. The fixture page mirrors the real one's shape
-where it matters: the wanted post sits among the author's OTHER posts, which carry the same
-keys and would be picked up by anything positional.
+Every test replaces `InstagramDownloader._fetch_page`, the one seam that touches the network.
+The fixture page mirrors the real one's shape where it matters: the wanted post sits among the
+author's OTHER posts, which carry the same keys and would be picked up by anything positional.
 """
 
-import json
 from typing import Any
 
 import pytest
 
 from discordbot.services.platforms.instagram import (
-    FetchedPage,
     InstagramURL,
     InstagramDownloader,
     is_instagram_post_url,
 )
+
+from tests.helpers.link_sources import serve_page, sjs_script
 
 _CODE = "Dc5eNjYkoZE"
 _COMMENT_ID = "17946527169275440"
@@ -99,29 +98,26 @@ def _page(
     comments: list[dict[str, Any]] | None = None,
     others: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Wraps the payloads into the script blocks the parser scans, plus one it must skip."""
-    blocks = [
-        json.dumps(
-            obj={
-                "require": [
-                    {
-                        "__bbox": {
-                            "result": {
-                                "data": {"xdt_media": media if media is not None else _media()}
-                            }
-                        }
-                    }
-                ]
-            }
-        )
-    ]
+    """Wraps the payloads into the script blocks the parser scans, plus one it must skip.
+
+    The "more posts" rail comes ahead of the post, where a reader taking the first node it meets
+    would read one of `others` instead.
+    """
+    blocks: list[dict[str, Any]] = []
     if others:
-        blocks.append(json.dumps(obj={"data": {"more_posts": {"edges": others}}}))
+        blocks.append({"data": {"more_posts": {"edges": others}}})
+    blocks.append({
+        "require": [
+            {
+                "__bbox": {
+                    "result": {"data": {"xdt_media": media if media is not None else _media()}}
+                }
+            }
+        ]
+    })
     if comments:
-        blocks.append(json.dumps(obj={"data": {"comments": comments}}))
-    scripts = "".join(
-        f'<script type="application/json" data-sjs>{block}</script>' for block in blocks
-    )
+        blocks.append({"data": {"comments": comments}})
+    scripts = "".join(sjs_script(payload=block) for block in blocks)
     return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
 
 
@@ -129,13 +125,7 @@ def _downloader(
     monkeypatch: pytest.MonkeyPatch, *, html: str, final_url: str = _URL
 ) -> InstagramDownloader:
     """A downloader whose only network call is replaced with canned HTML."""
-
-    def fake_fetch_page(self: InstagramDownloader, *, url: str) -> FetchedPage:
-        """Serves the canned page regardless of the URL asked for."""
-        del self, url
-        return FetchedPage(html=html, final_url=final_url)
-
-    monkeypatch.setattr(target=InstagramDownloader, name="_fetch_page", value=fake_fetch_page)
+    serve_page(monkeypatch, downloader=InstagramDownloader, html=html, final_url=final_url)
     return InstagramDownloader()
 
 
@@ -173,14 +163,19 @@ def test_a_url_that_names_no_post_is_refused(url: str) -> None:
     assert not is_instagram_post_url(url=url)
 
 
-def test_the_comment_permalink_is_parsed_but_never_fetched() -> None:
+def test_the_comment_permalink_is_parsed_but_never_fetched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """That URL answers with a page carrying no post payload, so the fetch must not use it."""
+    fetched = serve_page(monkeypatch, downloader=InstagramDownloader, html=_page())
     parsed = InstagramURL(raw_url=f"{_URL}c/{_COMMENT_ID}/?img_index=1")
+
+    InstagramDownloader().parse_metadata(url=parsed.raw_url)
 
     assert parsed.shortcode == _CODE
     assert parsed.comment_id == _COMMENT_ID
     assert parsed.clean_url == _URL
-    assert "/c/" not in parsed.clean_url
+    assert fetched == [_URL]
 
 
 def test_clean_url_drops_the_share_token_and_the_image_index() -> None:
@@ -260,7 +255,7 @@ def test_the_node_carrying_the_media_wins_over_a_stub_of_the_same_post(
     would go out with the caption but none of the pictures.
     """
     stub = _other_post(code=_CODE, caption="a stub of this same post")
-    downloader = _downloader(monkeypatch, html=_page(media=stub, others=[_media()]))
+    downloader = _downloader(monkeypatch, html=_page(others=[stub]))
 
     conversation = downloader.parse_metadata(url=_URL)
 
@@ -271,9 +266,13 @@ def test_the_node_carrying_the_media_wins_over_a_stub_of_the_same_post(
 
 
 def test_a_post_serialised_only_as_a_stub_is_still_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Preferring the node with media must not mean refusing a page that carries none of it."""
+    """Preferring the node with media must not mean refusing a page that carries none of it.
+
+    The rail ahead of it carries no media either, so only the shortcode tells the two apart.
+    """
     stub = _other_post(code=_CODE, caption="all this page gave")
-    downloader = _downloader(monkeypatch, html=_page(media=stub))
+    others = [_other_post(code="DVigY57EpeH", caption="somebody else's caption")]
+    downloader = _downloader(monkeypatch, html=_page(media=stub, others=others))
 
     conversation = downloader.parse_metadata(url=_URL)
 
@@ -356,6 +355,8 @@ def test_a_video_post_yields_its_playable_url(monkeypatch: pytest.MonkeyPatch) -
     post = conversation.target
     assert post is not None
     assert post.video_urls == ["https://instagram.example/clip.mp4"]
+    # The node's own thumbnail is the video's cover, not a picture of the post.
+    assert post.image_urls == []
     assert post.is_readable
 
 
@@ -384,15 +385,7 @@ def test_a_page_with_no_post_payload_reads_as_empty(monkeypatch: pytest.MonkeyPa
 
 def test_a_url_naming_no_post_is_never_fetched(monkeypatch: pytest.MonkeyPatch) -> None:
     """A profile link must cost no request at all, not a request that comes back empty."""
-    fetched: list[str] = []
-
-    def fake_fetch_page(self: InstagramDownloader, *, url: str) -> FetchedPage:
-        """Records that it was called, which this test asserts never happens."""
-        del self
-        fetched.append(url)
-        return FetchedPage(html=_page(), final_url=url)
-
-    monkeypatch.setattr(target=InstagramDownloader, name="_fetch_page", value=fake_fetch_page)
+    fetched = serve_page(monkeypatch, downloader=InstagramDownloader, html=_page())
 
     conversation = InstagramDownloader().parse_metadata(url="https://www.instagram.com/c_cylynn/")
 
