@@ -5,15 +5,11 @@ error path; everything after delivery is best-effort and must leave the picture 
 screen whatever happens. The persona reply itself lives in `answer.py`, since it is the same act
 as any other streamed reply.
 
-They share a second thing, which only `/ask` made visible (#619). Both generations can outlast the
-surface they were going to answer through: the omni render bounds a whole edit at
-`VIDEO_RENDER_TIMEOUT_SECONDS` plus a `FILES_READY_TIMEOUT_SECONDS` at each end, and the image
-render carries no bound of its own at all beyond the proxy client's, which it can spend twice on
-the empty-payload retry with `PROMPT_REFINE_TIMEOUT_SECONDS` in front. Against a channel that
-costs nothing; against an interaction token it costs the entire turn, because the delivery and
-the failure notice both go through it and both 404 together. So each generation runs inside
-`TurnSurface.delivery_budget_seconds`, which is None on the gateway path and leaves the routes
-exactly as they were there.
+They share a second thing: either generation can outlast the surface it was going to answer
+through. Against a channel that costs nothing; against an interaction token it costs the entire
+turn, because the delivery and the failure notice both go through it and both 404 together.
+So each generation runs inside `TurnSurface.delivery_budget_seconds`, which is None on the
+gateway path and adds no bound there.
 """
 
 import time
@@ -167,16 +163,12 @@ class MediaReplyRoutes(BaseModel):
         )
         async with self._delivery_window(context_task=context_task) as window:
             async with window:
-                if replied_to is not None:
-                    own_bytes, ref_bytes = await asyncio.gather(
-                        toolkit.input_builder.get_image_source_bytes(message=message),
-                        toolkit.input_builder.get_image_source_bytes(message=replied_to),
+                image_bytes_list = [
+                    loaded.data
+                    for loaded in await toolkit.input_builder.get_turn_image_sources(
+                        message=message, replied_to=replied_to
                     )
-                    image_bytes_list = own_bytes + ref_bytes
-                else:
-                    image_bytes_list = await toolkit.input_builder.get_image_source_bytes(
-                        message=message
-                    )
+                ]
 
                 # Refine the raw request into a full generation/edit prompt first (best-effort,
                 # raw prompt on disable / failure); the source bytes ride along so an edit prompt
@@ -272,15 +264,11 @@ class MediaReplyRoutes(BaseModel):
                     # No source video: gather the message + replied-to images as subject
                     # references, capped to the same set render sends (omni takes a few), so the
                     # director grounds on exactly those frames and no unused bytes ride the path.
-                    image_groups = await asyncio.gather(
-                        *(
-                            toolkit.input_builder.get_image_sources_with_mime(message=m)
-                            for m in source_messages
+                    images = (
+                        await toolkit.input_builder.get_turn_image_sources(
+                            message=message, replied_to=replied_to
                         )
-                    )
-                    images = [loaded for group in image_groups for loaded in group][
-                        :MAX_VIDEO_REFERENCE_IMAGES
-                    ]
+                    )[:MAX_VIDEO_REFERENCE_IMAGES]
                     # Refine the raw request into a full motion/camera prompt first (best-effort,
                     # raw prompt on disable / failure); the reference frames ride along as
                     # grounding.

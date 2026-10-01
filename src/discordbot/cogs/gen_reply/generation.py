@@ -1,41 +1,8 @@
-"""Media-generation services: the image, voice, video, and music render calls behind one shape.
+"""Media-generation services: the prompt director and the image, voice, video and music renders.
 
-All runtime media generators are BaseModel services held as `ReplyToolkit` `cached_property`s, so
-every media render goes through the same calling convention instead of a half-free-function /
-half-class mix:
-
-- `PromptGenerator` is the upstream prompt director shared by the router IMAGE and VIDEO routes:
-  `refine` expands a thin user request into one rich, self-contained generation prompt with the
-  grounding tools (so a vague "draw the heroine of some anime" is looked up first), best-effort and
-  gated per-route by `IMAGE_REFINE_PROMPT_ENABLED` / `VIDEO_REFINE_PROMPT_ENABLED`. It runs on the
-  proxy like the answer model. The QA-route inline
-  `<generate-image>` marker does NOT refine (its description is already written by the answer model).
-- `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
-  is the raising primitive shared by the router IMAGE route and the best-effort inline path (both
-  edit source pixels when the message carried an image); `generate` is the QA-route
-  `<generate-image>` marker's best-effort wrapper (timeout, None on any failure) so a slow inline
-  render never blocks anything but its own reply.
-- `VoiceGenerator` runs the text-to-speech model on the same LiteLLM proxy (`AsyncOpenAI`) as the
-  image generator. Kept on the proxy on purpose: TTS has many interchangeable providers, so the
-  one-SDK proxy path stays the most portable, unlike the omni video and Lyria music renders
-  below, which can only go direct.
-  `generate` is best-effort but returns a `VoiceClip` carrying a `VoiceOutcome`
-  (OK / EMPTY / TIMEOUT / ERROR) rather than a bare None, so the caller can hint a timeout (⏱️)
-  apart from any other failure (⚠️). The `speechify_discord_markup` helper that prepares its spoken
-  input lives alongside it.
-- `VideoGenerator` runs the native-omni render behind the VIDEO route DIRECT to Google
-  (`genai.Client`, the Interactions API is Gemini-only, not reachable via the proxy). One model
-  (`interactions.create`) backs text / reference-image / source-video generation: a `source_video`
-  is pinned to `task="edit"` while everything else omits the task so omni infers the mode
-  (image_to_video / reference_to_video / text_to_video). `render` is the raising primitive for the
-  VIDEO route; `generate` is its best-effort twin for the QA-route `<generate-video>` marker (None on
-  any failure), mirroring `ImageGenerator`.
-- `MusicGenerator` runs the native-Lyria render behind the QA-route `<generate-music>` marker via the
-  Gemini Interactions API, also DIRECT to Google. Like `ImageGenerator.generate` it is best-effort
-  only (`generate`, None on any failure), since music is inline-only.
-
-Keeping them here means a future provider swap (or a move of a render off the proxy) changes
-one place.
+Each is a BaseModel service held as a `ReplyToolkit` `cached_property`, so every media render
+goes through one calling convention, and a provider swap (or a move of a render off the proxy)
+changes one place.
 """
 
 import re
@@ -44,7 +11,6 @@ import time
 import base64
 from typing import TYPE_CHECKING, Protocol, cast
 import asyncio
-from collections.abc import AsyncIterator
 
 from google import genai
 from openai import AsyncOpenAI, APITimeoutError
@@ -117,27 +83,25 @@ MUSIC_STYLE_DIRECTIVE = (
     "instrumental, follow the description instead."
 )
 
-# Map a returned audio mime type to a Discord-playable file extension. Discord's inline audio
-# player keys off the extension, and `AudioContent.mime_type` can be a non-obvious value
-# (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would yield an unplayable
-# name; fall back to `.mp3` for anything unmapped.
-_AUDIO_MIME_EXTENSIONS = {
-    "audio/mp3": ".mp3",
-    "audio/mpeg": ".mp3",
-    "audio/wav": ".wav",
-    "audio/l16": ".wav",
-    "audio/m4a": ".m4a",
-    "audio/aac": ".m4a",
-    "audio/ogg": ".ogg",
-    "audio/opus": ".ogg",
-    "audio/flac": ".flac",
-    "audio/aiff": ".aiff",
-}
-
 
 def music_filename(*, mime_type: str | None) -> str:
     """The Discord attachment filename for a generated music clip, by its audio mime type."""
-    extension = _AUDIO_MIME_EXTENSIONS.get((mime_type or "").lower(), ".mp3")
+    # Discord's inline audio player keys off the extension, and `AudioContent.mime_type` can be a
+    # non-obvious value (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would
+    # yield an unplayable name; anything unmapped falls back to `.mp3`.
+    audio_mime_extensions = {
+        "audio/mp3": ".mp3",
+        "audio/mpeg": ".mp3",
+        "audio/wav": ".wav",
+        "audio/l16": ".wav",
+        "audio/m4a": ".m4a",
+        "audio/aac": ".m4a",
+        "audio/ogg": ".ogg",
+        "audio/opus": ".ogg",
+        "audio/flac": ".flac",
+        "audio/aiff": ".aiff",
+    }
+    extension = audio_mime_extensions.get((mime_type or "").lower(), ".mp3")
     return f"music{extension}"
 
 
@@ -329,7 +293,7 @@ class PromptGenerator(BaseModel):
         ..., description="Shared LiteLLM-proxy client used for the refinement call."
     )
     prompt_model: ModelSettings = Field(
-        ..., description="Model settings for the prompt director (flash + high + grounding)."
+        ..., description="Model settings for the prompt director, which needs the grounding tools."
     )
 
     async def refine(
@@ -402,10 +366,12 @@ class PromptGenerator(BaseModel):
 class VoiceGenerator(BaseModel):
     """Best-effort text-to-speech for spoken replies through the LiteLLM proxy.
 
-    Holds the shared async client plus the fixed voice / style / speed config; `generate`
-    renders one reply to a `VoiceClip` carrying the WAV bytes (when produced) plus an outcome
-    (OK / EMPTY / TIMEOUT / ERROR), so the caller both degrades to a text reply and can hint
-    why the clip is missing (a timeout vs. any other provider error, e.g. a policy refusal).
+    Kept on the proxy on purpose: TTS has many interchangeable providers, so the one-SDK proxy
+    path stays the most portable, unlike the omni video and Lyria music renders, which can only
+    go direct. `generate` renders one reply with the fixed `TTS_*` voice config to a `VoiceClip`
+    carrying the WAV bytes (when produced) plus an outcome (OK / EMPTY / TIMEOUT / ERROR), so
+    the caller both degrades to a text reply and can hint why the clip is missing (a timeout
+    vs. any other provider error, e.g. a policy refusal).
 
     The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it fixes the voice age/gender and lets
     the tone follow the reply's own wording), prepended to the input text because the proxy's
@@ -421,14 +387,6 @@ class VoiceGenerator(BaseModel):
     # A bare string rather than a `ModelSettings`, since TTS dispatches no effort and offers
     # no tools; the caller reads the name off the catalog's `tts_model`.
     model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
-    voice: str = Field(
-        default=TTS_VOICE, description="Fixed voice timbre name for spoken replies."
-    )
-    style_directive: str = Field(
-        default=TTS_STYLE_DIRECTIVE,
-        description="Style directive prepended to the spoken text (fixes voice age/gender).",
-    )
-    speed: float = Field(default=TTS_SPEED, description="Playback speed passed to the TTS model.")
 
     async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
         """Renders reply text to a VoiceClip, reporting why it ended for best-effort hinting."""
@@ -441,10 +399,10 @@ class VoiceGenerator(BaseModel):
             return VoiceClip(outcome=VoiceOutcome.EMPTY)
         try:
             responses = await self.client.audio.speech.create(
-                input=f"{self.style_directive}\n\n{spoken}",
+                input=f"{TTS_STYLE_DIRECTIVE}\n\n{spoken}",
                 model=self.model_name,
-                voice=self.voice,
-                speed=self.speed,
+                voice=TTS_VOICE,
+                speed=TTS_SPEED,
                 extra_headers={"x-litellm-end-user-id": end_user_id},
                 timeout=VOICE_TIMEOUT_SECONDS,
             )
@@ -452,7 +410,7 @@ class VoiceGenerator(BaseModel):
             logfire.debug(
                 "Voice synthesis succeeded",
                 model=self.model_name,
-                speed=self.speed,
+                speed=TTS_SPEED,
                 end_user_id=end_user_id,
                 text_chars=len(spoken),
                 audio_bytes=len(audio),
@@ -510,10 +468,10 @@ class _InteractionResult(Protocol):
     trap: `google.genai.interactions` star-imports `Interaction` from both the request-union
     alias (which carries none of these attributes) and the response module, and only the
     runtime import order makes the response class win. `ty` resolves it to the response class,
-    so a nominal `cast("Interaction", ...)` is no longer wrong there, merely fragile: its
-    meaning rests on that import order, while this Protocol pins the attributes actually read.
-    That the collision is real rather than theoretical was demonstrated by mypy, which bound
-    the request union before it was dropped in #356; no checker in the tree will show it again.
+    so a nominal `cast("Interaction", ...)` is not wrong there, merely fragile: its meaning rests
+    on that import order, while this Protocol pins the attributes actually read. The collision
+    is real rather than theoretical, since a checker can bind the request union instead, and no
+    checker in the tree will show it.
     """
 
     @property
@@ -565,25 +523,19 @@ class VideoGenerator(BaseModel):
         Gemini-only). A `source_video` is uploaded to the Files API and edited in place with an
         explicit `task="edit"`; otherwise the task is omitted and omni infers image_to_video /
         reference_to_video / text_to_video from the prompt plus any input images (up to
-        `MAX_VIDEO_REFERENCE_IMAGES`, each carrying its real mime type — omni 400s an image content
-        block whose mime is empty, "Unsupported MIME type: "). 16:9 is sent only for pure text (an
-        edit keeps the source clip's ratio, and an image request may become image_to_video, which
-        follows the source frame's ratio, so no aspect ratio is sent there); `delivery="uri"` so the
+        `MAX_VIDEO_REFERENCE_IMAGES`). 16:9 is sent only for pure text; `delivery="uri"` so the
         clip comes back as a Files URI (no base64 bloat) and is downloaded with a bounded retry
-        (`_download_output_video`):
-        the file can still be finalizing when the interaction reports `completed`, so a larger clip's
-        first download may fail and is retried until it lands. Duration is
-        left to omni's default. Raises `RuntimeError` when the interaction is not `completed` or
-        carries no video, folding in `status` + `output_text` (omni signals a soft refusal /
-        incomplete / budget_exceeded that way; the `Interaction` has no `error` / `rai_*` field).
+        (`_download_output_video`). Duration is left to omni's default. Raises `RuntimeError`
+        when the interaction is not `completed` or carries no video, folding in `status` +
+        `output_text` (omni signals a soft refusal / incomplete / budget_exceeded that way; the
+        `Interaction` has no `error` / `rai_*` field).
         """
         text = prompt or "Generate a video from the message content."
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
-        # A source-video edit is the one task we still pin: with task omitted, omni infers the mode
+        # A source-video edit is the one task pinned: with task omitted, omni infers the mode
         # (image_to_video vs reference_to_video vs text_to_video) from the prompt + input media,
-        # which follows the #317 "hand the raw request over and let the model decide" direction and
-        # covers image_to_video without a brittle image-count heuristic. If a future deployment finds
-        # the inferred mode underwhelming (e.g. a lone image not animated in place), pin it back here.
+        # which covers image_to_video without a brittle image-count heuristic. If the inferred
+        # mode underwhelms (e.g. a lone image not animated in place), pin it here.
         generation_config: GenerationConfigParam | None = None
         task_label: str
         # 16:9 is the generation default we keep for pure text; it is omitted when images are present
@@ -626,11 +578,8 @@ class VideoGenerator(BaseModel):
                 generation_config=generation_config,
                 timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
             )
-        # No `stream=True`, so this is the interaction rather than an event stream: exclude the
-        # stream at runtime, then read the result through the structural `_InteractionResult`
-        # view (its docstring has why naming the genai response class is not enough on its own).
-        if isinstance(interaction, AsyncIterator):
-            raise RuntimeError("Video generation returned an event stream, not an interaction")
+        # No `stream=True`, so this is the interaction rather than an event stream, read through
+        # the structural `_InteractionResult` view (its docstring has why).
         result = cast("_InteractionResult", interaction)
         video = result.output_video
         if result.status != "completed" or video is None or video.uri is None:
@@ -798,9 +747,7 @@ class MusicGenerator(BaseModel):
                     system_instruction=MUSIC_STYLE_DIRECTIVE,
                 )
             # No `stream=True`, so this is the interaction rather than an event stream (read via
-            # `_InteractionResult`, see its docstring); the guard lands in the except -> None path.
-            if isinstance(interaction, AsyncIterator):
-                raise RuntimeError("Music generation returned an event stream, not an interaction")
+            # `_InteractionResult`, see its docstring).
             audio = cast("_InteractionResult", interaction).output_audio
             if audio is None or not audio.data:
                 logfire.warn(

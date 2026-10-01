@@ -15,7 +15,7 @@ google-genai Interactions types here is the documented carve-out for video inges
 """
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from collections.abc import AsyncIterator
 
 from google import genai
@@ -46,10 +46,6 @@ if TYPE_CHECKING:
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
     from openai.types.responses.response_input_image_param import ResponseInputImageParam
-
-
-_INLINE_PREFIX: Final = "data:"
-_BASE64_MARKER: Final = ";base64"
 
 
 def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "document"]:
@@ -91,11 +87,13 @@ def _media_content(
     an empty attachment inlines to a header with no payload at all. Neither is worth sending, so
     an unusable one is dropped and said out loud instead.
     """
-    if not reference.startswith(_INLINE_PREFIX):
+    inline_prefix = "data:"
+    base64_marker = ";base64"
+    if not reference.startswith(inline_prefix):
         return cast("ContentParam", {"type": kind, "uri": reference})
-    header, _, payload = reference[len(_INLINE_PREFIX) :].partition(",")
-    mime_type = header.removesuffix(_BASE64_MARKER).split(";")[0].strip()
-    if not header.endswith(_BASE64_MARKER) or not mime_type or not payload:
+    header, _, payload = reference[len(inline_prefix) :].partition(",")
+    mime_type = header.removesuffix(base64_marker).split(";")[0].strip()
+    if not header.endswith(base64_marker) or not mime_type or not payload:
         logfire.warn(
             "dropping an inlined attachment the Interactions turn cannot carry",
             kind=kind,
@@ -125,7 +123,7 @@ def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
     if part_type == "input_file":
         file_part = cast("ResponseInputFileParam", part)
         # `file_data` is the inlined half: a PDF rendered without the Files API arrives only
-        # there, and reading the other two alone dropped it with no record anywhere (#661).
+        # there, and reading the other two alone would drop it without a log line.
         reference = (
             file_part.get("file_url") or file_part.get("file_id") or file_part.get("file_data")
         )

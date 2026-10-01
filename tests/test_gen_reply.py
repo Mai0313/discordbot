@@ -100,6 +100,7 @@ from discordbot.cogs.gen_reply.context import (
 from discordbot.cogs.gen_reply.markers import (
     MAX_MEMORY_NOTES,
     MAX_INLINE_IMAGES,
+    InlineMarkers,
     extract_inline_markers,
     scrub_markers_for_preview,
 )
@@ -152,6 +153,7 @@ from discordbot.cogs.gen_reply.speculation import (
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
+from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.services.memory.server_prompts import (
@@ -867,9 +869,12 @@ def _install_streamer(
         def __init__(self, **kwargs: object) -> None:
             """Records the constructor kwargs and seeds the marker notes."""
             built.append(kwargs)
-            self.memory_notes = list(memory_notes)
-            self.forget_notes = list(forget_notes)
-            self.server_memory_notes = list(server_memory_notes)
+            self.markers = InlineMarkers(
+                cleaned_text="",
+                memory_notes=list(memory_notes),
+                forget_notes=list(forget_notes),
+                server_memory_notes=list(server_memory_notes),
+            )
 
         async def stream(self, *, responses: object) -> str:
             """Returns the canned reply, or raises it."""
@@ -2281,12 +2286,12 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    async def _load(*, message: object) -> list[LoadedMedia]:
+    async def _load(*, message: object, replied_to: object) -> list[LoadedMedia]:
         """Stands in for the input builder loading the message's uploaded image."""
-        del message
+        del message, replied_to
         return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
 
-    builder = SimpleNamespace(get_image_sources_with_mime=_load)
+    builder = SimpleNamespace(get_turn_image_sources=_load)
 
     await _streamer(
         message=message,
@@ -2543,12 +2548,12 @@ async def test_video_marker_uses_uploaded_image_as_reference() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    async def _load(*, message: object) -> list[LoadedMedia]:
+    async def _load(*, message: object, replied_to: object) -> list[LoadedMedia]:
         """Stands in for the input builder loading the message's uploaded image."""
-        del message
+        del message, replied_to
         return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
 
-    builder = SimpleNamespace(get_image_sources_with_mime=_load)
+    builder = SimpleNamespace(get_turn_image_sources=_load)
 
     await _streamer(
         message=message,
@@ -3544,10 +3549,10 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
         streamer=streamer, open_stream=open_stream, message_id=message.id
     )
 
-    assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
+    assert RETRY_HINT_EMOJI in message.added_reactions
     reply = cast("FakeReply", streamer.reply)
     assert reply.edits[0] == (
-        f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
+        f"-# {RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
     )
     # And the notice is transient: the finished answer takes the message back.
     assert (reply.content or "").startswith("done")
@@ -3623,7 +3628,7 @@ async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
             streamer=streamer, open_stream=open_stream, message_id=message.id
         )
 
-    assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
+    assert RETRY_HINT_EMOJI in message.added_reactions
     assert message.replies == []
 
 
@@ -5252,8 +5257,8 @@ async def test_handle_image_reply_retries_the_persona_stream_without_captioning_
     assert (delivered.content or "").startswith("done")
     # But nothing announced it: not on the image, and not on the user's message.
     written = [delivered.content or "", *delivered.edits]
-    assert all(streaming_module.RETRY_HINT_EMOJI not in text for text in written)
-    assert streaming_module.RETRY_HINT_EMOJI not in message.added_reactions
+    assert all(RETRY_HINT_EMOJI not in text for text in written)
+    assert RETRY_HINT_EMOJI not in message.added_reactions
 
 
 async def test_handle_image_reply_best_effort_when_reply_fails(
@@ -5677,7 +5682,7 @@ class _NeverFinishes:
 
 
 async def test_a_video_outliving_the_ask_window_says_so_instead_of_hanging() -> None:
-    """Out of surface before out of work, the route stops while it can still be heard (#619).
+    """Out of surface before out of work, the route stops while it can still be heard.
 
     The render is left running rather than made to fail: what is pinned here is that the route
     gives up on it. A clip that lands after the interaction token dies is delivered into a 404,
@@ -7772,7 +7777,7 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
         ([], None, [], ["42"], [], ["📖"]),
         # Nobody present is nameable and the route picked a table-only member: the footer has
         # no name to print, so it reports the bare count. Only reachable because the optional
-        # offer is not gated on a deterministic memory existing (#663).
+        # offer is not gated on a deterministic memory existing.
         ([42], (42, "Boss", "李董"), [], ["42"], ["\n-# 📖 讀了 1 人的記憶"], []),
     ],
     ids=[

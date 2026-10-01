@@ -37,10 +37,8 @@ if TYPE_CHECKING:
 class AttachmentSource(BaseModel):
     """One renderable attachment source classified from message metadata.
 
-    Collected once per message and shared by the text-only marker render, the
-    Files-API upload, the per-message render cache key, and the IMAGE route's
-    raw-bytes path. Carries only metadata (no bytes, no network) so it is safe to
-    build on the route critical path.
+    Collected once per message and shared by every render of it. Carries only metadata (no
+    bytes, no network) so it is safe to build on the route critical path.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -90,9 +88,9 @@ class MessageInputBuilder(BaseModel):
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
     # time, so an edit or a late embed unfurl that swaps a URL without changing the
-    # source count still re-renders. Each entry pairs the files' real expiry (the earliest
-    # Gemini `expiration_time` across the rendered parts) with the parts, so a handle is
-    # re-uploaded just before it actually expires instead of on a guessed fixed TTL.
+    # source count still re-renders. Each entry pairs the parts with the earliest expiry among
+    # them (the provider's own for an uploaded file), so a handle is re-uploaded just before it
+    # actually expires instead of on a guessed fixed TTL.
     _attachment_cache: OrderedDict[
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
@@ -369,8 +367,8 @@ class MessageInputBuilder(BaseModel):
         image sources are collected; non-image files are not editable as images. The
         IMAGE/VIDEO routes run on the image/video model, so the slow model's modality gate
         is not applied here. The MIME is kept because omni's `ImageContentParam` requires a real
-        one (an empty mime 400s "Unsupported MIME type: "); the IMAGE route, which needs only the
-        pixels, drops it via `get_image_source_bytes`.
+        one (an empty mime 400s "Unsupported MIME type: "); an image edit, which needs only the
+        pixels, drops it.
         """
         tasks: list[Coroutine[object, object, LoadedMedia]] = []
         for source in self.collect_attachment_sources(message=message):
@@ -387,9 +385,15 @@ class MessageInputBuilder(BaseModel):
                 )
         return [item for item in loaded if isinstance(item, LoadedMedia)]
 
-    async def get_image_source_bytes(self, message: Message) -> list[bytes]:
-        """Returns downscaled bytes of a message's image sources for the IMAGE route."""
-        return [loaded.data for loaded in await self.get_image_sources_with_mime(message=message)]
+    async def get_turn_image_sources(
+        self, message: Message, replied_to: Message | None
+    ) -> list[LoadedMedia]:
+        """Returns a turn's source images: the message's own, then the replied-to message's."""
+        messages = [message] if replied_to is None else [message, replied_to]
+        groups = await asyncio.gather(
+            *(self.get_image_sources_with_mime(message=source) for source in messages)
+        )
+        return [loaded for group in groups for loaded in group]
 
     async def get_video_sources(self, message: Message) -> list[LoadedMedia]:
         """Best-effort (bytes, MIME) of the FIRST raw video attachment, for omni editing.
@@ -613,11 +617,10 @@ class MessageInputBuilder(BaseModel):
 
         A sticker is named rather than called an image: it renders through the image path like
         any other, but the marker is all a text-only reader gets, and "image" makes a pure
-        reaction indistinguishable from a screenshot someone needs read. That cost the effort
-        grade 18 of 20 on a sticker-only message, and naming it takes the same message to 20 of
-        20 `low` with no prompt change (#493). The route reads the same marker and does not move
-        on it: `ROUTE_PROMPT`'s IMAGE branch keys on "an image", yet an edit request over a
-        sticker measured IMAGE 20 of 20 under either spelling.
+        reaction indistinguishable from a screenshot someone needs read, which costs a
+        sticker-only message its `low` effort grade. The route reads the same marker and does not
+        move on it: `ROUTE_PROMPT`'s IMAGE branch keys on "an image", yet an edit request over a
+        sticker routes to IMAGE under either spelling.
         """
         content = await self.get_cleaned_content(message=message)
         markers: list[ResponseInputTextParam] = [

@@ -43,12 +43,7 @@ from discordbot.services.memory.writer import (
     server_subject,
     target_centered_memory_messages,
 )
-from discordbot.cogs.gen_reply.streaming import (
-    MEMORY_WRITE_EMOJI,
-    MEMORY_FORGET_EMOJI,
-    ResponseStreamer,
-    stream_answer_with_retry,
-)
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
 from discordbot.services.memory.pipeline import schedule_memory_update
 from discordbot.cogs.gen_reply.references import source_channel_is_public
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
@@ -57,7 +52,11 @@ from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
-from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
+from discordbot.cogs.gen_reply.status_marks import (
+    YOUTUBE_EMOJI,
+    MEMORY_WRITE_EMOJI,
+    MEMORY_FORGET_EMOJI,
+)
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
@@ -187,17 +186,14 @@ class AnswerTurn(BaseModel):
 
         Shared by the IMAGE and VIDEO routes' post-delivery reply. `reply` is the delivered media
         message (native attachment) or None when the media was hosted as a separate URL; the
-        persona-base message is built from it INSIDE the protected flow (`persona_base_reply`), so a
-        base-creation or streaming failure is swallowed here instead of surfacing to the outer error
-        path, and a fresh hosted-case base that never received content is deleted (never an orphan).
-        Builds the answer-path input (history, selected user memory, tone note, reference, current),
-        appends the just-made media as the focus, and streams onto the base (its content edits keep an
-        attached media). Injects only the selected user memory (already read through the
-        compartments this conversation may open) plus the author's tone note, never the server
-        memory block, and seeds the
-        memory labels so the footer matches the QA path. Consumes the
-        speculative `context_task` (awaited here so its build overlaps generation); any failure
-        leaves the delivered media untouched.
+        persona-base message is built from it INSIDE the protected flow (`persona_base_reply`), so
+        a base-creation or streaming failure is swallowed here instead of surfacing to the outer
+        error path, and a fresh hosted-case base that never received content is deleted (never an
+        orphan). Builds the answer-path input, appends the just-made media as the focus, and
+        streams onto the base (its content edits keep an attached media), seeding the memory
+        labels so the footer matches the QA path. Consumes the speculative `context_task`
+        (awaited here so its build overlaps generation); any failure leaves the delivered media
+        untouched.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
@@ -485,12 +481,12 @@ class AnswerTurn(BaseModel):
         # A <deep-research> brief the answer model emitted launches a research thread. Done after
         # the stream (and its single media edit) so it never touches the reply's attachment edit;
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
-        if research_offered and streamer.research_brief:
+        if research_offered and streamer.markers.research_brief:
             await maybe_launch_research(
                 bot=self.toolkit.bot,
                 message=self.message,
                 anchor=streamer.reply,
-                brief=streamer.research_brief,
+                brief=streamer.markers.research_brief,
             )
         # Recorded before the memory review is scheduled, so a conversation the store is meant to
         # carry survives even if the fire-and-forget review below never lands.
@@ -535,8 +531,8 @@ class AnswerTurn(BaseModel):
                 username=message.author.name,
                 user_id=message.author.id,
             ),
-            remember_notes=tuple(streamer.memory_notes),
-            forget_notes=tuple(streamer.forget_notes),
+            remember_notes=tuple(streamer.markers.memory_notes),
+            forget_notes=tuple(streamer.markers.forget_notes),
             report=memory_report_for(streamer=streamer),
         )
         # Server memory learns community-level signal from the whole conversation (no
@@ -562,5 +558,5 @@ class AnswerTurn(BaseModel):
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),
-            remember_notes=tuple(streamer.server_memory_notes),
+            remember_notes=tuple(streamer.markers.server_memory_notes),
         )

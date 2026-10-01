@@ -125,8 +125,9 @@ class GeminiFileUploader(FileUploadRenderer):
         )
         if uploaded is None:
             return None
-        # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
-        # attachment marker is derived from message metadata, not from this part.
+        # The LiteLLM bridge drops the filename, but the Interactions answer path classifies the
+        # part by its extension. The route's attachment marker is derived from message metadata,
+        # not from this part.
         part = ResponseInputFileParam(
             type="input_file", file_id=uploaded.uri, filename=source_name
         )
