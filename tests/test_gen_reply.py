@@ -8972,8 +8972,8 @@ async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
 ) -> None:
     """The resumed review and the consolidation sweep both run under the scope's flavor.
 
-    The recorder answers the review with no valid draft, and a failed review never
-    consolidates, so the one consolidation call is the sweep's.
+    The recorder answers the review with no valid draft, and a failed review with no forget
+    never consolidates, so the one consolidation call is the sweep's.
     """
     cog = _cog(bot_user_id=999)
     monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)

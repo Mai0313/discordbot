@@ -2,7 +2,7 @@
 
 The pipeline is keyed by an opaque scope (see ``store``), so the same orchestration drives both
 per-user and per-server memory. The flavor-specific bits are injected: ``subject`` names the
-memory target and ``writer`` carries the flavor's prompts.
+memory target, and the scope's flavor (``flavor_of``) picks the writer's prompts.
 
 The turn and the clear are the two ends of one protocol rather than two subsystems sharing a
 file. The turn reviews the reply's memory notes, stages what survives, and checks

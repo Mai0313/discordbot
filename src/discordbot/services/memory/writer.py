@@ -1,7 +1,7 @@
 """LLM review and consolidation for long-term memory, in either flavor.
 
-Each call is handed its scope's flavor, which picks the phase prompt, so the per-user and
-the per-server memory share every gate, renderer and redaction here.
+Each review and consolidation call is handed its scope's flavor, which picks the phase prompt,
+so the per-user and the per-server memory share every gate, renderer and redaction here.
 """
 
 import re
