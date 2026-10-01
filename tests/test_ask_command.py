@@ -1,9 +1,9 @@
 """`/ask`: the conversational entry point for the contexts a user install reaches.
 
-The fakes here are local rather than the shared Discord mocks because this route needs something
-those deliberately do not model: real `nextcord.Message` objects, built over a connection state,
-on a channel the bot is not a member of. Everything else about a `/ask` turn is the ordinary
-pipeline, tested as such.
+The fakes here are local rather than pulled from `tests/helpers/discord_mocks.py` because this
+route needs something that package deliberately does not model: real `nextcord.Message` objects,
+built over a connection state, on a channel the bot is not a member of. Everything else about a
+`/ask` turn is the ordinary pipeline, and `tests/test_gen_reply.py` already covers that.
 """
 
 from types import SimpleNamespace

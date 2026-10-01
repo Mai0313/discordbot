@@ -75,9 +75,9 @@ class _MessageLogFields(TypedDict):
 def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
     """Standard Discord identifying fields for correlating one reply's logs.
 
-    The records the cog writes when a turn arrives or fails carry the full set; every log inside
-    the pipeline carries only `message_id` as the correlation key, so a whole turn reconstructs
-    by grepping it.
+    The cog's arrival records and `gen_reply failed` carry the full set; every other log of the
+    turn carries only `message_id` as the correlation key, so a whole turn reconstructs by
+    grepping it.
     `user_name` is the stable handle, `display_name` the per-guild nickname;
     `guild_id` / `guild_name` are None in a DM.
 
