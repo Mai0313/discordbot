@@ -334,9 +334,9 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
 
     This is the only command-error surface the bot actually has: it registers no prefix
     commands and never passes `command_prefix`, so nextcord defaults it to `()` and
-    `get_context` can never resolve one — which is why the `on_command_*` pair that used to
-    live here could not fire. nextcord's own default prints to `sys.stderr`, which
-    `_TeeStream` does not tee, so before this the traceback reached no file at all.
+    `get_context` can never resolve one, which leaves no `on_command_*` handler able to fire.
+    nextcord's own default prints to `sys.stderr`, which `_TeeStream` does not tee, so without
+    this override the traceback reaches no file at all.
     """
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
     bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True))
