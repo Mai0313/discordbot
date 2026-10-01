@@ -44,7 +44,7 @@ make gen-docs
 - `src/discordbot/cogs/`: nextcord cogs, one directory each. `cogs/<name>/cog.py` is the module the loader imports; everything beside it in that directory is that cog's own code.
 - `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store, the per-platform link readers in `services/platforms/`). Discord-free, and never imports from `cogs/`, both enforced by `tests/test_package_layering.py`.
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
-- `src/discordbot/utils/`: generic helpers with no domain state — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
+- `src/discordbot/utils/`: generic helpers — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
 - `tests/`: pytest suite.
 - `scripts/`: local maintenance and development tools. The `*_dev.py` scripts are smoke tests against the live APIs, using the credentials in `.env` the way the bot does, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run one with `uv run python -m scripts.<name>`.
 - `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
@@ -197,7 +197,7 @@ Which document is for whom, and what must move together, lives in the [Documenta
 Maintainers handle releases through GitHub Actions.
 
 - Merged changes on `main` update draft release notes.
-- Tags matching `v*` build release artifacts and publish the Docker image.
+- Pushes to `main` and tags matching `v*` publish the Docker image; tags also build release artifacts.
 - The release workflow builds cross-platform binaries and publishes the Python package when credentials are available.
 
 Contributors usually do not need to run release commands locally.

@@ -38,17 +38,18 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功
 
 ## 一則回覆是怎麼跑的
 
-每一次 tag、DM 與 `/ask` 都走同一條流水線。關鍵路徑上只有一支 triage 呼叫，由它決定路線；其他工作不是在那個決定之前就並行準備好，就是等回覆文字已經上畫面之後才跑。
+每一次 tag、DM 與 `/ask` 都走同一條流水線。關鍵路徑上只有一支 triage 呼叫，由它決定路線；附件上傳與回覆的上下文跟它同時準備，貼上的貼文則要等路線要了才去抓。
 
 ```mermaid
 flowchart TD
-    U(["tag bot · DM · /ask"]) --> UP & RT & CX
+    U(["tag bot · DM · /ask"]) --> UP & RT
 
     UP["上傳附件"]
     RT["路由 + 思考強度 + 記憶挑選"]
     CX["歷史 · 記憶 · 語氣"]
 
-    UP & RT & CX --> R{"分派路線"}
+    RT --> R{"分派路線"}
+    UP & RT --> CX --> YT & QS & I2 & V2
 
     R -->|QA| L{"貼上的 Threads、Facebook、Instagram、<br/>Twitter、抖音或 Bilibili 貼文"}
     L -->|"使用者在問它的內容"| LF["抓那則貼文，上傳它的媒體"]
@@ -66,7 +67,7 @@ flowchart TD
     Q2 --> OUT(["回覆上畫面"])
     I2 --> OUT
     V2 --> OUT
-    OUT -.-> MM["背景：整理記憶"]
+    Q2 -.->|"記憶標記"| MM["背景：整理記憶"]
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
@@ -89,7 +90,7 @@ flowchart TD
 - **Bilibili 問答**：tag bot 並附上 B 站影片連結，它會看過影片再回答。單獨貼連結不會自動展開；`/download_video` 仍可下載檔案。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片。抖音也支援，無浮水印且包含圖文貼文。檔案太大無法上傳時會改以連結提供。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息獲得虛擬歡樂豆，可轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
-- **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby。Blackjack 莊家改為賭場系統 (deterministic H17)，bot 本身會以玩家身份入桌並由獨立的確定性策略 (fractional-Kelly 下注與 EV 決策) 決策，`/casino` 與 `/pocat` 分別顯示賭場帳本與 bot 玩家錢包。
+- **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby。Blackjack 莊家改為賭場系統 (deterministic H17)，bot 本身只要錢包大於零就會以玩家身份入桌，並由獨立的確定性策略 (fractional-Kelly 下注與 EV 決策) 決策，`/casino` 與 `/pocat` 分別顯示賭場帳本與 bot 玩家錢包。
 - **本地化指令**：slash command metadata 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。沒有 help 指令：直接問 bot 會做什麼，它會讀一份英文的功能說明並用你發問的語言回答。
 
 ## 指令

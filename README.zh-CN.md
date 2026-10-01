@@ -38,17 +38,18 @@
 
 ## 一条回复是怎么跑的
 
-每一次标记、DM 与 `/ask` 都走同一条流水线。关键路径上只有一支 triage 调用，由它决定路线；其他工作不是在那个决定之前就并行准备好，就是等回复文字已经上屏之后才跑。
+每一次标记、DM 与 `/ask` 都走同一条流水线。关键路径上只有一支 triage 调用，由它决定路线；附件上传与回复的上下文跟它同时准备，贴上的帖子则要等路线要了才去抓。
 
 ```mermaid
 flowchart TD
-    U(["标记机器人 · DM · /ask"]) --> UP & RT & CX
+    U(["标记机器人 · DM · /ask"]) --> UP & RT
 
     UP["上传附件"]
     RT["路由 + 思考强度 + 记忆挑选"]
     CX["历史 · 记忆 · 语气"]
 
-    UP & RT & CX --> R{"分派路线"}
+    RT --> R{"分派路线"}
+    UP & RT --> CX --> YT & QS & I2 & V2
 
     R -->|QA| L{"贴上的 Threads、Facebook、Instagram、<br/>Twitter、抖音或 Bilibili 帖子"}
     L -->|"用户在问它的内容"| LF["抓那条帖子，上传它的媒体"]
@@ -66,7 +67,7 @@ flowchart TD
     Q2 --> OUT(["回复上屏"])
     I2 --> OUT
     V2 --> OUT
-    OUT -.-> MM["后台：整理记忆"]
+    Q2 -.->|"记忆标记"| MM["后台：整理记忆"]
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
@@ -89,7 +90,7 @@ flowchart TD
 - **Bilibili 问答**：tag 机器人并附上 B 站视频链接，它会看过视频再回答。单独贴链接不会自动展开；`/download_video` 仍可下载文件。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
-- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
+- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身只要钱包大于零就会以玩家身份入桌，并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
 - **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么，它会读一份英文的功能说明并用你提问的语言回答。
 
 ## 指令
