@@ -22,6 +22,7 @@ from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.economy.views import (
     CreditLoanDecisionView,
     CentralBankLoanDecisionView,
+    is_guild_admin,
     central_bank_exclude_user_ids,
 )
 from discordbot.cogs.economy.boards import (
@@ -1076,7 +1077,7 @@ class EconomyCogs(commands.Cog):
                 interaction=interaction, embed=build_invalid_amount_embed(title="央行催收失敗")
             )
             return
-        if interaction.guild_id is None or not interaction.permissions.administrator:
+        if interaction.guild_id is None or not is_guild_admin(interaction=interaction):
             await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,

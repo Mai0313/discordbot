@@ -131,7 +131,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **Money inputs are string `SlashOption`s parsed by `utils.amount_parsing.parse_decimal_amount`;** malformed text gets an ephemeral reply before any mutation. Reuse it for any number that can exceed Discord's int cap.
 - **`UserAccount.avatar_url` is a last-seen cache (`utils.avatars.guild_avatar_url`); do not backfill existing URLs.**
 - **`credit_with_repayment` is the single income facade;** despite the name it repays nothing.
-- **Central-bank minting is bounded by the pool and the per-borrower ceiling, never by the approver.** Approval is any server administrator (`CentralBankLoanDecisionView._is_guild_admin`), which anyone becomes by creating a server.
+- **Central-bank minting is bounded by the pool and the per-borrower ceiling, never by the approver.** Approval is any server administrator (`cogs/economy/views.py::is_guild_admin`), which anyone becomes by creating a server.
 - **The pool's collateral is per guild; its debt is the whole bank's.** `guild_participant` is recorded only for a rewarded message's author and a `/central_bank` caller, never a `member:` target.
 - **Repaid interest kept in `central_bank_ledger` cannot be farmed** (measured: a borrow-at-100%-and-repay loop only ever lost the attacker money).
 - **Admin tweaks go through `adjust_balance(..., allow_negative=...)`, never a casino settlement helper.**
