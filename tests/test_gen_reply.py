@@ -59,6 +59,7 @@ from discordbot.typings.models import (
     RecallRouteClassification,
 )
 from discordbot.services.memory import database as memory_db
+from discordbot.services.memory import inflight, consolidation
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.typings.timeouts import (
     ANSWER_STREAM_MAX_ATTEMPTS,
@@ -92,11 +93,13 @@ from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_fo
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
+    flavor_of,
     user_scope,
     write_fact,
     write_tone,
     server_scope,
     scope_owner_id,
+    append_raw_entry,
     guild_compartment,
 )
 from discordbot.cogs.gen_reply.context import (
@@ -123,7 +126,9 @@ from discordbot.cogs.gen_reply.prompts import (
 from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
+from discordbot.services.memory.writer import RawMemoryDraft, render_turn_payload
 from discordbot.cogs.gen_reply.pipeline import UNROUTED_REPLY, ReplyPipeline
+from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     HISTORY_MESSAGE_LIMIT,
@@ -8245,12 +8250,55 @@ async def test_handle_message_reply_server_memory_gating(
             assert update["subject"] == f"target_user_id: 1\nsource: {user_source}"
         if update["scope"] == server_scope_value:
             assert update["subject"] == "target_server_id: 1"
-            assert update["writer"] is cog.toolkit.server_memory_writer
+            assert update["writer"] is cog.toolkit.memory_writer
             assert update["identity"] == "Test Guild [id: 1]"
-            assert (
-                cog.toolkit.server_memory_writer.evaluator_prompt is SERVER_PHASE1_EVALUATOR_PROMPT
-            )
-            assert cog.toolkit.server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
+
+
+async def _drain_memory_turns(scopes: tuple[str, ...]) -> None:
+    """Awaits every memory turn queued for `scopes`, then the reply.db writes they detached."""
+    for scope in scopes:
+        while (task := inflight._inflight_tasks.get(key=scope)) is not None:
+            await asyncio.gather(task, return_exceptions=True)
+            # Lets the done-callback run, which clears the slot or starts the next queued turn.
+            await asyncio.sleep(0)
+    while inflight._db_tasks:
+        await asyncio.gather(*list(inflight._db_tasks))
+
+
+@pytest.mark.parametrize(
+    ("memory_notes", "server_memory_notes", "prompt"),
+    [
+        (("使用者偏好繁體中文",), (), PHASE1_EVALUATOR_PROMPT),
+        ((), ("這個社群週五都在講炸雞",), SERVER_PHASE1_EVALUATOR_PROMPT),
+    ],
+    ids=["user", "server"],
+)
+async def test_a_memory_note_is_reviewed_under_its_scopes_own_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    memory_notes: tuple[str, ...],
+    server_memory_notes: tuple[str, ...],
+    prompt: str,
+) -> None:
+    """A note is reviewed under the evaluator prompt of the scope it lands in."""
+    cog = _cog()
+    _install_streamer(
+        monkeypatch=monkeypatch, memory_notes=memory_notes, server_memory_notes=server_memory_notes
+    )
+
+    await _run_pipeline(
+        cog=cog, message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    )
+    await _drain_memory_turns(scopes=(user_scope(user_id=1), server_scope(server_id=1)))
+
+    responses = _recorded(cog).responses
+    reviews = [
+        instructions
+        for instructions, text_format in zip(
+            responses.parse_instructions, responses.parse_text_formats, strict=True
+        )
+        if text_format is RawMemoryDraft
+    ]
+    assert reviews == [prompt]
 
 
 def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
@@ -8834,12 +8882,10 @@ def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
+    """on_ready resume re-enqueues persisted jobs and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
-    user_sentinel = object()
-    server_sentinel = object()
-    cog.toolkit.__dict__["memory_writer"] = user_sentinel
-    cog.toolkit.__dict__["server_memory_writer"] = server_sentinel
+    writer_sentinel = object()
+    cog.toolkit.__dict__["memory_writer"] = writer_sentinel
 
     user_job_scope = user_scope(user_id=1)
     server_job_scope = server_scope(server_id=2)
@@ -8898,15 +8944,57 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
 
     assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
     by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
-    assert by_scope[user_job_scope]["writer"] is user_sentinel
+    assert by_scope[user_job_scope]["writer"] is writer_sentinel
     assert by_scope[user_job_scope]["token"] == 11
-    assert by_scope[server_job_scope]["writer"] is server_sentinel
+    assert by_scope[server_job_scope]["writer"] is writer_sentinel
     # The row's status decides whether the resumed review is its one retry.
     assert by_scope[user_job_scope]["status"] == "failed"
     assert by_scope[server_job_scope]["status"] == "pending"
     # Every over-threshold scope is swept, including the resumed ones: the scope
     # lock makes the resumed review and the consolidation sweep idempotent.
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
+
+
+@pytest.mark.parametrize(
+    ("scope", "subject", "prompts"),
+    [
+        (user_scope(user_id=1), "target_user_id: 1", {PHASE1_EVALUATOR_PROMPT, PHASE2_PROMPT}),
+        (
+            server_scope(server_id=2),
+            "target_server_id: 2",
+            {SERVER_PHASE1_EVALUATOR_PROMPT, SERVER_PHASE2_PROMPT},
+        ),
+    ],
+    ids=["user", "server"],
+)
+async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
+    monkeypatch: pytest.MonkeyPatch, scope: str, subject: str, prompts: set[str]
+) -> None:
+    """The resumed review and the consolidation sweep both run under the scope's flavor.
+
+    The recorder answers the review with no valid draft, and a failed review with no forget
+    never consolidates, so the one consolidation call is the sweep's.
+    """
+    cog = _cog(bot_user_id=999)
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
+    append_raw_entry(scope=scope, entry_text="### stable_preference\n- summary_zh: 喜歡簡短回覆")
+    await memory_db.upsert_pending(
+        scope=scope,
+        flavor=flavor_of(scope=scope),
+        subject=subject,
+        transcript=render_turn_payload(
+            transcript="Alice (alice) [id: 1]: 哈囉", rounds=((("喜歡簡短回覆",), ()),)
+        ),
+        identity="",
+        token=memory_db.new_token(),
+    )
+
+    await cog._resume_memory()
+    while cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+    await _drain_memory_turns(scopes=(scope,))
+
+    assert set(_recorded(cog).responses.parse_instructions) == prompts
 
 
 async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:

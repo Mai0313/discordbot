@@ -255,7 +255,9 @@ async def _evaluate(
     subject: str = _SUBJECT,
 ) -> RawMemoryDraft | None:
     """Runs the note review for the test user."""
-    return await writer.evaluate(subject=subject, transcript=transcript, notes=notes)
+    return await writer.evaluate(
+        flavor="user", subject=subject, transcript=transcript, notes=notes
+    )
 
 
 _stored_fact = partial(make_fact, owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice (alice)"))
@@ -703,7 +705,7 @@ async def test_consolidate_marks_every_absent_input_block() -> None:
     """An absent block is labelled `(empty)` so the model never reads a gap as content."""
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(text="新事實")
-    result = await writer.consolidate(request=_consolidation_request())
+    result = await writer.consolidate(flavor="user", request=_consolidation_request())
     assert result is not None
     assert [delta.text for delta in result.deltas] == ["新事實"]
     user_text = fake_client.responses.parse_bodies[0]
@@ -723,7 +725,7 @@ async def test_consolidate_empty_delta_batch_passes_through() -> None:
     """Asking for no change is the normal outcome, not a failure the caller must retry."""
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
-    result = await writer.consolidate(request=_consolidation_request())
+    result = await writer.consolidate(flavor="user", request=_consolidation_request())
     assert result is not None
     assert result.deltas == ()
 
@@ -732,7 +734,7 @@ async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note()
     """Only the global compartment's call emits tone, so the others never see the note."""
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
-    await writer.consolidate(request=_consolidation_request(emit_tone=False))
+    await writer.consolidate(flavor="user", request=_consolidation_request(emit_tone=False))
     user_text = fake_client.responses.parse_bodies[0]
     assert "<existing_tone>" not in user_text
     assert "<tone_evidence>" not in user_text
@@ -741,8 +743,8 @@ async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note()
 async def test_consolidate_compact_appends_compaction_block() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
-    await writer.consolidate(request=_consolidation_request(compact=True))
-    await writer.consolidate(request=_consolidation_request(compact=False))
+    await writer.consolidate(flavor="user", request=_consolidation_request(compact=True))
+    await writer.consolidate(flavor="user", request=_consolidation_request(compact=False))
     assert "COMPACTION" in fake_client.responses.parse_instructions[0]
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
@@ -752,7 +754,7 @@ async def test_every_writer_call_runs_on_its_one_model() -> None:
     fake_client.responses.output_parsed = _draft("偏好明確")
     await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
-    await writer.consolidate(request=_consolidation_request())
+    await writer.consolidate(flavor="user", request=_consolidation_request())
     fake_client.responses.output_parsed = ToneForget()
     await writer.forget_tone(forgets="忘掉", note_lines=("說話簡短",), evidence=())
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name] * 3
@@ -3218,6 +3220,27 @@ async def test_memory_regenerate_command_schedules_in_background(
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
 
 
+async def test_memory_regenerate_command_rebuilds_under_the_per_user_prompt(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command rebuilds only the caller's own scope, so only the per-user prompt runs."""
+    cog = make_memory_cog()
+    fake_client = FakeMemoryClient()
+    monkeypatch.setitem(cog.__dict__, "client", fake_client)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+
+    await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=_interaction()))
+    task = regeneration._regeneration_tasks.get(key=USER_SCOPE)
+    assert task is not None
+    await task
+
+    rebuilt = {
+        instructions.removesuffix(PHASE2_COMPACTION_BLOCK)
+        for instructions in fake_client.responses.parse_instructions
+    }
+    assert rebuilt == {PHASE2_PROMPT}
+
+
 async def test_memory_regenerate_without_a_proxy_key_answers_the_command(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3609,7 +3632,7 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
     fake_client.responses.output_parsed = _no_signal()
     await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
-    await writer.consolidate(request=_consolidation_request())
+    await writer.consolidate(flavor="user", request=_consolidation_request())
     assert fake_client.responses.parse_extra_kwargs == [{}, {}]
 
 

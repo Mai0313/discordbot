@@ -368,6 +368,7 @@ async def _consolidate_compartment(
     existing = read_facts(scope=run.scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)
     result = await run.writer.consolidate(
+        flavor=run.flavor,
         request=compartment_request(
             run=run,
             compartment=compartment,
@@ -378,7 +379,7 @@ async def _consolidate_compartment(
             # non-delete it produced with a warning apiece. The block would only buy a
             # rewrite nobody can apply.
             compact=may_compact and not deletes_only and len(rendered) > COMPACTION_TRIGGER_CHARS,
-        )
+        ),
     )
     if result is None:
         logfire.warn(

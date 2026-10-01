@@ -34,7 +34,7 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
 from discordbot.services.memory.facts import render_owner_identity
-from discordbot.services.memory.store import flavor_of, read_owner, iter_scopes
+from discordbot.services.memory.store import read_owner, iter_scopes
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
@@ -183,16 +183,11 @@ class ReplyGeneratorCogs(commands.Cog):
         for job in jobs:
             if job.transcript is None:
                 continue
-            writer = (
-                self.toolkit.server_memory_writer
-                if job.flavor == "server"
-                else self.toolkit.memory_writer
-            )
             resume_memory_update(
                 scope=job.scope,
                 subject=job.subject,
                 transcript=job.transcript,
-                writer=writer,
+                writer=self.toolkit.memory_writer,
                 identity=job.identity,
                 token=job.token,
                 status=job.status,
@@ -203,15 +198,10 @@ class ReplyGeneratorCogs(commands.Cog):
         for scope in iter_scopes():
             if not needs_consolidation(scope=scope):
                 continue
-            writer = (
-                self.toolkit.server_memory_writer
-                if flavor_of(scope=scope) == "server"
-                else self.toolkit.memory_writer
-            )
             spawn_tracked(
                 coro=consolidate_if_needed(
                     scope=scope,
-                    writer=writer,
+                    writer=self.toolkit.memory_writer,
                     identity=render_owner_identity(owner=read_owner(scope=scope)),
                 ),
                 tasks=self._tasks,

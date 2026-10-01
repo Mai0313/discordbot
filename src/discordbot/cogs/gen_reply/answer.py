@@ -190,9 +190,9 @@ class AnswerTurn(BaseModel):
         instead of surfacing to the outer error path, and a fresh hosted-case base that never
         received content is deleted (never an orphan). Builds the answer-path input, appends the
         just-made media as the focus, and streams onto the base (its content edits keep an
-        attached media), seeding the memory labels so the footer matches the QA path. Consumes
-        the speculative `context_task` (awaited here so its build overlaps generation); any
-        failure leaves the delivered media untouched.
+        attached media), seeding the memory credits so the footer names whose memory the reply
+        read. Consumes the speculative `context_task` (awaited here so its build overlaps
+        generation); any failure leaves the delivered media untouched.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
@@ -552,7 +552,7 @@ class AnswerTurn(BaseModel):
             subject=server_subject(server_id=message.guild.id),
             message_list=context.message_list,
             full_reply=full_reply,
-            writer=self.toolkit.server_memory_writer,
+            writer=self.toolkit.memory_writer,
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),

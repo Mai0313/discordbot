@@ -1,5 +1,6 @@
 """Tests for the offline memory regeneration script."""
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
 
@@ -20,12 +21,9 @@ from discordbot.services.memory.store import (
     append_raw_entry,
     read_raw_entries,
 )
-from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
+from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE2_COMPACTION_BLOCK
 from discordbot.services.memory.regeneration import RegenerationReport
-from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE2_PROMPT,
-    SERVER_PHASE1_EVALUATOR_PROMPT,
-)
+from discordbot.services.memory.server_prompts import SERVER_PHASE2_PROMPT
 
 from tests.helpers.memory import make_fact
 
@@ -123,8 +121,7 @@ async def test_the_offline_fan_out_runs_under_its_own_bound(
     monkeypatch.setattr(regen_script, "regenerate_scope_memory", _rebuild)
 
     await regen_script._rebuild_batch(
-        writers=dict.fromkeys(("user", "server"), cast("MemoryWriterAI", None)),
-        scopes=regen_script._scopes_for_target(target="all"),
+        writer=cast("MemoryWriterAI", None), scopes=regen_script._scopes_for_target(target="all")
     )
 
     assert peak == 2
@@ -219,9 +216,7 @@ async def test_a_batch_run_counts_finished_scopes_and_reports_them_in_store_orde
 
     monkeypatch.setattr(regen_script, "regenerate_scope_memory", _land_in_reverse)
 
-    rows = await regen_script._rebuild_batch(
-        writers=dict.fromkeys(("user", "server"), cast("MemoryWriterAI", None)), scopes=scopes
-    )
+    rows = await regen_script._rebuild_batch(writer=cast("MemoryWriterAI", None), scopes=scopes)
 
     assert [row.scope for row in rows] == scopes
     assert "3/3" in " ".join(capsys.readouterr().out.split())
@@ -257,31 +252,36 @@ async def test_a_run_that_is_not_confirmed_builds_no_client_and_writes_nothing(
     assert "nothing was written" in " ".join(capsys.readouterr().out.split())
 
 
-async def test_a_server_scope_rebuilds_under_the_server_prompts(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("target", "prompt"),
+    [(_USER, PHASE2_PROMPT), (_SERVER, SERVER_PHASE2_PROMPT)],
+    ids=["user", "server"],
+)
+async def test_each_scope_rebuilds_under_its_own_flavors_prompt(
+    monkeypatch: pytest.MonkeyPatch, target: str, prompt: str
 ) -> None:
-    """The prompts ride on the writer, so a server scope needs the server-flavor one."""
+    """A rebuild reaches the model only under the consolidation prompt of its scope's flavor."""
     _seed(scope=_USER)
     _seed(scope=_SERVER)
-    prompts: dict[str, tuple[str, str]] = {}
+    instructions: list[str] = []
 
-    async def _record(scope: str, writer: object, identity: str) -> object:
-        chosen = cast("MemoryWriterAI", writer)
-        prompts[scope] = (chosen.evaluator_prompt, chosen.consolidate_prompt)
-        return RegenerationReport(result="no_evidence")
+    async def parse(**kwargs: object) -> SimpleNamespace:
+        """Records the call's instructions and answers with nothing usable."""
+        instructions.append(str(kwargs["instructions"]))
+        return SimpleNamespace(output_parsed=None, status="completed", incomplete_details=None)
 
     monkeypatch.setattr(regen_script.console, "input", lambda *args, **kwargs: "y")
-    monkeypatch.setattr(regen_script, "AsyncOpenAI", lambda **kwargs: object())
-    monkeypatch.setattr(regen_script, "regenerate_scope_memory", _record)
-
-    await regen_script._regen_all(
-        model=ModelSettings(name="test-model", effort="low"), target="all", dry_run=False
+    monkeypatch.setattr(
+        regen_script,
+        "AsyncOpenAI",
+        lambda **kwargs: SimpleNamespace(responses=SimpleNamespace(parse=parse)),
     )
 
-    assert prompts == {
-        _USER: (PHASE1_EVALUATOR_PROMPT, PHASE2_PROMPT),
-        _SERVER: (SERVER_PHASE1_EVALUATOR_PROMPT, SERVER_PHASE2_PROMPT),
-    }
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=target, dry_run=False
+    )
+
+    assert {text.removesuffix(PHASE2_COMPACTION_BLOCK) for text in instructions} == {prompt}
 
 
 def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
