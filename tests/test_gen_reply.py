@@ -1103,41 +1103,15 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassifi
     )
 
 
-def _resolved_picks(ids: list[str] | None = None) -> asyncio.Future[list[str]]:
-    """Recall picks already resolved, as the pipeline hands them over once the route returns.
+def _resolved_picks() -> asyncio.Future[list[str]]:
+    """No recall picks, already resolved, as the pipeline hands them over once the route returns.
 
     Every direct `build` call takes one of these: `build` awaits the picks, and an unresolved
     future would hang the suite rather than fail it.
     """
     picks: asyncio.Future[list[str]] = asyncio.get_running_loop().create_future()
-    picks.set_result(ids or [])
+    picks.set_result([])
     return picks
-
-
-async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors AnswerTurn.stream_answer's inputs
-    cog: ReplyGeneratorCogs,
-    message: FakeMessage,
-    system_prompt: str = "SYS",
-    history_limit: int = 2,
-    effort: Literal["low", "high"] = "high",
-    picks: list[str] | None = None,
-) -> None:
-    """Drives prepare-context plus answer the way on_message does for the QA route.
-
-    Skips the route call, so `picks` stands in for what it would have named.
-    """
-    msg = as_message(fake=message)
-    builder = _context_builder(cog=cog, message=msg)
-    parts_task = asyncio.create_task(coro=builder.render_parts())
-    context = await builder.build(
-        history_limit=history_limit,
-        parts_task=parts_task,
-        recall=builder.plan_recall(),
-        recall_picks=_resolved_picks(ids=picks),
-    )
-    await _answer(cog=cog, message=msg).stream_answer(
-        system_prompt=system_prompt, context=context, effort=effort
-    )
 
 
 async def _run_pipeline(
@@ -3871,7 +3845,7 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
         list(_default_turn_events()),
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     # Two streaming dispatches for one answer, and the reply still landed.
     assert _recorded(cog).responses.create_streams.count(True) == 2
@@ -5093,7 +5067,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert _recorded(cog).responses.create_tools[-1] is None
 
     built = _install_streamer(monkeypatch=monkeypatch)
-    await _reply_via_pipeline(cog=cog, message=message, system_prompt="system")
+    await _run_pipeline(cog=cog, message=message)
     assert _recorded(cog).responses.create_streams[-1] is True
     assert built[-1]["message"] is message
 
@@ -7148,7 +7122,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference() -> Non
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     header = str(render_capabilities_block()["content"]).split("\n", 1)[0]
     blocks = list(iter_text_blocks(request=request_input(responses=_recorded(cog).responses)))
@@ -7180,7 +7154,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
     blocks = list(iter_text_blocks(request=answer))
@@ -7216,7 +7190,7 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
     history_header = next(
@@ -7281,7 +7255,11 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone()
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message, picks=["42"])
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=["42"]
+    )
+
+    await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
     tone = extract_tone_block(request=answer)
@@ -7307,7 +7285,7 @@ async def test_reply_context_always_injects_the_author_tone_block() -> None:
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
     assert not has_memory_context_block(request=answer)
@@ -7359,7 +7337,7 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     # The route picks nobody for the optional alias. The author's memory is deterministic and
     # must still be injected.
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     # Only the answer pays for slow_model; memory adds no call of its own.
     assert _recorded(cog).responses.create_models == [cog.toolkit.runtime_models.slow_model.name]
@@ -7370,7 +7348,8 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
         cog.toolkit.runtime_models.slow_model.tools
     )
     _assert_runtime_time_context(
-        instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
+        instructions=_recorded(cog).responses.create_instructions[answer_idx],
+        system_prompt=REPLY_PROMPT,
     )
     answer = request_input(responses=_recorded(cog).responses)
     assert "喜歡簡短回覆" in (extract_user_memory_blocks(request=answer).get(1) or "")
@@ -7412,12 +7391,13 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     answer_idx = request_index(responses=_recorded(cog).responses)
     assert _recorded(cog).responses.create_streams == [True]
     _assert_runtime_time_context(
-        instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
+        instructions=_recorded(cog).responses.create_instructions[answer_idx],
+        system_prompt=REPLY_PROMPT,
     )
     assert Counter(scheduled) == Counter((user_scope(user_id=1), server_scope(server_id=1)))
 
@@ -7449,7 +7429,7 @@ async def test_memory_markers_route_by_the_message_not_by_the_note(
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     by_scope = {str(update["scope"]): update for update in scheduled}
     personal = by_scope[user_scope(user_id=1)]
@@ -7889,7 +7869,7 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
         FakeAuthor(user_id=3),
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
     assert list(extract_user_memory_blocks(request=answer)) == [1, 2, 3]
@@ -8260,7 +8240,7 @@ async def test_handle_message_reply_server_memory_gating(
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
     assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
@@ -8632,9 +8612,10 @@ async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
 async def test_handle_message_reply_uses_route_effort() -> None:
     """The answer request's reasoning effort follows the route decision."""
     cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA", effort="low")
     message = FakeMessage(content="<@999> why", author=FakeAuthor(user_id=1))
 
-    await _reply_via_pipeline(cog=cog, message=message, effort="low")
+    await _run_pipeline(cog=cog, message=message)
 
     assert _recorded(cog).responses.create_reasonings[-1]["effort"] == "low"
 
