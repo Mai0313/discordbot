@@ -973,14 +973,9 @@ class ResponseStreamer(BaseModel):
         if self.input_builder is None:
             return []
         try:
-            replied_to = replied_to_message(message=self.message)
-            if replied_to is not None:
-                own_images, ref_images = await asyncio.gather(
-                    self.input_builder.get_image_sources_with_mime(message=self.message),
-                    self.input_builder.get_image_sources_with_mime(message=replied_to),
-                )
-                return own_images + ref_images
-            return await self.input_builder.get_image_sources_with_mime(message=self.message)
+            return await self.input_builder.get_turn_image_sources(
+                message=self.message, replied_to=replied_to_message(message=self.message)
+            )
         except Exception as exc:  # broad: best-effort source load, see docstring
             logfire.warn(
                 "Inline image source load failed; generating without source pixels",

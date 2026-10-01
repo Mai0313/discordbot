@@ -2286,12 +2286,12 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    async def _load(*, message: object) -> list[LoadedMedia]:
+    async def _load(*, message: object, replied_to: object) -> list[LoadedMedia]:
         """Stands in for the input builder loading the message's uploaded image."""
-        del message
+        del message, replied_to
         return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
 
-    builder = SimpleNamespace(get_image_sources_with_mime=_load)
+    builder = SimpleNamespace(get_turn_image_sources=_load)
 
     await _streamer(
         message=message,
@@ -2548,12 +2548,12 @@ async def test_video_marker_uses_uploaded_image_as_reference() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    async def _load(*, message: object) -> list[LoadedMedia]:
+    async def _load(*, message: object, replied_to: object) -> list[LoadedMedia]:
         """Stands in for the input builder loading the message's uploaded image."""
-        del message
+        del message, replied_to
         return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
 
-    builder = SimpleNamespace(get_image_sources_with_mime=_load)
+    builder = SimpleNamespace(get_turn_image_sources=_load)
 
     await _streamer(
         message=message,

@@ -369,8 +369,8 @@ class MessageInputBuilder(BaseModel):
         image sources are collected; non-image files are not editable as images. The
         IMAGE/VIDEO routes run on the image/video model, so the slow model's modality gate
         is not applied here. The MIME is kept because omni's `ImageContentParam` requires a real
-        one (an empty mime 400s "Unsupported MIME type: "); the IMAGE route, which needs only the
-        pixels, drops it via `get_image_source_bytes`.
+        one (an empty mime 400s "Unsupported MIME type: "); an image edit, which needs only the
+        pixels, drops it.
         """
         tasks: list[Coroutine[object, object, LoadedMedia]] = []
         for source in self.collect_attachment_sources(message=message):
@@ -387,9 +387,15 @@ class MessageInputBuilder(BaseModel):
                 )
         return [item for item in loaded if isinstance(item, LoadedMedia)]
 
-    async def get_image_source_bytes(self, message: Message) -> list[bytes]:
-        """Returns downscaled bytes of a message's image sources for the IMAGE route."""
-        return [loaded.data for loaded in await self.get_image_sources_with_mime(message=message)]
+    async def get_turn_image_sources(
+        self, message: Message, replied_to: Message | None
+    ) -> list[LoadedMedia]:
+        """Returns a turn's source images: the message's own, then the replied-to message's."""
+        messages = [message] if replied_to is None else [message, replied_to]
+        groups = await asyncio.gather(
+            *(self.get_image_sources_with_mime(message=source) for source in messages)
+        )
+        return [loaded for group in groups for loaded in group]
 
     async def get_video_sources(self, message: Message) -> list[LoadedMedia]:
         """Best-effort (bytes, MIME) of the FIRST raw video attachment, for omni editing.
