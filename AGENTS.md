@@ -101,7 +101,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 
 - **The answer model picks what to speak and attach inside its own output** (`markers.py` has which tags stay visible): do not move that choice to a post-hoc classifier, which would not keep text, clip and media coherent.
 - **A memory marker never chooses whose memory it writes**: `<write-memory>` / `<forget-memory>` (the person replied to) and `<write-server-memory>` (the community) take their scope from the message in `answer.py::_schedule_memory_updates`.
-- **A link source that hands the model strangers' discussion runs it through `link_sources/__init__.py::defuse_markers`**, or a quoted tag becomes a real render or a memory write; a Douyin caption and a Bilibili title and description stay undefused under `COMMON_PROMPT`'s never-echo rule, whose measurement `tests/test_prompt_guards.py` owns.
+- **A link source that hands the model strangers' discussion runs it through `link_sources/__init__.py::defuse_markers`**, or a quoted tag becomes a real render or a memory write; a Douyin caption and author and a Bilibili title, description and uploader stay undefused under `COMMON_PROMPT`'s never-echo rule, whose measurement `tests/test_prompt_guards.py` owns.
 - **The voice / image / music / video markers ride QA only and are deliberately separate from the IMAGE/VIDEO routes** (image-first UX): routing decides which runs, so they never double-fire, and those routes never speak or inline-image.
 - **The bot's own music clip is re-ingested into later history on purpose**, unlike `reply.wav` (`input.py::_sources_from_parts`): the `<generate-music>` body is stripped from the reply, so the clip is the song's only trace.
 
