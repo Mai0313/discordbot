@@ -571,7 +571,7 @@ class ResearchCogs(commands.Cog):
                 await status.edit(content=content, allowed_mentions=AllowedMentions.none())
                 return
             except Forbidden:
-                # The parent's permissions changed under the run; the id is the whole finding.
+                # The thread's overwrites changed under the run; the id is the whole finding.
                 logfire.warn("research thread refused the status edit", thread_id=thread.id)
             except Exception as exc:
                 # Broad: any Discord failure is recoverable by the fallback send below.
