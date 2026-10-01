@@ -215,23 +215,12 @@ class TurnSurface(BaseModel):
         Returns:
             The message that landed.
         """
-        if self.interaction is not None:
-            return await self.send(
-                content=content,
-                embed=embed,
-                file=file,
-                files=files,
-                allowed_mentions=allowed_mentions,
-            )
-        return await self.message.channel.send(
-            **_payload(
-                content=content,
-                embed=embed,
-                file=file,
-                files=files,
-                allowed_mentions=allowed_mentions,
-            )
+        payload = _payload(
+            content=content, embed=embed, file=file, files=files, allowed_mentions=allowed_mentions
         )
+        if self.interaction is not None:
+            return await self.send(**payload)
+        return await self.message.channel.send(**payload)
 
     async def follow_up(
         self, *, previous: Message, content: str, allowed_mentions: AllowedMentions | None = None
@@ -246,27 +235,13 @@ class TurnSurface(BaseModel):
         Returns:
             The message carrying this chunk.
         """
-        if self.interaction is None:
-            return await previous.reply(
-                **_payload(
-                    content=content,
-                    embed=None,
-                    file=None,
-                    files=None,
-                    allowed_mentions=allowed_mentions,
-                )
-            )
-        self._followups_spent += 1
-        return await self.interaction.followup.send(
-            **_payload(
-                content=content,
-                embed=None,
-                file=None,
-                files=None,
-                allowed_mentions=allowed_mentions,
-            ),
-            wait=True,
+        payload = _payload(
+            content=content, embed=None, file=None, files=None, allowed_mentions=allowed_mentions
         )
+        if self.interaction is None:
+            return await previous.reply(**payload)
+        self._followups_spent += 1
+        return await self.interaction.followup.send(**payload, wait=True)
 
     async def fetch_history(self, *, limit: int) -> list[Message]:
         """The conversation before this turn, oldest first and at most `limit` messages.
