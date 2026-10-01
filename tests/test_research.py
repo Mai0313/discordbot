@@ -2163,7 +2163,7 @@ async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_ca
     anchor.create_thread = AsyncMock(return_value=thread)
     channel.send = AsyncMock(return_value=anchor)
     interaction = _ResearchInteraction(channel=channel)
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    infos = _recorded(monkeypatch=monkeypatch, level="info")
 
     await cog.deep_research(as_interaction(fake=interaction), topic="TPU landscape\nand history")
     await asyncio.gather(*cog._tasks)
@@ -2171,6 +2171,7 @@ async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_ca
     anchor.create_thread.assert_awaited_once_with(name="TPU landscape", auto_archive_duration=1440)
     assert [edit.get("content") for edit in interaction.edits] == [f"開好了:<#{_THREAD_ID}>"]
     assert anchor.deleted is False
-    assert warns == [
-        ("no proxy key for the deep research thread title; using the brief's first line", {})
-    ], "an unset key is the whole finding, so no traceback rides the warn"
+    assert (
+        "no proxy key for the deep research thread title; using the brief's first line",
+        {},
+    ) in infos, "an unset key is an unconfigured-feature skip, so it carries no traceback"

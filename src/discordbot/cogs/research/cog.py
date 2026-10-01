@@ -178,7 +178,7 @@ class ResearchCogs(commands.Cog):
         # Only building `responses_client` lands here, since the helper absorbs its own call's
         # failures: the SDK refuses an empty `OPENAI_API_KEY`, and that is the whole finding.
         except OpenAIError:
-            logfire.warn(
+            logfire.info(
                 "no proxy key for the deep research thread title; using the brief's first line"
             )
             raw = None
