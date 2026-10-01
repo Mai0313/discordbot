@@ -116,7 +116,7 @@ def test_no_view_timeout_leaves_a_failure_to_asyncios_stderr_print() -> None:
     offenders = sorted(
         f"{cls.__module__}.{cls.__qualname__}"
         for cls in overriding
-        if not hasattr(cls.on_timeout, "__wrapped__")
+        if cls.on_timeout.__code__.co_qualname != "_logging_timeout.<locals>.logged"
     )
 
     assert overriding, "the sweep found no on_timeout override"
