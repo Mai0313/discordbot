@@ -6,12 +6,8 @@ so after a restart the cog reloads the rows still in `researching` and re-attach
 a live stream to each `interaction_id`. It is also the per-user concurrency
 guard (one active research per owner).
 
-The engine is a module-level `AsyncEngine` singleton, exactly like
-`services/economy/database.py`: a per-instance `cached_property` engine would leak
-the connection pool / dialect cache for every interaction. `reply.db` is shared with
-other reply-side tables; this one has no money columns, so no `StoredInteger`. Each call
-opens an `AsyncSession` bound to the current `_engine`, so tests can monkeypatch `_engine`
-per-test.
+`reply.db` is shared with other reply-side tables. Each call opens an `AsyncSession`
+bound to the current `_engine`, so tests can monkeypatch `_engine` per-test.
 
 This module deliberately avoids `from __future__ import annotations`: SQLAlchemy
 resolves the `Mapped[datetime]` column annotations when the class is built, and under
@@ -24,10 +20,9 @@ from datetime import datetime
 from contextlib import AbstractAsyncContextManager
 
 from pydantic import Field, BaseModel
-from sqlalchemy import String, Integer, DateTime, select, update
+from sqlalchemy import String, Integer, DateTime, insert, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
@@ -116,7 +111,7 @@ def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:
     )
 
 
-async def upsert_session(  # noqa: PLR0913 -- one row's columns are all per-call inputs
+async def insert_session(  # noqa: PLR0913 -- one row's columns are all per-call inputs
     *,
     thread_id: int,
     owner_id: int,
@@ -124,40 +119,24 @@ async def upsert_session(  # noqa: PLR0913 -- one row's columns are all per-call
     guild_id: int | None,
     source_message_id: int,
     agent: str,
-    interaction_id: str | None,
     brief: str,
-    phase: ResearchPhase,
 ) -> None:
-    """Creates or overwrites the session row for a thread."""
+    """Records a just-opened thread as `researching`, before its interaction id exists."""
     now = _database_now()
     async with open_session() as session:
-        stmt = insert(ResearchSessionRow).values(
-            thread_id=thread_id,
-            owner_id=owner_id,
-            channel_id=channel_id,
-            guild_id=guild_id,
-            source_message_id=source_message_id,
-            agent=agent,
-            interaction_id=interaction_id,
-            brief=brief,
-            phase=phase,
-            created_at=now,
-            updated_at=now,
-        )
         await session.execute(
-            statement=stmt.on_conflict_do_update(
-                index_elements=["thread_id"],
-                set_={
-                    "owner_id": owner_id,
-                    "channel_id": channel_id,
-                    "guild_id": guild_id,
-                    "source_message_id": source_message_id,
-                    "agent": agent,
-                    "interaction_id": interaction_id,
-                    "brief": brief,
-                    "phase": phase,
-                    "updated_at": now,
-                },
+            statement=insert(ResearchSessionRow).values(
+                thread_id=thread_id,
+                owner_id=owner_id,
+                channel_id=channel_id,
+                guild_id=guild_id,
+                source_message_id=source_message_id,
+                agent=agent,
+                interaction_id=None,
+                brief=brief,
+                phase="researching",
+                created_at=now,
+                updated_at=now,
             )
         )
         await session.commit()

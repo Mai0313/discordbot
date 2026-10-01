@@ -1,11 +1,10 @@
 """Message logging cog backed by the local SQLite message store."""
 
-import re
 from typing import TYPE_CHECKING, Final
 
 import logfire
 from nextcord import Message, DMChannel
-from pydantic import Field, BaseModel, ConfigDict, computed_field
+from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import MetaData, text
 from nextcord.ext import commands
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection, create_async_engine
@@ -15,8 +14,6 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 
 if TYPE_CHECKING:
     import asyncio
-
-NULL_BYTE_RE = re.compile(pattern=r"\x00")
 
 # Single shared engine, never a per-message `cached_property`: that leaks the
 # connection pool, dialect cache and inspector cache once per Discord message.
@@ -134,9 +131,8 @@ class MessageLogger(BaseModel):
         Returns:
             The sanitized string.
         """
-        return NULL_BYTE_RE.sub("", s)
+        return s.replace("\x00", "")
 
-    @computed_field
     @property
     def source_type(self) -> str:
         """The storage source type for this message.
@@ -148,7 +144,6 @@ class MessageLogger(BaseModel):
             return "dm"
         return "guild"
 
-    @computed_field
     @property
     def channel_name_or_author_name(self) -> str:
         """The channel name or DM author label for this message.
@@ -164,7 +159,6 @@ class MessageLogger(BaseModel):
         channel_name = getattr(channel, "name", None) or channel.id
         return f"channel_{channel_name}_{channel.id}"
 
-    @computed_field
     @property
     def channel_id_or_author_id(self) -> str:
         """The channel ID or DM author ID for this message.
@@ -176,24 +170,6 @@ class MessageLogger(BaseModel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
-    async def _save_messages(self) -> None:
-        """Persists the message row."""
-        attachment_paths = [attachment.url for attachment in self.message.attachments]
-        sticker_paths = [sticker.url for sticker in self.message.stickers]
-        row: dict[str, str] = {
-            "discord_message_id": str(self.message.id),
-            "source_type": self.source_type,
-            "author": self.sanitize_text(s=self.message.author.name),
-            "author_id": str(self.message.author.id),
-            "content": self.sanitize_text(s=self.message.content),
-            "created_at": self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "channel_name": self.channel_name_or_author_name,
-            "channel_id": self.channel_id_or_author_id,
-            "attachments": ";".join(attachment_paths),
-            "stickers": ";".join(sticker_paths),
-        }
-        await _write_row(row=row)
-
     async def log(self) -> None:
         """Persists the message row.
 
@@ -202,7 +178,21 @@ class MessageLogger(BaseModel):
         anywhere that already knows the message is loggable.
         """
         try:
-            await self._save_messages()
+            attachment_paths = [attachment.url for attachment in self.message.attachments]
+            sticker_paths = [sticker.url for sticker in self.message.stickers]
+            row: dict[str, str] = {
+                "discord_message_id": str(self.message.id),
+                "source_type": self.source_type,
+                "author": self.sanitize_text(s=self.message.author.name),
+                "author_id": str(self.message.author.id),
+                "content": self.sanitize_text(s=self.message.content),
+                "created_at": self.message.created_at.strftime(format="%Y-%m-%d %H:%M:%S"),
+                "channel_name": self.channel_name_or_author_name,
+                "channel_id": self.channel_id_or_author_id,
+                "attachments": ";".join(attachment_paths),
+                "stickers": ";".join(sticker_paths),
+            }
+            await _write_row(row=row)
         except Exception as exc:
             # Stays broad: this runs as a detached task, and this log carries the message's
             # ids, which the spawner's generic failure line does not.

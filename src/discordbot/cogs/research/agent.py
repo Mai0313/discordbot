@@ -66,10 +66,6 @@ RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(type="antigravity")
 
 # The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
-# A transient get() error mid-research (e.g. a server 504 gateway timeout) is retried, not fatal;
-# only this many CONSECUTIVE failures give up. There is no wall-clock timeout: the Gemini SDK
-# bounds each request and the agent settles server-side on its own budget.
-MAX_CONSECUTIVE_POLL_ERRORS = 30
 
 
 class _InteractionUsage(Protocol):
@@ -179,14 +175,15 @@ def _to_result(*, interaction: _ResearchInteraction) -> ResearchResult:
 
 
 async def _poll_until_terminal(
-    *, client: genai.Client, interaction_id: str, poll_interval_seconds: float
+    *, client: genai.Client, interaction_id: str
 ) -> _ResearchInteraction:
     """Polls `interactions.get` until the status leaves `in_progress`.
 
     No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
     transient get() error mid-research is retried so one 504 does not kill a long run; it gives
-    up only after `MAX_CONSECUTIVE_POLL_ERRORS` consecutive failures (re-raising the last error).
+    up only after `max_consecutive_errors` consecutive failures (re-raising the last error).
     """
+    max_consecutive_errors = 30
     consecutive_errors = 0
     while True:
         try:
@@ -202,20 +199,21 @@ async def _poll_until_terminal(
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
+            if consecutive_errors >= max_consecutive_errors:
                 raise
-            await asyncio.sleep(poll_interval_seconds)
+            await asyncio.sleep(RESEARCH_POLL_INTERVAL_SECONDS)
             continue
         consecutive_errors = 0
         if interaction.status != "in_progress":
             return interaction
-        await asyncio.sleep(poll_interval_seconds)
+        await asyncio.sleep(RESEARCH_POLL_INTERVAL_SECONDS)
 
 
 # The SDK can close a create/get(stream=True) SSE request mid-run (each request is bounded) while
 # the agent keeps working server-side; `_StreamDriver` re-attaches via get(stream=True). This caps
 # CONSECUTIVE re-attaches that make no progress so a truly dead stream gives up (mirrors
-# MAX_CONSECUTIVE_POLL_ERRORS), while a healthy long run that just needs periodic re-attach never trips.
+# `_poll_until_terminal`'s error cap), while a healthy long run that just needs periodic re-attach
+# never trips.
 MAX_STREAM_RECONNECTS = 20
 
 # Called with the interaction id the moment `interaction.created` arrives (the stream's first event),
@@ -365,11 +363,7 @@ async def _drive(
             interaction_id=driver.interaction_id,
             _exc_info=True,
         )
-    return await _poll_until_terminal(
-        client=driver.client,
-        interaction_id=driver.interaction_id,
-        poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
-    )
+    return await _poll_until_terminal(client=driver.client, interaction_id=driver.interaction_id)
 
 
 async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs plus the streamer + id callback

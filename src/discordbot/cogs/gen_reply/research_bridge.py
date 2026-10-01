@@ -11,7 +11,7 @@ import logfire
 from nextcord import Message, TextChannel
 from nextcord.ext import commands
 
-from discordbot.typings.research import RESEARCH_THREAD_PERMISSIONS
+from discordbot.typings.research import has_research_permissions
 
 
 def can_launch_research(*, message: Message) -> bool:
@@ -24,7 +24,7 @@ def can_launch_research(*, message: Message) -> bool:
     """
     if message.guild is None or not isinstance(message.channel, TextChannel):
         return False
-    return message.channel.permissions_for(message.guild.me) >= RESEARCH_THREAD_PERMISSIONS
+    return has_research_permissions(channel=message.channel, member=message.guild.me)
 
 
 def in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:

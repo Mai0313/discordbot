@@ -60,11 +60,6 @@ class MediaCleanupCogs(commands.Cog):
         """The periodic backstop sweep."""
         await self._sweep()
 
-    @cleanup_loop.before_loop
-    async def _before_cleanup_loop(self) -> None:
-        """Waits until the gateway is ready before the first scheduled sweep."""
-        await self.bot.wait_until_ready()
-
     async def _sweep(self) -> None:
         """Runs one off-loop maintenance pass, best-effort (never raises into the loop)."""
         try:

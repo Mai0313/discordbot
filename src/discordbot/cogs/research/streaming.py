@@ -4,7 +4,7 @@ Paints the agent's thought-summary text onto the research thread's opening statu
 message while the run is in flight, mirroring the QA reply streamer's cadence-editor
 UX (`gen_reply/streaming.py`): a snapshot editor task edits the message on a fixed
 interval with a windowed tail of `-#` reasoning lines under a `Researching...` header,
-so the user watches the agent think instead of a 15s-polled snapshot of one thought.
+so the user watches the agent think.
 
 Purpose-built and self-contained on purpose: it never touches the SDK, the interaction
 id, the reconnect loop, or the final result (those live in `agent.py::_StreamDriver`);
@@ -29,6 +29,10 @@ from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 
 if TYPE_CHECKING:
     from google.genai.interactions import InteractionSSEEvent
+
+# Every status line of a running research opens with this, which is how a resume finds the one
+# posted before a restart.
+RESEARCHING_PREFIX = "-# Researching..."
 
 
 class ResearchProgressStreamer(BaseModel):
@@ -55,8 +59,8 @@ class ResearchProgressStreamer(BaseModel):
     preview_interval_seconds: float = Field(
         default=3.0,
         description=(
-            "Cadence of the editor's Discord edits; research runs for minutes so a slower "
-            "interval than QA's 1s keeps the single message well under Discord's edit rate limit."
+            "Cadence of the editor's Discord edits; research runs for minutes, so a coarse "
+            "interval keeps the single message well under Discord's edit rate limit."
         ),
     )
     started_at: float = Field(
@@ -94,7 +98,7 @@ class ResearchProgressStreamer(BaseModel):
         """
         elapsed = int(time.monotonic() - self.started_at)
         mins, secs = divmod(elapsed, 60)
-        header = f"-# Researching... ({self.label}, {mins}m{secs:02d}s)"
+        header = f"{RESEARCHING_PREFIX} ({self.label}, {mins}m{secs:02d}s)"
         if not self.reasoning:
             return header
         tail = escape_mentions(self.reasoning[-1500:])
