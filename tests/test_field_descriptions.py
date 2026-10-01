@@ -13,7 +13,8 @@ sends, and for the handful of prompt-bearing models it is what the answer model 
 The scan is narrow on purpose. An `Attributes:` entry naming something that is NOT a `Field` — a
 `ClassVar`, a property, a plain annotation pydantic ignores — has no second copy to disagree with
 and is left alone. Only a name that is both is an offence, in either Google entry form, `name:`
-or `name (type):`, anywhere in the package, the scripts or the tests.
+or `name (type):`, anywhere in the package, the scripts or the tests except the template-owned
+`scripts/gen_docs.py`.
 """
 
 import re
@@ -25,8 +26,8 @@ from tests.helpers.source_tree import PACKAGE, REPO_ROOT, python_modules
 _MODEL_BASES = frozenset({"BaseModel", "BaseSettings"})
 _ENTRY = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\([^)]*\))?:\s")
 _ROOTS = (PACKAGE, REPO_ROOT / "scripts", REPO_ROOT / "tests")
-# Its `Attributes:` block comes from the repository template, so a local fix is undone by the next
-# template sync; the duplicate is fixed in the template instead.
+# Its `Attributes:` block comes from the repository template, which still carries the duplicate, so
+# the next template sync would undo a local fix; fix it in the template, then drop this exclusion.
 _TEMPLATE_OWNED = frozenset({REPO_ROOT / "scripts" / "gen_docs.py"})
 
 
