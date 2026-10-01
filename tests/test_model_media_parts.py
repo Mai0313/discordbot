@@ -8,6 +8,10 @@ native Interactions answer path has no proxy at all and is only ever handed File
 YouTube links; whether it resolves an arbitrary remote URL was never validly measured (#346). Uploading via `gen_reply/files_api.py` is the one shape both accept.
 
 Data URIs are exempt: the bytes are already in hand, so nothing is fetched.
+
+What this cannot catch: a `file_id` is never checked, because it carries the Files API uri by
+design, so a remote URL handed to one passes; only `file_url` and a non-data-URI `image_url` are
+flagged, and only where the part is built in place as a TypedDict call or a dict literal.
 """
 
 import ast

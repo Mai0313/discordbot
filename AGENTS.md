@@ -187,7 +187,6 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **`cogs/template/` is a real loaded cog, not a scaffold to copy or delete**: it owns `/ping` plus message-trigger reactions that `gen_reply/capabilities.md` does not mention.
 - **Never let `media_cleanup`'s sweep run in a test**: it deletes against the env-resolved live serve dir, so test the gate only.
 - **Usage records (`utils/usage_log.py`, #429) cover slash invocations and AI replies only**: a research run gets no record of its own, since its launch is already a `reply.db` `research` row and the `/deep_research` or `QA` turn that started it is recorded as usual; the empty-prompt `?` path writes no `reply` record. `scripts/usage_report.py` names only what was used, so a zero-use inventory comes from `gen_reply/capabilities.md`.
-- **A test cog built via `__new__` must be handed a `UsageRecorder` explicitly** (`tests/test_gen_reply.py::_cog`).
 
 ## Conventions
 

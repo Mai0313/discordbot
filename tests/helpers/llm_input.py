@@ -17,6 +17,7 @@ breaking these extractors.
 import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Protocol, cast
+from importlib import import_module
 from collections.abc import Mapping, Iterator, Sequence
 
 from pydantic import Field, BaseModel
@@ -29,46 +30,7 @@ from discordbot.cogs.gen_reply.recall import (
     render_memory_context_block,
 )
 from discordbot.cogs.gen_reply.context import current_header, reference_header
-from discordbot.cogs.gen_reply.link_sources.douyin import (
-    DOUYIN_BLOCKED_NOTICE,
-    DOUYIN_TIMEOUT_NOTICE,
-    DOUYIN_CONTEXT_SEPARATOR,
-    DOUYIN_UNREADABLE_NOTICE,
-    DOUYIN_UNAVAILABLE_NOTICE,
-    DOUYIN_TEXT_ONLY_SEPARATOR,
-)
-from discordbot.cogs.gen_reply.link_sources.threads import (
-    THREADS_TIMEOUT_NOTICE,
-    THREADS_CONTEXT_SEPARATOR,
-    THREADS_UNAVAILABLE_NOTICE,
-    THREADS_TEXT_ONLY_SEPARATOR,
-    THREADS_PARTIAL_MEDIA_SEPARATOR,
-)
-from discordbot.cogs.gen_reply.link_sources.twitter import (
-    TWITTER_TIMEOUT_NOTICE,
-    TWITTER_CONTEXT_SEPARATOR,
-    TWITTER_UNAVAILABLE_NOTICE,
-    TWITTER_TEXT_ONLY_SEPARATOR,
-)
-from discordbot.cogs.gen_reply.link_sources.bilibili import (
-    BILIBILI_TIMEOUT_NOTICE,
-    BILIBILI_CONTEXT_SEPARATOR,
-    BILIBILI_UNREADABLE_NOTICE,
-    BILIBILI_TOO_LONG_SEPARATOR,
-    BILIBILI_TEXT_ONLY_SEPARATOR,
-)
-from discordbot.cogs.gen_reply.link_sources.facebook import (
-    FACEBOOK_TIMEOUT_NOTICE,
-    FACEBOOK_CONTEXT_SEPARATOR,
-    FACEBOOK_UNAVAILABLE_NOTICE,
-    FACEBOOK_TEXT_ONLY_SEPARATOR,
-)
-from discordbot.cogs.gen_reply.link_sources.instagram import (
-    INSTAGRAM_TIMEOUT_NOTICE,
-    INSTAGRAM_CONTEXT_SEPARATOR,
-    INSTAGRAM_UNAVAILABLE_NOTICE,
-    INSTAGRAM_TEXT_ONLY_SEPARATOR,
-)
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 if TYPE_CHECKING:
     from nextcord import Message
@@ -104,9 +66,14 @@ def _content_to_text(content: object) -> str:
     return ""
 
 
+def _head(text: str) -> str:
+    """Returns a block text's first line, which is what identifies the block."""
+    return text.split("\n", 1)[0]
+
+
 def _header_line(block: Mapping[str, object]) -> str:
     """Returns the first line of a rendered block's text (its stable header)."""
-    return _content_to_text(content=block.get("content")).split("\n", 1)[0]
+    return _head(text=_content_to_text(content=block.get("content")))
 
 
 _PARTICIPANT_HEADER = _header_line(block=render_memory_context_block(memories=[]))
@@ -131,12 +98,22 @@ _CURRENT_HEAD = _header_line(
 ).split(_AUTHOR_SENTINEL, 1)[0]
 
 
+# Kind -> the role and leading text of the answer-input block it names.
+_BLOCK_HEADS: dict[str, tuple[str, str]] = {
+    "server_memory": ("assistant", _SERVER_HEADER),
+    "memory": ("assistant", _PARTICIPANT_HEADER),
+    "tone": ("assistant", _TONE_HEADER),
+    "reference": ("system", _REFERENCE_HEAD),
+    "current": ("system", _CURRENT_HEAD),
+    "callable": ("system", _CALLABLE_HEADER),
+}
+
+
 class LinkSourceBlocks(BaseModel):
     """The top-level texts one link source injects into the answer input."""
 
     separators: tuple[str, ...] = Field(
-        ...,
-        description="System separators a fetched post's own block follows, the attached one first.",
+        ..., description="System separators a fetched post's own block follows."
     )
     notices: tuple[str, ...] = Field(
         ..., description="Notices a failed or timed-out read injects instead of the post."
@@ -146,52 +123,30 @@ class LinkSourceBlocks(BaseModel):
     )
 
 
-# Keyed by registry name. A text missing here reads as "no block" in every
-# `has_link_context_block` check, which would leave a negative assertion vacuous.
+def _link_source_blocks(name: str) -> LinkSourceBlocks:
+    """Reads one registered source's top-level separators and notices off its module.
+
+    Only `====` texts count: a `----` notice is a section inside a post's own block, not a
+    block of its own.
+    """
+    module = import_module(name=f"discordbot.cogs.gen_reply.link_sources.{name}")
+    texts = {
+        key: value
+        for key, value in vars(module).items()
+        if isinstance(value, str) and value.startswith("====")
+    }
+    (timeout_notice,) = (value for key, value in texts.items() if key.endswith("_TIMEOUT_NOTICE"))
+    return LinkSourceBlocks(
+        separators=tuple(value for key, value in texts.items() if key.endswith("_SEPARATOR")),
+        notices=tuple(value for key, value in texts.items() if key.endswith("_NOTICE")),
+        timeout_notice=timeout_notice,
+    )
+
+
+# Keyed by registry name. Read off each source's own module, since a text missing here reads as
+# "no block" in every `has_link_context_block` check and would leave a negative assertion vacuous.
 LINK_SOURCE_BLOCKS: dict[str, LinkSourceBlocks] = {
-    "threads": LinkSourceBlocks(
-        separators=(
-            THREADS_CONTEXT_SEPARATOR,
-            THREADS_PARTIAL_MEDIA_SEPARATOR,
-            THREADS_TEXT_ONLY_SEPARATOR,
-        ),
-        notices=(THREADS_UNAVAILABLE_NOTICE, THREADS_TIMEOUT_NOTICE),
-        timeout_notice=THREADS_TIMEOUT_NOTICE,
-    ),
-    "facebook": LinkSourceBlocks(
-        separators=(FACEBOOK_CONTEXT_SEPARATOR, FACEBOOK_TEXT_ONLY_SEPARATOR),
-        notices=(FACEBOOK_UNAVAILABLE_NOTICE, FACEBOOK_TIMEOUT_NOTICE),
-        timeout_notice=FACEBOOK_TIMEOUT_NOTICE,
-    ),
-    "instagram": LinkSourceBlocks(
-        separators=(INSTAGRAM_CONTEXT_SEPARATOR, INSTAGRAM_TEXT_ONLY_SEPARATOR),
-        notices=(INSTAGRAM_UNAVAILABLE_NOTICE, INSTAGRAM_TIMEOUT_NOTICE),
-        timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,
-    ),
-    "twitter": LinkSourceBlocks(
-        separators=(TWITTER_CONTEXT_SEPARATOR, TWITTER_TEXT_ONLY_SEPARATOR),
-        notices=(TWITTER_UNAVAILABLE_NOTICE, TWITTER_TIMEOUT_NOTICE),
-        timeout_notice=TWITTER_TIMEOUT_NOTICE,
-    ),
-    "douyin": LinkSourceBlocks(
-        separators=(DOUYIN_CONTEXT_SEPARATOR, DOUYIN_TEXT_ONLY_SEPARATOR),
-        notices=(
-            DOUYIN_UNAVAILABLE_NOTICE,
-            DOUYIN_BLOCKED_NOTICE,
-            DOUYIN_UNREADABLE_NOTICE,
-            DOUYIN_TIMEOUT_NOTICE,
-        ),
-        timeout_notice=DOUYIN_TIMEOUT_NOTICE,
-    ),
-    "bilibili": LinkSourceBlocks(
-        separators=(
-            BILIBILI_CONTEXT_SEPARATOR,
-            BILIBILI_TEXT_ONLY_SEPARATOR,
-            BILIBILI_TOO_LONG_SEPARATOR,
-        ),
-        notices=(BILIBILI_UNREADABLE_NOTICE, BILIBILI_TIMEOUT_NOTICE),
-        timeout_notice=BILIBILI_TIMEOUT_NOTICE,
-    ),
+    source.name: _link_source_blocks(name=source.name) for source in LINK_CONTEXT_SOURCES
 }
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
@@ -210,12 +165,18 @@ def iter_text_blocks(request: ResponseInputParam | str) -> Iterator[tuple[str, s
             yield role, _content_to_text(content=item.get("content"))
 
 
-def extract_memory_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the participant-memory assistant block's text, or None if absent."""
-    for role, text in iter_text_blocks(request=request):
-        if role == "assistant" and text.split("\n", 1)[0] == _PARTICIPANT_HEADER:
+def _block_text(request: ResponseInputParam | str, kind: str) -> str | None:
+    """Returns the text of the first block of `kind` (a `_BLOCK_HEADS` key), or None if absent."""
+    role, head = _BLOCK_HEADS[kind]
+    for item_role, text in iter_text_blocks(request=request):
+        if item_role == role and text.startswith(head):
             return text
     return None
+
+
+def extract_memory_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the participant-memory assistant block's text, or None if absent."""
+    return _block_text(request=request, kind="memory")
 
 
 def has_memory_context_block(request: ResponseInputParam | str) -> bool:
@@ -238,18 +199,12 @@ def extract_user_memory_blocks(request: ResponseInputParam | str) -> dict[int, s
 
 def extract_server_memory_block(request: ResponseInputParam | str) -> str | None:
     """Returns the server-memory assistant block's text, or None if absent."""
-    for role, text in iter_text_blocks(request=request):
-        if role == "assistant" and text.split("\n", 1)[0] == _SERVER_HEADER:
-            return text
-    return None
+    return _block_text(request=request, kind="server_memory")
 
 
 def extract_tone_block(request: ResponseInputParam | str) -> str | None:
     """Returns the tone-note assistant block's text, or None if absent."""
-    for role, text in iter_text_blocks(request=request):
-        if role == "assistant" and text.split("\n", 1)[0] == _TONE_HEADER:
-            return text
-    return None
+    return _block_text(request=request, kind="tone")
 
 
 def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
@@ -258,15 +213,8 @@ def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
     This is the narrowed per-request allowlist boundary: it contains only absent
     public nickname-table members, never deterministic participants.
     """
-    for role, text in iter_text_blocks(request=request):
-        if role == "system" and text.split("\n", 1)[0] == _CALLABLE_HEADER:
-            return {int(match) for match in _ID_MARKER.findall(text)}
-    return set()
-
-
-def _head(text: str) -> str:
-    """Returns a block text's first line, which is what identifies the block."""
-    return text.split("\n", 1)[0]
+    text = _block_text(request=request, kind="callable")
+    return set() if text is None else {int(match) for match in _ID_MARKER.findall(text)}
 
 
 def extract_link_context_block(request: ResponseInputParam | str, source: str) -> str | None:
@@ -298,16 +246,6 @@ def has_timeout_notice(request: ResponseInputParam | str, source: str) -> bool:
         role == "system" and _head(text=text) == head
         for role, text in iter_text_blocks(request=request)
     )
-
-
-# Kind -> the role and leading text of the answer-input block it names.
-_BLOCK_HEADS: dict[str, tuple[str, str]] = {
-    "server_memory": ("assistant", _SERVER_HEADER),
-    "memory": ("assistant", _PARTICIPANT_HEADER),
-    "tone": ("assistant", _TONE_HEADER),
-    "reference": ("system", _REFERENCE_HEAD),
-    "current": ("system", _CURRENT_HEAD),
-}
 
 
 def block_index(request: ResponseInputParam | str, kind: str) -> int:
