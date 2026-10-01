@@ -287,7 +287,7 @@ class ReplyContextBuilder(BaseModel):
 
         History is the only render that opts into the dead-source skip:
         an expired CDN attachment here re-fails every turn (current / reference do not; see
-        GeminiFileUploader._resolve_file_upload).
+        FileUploadRenderer._resolve_file_upload).
 
         The full render is additionally capped at `MAX_HISTORY_MEDIA_PARTS` uploaded files: a
         message past the cap takes the text-only render, which is exactly the marker form the

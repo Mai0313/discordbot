@@ -89,7 +89,7 @@ class AnthropicFileUploader(FileUploadRenderer):
         return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str, kind: UploadKind
+        self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
         """Uploads bytes to the Anthropic Files API and returns the uploaded handle.
 
@@ -98,7 +98,7 @@ class AnthropicFileUploader(FileUploadRenderer):
         the module docstring). Anthropic files have no provider expiry, so the cache window is
         a fixed synthetic TTL.
         """
-        del kind
+        del cache_key, kind
         started = time.monotonic()
         logfire.debug(
             "anthropic upload start", filename=filename, content_type=content_type, bytes=len(data)

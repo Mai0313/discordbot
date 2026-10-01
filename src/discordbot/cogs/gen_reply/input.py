@@ -519,7 +519,7 @@ class MessageInputBuilder(BaseModel):
         """Extracts attachment content parts from a message, with a per-message cache.
 
         `sources` are the message's collected sources after the modality gate. `allow_dead_cache`
-        is opt-in for history scrollback only (see `GeminiFileUploader._resolve_file_upload`).
+        is opt-in for history scrollback only (see `FileUploadRenderer._resolve_file_upload`).
         """
         if not sources:
             return []

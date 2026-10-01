@@ -31,7 +31,6 @@ from discordbot.cogs.gen_reply.attachment.base import (
     UploadKind,
     FileBytesLoader,
     FileUploadRenderer,
-    media_semaphore,
     loggable_cache_key,
 )
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
@@ -88,9 +87,9 @@ class GeminiFileUploader(FileUploadRenderer):
     its own, because a file is readable only by the project that uploaded it: a uri uploaded
     under any other key fails the whole answer rather than dropping the attachment.
 
-    Overrides `_resolve_file_upload` whole, for the pending re-poll, so its upload is
-    `_upload_or_pend` rather than `_upload_file`: a file still PROCESSING at the activation
-    bound comes back as a `PendingUpload` to re-poll later, not as a failure.
+    Re-polls a pending upload before the shared upload resolution runs, and its `_upload_file`
+    caches a file still PROCESSING at the activation bound as a `PendingUpload` to re-poll
+    later, rather than failing it.
     """
 
     gemini_client: Callable[[], genai.Client | None] = Field(
@@ -200,38 +199,30 @@ class GeminiFileUploader(FileUploadRenderer):
         when a fresh upload is actually needed: adopting a now-ACTIVE pending upload, or
         dropping one still PROCESSING, never re-downloads the source. So a borderline file
         keeps being adopted even after its Discord CDN url has expired and a re-download
-        would fail. `kind` changes nothing here: Gemini uploads an image like any other file.
+        would fail.
         """
-        del kind
         repoll = await self._repoll_pending_upload(cache_key=cache_key)
         if repoll.handled:
             return repoll.uploaded
-        # The dead-source skip is for history scrollback only (an expired CDN url that
-        # re-fails every turn); current/reference renders never opt in, so one transient
-        # failure on a just-posted attachment is not poisoned for the next reply.
-        if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
-            return None
-        # One media slot spans the whole download + upload (+ activation poll) for every
-        # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
-        # uploads at once and buffer all their bytes while waiting for an upload slot.
-        wait_started = time.monotonic()
-        async with media_semaphore.get():
-            logfire.debug(
-                "gemini media slot acquired",
-                cache_key=loggable_cache_key(cache_key=cache_key),
-                wait_seconds=time.monotonic() - wait_started,
-            )
-            loaded = await self._load_source_bytes(
-                cache_key=cache_key,
-                filename=filename,
-                load_data=load_data,
-                allow_dead_cache=allow_dead_cache,
-            )
-            if loaded is None:
-                return None
-            result = await self._upload_or_pend(
-                filename=filename, data=loaded.data, content_type=loaded.mime_type
-            )
+        return await super()._resolve_file_upload(
+            cache_key=cache_key,
+            filename=filename,
+            load_data=load_data,
+            kind=kind,
+            allow_dead_cache=allow_dead_cache,
+        )
+
+    async def _upload_file(
+        self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
+    ) -> UploadedFile | None:
+        """Uploads one source, caching it as pending when it is still PROCESSING at the bound.
+
+        `kind` changes nothing here: Gemini uploads an image like any other file.
+        """
+        del kind
+        result = await self._upload_or_pend(
+            filename=filename, data=data, content_type=content_type
+        )
         if isinstance(result, PendingUpload):
             self._pending_uploads[cache_key] = result
             self._pending_uploads.move_to_end(cache_key)
@@ -268,8 +259,8 @@ class GeminiFileUploader(FileUploadRenderer):
         logfire.debug(
             "gemini upload start", filename=filename, content_type=content_type, bytes=len(data)
         )
-        # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
-        # call, so the activation poll counts against the concurrency cap on purpose.
+        # The shared `_resolve_file_upload` holds the media semaphore across this whole call,
+        # so the activation poll counts against the concurrency cap on purpose.
         client = self.gemini_client()
         if client is None:
             logfire.error("gemini Files API key missing; dropping attachment", filename=filename)

@@ -105,7 +105,7 @@ class GrokFileUploader(FileUploadRenderer):
         )
 
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str, kind: UploadKind
+        self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
         """Uploads bytes to the xAI Files API and returns the uploaded handle.
 
@@ -113,7 +113,7 @@ class GrokFileUploader(FileUploadRenderer):
         module docstring). The timeout is this call's only deadline, since the SDK's own covers
         every RPC shape except the client-streaming one an upload uses.
         """
-        del kind
+        del cache_key, kind
         started = time.monotonic()
         logfire.debug(
             "xai upload start", filename=filename, content_type=content_type, bytes=len(data)

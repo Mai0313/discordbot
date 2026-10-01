@@ -4179,7 +4179,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     errored = _fake_openai_uploader(files=FakeOpenAIFiles(status="error"))
     assert (
         await errored._upload_file(
-            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4198,7 +4198,7 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     monkeypatch.setattr(boom.client.files, "create", _raise)
     assert (
         await boom._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4259,6 +4259,29 @@ async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
 
     assert rendered is None
     assert clip.read_count == 0
+
+
+async def test_inline_renderer_drops_a_source_that_fails_to_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed fetch drops only that part, and the stateless renderer remembers nothing of it."""
+
+    async def fail(attachment: object) -> LoadedMedia:
+        """Fails the download the way an expired CDN url does."""
+        del attachment
+        raise RuntimeError("cdn expired")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.inline.load_attachment_bytes", fail)
+    renderer = InlineRenderer()
+
+    rendered = await renderer.render_file(
+        attachment=cast("Attachment", FakeAttachment(filename="notes.txt")),
+        cache_key="notes.txt",
+        allow_dead_cache=True,
+    )
+
+    assert rendered is None
+    assert not renderer._dead_sources
 
 
 def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
@@ -4327,7 +4350,7 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     idless = _fake_grok_uploader(files=FakeXAIFiles(file_id=""))
     assert (
         await idless._upload_file(
-            filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="bad.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4343,7 +4366,7 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     monkeypatch.setattr(boom.xai_client.files, "upload", _raise)
     assert (
         await boom._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4372,7 +4395,7 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
     )
     assert (
         await stalled._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4403,7 +4426,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     renderer = GrokFileUploader()
     assert (
         await renderer._upload_file(
-            filename="x.txt", data=b"x", content_type="text/plain", kind="file"
+            cache_key="k", filename="x.txt", data=b"x", content_type="text/plain", kind="file"
         )
         is None
     )
@@ -4446,7 +4469,7 @@ async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
     """A response without an expiry still bounds the render cache by the requested TTL."""
     renderer = _fake_grok_uploader(files=FakeXAIFiles(expires_at=None))
     uploaded = await renderer._upload_file(
-        filename="notes.txt", data=b"hello", content_type="text/plain", kind="file"
+        cache_key="k", filename="notes.txt", data=b"hello", content_type="text/plain", kind="file"
     )
     assert uploaded is not None
     assert uploaded.expires_at > datetime.now(tz=UTC) + timedelta(days=29)
