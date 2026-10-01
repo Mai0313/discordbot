@@ -44,6 +44,7 @@ from discordbot.services.memory.deltas import (
     today_utc,
     apply_deltas,
     forget_segments,
+    reconfirm_facts,
     sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
@@ -406,6 +407,14 @@ async def _consolidate_compartment(
         )
         return outcome
     _consecutive_rejections.pop((run.scope, compartment), None)
+    if not deletes_only:
+        # Ahead of the sweep, which would otherwise age out a fact this batch restated.
+        reconfirm_facts(
+            scope=run.scope,
+            compartment=compartment,
+            raw_text=request_parts.raw_entries,
+            written=outcome.written,
+        )
     swept = sweep_stale_facts(scope=run.scope, compartment=compartment, today=today_utc())
     logfire.debug(
         "Memory compartment consolidated",
