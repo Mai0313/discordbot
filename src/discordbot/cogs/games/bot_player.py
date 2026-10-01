@@ -34,29 +34,6 @@ BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # and well above the standard Hi-Lo ~0.005 because this table's five-card rules amplify
 # a ten-rich shoe; re-measure offline if those rules change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
-_PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
-    11: frozenset(range(2, 12)),
-    8: frozenset(range(2, 12)),
-    9: frozenset({2, 3, 4, 5, 6, 8, 9}),
-    7: frozenset(range(2, 8)),
-    6: frozenset(range(2, 7)),
-    4: frozenset({5, 6}),
-    3: frozenset(range(2, 8)),
-    2: frozenset(range(2, 8)),
-}
-_HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
-    9: frozenset({3, 4, 5, 6}),
-    10: frozenset(range(2, 10)),
-    11: frozenset(range(2, 12)),
-}
-_SOFT_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
-    13: frozenset({5, 6}),
-    14: frozenset({5, 6}),
-    15: frozenset({4, 5, 6}),
-    16: frozenset({4, 5, 6}),
-    17: frozenset({3, 4, 5, 6}),
-    18: frozenset(range(2, 7)),
-}
 
 
 def _dealer_up_value(*, up_card: Card | None) -> int:
@@ -84,11 +61,24 @@ def _should_surrender(*, hand_total: int, dealer_value: int) -> bool:
 
 def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
     """Returns whether double down is the fallback table choice."""
+    hard_double_dealers: dict[int, frozenset[int]] = {
+        9: frozenset({3, 4, 5, 6}),
+        10: frozenset(range(2, 10)),
+        11: frozenset(range(2, 12)),
+    }
+    soft_double_dealers: dict[int, frozenset[int]] = {
+        13: frozenset({5, 6}),
+        14: frozenset({5, 6}),
+        15: frozenset({4, 5, 6}),
+        16: frozenset({4, 5, 6}),
+        17: frozenset({3, 4, 5, 6}),
+        18: frozenset(range(2, 7)),
+    }
     is_soft, _total = is_soft_total(cards=cards)
     double_dealers = (
-        _SOFT_DOUBLE_DEALERS.get(hand_total, frozenset())
+        soft_double_dealers.get(hand_total, frozenset())
         if is_soft
-        else _HARD_DOUBLE_DEALERS.get(hand_total, frozenset())
+        else hard_double_dealers.get(hand_total, frozenset())
     )
     return dealer_value in double_dealers
 
@@ -194,12 +184,22 @@ def fallback_action(
 
     Only emits actions listed in `allowed_actions`.
     """
+    pair_split_dealers: dict[int, frozenset[int]] = {
+        11: frozenset(range(2, 12)),
+        8: frozenset(range(2, 12)),
+        9: frozenset({2, 3, 4, 5, 6, 8, 9}),
+        7: frozenset(range(2, 8)),
+        6: frozenset(range(2, 7)),
+        4: frozenset({5, 6}),
+        3: frozenset(range(2, 8)),
+        2: frozenset(range(2, 8)),
+    }
     dealer_value = _dealer_up_value(up_card=dealer_up)
     pair_value = _pair_value(cards=hand_cards) if is_pair_hand else None
     if (
         pair_value is not None
         and "split" in allowed_actions
-        and dealer_value in _PAIR_SPLIT_DEALERS.get(pair_value, frozenset())
+        and dealer_value in pair_split_dealers.get(pair_value, frozenset())
     ):
         return "split"
     if "surrender" in allowed_actions and _should_surrender(

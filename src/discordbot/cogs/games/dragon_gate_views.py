@@ -9,7 +9,6 @@ import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
 from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
-from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.cogs.games.lobby import (
     PrepareParticipant,
     RefreshParticipants,
@@ -27,6 +26,7 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGateDirection,
     DragonGateTurnError,
     DragonGateTurnResult,
+    DragonGatePlayerResult,
     DragonGateBetRangeError,
     DragonGateTableFinishedError,
     DragonGatePairChoiceRequiredError,
@@ -40,8 +40,6 @@ from discordbot.cogs.games.interactions import (
     set_view_item_visible,
 )
 from discordbot.cogs.games.presentation import (
-    WIN_COLOR,
-    LOSE_COLOR,
     PUSH_COLOR,
     POT_FIELD_EMOJI,
     TURN_FIELD_EMOJI,
@@ -49,6 +47,7 @@ from discordbot.cogs.games.presentation import (
     LAST_HAND_FIELD_EMOJI,
     FINISH_REASON_FIELD_EMOJI,
     LOBBY_PLAYERS_FIELD_EMOJI,
+    delta_color,
     metadata_line,
     lobby_participant_line,
 )
@@ -59,6 +58,8 @@ if TYPE_CHECKING:
     from random import Random
 
     from nextcord.ext import commands
+
+    from discordbot.typings.games import GameParticipant
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
@@ -172,16 +173,6 @@ def _gate_description_block(turn: DragonGateTurn) -> str:
             return f"{cards}\n### ⚠️ 同點門柱\n{hint}"
         return f"{cards}\n### {_direction_label(direction=turn.direction)}"
     return cards
-
-
-def _table_color(results: list[DragonGatePlayerResult]) -> int:
-    """Returns the final embed color from the table's net result."""
-    total_delta = sum(result.delta for result in results)
-    if total_delta > 0:
-        return WIN_COLOR
-    if total_delta < 0:
-        return LOSE_COLOR
-    return PUSH_COLOR
 
 
 def _settlement_result_heading(delta: int) -> str:
@@ -327,7 +318,7 @@ def build_dragon_gate_final_embed(
     embed = Embed(
         title=_final_title(results=results),
         description="\n".join(description_parts),
-        color=_table_color(results=results),
+        color=delta_color(delta=sum(result.delta for result in results)),
     )
     if round_state.participants and round_state.participants[0].avatar_url:
         embed.set_thumbnail(url=round_state.participants[0].avatar_url)
@@ -650,10 +641,7 @@ class DragonGateView(GameView):
         pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
         if user_id is None:
             return pool_max
-        balance = self._final_balances.get(user_id)
-        if balance is None:
-            return pool_max
-        return min(pool_max, max(balance, 0))
+        return min(pool_max, max(self._final_balances[user_id], 0))
 
     def _active_max_bet(self) -> int:
         """Returns the active player's balance-bounded maximum bet."""
@@ -679,7 +667,6 @@ class DragonGateView(GameView):
             if self._settled:
                 return
             jackpot_before = self._jackpot_snapshot
-            participant = self._participant_for(user_id=interaction.user.id)
             try:
                 # Refresh from the live wallet: a player may have spent or transferred
                 # outside the table since the ante, so the in-table cache can be stale.
@@ -697,8 +684,8 @@ class DragonGateView(GameView):
             was_loss = turn_result.delta < 0
             settlement = await apply_jackpot_settlement(
                 player_id=interaction.user.id,
-                player_account_name=participant.account_name if participant else "",
-                player_avatar_url=participant.avatar_url if participant else "",
+                player_account_name=turn_result.participant.account_name,
+                player_avatar_url=turn_result.participant.avatar_url,
                 player_delta=turn_result.delta,
                 game_id=GAME_ID,
                 expected_jackpot_generation=self._jackpot_generation,
@@ -788,11 +775,15 @@ class DragonGateView(GameView):
 
     async def _refund_winnings_to_pool_locked(self, *, user_id: int, delta: int) -> None:
         """Pushes one player's positive table delta back into the jackpot ("逆贏不拿")."""
-        participant = self._participant_for(user_id=user_id)
+        participant = next(
+            participant
+            for participant in self.round_state.participants
+            if participant.user_id == user_id
+        )
         settlement = await apply_jackpot_settlement(
             player_id=user_id,
-            player_account_name=participant.account_name if participant else "",
-            player_avatar_url=participant.avatar_url if participant else "",
+            player_account_name=participant.account_name,
+            player_avatar_url=participant.avatar_url,
             player_delta=-delta,
             game_id=GAME_ID,
         )
@@ -825,16 +816,13 @@ class DragonGateView(GameView):
         results: list[DragonGatePlayerResult] = []
         for participant in self.round_state.participants:
             user_id = participant.user_id
-            final_balance = self._final_balances.get(user_id)
-            if final_balance is None:
-                final_balance = await get_balance(user_id=user_id)
             gross_delta = self.round_state.player_delta(user_id=user_id)
             refunded = self._refunded_to_pool.get(user_id, 0)
             results.append(
                 DragonGatePlayerResult(
                     participant=participant,
                     delta=gross_delta - refunded,
-                    final_balance=final_balance,
+                    final_balance=self._final_balances[user_id],
                     withdrawn=user_id in self.round_state.withdrawn_user_ids,
                     refunded_to_pool=refunded,
                 )
@@ -864,13 +852,6 @@ class DragonGateView(GameView):
             message_id=message.id,
             reason=reason,
         )
-
-    def _participant_for(self, user_id: int) -> GameParticipant | None:
-        """Returns the participant matching a Discord user ID."""
-        for participant in self.round_state.participants:
-            if participant.user_id == user_id:
-                return participant
-        return None
 
     def _current_turn_notice(self) -> str:
         """Returns the ephemeral notice for users acting out of turn."""
@@ -924,14 +905,3 @@ class DragonGateBetModal(Modal):
     async def callback(self, interaction: Interaction[commands.Bot]) -> None:
         """Submits the custom bet amount back to the active table view."""
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
-
-
-__all__ = [
-    "DRAGON_GATE_ACTION_TIMEOUT_SECONDS",
-    "DragonGateBetModal",
-    "DragonGateLobbyView",
-    "DragonGateView",
-    "build_dragon_gate_final_embed",
-    "build_dragon_gate_in_progress_embed",
-    "build_dragon_gate_lobby_embed",
-]

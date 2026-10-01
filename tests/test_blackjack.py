@@ -20,7 +20,6 @@ from discordbot.cogs.games.blackjack import (
     can_double,
     hand_value,
     is_soft_17,
-    render_hand,
     settle_hand,
     is_blackjack,
     can_surrender,
@@ -29,7 +28,7 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs.games.settlement import blackjack_player_early_finish_note
+from discordbot.cogs.games.presentation import render_hand, blackjack_player_early_finish_note
 from discordbot.services.economy.database import buy_vip, get_casino_ledger
 
 from tests.helpers.games import card, seat, settle_only_seat
@@ -980,7 +979,6 @@ async def test_settle_blackjack_player_updates_player_and_casino() -> None:
     settlement = await settle_only_seat(round_state=round_state)
 
     assert settlement.delta == 50
-    assert settlement.payout == 50
     assert settlement.new_balance == 150
     assert settlement.casino_balance == -50
     ledger = await get_casino_ledger()

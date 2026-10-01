@@ -9,7 +9,13 @@ from typing import Final, Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.games import Card, BotAction, SettleOutcome, GameParticipant
+from discordbot.typings.games import (
+    Card,
+    BotAction,
+    SettleOutcome,
+    GameParticipant,
+    BlackjackDealerStep,
+)
 from discordbot.typings.economy import MAX_SINGLE_BET
 
 RoundPhase = Literal["insurance", "player_actions", "settled"]
@@ -43,9 +49,6 @@ class InsuranceBetTooSmallError(InsuranceRefusedError):
 
 
 SHOE_DECK_COUNT = 4
-# Natural Blackjack pays 3:2.
-_BLACKJACK_PAYOUT_NUM: Final[int] = 3
-_BLACKJACK_PAYOUT_DEN: Final[int] = 2
 CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
 CARD_SUITS = ("♠", "♥", "♦", "♣")
 TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
@@ -379,23 +382,6 @@ def surrender_loss(bet: int) -> int:
     return (bet + 1) // 2
 
 
-def _settle_split_twenty_one(
-    hand: BlackjackHandState, dealer: list[Card]
-) -> tuple[SettleOutcome, int]:
-    """Resolves a split-derived two-card 21 without treating it as natural Blackjack."""
-    dealer_total = hand_value(cards=dealer)
-    if is_blackjack(cards=dealer):
-        outcome: SettleOutcome = "lose"
-        delta = -hand.bet
-    elif dealer_total == 21:
-        outcome, delta = "push", 0
-    elif is_bust(cards=dealer):
-        outcome, delta = "dealer_bust", hand.bet
-    else:
-        outcome, delta = "win", hand.bet
-    return outcome, delta
-
-
 def _settle_regular_hand(
     hand: BlackjackHandState, dealer: list[Card]
 ) -> tuple[SettleOutcome, int]:
@@ -410,7 +396,8 @@ def _settle_regular_hand(
         outcome: SettleOutcome = "push"
         delta = 0
     elif player_bj:
-        outcome, delta = "blackjack", bet * _BLACKJACK_PAYOUT_NUM // _BLACKJACK_PAYOUT_DEN
+        # A natural pays 3:2.
+        outcome, delta = "blackjack", bet * 3 // 2
     elif dealer_bj:
         outcome, delta = "lose", -bet
     elif hand.is_bust():
@@ -431,9 +418,8 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
 
     Surrender short-circuits to a half-bet refund. `is_five_card_win` also
     matches a five-card 21, so the 21 is tested first or the hand would settle
-    as a plain five-card win and lose the bonus that label carries.
-    Split-derived two-card 21 is handled before natural Blackjack so it never
-    receives the natural Blackjack payout.
+    as a plain five-card win and lose the bonus that label carries. A split
+    hand's two-card 21 is not a natural, so it settles as an ordinary 21.
 
     Args:
         hand: Finished sub-hand to settle.
@@ -458,8 +444,6 @@ def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOut
         return "five_card_twenty_one", delta
     if is_five_card_win(cards=hand.cards):
         return "five_card_win", hand.bet
-    if hand.is_split_hand and is_blackjack(cards=hand.cards):
-        return _settle_split_twenty_one(hand=hand, dealer=dealer)
     return _settle_regular_hand(hand=hand, dealer=dealer)
 
 
@@ -839,12 +823,46 @@ class BlackjackRound(BaseModel):
         self.dealer_played = True
         self.phase = "settled"
 
-    def _find_player(self, user_id: int) -> BlackjackPlayerHand:
-        """Returns the player by user_id or raises when unknown."""
+    def play_dealer(self) -> list[BlackjackDealerStep]:
+        """Draws for the dealer under H17 rules, then closes the dealer phase.
+
+        Returns:
+            Each hit in draw order, then a stand unless the dealer bust. Empty, with the round
+            left as it was, when the dealer already played or no hand needs it to.
+        """
+        if self.dealer_played or not self.needs_dealer_play():
+            return []
+        steps: list[BlackjackDealerStep] = []
+        while dealer_must_hit(cards=self.dealer):
+            total_before = self.dealer_total()
+            drawn_card = self.draw_dealer_card()
+            steps.append(
+                BlackjackDealerStep(
+                    total_before=total_before,
+                    action="hit",
+                    drawn_card=drawn_card,
+                    total_after=self.dealer_total(),
+                )
+            )
+        final_total = self.dealer_total()
+        if final_total <= 21:
+            steps.append(BlackjackDealerStep(total_before=final_total, action="stand"))
+        self.mark_dealer_played()
+        return steps
+
+    def find_player(self, user_id: int) -> BlackjackPlayerHand | None:
+        """Returns the seat `user_id` holds at this table, or None when they hold none."""
         for player in self.players:
             if player.participant.user_id == user_id:
                 return player
-        raise ValueError("Unknown user for this round")
+        return None
+
+    def _find_player(self, user_id: int) -> BlackjackPlayerHand:
+        """Returns the player by user_id or raises when unknown."""
+        player = self.find_player(user_id=user_id)
+        if player is None:
+            raise ValueError("Unknown user for this round")
+        return player
 
     def _require_active(self, user_id: int) -> tuple[BlackjackPlayerHand, BlackjackHandState]:
         """Returns the active (player, hand) tuple or raises when not turn."""
@@ -913,19 +931,3 @@ class BlackjackRound(BaseModel):
         `draw_dealer_card` at a time, closed by `mark_dealer_played`.
         """
         self.phase = "settled"
-
-
-def render_hand(cards: list[Card], hide_first: bool = False) -> str:
-    """Formats a hand for display.
-
-    Args:
-        cards: Cards to render.
-        hide_first: Whether to replace the first card with a hidden-card marker.
-
-    Returns:
-        A space-separated display string for the hand.
-    """
-    if hide_first and cards:
-        rest = " ".join(str(card) for card in cards[1:])
-        return f"🂠 {rest}".strip()
-    return " ".join(str(card) for card in cards)

@@ -12,7 +12,7 @@ import logfire
 from nextcord import Embed, HTTPException
 from nextcord.ui import StringSelect
 
-from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
+from discordbot.typings.games import GameParticipant
 from discordbot.typings.economy import (
     JackpotSnapshot,
     JackpotSettlementResult,
@@ -24,6 +24,7 @@ from discordbot.cogs.games.dragon_gate import (
     GAME_ID,
     DragonGateRound,
     DragonGateTurnResult,
+    DragonGatePlayerResult,
     DragonGateParticipantUnknownError,
     card_value,
     has_open_gate,

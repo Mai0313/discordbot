@@ -1,4 +1,4 @@
-"""Interactive components for multiplayer casino game sessions."""
+"""Blackjack lobby and table views, and the seat embeds they render."""
 
 from __future__ import annotations
 
@@ -30,16 +30,11 @@ from discordbot.cogs.games.blackjack import (
     InsuranceBetTooSmallError,
     InsuranceBeyondBalanceError,
     hand_value,
-    render_hand,
-    dealer_must_hit,
     is_five_card_win,
     is_five_card_twenty_one,
 )
 from discordbot.cogs.games.bot_player import choose_bot_action, bot_takes_insurance
-from discordbot.cogs.games.settlement import (
-    settle_blackjack_player,
-    blackjack_player_early_finish_note,
-)
+from discordbot.cogs.games.settlement import settle_blackjack_player
 from discordbot.cogs.games.interactions import (
     GameView,
     edit_game_message,
@@ -58,10 +53,13 @@ from discordbot.cogs.games.presentation import (
     SYSTEM_NARRATOR_NAME,
     LOBBY_PLAYERS_FIELD_EMOJI,
     card_line,
+    delta_color,
+    render_hand,
     metadata_line,
     player_result_title,
     settlement_metadata,
     lobby_participant_line,
+    blackjack_player_early_finish_note,
 )
 from discordbot.services.economy.presentation import amount_code, currency_text
 
@@ -222,19 +220,11 @@ def _dealer_in_progress_color(round_state: BlackjackRound) -> int:
 
 
 def _player_seat_color(
-    player: BlackjackPlayerHand,
-    *,
-    settlement: BlackjackPlayerSettlement | None,
-    is_active: bool,
-    insurance_phase: bool,
+    *, settlement: BlackjackPlayerSettlement | None, is_active: bool, insurance_phase: bool
 ) -> int:
     """Picks a player seat embed color from settlement or in-progress state."""
     if settlement is not None:
-        if settlement.delta > 0:
-            return WIN_COLOR
-        if settlement.delta < 0:
-            return LOSE_COLOR
-        return PUSH_COLOR
+        return delta_color(delta=settlement.delta)
     if insurance_phase:
         return IN_PROGRESS_COLOR
     if is_active:
@@ -333,13 +323,13 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
     active_hand_index: int | None,
     insurance_status: str | None,
     settlement: BlackjackPlayerSettlement | None = None,
-    dealer_total: int | None = None,
+    dealer_total: int = 0,
 ) -> Embed:
     """Builds one player's seat embed. Same shape for human and bot players."""
     is_active = active_hand_index is not None
     insurance_phase = round_state.phase == "insurance"
     color = _player_seat_color(
-        player=player, settlement=settlement, is_active=is_active, insurance_phase=insurance_phase
+        settlement=settlement, is_active=is_active, insurance_phase=insurance_phase
     )
     description_parts: list[str] = []
     hand_count = len(player.hands)
@@ -353,7 +343,7 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
             title = player_result_title(
                 outcome=hand_settlement.outcome,
                 player_total=hand_value(cards=hand_settlement.cards),
-                dealer_total=dealer_total or 0,
+                dealer_total=dealer_total,
             )
             description_parts.append(f"{summary}\n{title}")
     else:
@@ -377,7 +367,6 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
                 delta=settlement.delta,
                 new_balance=settlement.new_balance,
                 is_allin=player.participant.is_allin,
-                base_delta=settlement.base_delta,
                 vip_bonus=settlement.vip_bonus,
                 five_card_bonus=settlement.five_card_bonus,
             )
@@ -400,18 +389,12 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
 
 
 def build_in_progress_embeds(
-    *,
-    round_state: BlackjackRound,
-    dealer_steps: list[BlackjackDealerStep] | None = None,
-    force_show_hole: bool = False,
+    *, round_state: BlackjackRound, force_show_hole: bool = False
 ) -> list[Embed]:
     """Builds dealer + per-player seat embeds for the in-progress table."""
     embeds: list[Embed] = [
         build_dealer_seat_embed(
-            round_state=round_state,
-            hide_hole=not force_show_hole,
-            dealer_steps=dealer_steps,
-            is_settled=False,
+            round_state=round_state, hide_hole=not force_show_hole, is_settled=False
         )
     ]
     insurance_phase = round_state.phase == "insurance"
@@ -586,7 +569,6 @@ class BlackjackView(GameView):
         self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self._dealer_steps: list[BlackjackDealerStep] = []
         self._peek_animated = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -611,7 +593,7 @@ class BlackjackView(GameView):
         if interaction.user is None:
             return False
         if self.round_state.phase == "insurance":
-            player = self._find_player_by_user_id(user_id=interaction.user.id)
+            player = self.round_state.find_player(user_id=interaction.user.id)
             if player is None:
                 await self._send_notice(interaction=interaction, content="你不在這個牌桌")
                 return False
@@ -761,7 +743,7 @@ class BlackjackView(GameView):
         self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
     ) -> bool:
         """Buys half-bet insurance for one seat; False when the round refused it."""
-        if self._find_player_by_user_id(user_id=user_id) is None:
+        if self.round_state.find_player(user_id=user_id) is None:
             return False
         try:
             self.round_state.take_insurance(user_id=user_id)
@@ -871,12 +853,8 @@ class BlackjackView(GameView):
         if self._settled or self.round_state.finished:
             return None
         if self.round_state.phase == "insurance":
-            bot_player = self._find_player_by_user_id(user_id=bot_user_id)
-            if (
-                bot_player is None
-                or bot_player.insurance_resolved
-                or not self.round_state.insurance_offered
-            ):
+            bot_player = self.round_state.find_player(user_id=bot_user_id)
+            if bot_player is None or bot_player.insurance_resolved:
                 return None
             return bot_player
         if self.round_state.phase != "player_actions":
@@ -886,13 +864,6 @@ class BlackjackView(GameView):
             return None
         return active
 
-    def _find_player_by_user_id(self, *, user_id: int) -> BlackjackPlayerHand | None:
-        """Returns the player hand container matching a user_id, if any."""
-        for candidate in self.round_state.players:
-            if candidate.participant.user_id == user_id:
-                return candidate
-        return None
-
     async def _dispatch_bot_insurance_locked(
         self,
         *,
@@ -901,8 +872,6 @@ class BlackjackView(GameView):
         interaction: Interaction[commands.Bot],
     ) -> None:
         """Applies the bot's deterministic count-based insurance decision."""
-        if not bot_player.hands:
-            return
         user_id = bot_player.participant.user_id
         take_insurance = bot_takes_insurance(shoe=self.round_state.shoe)
         try:
@@ -1031,9 +1000,7 @@ class BlackjackView(GameView):
         """Refreshes the per-seat embeds while holding the round lock."""
         self.last_press = interaction
         self.sync_buttons()
-        seat_embeds = build_in_progress_embeds(
-            round_state=self.round_state, dealer_steps=self._dealer_steps
-        )
+        seat_embeds = build_in_progress_embeds(round_state=self.round_state)
         await interaction.edit_original_message(
             **table_edit_kwargs(embeds=seat_embeds, view=self, target=message)
         )
@@ -1053,8 +1020,6 @@ class BlackjackView(GameView):
             return
         self._settled = True
         self._state_revision += 1
-        if self.round_state.phase == "insurance":
-            self.round_state.decline_insurance_for_all_unresolved()
         if not self.round_state.finished:
             self.round_state.stand_all_remaining()
         self._disable_buttons()
@@ -1070,7 +1035,7 @@ class BlackjackView(GameView):
             self._peek_animated = True
             await self._animate_peek_locked(message=message, interaction=interaction)
 
-        await self._play_dealer_locked()
+        dealer_steps = self.round_state.play_dealer()
         logfire.debug(
             "Blackjack dealer phase done",
             dealer_total=self.round_state.dealer_total(),
@@ -1107,7 +1072,7 @@ class BlackjackView(GameView):
         )
 
         seat_embeds = build_final_embeds(
-            round_state=self.round_state, results=results, dealer_steps=self._dealer_steps
+            round_state=self.round_state, results=results, dealer_steps=dealer_steps
         )
         self.clear_items()
         landed = await publish_final_table(
@@ -1183,9 +1148,7 @@ class BlackjackView(GameView):
         further edits after the animation returns.
         """
         self._disable_buttons()
-        body_hidden = build_in_progress_embeds(
-            round_state=self.round_state, dealer_steps=self._dealer_steps
-        )
+        body_hidden = build_in_progress_embeds(round_state=self.round_state)
         await self._safe_edit_locked(
             message=message,
             interaction=interaction,
@@ -1194,9 +1157,7 @@ class BlackjackView(GameView):
         )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
-        reveal_body = build_in_progress_embeds(
-            round_state=self.round_state, dealer_steps=self._dealer_steps, force_show_hole=True
-        )
+        reveal_body = build_in_progress_embeds(round_state=self.round_state, force_show_hole=True)
         await self._safe_edit_locked(
             message=message,
             interaction=interaction,
@@ -1219,29 +1180,6 @@ class BlackjackView(GameView):
             return
         self._peek_animated = True
         await self._animate_peek_locked(message=message, interaction=interaction)
-
-    async def _play_dealer_locked(self) -> None:
-        """Runs the dealer phase using H17 rules (no AI involved)."""
-        if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
-            return
-
-        while dealer_must_hit(cards=self.round_state.dealer):
-            total_before = self.round_state.dealer_total()
-            drawn_card = self.round_state.draw_dealer_card()
-            self._dealer_steps.append(
-                BlackjackDealerStep(
-                    total_before=total_before,
-                    action="hit",
-                    drawn_card=drawn_card,
-                    total_after=self.round_state.dealer_total(),
-                )
-            )
-        final_total = self.round_state.dealer_total()
-        if final_total <= 21:
-            self._dealer_steps.append(
-                BlackjackDealerStep(total_before=final_total, action="stand")
-            )
-        self.round_state.mark_dealer_played()
 
     async def _record_history_later(
         self,
@@ -1283,13 +1221,3 @@ class BlackjackView(GameView):
         """
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))
-
-
-__all__: list[str] = [
-    "MAX_BLACKJACK_PLAYERS",
-    "BlackjackLobbyView",
-    "BlackjackView",
-    "build_blackjack_lobby_embed",
-    "build_final_embeds",
-    "build_in_progress_embeds",
-]

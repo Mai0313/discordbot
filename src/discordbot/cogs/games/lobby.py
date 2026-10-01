@@ -286,7 +286,6 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         initial_jackpot: int,
         timeout: int,
         initial_jackpot_generation: int | None = None,
-        extra_initial_participants: Iterable[GameParticipant] | None = None,
     ) -> None:
         """Initializes jackpot lobby state with the live pool snapshot."""
         super().__init__(
@@ -295,7 +294,6 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             timeout=timeout,
-            extra_initial_participants=extra_initial_participants,
         )
         self._jackpot_snapshot = initial_jackpot
         self._jackpot_generation = initial_jackpot_generation

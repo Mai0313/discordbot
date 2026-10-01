@@ -38,7 +38,6 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
     """Wraps settlement fields into a `BlackjackPlayerResult`."""
     settlement = BlackjackPlayerSettlement(
         delta=delta,
-        payout=max(delta, 0),
         new_balance=participant.balance_at_start + delta,
         casino_balance=0,
         base_delta=delta,

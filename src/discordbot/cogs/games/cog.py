@@ -28,7 +28,7 @@ from discordbot.utils.message_cleanup import track_public_message
 from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
-from discordbot.services.economy.database import get_account, get_balance, get_jackpot_snapshot
+from discordbot.services.economy.database import get_balance, get_jackpot_snapshot
 from discordbot.cogs.games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
     BlackjackLobbyView,
@@ -71,8 +71,7 @@ class GamesCogs(commands.Cog):
         bot_user = self.bot.user
         if bot_user is None:
             return None
-        account = await get_account(user_id=bot_user.id)
-        balance = account.balance if account is not None else 0
+        balance = await get_balance(user_id=bot_user.id)
         if balance <= 0:
             logfire.info(
                 "Bot player skipped Blackjack lobby; wallet is empty", user_id=bot_user.id
@@ -136,10 +135,7 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return None
         result = await self._participant_from_user(
-            user=interaction.user,
-            wager=wager,
-            mode=mode,
-            guild=getattr(interaction, "guild", None),
+            user=interaction.user, wager=wager, mode=mode, guild=interaction.guild
         )
         if result.participant is None:
             await send_private_followup(
@@ -265,7 +261,7 @@ class GamesCogs(commands.Cog):
 
         await interaction.response.defer()
 
-        guild = getattr(interaction, "guild", None)
+        guild = interaction.guild
         participant_result = await self._participant_from_user(
             user=interaction.user, wager=None if wager == 0 else wager, mode="clamp", guild=guild
         )
@@ -278,7 +274,7 @@ class GamesCogs(commands.Cog):
             return
 
         table_bet = owner.bet
-        channel_id = getattr(interaction, "channel_id", None) or 0
+        channel_id = interaction.channel_id or 0
         bot_participant = await self._bot_blackjack_participant(
             guild=guild, table_bet=table_bet, channel_id=channel_id
         )
@@ -325,10 +321,7 @@ class GamesCogs(commands.Cog):
             return
 
         participant_result = await self._participant_from_user(
-            user=interaction.user,
-            wager=ANTE,
-            mode="exact",
-            guild=getattr(interaction, "guild", None),
+            user=interaction.user, wager=ANTE, mode="exact", guild=interaction.guild
         )
         owner = participant_result.participant
         if owner is None:
@@ -406,7 +399,7 @@ class GamesCogs(commands.Cog):
             return
         await interaction.response.defer()
         target = member or interaction.user
-        target_name = getattr(target, "display_name", "") or target.name
+        target_name = target.display_name or target.name
         records = await fetch_recent_blackjack_rounds(user_id=target.id, limit=count)
         embed = build_blackjack_history_embed(player_name=target_name, records=records)
         await send_expiring_followup(interaction=interaction, embed=embed)
