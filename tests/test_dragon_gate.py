@@ -14,6 +14,7 @@ from nextcord.ui import StringSelect
 
 from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
 from discordbot.typings.economy import (
+    JackpotSnapshot,
     JackpotSettlementResult,
     JackpotSettlementRequest,
     JackpotSettlementBatchResult,
@@ -28,7 +29,11 @@ from discordbot.cogs.games.dragon_gate import (
     has_open_gate,
 )
 from discordbot.cogs.games.interactions import publish_final_table
-from discordbot.services.economy.database import apply_jackpot_settlement_batch
+from discordbot.services.economy.database import (
+    get_jackpot_snapshot,
+    apply_jackpot_settlement,
+    apply_jackpot_settlement_batch,
+)
 from discordbot.cogs.games.dragon_gate_views import (
     DRAGON_GATE_VISIBLE_PLAYER_LINES,
     DRAGON_GATE_VISIBLE_HISTORY_LINES,
@@ -95,99 +100,6 @@ class RiggedRandom(Random):
         return cast("T", value)
 
 
-class JackpotState:
-    """In-memory simulator for jackpot settlement helpers used in view tests.
-
-    Each `settle` call mutates the simulated player balance and jackpot
-    snapshot, lets tests assert the running effect of multiple settlements
-    without spinning up a real database.
-    """
-
-    def __init__(
-        self,
-        initial_jackpot: int = 100_000,
-        initial_balance: int = 100_000,
-        replenish_seed: int = 100_000,
-    ) -> None:
-        """Initializes simulated player balances and jackpot state."""
-        self.jackpot = initial_jackpot
-        self.generation = 0
-        self.balances: dict[int, int] = {}
-        self.initial_balance = initial_balance
-        self._replenish_seed = replenish_seed
-        self.calls: list[dict[str, Any]] = []
-
-    async def settle(  # noqa: PLR0913 -- mirrors apply_jackpot_settlement for monkeypatching
-        self,
-        player_id: int,
-        player_account_name: str,
-        player_delta: int,
-        game_id: str,
-        player_avatar_url: str = "",
-        expected_jackpot_generation: int | None = None,
-    ) -> JackpotSettlementResult:
-        """Mocks `apply_jackpot_settlement` and tracks the call chain."""
-        assert game_id == GAME_ID
-        self.balances.setdefault(player_id, self.initial_balance)
-        starting_balance = self.balances[player_id]
-        if (
-            player_delta > 0
-            and expected_jackpot_generation is not None
-            and expected_jackpot_generation != self.generation
-        ):
-            applied_delta = 0
-        elif player_delta < 0:
-            self.balances[player_id] = max(starting_balance + player_delta, 0)
-            applied_delta = self.balances[player_id] - starting_balance
-        else:
-            self.balances[player_id] += player_delta
-            applied_delta = self.balances[player_id] - starting_balance
-        self.jackpot -= applied_delta
-        depleted = self._replenish_seed > 0 and self.jackpot <= 0
-        if depleted:
-            self.jackpot = self._replenish_seed
-            self.generation += 1
-        self.calls.append({
-            "player_id": player_id,
-            "player_account_name": player_account_name,
-            "player_delta": player_delta,
-            "player_avatar_url": player_avatar_url,
-            "expected_jackpot_generation": expected_jackpot_generation,
-        })
-        return JackpotSettlementResult(
-            player_balance=self.balances[player_id],
-            jackpot_balance=self.jackpot,
-            jackpot_generation=self.generation,
-            applied_player_delta=applied_delta,
-            jackpot_depleted=depleted,
-        )
-
-    async def settle_batch(
-        self, game_id: str, settlements: Sequence[JackpotSettlementRequest]
-    ) -> JackpotSettlementBatchResult:
-        """Mocks `apply_jackpot_settlement_batch` with the same state model."""
-        player_balances: dict[int, int] = {}
-        applied_player_deltas: dict[int, int] = {}
-        for settlement in settlements:
-            result = await self.settle(
-                player_id=settlement.player_id,
-                player_account_name=settlement.player_account_name,
-                player_delta=settlement.player_delta,
-                game_id=game_id,
-                player_avatar_url=settlement.player_avatar_url,
-                expected_jackpot_generation=settlement.expected_jackpot_generation,
-            )
-            player_balances[settlement.player_id] = result.player_balance
-            applied_player_deltas[settlement.player_id] = result.applied_player_delta
-            self.jackpot = result.jackpot_balance
-        return JackpotSettlementBatchResult(
-            player_balances=player_balances,
-            applied_player_deltas=applied_player_deltas,
-            jackpot_balance=self.jackpot,
-            jackpot_generation=self.generation,
-        )
-
-
 def _rendered_length(embed: Embed) -> int:
     """What Discord counts one embed as, for the 6000-per-message budget it shares.
 
@@ -209,21 +121,58 @@ def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> G
     return seat(user_id=user_id, display_name=display_name, bet=ANTE, balance_at_start=balance)
 
 
-def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) -> None:
-    """Patches jackpot database calls to use an in-memory state model."""
-    monkeypatch.setattr(
-        "discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", state.settle
-    )
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", state.settle_batch
-    )
+async def _funded(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
+    """Builds a 射龍門 seat whose wallet in the isolated ledger holds what it sat down with."""
+    participant = _participant(user_id=user_id, display_name=display_name, balance=balance)
+    await seed_balance(user_id=user_id, name=participant.account_name, amount=balance)
+    return participant
 
-    async def fake_get_balance(user_id: int) -> int:
-        """Returns the simulated wallet balance, seeded until a settlement sets it."""
-        return state.balances.get(user_id, state.initial_balance)
 
-    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
+def _record_jackpot_settlements(monkeypatch: pytest.MonkeyPatch) -> list[JackpotSettlementRequest]:
+    """Settles every ante and bet against the isolated ledger, recording each request in order.
+
+    Also stands in for the table cleanup, so no deletion is ever scheduled.
+    """
+    requests: list[JackpotSettlementRequest] = []
+
+    async def settle(  # noqa: PLR0913 -- mirrors apply_jackpot_settlement
+        player_id: int,
+        player_account_name: str,
+        player_delta: int,
+        game_id: str,
+        player_avatar_url: str = "",
+        expected_jackpot_generation: int | None = None,
+    ) -> JackpotSettlementResult:
+        """Records the bet's request, then settles it."""
+        requests.append(
+            JackpotSettlementRequest(
+                player_id=player_id,
+                player_account_name=player_account_name,
+                player_avatar_url=player_avatar_url,
+                player_delta=player_delta,
+                expected_jackpot_generation=expected_jackpot_generation,
+            )
+        )
+        return await apply_jackpot_settlement(
+            player_id=player_id,
+            player_account_name=player_account_name,
+            player_delta=player_delta,
+            game_id=game_id,
+            player_avatar_url=player_avatar_url,
+            expected_jackpot_generation=expected_jackpot_generation,
+        )
+
+    async def settle_batch(
+        game_id: str, settlements: Sequence[JackpotSettlementRequest]
+    ) -> JackpotSettlementBatchResult:
+        """Records the antes' requests, then settles them as one batch."""
+        requests.extend(settlements)
+        return await apply_jackpot_settlement_batch(game_id=game_id, settlements=settlements)
+
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", settle)
+    monkeypatch.setattr("discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", settle_batch)
     record_scheduled_deletes(monkeypatch=monkeypatch)
+    return requests
 
 
 def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
@@ -543,19 +492,18 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Lobby buttons mutate participants and only the owner starts the table."""
-    owner = _participant(user_id=1, display_name="Alice")
+    owner = await _funded(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     message = FakeDiscordMessage()
-
-    state = JackpotState()
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
         prepare_participant=joins_as(participant=bob),
         refresh_participants=everyone_stays,
-        initial_jackpot=state.jackpot,
+        initial_jackpot=pool_before,
     )
     view.message = as_message(fake=message)
 
@@ -582,16 +530,16 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
     await start_button.callback(as_interaction(fake=owner_interaction))
     assert isinstance(message.edits[-1]["view"], DragonGateView)
-    assert state.calls == [
-        {
-            "player_id": owner.user_id,
-            "player_account_name": owner.account_name,
-            "player_delta": -ANTE,
-            "player_avatar_url": owner.avatar_url,
-            "expected_jackpot_generation": None,
-        }
+    assert settlements == [
+        JackpotSettlementRequest(
+            player_id=owner.user_id,
+            player_account_name=owner.account_name,
+            player_avatar_url=owner.avatar_url,
+            player_delta=-ANTE,
+            require_full_debit=True,
+        )
     ]
-    assert state.jackpot == 100_000 + ANTE
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before + ANTE
 
 
 async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
@@ -727,10 +675,9 @@ async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_play
     bot out of afterwards, where every channel edit is refused. A start edited through the
     channel charges the antes for a table that never appears.
     """
-    owner = _participant(user_id=1, display_name="Alice")
-    bob = _participant(user_id=2, display_name="Bob")
-    state = JackpotState()
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    owner = await _funded(user_id=1, display_name="Alice")
+    bob = await _funded(user_id=2, display_name="Bob")
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
     message.edit_failure = make_forbidden(message="Missing Access")
@@ -739,7 +686,7 @@ async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_play
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
         prepare_participant=joins_as(participant=bob),
         refresh_participants=everyone_stays,
-        initial_jackpot=state.jackpot,
+        initial_jackpot=await get_jackpot_pool(game_id=GAME_ID),
     )
     view.message = as_message(fake=message)
 
@@ -753,8 +700,8 @@ async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_play
     table = message.edits[-1]["view"]
     assert isinstance(table, DragonGateView)
     assert owner_start.followup.sent == []
-    assert len(state.calls) == 2, "the antes were charged once and never handed back"
-    assert {call["player_id"]: call["player_delta"] for call in state.calls} == {
+    assert len(settlements) == 2, "the antes were charged once and never handed back"
+    assert {request.player_id: request.player_delta for request in settlements} == {
         1: -ANTE,
         2: -ANTE,
     }
@@ -765,7 +712,7 @@ async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_play
             fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
         ),
     )
-    assert len(state.calls) == 3
+    assert len(settlements) == 3
     assert len(message.edits) == 3
     assert message.edits[-1]["view"] is table
 
@@ -797,19 +744,18 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bet calls apply_jackpot_settlement and updates the live snapshot."""
-    owner = _participant(user_id=1, display_name="Alice")
+    owner = await _funded(user_id=1, display_name="Alice")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("7", "♠", "7", "♥", "8", "♣")), participants=[owner]
     )
-
-    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=pool_before,
         final_balances={1: 1_000_000},
     )
     view.message = as_message(fake=message)
@@ -836,33 +782,31 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     )
 
     # 7-pair, higher, third = 8 → pair_win at +bet (MIN_BET = 20)
-    assert state.calls[-1]["player_delta"] == 20
-    assert state.jackpot == 100_000 - 20
-    assert view._jackpot_snapshot == state.jackpot
+    assert settlements[-1].player_delta == 20
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before - 20
+    assert view._jackpot_snapshot == pool_before - 20
 
 
 async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A low-balance player's max bet is capped at their balance, not the whole pool."""
-    owner = _participant(user_id=1, display_name="Alice", balance=100)
+    owner = await _funded(user_id=1, display_name="Alice", balance=100)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
     )
-    state = JackpotState(initial_jackpot=100_000, initial_balance=100)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool = await get_jackpot_pool(game_id=GAME_ID)
+    assert pool > 100
 
     message = FakeDiscordMessage()
     view = DragonGateView(
-        round_state=round_state,
-        owner=owner,
-        jackpot_snapshot=state.jackpot,
-        final_balances={1: 100},
+        round_state=round_state, owner=owner, jackpot_snapshot=pool, final_balances={1: 100}
     )
     view.message = as_message(fake=message)
     view.sync_controls()
 
-    # The 100,000 pool is bounded down to the player's 100 balance.
+    # The pool is bounded down to the player's 100 balance.
     assert view._active_max_bet() == 100
 
     await view._handle_bet_choice(
@@ -873,7 +817,7 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     )
 
     # Gate win pays only the balance-bounded 100, closing the free-option.
-    assert state.calls[-1]["player_delta"] == 100
+    assert settlements[-1].player_delta == 100
     assert round_state.player_delta(user_id=1) == 100
 
 
@@ -881,18 +825,17 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A player whose balance is below the minimum bet cannot win above wallet risk."""
-    owner = _participant(user_id=1, display_name="Alice", balance=15)
+    owner = await _funded(user_id=1, display_name="Alice", balance=15)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
     )
-    state = JackpotState(initial_jackpot=100_000, initial_balance=15)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=await get_jackpot_pool(game_id=GAME_ID),
         final_balances={1: 15},
     )
     view.message = as_message(fake=message)
@@ -905,7 +848,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
 
     interaction = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
     await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=interaction))
-    assert state.calls == []
+    assert settlements == []
     assert interaction.followup.sent[-1]["content"] == "餘額不足以下注，請先離桌"
 
 
@@ -913,13 +856,13 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Draining the pool replenishes it and skips the 逆贏不拿 refund."""
-    owner = _participant(user_id=1, display_name="Alice")
+    owner = await _funded(user_id=1, display_name="Alice", balance=500_000)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
     )
-
-    state = JackpotState(initial_jackpot=10_000, initial_balance=500_000)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    # A fresh ledger's pool holds its seed, which is what a drained pool is topped back up to.
+    seed = await get_jackpot_snapshot(game_id=GAME_ID)
 
     message = FakeDiscordMessage()
     # The channel refuses every edit, so the closing render lands only through the press.
@@ -927,7 +870,7 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=seed.balance,
         final_balances={1: 500_000},
     )
     view.message = as_message(fake=message)
@@ -941,9 +884,11 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     )
 
     # gate_win for the full pot → pool replenished, table finalised, no refund follow-up
-    assert state.jackpot == 100_000
-    assert len(state.calls) == 1
-    assert state.calls[0]["player_delta"] == 10_000
+    assert [request.player_delta for request in settlements] == [seed.balance]
+    assert await get_jackpot_snapshot(game_id=GAME_ID) == JackpotSnapshot(
+        balance=seed.balance, generation=seed.generation + 1
+    )
+    await assert_wallet_consistent(user_id=1, expected_balance=500_000 + seed.balance)
     assert view._settled is True
     # The pool state above is the invariant, and the closing render has to say WHY the table
     # ended: the reason rides the final embed's description, and an emptied pool that was
@@ -1020,22 +965,18 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A player whose Dragon Gate loss clamps to zero is withdrawn and finalizes."""
-    owner = _participant(user_id=1, display_name="Alice", balance=30)
+    owner = await _funded(user_id=1, display_name="Alice", balance=30)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "3", "♣")), participants=[owner]
     )
-
-    state = JackpotState(initial_jackpot=100_000, initial_balance=30)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     message = FakeDiscordMessage()
     # The channel refuses every edit, so the closing render lands only through the press.
     message.edit_failure = make_forbidden(message="Missing Access")
     view = DragonGateView(
-        round_state=round_state,
-        owner=owner,
-        jackpot_snapshot=state.jackpot,
-        final_balances={1: 30},
+        round_state=round_state, owner=owner, jackpot_snapshot=pool_before, final_balances={1: 30}
     )
     view.message = as_message(fake=message)
     view.sync_controls()
@@ -1048,8 +989,8 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     )
 
     # MIN_BET 20 pillar hit (-40) clamps to the 30 balance, busting the player.
-    assert state.balances[1] == 0
-    assert state.jackpot == 100_030
+    await assert_wallet_consistent(user_id=1, expected_balance=0)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before + 30
     assert round_state.player_delta(user_id=1) == -30
     assert round_state.is_active(user_id=1) is False
     assert round_state.finished is True
@@ -1069,22 +1010,19 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In multiplayer, a zero-balance loser leaves while the next player continues."""
-    alice = _participant(user_id=1, display_name="Alice", balance=30)
-    bob = _participant(user_id=2, display_name="Bob", balance=100_000)
+    alice = await _funded(user_id=1, display_name="Alice", balance=30)
+    bob = await _funded(user_id=2, display_name="Bob", balance=100_000)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "3", "♣")), participants=[alice, bob]
     )
-
-    state = JackpotState(initial_jackpot=100_000, initial_balance=100_000)
-    state.balances[1] = 30
-    state.balances[2] = 100_000
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=pool_before,
         final_balances={1: 30, 2: 100_000},
     )
     view.message = as_message(fake=message)
@@ -1098,8 +1036,8 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
     )
 
     # MIN_BET 20 pillar hit (-40) clamps to the 30 balance, busting only Alice.
-    assert state.balances[1] == 0
-    assert state.jackpot == 100_030
+    await assert_wallet_consistent(user_id=1, expected_balance=0)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before + 30
     assert round_state.player_delta(user_id=1) == -30
     assert round_state.is_active(user_id=1) is False
     assert round_state.is_active(user_id=2) is True
@@ -1113,21 +1051,20 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Leaving with a positive running delta refunds the surplus into the pool."""
-    alice = _participant(user_id=1, display_name="Alice")
+    alice = await _funded(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣", "4", "♦", "Q", "♣")),
         participants=[alice, bob],
     )
-
-    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=pool_before,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
     view.message = as_message(fake=message)
@@ -1149,8 +1086,8 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     )
 
     # Bet settled +20 into Alice. Leave refunds 20 back into the pool.
-    assert [call["player_delta"] for call in state.calls] == [20, -20]
-    assert state.jackpot == 100_000
+    assert [request.player_delta for request in settlements] == [20, -20]
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
     assert view._refunded_to_pool[1] == 20
     assert round_state.is_active(user_id=1) is False
     assert round_state.active_turn is not None
@@ -1165,17 +1102,16 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
     )
-    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000)
     # Live wallet dropped to 100 (player spent elsewhere mid-round); the in-table
     # cache still shows the post-ante 1,000.
-    state.balances[1] = 100
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    await seed_balance(user_id=1, name=owner.account_name, amount=100)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=await get_jackpot_pool(game_id=GAME_ID),
         final_balances={1: 1_000},
     )
     view.message = as_message(fake=message)
@@ -1189,7 +1125,7 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
         raw_amount="500",
     )
 
-    assert state.calls == []
+    assert settlements == []
     assert round_state.player_delta(user_id=1) == 0
 
 
@@ -1197,21 +1133,19 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Leaving while down or even does not push points back into the pool."""
-    alice = _participant(user_id=1, display_name="Alice")
+    alice = await _funded(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "K", "♣", "4", "♦", "Q", "♣")),
         participants=[alice, bob],
     )
-
-    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=await get_jackpot_pool(game_id=GAME_ID),
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
     view.message = as_message(fake=message)
@@ -1233,25 +1167,21 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     )
 
     # Single bet settled -20; leave path does not append another settlement.
-    assert [call["player_delta"] for call in state.calls] == [-20]
+    assert [request.player_delta for request in settlements] == [-20]
     assert 1 not in view._refunded_to_pool
 
 
-async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> None:
     """Only the active player can bet; the leave button is open to all seated."""
     alice = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[alice, bob]
     )
-    state = JackpotState()
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=100_000,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
 
@@ -1296,18 +1226,18 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Timeout refunds positive running deltas back into the jackpot."""
-    alice = _participant(user_id=1, display_name="Alice")
+    alice = await _funded(user_id=1, display_name="Alice")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[alice]
     )
-    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     message = FakeDiscordMessage()
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        jackpot_snapshot=state.jackpot,
+        jackpot_snapshot=pool_before,
         final_balances={1: 1_000_000},
     )
     view.message = as_message(fake=message)
@@ -1323,8 +1253,8 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
 
     await view.on_timeout()
 
-    assert [call["player_delta"] for call in state.calls] == [20, -20]
-    assert state.jackpot == 100_000
+    assert [request.player_delta for request in settlements] == [20, -20]
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
     assert view._refunded_to_pool[1] == 20
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
@@ -1341,10 +1271,9 @@ async def test_a_dragon_gate_table_left_to_time_out_in_a_shut_out_channel_closes
     Whichever control that press was, the start included. Once its token has expired only the
     channel is left, which refuses the render.
     """
-    owner = _participant(user_id=1, display_name="Alice")
-    bob = _participant(user_id=2, display_name="Bob")
-    state = JackpotState()
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    owner = await _funded(user_id=1, display_name="Alice")
+    bob = await _funded(user_id=2, display_name="Bob")
+    _record_jackpot_settlements(monkeypatch=monkeypatch)
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
 
     message = FakeDiscordMessage()
@@ -1354,7 +1283,7 @@ async def test_a_dragon_gate_table_left_to_time_out_in_a_shut_out_channel_closes
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
         prepare_participant=joins_as(participant=bob),
         refresh_participants=everyone_stays,
-        initial_jackpot=state.jackpot,
+        initial_jackpot=await get_jackpot_pool(game_id=GAME_ID),
     )
     lobby.message = as_message(fake=message)
     await lobby_button(view=lobby, label="加入").callback(
