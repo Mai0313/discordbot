@@ -137,7 +137,8 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **Admin tweaks go through `adjust_balance(..., allow_negative=...)`, never a casino settlement helper.**
 - **A write that moves a balance commits through `services/economy/database.py::_commit_balance_write`, never clearing the leaderboard caches inside its transaction**: a clear before the commit lets a read in between cache the rows being replaced.
 - **House P&L is the `casino_ledger` row, never the bot's `user_wallet`.**
-- **Shared social and settlement events are public embeds with scheduled cleanup; personal state, malformed-amount and permission failures are ephemeral.** A validation failure found after the public defer (`/give`, `/games`) is a public expiring embed. A slash command's first followup after a defer keeps the defer's flag, so a public settlement after an ephemeral defer goes through `utils/interaction_responses.py::send_expiring_followup_after_private_defer`.
+- **Shared social and settlement events are public embeds with scheduled cleanup; personal state, malformed-amount and permission failures are ephemeral.** A validation failure found after the public defer (`/give`, `/games`) is a public expiring embed.
+- **A slash command's first followup after a defer keeps the defer's flag**, so a public settlement after an ephemeral defer goes through `utils/interaction_responses.py::send_expiring_followup_after_private_defer`.
 - **Exactly one faucet pays an action reward, `cli.py`'s cooldown-gated per-message reward;** other cogs must not add a second (the system-funded mints that settle a loan or a game are not rewards).
 - **`apply_vip_blackjack_bonus` and the loan-rate converters stay in `typings/economy.py`,** so code that only formats or settles a number never imports the ledger's engine module (#610).
 
