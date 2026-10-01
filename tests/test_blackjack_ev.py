@@ -43,7 +43,6 @@ def _evs(
         deck=build_shoe_value_counts(shoe=build_shoe(rng=Random(x=0)) if shoe is None else shoe),
         hand_cards=hand,
         allowed_actions=allowed,
-        doubled=False,
         bet=bet,
     )
     return {item.action: item.expected_value for item in evs}
@@ -96,7 +95,6 @@ def test_standing_beats_hitting_on_hard_twenty() -> None:
         dealer_cards=dealer,
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand"),
-        doubled=False,
         bet=100,
     )
     evs = _evs(hand=hand, dealer=dealer, allowed=("hit", "stand"))
@@ -117,7 +115,6 @@ def test_recommendation_reads_the_hole_card() -> None:
         dealer_cards=[card(rank="5"), card(rank="10")],
         shoe=shoe,
         allowed_actions=("hit", "stand", "surrender"),
-        doubled=False,
         bet=100,
     )
     strong = recommend_action(
@@ -125,7 +122,6 @@ def test_recommendation_reads_the_hole_card() -> None:
         dealer_cards=[card(rank="10"), card(rank="10")],
         shoe=shoe,
         allowed_actions=("hit", "stand", "surrender"),
-        doubled=False,
         bet=100,
     )
 
@@ -164,7 +160,6 @@ def test_five_card_chase_beats_standing_into_a_sure_loss() -> None:
         dealer_cards=dealer,
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand"),
-        doubled=False,
         bet=100,
     )
     evs = _evs(hand=hand, dealer=dealer, allowed=("hit", "stand"))
@@ -202,7 +197,6 @@ def test_split_can_be_recommended() -> None:
         dealer_cards=[card(rank="10"), card(rank="6")],
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand", "double", "split"),
-        doubled=False,
         bet=100,
     )
 
@@ -218,7 +212,6 @@ def test_action_evs_only_cover_legal_actions() -> None:
         dealer_cards=dealer,
         shoe=build_shoe(rng=Random(x=0)),
         allowed_actions=("hit", "stand"),
-        doubled=False,
         bet=100,
     )
 
@@ -233,7 +226,6 @@ def test_empty_shoe_does_not_crash() -> None:
         dealer_cards=[card(rank="9"), card(rank="7")],
         shoe=[],
         allowed_actions=("hit", "stand"),
-        doubled=False,
         bet=100,
     )
 
