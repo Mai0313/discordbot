@@ -70,7 +70,7 @@ class BaseGameLobbyView(GameView):
         self.prepare_participant = prepare_participant
         self.refresh_participants = refresh_participants
         self.message: Message | None = None
-        # The last press that edited the lobby; the timeout's edit and delete ride its token.
+        # The last press acknowledged on the lobby; the timeout's edit and delete ride its token.
         self.last_press: Interaction[commands.Bot] | None = None
         self._participants: dict[int, GameParticipant] = {owner.user_id: owner}
         for extra in extra_initial_participants or ():
@@ -147,6 +147,7 @@ class BaseGameLobbyView(GameView):
                 await self._send_notice(interaction=interaction, content="這桌已經滿了")
                 return
             await interaction.response.defer()
+            self._keep_press(interaction=interaction)
             participant = await self.prepare_participant(interaction=interaction)
             if participant is None:
                 return
@@ -189,6 +190,7 @@ class BaseGameLobbyView(GameView):
             await self._send_notice(interaction=interaction, content="只有房主可以開始")
             return
         await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")

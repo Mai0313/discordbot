@@ -281,7 +281,7 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled() -> None:
     allowed = await view.interaction_check(interaction=as_interaction(fake=press))
 
     assert allowed is False
-    assert press.response.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
+    assert press.followup.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
 
 
 async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
@@ -308,7 +308,7 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
 
     assert decided is False
     assert round_state.players[0].insurance_bet == 0
-    assert press.response.sent == [
+    assert press.followup.sent == [
         {"content": "你的下注太小，一半不到 1 點，這局沒有保險可買", "ephemeral": True}
     ]
 

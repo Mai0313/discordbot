@@ -13,7 +13,7 @@ from nextcord import Embed, Interaction, HTTPException
 from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.cogs.games import cog as games
 from discordbot.cogs.games import blackjack_views
-from discordbot.typings.games import GameParticipant
+from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import JackpotSnapshot
@@ -182,7 +182,7 @@ async def test_a_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> N
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(as_interaction(fake=other_interaction))
 
-    assert other_interaction.response.sent == [{"content": "只有房主可以開始", "ephemeral": True}]
+    assert other_interaction.followup.sent == [{"content": "只有房主可以開始", "ephemeral": True}]
     assert lobby_view._started is False
 
 
@@ -314,6 +314,75 @@ async def test_a_lobby_someone_joined_times_out_through_the_join_in_a_shut_out_c
     assert scheduled.interactions == [join]
 
 
+@pytest.mark.parametrize(argnames="presser", argvalues=["owner", "broke"])
+async def test_a_lobby_kept_open_by_refused_presses_closes_through_the_newest_one(
+    monkeypatch: pytest.MonkeyPatch, presser: str
+) -> None:
+    """Every press restarts a lobby's timer, a refused one included, so the lobby closes through it.
+
+    Nobody joined, so the only other way to the lobby is the slash command's own token, which
+    the presses can have kept the lobby open past.
+    """
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    async def turned_away(interaction: Interaction[Any]) -> GameParticipant | None:
+        """Answers a press the way the cog does for a balance that cannot cover the bet."""
+        del interaction
+
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    lobby.prepare_participant = turned_away
+    followup = FakeDiscordMessage()
+    followup.edit_failure = make_not_found(message="Unknown Webhook")
+    lobby.message = as_message(fake=followup)
+    message = FakeDiscordMessage()
+    user = FakeUser(user_id=1) if presser == "owner" else FakeUser(user_id=2, name="bob")
+    press = FakeInteraction(user=user, message=message)
+
+    await lobby_button(view=lobby, label="加入").callback(as_interaction(fake=press))
+    await lobby.on_timeout()
+
+    assert [edit["embed"].description for edit in press.edits] == ["Lobby 已逾時"]
+    assert (scheduled.messages, scheduled.interactions) == ([message], [press])
+    assert press.followup.sent == (
+        [{"content": "你已經在這桌了", "ephemeral": True}] if presser == "owner" else []
+    ), "a refusal is a followup, so the press's own token stays on the lobby"
+
+
+@pytest.mark.parametrize(argnames="label", argvalues=["加入", "開始"], ids=["join", "start"])
+async def test_a_lobby_press_that_fails_after_its_acknowledgement_still_closes_the_lobby(
+    monkeypatch: pytest.MonkeyPatch, label: str
+) -> None:
+    """The press restarted the lobby's timer before its callback failed, so it is kept too."""
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    async def wallet_unreadable(interaction: Interaction[Any]) -> GameParticipant | None:
+        """Fails the join's balance read."""
+        raise RuntimeError(interaction)
+
+    async def balances_unreadable(
+        participants: list[GameParticipant],
+    ) -> RefreshParticipantsResult:
+        """Fails the start's balance re-check."""
+        raise RuntimeError(participants)
+
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    lobby.prepare_participant = wallet_unreadable
+    lobby.refresh_participants = balances_unreadable
+    followup = FakeDiscordMessage()
+    followup.edit_failure = make_not_found(message="Unknown Webhook")
+    lobby.message = as_message(fake=followup)
+    message = FakeDiscordMessage()
+    user = FakeUser(user_id=2, name="bob") if label == "加入" else FakeUser(user_id=1)
+    press = FakeInteraction(user=user, message=message)
+
+    with pytest.raises(RuntimeError):
+        await lobby_button(view=lobby, label=label).callback(as_interaction(fake=press))
+    await lobby.on_timeout()
+
+    assert [edit["embed"].description for edit in press.edits] == ["Lobby 已逾時"]
+    assert (scheduled.messages, scheduled.interactions) == ([message], [press])
+
+
 async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,6 +511,31 @@ async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_t
     assert [(level, "_exc_info" in fields) for level, fields in reports] == (
         [("warn", False), ("warn", False)] if expired else []
     )
+
+
+async def test_a_blackjack_table_kept_open_by_a_refused_press_closes_through_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A press refused out of turn restarts the table's timer, so the timeout closes through it.
+
+    By then the press that last moved the table can be past its life, and in a channel the bot
+    was shut out of nothing else reaches the table to show its result or delete it.
+    """
+    # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
+    message = await _start_in_a_shut_out_channel(monkeypatch=monkeypatch, dealt=[])
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+    cast("FakeInteraction", table.last_press).expired = True
+    refused = FakeInteraction(user=FakeUser(user_id=2, name="bob"), message=message)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    assert await table.interaction_check(interaction=as_interaction(fake=refused)) is False
+    await table.on_timeout()
+    await table.wait_for_background_tasks()
+
+    assert [edit["view"] for edit in refused.edits[-1:]] == [None], "the result landed through it"
+    assert (scheduled.messages, scheduled.interactions) == ([message], [refused])
+    assert refused.followup.sent == [{"content": "現在輪到 Alice", "ephemeral": True}]
 
 
 async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(

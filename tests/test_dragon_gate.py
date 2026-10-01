@@ -1187,7 +1187,7 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
         user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:bet"
     )
     assert await view.interaction_check(interaction=as_interaction(fake=non_active)) is False
-    assert non_active.response.sent
+    assert non_active.followup.sent
 
     leave_ok = FakeInteraction(
         user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:leave"
@@ -1198,7 +1198,7 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
     await view.submit_custom_bet(
         interaction=as_interaction(fake=invalid), raw_amount="not a number"
     )
-    assert invalid.response.sent
+    assert invalid.followup.sent
 
 
 async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
