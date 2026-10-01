@@ -75,10 +75,16 @@ class FakeUser:
 class FakeResponse:
     """Interaction response stub that records sends, edits, and deferral."""
 
-    def __init__(self) -> None:
-        """Initializes response state records."""
+    def __init__(self, slash_command: bool = False) -> None:
+        """Initializes response state records.
+
+        `slash_command` makes a defer post the "thinking" placeholder a slash command's does,
+        which the next followup or edit of the original fills; a component's defer posts nothing.
+        """
+        self.slash_command = slash_command
         self.deferred = False
         self.deferred_ephemeral = False
+        self.placeholder_pending = False
         self.sent: list[DiscordPayload] = []
         self.edited: list[DiscordPayload] = []
 
@@ -86,6 +92,7 @@ class FakeResponse:
         """Records that the interaction response was deferred."""
         self.deferred = True
         self.deferred_ephemeral = ephemeral
+        self.placeholder_pending = self.slash_command
 
     async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         """Records an interaction response message."""
@@ -107,12 +114,20 @@ class FakeResponse:
 class FakeFollowup:
     """Interaction followup stub that records sends."""
 
-    def __init__(self) -> None:
-        """Initializes recorded followup sends."""
+    def __init__(self, response: FakeResponse) -> None:
+        """Initializes recorded followup sends against the response they follow."""
         self.sent: list[DiscordPayload] = []
+        self._response = response
 
     async def send(self, **kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
-        """Records the followup payload and returns a fake message."""
+        """Records the followup payload and returns a fake message.
+
+        The first followup after a slash command's defer fills its placeholder, and Discord keeps
+        the defer's ephemeral flag over this one's, so that is the flag recorded.
+        """
+        if self._response.placeholder_pending:
+            self._response.placeholder_pending = False
+            kwargs["ephemeral"] = self._response.deferred_ephemeral
         self.sent.append(kwargs)
         return FakeDiscordMessage()
 
@@ -246,11 +261,13 @@ class FakeInteraction:
         channel_id: int = 200,
         administrator: bool = False,
         custom_id: str | None = None,
+        slash_command: bool = False,
     ) -> None:
         """Initializes user, origin, guild upload limit, response, followup, and edit records.
 
         `custom_id` names the pressed control for a component interaction, which a view's
         `interaction_check` reads off `data`; a slash command carries no component payload.
+        `slash_command` gives a defer the placeholder only a slash command's posts.
         """
         self.user = user or FakeUser()
         self.message = message
@@ -269,8 +286,8 @@ class FakeInteraction:
         self.guild_id: int | None = guild_id if in_guild else None
         self.permissions = SimpleNamespace(administrator=administrator)
         self.channel_id = channel_id
-        self.response = FakeResponse()
-        self.followup = FakeFollowup()
+        self.response = FakeResponse(slash_command=slash_command)
+        self.followup = FakeFollowup(response=self.response)
         self.edit_failure: Exception | None = None
         self.edits: list[OriginalEditPayload] = []
         # A live token by default; set to model one past Discord's 15-minute life.
@@ -302,6 +319,7 @@ class FakeInteraction:
         """
         if self.edit_failure is not None:
             raise self.edit_failure
+        self.response.placeholder_pending = False
         self.edits.append(kwargs)
         if isinstance(self.message, FakeDiscordMessage):
             self.message.edits.append(DiscordPayload(**kwargs))

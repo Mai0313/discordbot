@@ -1,16 +1,16 @@
 """Shared send/edit helpers for interaction responses.
 
-Each embed helper pairs one response shape (public followup, loan-request followup, private
-followup, ephemeral response, edit) with the `embed_spacer_payload` call that keeps embed
-widths aligned; the plain-text ephemeral notice needs none. Only the plain public followup
-schedules its own deletion up front; the loan-request one hands that to the view, which
-schedules it at a terminal state.
+Each embed helper pairs one response shape (public followup, public followup after a private
+defer, loan-request followup, private followup, ephemeral response, edit) with the
+`embed_spacer_payload` call that keeps embed widths aligned; the plain-text ephemeral notice
+needs none. Only the public followups schedule their own deletion up front; the loan-request one
+hands that to the view, which schedules it at a terminal state.
 """
 
 from typing import Protocol, cast
 
 import logfire
-from nextcord import File, Embed, Message, Interaction
+from nextcord import File, Embed, Message, Interaction, HTTPException
 from nextcord.ui import View
 from nextcord.ext import commands
 
@@ -35,6 +35,28 @@ async def send_expiring_followup(
     message = await interaction.followup.send(embed=embed, wait=True, **spacer)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_public_message_delete(message=message, user_name=user_name)
+
+
+async def send_expiring_followup_after_private_defer(
+    interaction: Interaction[commands.Bot], embed: Embed
+) -> None:
+    """Sends a public expiring embed for a slash command that deferred ephemerally.
+
+    The first followup after that defer fills its placeholder and keeps the defer's flag, so the
+    caller gets the embed there first and that copy is withdrawn once the public one is up.
+    """
+    await send_private_followup(interaction=interaction, embed=embed)
+    await send_expiring_followup(interaction=interaction, embed=embed)
+    try:
+        await interaction.delete_original_message()
+    except HTTPException:
+        # The public embed is already up; a failure here only leaves the caller a second copy.
+        logfire.warn(
+            "Could not withdraw the private copy of a public followup",
+            interaction_id=interaction.id,
+            guild_id=interaction.guild_id,
+            _exc_info=True,
+        )
 
 
 async def send_loan_request_followup(

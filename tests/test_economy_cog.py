@@ -434,12 +434,27 @@ def _writes_before(node: ast.AsyncFunctionDef, ack: ast.Call | None) -> list[str
     return found
 
 
+# The four loan settlements, each with the ledger call that decides it. A repayment of zero is
+# refused before the command ever acks, so these carry a real amount; a collection of zero means
+# "everything owed" and is the ordinary call.
+_LOAN_SETTLEMENTS: tuple[tuple[str, str, dict[str, object]], ...] = (
+    ("credit_repay", "repay_personal_loans", {"member": FakeUser(user_id=2), "amount": "5"}),
+    ("credit_call", "call_personal_loans", {"member": FakeUser(user_id=2), "amount": "0"}),
+    ("central_bank_repay", "repay_central_bank_loans", {"amount": "5"}),
+    (
+        "central_bank_call",
+        "call_central_bank_loans",
+        {"member": FakeUser(user_id=2), "amount": "0"},
+    ),
+)
+
+
 async def test_a_failed_money_command_stays_private(monkeypatch: pytest.MonkeyPatch) -> None:
     """Acking before the write must not turn a private failure into a public one.
 
-    Having no matching loan is an ordinary mistake, not an edge case. The placeholder's flag
-    and the followup's are independent and both matter: the first decides whether the channel
-    sees that the attempt happened, the second whether it sees what came of it.
+    Having no matching loan is an ordinary mistake, not an edge case. The failure fills the
+    placeholder the defer posted, so the defer's flag decides both whether the channel sees that
+    the attempt happened and whether it sees what came of it.
 
     All four, because the ack is written out once per command and only a sweep catches the one
     someone changes on its own.
@@ -449,25 +464,15 @@ async def test_a_failed_money_command_stays_private(monkeypatch: pytest.MonkeyPa
         """Stands in for a write that matched no loan."""
         return
 
-    # A repayment of zero is refused before the command ever acks, so these have to carry a
-    # real amount; a collection of zero means "everything owed" and is the ordinary call.
-    collect: dict[str, object] = {"member": FakeUser(user_id=2), "amount": "0"}
-    commands_under_test = (
-        ("credit_repay", "repay_personal_loans", {"member": FakeUser(user_id=2), "amount": "5"}),
-        ("credit_call", "call_personal_loans", collect),
-        ("central_bank_repay", "repay_central_bank_loans", {"amount": "5"}),
-        ("central_bank_call", "call_central_bank_loans", collect),
-    )
-
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
-    for command, ledger_call, kwargs in commands_under_test:
+    for command, ledger_call, kwargs in _LOAN_SETTLEMENTS:
         monkeypatch.setattr(economy, ledger_call, nothing_to_settle)
         cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
         # Administrator, or `central_bank_call` returns from its permission branch and this
         # stops covering the failure path it was written for — while still passing, because
         # that branch defers and follows up ephemerally just like the one under test.
         interaction = FakeInteraction(
-            user=FakeUser(user_id=1, display_name="Alice"), administrator=True
+            user=FakeUser(user_id=1, display_name="Alice"), administrator=True, slash_command=True
         )
 
         await getattr(EconomyCogs, command).callback(
@@ -482,6 +487,36 @@ async def test_a_failed_money_command_stays_private(monkeypatch: pytest.MonkeyPa
         assert interaction.followup.sent[-1]["ephemeral"] is True, (
             f"{command} announced the failure to the channel"
         )
+
+
+async def test_a_settled_loan_is_posted_to_the_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A repayment or collection is a settlement, so the other party sees it in the channel.
+
+    The defer stays ephemeral for the failure's sake, and the first followup after it fills that
+    placeholder with its flag, so a settlement sent as that followup reaches only the caller.
+    """
+    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
+    for command, ledger_call, kwargs in _LOAN_SETTLEMENTS:
+        monkeypatch.setattr(economy, ledger_call, fake_loan_payment)
+        interaction = FakeInteraction(
+            user=FakeUser(user_id=1, display_name="Alice"), administrator=True, slash_command=True
+        )
+
+        await getattr(EconomyCogs, command).callback(
+            EconomyCogs(bot=as_bot(fake=SimpleNamespace())),
+            as_interaction(fake=interaction),
+            **kwargs,
+        )
+
+        assert interaction.response.deferred_ephemeral is True, (
+            f"{command} announced the attempt to the channel"
+        )
+        assert interaction.followup.sent[-1].get("ephemeral") is not True, (
+            f"{command} posted its settlement only to the caller"
+        )
+        assert interaction.original_deleted is True, f"{command} left the caller a second copy"
+    assert len(scheduled) == len(_LOAN_SETTLEMENTS)
 
 
 def test_every_money_command_acknowledges_before_it_mutates() -> None:
@@ -572,7 +607,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     cog = EconomyCogs(bot=_bot())
-    interaction = FakeInteraction(user=FakeUser(user_id=1), administrator=True)
+    interaction = FakeInteraction(user=FakeUser(user_id=1), administrator=True, slash_command=True)
     await EconomyCogs.balance.callback(cog, interaction, member=None)
     await EconomyCogs.leaderboard.callback(cog, interaction)
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
@@ -610,7 +645,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     )
     await EconomyCogs.central_bank_status.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 17
+    assert len(interaction.followup.sent) == 21
     assert len(scheduled) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
@@ -622,12 +657,12 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[6].get("ephemeral") is not True
     assert interaction.followup.sent[7].get("ephemeral") is not True
     assert interaction.followup.sent[8].get("ephemeral") is not True
-    assert interaction.followup.sent[9].get("ephemeral") is not True
     assert interaction.followup.sent[10].get("ephemeral") is not True
-    assert interaction.followup.sent[11].get("ephemeral") is True
-    assert interaction.followup.sent[13].get("ephemeral") is not True
-    assert interaction.followup.sent[14].get("ephemeral") is not True
-    assert interaction.followup.sent[15].get("ephemeral") is not True
+    assert interaction.followup.sent[12].get("ephemeral") is not True
+    assert interaction.followup.sent[13].get("ephemeral") is True
+    assert interaction.followup.sent[16].get("ephemeral") is not True
+    assert interaction.followup.sent[18].get("ephemeral") is not True
+    assert interaction.followup.sent[19].get("ephemeral") is not True
     assert interaction.followup.sent[-1].get("ephemeral") is True
     balance_embed = interaction.followup.sent[0]["embed"]
     # Assert the financial summary's structure and the facade values it surfaces, not the exact
@@ -643,7 +678,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     borrow_view = interaction.followup.sent[8]["view"]
     assert isinstance(borrow_view, CreditLoanDecisionView)
     assert borrow_view.message is not None
-    central_bank_payload = interaction.followup.sent[12]
+    central_bank_payload = interaction.followup.sent[14]
     central_bank_view = central_bank_payload["view"]
     assert isinstance(central_bank_view, CentralBankLoanDecisionView)
     assert central_bank_view.message is not None

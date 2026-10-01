@@ -92,6 +92,7 @@ from discordbot.utils.interaction_responses import (
     send_expiring_followup,
     send_ephemeral_response,
     send_loan_request_followup,
+    send_expiring_followup_after_private_defer,
 )
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
@@ -753,7 +754,7 @@ class EconomyCogs(commands.Cog):
             lender_display_name=member.display_name,
             result=result,
         )
-        await send_expiring_followup(interaction=interaction, embed=embed)
+        await send_expiring_followup_after_private_defer(interaction=interaction, embed=embed)
 
     @credit.subcommand(
         name="call",
@@ -829,7 +830,7 @@ class EconomyCogs(commands.Cog):
             borrower_mention=member.mention,
             result=result,
         )
-        await send_expiring_followup(interaction=interaction, embed=embed)
+        await send_expiring_followup_after_private_defer(interaction=interaction, embed=embed)
 
     @credit.subcommand(
         name="status",
@@ -1030,7 +1031,7 @@ class EconomyCogs(commands.Cog):
             user_mention=user.mention,
             result=result,
         )
-        await send_expiring_followup(interaction=interaction, embed=embed)
+        await send_expiring_followup_after_private_defer(interaction=interaction, embed=embed)
 
     @central_bank.subcommand(
         name="call",
@@ -1114,7 +1115,7 @@ class EconomyCogs(commands.Cog):
             borrower_avatar_url=borrower_avatar_url,
             result=result,
         )
-        await send_expiring_followup(interaction=interaction, embed=embed)
+        await send_expiring_followup_after_private_defer(interaction=interaction, embed=embed)
 
     @central_bank.subcommand(
         name="status",
