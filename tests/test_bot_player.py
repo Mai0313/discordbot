@@ -66,22 +66,33 @@ def test_fallback_action_splits_eights_against_ten() -> None:
     assert action == "split"
 
 
-def test_insurance_is_taken_when_the_unseen_shoe_is_ten_rich() -> None:
-    """A shoe more than a third ten-value makes insurance +EV, whatever the hole is."""
-    assert bot_takes_insurance(shoe=[card(rank="10"), card(rank="J"), card(rank="Q")]) is True
+@pytest.mark.parametrize(
+    ("face_down_ranks", "insures"),
+    [
+        (["10", "J", "Q", "2"], True),
+        (["K", "Q", "J", "5", "6", "7", "8"], True),
+        (["K", "Q", "5", "6", "7", "8"], False),
+        (["2", "3", "4", "5", "6"], False),
+    ],
+)
+def test_insurance_makes_one_call_whichever_face_down_card_lies_in_the_hole(
+    face_down_ranks: list[str], insures: bool
+) -> None:
+    """Each face-down card takes the hole in turn, and the call never changes (#860).
 
-
-def test_insurance_is_declined_unless_the_ten_density_clears_one_third() -> None:
-    """At or under one third ten-value, or with nothing left to count, the bot declines.
-
-    The hole card is never an input, so the bot cannot win insurance on a real dealer
-    Blackjack it could not have counted its way to.
+    The hole is dealt out of the shoe, so the shoe alone is ten-poorer under a ten-value hole
+    and ten-richer under any other: priced from it, the bot insured exactly when insurance lost.
+    Insurance turns +EV only past a third.
     """
-    low_shoe = [card(rank="2"), card(rank="3"), card(rank="4"), card(rank="5"), card(rank="6")]
+    face_down = [card(rank=rank) for rank in face_down_ranks]
+    for index, hole in enumerate(face_down):
+        shoe = face_down[:index] + face_down[index + 1 :]
+        assert bot_takes_insurance(shoe=shoe, dealer_cards=[hole, card(rank="A")]) is insures, hole
 
-    assert bot_takes_insurance(shoe=low_shoe) is False
-    assert bot_takes_insurance(shoe=[card(rank="10"), card(rank="2"), card(rank="3")]) is False
-    assert bot_takes_insurance(shoe=[]) is False
+
+def test_insurance_is_declined_with_nothing_left_in_the_shoe() -> None:
+    """With the shoe empty the pool is the hole alone, which would read it outright."""
+    assert bot_takes_insurance(shoe=[], dealer_cards=[card(rank="K"), card(rank="A")]) is False
 
 
 def test_action_uses_ev_recommendation() -> None:
