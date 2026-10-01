@@ -261,34 +261,33 @@ class VideoCogs(commands.Cog):
                 return
 
             try:
-                with result:
-                    delivery = await plan_douyin_delivery(
-                        planner=self.media_delivery, result=result, upload_limit=upload_limit
-                    )
-                    plan = delivery.plan
+                delivery = await plan_douyin_delivery(
+                    planner=self.media_delivery, result=result, upload_limit=upload_limit
+                )
+                plan = delivery.plan
 
-                    # Nothing to attach has two ways out; anything else is the normal reply.
-                    if not plan.native:
-                        # Only a lone oversize file may collapse to the bare-URL reply, which
-                        # deliberately posts nothing but the link so Discord renders the inline
-                        # player. A gallery would lose every URL past the first, plus the omitted
-                        # / dropped notices, so it goes through the normal reply instead.
-                        if plan.hosted_urls and len(result.filenames) == 1:
-                            await self._deliver_url(
-                                interaction=interaction,
-                                file_size_mb=delivery.total_mb,
-                                public_url=plan.hosted_urls[0],
-                            )
-                            return
-                        if not plan.hosted_urls:
-                            await self._refuse_oversize(
-                                interaction=interaction, file_size_mb=delivery.total_mb
-                            )
-                            return
+                # Nothing to attach has two ways out; anything else is the normal reply.
+                if not plan.native:
+                    # Only a lone oversize file may collapse to the bare-URL reply, which
+                    # deliberately posts nothing but the link so Discord renders the inline
+                    # player. A gallery would lose every URL past the first, plus the omitted
+                    # / dropped notices, so it goes through the normal reply instead.
+                    if plan.hosted_urls and len(result.filenames) == 1:
+                        await self._deliver_url(
+                            interaction=interaction,
+                            file_size_mb=delivery.total_mb,
+                            public_url=plan.hosted_urls[0],
+                        )
+                        return
+                    if not plan.hosted_urls:
+                        await self._refuse_oversize(
+                            interaction=interaction, file_size_mb=delivery.total_mb
+                        )
+                        return
 
-                    await self._deliver_douyin(
-                        interaction=interaction, delivery=delivery, result=result, url=url
-                    )
+                await self._deliver_douyin(
+                    interaction=interaction, delivery=delivery, result=result, url=url
+                )
             except Exception as error:
                 # Broad on purpose, for the same reason as the download step above: an escape
                 # leaves the interaction unanswered and the user on the placeholder.

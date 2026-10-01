@@ -172,7 +172,6 @@ async def _fetch_and_upload(
             filename=download.filename.name,
             timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
         )
-        # The scratch dir removes the file; `download.unlink` would only duplicate that.
         return [part] if part is not None else []
 
 

@@ -101,9 +101,9 @@ def test_download_uses_ytdlp_params(
     )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(url=url, quality="best") as result:
-        assert result.filename == tmp_path / "video_id.mp4"
+    result = downloader.download(url=url, quality="best")
 
+    assert result.filename == tmp_path / "video_id.mp4"
     assert captured_calls == [{"url": expected_url, "download": True}]
     assert captured_params[0]["format"] == downloader.quality_formats["best"]
 
@@ -127,8 +127,7 @@ def test_download_resolves_facebook_share_links(
     )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(url="https://www.facebook.com/share/r/17h4SsC2p1", quality="best"):
-        pass
+    downloader.download(url="https://www.facebook.com/share/r/17h4SsC2p1", quality="best")
 
     assert captured_calls == [
         {"url": "https://www.facebook.com/reel/828357636228730", "download": True}
@@ -163,8 +162,7 @@ def test_a_lookalike_facebook_host_reaches_ytdlp_unchanged(
     )
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(url=url, quality="best"):
-        pass
+    downloader.download(url=url, quality="best")
 
     assert captured_calls == [{"url": url, "download": True}]
     assert resolved == []
@@ -354,8 +352,7 @@ def test_download_stop_signal_aborts_at_the_next_progress_tick(
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
     stop_signal = threading.Event()
 
-    with downloader.download(url="https://example.com/v", quality="best", stop_signal=stop_signal):
-        pass
+    downloader.download(url="https://example.com/v", quality="best", stop_signal=stop_signal)
 
     (hook,) = captured_params[0]["progress_hooks"]
     hook({})  # not signaled yet: the download proceeds
@@ -364,8 +361,7 @@ def test_download_stop_signal_aborts_at_the_next_progress_tick(
         hook({})
 
     # Without a signal no hook is installed, so the plain path stays untouched.
-    with downloader.download(url="https://example.com/v", quality="best"):
-        pass
+    downloader.download(url="https://example.com/v", quality="best")
     assert "progress_hooks" not in captured_params[1]
 
 

@@ -29,21 +29,16 @@ from discordbot.typings.timeouts import (
     SHARE_RESOLVE_TIMEOUT_SECONDS,
 )
 from discordbot.services.platforms.base import PlatformDownloader
-from discordbot.services.platforms.file_downloads import TemporaryDownload
 
 
 class DownloadStoppedError(Exception):
     """Raised inside yt-dlp when the caller's stop signal is set mid-download."""
 
 
-class DownloadResult(TemporaryDownload):
+class DownloadResult(BaseModel):
     """Represents a downloaded video file."""
 
     filename: Path = Field(..., description="Local path of the downloaded file.")
-
-    def unlink(self) -> None:
-        """Deletes the downloaded file."""
-        self.filename.unlink(missing_ok=True)
 
 
 class VideoMetadata(BaseModel):
@@ -160,7 +155,6 @@ class VideoDownloader(PlatformDownloader):
             A dictionary of yt-dlp parameters.
         """
         output_path = Path(self.output_folder)
-        output_path.mkdir(parents=True, exist_ok=True)
 
         # Base headers safe for most sites; site-specific headers added conditionally below.
         # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`

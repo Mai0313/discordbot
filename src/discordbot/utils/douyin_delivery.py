@@ -49,8 +49,8 @@ class DouyinDelivery(BaseModel):
     """A planned Douyin send: what goes out, and the size a refusal has to be able to quote.
 
     `total_mb` rides along rather than being re-read off the download, because reading it is
-    order-sensitive: `DouyinDownload.total_bytes` stats the files and caches the answer, and a
-    successful host moves them out of the temp dir, so the read has to happen BEFORE the plan.
+    order-sensitive: `DouyinDownload.total_bytes` stats the files, and a successful host moves
+    them out of the temp dir, so the read has to happen BEFORE the plan.
     Carrying the number here is what stops a later caller re-deriving it from a deleted path —
     on exactly the oversize path that most needs it.
     """

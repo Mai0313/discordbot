@@ -177,7 +177,6 @@ async def _fetch_and_upload(
                     max_images=MAX_DOUYIN_INGEST_IMAGES,
                     max_bytes=FILES_API_MAX_BYTES,
                 )
-            # The scratch dir removes the files; `download.unlink` would only duplicate that.
             return await _upload_media(download=download, gemini_client=gemini_client)
     except DouyinTooLargeError:
         logfire.warn(

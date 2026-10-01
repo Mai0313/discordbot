@@ -15,7 +15,6 @@ import json
 import time
 from typing import Any, ClassVar
 from pathlib import Path
-from functools import cached_property
 import threading
 from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
@@ -45,11 +44,7 @@ from discordbot.utils.link_errors import (
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 from discordbot.services.platforms.base import PlatformDownloader
-from discordbot.services.platforms.file_downloads import (
-    TemporaryDownload,
-    DownloadTooLargeError,
-    stream_to_file,
-)
+from discordbot.services.platforms.file_downloads import DownloadTooLargeError, stream_to_file
 
 # Detects a Douyin URL. Douyin's own share button emits the link inside a blob of noise
 # ("7.64 gOX:/ w@f.oD ... https://v.douyin.com/iR2syBRn/ 复制此链接，打开Dou音搜索"), so the
@@ -206,7 +201,7 @@ class DouyinMetadata(BaseModel):
     )
 
 
-class DouyinDownload(TemporaryDownload):
+class DouyinDownload(BaseModel):
     """Files downloaded for one Douyin post."""
 
     is_photo: bool = Field(
@@ -219,25 +214,15 @@ class DouyinDownload(TemporaryDownload):
         default=0, description="Image count in the source post, before any cap was applied."
     )
 
-    @cached_property
+    @property
     def total_bytes(self) -> int:
-        """Combined size of the downloaded files.
-
-        Cached on first access so a caller can still read it after delivery has moved a hosted
-        file out of the download folder; stat-ing later would raise on the very oversize path
-        that most needs the number.
-        """
+        """Combined size of the downloaded files still in the download folder."""
         return sum(path.stat().st_size for path in self.filenames if path.exists())
 
     @property
     def omitted_images(self) -> int:
         """Number of images present in the post but not downloaded."""
         return max(0, self.total_images - len(self.filenames))
-
-    def unlink(self) -> None:
-        """Deletes every downloaded file."""
-        for path in self.filenames:
-            path.unlink(missing_ok=True)
 
 
 class _DouyinPayload(BaseModel):
@@ -808,7 +793,6 @@ class DouyinDownloader(PlatformDownloader):
             DouyinError: If the post cannot be resolved, read, or downloaded.
         """
         resolved = post if post is not None else self.parse_metadata(url=url)
-        Path(self.output_folder).mkdir(parents=True, exist_ok=True)
         if resolved.is_photo:
             return self._download_images(post=resolved, max_images=max_images, max_bytes=max_bytes)
         return self._download_video(post=resolved, quality=quality, max_bytes=max_bytes)

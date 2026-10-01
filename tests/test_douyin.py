@@ -463,13 +463,12 @@ def test_download_video_writes_the_file(monkeypatch: pytest.MonkeyPatch, tmp_pat
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}") as result:
-        assert result.is_photo is False
-        assert result.filenames == [tmp_path / f"{_VIDEO_ID}.mp4"]
-        assert result.filenames[0].read_bytes() == b"video-bytes"
-        assert result.omitted_images == 0
+    result = downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
 
-    assert not (tmp_path / f"{_VIDEO_ID}.mp4").exists()  # cleaned up on context exit
+    assert result.is_photo is False
+    assert result.filenames == [tmp_path / f"{_VIDEO_ID}.mp4"]
+    assert result.filenames[0].read_bytes() == b"video-bytes"
+    assert result.omitted_images == 0
 
 
 def test_download_gallery_honours_the_cap_and_reports_the_remainder(
@@ -485,13 +484,12 @@ def test_download_gallery_honours_the_cap_and_reports_the_remainder(
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(
-        url=f"https://www.douyin.com/note/{_PHOTO_ID}", max_images=2
-    ) as result:
-        assert result.is_photo is True
-        assert len(result.filenames) == 2
-        assert result.total_images == 3
-        assert result.omitted_images == 1
+    result = downloader.download(url=f"https://www.douyin.com/note/{_PHOTO_ID}", max_images=2)
+
+    assert result.is_photo is True
+    assert len(result.filenames) == 2
+    assert result.total_images == 3
+    assert result.omitted_images == 1
 
 
 def test_download_retries_a_stalled_transfer(
@@ -511,8 +509,9 @@ def test_download_retries_a_stalled_transfer(
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}") as result:
-        assert result.filenames[0].read_bytes() == b"video-bytes"
+    result = downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+
+    assert result.filenames[0].read_bytes() == b"video-bytes"
     assert attempts["count"] == 2
 
 
@@ -603,10 +602,9 @@ def test_download_under_the_cap_is_unaffected(
     _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
-    with downloader.download(
-        url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=1024
-    ) as result:
-        assert result.filenames[0].read_bytes() == b"video-bytes"
+    result = downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=1024)
+
+    assert result.filenames[0].read_bytes() == b"video-bytes"
 
 
 def test_download_reuses_a_caller_supplied_post(
@@ -636,13 +634,13 @@ def test_download_reuses_a_caller_supplied_post(
     post = downloader.parse_metadata(url=url)
     monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=counting_parse)
 
-    with downloader.download(url=url, post=post) as result:
-        assert result.filenames[0].read_bytes() == b"video-bytes"
+    result = downloader.download(url=url, post=post)
+    assert result.filenames[0].read_bytes() == b"video-bytes"
     assert parses["count"] == 0
 
     # Without a post the download resolves it itself, so the counter proves it is watching.
-    with downloader.download(url=url) as result:
-        assert result.filenames[0].read_bytes() == b"video-bytes"
+    result = downloader.download(url=url)
+    assert result.filenames[0].read_bytes() == b"video-bytes"
     assert parses["count"] == 1
 
 
