@@ -430,7 +430,10 @@ def test_only_an_answer_past_the_budget_is_cut(max_messages: int) -> None:
         content=f"{fits}字", footer=footer, max_messages=max_messages
     )
 
-    assert "".join([parent, *chunks]) == f"{fits}{footer}"
+    fit = [parent, *chunks]
+    assert "".join(fit) == f"{fits}{footer}"
+    assert len(fit) <= max_messages
+    assert all(len(message) <= DISCORD_MESSAGE_LIMIT for message in fit)
     over = [over_parent, *over_chunks]
     assert len(over) == max_messages
     assert TRUNCATED_NOTICE.strip() in over[-1]
