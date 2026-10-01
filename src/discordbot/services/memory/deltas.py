@@ -532,8 +532,10 @@ def _fact_sharing_keys(delta: MemoryFactDelta, existing: dict[str, MemoryFact]) 
     return None
 
 
-def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[str, ...]) -> None:
+def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[str, ...]) -> int:
     """Stamps `last_confirmed` on each fact a batch observed again but did not rewrite.
+
+    Returns how many it stamped.
 
     A restatement that adds nothing draws no delta, which the prompt prefers, and only a
     written delta stamps the date, so a fact the user keeps repeating would still age out.
@@ -546,9 +548,12 @@ def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[
         for _, block in _iter_observations(text=raw_text)
     }
     now = utc_now()
+    reconfirmed = 0
     for fact in read_facts(scope=scope, compartment=compartment):
         if fact.fact_id not in written and observed & set(fact.keys):
             write_fact(scope=scope, fact=fact.model_copy(update={"last_confirmed": now}))
+            reconfirmed += 1
+    return reconfirmed
 
 
 def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:

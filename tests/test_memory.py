@@ -1852,6 +1852,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         # as a review that returned nothing: that one is `kept-nothing`.
         fake_client.responses.raises = RuntimeError("the evaluator call blew up")
     elif outcome == "raised":
+        fake_client.responses.output_parsed = _draft("喜歡簡短")
         monkeypatch.setattr(pipeline, "append_raw_entry", _blow_up)
     else:
         fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, observations=())
@@ -1859,7 +1860,8 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
     _schedule(writer=writer, report=record)
     if outcome == "cleared-mid-flight":
         mark_cleared(scope=USER_SCOPE)
-    await _wait_for_inflight()
+    # Tolerates the `raised` turn's exception, which the task keeps after its callback logs it.
+    await _drain_scope()
 
     assert len(reported) == 1
     assert reported[0] == MemoryWriteSummary()

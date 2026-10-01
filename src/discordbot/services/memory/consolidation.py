@@ -407,9 +407,10 @@ async def _consolidate_compartment(
         )
         return outcome
     _consecutive_rejections.pop((run.scope, compartment), None)
+    reconfirmed = 0
     if not deletes_only:
         # Ahead of the sweep, which would otherwise age out a fact this batch restated.
-        reconfirm_facts(
+        reconfirmed = reconfirm_facts(
             scope=run.scope,
             compartment=compartment,
             raw_text=request_parts.raw_entries,
@@ -424,6 +425,7 @@ async def _consolidate_compartment(
         updated=outcome.updated,
         deleted=outcome.deleted,
         dropped=outcome.dropped,
+        reconfirmed=reconfirmed,
         swept=swept,
     )
     return outcome
