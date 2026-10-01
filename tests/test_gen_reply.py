@@ -107,9 +107,9 @@ from discordbot.cogs.gen_reply.markers import (
 from discordbot.cogs.gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
-    ROUTE_PROMPT,
     VIDEO_PROMPT,
     ROUTE_RECALL_SECTION,
+    route_prompt,
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.surface import TurnSurface
@@ -917,7 +917,11 @@ def _classifier(
     *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
-    return RouteClassifier(toolkit=toolkit or cog.toolkit, message=message)
+    return RouteClassifier(
+        toolkit=toolkit or cog.toolkit,
+        message=message,
+        inline_image_enabled=cog.config.inline_image_enabled,
+    )
 
 
 def _streamer(*, message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
@@ -1215,11 +1219,13 @@ def _assert_route_offered(*, cog: ReplyGeneratorCogs, candidates: set[int]) -> N
     (route_input,) = responses.parse_inputs
     if candidates:
         assert responses.parse_text_formats == [RecallRouteClassification]
-        assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_RECALL_SECTION]
+        assert responses.parse_instructions == [
+            route_prompt(inline_image_enabled=True) + ROUTE_RECALL_SECTION
+        ]
         assert extract_callable_user_ids(request=route_input) == candidates
     else:
         assert responses.parse_text_formats == [RouteClassification]
-        assert responses.parse_instructions == [ROUTE_PROMPT]
+        assert responses.parse_instructions == [route_prompt(inline_image_enabled=True)]
         assert extract_callable_user_ids(request=route_input) == set()
         assert extract_server_memory_block(request=route_input) is None
 
@@ -7852,6 +7858,64 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
     assert set(extract_user_memory_blocks(request=[context.memory_block])) == {1}
 
 
+# The two route-prompt claims that QA draws inline, as they read before #845.
+_ROUTE_INLINE_IMAGE_NOTE = (
+    "The bot has two ways to show a generated image. The QA path can already attach its own "
+    "generated illustration inline whenever one would help its written answer, so an image "
+    "alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a "
+    "produced image is the whole point of the request, not a helpful add-on to an answer."
+)
+_ROUTE_QA_LINE = (
+    "- QA: everything else — normal questions; image analysis; captioning; requests to "
+    "summarize, recap, explain, or make a 懶人包 for ANYTHING, including a URL, webpage, "
+    "article, referenced message, attachment, pasted content, and the channel's own recent "
+    "conversation; discussions about art that do NOT ask the bot to actually generate or edit "
+    "an image; and any message that is primarily a question, explanation, or conversation even "
+    "when showing a picture alongside the answer would be nice (QA draws that picture inline "
+    "itself). QA is also the default whenever no other category clearly applies."
+)
+
+
+def test_the_route_prompt_says_qa_draws_inline_only_while_it_can() -> None:
+    """With inline images on, the route reads its old text less only the edit-only claim.
+
+    The inline marker edits too, so "editing is only possible on this route" is false whenever
+    QA can draw (#845). With inline images off the answer is never offered the marker, so both
+    claims that QA draws go too, and nothing else changes.
+    """
+    on = route_prompt(inline_image_enabled=True)
+    off = route_prompt(inline_image_enabled=False)
+
+    assert f"rules below.\n\n{_ROUTE_INLINE_IMAGE_NOTE}\n\nClassification rules:\n" in on
+    assert f"\n{_ROUTE_QA_LINE}\n" in on
+    assert "only possible on this route" not in on
+    assert "inline" not in off
+    assert (
+        on.replace(f"{_ROUTE_INLINE_IMAGE_NOTE}\n\n", "").replace(
+            " (QA draws that picture inline itself)", ""
+        )
+        == off
+    )
+
+
+@pytest.mark.parametrize("inline_image_enabled", [True, False])
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_route_is_told_qa_draws_inline_only_while_the_answer_can(
+    inline_image_enabled: bool,
+) -> None:
+    """A turn's route call reads the prompt for the deployment's inline-image switch."""
+    cog = _cog()
+    cog.config.inline_image_enabled = inline_image_enabled
+
+    await _run_pipeline(
+        cog=cog, message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    )
+
+    assert _recorded(cog).responses.parse_instructions == [
+        route_prompt(inline_image_enabled=inline_image_enabled)
+    ]
+
+
 @pytest.mark.parametrize(
     ("seeded_ids", "server_nick", "mentions", "picks", "present", "absent"),
     [
@@ -8282,7 +8346,7 @@ async def test_the_route_reads_neither_memory_block_without_candidates() -> None
 
     responses = _recorded(cog).responses
     assert responses.parse_text_formats == [RouteClassification]
-    assert responses.parse_instructions == [ROUTE_PROMPT]
+    assert responses.parse_instructions == [route_prompt(inline_image_enabled=True)]
     assert responses.parse_inputs == [[*_ROUTE_REFERENCE, *_ROUTE_CURRENT]]
     assert type(route) is RouteClassification
     assert route.effort == "low"
@@ -8316,7 +8380,10 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last()
 
     responses = _recorded(cog).responses
     assert responses.parse_text_formats == [RecallRouteClassification] * 2
-    assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_RECALL_SECTION] * 2
+    assert (
+        responses.parse_instructions
+        == [route_prompt(inline_image_enabled=True) + ROUTE_RECALL_SECTION] * 2
+    )
     candidate_block = render_callable_users_block(allowed=candidates)
     assert responses.parse_inputs == [
         [_ROUTE_SERVER_MEMORY, *_ROUTE_REFERENCE, *_ROUTE_CURRENT, candidate_block],
@@ -8326,6 +8393,26 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last()
     assert isinstance(route, RecallRouteClassification)
     assert route.recall_user_ids == ["42"]
     assert route.effort == "low"
+
+
+@pytest.mark.parametrize("inline_image_enabled", [True, False])
+async def test_a_recall_turn_appends_its_section_to_either_route_prompt(
+    inline_image_enabled: bool,
+) -> None:
+    """The recall section follows the route prompt whether or not QA can draw."""
+    cog = _cog()
+    cog.config.inline_image_enabled = inline_image_enabled
+
+    await _classifier(cog=cog, message=as_message(fake=FakeMessage())).classify(
+        reference_messages=_ROUTE_REFERENCE,
+        current_message=_ROUTE_CURRENT,
+        recall_candidates={42: RecallCandidate(prompt_label="Boss(社群暱稱:李董)")},
+        server_memory_block=None,
+    )
+
+    assert _recorded(cog).responses.parse_instructions == [
+        route_prompt(inline_image_enabled=inline_image_enabled) + ROUTE_RECALL_SECTION
+    ]
 
 
 async def test_an_unparseable_route_falls_back_to_a_plain_high_effort_qa(

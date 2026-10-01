@@ -8,7 +8,7 @@ from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RouteClassification, RuntimeModelCatalog
-from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT
+from discordbot.cogs.gen_reply.prompts import route_prompt
 
 console = Console()
 config = LLMConfig()
@@ -45,7 +45,7 @@ def use_oai_responses_parse(user_prompt: str) -> None:
         client=client,
         user_prompt=user_prompt,
         label="route",
-        instructions=ROUTE_PROMPT,
+        instructions=route_prompt(inline_image_enabled=config.inline_image_enabled),
         text_format=RouteClassification,
     )
 

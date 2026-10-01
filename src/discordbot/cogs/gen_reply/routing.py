@@ -19,7 +19,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from discordbot.typings.models import RouteClassification, RecallRouteClassification
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.recall import RecallCandidate, render_callable_users_block
-from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT, ROUTE_RECALL_SECTION
+from discordbot.cogs.gen_reply.prompts import ROUTE_RECALL_SECTION, route_prompt
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 
@@ -37,6 +37,13 @@ class RouteClassifier(BaseModel):
         ),
     )
     message: SkipValidation[Message] = Field(..., description="The message being classified.")
+    inline_image_enabled: bool = Field(
+        ...,
+        description=(
+            "Whether the QA answer can draw inline (`LLMConfig.inline_image_enabled`), and so "
+            "whether the route is told it can."
+        ),
+    )
 
     async def classify(
         self,
@@ -60,7 +67,7 @@ class RouteClassifier(BaseModel):
         allowlist.
         """
         message_list = [*reference_messages, *current_message]
-        instructions = ROUTE_PROMPT
+        instructions = route_prompt(inline_image_enabled=self.inline_image_enabled)
         text_format: type[RouteClassification] = RouteClassification
         if recall_candidates:
             message_list = [
@@ -68,7 +75,7 @@ class RouteClassifier(BaseModel):
                 *message_list,
                 render_callable_users_block(allowed=recall_candidates),
             ]
-            instructions = ROUTE_PROMPT + ROUTE_RECALL_SECTION
+            instructions += ROUTE_RECALL_SECTION
             text_format = RecallRouteClassification
 
         triage_model = self.toolkit.runtime_models.triage_model
