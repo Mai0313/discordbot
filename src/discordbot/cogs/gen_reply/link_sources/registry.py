@@ -3,7 +3,7 @@
 The blocks land in the answer input in `LINK_CONTEXT_SOURCES` order, just before the current
 message. Adding a source is one entry here, its builder module beside this one, its name in
 `typings/emojis.py::LinkSourceName` (a source the router cannot name is never selected, so its
-builder never starts) with a marker in `LINK_SOURCE_EMOJIS`, and a line in `ROUTE_PROMPT` saying
+builder never starts) with a marker in `LINK_SOURCE_EMOJIS`, and a line in `route_prompt` saying
 when the router should select it; the pipeline loops stay untouched.
 
 Each entry is a thin adapter over its builder function rather than the function itself: an

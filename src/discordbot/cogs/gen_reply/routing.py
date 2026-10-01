@@ -19,11 +19,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from discordbot.typings.models import RouteClassification, RecallRouteClassification
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.recall import RecallCandidate, render_callable_users_block
-from discordbot.cogs.gen_reply.prompts import (
-    ROUTE_PROMPT,
-    ROUTE_RECALL_SECTION,
-    ROUTE_INLINE_IMAGE_SECTION,
-)
+from discordbot.cogs.gen_reply.prompts import ROUTE_RECALL_SECTION, route_prompt
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 
@@ -71,9 +67,7 @@ class RouteClassifier(BaseModel):
         allowlist.
         """
         message_list = [*reference_messages, *current_message]
-        instructions = ROUTE_PROMPT
-        if self.inline_image_enabled:
-            instructions += ROUTE_INLINE_IMAGE_SECTION
+        instructions = route_prompt(inline_image_enabled=self.inline_image_enabled)
         text_format: type[RouteClassification] = RouteClassification
         if recall_candidates:
             message_list = [

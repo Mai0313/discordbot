@@ -618,7 +618,7 @@ class MessageInputBuilder(BaseModel):
         any other, but the marker is all a text-only reader gets, and "image" makes a pure
         reaction indistinguishable from a screenshot someone needs read, which costs a
         sticker-only message its `low` effort grade. The route reads the same marker and does not
-        move on it: `ROUTE_PROMPT`'s IMAGE branch keys on "an image", yet an edit request over a
+        move on it: `route_prompt`'s IMAGE branch keys on "an image", yet an edit request over a
         sticker routes to IMAGE under either spelling.
         """
         content = await self.get_cleaned_content(message=message)
