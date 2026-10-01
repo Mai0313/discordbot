@@ -16,8 +16,8 @@ status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answ
 upload is made of. They decide nothing: each raises the SDK's own error (the poll also a
 `TimeoutError` for a read past the bound its caller set), and what a missing resource name, a
 file still PROCESSING at the bound, or a failure costs is the caller's call.
-`upload_to_files_api` serves a caller with no later reference to re-poll from, so it bounds the
-whole transfer and gives up.
+`upload_until_active` serves a caller with no later reference to re-poll from: it raises unless
+the file reaches ACTIVE, and that caller bounds the whole transfer and gives up.
 """
 
 import io
@@ -38,14 +38,15 @@ from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 # fetching bytes Google would reject. It is the provider's limit, not a policy of ours.
 FILES_API_MAX_BYTES = 2 * 1024**3
 
-# Caps concurrent `upload_to_files_api` transfers across all in-flight pipelines. Deliberately
-# NOT the attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can
-# hold its slot for minutes, which would starve the ordinary per-message attachment renders that
-# share that pool. Small on purpose — these uploads are large and few.
-LINK_MEDIA_UPLOAD_CONCURRENCY = 2
+# Caps concurrent `upload_as_input_file` transfers (a linked post's media, a generated clip)
+# across all in-flight pipelines. Deliberately NOT the attachment renderers' shared
+# `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can hold its slot for minutes, which
+# would starve the ordinary per-message attachment renders that share that pool. Small on
+# purpose — these uploads are large and few.
+INPUT_FILE_UPLOAD_CONCURRENCY = 2
 
-link_media_upload_semaphore = LoopLocalSemaphore(
-    capacity_provider=lambda: LINK_MEDIA_UPLOAD_CONCURRENCY
+input_file_upload_semaphore = LoopLocalSemaphore(
+    capacity_provider=lambda: INPUT_FILE_UPLOAD_CONCURRENCY
 )
 
 
@@ -105,15 +106,48 @@ async def poll_while_processing(  # noqa: PLR0913 -- each bound is its caller's 
     return uploaded
 
 
-async def upload_to_files_api(
+async def upload_until_active(
+    *, client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
+) -> str:
+    """Uploads media and polls it out of PROCESSING, returning its ACTIVE uri.
+
+    Bounds nothing itself: the caller wraps it in the one timeout that covers the transfer as
+    well as the poll, since google-genai sets no transport timeout and an upload into a stalled
+    connection never returns.
+
+    Raises:
+        RuntimeError: The upload reported no resource name, or the file ended in a state other
+            than ACTIVE or without a uri.
+        Exception: Whatever the SDK or its transport raised, unchanged.
+    """
+    uploaded = await upload_file(
+        client=client, source=source, mime_type=mime_type, display_name=display_name
+    )
+    file_name = uploaded.name
+    if file_name is None:
+        raise RuntimeError(f"Files API upload of {display_name} returned no resource name")
+    uploaded = await poll_while_processing(
+        client=client,
+        uploaded=uploaded,
+        name=file_name,
+        poll_interval_seconds=1.0,
+        timeout_seconds=None,
+        read_timeout_seconds=None,
+    )
+    if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
+        raise RuntimeError(f"Files API upload of {display_name} failed: state={uploaded.state}")
+    return uploaded.uri
+
+
+async def upload_as_input_file(
     *,
     client: genai.Client,
     source: Path | bytes,
     mime_type: str,
-    display_name: str,
+    filename: str,
     timeout_seconds: float,
-) -> str | None:
-    """Uploads media to the Gemini Files API and returns its ACTIVE uri; None on any failure.
+) -> ResponseInputFileParam | None:
+    """Uploads media and wraps its ACTIVE uri as an `input_file` part; None on any failure.
 
     Best-effort by design: every caller degrades rather than failing — the link builders to
     their text-only block, the generated-clip path by skipping its persona reply — so a
@@ -130,15 +164,17 @@ async def upload_to_files_api(
         client: A Gemini client built with the Files API key (direct, never the proxy).
         source: The media bytes, or the path to the media file on disk.
         mime_type: The media's real MIME type; the upload needs it, the part does not carry one.
-        display_name: Cosmetic name recorded on the uploaded file.
+        filename: Must carry the real extension: it is cosmetic on the proxied Responses path
+            (the bridge drops it) but load-bearing on the native Interactions path, which
+            classifies a part as video / audio / image / document purely by that extension.
         timeout_seconds: Bound on the whole transfer, not just the activation poll.
 
     Returns:
-        The full `https://.../files/<id>` uri, or None when the upload failed or never
-        became ACTIVE in time.
+        The part referencing the full `https://.../files/<id>` uri, or None when the upload
+        failed or never became ACTIVE in time.
     """
     if not LLMConfig().file_api_enabled:
-        logfire.info("files api upload skipped by kill-switch", name=display_name)
+        logfire.info("files api upload skipped by kill-switch", name=filename)
         return None
     started = time.monotonic()
     try:
@@ -146,76 +182,28 @@ async def upload_to_files_api(
         # purpose. google-genai disables the transport timeout by default (`timeout=None`), so
         # an upload into a black-holed connection never returns; bounding only the poll would
         # let two such uploads wedge both slots for the life of the process, after which every
-        # link-media build burns its full budget waiting here and silently degrades to text.
-        async with link_media_upload_semaphore.get(), asyncio.timeout(delay=timeout_seconds):
-            uploaded = await upload_file(
-                client=client, source=source, mime_type=mime_type, display_name=display_name
-            )
-            file_name = uploaded.name
-            if file_name is None:
-                logfire.warn("files api upload returned no resource name", name=display_name)
-                return None
-            uploaded = await poll_while_processing(
-                client=client,
-                uploaded=uploaded,
-                name=file_name,
-                poll_interval_seconds=1.0,
-                timeout_seconds=None,
-                read_timeout_seconds=None,
+        # upload behind them burns its full budget waiting here and silently degrades.
+        async with input_file_upload_semaphore.get(), asyncio.timeout(delay=timeout_seconds):
+            file_uri = await upload_until_active(
+                client=client, source=source, mime_type=mime_type, display_name=filename
             )
     except TimeoutError as exc:
         logfire.warn(
             "files api upload did not finish in time",
-            name=display_name,
+            name=filename,
             timeout_seconds=timeout_seconds,
             _exc_info=exc,
         )
         return None
     except Exception as exc:
         logfire.warn(
-            "files api upload failed",
-            name=display_name,
-            error_type=type(exc).__name__,
-            _exc_info=exc,
-        )
-        return None
-    if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
-        logfire.warn(
-            "files api upload reached a non-active state",
-            name=display_name,
-            state=str(uploaded.state),
+            "files api upload failed", name=filename, error_type=type(exc).__name__, _exc_info=exc
         )
         return None
     logfire.debug(
         "files api upload done",
-        name=display_name,
+        name=filename,
         elapsed_seconds=time.monotonic() - started,
-        file_uri=uploaded.uri,
+        file_uri=file_uri,
     )
-    return uploaded.uri
-
-
-async def upload_as_input_file(
-    *,
-    client: genai.Client,
-    source: Path | bytes,
-    mime_type: str,
-    filename: str,
-    timeout_seconds: float,
-) -> ResponseInputFileParam | None:
-    """Uploads media and wraps its uri as an `input_file` part; None when the upload failed.
-
-    `filename` must carry the real extension: it is cosmetic on the proxied Responses path
-    (the bridge drops it) but load-bearing on the native Interactions path, which classifies
-    a part as video / audio / image / document purely by that extension.
-    """
-    file_uri = await upload_to_files_api(
-        client=client,
-        source=source,
-        mime_type=mime_type,
-        display_name=filename,
-        timeout_seconds=timeout_seconds,
-    )
-    if file_uri is None:
-        return None
     return ResponseInputFileParam(type="input_file", file_id=file_uri, filename=filename)

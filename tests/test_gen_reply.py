@@ -5364,7 +5364,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
         """Simulates the post-delivery Files-API upload failing."""
         del kwargs
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.upload_to_files_api", _no_upload)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.upload_as_input_file", _no_upload)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=1)  # below the 3-byte fake clip -> oversized
 
@@ -5472,7 +5472,7 @@ _SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENI
         (_SOURCE_UPLOAD_REFUSED, _SOURCE_UPLOAD_REFUSED),
         (
             SimpleNamespace(name=None, uri=None, state=FileState.ACTIVE),
-            RuntimeError("Source video upload returned no file name"),
+            RuntimeError("Files API upload of source.mp4 returned no resource name"),
         ),
         (
             SimpleNamespace(name="files/vid", uri=None, state=FileState.PROCESSING),
@@ -5480,7 +5480,7 @@ _SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENI
         ),
         (
             SimpleNamespace(name="files/vid", uri=None, state=FileState.FAILED),
-            RuntimeError("Source video upload failed: state=FileState.FAILED"),
+            RuntimeError("Files API upload of source.mp4 failed: state=FileState.FAILED"),
         ),
     ],
     ids=["sdk-error", "no-name", "never-active", "failed-state"],

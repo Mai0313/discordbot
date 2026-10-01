@@ -9,11 +9,7 @@ from google import genai
 import pytest
 from google.genai.types import FileState
 
-from discordbot.cogs.gen_reply.files_api import (
-    LINK_MEDIA_UPLOAD_CONCURRENCY,
-    upload_to_files_api,
-    upload_as_input_file,
-)
+from discordbot.cogs.gen_reply.files_api import INPUT_FILE_UPLOAD_CONCURRENCY, upload_as_input_file
 
 from tests.helpers.casting import as_client
 from tests.helpers.gen_reply import FakeGeminiFiles, FakeGeminiClient
@@ -24,16 +20,27 @@ def _client(files: FakeGeminiFiles) -> genai.Client:
     return as_client(fake=FakeGeminiClient(files=files))
 
 
+async def _uploaded_uri(
+    files: FakeGeminiFiles,
+    filename: str = "clip.mp4",
+    source: Path | bytes = b"data",
+    timeout_seconds: float = 5.0,
+) -> str | None:
+    """Uploads through the helper and returns the uri its part references, or None."""
+    part = await upload_as_input_file(
+        client=_client(files),
+        source=source,
+        mime_type="video/mp4",
+        filename=filename,
+        timeout_seconds=timeout_seconds,
+    )
+    return None if part is None else part.get("file_id")
+
+
 async def test_upload_returns_the_active_uri() -> None:
     """A file that is ACTIVE straight away yields its full uri."""
     files = FakeGeminiFiles()
-    uri = await upload_to_files_api(
-        client=_client(files),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=5.0,
-    )
+    uri = await _uploaded_uri(files=files)
     assert uri == "https://files.test/clip.mp4"
     assert files.upload_calls == [("clip.mp4", "video/mp4")]
     # Bytes are wrapped in a stream because the SDK's `file` parameter takes no raw bytes.
@@ -46,26 +53,14 @@ async def test_upload_streams_from_a_path_without_reading_it(tmp_path: Path) -> 
     """A path source is handed to the SDK as-is, so a large clip is never read into memory."""
     files = FakeGeminiFiles()
     path = tmp_path / "clip.mp4"
-    await upload_to_files_api(
-        client=_client(files),
-        source=path,
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=5.0,
-    )
+    await _uploaded_uri(files=files, source=path)
     assert files.uploaded_sources[0] is path
 
 
 async def test_upload_polls_until_active() -> None:
     """A file still PROCESSING is polled until it flips to ACTIVE."""
     files = FakeGeminiFiles(processing_rounds=2)
-    uri = await upload_to_files_api(
-        client=_client(files),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=30.0,
-    )
+    uri = await _uploaded_uri(files=files, timeout_seconds=30.0)
     assert uri == "https://files.test/clip.mp4"
     assert files.get_calls == 2
 
@@ -73,13 +68,7 @@ async def test_upload_polls_until_active() -> None:
 async def test_upload_gives_up_when_activation_exceeds_the_bound() -> None:
     """A file that never leaves PROCESSING degrades to None rather than hanging or raising."""
     files = FakeGeminiFiles(processing_rounds=10_000)
-    uri = await upload_to_files_api(
-        client=_client(files),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=0.0,
-    )
+    uri = await _uploaded_uri(files=files, timeout_seconds=0.0)
     assert uri is None
 
 
@@ -98,25 +87,13 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
             raise AssertionError("should have been abandoned")
 
     hung = [
-        upload_to_files_api(
-            client=_client(_Hangs()),
-            source=b"data",
-            mime_type="video/mp4",
-            display_name=f"hung{index}.mp4",
-            timeout_seconds=0.05,
-        )
-        for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)
+        _uploaded_uri(files=_Hangs(), filename=f"hung{index}.mp4", timeout_seconds=0.05)
+        for index in range(INPUT_FILE_UPLOAD_CONCURRENCY)
     ]
-    healthy = upload_to_files_api(
-        client=_client(FakeGeminiFiles()),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=5.0,
-    )
+    healthy = _uploaded_uri(files=FakeGeminiFiles())
     results = await asyncio.wait_for(asyncio.gather(*hung, healthy), timeout=10.0)
 
-    assert results[:-1] == [None] * LINK_MEDIA_UPLOAD_CONCURRENCY
+    assert results[:-1] == [None] * INPUT_FILE_UPLOAD_CONCURRENCY
     assert results[-1] == "https://files.test/clip.mp4"
 
 
@@ -135,25 +112,11 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
             return await super().upload(file=file, config=config)
 
     holders = [
-        asyncio.create_task(
-            upload_to_files_api(
-                client=_client(_Slow()),
-                source=b"data",
-                mime_type="video/mp4",
-                display_name=f"slow{index}.mp4",
-                timeout_seconds=5.0,
-            )
-        )
-        for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)
+        asyncio.create_task(_uploaded_uri(files=_Slow(), filename=f"slow{index}.mp4"))
+        for index in range(INPUT_FILE_UPLOAD_CONCURRENCY)
     ]
     queued = asyncio.create_task(
-        upload_to_files_api(
-            client=_client(FakeGeminiFiles()),
-            source=b"data",
-            mime_type="video/mp4",
-            display_name="queued.mp4",
-            timeout_seconds=0.05,
-        )
+        _uploaded_uri(files=FakeGeminiFiles(), filename="queued.mp4", timeout_seconds=0.05)
     )
     # Longer than the queued upload's own bound, all of it spent waiting for a slot.
     await asyncio.sleep(0.2)
@@ -161,7 +124,7 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
     results = await asyncio.wait_for(asyncio.gather(*holders, queued), timeout=5.0)
 
     assert results == [
-        *(f"https://files.test/slow{index}.mp4" for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)),
+        *(f"https://files.test/slow{index}.mp4" for index in range(INPUT_FILE_UPLOAD_CONCURRENCY)),
         "https://files.test/queued.mp4",
     ]
 
@@ -169,13 +132,7 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
 async def test_upload_degrades_on_a_failed_file() -> None:
     """A terminal non-ACTIVE state degrades to None."""
     files = FakeGeminiFiles(final_state=FileState.FAILED)
-    uri = await upload_to_files_api(
-        client=_client(files),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=5.0,
-    )
+    uri = await _uploaded_uri(files=files)
     assert uri is None
 
 
@@ -187,13 +144,7 @@ async def test_upload_degrades_when_the_sdk_raises() -> None:
             """Fails the upload the way a transport error would."""
             raise RuntimeError("network down")
 
-    uri = await upload_to_files_api(
-        client=_client(_Boom()),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=5.0,
-    )
+    uri = await _uploaded_uri(files=_Boom())
     assert uri is None
 
 
@@ -217,28 +168,10 @@ async def test_input_file_part_carries_the_uri_and_a_real_extension() -> None:
     }
 
 
-async def test_input_file_part_is_none_when_the_upload_fails() -> None:
-    """A failed upload produces no part, so the caller degrades to text instead of a bad ref."""
-    part = await upload_as_input_file(
-        client=_client(FakeGeminiFiles(final_state=FileState.FAILED)),
-        source=b"data",
-        mime_type="video/mp4",
-        filename="douyin_123.mp4",
-        timeout_seconds=5.0,
-    )
-    assert part is None
-
-
 async def test_the_kill_switch_skips_the_upload_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
     """Switched off, the transfer never starts, so an outage costs no upload either."""
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     files = FakeGeminiFiles()
-    uri = await upload_to_files_api(
-        client=_client(files),
-        source=b"data",
-        mime_type="video/mp4",
-        display_name="clip.mp4",
-        timeout_seconds=5.0,
-    )
+    uri = await _uploaded_uri(files=files)
     assert uri is None
     assert files.upload_calls == []

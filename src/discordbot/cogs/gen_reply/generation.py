@@ -16,7 +16,6 @@ from google import genai
 from openai import AsyncOpenAI, APITimeoutError
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from google.genai.types import FileState
 from google.genai.interactions import (
     TextContentParam,
     VideoConfigParam,
@@ -42,7 +41,7 @@ from discordbot.typings.timeouts import (
     PROMPT_REFINE_TIMEOUT_SECONDS,
 )
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
-from discordbot.cogs.gen_reply.files_api import upload_file, poll_while_processing
+from discordbot.cogs.gen_reply.files_api import upload_until_active
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
@@ -674,28 +673,14 @@ class VideoGenerator(BaseModel):
         """
         try:
             async with asyncio.timeout(delay=FILES_READY_TIMEOUT_SECONDS):
-                uploaded = await upload_file(
+                return await upload_until_active(
                     client=self.client,
                     source=source_video.data,
                     mime_type=source_video.mime_type,
                     display_name="source.mp4",
                 )
-                file_name = uploaded.name
-                if file_name is None:
-                    raise RuntimeError("Source video upload returned no file name")
-                uploaded = await poll_while_processing(
-                    client=self.client,
-                    uploaded=uploaded,
-                    name=file_name,
-                    poll_interval_seconds=1.0,
-                    timeout_seconds=None,
-                    read_timeout_seconds=None,
-                )
         except TimeoutError as exc:
             raise RuntimeError("Source video did not become ACTIVE before the deadline") from exc
-        if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
-            raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
-        return uploaded.uri
 
 
 class MusicClip(BaseModel):
