@@ -666,8 +666,8 @@ def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bo
     """Only a post-shaped link may be claimed automatically.
 
     `DOUYIN_URL_RE` matches the host rather than the path, so without this a pasted profile or
-    live room would earn a warning reaction plus a failure reply, and spend a Douyin request
-    to discover it was never a post.
+    live room would earn a warning reaction, and spend a Douyin request to discover it was
+    never a post.
     """
     assert is_douyin_post_url(url=url) is expected
 
