@@ -384,7 +384,6 @@ class MemoryWriterAI(BaseModel):
             else ()
         )
         draft = await self._parse(
-            model=self.model,
             instructions=self.evaluator_prompt,
             user_text=(
                 f"{subject}\n\n"
@@ -420,7 +419,6 @@ class MemoryWriterAI(BaseModel):
             else self.consolidate_prompt
         )
         result = await self._parse(
-            model=self.model,
             instructions=instructions,
             user_text="\n\n".join(blocks),
             text_format=ConsolidatedMemory,
@@ -445,7 +443,6 @@ class MemoryWriterAI(BaseModel):
         land in the note. None means the LLM path failed.
         """
         return await self._parse(
-            model=self.model,
             instructions=TONE_FORGET_PROMPT,
             user_text="\n\n".join([
                 _tagged(tag="forget_requests", body=forgets),
@@ -457,12 +454,7 @@ class MemoryWriterAI(BaseModel):
         )
 
     async def _parse(
-        self,
-        model: ModelSettings,
-        instructions: str,
-        user_text: str,
-        text_format: type[_OutputT],
-        end_user_label: str,
+        self, instructions: str, user_text: str, text_format: type[_OutputT], end_user_label: str
     ) -> _OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
@@ -477,7 +469,7 @@ class MemoryWriterAI(BaseModel):
         """
         return await parse_responses_or_none(
             client=self.client,
-            model=model,
+            model=self.model,
             instructions=instructions,
             user_text=user_text,
             end_user_id=end_user_label,
@@ -751,7 +743,7 @@ def redact_secrets(text: str) -> str:
 
 
 def _validated_draft(
-    draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...] = ()
+    draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...]
 ) -> RawMemoryDraft:
     """Applies deterministic high-precision gates to model observations."""
     observations: list[MemoryObservation] = []
@@ -779,7 +771,7 @@ def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
 
 
 def _sanitize_observation(
-    observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...] = ()
+    observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...]
 ) -> MemoryObservation:
     """Normalizes text, keys, TTL, and sharing fields before validation."""
     category = observation.category

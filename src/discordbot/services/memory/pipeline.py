@@ -340,6 +340,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
     Returns whether consolidation should be FORCED (a forget is waiting), or None when the
     turn is finished and must not consolidate at all. Split out of `_run_memory_update` so the
     lock-holding half reads as one thing; the caller owns only the consolidation decision.
+    `report` is awaited bare, so it must already swallow its own failure.
     """
     scope = turn.scope
     transcript, rounds = parse_turn_payload(payload=turn.transcript)
@@ -423,10 +424,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             # What earlier rounds staged and every forget are durable regardless of the failed
             # review, so the reply may say so; the notes that failed are left out rather than
             # guessed at. A resumed retry carries no report, so this is the only chance.
-            await report_writes(
-                report=report,
-                summary=_write_summary(observations=tuple(kept), forgotten=forget_notes),
-            )
+            await report(_write_summary(observations=tuple(kept), forgotten=forget_notes))
         # The forget above is already durable and has nothing to do with the review that
         # failed, so it still gets the immediate pass it was written for. Without this it
         # would wait for an unrelated turn to push the backlog over threshold, and the bot
@@ -441,9 +439,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
     # self-healing) consolidation so a consolidation crash never re-runs the review.
     await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
     if report is not None:
-        await report_writes(
-            report=report, summary=_write_summary(observations=tuple(kept), forgotten=forget_notes)
-        )
+        await report(_write_summary(observations=tuple(kept), forgotten=forget_notes))
     return bool(forget_notes)
 
 
