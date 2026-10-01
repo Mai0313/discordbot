@@ -146,8 +146,8 @@ class LoanDecisionViewBase(LoggedView):
                 channel_id=self.message.channel.id,
                 message_id=self.message.id,
             )
-        # Broad on purpose: the proposal is already rejected, a raise here would only reach
-        # nextcord's timeout task, and the cleanup below must still be scheduled.
+        # Broad on purpose: the proposal is already rejected and the cleanup below must still
+        # be scheduled.
         except Exception as exc:
             logfire.warn(
                 "Loan request timeout edit failed",
