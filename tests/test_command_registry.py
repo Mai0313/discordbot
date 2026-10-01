@@ -359,11 +359,11 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
 async def test_cli_reports_an_exception_from_any_event_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The wider half of the same gap the test above closes.
+    """An exception no event handler caught reaches `./data/logs` with its traceback.
 
     `_run_event` funnels every unhandled exception from every event handler and every cog
-    listener into `on_error`, whose default prints to `sys.stderr` — untee'd, so an
-    `on_message` or an expansion cog's `on_ready` sweep that raised left no line at all.
+    listener into `on_error`, whose default prints to `sys.stderr` — untee'd, so without this
+    override an `on_message` or an expansion cog's `on_ready` sweep that raised leaves no line.
     """
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
     try:

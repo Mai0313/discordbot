@@ -103,8 +103,8 @@ class DiscordBot(commands.Bot):
         READY, and an empty one sends the next interaction whose guild does not resolve — a DM,
         a group DM, a user install in a server the bot is not in — down nextcord's lazy-load
         path into a global `delete_unknown` pass that deletes every command Discord holds, with
-        nothing in `data/logs` saying so. Measured 2026-09-09: one reconnect, then one DM
-        command, then twelve hours with nothing registered. It runs before the `user` guard
+        nothing in `data/logs` saying so. One reconnect and one DM command are enough, and the
+        commands stay gone until the next restart re-syncs them. It runs before the `user` guard
         because a registry left empty is not a logging concern, and it reaches no API. The
         re-sync the base method also does stays dropped on purpose; `on_ready` owns that, once
         per process.
