@@ -20,6 +20,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import ask_store
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
+from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.recall import RecallContext
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
@@ -414,6 +415,25 @@ def test_an_answer_past_the_follow_up_budget_says_it_was_cut() -> None:
     assert len(chunks[0]) <= 2000
     assert TRUNCATED_NOTICE.strip() in f"{parent}{chunks[0]}"
     assert f"{parent}{chunks[0]}".endswith(footer)
+
+
+@pytest.mark.parametrize("max_messages", [1, 2])
+def test_only_an_answer_past_the_budget_is_cut(max_messages: int) -> None:
+    """The notice's room is held back only once something must go, so a fitting answer is whole."""
+    footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
+    fits = "字" * (max_messages * DISCORD_MESSAGE_LIMIT - len(footer))
+
+    parent, chunks = ResponseStreamer._split_reply_for_discord(
+        content=fits, footer=footer, max_messages=max_messages
+    )
+    over_parent, over_chunks = ResponseStreamer._split_reply_for_discord(
+        content=f"{fits}字", footer=footer, max_messages=max_messages
+    )
+
+    assert "".join([parent, *chunks]) == f"{fits}{footer}"
+    over = [over_parent, *over_chunks]
+    assert len(over) == max_messages
+    assert TRUNCATED_NOTICE.strip() in over[-1]
 
 
 def test_an_uncapped_surface_splits_the_whole_answer() -> None:
