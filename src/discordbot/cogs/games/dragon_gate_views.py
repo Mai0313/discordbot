@@ -387,6 +387,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             final_balances=final_balances,
         )
         view.message = message
+        view.last_press = interaction
         embeds = view.in_progress_embeds()
         await self._show_table(
             interaction=interaction,
@@ -413,6 +414,8 @@ class DragonGateView(GameView):
         self.round_state = round_state
         self.owner = owner
         self.message: Message | None = None
+        # The last press that edited the table; the timeout's edit and delete ride its token.
+        self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
         self._history: list[DragonGateTurnResult] = []
@@ -463,7 +466,7 @@ class DragonGateView(GameView):
                 return
             await self._refund_remaining_winners_locked()
             await self._finalize_locked(
-                message=self.message, reason="逾時未操作", interaction=None
+                message=self.message, reason="逾時未操作", interaction=self.last_press
             )
 
     @nextcord.ui.button(
@@ -628,6 +631,7 @@ class DragonGateView(GameView):
                 await self._send_notice(interaction=interaction, content="這手不需要猜大小")
                 return
             self.sync_controls()
+            self.last_press = interaction
             await interaction.edit_original_message(
                 **table_edit_kwargs(
                     embeds=self.in_progress_embeds(), view=self, target=interaction.message
@@ -732,6 +736,7 @@ class DragonGateView(GameView):
                     )
                     return
             self.sync_controls()
+            self.last_press = interaction
             await interaction.edit_original_message(
                 **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
             )
@@ -762,6 +767,7 @@ class DragonGateView(GameView):
                 )
                 return
             self.sync_controls()
+            self.last_press = interaction
             await interaction.edit_original_message(
                 **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
             )
@@ -854,6 +860,7 @@ class DragonGateView(GameView):
             user_name=self.owner.account_name,
             game_name="Dragon Gate",
             interaction=interaction,
+            channel_id=message.channel.id,
             message_id=message.id,
             reason=reason,
         )

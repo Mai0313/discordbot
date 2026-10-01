@@ -4,7 +4,7 @@ from typing import Final
 import asyncio
 
 import logfire
-from nextcord import Message, NotFound, Forbidden, HTTPException
+from nextcord import Message, NotFound, Forbidden, Interaction, HTTPException
 from pydantic import Field, BaseModel
 from sqlalchemy import MetaData, text
 from nextcord.abc import Messageable
@@ -192,8 +192,58 @@ async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage
     return await channel.fetch_message(record.message_id)
 
 
-async def delete_public_message(message: Message, message_id: int | None = None) -> bool:
+def report_press_failure(error: HTTPException, message: Message, action: str) -> None:
+    """Logs a press's token failing to `action` a public message, before the channel is tried.
+
+    A 404 is a message already gone or one the token cannot reach, which the channel attempt
+    tells apart and reports; a 403 is a refusal whose code is the whole finding. Anything else
+    keeps its traceback.
+    """
+    text = f"A press could not {action} a public message; trying the channel"
+    message_id = getattr(message, "id", None)
+    channel_id = getattr(getattr(message, "channel", None), "id", None)
+    if isinstance(error, NotFound):
+        logfire.info(text, message_id=message_id, channel_id=channel_id, code=error.code)
+    elif isinstance(error, Forbidden):
+        logfire.warn(text, message_id=message_id, channel_id=channel_id, code=error.code)
+    else:
+        logfire.warn(
+            text, message_id=message_id, channel_id=channel_id, code=error.code, _exc_info=error
+        )
+
+
+async def _deleted_through_press(
+    interaction: Interaction[commands.Bot] | None, message: Message
+) -> bool:
+    """Deletes through a live press on the message; False leaves the delete to the channel.
+
+    A press's token reaches the message its control sits on whatever the channel allows, where
+    the channel endpoint answers 403 once the server shuts the bot out. That the token can
+    delete that message, not only edit it, is read off Discord's docs rather than measured, so
+    any failure hands the delete to the channel.
+    """
+    if interaction is None or interaction.is_expired():
+        return False
+    try:
+        await interaction.delete_original_message()
+    except HTTPException as error:
+        report_press_failure(error=error, message=message, action="delete")
+        return False
+    return True
+
+
+async def delete_public_message(
+    message: Message,
+    message_id: int | None = None,
+    interaction: Interaction[commands.Bot] | None = None,
+) -> bool:
     """Deletes a public message and removes its persisted cleanup record.
+
+    Args:
+        message: Discord message to delete.
+        message_id: Record key when the message object carries none.
+        interaction: A press on the message whose token, while it lives, deletes it in place of
+            the channel. Never persisted, so a restart's sweep has only the channel.
 
     Returns:
         True when the message is gone, an already-deleted one included; False when Discord
@@ -201,7 +251,8 @@ async def delete_public_message(message: Message, message_id: int | None = None)
     """
     resolved_message_id = message_id if message_id is not None else getattr(message, "id", None)
     try:
-        await message.delete()
+        if not await _deleted_through_press(interaction=interaction, message=message):
+            await message.delete()
     except NotFound:
         pass
     except Forbidden:
@@ -277,7 +328,10 @@ async def delete_tracked_public_messages(bot: commands.Bot) -> None:
 
 
 async def delete_public_message_after(
-    message: Message, delay: float = PUBLIC_MESSAGE_TTL_SECONDS, user_name: str | None = None
+    message: Message,
+    delay: float = PUBLIC_MESSAGE_TTL_SECONDS,
+    user_name: str | None = None,
+    interaction: Interaction[commands.Bot] | None = None,
 ) -> None:
     """Deletes a public response after a delay.
 
@@ -285,18 +339,24 @@ async def delete_public_message_after(
         message: Discord message to delete.
         delay: Seconds to wait before deletion.
         user_name: Optional Discord account name of the user who triggered the response.
+        interaction: Optional press on the message to delete through (`delete_public_message`).
     """
     await track_public_message(message=message, user_name=user_name)
     await asyncio.sleep(delay=delay)
-    await delete_public_message(message=message)
+    await delete_public_message(message=message, interaction=interaction)
 
 
 def schedule_public_message_delete(
-    message: Message, delay: float = PUBLIC_MESSAGE_TTL_SECONDS, user_name: str | None = None
+    message: Message,
+    delay: float = PUBLIC_MESSAGE_TTL_SECONDS,
+    user_name: str | None = None,
+    interaction: Interaction[commands.Bot] | None = None,
 ) -> None:
     """Schedules delayed deletion for a public response, never blocking the command."""
     spawn_tracked(
-        coro=delete_public_message_after(message=message, delay=delay, user_name=user_name),
+        coro=delete_public_message_after(
+            message=message, delay=delay, user_name=user_name, interaction=interaction
+        ),
         tasks=_delete_tasks,
         name="delete-public-response",
     )

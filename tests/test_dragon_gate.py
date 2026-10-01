@@ -8,6 +8,7 @@ import contextlib
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
+import logfire
 from nextcord import Embed, HTTPException
 from nextcord.ui import StringSelect
 
@@ -221,11 +222,11 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
     monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
         "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: None,
+        lambda message, delay=180, user_name=None, interaction=None: None,
     )
     monkeypatch.setattr(
         "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: None,
+        lambda message, delay=180, user_name=None, interaction=None: None,
     )
 
 
@@ -449,7 +450,10 @@ async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
     monkeypatch.setattr(
         game_interactions,
         "schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: scheduled.append((message, user_name)),
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append((
+            message,
+            user_name,
+        )),
     )
 
     class _RefusingMessage:
@@ -470,6 +474,52 @@ async def test_a_failed_final_render_still_schedules_the_table_for_deletion(
 
     assert landed is False
     assert scheduled == [(message, "alice")]
+
+
+@pytest.mark.parametrize(
+    argnames=("failure", "report"),
+    argvalues=[
+        (make_not_found(message="Unknown Webhook"), ("info", False)),
+        (make_forbidden(message="Missing Access"), ("warn", False)),
+        (make_server_error(), ("warn", True)),
+    ],
+    ids=["token_404", "token_refused", "token_broke"],
+)
+async def test_a_final_render_the_press_cannot_make_goes_through_the_channel(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException, report: tuple[str, bool]
+) -> None:
+    """A press's 404 may be its token rather than the message, which only the channel can tell.
+
+    So any failure of the press is recorded and the render retried through the channel.
+    """
+    monkeypatch.setattr(
+        game_interactions,
+        "schedule_public_message_delete",
+        lambda message, delay=180, user_name=None, interaction=None: None,
+    )
+    reports: list[tuple[str, dict[str, object]]] = []
+    for level in ("info", "warn"):
+        monkeypatch.setattr(
+            target=logfire,
+            name=level,
+            value=lambda message, level=level, **fields: reports.append((level, fields)),
+        )
+    message = FakeDiscordMessage()
+    press = FakeInteraction(message=message)
+    press.edit_failure = failure
+
+    landed = await publish_final_table(
+        message=as_message(fake=message),
+        embeds=[Embed(title="settled")],
+        user_name="alice",
+        game_name="Dragon Gate",
+        interaction=as_interaction(fake=press),
+        message_id=message.id,
+    )
+
+    assert landed is True
+    assert message.edits[-1]["view"] is None
+    assert [(level, "_exc_info" in fields) for level, fields in reports] == [report]
 
 
 async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
@@ -613,7 +663,7 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     )
     monkeypatch.setattr(
         "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: None,
+        lambda message, delay=180, user_name=None, interaction=None: None,
     )
 
     view = DragonGateLobbyView(
@@ -661,7 +711,7 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
     scheduled: list[object] = []
     monkeypatch.setattr(
         "discordbot.cogs.games.lobby.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: scheduled.append(message),
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(message),
     )
     batches: list[list[JackpotSettlementRequest]] = []
 
@@ -1008,7 +1058,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
     monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
         "discordbot.cogs.games.interactions.schedule_public_message_delete",
-        lambda message, delay=180, user_name=None: None,
+        lambda message, delay=180, user_name=None, interaction=None: None,
     )
 
     message = FakeDiscordMessage()
@@ -1354,6 +1404,45 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert all(isinstance(embed, Embed) for embed in embeds)
+
+
+@pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
+async def test_a_dragon_gate_table_left_to_time_out_in_a_shut_out_channel_closes_through_its_last_press(
+    monkeypatch: pytest.MonkeyPatch, expired: bool
+) -> None:
+    """A timeout has no press of its own, so it renders and deletes through the last bet's.
+
+    Once that bet's token has expired only the channel is left, which refuses the render.
+    """
+    alice = _participant(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[alice]
+    )
+    state = JackpotState(initial_jackpot=100_000, initial_balance=1_000_000)
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+    scheduled: list[object] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.games.interactions.schedule_public_message_delete",
+        lambda message, delay=180, user_name=None, interaction=None: scheduled.append(interaction),
+    )
+    message = FakeDiscordMessage()
+    message.edit_failure = make_forbidden(message="Missing Access")
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=state.jackpot,
+        final_balances={1: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+    bet = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+    await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=bet))
+    bet.expired = expired
+
+    await view.on_timeout()
+
+    assert (bet.edits[-1]["view"] is None) is not expired, "the settled table landed via the bet"
+    assert scheduled == [bet], "the delete rides the same press"
 
 
 def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:

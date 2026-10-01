@@ -1,10 +1,12 @@
 """Tests for public response cleanup helpers."""
 
 import asyncio
+from collections import Counter
 
 import pytest
-from nextcord import Message
+from nextcord import Message, Interaction
 from nextcord.abc import Messageable
+from nextcord.ext import commands
 
 from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.utils.message_cleanup import (
@@ -21,10 +23,12 @@ from discordbot.utils.message_cleanup import (
 from tests.helpers.casting import (
     as_bot,
     as_message,
+    as_interaction,
     make_forbidden,
     make_not_found,
     make_server_error,
 )
+from tests.helpers.discord_mocks import FakeInteraction
 
 
 class _DeletableMessageStub:
@@ -371,6 +375,54 @@ async def test_a_refused_delete_is_reported_without_a_traceback(
     ] == [(True, 789, 456, traceback)]
 
 
+@pytest.mark.parametrize(
+    argnames=("expired", "failure", "through_token", "report"),
+    argvalues=[
+        (False, None, True, []),
+        (True, None, False, []),
+        (False, make_not_found(), False, [("info", False)]),
+        (False, make_forbidden(message="Missing Access"), False, [("warn", False)]),
+        (False, make_server_error(), False, [("warn", True)]),
+    ],
+    ids=["live", "expired", "token_404", "token_refused", "token_broke"],
+)
+async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
+    monkeypatch: pytest.MonkeyPatch,
+    expired: bool,
+    failure: Exception | None,
+    through_token: bool,
+    report: list[tuple[str, bool]],
+) -> None:
+    """A press's token reaches a message the channel no longer lets the bot touch.
+
+    A token that cannot do it hands the delete to the channel and leaves a record: a 404 is
+    routine, since the channel tells a message already gone apart, and only a failure that is
+    neither keeps its traceback.
+    """
+    reports: list[tuple[str, dict[str, object]]] = []
+    for level in ("info", "warn"):
+        monkeypatch.setattr(
+            target=cleanup_module.logfire,
+            name=level,
+            value=lambda message, level=level, **fields: reports.append((level, fields)),
+        )
+    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    press = FakeInteraction()
+    press.expired = expired
+    press.delete_failure = failure
+
+    await delete_public_message_after(
+        message=as_message(fake=message), delay=0, interaction=as_interaction(fake=press)
+    )
+
+    assert (press.original_deleted, message.delete_calls) == (
+        through_token,
+        0 if through_token else 1,
+    )
+    assert Counter((level, "_exc_info" in fields) for level, fields in reports) == Counter(report)
+    assert await list_pending_public_messages() == []
+
+
 async def test_schedule_public_message_delete_uses_default_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -378,7 +430,10 @@ async def test_schedule_public_message_delete_uses_default_ttl(
     scheduled_delay: float | None = None
 
     async def fake_delete_public_message_after(
-        message: Message, delay: float, user_name: str | None = None
+        message: Message,
+        delay: float,
+        user_name: str | None = None,
+        interaction: Interaction[commands.Bot] | None = None,
     ) -> None:
         """Records the delay requested by the scheduler."""
         nonlocal scheduled_delay

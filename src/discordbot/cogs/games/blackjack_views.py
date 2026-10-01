@@ -544,6 +544,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             shoe_generation=shoe_generation,
         )
         view.message = message
+        view.last_press = interaction
         if round_state.finished:
             await view.finalize(message=message, interaction=interaction)
             return True
@@ -581,6 +582,8 @@ class BlackjackView(GameView):
         self._channel_id = channel_id
         self._shoe_generation = shoe_generation
         self.message: Message | None = None
+        # The last press that edited the table; the timeout's edits and delete ride its token.
+        self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
         self._dealer_steps: list[BlackjackDealerStep] = []
@@ -631,7 +634,7 @@ class BlackjackView(GameView):
         """Auto-resolves the round when nobody clicked in time."""
         if self.message is None:
             return
-        await self.finalize(message=self.message, interaction=None)
+        await self.finalize(message=self.message, interaction=self.last_press)
 
     async def _run_player_action(
         self, *, interaction: Interaction[commands.Bot], apply: Callable[..., object]
@@ -1026,6 +1029,7 @@ class BlackjackView(GameView):
         self, message: Message, interaction: Interaction[commands.Bot]
     ) -> None:
         """Refreshes the per-seat embeds while holding the round lock."""
+        self.last_press = interaction
         self.sync_buttons()
         seat_embeds = build_in_progress_embeds(
             round_state=self.round_state, dealer_steps=self._dealer_steps
@@ -1142,8 +1146,8 @@ class BlackjackView(GameView):
                 message_id=message.id,
             )
         except Forbidden:
-            # Only an edit no press triggered goes through the channel, which the server can
-            # shut the bot out of; the ids are the whole finding.
+            # Only an edit with no working press behind it goes through the channel, which
+            # the server can shut the bot out of; the ids are the whole finding.
             logfire.warn(
                 "Discord refused a Blackjack table edit",
                 step=step,
