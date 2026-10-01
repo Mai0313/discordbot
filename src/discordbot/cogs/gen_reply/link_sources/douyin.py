@@ -116,7 +116,7 @@ def _render_post_text(post: DouyinMetadata, url: str) -> str:
 
 
 async def _upload_media(
-    *, download: DouyinDownload, gemini_client: genai.Client
+    *, url: str, download: DouyinDownload, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the downloaded files concurrently, keeping the parts that succeeded."""
     results = await asyncio.gather(
@@ -135,7 +135,12 @@ async def _upload_media(
     parts: list[ResponseInputFileParam] = []
     for result in results:
         if isinstance(result, BaseException):
-            logfire.warn("Douyin media upload failed for one item", _exc_info=result)
+            logfire.warn(
+                "Douyin media upload failed for one item",
+                url=url,
+                error_type=type(result).__name__,
+                _exc_info=result,
+            )
             continue
         if result is not None:
             parts.append(result)
@@ -172,7 +177,7 @@ async def _fetch_and_upload(
                     max_images=MAX_DOUYIN_INGEST_IMAGES,
                     max_bytes=FILES_API_MAX_BYTES,
                 )
-            return await _upload_media(download=download, gemini_client=gemini_client)
+            return await _upload_media(url=url, download=download, gemini_client=gemini_client)
     except DouyinTooLargeError:
         logfire.warn(
             "Douyin clip exceeds the Files API ceiling; answering from the caption",

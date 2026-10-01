@@ -762,7 +762,7 @@ class DouyinDownloader(PlatformDownloader):
                     attempt=attempt + 1,
                     max_retries=self.max_retries,
                     error_type=type(e).__name__,
-                    _exc_info=True,
+                    _exc_info=e,
                 )
 
         # Every retry spent on a transfer that kept stalling, which is the ordinary Douyin
