@@ -342,9 +342,7 @@ class ReplyPipeline(BaseModel):
                     # sit between two of them. Bilibili has no expansion cog, so this is the only
                     # path that ever marks one.
                     for source_name in link_tasks:
-                        await self.surface.mark(
-                            emoji=LINK_SOURCE_EMOJIS[source_name], bot_user=self.toolkit.bot.user
-                        )
+                        await self.surface.mark(emoji=LINK_SOURCE_EMOJIS[source_name])
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
                     # in the status emoji and which media handler runs. Intent-gated link

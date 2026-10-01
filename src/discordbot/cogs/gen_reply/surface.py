@@ -29,7 +29,7 @@ Three notes on what it deliberately does not paper over:
 from typing import Any
 
 import logfire
-from nextcord import File, Embed, Message, DMChannel, ClientUser, Interaction, AllowedMentions
+from nextcord import File, Embed, Message, DMChannel, Interaction, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from nextcord.enums import InteractionContextType
@@ -285,7 +285,7 @@ class TurnSurface(BaseModel):
             channel=interaction_channel(interaction=self.interaction),
         )
 
-    async def mark(self, *, emoji: str, bot_user: ClientUser | None = None) -> None:
+    async def mark(self, *, emoji: str) -> None:
         """Puts a status or provenance reaction on the source message, where there is one.
 
         Refused rather than attempted on `/ask`: the synthesized message names nothing Discord
@@ -295,7 +295,7 @@ class TurnSurface(BaseModel):
         """
         if self.interaction is not None:
             return
-        await update_reaction(message=self.message, bot_user=bot_user, emoji=emoji)
+        await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
     async def hint(self, *, emoji: str) -> None:
         """Records that something best-effort was dropped, so it is never silent.

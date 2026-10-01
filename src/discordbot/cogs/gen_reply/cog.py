@@ -340,7 +340,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.debug(
                 "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
             )
-            await surface.mark(emoji="❓", bot_user=self.bot.user)
+            await surface.mark(emoji="❓")
             await surface.send(content="?")
             return
 
