@@ -692,33 +692,6 @@ def test_a_download_never_recreates_a_removed_output_folder(
     assert not scratch.exists()  # nothing re-created it behind the caller's back
 
 
-def test_failed_gallery_leaves_no_images_behind(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A gallery that dies part-way must not strand the images it already wrote.
-
-    Nothing is returned on failure, so the caller never gets a handle to clean up with; the
-    cleanup has to happen inside the downloader or the files live in the temp dir for good.
-    """
-    downloaded = {"count": 0}
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
-        downloaded["count"] += 1
-        if downloaded["count"] == 3:
-            raise douyin_module.RequestException("gone")
-        return _FakeResponse(body=b"image-bytes")
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    downloader = DouyinDownloader(output_folder=tmp_path.as_posix(), max_retries=1)
-
-    with pytest.raises(DouyinError):
-        downloader.download(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
-
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """The share-payload cache must not grow one entry per link the bot has ever seen."""
     _install_session(

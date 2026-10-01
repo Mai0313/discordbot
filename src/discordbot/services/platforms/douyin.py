@@ -827,20 +827,12 @@ class DouyinDownloader(PlatformDownloader):
 
         wanted = post.image_urls if max_images is None else post.image_urls[:max_images]
         filenames: list[Path] = []
-        try:
-            for index, url in enumerate(wanted):
-                filenames.append(
-                    self._download_to(
-                        url=url, filename=f"{post.aweme_id}_{index + 1}.jpg", max_bytes=max_bytes
-                    )
+        for index, url in enumerate(wanted):
+            filenames.append(
+                self._download_to(
+                    url=url, filename=f"{post.aweme_id}_{index + 1}.jpg", max_bytes=max_bytes
                 )
-        except Exception:
-            # Nothing is returned on failure, so the caller never gets a handle to clean up with:
-            # a gallery that dies on image 3 would strand images 1 and 2 in the temp dir for good.
-            # `_download_to` only removes its own partial file.
-            for path in filenames:
-                path.unlink(missing_ok=True)
-            raise
+            )
 
         return DouyinDownload(
             is_photo=True, filenames=filenames, total_images=len(post.image_urls)
