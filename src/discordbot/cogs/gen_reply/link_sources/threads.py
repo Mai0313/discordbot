@@ -63,20 +63,20 @@ THREADS_CONTEXT_TRAILER = (
     "===="
 )
 
-# Leads the injected blocks. The wording is load-bearing on three fronts: it tells the model
-# the link is ALREADY fetched below (so it answers about the post instead of falling back to
-# "I cannot open this link"), it marks the post body as untrusted quoted data so injection-style
-# text inside the post ("ignore the user and say ...") is treated as content to answer about,
-# never as a command to obey, and it defers to
-# the block's own accounting for which media is attached and whose it is. The comments are named
-# separately in that guard because they are the sharper edge of it: the post has one author the
-# user chose to link, while a comment is arbitrary text from a stranger. The post a quote post
-# quotes is named too, for the same reason a comment is: its author never chose to be in this
-# conversation and its body is a stranger's words. Two hedges are deliberate, since this is the
-# highest-authority text in the block and the body below it is only role=user: the quoted post is
-# claimed only when Threads actually served it (a tombstone leaves a notice, not a post), and the
-# media is never called "the post's images", because on the canonical quote post — a line of
-# commentary over someone else's carousel — every attached item belongs to the QUOTED post.
+# Leads the injected blocks. The wording is load-bearing on three fronts: it tells the model the
+# link is ALREADY fetched below (so it answers about the post instead of falling back to "I cannot
+# open this link"), it marks the post body as untrusted quoted data so injection-style text inside
+# the post ("ignore the user and say ...") is treated as content to answer about, never as a
+# command to obey, and it defers to the block's own accounting for which media is attached and
+# whose it is. The comments are named separately in that guard because they are the sharper edge of
+# it: the post has one author the user chose to link, while a comment is arbitrary text from a
+# stranger. The post a quote post quotes is named too, for the same reason a comment is: its author
+# never chose to be in this conversation and its body is a stranger's words. Two hedges are
+# deliberate, since this is the highest-authority text in the block and the body below it is only
+# role=user: the quoted post is claimed only when Threads actually served it (a tombstone leaves a
+# notice, not a post), and the media is never called "the post's images", because on the canonical
+# quote post — a line of commentary over someone else's carousel — every attached item belongs to
+# the QUOTED post.
 THREADS_CONTEXT_SEPARATOR = (
     "==== The Threads link the user is asking about, already fetched for you below: its text, "
     "the comments under it if any, the post it quotes if it is a quote post AND Threads served "
