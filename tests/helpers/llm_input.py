@@ -169,7 +169,7 @@ def _block_text(request: ResponseInputParam | str, kind: str) -> str | None:
     """Returns the text of the first block of `kind` (a `_BLOCK_HEADS` key), or None if absent."""
     role, head = _BLOCK_HEADS[kind]
     for item_role, text in iter_text_blocks(request=request):
-        if item_role == role and _head(text=text) == head:
+        if item_role == role and text.startswith(head):
             return text
     return None
 

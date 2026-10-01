@@ -813,11 +813,12 @@ def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
 
 
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
-    """Builds a ReplyGeneratorCogs over fake clients, with nothing read from the environment.
+    """Builds a ReplyGeneratorCogs over fake clients, its LLMConfig and media planner pinned.
 
     The config is every field's declared default, so a checkout's `.env` cannot decide a test,
     and the planner never hosts, so an oversize item cannot reach a live serve directory; a test
-    about either sets it on the cog.
+    about either sets it on the cog. Everything else, the usage recorder and the attachment
+    handler choice included, still reads the environment.
     """
     cog = ReplyGeneratorCogs(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
@@ -2619,8 +2620,12 @@ async def test_voice_music_video_image_attach_in_one_edit() -> None:
     )
 
     assert "聽好" in result
+    assert "<generate-music>" not in result
+    assert "lo-fi" not in result
     assert "<generate-video>" not in result
     assert "a wave" not in result
+    assert "<generate-image>" not in result
+    assert "a red balloon" not in result
     files = message.replies[0].files
     assert files is not None
     assert {item.filename for item in files} == {
