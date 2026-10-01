@@ -38,6 +38,6 @@ def gen_speech(text: str) -> None:
 
 
 if __name__ == "__main__":
-    # The generator reports a failed synthesis only as a log record, so print records here.
+    # The generator logs a failed synthesis's cause rather than raising it, so print records here.
     logfire.configure(send_to_logfire=False)
     gen_speech(text="為何 37 是質數?")
