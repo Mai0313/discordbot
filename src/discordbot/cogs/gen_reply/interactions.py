@@ -123,7 +123,7 @@ def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
     if part_type == "input_file":
         file_part = cast("ResponseInputFileParam", part)
         # `file_data` is the inlined half: a PDF rendered without the Files API arrives only
-        # there, and reading the other two alone dropped it with no record anywhere (#661).
+        # there, and reading the other two alone would drop it without a log line.
         reference = (
             file_part.get("file_url") or file_part.get("file_id") or file_part.get("file_data")
         )

@@ -23,8 +23,8 @@ MUSIC_EMOJI: Final[str] = "🎵"
 # Marks a reply grounded in a watched YouTube video.
 YOUTUBE_EMOJI: Final[str] = "<:youtube:1517546722535018596>"
 
-# Best-effort media the reply goes out without: a clip that ran out of time, and anything
-# dropped for another reason.
+# Best-effort media the reply goes out without: a spoken clip that ran out of time, and
+# anything else dropped (a timed-out song, video or image included).
 TIMEOUT_HINT_EMOJI: Final[str] = "⏱️"
 DROPPED_HINT_EMOJI: Final[str] = "⚠️"
 
