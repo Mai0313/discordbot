@@ -338,6 +338,8 @@ class FacebookDownloader(PlatformDownloader):
             for node in walk(node=payload):
                 if "post_id" not in node or "creation_time" not in node:
                     continue
+                # Empty when a `/share/p/` link landed on a `pfbid` permalink, which names no
+                # numeric id; the page's first story is then the post (2 of 8 links, 2026-10-01).
                 if post_id and str(node.get("post_id")) != post_id:
                     continue
                 if deep_get(
