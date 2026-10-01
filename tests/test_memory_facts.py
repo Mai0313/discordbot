@@ -65,7 +65,12 @@ _fact = partial(make_fact, owner=_OWNER)
 def test_fact_file_round_trips(memory_isolated_dir: Path) -> None:
     """A written fact parses back identical, including its code-stamped fields."""
     fact = _fact(keys=("preference.reply_length",))
-    parsed = parse_fact_file(text=render_fact_file(fact=fact), compartment=GLOBAL_COMPARTMENT)
+    parsed = parse_fact_file(
+        text=render_fact_file(fact=fact),
+        compartment=GLOBAL_COMPARTMENT,
+        scope="111",
+        filename="fact.md",
+    )
     assert parsed == fact
 
 
@@ -73,14 +78,25 @@ def test_fact_file_from_the_wrong_directory_is_refused() -> None:
     """A stored compartment that disagrees with the directory is corruption, not a hint."""
     fact = _fact(compartment=guild_compartment(guild_id=222))
     assert (
-        parse_fact_file(text=render_fact_file(fact=fact), compartment=GLOBAL_COMPARTMENT) is None
+        parse_fact_file(
+            text=render_fact_file(fact=fact),
+            compartment=GLOBAL_COMPARTMENT,
+            scope="111",
+            filename="fact.md",
+        )
+        is None
     )
 
 
 def test_fact_file_survives_a_multiline_body_and_colons() -> None:
     """The hand-rolled header stops at its fence; the body may contain anything."""
     fact = _fact(text="第一行: 有冒號\n第二行\n---\n第三行")
-    parsed = parse_fact_file(text=render_fact_file(fact=fact), compartment=GLOBAL_COMPARTMENT)
+    parsed = parse_fact_file(
+        text=render_fact_file(fact=fact),
+        compartment=GLOBAL_COMPARTMENT,
+        scope="111",
+        filename="fact.md",
+    )
     assert parsed is not None
     assert parsed.text == "第一行: 有冒號\n第二行\n---\n第三行"
 
@@ -88,7 +104,10 @@ def test_fact_file_survives_a_multiline_body_and_colons() -> None:
 @pytest.mark.parametrize("text", ["", "no fence here", "---\nid: x\nno closing fence"])
 def test_malformed_fact_files_parse_to_none(text: str) -> None:
     """An unreadable file is skipped rather than half-parsed into a fact."""
-    assert parse_fact_file(text=text, compartment=GLOBAL_COMPARTMENT) is None
+    assert (
+        parse_fact_file(text=text, compartment=GLOBAL_COMPARTMENT, scope="111", filename="fact.md")
+        is None
+    )
 
 
 def test_minted_ids_are_stable_per_compartment_and_summary() -> None:

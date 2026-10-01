@@ -137,21 +137,28 @@ def memory_semaphore() -> asyncio.Semaphore:
     return _memory_semaphore_holder.get()
 
 
-async def safe_db_write(coro: Awaitable[None]) -> None:
-    """Awaits a best-effort reply.db write, swallowing any failure.
+async def safe_db_write(coro: Awaitable[None], scope: str) -> None:
+    """Awaits a best-effort reply.db write for `scope`, swallowing any failure.
 
     Persistence is an augmentation layer: a reply.db failure must never break the
     in-memory fire-and-forget memory pipeline.
     """
     try:
         await coro
-    except Exception:
-        logfire.warn("memory_job persistence write failed", _exc_info=True)
+    except Exception as exc:
+        logfire.warn(
+            "memory_job persistence write failed",
+            scope=scope,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
 
 
-def _spawn_db(coro: Awaitable[None]) -> None:
+def _spawn_db(coro: Awaitable[None], scope: str) -> None:
     """Runs a detached best-effort DB write, tracked so it is not GC'd mid-flight."""
-    spawn_tracked(coro=safe_db_write(coro=coro), tasks=_db_tasks, name="memory-db-write")
+    spawn_tracked(
+        coro=safe_db_write(coro=coro, scope=scope), tasks=_db_tasks, name="memory-db-write"
+    )
 
 
 async def stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capture time
@@ -214,7 +221,8 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
                 identity=turn.identity,
                 token=turn.token,
                 captured_at=turn.captured_at,
-            )
+            ),
+            scope=turn.scope,
         )
         return
     task = asyncio.create_task(run(turn))
@@ -247,10 +255,14 @@ async def report_writes(report: MemoryWriteReport, summary: MemoryWriteSummary) 
     """
     try:
         await report(summary)
-    except Exception:
+    except Exception as exc:
         # Broad on purpose: the callback reaches Discord, and this runs in a background task
         # whose failure would otherwise be logged as the memory update having failed.
-        logfire.warn("Reporting a memory write back to the reply failed", _exc_info=True)
+        logfire.warn(
+            "Reporting a memory write back to the reply failed",
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
 
 
 def _merged_payload(newer: str, older: str) -> str:
@@ -347,7 +359,10 @@ def _release_pending_report(pending: MemoryTurn) -> None:
     """
     if pending.report is None:
         return
-    _spawn_db(coro=report_writes(report=pending.report, summary=MemoryWriteSummary()))
+    _spawn_db(
+        coro=report_writes(report=pending.report, summary=MemoryWriteSummary()),
+        scope=pending.scope,
+    )
 
 
 def _finish_memory_update(scope: str, task: asyncio.Task[None], run: TurnRunner) -> None:
@@ -383,7 +398,7 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None], run: TurnRunner)
     if cleared_since(scope=scope, started_at=pending.captured_at):
         # The durable clear tombstone owns the privacy guarantee. This remains a
         # best-effort cleanup for store-level clears that only stamped the process.
-        _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token))
+        _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token), scope=scope)
         _release_pending_report(pending=pending)
         return
     enqueue_memory_update(turn=pending, run=run)

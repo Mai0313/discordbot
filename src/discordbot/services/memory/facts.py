@@ -172,14 +172,15 @@ def render_fact_file(fact: MemoryFact) -> str:
     return "\n".join(lines) + "\n"
 
 
-def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
+def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> MemoryFact | None:
     """Parses one fact file, or returns None when it is unusable.
 
     `compartment` is the directory the file was found in and is authoritative: a stored
     `compartment` that disagrees means the tree was edited outside the store, and there is no
     safe way to guess which side is right. Returning None keeps the fact out of every reply
     rather than guessing the permissive answer. That mismatch is logged at error and a header
-    whose values do not validate at warn; a file with no readable header is skipped silently.
+    whose values do not validate at warn, both naming `scope` and `filename`; a file with no
+    readable header is skipped silently.
     """
     header, body = _split_front_matter(text=text)
     if header is None:
@@ -188,6 +189,8 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
     if stored_compartment != compartment:
         logfire.error(
             "Memory fact compartment disagrees with its directory; skipping",
+            scope=scope,
+            filename=filename,
             directory=compartment,
             stored=stored_compartment,
             fact_id=header.get("id", ""),
@@ -214,7 +217,9 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
         # same thing: the file is not a fact.
         logfire.warn(
             "Memory fact file is malformed; skipping",
+            scope=scope,
             compartment=compartment,
+            filename=filename,
             error_type=type(error).__name__,
         )
         return None

@@ -299,13 +299,15 @@ def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
             # repair path an operator reaches for included.
             logfire.warn(
                 "Memory fact file could not be read; skipping",
+                scope=scope,
                 compartment=compartment,
+                filename=path.name,
                 error_type=type(error).__name__,
             )
             continue
         if not text:
             continue
-        fact = parse_fact_file(text=text, compartment=compartment)
+        fact = parse_fact_file(text=text, compartment=compartment, scope=scope, filename=path.name)
         if fact is not None:
             facts.append(fact)
     return facts
