@@ -20,11 +20,8 @@ from nextcord.ext import commands
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.media_delivery import (
-    DISCORD_ATTACHMENT_LIMIT,
-    upload_limit_for,
-    build_media_delivery_planner,
-)
+from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
+from discordbot.utils.media_delivery import upload_limit_for, build_media_delivery_planner
 from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
 from discordbot.services.platforms.douyin import (
     DOUYIN_URL_RE,

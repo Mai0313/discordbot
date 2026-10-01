@@ -17,9 +17,9 @@ from pathlib import Path
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
+from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
-    DISCORD_ATTACHMENT_LIMIT,
     MediaItem,
     MediaPlan,
     MediaDeliveryPlanner,

@@ -34,6 +34,8 @@ from nextcord import File
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings
 
+from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
+
 if TYPE_CHECKING:
     from nextcord import Guild
 
@@ -41,8 +43,6 @@ if TYPE_CHECKING:
 # boost-tier table to consult, so it falls back to this base.
 DEFAULT_NON_NITRO_UPLOAD_LIMIT = 20 * 1024 * 1024
 
-# Discord caps one message at 10 attachments; the combined media edit is clamped to this.
-DISCORD_ATTACHMENT_LIMIT = 10
 # Discord measures the full multipart request body, not just the file bytes, so a combined
 # attach (or one riding with embeds) is held this far under the limit; without it a set whose
 # per-file sizes each pass can still 400 the final send.

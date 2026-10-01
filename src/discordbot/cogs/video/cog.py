@@ -12,9 +12,9 @@ from discordbot.utils.urls import extract_first_url
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
+from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.media_delivery import (
-    DISCORD_ATTACHMENT_LIMIT,
     MediaItem,
     upload_limit_for,
     build_media_delivery_planner,

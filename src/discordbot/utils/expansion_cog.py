@@ -40,6 +40,7 @@ from discordbot.utils.discord_embeds import (
     DISCORD_EMBED_TOTAL_LIMIT,
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     utf16_length,
+    embed_text_length,
     clip_to_utf16_limit,
 )
 from discordbot.utils.expansion_placeholder import (
@@ -147,6 +148,29 @@ class ConversationReader[ConversationT](Protocol):
         ...
 
 
+def with_gallery(card: Embed, images: list[str]) -> list[Embed]:
+    """Shows the first image on `card` and each further one on a bare embed after it.
+
+    The further embeds reuse the card's URL, which is what makes Discord merge them into one
+    gallery under the card rather than stacking separate cards.
+
+    Args:
+        card: The post's own embed.
+        images: The images to show, empty for none.
+
+    Returns:
+        The card followed by its gallery.
+    """
+    if images:
+        card.set_image(url=images[0])
+    embeds = [card]
+    for image_url in images[1:]:
+        extra = Embed(url=card.url)
+        extra.set_image(url=image_url)
+        embeds.append(extra)
+    return embeds
+
+
 def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform supplies
     *,
     post: CardPost,
@@ -159,10 +183,8 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
 ) -> list[Embed]:
     """Builds the linked post's own embed plus one bare embed per further image.
 
-    The further images reuse the post's URL, which is what makes Discord merge them into one
-    gallery under the post rather than stacking separate cards. A long body is cut rather than
-    split across a second embed: the whole card is one post, and a reader who wants the tail has
-    the link.
+    A long body is cut rather than split across a second embed: the whole card is one post, and
+    a reader who wants the tail has the link.
 
     Args:
         post: The linked post.
@@ -194,15 +216,8 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
     )
     if author:
         main.set_author(name=author, url=post.url, icon_url=post.author_icon_url or None)
-    if images:
-        main.set_image(url=images[0])
     main.set_footer(text=footer)
-    embeds = [main]
-    for image_url in images[1:]:
-        extra = Embed(url=post.url)
-        extra.set_image(url=image_url)
-        embeds.append(extra)
-    return embeds
+    return with_gallery(card=main, images=images)
 
 
 def context_card_budget(*, card: Embed) -> int:
@@ -218,12 +233,7 @@ def context_card_budget(*, card: Embed) -> int:
     Returns:
         The UTF-16 units left for every secondary card together.
     """
-    spent = sum(
-        utf16_length(value=text)
-        for text in (card.description, card.footer.text, card.author.name)
-        if isinstance(text, str)
-    )
-    return DISCORD_EMBED_TOTAL_LIMIT - spent - _CONTEXT_CARD_SLACK
+    return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
 
 
 def expansion_failure_emoji(*, error: Exception) -> str:
@@ -793,6 +803,29 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     def _video_link(self, *, post: PostT) -> str:
         """Where a video post's link points; only its first video gets one."""
         return post.video_urls[0]
+
+    @staticmethod
+    def _omitted_media_notes(post: CardPost, shown_images: int) -> list[str]:
+        """The footer notes for what the card leaves out of a post's media.
+
+        Images past the ones shown are counted, and so is every video but the first, since only
+        the first gets a link.
+
+        Args:
+            post: The linked post.
+            shown_images: How many of its images the card shows.
+
+        Returns:
+            One note per kind left out, empty when nothing was.
+        """
+        notes: list[str] = []
+        remaining_images = len(post.image_urls) - shown_images
+        if remaining_images > 0:
+            notes.append(f"🖼️ 另有 {remaining_images} 張")
+        remaining_videos = len(post.video_urls) - 1
+        if remaining_videos > 0:
+            notes.append(f"🎬 另有 {remaining_videos} 部影片")
+        return notes
 
     def _footer_text(self, *, post: PostT, shown_images: int) -> str:
         """The post card's counter line, given how many of its images the card shows.
