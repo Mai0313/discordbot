@@ -116,8 +116,7 @@ class BaseGameLobbyView(GameView):
                 channel_id=self.message.channel.id,
                 message_id=self.message.id,
             )
-        # Broad on purpose: a raise here would only reach nextcord's timeout task, and the
-        # cleanup below must still be scheduled.
+        # Broad on purpose: the cleanup below must still be scheduled.
         except Exception as exc:
             logfire.warn(
                 "Lobby timeout edit failed",
