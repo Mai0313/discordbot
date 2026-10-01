@@ -3970,34 +3970,39 @@ def _transparent_png() -> bytes:
     return buffered.getvalue()
 
 
-def _two_frames(image_format: str) -> bytes:
-    """Two distinct frames, since two identical default-palette frames collapse into one."""
-    frames = [Image.new(mode="RGB", size=(32, 32), color=color) for color in ("red", "blue")]
+def _animated_gif() -> bytes:
+    """A red square on a transparent first frame, then a solid blue second frame."""
+    palette = [0, 0, 0, 255, 0, 0, 0, 0, 255]
+    first = Image.new(mode="P", size=(32, 32), color=0)
+    first.putpalette(data=palette)
+    first.paste(im=1, box=(8, 8, 24, 24))
+    second = Image.new(mode="P", size=(32, 32), color=2)
+    second.putpalette(data=palette)
     buffered = BytesIO()
-    frames[0].save(fp=buffered, format=image_format, save_all=True, append_images=frames[1:])
+    first.save(fp=buffered, format="GIF", save_all=True, append_images=[second], transparency=0)
     return buffered.getvalue()
 
 
 @pytest.mark.parametrize(
-    ("payload", "mime_type"),
-    [
-        (_transparent_png(), "image/png"),
-        (_two_frames(image_format="GIF"), "image/gif"),
-        # A phone camera's multi-picture JPEG, which PIL reports as a format of its own.
-        (_two_frames(image_format="MPO"), "image/jpeg"),
-    ],
-    ids=["transparent-png", "animated-gif", "camera-mpo"],
+    ("payload", "center"),
+    [(_transparent_png(), (0, 0, 0, 255)), (_animated_gif(), (255, 0, 0, 255))],
+    ids=["transparent-png", "animated-gif"],
 )
-async def test_a_linked_image_reaches_the_model_as_an_attached_one_would(
-    monkeypatch: pytest.MonkeyPatch, payload: bytes, mime_type: str
+async def test_a_linked_image_reaches_the_model_as_one_still_keeping_its_alpha(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes, center: tuple[int, int, int, int]
 ) -> None:
-    """A URL image keeps its alpha, its frames and its bytes, labelled by what it is."""
+    """A linked image keeps its transparency, and an animated one arrives as its first frame."""
     monkeypatch.setattr(
         "discordbot.utils.images.requests.get",
         lambda url, timeout: SimpleNamespace(content=payload),
     )
     loaded = await load_image_bytes(source="https://cdn.test/linked")
-    assert loaded == LoadedMedia(data=payload, mime_type=mime_type)
+    still = Image.open(fp=BytesIO(initial_bytes=loaded.data))
+    assert loaded.mime_type == "image/png"
+    assert getattr(still, "n_frames", 1) == 1
+    rgba = still.convert("RGBA")
+    assert rgba.getchannel(channel="A").getpixel(xy=(0, 0)) == 0
+    assert rgba.getpixel(xy=(rgba.width // 2, rgba.height // 2)) == center
 
 
 async def test_a_linked_page_that_is_not_an_image_still_raises(

@@ -29,8 +29,7 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
     Args:
         payload: The original encoded image bytes.
         content_type: The image's MIME type, used to pick passthrough cases.
-        filename: The source's upload filename, or a URL source's address without its query,
-            logged when the payload cannot be decoded.
+        filename: The source's upload filename, logged when the payload cannot be decoded.
 
     Returns:
         The (possibly re-encoded) image bytes and their MIME type.
@@ -69,31 +68,35 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
 
 
 def get_image_data(image_file: str) -> LoadedMedia:
-    """Fetches an image URL and downscales it as `shrink_image_bytes` does an attachment.
+    """Fetches an image URL as one still, downscaled to the provider's effective resolution.
 
-    The MIME type is read off the bytes rather than the server's header, since an image that
-    `shrink_image_bytes` passes through leaves with whatever label it came in with.
+    Unlike an attachment, an animated image keeps only its first frame: linked GIFs are mostly
+    GIF-picker clips of several megabytes, and a reply's history can carry several of them.
+    A still with transparency stays PNG so its alpha survives; anything else becomes JPEG.
 
     Args:
         image_file: `http(s)://...` URL.
 
     Returns:
-        The (possibly re-encoded) image bytes and their MIME type.
+        The re-encoded still and its MIME type.
 
     Raises:
         requests.RequestException: The URL could not be fetched, or is not `http(s)://`.
         PIL.UnidentifiedImageError: What came back is not a decodable image, which is
             what a 404 HTML body from a dead CDN arrives as.
-        KeyError: The image's format has no MIME type to label it with.
     """
-    payload = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS).content
-    image_format = Image.open(fp=BytesIO(initial_bytes=payload)).format
-    # PIL names a camera's multi-picture JPEG MPO, a MIME type no provider takes; it is a JPEG.
-    content_type = "image/jpeg" if image_format == "MPO" else Image.MIME[image_format or ""]
-    # The query can carry a signed CDN token, which must not reach the fallback's log.
-    return shrink_image_bytes(
-        payload=payload, content_type=content_type, filename=image_file.split("?", 1)[0]
+    response = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
+    # An image opens on its first frame, and saving without `save_all` writes only that frame.
+    image = Image.open(fp=BytesIO(initial_bytes=response.content))
+    image.thumbnail(
+        size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
     )
+    buffered = BytesIO()
+    if image.has_transparency_data:
+        image.save(fp=buffered, format="PNG")
+        return LoadedMedia(data=buffered.getvalue(), mime_type="image/png")
+    image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
+    return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
 
 
 def to_data_uri(data: bytes, mime_type: str | None = None) -> str:
