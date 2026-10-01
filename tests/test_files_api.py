@@ -28,7 +28,7 @@ async def _uploaded_uri(
 ) -> str | None:
     """Uploads through the helper and returns the uri its part references, or None."""
     part = await upload_as_input_file(
-        client=_client(files),
+        client=_client(files=files),
         source=source,
         mime_type="video/mp4",
         filename=filename,

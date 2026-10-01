@@ -38,11 +38,10 @@ from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 # fetching bytes Google would reject. It is the provider's limit, not a policy of ours.
 FILES_API_MAX_BYTES = 2 * 1024**3
 
-# Caps concurrent `upload_as_input_file` transfers (a linked post's media, a generated clip)
-# across all in-flight pipelines. Deliberately NOT the attachment renderers' shared
-# `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can hold its slot for minutes, which
-# would starve the ordinary per-message attachment renders that share that pool. Small on
-# purpose — these uploads are large and few.
+# Caps concurrent `upload_as_input_file` transfers across all in-flight pipelines. Deliberately
+# NOT the attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can
+# hold its slot for minutes, which would starve the ordinary per-message attachment renders that
+# share that pool. Small on purpose — these uploads are large and few.
 INPUT_FILE_UPLOAD_CONCURRENCY = 2
 
 input_file_upload_semaphore = LoopLocalSemaphore(
