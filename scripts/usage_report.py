@@ -42,11 +42,6 @@ if TYPE_CHECKING:
 
 console = Console()
 
-# Rows the per-guild and per-user tables show before collapsing the rest into one line.
-# Both are long-tailed — a hundred users, thirty guilds, most of them one visit — and the
-# tail is reported as a count so a truncated table never reads as the whole population.
-_TOP_ROWS = 10
-
 
 def _month_files(directory: Path, month: str | None) -> list[Path]:
     """Returns the month files to read, oldest first.
@@ -215,7 +210,7 @@ def _top_table(
     key: Callable[[UsageRecord], str],
     display: dict[str, str] | None = None,
 ) -> Table:
-    """Returns the `_TOP_ROWS` busiest values of `key`, with everything else as one row.
+    """Returns the `top_rows` busiest values of `key`, with everything else as one row.
 
     `display` relabels a key for the table only. Grouping and labelling are separate on
     purpose: a username drifts and an id does not, so the id is what counts the rows up
@@ -237,7 +232,11 @@ def _top_table(
     table.add_column("share", justify="right")
     table.add_column("", style="cyan")
     table.add_column("most used")
-    top = counts.most_common(_TOP_ROWS)
+    # The per-guild and per-user tables are long-tailed — a hundred users, thirty guilds, most of
+    # them one visit — and the tail is reported as a count so a truncated table never reads as the
+    # whole population.
+    top_rows = 10
+    top = counts.most_common(top_rows)
     peak = max((count for _, count in top), default=0)
     for name, count in top:
         table.add_row(
