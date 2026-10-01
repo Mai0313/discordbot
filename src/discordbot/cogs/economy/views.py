@@ -9,7 +9,11 @@ from nextcord.ui import View, Button
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS, LoanProposalAcceptResult
+from discordbot.typings.economy import (
+    LOAN_PROPOSAL_TIMEOUT_SECONDS,
+    LoanProposalAcceptResult,
+    LoanProposalExpiredError,
+)
 from discordbot.cogs.economy.embeds import (
     REPAY_COLOR,
     CENTRAL_BANK_COLOR,
@@ -93,6 +97,14 @@ class LoanDecisionViewBase(View):
         """Builds the panel an approved request is edited into."""
         raise NotImplementedError
 
+    def _timeout_embed(self) -> Embed:
+        """Builds the panel an expired request is edited into."""
+        return build_simple_embed(
+            title=self.TIMEOUT_TITLE,
+            description="### 申請已逾時，自動拒絕",
+            color=self.PANEL_COLOR,
+        )
+
     def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
         """Schedules the public request message for cleanup after a terminal state."""
         message = self.message or getattr(interaction, "message", None)
@@ -109,11 +121,7 @@ class LoanDecisionViewBase(View):
         if proposal is None or self.message is None:
             return
         self.stop()
-        embed = build_simple_embed(
-            title=self.TIMEOUT_TITLE,
-            description="### 申請已逾時，自動拒絕",
-            color=self.PANEL_COLOR,
-        )
+        embed = self._timeout_embed()
         try:
             await self.message.edit(
                 embed=embed,
@@ -160,9 +168,15 @@ class LoanDecisionViewBase(View):
             await send_private_followup(interaction=interaction, embed=embed)
             return
 
-        proposal = await cancel_loan_proposal(
-            proposal_id=self.proposal_id, actor_id=interaction.user.id
-        )
+        try:
+            proposal = await cancel_loan_proposal(
+                proposal_id=self.proposal_id, actor_id=interaction.user.id
+            )
+        except LoanProposalExpiredError:
+            self.stop()
+            await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
+            self._schedule_cleanup(interaction=interaction)
+            return
         if proposal is None:
             embed = build_error_embed(
                 title="取消失敗", description="### 申請不存在、已處理，或你不是發起者"
@@ -197,16 +211,22 @@ class LoanDecisionViewBase(View):
             return
 
         actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
-        result = await accept_loan_proposal(
-            proposal_id=self.proposal_id,
-            actor_id=interaction.user.id,
-            actor_name=interaction.user.name,
-            actor_avatar_url=actor_avatar_url,
-            approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
-            guild_id=guild_id,
-            central_bank_exclude_user_ids=central_bank_exclude_user_ids,
-            allow_central_bank_self_approval=allow_central_bank_self_approval,
-        )
+        try:
+            result = await accept_loan_proposal(
+                proposal_id=self.proposal_id,
+                actor_id=interaction.user.id,
+                actor_name=interaction.user.name,
+                actor_avatar_url=actor_avatar_url,
+                approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
+                guild_id=guild_id,
+                central_bank_exclude_user_ids=central_bank_exclude_user_ids,
+                allow_central_bank_self_approval=allow_central_bank_self_approval,
+            )
+        except LoanProposalExpiredError:
+            self.stop()
+            await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
+            self._schedule_cleanup(interaction=interaction)
+            return
         if result is None:
             embed = build_error_embed(title="批准失敗", description=self.APPROVE_FAILED_NOTICE)
             await send_private_followup(interaction=interaction, embed=embed)
@@ -229,11 +249,17 @@ class LoanDecisionViewBase(View):
         if not await self._may_decide(interaction=interaction):
             return
 
-        proposal = await reject_loan_proposal(
-            proposal_id=self.proposal_id,
-            actor_id=interaction.user.id,
-            approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
-        )
+        try:
+            proposal = await reject_loan_proposal(
+                proposal_id=self.proposal_id,
+                actor_id=interaction.user.id,
+                approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
+            )
+        except LoanProposalExpiredError:
+            self.stop()
+            await edit_response_embed(interaction=interaction, embed=self._timeout_embed())
+            self._schedule_cleanup(interaction=interaction)
+            return
         if proposal is None:
             embed = build_error_embed(title="拒絕失敗", description=self.REJECT_FAILED_NOTICE)
             await send_private_followup(interaction=interaction, embed=embed)
