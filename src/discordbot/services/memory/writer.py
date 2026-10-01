@@ -530,7 +530,8 @@ def _is_matchable_name(name: str) -> bool:
 def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
     """Whether the text names another participant in plain prose.
 
-    Latin names must land on a word boundary so `amy` does not fire on `dynamic`; a CJK
+    Latin names must land on an ASCII word boundary, so `amy` does not fire on `amylase` but
+    does on `跟Amy吵架`, where Chinese puts no space around a name; a CJK
     name has no boundaries to anchor to and is matched as a substring, which is the
     deliberate asymmetry — a false positive keeps a harmless fact inside one guild,
     while a false negative publishes a private one everywhere.
@@ -539,7 +540,7 @@ def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
     for name in roster:
         candidate = name.casefold()
         if _LATIN_NAME_RE.match(name):
-            if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", folded):
+            if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", folded, flags=re.ASCII):
                 return True
         elif candidate in folded:
             return True

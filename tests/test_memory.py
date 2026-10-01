@@ -4194,6 +4194,20 @@ async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
     assert [observation.sharing for observation in draft.observations] == ["global"]
 
 
+async def test_a_latin_roster_name_typed_against_chinese_still_locks() -> None:
+    """Chinese puts no space around a Latin name, so a CJK neighbour has to count as a boundary."""
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(summary="使用者昨天跟Amy吵架了", normalized_key="relationship.amy"),
+        ),
+    )
+    draft = await _evaluate(writer=writer, transcript=_ROSTER_TRANSCRIPT)
+    assert draft is not None
+    assert [observation.sharing for observation in draft.observations] == ["source_only"]
+
+
 def test_filter_duplicate_observations_is_source_aware() -> None:
     existing = (
         "### stable_preference\n"
