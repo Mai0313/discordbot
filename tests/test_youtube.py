@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from collections.abc import AsyncIterator
 
 import pytest
 from google.genai.errors import APIError
@@ -12,6 +11,7 @@ from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.interactions import to_interactions_input, adapt_interactions_stream
 
 from tests.helpers.casting import step_dicts, as_interaction_event_stream
+from tests.helpers.gen_reply import event_stream, interactions_turn_events
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_param import ResponseInputParam
@@ -219,44 +219,6 @@ def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
     assert steps[0]["content"] == [{"type": "video", "uri": "https://youtu.be/abcdefghijk"}]
 
 
-def _interaction_events() -> list[SimpleNamespace]:
-    """A minimal Interactions stream: created, a thought, two text deltas, completed+usage."""
-    return [
-        SimpleNamespace(
-            event_type="interaction.created",
-            interaction=SimpleNamespace(model="gemini-3.1-pro-preview"),
-        ),
-        SimpleNamespace(
-            event_type="step.delta",
-            metadata=None,
-            delta=SimpleNamespace(type="thought_summary", content=SimpleNamespace(text="hmm")),
-        ),
-        SimpleNamespace(
-            event_type="step.delta",
-            metadata=None,
-            delta=SimpleNamespace(type="text", text="Hello"),
-        ),
-        SimpleNamespace(
-            event_type="step.delta",
-            metadata=None,
-            delta=SimpleNamespace(type="text", text=" world"),
-        ),
-        SimpleNamespace(
-            event_type="interaction.completed",
-            interaction=SimpleNamespace(
-                model="gemini-3.1-pro-preview",
-                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
-            ),
-        ),
-    ]
-
-
-async def _aiter(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace]:
-    """Yields fake Interactions events in order."""
-    for event in events:
-        yield event
-
-
 def _ns(event: object) -> SimpleNamespace:
     """Narrows an adapted event to the namespace shape the adapter fabricates."""
     assert isinstance(event, SimpleNamespace)
@@ -266,7 +228,7 @@ def _ns(event: object) -> SimpleNamespace:
 async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     """Interactions events become Responses-shaped events the streamer consumes."""
     stream = adapt_interactions_stream(
-        stream=as_interaction_event_stream(fake=_aiter(events=_interaction_events()))
+        stream=as_interaction_event_stream(fake=event_stream(events=interactions_turn_events()))
     )
     out = [event async for event in stream]
 
@@ -296,7 +258,7 @@ async def test_adapt_interactions_stream_falls_back_to_step_delta_usage() -> Non
     google-genai 2.22 moved `total_usage` onto `step.delta`, and `interaction.usage` is optional
     on a streaming payload, so without this the footer and the turn's token fields read zero.
     """
-    events = _interaction_events()
+    events = interactions_turn_events()
     events[2].metadata = SimpleNamespace(
         total_usage=SimpleNamespace(total_input_tokens=7, total_output_tokens=9)
     )
@@ -305,7 +267,7 @@ async def test_adapt_interactions_stream_falls_back_to_step_delta_usage() -> Non
     out = [
         event
         async for event in adapt_interactions_stream(
-            stream=as_interaction_event_stream(fake=_aiter(events=events))
+            stream=as_interaction_event_stream(fake=event_stream(events=events))
         )
     ]
 
@@ -318,7 +280,7 @@ async def _raise_from_error_event(error: object) -> APIError:
     events = [SimpleNamespace(event_type="error", error=error)]
     with pytest.raises(APIError) as raised:
         async for _ in adapt_interactions_stream(
-            stream=as_interaction_event_stream(fake=_aiter(events=events))
+            stream=as_interaction_event_stream(fake=event_stream(events=events))
         ):
             pass
     return raised.value

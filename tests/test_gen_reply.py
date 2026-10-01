@@ -9,6 +9,7 @@ import base64
 from typing import TYPE_CHECKING, Any, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
+import itertools
 from collections import Counter
 from unittest.mock import MagicMock
 
@@ -117,6 +118,8 @@ from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     HISTORY_MESSAGE_LIMIT,
     MAX_HISTORY_MEDIA_PARTS,
+    MAX_VIDEO_REFERENCE_IMAGES,
+    MEMORY_CONTEXT_TARGET_USERS,
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
 from discordbot.cogs.gen_reply.streaming import (
@@ -172,6 +175,12 @@ from tests.helpers.casting import (
     make_invalid_form_body,
     make_media_hosting_config,
 )
+from tests.helpers.gen_reply import (
+    FakeGeminiFiles,
+    FakeGeminiClient,
+    event_stream,
+    interactions_turn_events,
+)
 from tests.helpers.llm_input import (
     LINK_SOURCE_BLOCKS,
     block_index,
@@ -196,6 +205,8 @@ pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
 
 TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
+# Every `FakeMessage` takes the next id, so two messages in one test are never the same message.
+_FAKE_MESSAGE_IDS = itertools.count(start=1000)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -375,7 +386,7 @@ class FakeMessage:
         self.guild: FakeGuild | None = FakeGuild()
         self.channel = FakeChannel(history=self._history, view_channel=channel_public)
         self.mentions: list[FakeAuthor] = []
-        self.id = 987
+        self.id = next(_FAKE_MESSAGE_IDS)
         self.created_at = FAKE_MESSAGE_CREATED_AT
         self.edited_at: datetime | None = None
         self.system_content = ""
@@ -579,7 +590,8 @@ class FakeImages:
         del model, n, response_format, quality, size, extra_headers
         self.generate_calls += 1
         self.generate_prompts.append(prompt)
-        return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
+        png = base64.b64encode(s=_png_bytes()).decode(encoding="utf-8")
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=png)])
 
     async def edit(  # noqa: PLR0913 -- mirrors Images API edit signature
         self,
@@ -596,7 +608,8 @@ class FakeImages:
         del image, model, n, response_format, quality, size, extra_headers
         self.edit_calls += 1
         self.edit_prompts.append(prompt)
-        return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
+        png = base64.b64encode(s=_png_bytes()).decode(encoding="utf-8")
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=png)])
 
 
 class FakeGeminiVideoClient:
@@ -652,61 +665,6 @@ class FakeGeminiVideoClient:
         return SimpleNamespace(
             name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
         )
-
-
-class FakeGeminiFiles:
-    """Fake Gemini Files API resource that records uploads and returns ACTIVE files.
-
-    `processing_rounds` makes `upload` return a PROCESSING file that flips to ACTIVE
-    after that many `get` polls, so the activation poll loop is exercised. A negative
-    `final_state` (e.g. FAILED) lets a test drive the failed-processing branch.
-    """
-
-    def __init__(
-        self,
-        processing_rounds: int = 0,
-        final_state: FileState = FileState.ACTIVE,
-        expiration_time: datetime = datetime(2099, 1, 1, tzinfo=UTC),
-    ) -> None:
-        """Initializes upload records and the processing-to-active schedule."""
-        self.upload_calls: list[tuple[str, str]] = []
-        self.processing_rounds = processing_rounds
-        self.final_state = final_state
-        self.expiration_time = expiration_time
-        self._remaining = 0
-
-    def _file(self, name: str, state: FileState) -> SimpleNamespace:
-        """Builds a fake uploaded-file object with the URI the answer references."""
-        return SimpleNamespace(
-            name=name,
-            uri=f"https://files.test/{name}",
-            state=state,
-            error=None,
-            expiration_time=self.expiration_time,
-        )
-
-    async def upload(self, file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
-        """Records an upload and returns a file keyed on its display name."""
-        del file
-        display_name = config["display_name"]
-        self.upload_calls.append((display_name, config["mime_type"]))
-        self._remaining = self.processing_rounds
-        state = FileState.PROCESSING if self.processing_rounds else self.final_state
-        return self._file(name=display_name, state=state)
-
-    async def get(self, name: str) -> SimpleNamespace:
-        """Returns the polled file, flipping to the final state once rounds elapse."""
-        self._remaining -= 1
-        state = FileState.PROCESSING if self._remaining > 0 else self.final_state
-        return self._file(name=name, state=state)
-
-
-class FakeGeminiClient:
-    """Fake Gemini client exposing the async Files API used for attachment uploads."""
-
-    def __init__(self, files: FakeGeminiFiles | None = None) -> None:
-        """Initializes the async-namespace file resource."""
-        self.aio = SimpleNamespace(files=files or FakeGeminiFiles())
 
 
 class FakeOpenAIFiles:
@@ -826,12 +784,12 @@ def _recorded_content_parts(
     return parts
 
 
-def _png_b64() -> str:
-    """Returns a base64-encoded one-pixel PNG."""
+def _png_bytes() -> bytes:
+    """Returns a one-pixel PNG."""
     image = Image.new(mode="RGB", size=(1, 1), color=(255, 0, 0))
     buffer = BytesIO()
     image.save(fp=buffer, format="PNG")
-    return base64.b64encode(s=buffer.getvalue()).decode(encoding="utf-8")
+    return buffer.getvalue()
 
 
 def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
@@ -1039,8 +997,18 @@ def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
 
 
 def _config_stub(**flags: object) -> LLMConfig:
-    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig."""
-    return cast("LLMConfig", SimpleNamespace(**flags))
+    """Views a namespace carrying just the flags a test reads as the cog's LLMConfig.
+
+    Every inline marker is off unless `flags` turns it on, so nothing is appended to the answer
+    instructions a test did not ask for.
+    """
+    markers_off = {
+        "inline_voice_enabled": False,
+        "inline_image_enabled": False,
+        "music_available": False,
+        "video_available": False,
+    }
+    return cast("LLMConfig", SimpleNamespace(**(markers_off | flags)))
 
 
 def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test varies
@@ -1077,6 +1045,17 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
             last_confirmed=now,
             keys=(),
         ),
+    )
+
+
+def _seed_alias(subject_id: int, text: str) -> None:
+    """Seeds one `## 成員稱呼` row of guild 1's server memory, naming `subject_id`."""
+    _seed_fact(
+        scope=server_scope(server_id=1),
+        text=text,
+        section="member_alias",
+        durability="permanent",
+        subject_id=subject_id,
     )
 
 
@@ -1310,12 +1289,7 @@ def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[Response
     Typed as the SDK stream union: production discriminates on the `.type` string, so
     fabricated SimpleNamespace events stand in for the real stream events.
     """
-
-    async def _iter() -> AsyncIterator[SimpleNamespace]:
-        for event in events:
-            yield event
-
-    return cast("AsyncIterator[ResponseStreamEvent]", _iter())
+    return cast("AsyncIterator[ResponseStreamEvent]", event_stream(events=events))
 
 
 def _text_event(delta: str) -> SimpleNamespace:
@@ -1340,20 +1314,14 @@ def _default_turn_events() -> list[SimpleNamespace]:
     return [_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=1)]
 
 
-async def _ready_reply_context() -> ReplyContext:
-    """An empty reply context for directly exercising the IMAGE and VIDEO handlers."""
-    return ReplyContext()
+def _ready_context_task() -> asyncio.Task[ReplyContext]:
+    """An empty reply context already built, as the IMAGE and VIDEO handlers are handed one."""
 
+    async def ready() -> ReplyContext:
+        """Hands over the empty context at once."""
+        return ReplyContext()
 
-async def test_handle_streaming_allows_missing_output_token_details() -> None:
-    """Regression: LiteLLM may return usage with output_tokens_details=null."""
-    message = FakeMessage()
-
-    result = await _streamer(message=message).stream(responses=_stream_events())
-
-    expected = f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
-    assert result == expected
-    assert message.replies[0].content == result
+    return asyncio.create_task(coro=ready())
 
 
 def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
@@ -1568,7 +1536,7 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
 
     await _streamer(
         message=message, reply=reply, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
+    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     assert synthesizer.calls == []
     assert message.added_reactions == []
@@ -1614,10 +1582,9 @@ async def test_set_memory_note_splices_before_the_usage_footer() -> None:
     message = FakeMessage()
     streamer = _streamer(message=message)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="好喔"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[_text_event(delta="好喔"), _completed_event(input_tokens=3, output_tokens=4)]
+        )
     )
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
@@ -1639,10 +1606,12 @@ async def test_set_memory_note_declines_when_the_reply_is_already_full() -> None
     message = FakeMessage()
     streamer = _streamer(message=message)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 5)),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 5)),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
     before = message.replies[0].content
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
@@ -1659,10 +1628,12 @@ async def test_the_outcome_note_replaces_the_pending_one() -> None:
     message = FakeMessage()
     streamer = _streamer(message=message)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
 
@@ -1682,10 +1653,12 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
     message = FakeMessage()
     streamer = _streamer(message=message)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
     await streamer._finalize_media_edit(
         reply=as_message(fake=message.replies[0]),
@@ -1710,10 +1683,12 @@ async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     message = FakeMessage()
     streamer = _streamer(message=message)
     full_reply = await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
 
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
@@ -1743,10 +1718,9 @@ async def test_the_pending_note_is_written_only_when_something_can_take_it_back(
     message = FakeMessage()
     streamer = _streamer(message=message, carries_turn_notices=carries_turn_notices)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta=delta),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[_text_event(delta=delta), _completed_event(input_tokens=3, output_tokens=4)]
+        )
     )
 
     assert (MEMORY_PENDING_NOTE in (message.replies[0].content or "")) is expected
@@ -1762,11 +1736,13 @@ async def test_an_outcome_too_long_to_splice_withdraws_the_pending_note() -> Non
     message = FakeMessage()
     streamer = _streamer(message=message)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 90)),
-            _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 90)),
+                _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
 
@@ -1787,11 +1763,13 @@ async def test_no_pending_note_on_a_reply_that_chunks() -> None:
     message = FakeMessage()
     streamer = _streamer(message=message)
     await streamer.stream(
-        responses=_stream_events_from([
-            _text_event(delta="x" * DISCORD_MESSAGE_LIMIT),
-            _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="x" * DISCORD_MESSAGE_LIMIT),
+                _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
 
     # Each overflow chunk is a reply to the previous chunk, so the whole chain has to be walked:
@@ -1817,7 +1795,7 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag() -> None:
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
+    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
     # The wrapped content stays visible alongside the rest of the reply.
@@ -1851,7 +1829,7 @@ async def test_voice_disabled_still_strips_marker() -> None:
     message = FakeMessage()
 
     result = await _streamer(message=message).stream(
-        responses=_stream_events_from(_voice_marker_events())
+        responses=_stream_events_from(events=_voice_marker_events())
     )
 
     _assert_no_voice_tags(result)
@@ -1866,7 +1844,7 @@ async def test_voice_synthesis_failure_leaves_text_reply() -> None:
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
+    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
@@ -1881,7 +1859,7 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
+    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
@@ -1894,17 +1872,12 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 20 MiB DM.
     message.guild = FakeGuild(filesize_limit=4)
     synthesizer = _FakeVoiceGenerator()
-    service = MediaHostingService(
-        config=make_media_hosting_config(
-            enabled=True, base_url="https://media.test", serve_dir=str(tmp_path)
-        )
-    )
 
     result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", synthesizer),
-        media_delivery=MediaDeliveryPlanner(media_hosting=service),
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
+        media_delivery=MediaDeliveryPlanner(media_hosting=_hosting_service(serve_dir=tmp_path)),
+    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
     # The clip was hosted, not attached; its URL (a .wav) rides the reply content instead.
@@ -1922,21 +1895,6 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     # The media edit that appended the URL must carry AllowedMentions.none() so the already-pinged
     # author is never re-pinged; a regression dropping the kwarg would record None here.
     assert message.replies[0].allowed_mentions_seen[-1] is not None
-
-
-async def test_voice_too_big_without_hosting_drops_with_hint() -> None:
-    """With no media host, an oversized voice clip degrades to today's drop + ⚠️ hint."""
-    message = FakeMessage()
-    message.guild = FakeGuild(filesize_limit=4)
-    synthesizer = _FakeVoiceGenerator()
-
-    result = await _streamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
-
-    _assert_no_voice_tags(result)
-    assert message.replies[0].file is None
-    assert "⚠️" in message.added_reactions
 
 
 def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
@@ -1995,7 +1953,7 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
     reply = FakeReply()
     if refused:
         reply.edit_error = RuntimeError("file uploads are limited here")
-    streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
     logged: list[str] = []
 
     async def voice_clip() -> MediaItem:
@@ -2075,62 +2033,38 @@ def test_extract_inline_markers_unclosed_image_is_pulled() -> None:
     assert markers.cleaned_text == "來囉"
 
 
-def test_extract_inline_markers_music_block_removed() -> None:
-    """A <generate-music> block (tags AND content) is pulled from the visible reply."""
-    markers = extract_inline_markers(
-        text="這首給你\n<generate-music>upbeat anime J-pop, female vocals</generate-music>"
-    )
-    assert markers.music_prompt == "upbeat anime J-pop, female vocals"
-    assert "<generate-music>" not in markers.cleaned_text
-    assert "anime" not in markers.cleaned_text
-    assert markers.cleaned_text == "這首給你"
+_CLIP_MARKERS = pytest.mark.parametrize(
+    ("tag", "field"), [("generate-music", "music_prompt"), ("generate-video", "video_prompt")]
+)
 
 
-def test_extract_inline_markers_only_first_music_block_kept() -> None:
-    """Only the first non-empty <generate-music> block is kept (a single clip per reply)."""
-    markers = extract_inline_markers(
-        text="<generate-music>first track</generate-music>中間<generate-music>second track</generate-music>"
-    )
-    assert markers.music_prompt == "first track"
-    assert "<generate-music>" not in markers.cleaned_text
-    assert "second track" not in markers.cleaned_text
-
-
-def test_extract_inline_markers_unclosed_music_is_pulled() -> None:
-    """An unclosed trailing <generate-music> (model forgot to close) never leaks its description."""
-    markers = extract_inline_markers(text="等我一下\n<generate-music>a calm lo-fi beat")
-    assert markers.music_prompt == "a calm lo-fi beat"
-    assert "<generate-music>" not in markers.cleaned_text
-    assert "lo-fi" not in markers.cleaned_text
-    assert markers.cleaned_text == "等我一下"
-
-
-def test_extract_inline_markers_video_block_removed() -> None:
-    """A <generate-video> block (tags AND content) is pulled from the visible reply."""
-    markers = extract_inline_markers(
-        text="動起來\n<generate-video>a wave crashing on rocks</generate-video>"
-    )
-    assert markers.video_prompt == "a wave crashing on rocks"
-    assert "<generate-video>" not in markers.cleaned_text
+@_CLIP_MARKERS
+def test_extract_inline_markers_clip_block_removed(tag: str, field: str) -> None:
+    """A `<generate-music>` / `<generate-video>` block (tags AND content) is pulled from the reply."""
+    markers = extract_inline_markers(text=f"動起來\n<{tag}>a wave crashing on rocks</{tag}>")
+    assert getattr(markers, field) == "a wave crashing on rocks"
+    assert f"<{tag}>" not in markers.cleaned_text
     assert "wave" not in markers.cleaned_text
     assert markers.cleaned_text == "動起來"
 
 
-def test_extract_inline_markers_only_first_video_block_kept() -> None:
-    """Only the first non-empty <generate-video> block is kept (a single clip per reply)."""
+@_CLIP_MARKERS
+def test_extract_inline_markers_only_first_clip_block_kept(tag: str, field: str) -> None:
+    """Only the first non-empty clip block is kept (a single clip per reply)."""
     markers = extract_inline_markers(
-        text="<generate-video>first scene</generate-video>中間<generate-video>second scene</generate-video>"
+        text=f"<{tag}>first scene</{tag}>中間<{tag}>second scene</{tag}>"
     )
-    assert markers.video_prompt == "first scene"
-    assert "<generate-video>" not in markers.cleaned_text
+    assert getattr(markers, field) == "first scene"
+    assert f"<{tag}>" not in markers.cleaned_text
     assert "second scene" not in markers.cleaned_text
 
 
-def test_extract_inline_markers_unclosed_video_is_pulled() -> None:
-    """An unclosed trailing <generate-video> (model forgot to close) never leaks its description."""
-    markers = extract_inline_markers(text="等我一下\n<generate-video>a slow zoom over a city")
-    assert markers.video_prompt == "a slow zoom over a city"
-    assert "<generate-video>" not in markers.cleaned_text
+@_CLIP_MARKERS
+def test_extract_inline_markers_unclosed_clip_is_pulled(tag: str, field: str) -> None:
+    """An unclosed trailing clip tag (model forgot to close) never leaks its description."""
+    markers = extract_inline_markers(text=f"等我一下\n<{tag}>a slow zoom over a city")
+    assert getattr(markers, field) == "a slow zoom over a city"
+    assert f"<{tag}>" not in markers.cleaned_text
     assert "zoom" not in markers.cleaned_text
     assert markers.cleaned_text == "等我一下"
 
@@ -2257,7 +2191,7 @@ async def test_voice_text_strips_discord_markup() -> None:
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_mention_events()))
+    ).stream(responses=_stream_events_from(events=_voice_marker_mention_events()))
 
     # The visible reply keeps the clickable mention; only the spoken text is normalised.
     assert "<@239270225441193986>" in result
@@ -2325,7 +2259,7 @@ async def test_image_marker_generates_and_attaches() -> None:
 
     result = await _streamer(
         message=message, image_generator=cast("ImageGenerator", generator)
-    ).stream(responses=_stream_events_from(_image_marker_events()))
+    ).stream(responses=_stream_events_from(events=_image_marker_events()))
 
     # The block (tags AND description) never shows in chat.
     assert "<generate-image>" not in result
@@ -2359,7 +2293,7 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
         message=message,
         image_generator=cast("ImageGenerator", generator),
         input_builder=cast("MessageInputBuilder", builder),
-    ).stream(responses=_stream_events_from(_image_marker_events()))
+    ).stream(responses=_stream_events_from(events=_image_marker_events()))
 
     # The uploaded bytes (mime stripped for the edit path) ride through to generate, so the inline
     # <generate-image> edits them.
@@ -2375,7 +2309,7 @@ async def test_image_disabled_still_strips_marker() -> None:
     message = FakeMessage()
 
     result = await _streamer(message=message).stream(
-        responses=_stream_events_from(_image_marker_events())
+        responses=_stream_events_from(events=_image_marker_events())
     )
 
     assert "<generate-image>" not in result
@@ -2390,37 +2324,11 @@ async def test_image_generation_failure_hints() -> None:
 
     result = await _streamer(
         message=message, image_generator=cast("ImageGenerator", generator)
-    ).stream(responses=_stream_events_from(_image_marker_events()))
+    ).stream(responses=_stream_events_from(events=_image_marker_events()))
 
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
     assert message.added_reactions == ["<:image:1517559727880667226>", "⚠️"]
-
-
-async def test_voice_and_image_attach_in_one_edit() -> None:
-    """A reply with both markers rides a single edit carrying the WAV and the PNG together."""
-    message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator()
-    generator = _FakeImageGenerator()
-
-    result = await _streamer(
-        message=message,
-        voice_generator=cast("VoiceGenerator", synthesizer),
-        image_generator=cast("ImageGenerator", generator),
-    ).stream(
-        responses=_stream_events_from([
-            _text_event(delta="看 <generate-voice>聽好</generate-voice> "),
-            _text_event(delta="<generate-image>a red balloon</generate-image>"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
-    )
-
-    assert "聽好" in result
-    assert "<generate-image>" not in result
-    assert "a red balloon" not in result
-    files = message.replies[0].files
-    assert files is not None
-    assert {item.filename for item in files} == {"reply.wav", "generated.png"}
 
 
 async def test_multiple_image_markers_attach_distinct_files() -> None:
@@ -2431,13 +2339,15 @@ async def test_multiple_image_markers_attach_distinct_files() -> None:
     result = await _streamer(
         message=message, image_generator=cast("ImageGenerator", generator)
     ).stream(
-        responses=_stream_events_from([
-            _text_event(delta="兩張圖 "),
-            _text_event(
-                delta="<generate-image>a red cat</generate-image><generate-image>a blue dog</generate-image>"
-            ),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="兩張圖 "),
+                _text_event(
+                    delta="<generate-image>a red cat</generate-image><generate-image>a blue dog</generate-image>"
+                ),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
 
     assert "<generate-image>" not in result
@@ -2457,10 +2367,12 @@ async def test_image_markers_capped_at_limit() -> None:
     )
 
     await _streamer(message=message, image_generator=cast("ImageGenerator", generator)).stream(
-        responses=_stream_events_from([
-            _text_event(delta=f"好多圖 {blocks}"),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta=f"好多圖 {blocks}"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
 
     # Only the first MAX_INLINE_IMAGES render and attach; the extra blocks are dropped.
@@ -2505,7 +2417,7 @@ async def test_music_marker_generates_and_attaches() -> None:
 
     result = await _streamer(
         message=message, music_generator=cast("MusicGenerator", generator)
-    ).stream(responses=_stream_events_from(_music_marker_events()))
+    ).stream(responses=_stream_events_from(events=_music_marker_events()))
 
     # The block (tags AND description) never shows in chat.
     assert "<generate-music>" not in result
@@ -2524,7 +2436,7 @@ async def test_music_disabled_still_strips_marker() -> None:
     message = FakeMessage()
 
     result = await _streamer(message=message).stream(
-        responses=_stream_events_from(_music_marker_events())
+        responses=_stream_events_from(events=_music_marker_events())
     )
 
     assert "<generate-music>" not in result
@@ -2539,7 +2451,7 @@ async def test_music_generation_failure_hints() -> None:
 
     result = await _streamer(
         message=message, music_generator=cast("MusicGenerator", generator)
-    ).stream(responses=_stream_events_from(_music_marker_events()))
+    ).stream(responses=_stream_events_from(events=_music_marker_events()))
 
     assert "anime" not in result
     assert message.replies[0].file is None
@@ -2552,37 +2464,6 @@ async def test_music_filename_follows_returned_mime() -> None:
     assert music_filename(mime_type="audio/mpeg") == "music.mp3"
     assert music_filename(mime_type="audio/ogg") == "music.ogg"
     assert music_filename(mime_type=None) == "music.mp3"
-
-
-async def test_voice_music_image_attach_in_one_edit() -> None:
-    """A reply with all three markers rides one edit carrying the WAV, the clip, and the PNG."""
-    message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator()
-    music_generator = _FakeMusicGenerator()
-    image_generator = _FakeImageGenerator()
-
-    result = await _streamer(
-        message=message,
-        voice_generator=cast("VoiceGenerator", synthesizer),
-        music_generator=cast("MusicGenerator", music_generator),
-        image_generator=cast("ImageGenerator", image_generator),
-    ).stream(
-        responses=_stream_events_from([
-            _text_event(delta="來囉 <generate-voice>聽好</generate-voice> "),
-            _text_event(
-                delta="<generate-music>a calm lo-fi beat</generate-music><generate-image>a red balloon</generate-image>"
-            ),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
-    )
-
-    assert "聽好" in result
-    assert "<generate-music>" not in result
-    assert "lo-fi" not in result
-    assert "a red balloon" not in result
-    files = message.replies[0].files
-    assert files is not None
-    assert {item.filename for item in files} == {"reply.wav", "music.mp3", "generated.png"}
 
 
 async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
@@ -2642,7 +2523,7 @@ async def test_video_marker_generates_and_attaches() -> None:
 
     result = await _streamer(
         message=message, video_generator=cast("VideoGenerator", generator)
-    ).stream(responses=_stream_events_from(_video_marker_events()))
+    ).stream(responses=_stream_events_from(events=_video_marker_events()))
 
     # The block (tags AND description) never shows in chat.
     assert "<generate-video>" not in result
@@ -2674,7 +2555,7 @@ async def test_video_marker_uses_uploaded_image_as_reference() -> None:
         message=message,
         video_generator=cast("VideoGenerator", generator),
         input_builder=cast("MessageInputBuilder", builder),
-    ).stream(responses=_stream_events_from(_video_marker_events()))
+    ).stream(responses=_stream_events_from(events=_video_marker_events()))
 
     # The uploaded (bytes, mime) pair rides through to generate, so the inline <generate-video>
     # animates it and omni infers the task.
@@ -2689,7 +2570,7 @@ async def test_video_disabled_still_strips_marker() -> None:
     message = FakeMessage()
 
     result = await _streamer(message=message).stream(
-        responses=_stream_events_from(_video_marker_events())
+        responses=_stream_events_from(events=_video_marker_events())
     )
 
     assert "<generate-video>" not in result
@@ -2706,7 +2587,7 @@ async def test_video_generation_failure_hints() -> None:
 
     result = await _streamer(
         message=message, video_generator=cast("VideoGenerator", generator)
-    ).stream(responses=_stream_events_from(_video_marker_events()))
+    ).stream(responses=_stream_events_from(events=_video_marker_events()))
 
     assert "wave" not in result
     assert message.replies[0].file is None
@@ -2728,13 +2609,15 @@ async def test_voice_music_video_image_attach_in_one_edit() -> None:
         video_generator=cast("VideoGenerator", video_generator),
         image_generator=cast("ImageGenerator", image_generator),
     ).stream(
-        responses=_stream_events_from([
-            _text_event(delta="來囉 <generate-voice>聽好</generate-voice> "),
-            _text_event(
-                delta="<generate-music>a calm lo-fi beat</generate-music><generate-video>a wave</generate-video><generate-image>a red balloon</generate-image>"
-            ),
-            _completed_event(input_tokens=3, output_tokens=4),
-        ])
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="來囉 <generate-voice>聽好</generate-voice> "),
+                _text_event(
+                    delta="<generate-music>a calm lo-fi beat</generate-music><generate-video>a wave</generate-video><generate-image>a red balloon</generate-image>"
+                ),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        )
     )
 
     assert "聽好" in result
@@ -2849,7 +2732,7 @@ async def test_voice_oversized_clip_not_attached() -> None:
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(_voice_marker_events()))
+    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
@@ -2857,19 +2740,21 @@ async def test_voice_oversized_clip_not_attached() -> None:
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
 
 
-@pytest.mark.parametrize(("enabled", "expect_synth"), [(True, True), (False, False)])
+@pytest.mark.parametrize(
+    ("flag", "kwarg", "generator_type"),
+    [
+        ("inline_voice_enabled", "voice_generator", VoiceGenerator),
+        ("inline_image_enabled", "image_generator", ImageGenerator),
+    ],
+)
+@pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_voice_config_gate_controls_synthesizer(
-    monkeypatch: pytest.MonkeyPatch, enabled: bool, expect_synth: bool
+async def test_a_marker_switch_controls_its_generator(
+    monkeypatch: pytest.MonkeyPatch, flag: str, kwarg: str, generator_type: type, enabled: bool
 ) -> None:
-    """config.inline_voice_enabled gates whether the QA streamer receives a synthesizer."""
+    """Each inline marker's switch gates whether the QA streamer receives its generator."""
     cog = _cog()
-    cog.config = _config_stub(
-        inline_voice_enabled=enabled,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-    )
+    cog.config = _config_stub(**{flag: enabled})
     built = _install_streamer(monkeypatch=monkeypatch)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -2877,34 +2762,10 @@ async def test_voice_config_gate_controls_synthesizer(
         system_prompt="SYS", context=ReplyContext()
     )
 
-    assert (built[0]["voice_generator"] is not None) == expect_synth
-    if expect_synth:
-        assert isinstance(built[0]["voice_generator"], VoiceGenerator)
-
-
-@pytest.mark.parametrize(("enabled", "expect_gen"), [(True, True), (False, False)])
-@pytest.mark.usefixtures("no_memory_review")
-async def test_image_config_gate_controls_generator(
-    monkeypatch: pytest.MonkeyPatch, enabled: bool, expect_gen: bool
-) -> None:
-    """config.inline_image_enabled gates whether the QA streamer receives an image generator."""
-    cog = _cog()
-    cog.config = _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=enabled,
-        music_available=False,
-        video_available=False,
-    )
-    built = _install_streamer(monkeypatch=monkeypatch)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext()
-    )
-
-    assert (built[0]["image_generator"] is not None) == expect_gen
-    if expect_gen:
-        assert isinstance(built[0]["image_generator"], ImageGenerator)
+    if enabled:
+        assert isinstance(built[0][kwarg], generator_type)
+    else:
+        assert built[0][kwarg] is None
 
 
 class _FakeInteractionsResource:
@@ -2947,83 +2808,35 @@ class _FakeInteractionsClient:
         self.aio = SimpleNamespace(interactions=self.recorder)
 
 
-def _interactions_turn_events() -> list[SimpleNamespace]:
-    """A minimal Interactions turn: created, one text delta, completed with usage."""
-    return [
-        SimpleNamespace(
-            event_type="interaction.created", interaction=SimpleNamespace(model=TEST_LLM_MODEL)
-        ),
-        SimpleNamespace(
-            event_type="step.delta",
-            metadata=None,
-            delta=SimpleNamespace(type="text", text="watched it"),
-        ),
-        SimpleNamespace(
-            event_type="interaction.completed",
-            interaction=SimpleNamespace(
-                model=TEST_LLM_MODEL,
-                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
-            ),
-        ),
-    ]
-
-
 @pytest.mark.usefixtures("no_memory_review")
 async def test_youtube_qa_uses_interactions_backend() -> None:
-    """A watched YouTube URL streams the answer through Interactions, not Responses."""
+    """A watched YouTube URL streams the answer through Interactions, not Responses.
+
+    The graded effort is sent straight through as the Interactions thinking_level.
+    """
     cog = _cog()
-    cog.config = _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-        youtube_video_enabled=True,
-        gemini_key_configured=True,
-    )
-    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.config = _config_stub(youtube_video_enabled=True, gemini_key_configured=True)
+    fake = _FakeInteractionsClient(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext(), yt_url=url
+        system_prompt="SYS", context=ReplyContext(), effort="low", yt_url=url
     )
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
     assert _recorded(cog).responses.create_streams == []
     assert len(fake.recorder.calls) == 1
+    assert fake.recorder.calls[0].generation_config["thinking_level"] == "low"
     last_step_parts = fake.recorder.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
-    assert "watched it" in reply_content
+    assert "Hello world" in reply_content
     assert "⬆ 12 ⬇ 34" in reply_content
     # A persistent watch reaction marks that the reply was grounded in the video.
     assert "<:youtube:1517546722535018596>" in message.added_reactions
-
-
-@pytest.mark.usefixtures("no_memory_review")
-async def test_youtube_interactions_passes_effort_as_thinking_level() -> None:
-    """The graded effort is sent straight through as the Interactions thinking_level."""
-    cog = _cog()
-    cog.config = _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-        youtube_video_enabled=True,
-        gemini_key_configured=True,
-    )
-    fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.toolkit.__dict__["gemini_client"] = fake
-
-    url = "https://youtu.be/jNQXAC9IVRw"
-    message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
-    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext(), effort="low", yt_url=url
-    )
-
-    assert fake.recorder.calls[0].generation_config["thinking_level"] == "low"
 
 
 def test_count_media_parts_counts_only_the_shapes_media_reaches_the_model_in() -> None:
@@ -3062,10 +2875,6 @@ async def test_youtube_qa_falls_back_to_responses(
     """Without a watchable Gemini video turn, the answer stays on the Responses path."""
     cog = _cog()
     cog.config = _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
         youtube_video_enabled=scenario != "kill_switch_off",
         gemini_key_configured=scenario != "no_key",
     )
@@ -3075,7 +2884,7 @@ async def test_youtube_qa_falls_back_to_responses(
             "slow_model",
             property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
         )
-    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    fake = _FakeInteractionsClient(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = fake
     logged: list[tuple[str, dict[str, object]]] = []
 
@@ -3113,7 +2922,6 @@ def test_find_youtube_url_searches_the_replied_to_message() -> None:
     """A YouTube link in the replied-to message is found even when the reply omits it."""
     url = "https://youtu.be/jNQXAC9IVRw"
     referenced = FakeMessage(content=f"look at this {url}")
-    referenced.id = 555
     message = FakeMessage(content="<@999> 總結這影片")
     message.reference = FakeReference(resolved=referenced)
 
@@ -3125,7 +2933,6 @@ def test_find_youtube_url_ignores_url_inside_replied_to_usage_footer() -> None:
     url = "https://youtu.be/jNQXAC9IVRw"
     footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {url} 的記憶"
     answer = FakeMessage(content=f"這是我的回答{footer}")
-    answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
     message.reference = FakeReference(resolved=answer)
 
@@ -3153,7 +2960,6 @@ def test_find_youtube_url_reads_embed_card_in_replied_to_message() -> None:
     """Footer stripping keeps the wider replied-to scan used for YouTube cards."""
     url = "https://youtu.be/jNQXAC9IVRw"
     referenced = FakeMessage(content="")
-    referenced.id = 555
     referenced.embeds = [Embed(url=url)]
     message = FakeMessage(content="<@999> 總結這影片")
     message.reference = FakeReference(resolved=referenced)
@@ -3169,41 +2975,30 @@ def test_find_youtube_url_none_without_link() -> None:
     assert find_youtube_url(message=as_message(fake=message)) is None
 
 
-def test_find_youtube_url_in_forwarded_snapshot() -> None:
-    """A forwarded message's YouTube link (in message.snapshots) is found, not just message.content."""
-    url = "https://youtu.be/jNQXAC9IVRw"
-    message = FakeMessage(content="")  # pure forward: empty top-level content
-    message.snapshots = [FakeSnapshot(content=f"summarize this {url}")]
-
-    assert find_youtube_url(message=as_message(fake=message)) == url
+_FORWARDED_URL = "https://youtu.be/jNQXAC9IVRw"
 
 
-def test_find_youtube_url_in_forwarded_embed_title() -> None:
-    """A forwarded URL only in an embed title is found, matching what routing sees."""
-    url = "https://youtu.be/jNQXAC9IVRw"
+@pytest.mark.parametrize(
+    ("content", "embed", "expected"),
+    [
+        (f"summarize this {_FORWARDED_URL}", None, _FORWARDED_URL),
+        ("", Embed(title=f"watch {_FORWARDED_URL}"), _FORWARDED_URL),
+        ("", Embed(url=_FORWARDED_URL), _FORWARDED_URL),
+        ("lol look at this", Embed(url=_FORWARDED_URL), None),
+    ],
+    ids=["content", "embed-title", "bare-link-card", "captioned-forward-skips-its-embed"],
+)
+def test_find_youtube_url_in_a_forwarded_snapshot(
+    content: str, embed: Embed | None, expected: str | None
+) -> None:
+    """A pure forward's link (in message.snapshots) is found wherever routing sees it, and only there.
+
+    A captioned forward renders only its caption, so an embed-only URL there is not scanned.
+    """
     message = FakeMessage(content="")
-    message.snapshots = [FakeSnapshot(embeds=[Embed(title=f"watch {url}")])]
+    message.snapshots = [FakeSnapshot(content=content, embeds=[embed] if embed else None)]
 
-    assert find_youtube_url(message=as_message(fake=message)) == url
-
-
-def test_find_youtube_url_in_forwarded_embed_url() -> None:
-    """A forwarded link card whose URL is only in embed.url is detected and was rendered too."""
-    url = "https://youtu.be/jNQXAC9IVRw"
-    message = FakeMessage(content="")
-    message.snapshots = [FakeSnapshot(embeds=[Embed(url=url)])]  # bare link card, no caption
-
-    assert find_youtube_url(message=as_message(fake=message)) == url
-
-
-def test_find_youtube_url_skips_captioned_forward_embed() -> None:
-    """A captioned forward renders only its caption, so an embed-only URL is not scanned either."""
-    url = "https://youtu.be/jNQXAC9IVRw"
-    message = FakeMessage(content="")
-    # Snapshot has its own caption, so the embed (where the URL lives) is not rendered to the model.
-    message.snapshots = [FakeSnapshot(content="lol look at this", embeds=[Embed(url=url)])]
-
-    assert find_youtube_url(message=as_message(fake=message)) is None
+    assert find_youtube_url(message=as_message(fake=message)) == expected
 
 
 def _link_source(name: str) -> LinkContextSource:
@@ -3214,7 +3009,6 @@ def _link_source(name: str) -> LinkContextSource:
 def test_link_url_for_source_searches_the_replied_to_message() -> None:
     """Threads reads a link the user only replied to, like YouTube already does."""
     referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")
-    referenced.id = 555
     message = FakeMessage(content="<@999> 這篇底下在吵什麼")
     message.reference = FakeReference(resolved=referenced)
 
@@ -3242,7 +3036,6 @@ def test_link_url_for_source_finds_the_threads_share_form() -> None:
 def test_link_url_for_source_prefers_the_current_message() -> None:
     """With a Threads link on both, the one the user typed wins over the replied-to one."""
     referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")
-    referenced.id = 555
     own_url = "https://www.threads.com/@b/post/XYZ789"
     message = FakeMessage(content=f"<@999> 跟這篇比 {own_url}")
     message.reference = FakeReference(resolved=referenced)
@@ -3263,7 +3056,6 @@ def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(na
     this", and a second read of a Twitter link finds exactly what the expansion already showed.
     """
     referenced = FakeMessage(content=f"看看這個 {SAMPLE_POST_URLS[name]}")
-    referenced.id = 555
     message = FakeMessage(content="<@999> 這在講什麼")
     message.reference = FakeReference(resolved=referenced)
 
@@ -3282,7 +3074,6 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message() -
     """
     root_url = "https://www.threads.com/@a/post/ROOT111"
     expansion = FakeMessage(content="")  # an expansion posts embeds with no content of its own
-    expansion.id = 555
     expansion.embeds = [
         Embed(description="the thread's top post", url=root_url),
         Embed(description="the post the human linked", url=SAMPLE_POST_URLS["threads"]),
@@ -3308,7 +3099,6 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer() 
         f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 {SAMPLE_POST_URLS['threads']} 的記憶"
     )
     answer = FakeMessage(content=f"這是我的回答{footer}")
-    answer.id = 555
     message = FakeMessage(content="<@999> 再說清楚一點")
     message.reference = FakeReference(resolved=answer)
 
@@ -3325,7 +3115,6 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer() 
 def test_link_url_for_source_reads_a_forwarded_link_in_the_replied_to_message() -> None:
     """A forward counts for what its author wrote, on the same terms as a typed link."""
     forward = FakeMessage(content="")  # a pure forward puts its payload in snapshots
-    forward.id = 555
     forward.snapshots = [FakeSnapshot(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")]
     message = FakeMessage(content="<@999> 這篇底下在吵什麼")
     message.reference = FakeReference(resolved=forward)
@@ -3658,7 +3447,11 @@ async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previ
             )
         # Paced so the editor gets at least one tick to write on the SECOND attempt.
         return _paced_stream_events(
-            events=[_text_event(delta="the whole answer"), _completed_event(1, 2)], pause=0.05
+            events=[
+                _text_event(delta="the whole answer"),
+                _completed_event(input_tokens=1, output_tokens=2),
+            ],
+            pause=0.05,
         )
 
     reply = await stream_answer_with_retry(
@@ -3732,7 +3525,7 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
     """
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
-    streamer = _streamer(message=message, reply=cast("Message", FakeReply()))
+    streamer = _streamer(message=message, reply=as_message(fake=FakeReply()))
     opened = 0
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
@@ -3740,7 +3533,9 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
         opened += 1
         if opened == 1:
             return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
-        return _stream_events_from(events=[_text_event(delta="done"), _completed_event(1, 2)])
+        return _stream_events_from(
+            events=[_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=2)]
+        )
 
     await stream_answer_with_retry(
         streamer=streamer, open_stream=open_stream, message_id=message.id
@@ -3764,7 +3559,7 @@ async def test_a_spent_retry_takes_its_own_notice_back(monkeypatch: pytest.Monke
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     reply = FakeReply()
-    streamer = _streamer(message=message, reply=cast("Message", reply))
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
         return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
@@ -3789,7 +3584,7 @@ async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
     message = FakeMessage()
     reply = FakeReply()
     streamer = _streamer(
-        message=message, reply=cast("Message", reply), preview_interval_seconds=0.01
+        message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
     )
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
@@ -3882,9 +3677,7 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
         """Streams half an answer onto a reply already on screen, then fails every attempt."""
         del kwargs
         streamer = _streamer(
-            message=cast("Message", message),
-            reply=cast("Message", reply),
-            preview_interval_seconds=0.01,
+            message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
         )
         await stream_answer_with_retry(
             streamer=streamer, open_stream=open_stream, message_id=message.id
@@ -3913,7 +3706,7 @@ async def test_a_failure_over_a_thinking_preview_clears_it() -> None:
     message = FakeMessage()
     reply = FakeReply()
     reply.content = "-# <:message:1517560873000898860> Thinking..."
-    streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
     streamer.reasoning_content = "weighing the options"
 
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is True
@@ -3927,7 +3720,7 @@ async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_me
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = make_not_found()
-    streamer = _streamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
 
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
 
@@ -3940,7 +3733,7 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
     still raise, and an error landing on the finished reply would take its attachments with it.
     """
     message = FakeMessage()
-    streamer = _streamer(message=cast("Message", message))
+    streamer = _streamer(message=message)
     published: list[object] = []
 
     async def events() -> AsyncIterator[SimpleNamespace]:
@@ -3977,7 +3770,7 @@ async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_p
     ] * ANSWER_STREAM_MAX_ATTEMPTS
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="a cat", context_task=_ready_context_task()
     )
 
     # The image was delivered and every persona attempt then died on it.
@@ -4009,6 +3802,9 @@ def test_required_modality_gate_keeps_code_and_text() -> None:
     assert modality(content_type="application/geo+json") == "image"
     assert modality(content_type="application/atom+xml") == "image"
     assert modality(content_type="text/x-go") == "image"
+    assert modality(content_type="video/mp4") == "video"
+    assert modality(content_type="audio/mpeg") == "audio"
+    assert modality(content_type="application/pdf") == "image"
 
 
 async def test_gen_reply_message_content_and_attachment_helpers(
@@ -4024,12 +3820,6 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert await cog.toolkit.input_builder.get_user_prompt(content="hi <@999>") == "hi"
     assert await cog.toolkit.input_builder.get_user_prompt(content="hi <@!999>") == "hi"
     assert "Author" in cog.toolkit.input_builder.extract_embed_text(embeds=[embed])
-
-    self_mention = FakeMessage(content="你的審美跟 <@999> 一樣", author=FakeAuthor(user_id=1))
-    assert (
-        await cog.toolkit.input_builder.get_cleaned_content(message=as_message(fake=self_mention))
-        == self_mention.content
-    )
 
     bot_message = FakeMessage(
         content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0", author=FakeAuthor(bot=True, user_id=999)
@@ -4061,10 +3851,6 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         == "joined"
     )
 
-    assert cog.toolkit.input_builder.required_modality(content_type="video/mp4") == "video"
-    assert cog.toolkit.input_builder.required_modality(content_type="audio/mpeg") == "audio"
-    assert cog.toolkit.input_builder.required_modality(content_type="application/pdf") == "image"
-
     file_rendered = await cog.toolkit.input_builder.attachment_handler.render_file(
         attachment=_att(filename="note.txt", content_type="text/plain", payload=b"abc"),
         cache_key="note.txt",
@@ -4077,9 +3863,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
     image_rendered = await cog.toolkit.input_builder.attachment_handler.render_image(
-        source=_att(
-            filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
+        source=_att(filename="pixel.png", content_type="image/png", payload=_png_bytes()),
         cache_key="pixel.png",
     )
     assert image_rendered is not None
@@ -4092,36 +3876,55 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     )
     message = FakeMessage()
     message.attachments = [
-        FakeAttachment(
-            filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
+        FakeAttachment(filename="pixel.png", content_type="image/png", payload=_png_bytes()),
         FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"video"),
     ]
     message.stickers = [
-        FakeAttachment(
-            filename="sticker.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
+        FakeAttachment(filename="sticker.png", content_type="image/png", payload=_png_bytes())
     ]
     img_embed = Embed()
     img_embed.set_image(url="https://example.test/image.png")
     message.embeds = [img_embed]
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
-        lambda image_file: base64.b64decode(_png_b64()),
+        lambda image_file: _png_bytes(),
     )
     parts = await _attachment_parts(builder=cog.toolkit.input_builder, message=message)
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
 
 
+@pytest.fixture
+def files_api_poll_unslept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes the Files API activation poll's backoff return at once."""
+
+    async def no_sleep(delay: float) -> None:
+        """Skips the backoff."""
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", no_sleep)
+
+
+def _jump_files_api_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes every clock read of the Files API upload jump well past its activation bound.
+
+    Auto-advancing rather than a hand-counted list, so the deadline trips however many
+    `monotonic()` calls the upload path makes, latency logging among them.
+    """
+    clock = {"now": 0.0}
+
+    def monotonic() -> float:
+        """Advances fifty seconds per read."""
+        clock["now"] += 50.0
+        return clock["now"]
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", monotonic)
+
+
+@pytest.mark.usefixtures("files_api_poll_unslept")
 async def test_upload_file_polls_active_and_drops_unready_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies the upload polls to ACTIVE and drops files that never become usable."""
-
-    async def _no_sleep(delay: float) -> None:
-        del delay
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", _no_sleep)
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
         return _fake_uploader(files=files)
@@ -4142,16 +3945,8 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         is None
     )
 
-    # Never leaves PROCESSING within the bound: the timeout drops the file. An auto-advancing
-    # clock jumps past the 15s bound on each read, so the deadline trips regardless of how many
-    # monotonic() calls the upload path makes (e.g. for latency logging).
-    clock = {"now": 0.0}
-
-    def _fake_monotonic() -> float:
-        clock["now"] += 50.0
-        return clock["now"]
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
+    # Never leaves PROCESSING within the bound: the timeout drops the file.
+    _jump_files_api_clock(monkeypatch=monkeypatch)
     stuck = _uploader(FakeGeminiFiles(processing_rounds=99))
     pending = await stuck._upload_or_pend(filename="slow.mp4", data=b"x", content_type="video/mp4")
     assert isinstance(pending, PendingUpload)
@@ -4171,26 +3966,13 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     )
 
 
+@pytest.mark.usefixtures("files_api_poll_unslept")
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A timed-out upload is cached as pending and re-polled, not re-uploaded, next time."""
-
-    async def _no_sleep(delay: float) -> None:
-        del delay
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", _no_sleep)
-
-    # Auto-advancing clock: each call jumps well past the 15s activation bound, so the first
-    # reference times out to PENDING regardless of how many monotonic() calls the upload path
-    # makes (e.g. for latency logging). Robust to instrumentation, unlike a hand-counted list.
-    clock = {"now": 0.0}
-
-    def _fake_monotonic() -> float:
-        clock["now"] += 50.0
-        return clock["now"]
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", _fake_monotonic)
+    # The first reference times out to PENDING.
+    _jump_files_api_clock(monkeypatch=monkeypatch)
 
     files = FakeGeminiFiles(processing_rounds=99)
     uploader = _fake_uploader(files=files)
@@ -4332,9 +4114,7 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
     renderer = _fake_openai_uploader(files=files)
 
     image_rendered = await renderer.render_image(
-        source=_att(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
+        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
         cache_key="pic.png",
     )
     assert image_rendered is not None
@@ -4522,9 +4302,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
 
     # xAI resolves no file id for image input, so an image is inlined instead of uploaded.
     image_rendered = await renderer.render_image(
-        source=_att(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
+        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
         cache_key="pic.png",
     )
     assert image_rendered is not None
@@ -4596,20 +4374,27 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
     )
 
 
+def _message_recorder(into: list[str]) -> Callable[..., None]:
+    """A logfire level stand-in that keeps each record's message and drops its fields."""
+
+    def record(message: str, **kwargs: object) -> None:
+        """Records the message."""
+        del kwargs
+        into.append(message)
+
+    return record
+
+
 async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
-    monkeypatch.setenv("XAI_API_KEY", "")
+    monkeypatch.setenv(name="XAI_API_KEY", value="")
     logged: list[str] = []
 
-    def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the missing-key log."""
-        del kwargs
-        logged.append(message)
-
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.grok_file_api.logfire.error", record_error
+        "discordbot.cogs.gen_reply.attachment.grok_file_api.logfire.error",
+        _message_recorder(into=logged),
     )
     renderer = GrokFileUploader()
     assert (
@@ -4637,13 +4422,9 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
 
     logged: list[str] = []
 
-    def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the missing-key log."""
-        del kwargs
-        logged.append(message)
-
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.logfire.error", record_error
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.logfire.error",
+        _message_recorder(into=logged),
     )
     keyless = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
     keyless_handler = keyless.input_builder.attachment_handler
@@ -4673,9 +4454,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
 
     # Image -> base64 input_image (no Files API upload).
     image_rendered = await renderer.render_image(
-        source=_att(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
+        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
         cache_key="pic.png",
     )
     assert image_rendered is not None
@@ -4767,8 +4546,6 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
 
     parent = FakeMessage(content="parent", author=FakeAuthor(user_id=4))
     grandparent = FakeMessage(content="grandparent", author=FakeAuthor(user_id=5))
-    parent.id = 988
-    grandparent.id = 989
     parent.reference = FakeReference(resolved=grandparent)
     current.reference = FakeReference(resolved=parent)
     reference = await _context_builder(
@@ -4897,7 +4674,6 @@ def test_trim_history_charges_an_attachment_only_message() -> None:
 def _image_post(index: int, count: int) -> FakeMessage:
     """A history message carrying `count` image attachments with distinct ids."""
     message = FakeMessage(content=f"post {index}", author=FakeAuthor(user_id=1))
-    message.id = 7000 + index
     message.attachments = [
         FakeAttachment(
             filename=f"{index}-{n}.png", content_type="image/png", attachment_id=index * 100 + n
@@ -4918,7 +4694,7 @@ def test_history_media_budget_refuses_every_older_post_once_one_is_refused() -> 
     posts = [
         _image_post(index=0, count=1),
         _image_post(index=1, count=5),
-        _image_post(index=2, count=9),
+        _image_post(index=2, count=MAX_HISTORY_MEDIA_PARTS - 1),
     ]
 
     over = history_media_over_budget(
@@ -4942,7 +4718,6 @@ def test_history_media_budget_exempts_the_newest_post_that_carries_attachments()
 def _document_post(index: int, count: int) -> FakeMessage:
     """A history message carrying `count` office documents, which no model accepts."""
     message = FakeMessage(content=f"docs {index}", author=FakeAuthor(user_id=1))
-    message.id = 7500 + index
     message.attachments = [
         FakeAttachment(
             filename=f"{index}-{n}.docx",
@@ -4988,7 +4763,8 @@ def test_history_media_budget_counts_only_the_supported_half_of_a_mixed_post() -
         hist_messages=[as_message(fake=older), as_message(fake=mixed)],
     )
 
-    # The newest post spends 9 of the 10 parts rather than all 15, so the older one still fits.
+    # The newest post spends one part short of the cap rather than counting its documents
+    # too, so the older one still fits.
     assert over == {}
 
 
@@ -5054,7 +4830,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert _recorded(cog).responses.parse_models[0] == cog.toolkit.runtime_models.triage_model.name
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="video", context_task=_ready_context_task()
     )
     assert len(message.replies) == 1
     # Text-to-video: the fake director returns no draft, so `refine` falls back to the raw
@@ -5063,7 +4839,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="image", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="image", context_task=_ready_context_task()
     )
     assert _recorded(cog).images.generate_calls
     # The director returns no draft here either, so images.generate gets the raw request.
@@ -5095,7 +4871,7 @@ async def test_uploaded_image_without_extension_marks_as_image(
         FakeAttachment(
             filename="screenshot",
             content_type="image/png",
-            payload=base64.b64decode(_png_b64()),
+            payload=_png_bytes(),
             url="https://example.test/screenshot",
         )
     ]
@@ -5122,7 +4898,7 @@ async def test_text_only_render_names_a_sticker_instead_of_calling_it_an_image(
         FakeAttachment(
             filename="sticker.png",
             content_type="image/png",
-            payload=base64.b64decode(_png_b64()),
+            payload=_png_bytes(),
             url="https://example.test/sticker.png",
         )
     ]
@@ -5135,27 +4911,10 @@ async def test_text_only_render_names_a_sticker_instead_of_calling_it_an_image(
     assert step_dicts(steps=parts)[-1]["text"] == "[attachment: sticker]"
 
 
-async def test_text_only_and_full_render_agree_on_attachment_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The marker render and the upload render keep the same supported-attachment slots."""
-    cog = _cog()
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
-    )
-    message = FakeMessage(content="<@999> mix", author=FakeAuthor(user_id=1))
-    message.attachments = [
-        FakeAttachment(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
-        FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
-    ]
-
-    text_only = await cog.toolkit.input_builder.process_single_message(
-        message=as_message(fake=message), text_only=True
-    )
-    full = await cog.toolkit.input_builder.process_single_message(message=as_message(fake=message))
-
+def _attachment_slots(
+    text_only: EasyInputMessageParam, full: EasyInputMessageParam
+) -> tuple[int, int]:
+    """Counts the attachment markers in a text-only render and the files in the full render."""
     text_markers = [
         part
         for part in text_only["content"]
@@ -5166,7 +4925,30 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
         for part in full["content"]
         if isinstance(part, dict) and part.get("type") == "input_file"
     ]
-    assert len(text_markers) == len(full_files) == 1
+    return len(text_markers), len(full_files)
+
+
+async def test_text_only_and_full_render_agree_on_attachment_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The marker render and the upload render keep the same supported-attachment slots."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="<@999> mix", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes()),
+        FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
+    ]
+
+    text_only = await cog.toolkit.input_builder.process_single_message(
+        message=as_message(fake=message), text_only=True
+    )
+    full = await cog.toolkit.input_builder.process_single_message(message=as_message(fake=message))
+
+    text_markers, full_files = _attachment_slots(text_only=text_only, full=full)
+    assert text_markers == full_files == 1
 
 
 @pytest.mark.parametrize(
@@ -5189,10 +4971,7 @@ async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_count
     message = FakeMessage(content="<@999> build this", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(
-            filename="pic.png",
-            content_type="image/png",
-            payload=base64.b64decode(_png_b64()),
-            attachment_id=1,
+            filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
         ),
         # A name `mimetypes` cannot guess, so a missing type resolves to "".
         FakeAttachment(
@@ -5205,18 +4984,9 @@ async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_count
     )
     full = await cog.toolkit.input_builder.process_single_message(message=as_message(fake=message))
 
-    text_markers = [
-        part
-        for part in text_only["content"]
-        if isinstance(part, dict) and str(part.get("text", "")).startswith("[attachment:")
-    ]
-    full_files = [
-        part
-        for part in full["content"]
-        if isinstance(part, dict) and part.get("type") == "input_file"
-    ]
+    text_markers, full_files = _attachment_slots(text_only=text_only, full=full)
     budgeted = cog.toolkit.input_builder.count_supported_sources(message=as_message(fake=message))
-    assert len(text_markers) == len(full_files) == budgeted == 1
+    assert text_markers == full_files == budgeted == 1
 
 
 @pytest.mark.parametrize(
@@ -5338,7 +5108,7 @@ async def test_prompt_generator_rides_source_images_as_input() -> None:
         instructions=IMAGE_PROMPT,
         end_user_id="alice",
         enabled=True,
-        image_bytes_list=[base64.b64decode(_png_b64())],
+        image_bytes_list=[_png_bytes()],
     )
 
     director_content = _recorded_content_parts(request=client.responses.create_inputs[0])
@@ -5354,13 +5124,11 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     )
     message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
     message.attachments = [
-        FakeAttachment(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
+        FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes())
     ]
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="make it blue", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="make it blue", context_task=_ready_context_task()
     )
 
     assert _recorded(cog).images.edit_calls == 1
@@ -5372,7 +5140,7 @@ async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
     cog = _cog()
 
     await cog.toolkit.image_generator.render(
-        prompt="", end_user_id="user", image_bytes_list=[base64.b64decode(_png_b64())]
+        prompt="", end_user_id="user", image_bytes_list=[_png_bytes()]
     )
     await cog.toolkit.video_generator.render(prompt="", reference_image_sources=[])
 
@@ -5392,7 +5160,7 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="draw a cat", context_task=_ready_context_task()
     )
 
     # The refined prompt (not the raw request) reaches images.generate.
@@ -5417,7 +5185,7 @@ async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="draw a cat", context_task=_ready_context_task()
     )
 
     # The raw prompt reaches images.generate; the only create is the streaming persona reply.
@@ -5441,7 +5209,7 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
         return context
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready())
+        user_prompt="draw a cat", context_task=asyncio.create_task(coro=_ready())
     )
 
     # The streamed reply is the last create; the user memory block rides in it, then the
@@ -5472,7 +5240,7 @@ async def test_handle_image_reply_retries_the_persona_stream_without_captioning_
     ]
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="draw a cat", context_task=_ready_context_task()
     )
 
     # The retry happened (two streaming dispatches) and the persona reply still landed.
@@ -5495,7 +5263,7 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
     _install_streamer(monkeypatch=monkeypatch, reply=RuntimeError("stream boom"))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="draw a cat", context_task=_ready_context_task()
     )
 
     # The image is delivered even though the reply stream raised; the error never surfaced.
@@ -5514,7 +5282,7 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="draw a cat", context_task=_ready_context_task()
     )
 
     # Two messages: the hosted-URL deliverable (no attachment) and the separate persona reply.
@@ -5544,7 +5312,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
     _install_streamer(monkeypatch=monkeypatch, reply=RuntimeError("stream boom"))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-        user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="draw a cat", context_task=_ready_context_task()
     )
 
     # replies[0] is the hosted-URL deliverable (kept); replies[1] is the bare persona base (deleted).
@@ -5575,7 +5343,7 @@ async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> Non
 
     with pytest.raises(nextcord.HTTPException):
         await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
-            user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+            user_prompt="draw a cat", context_task=_ready_context_task()
         )
 
 
@@ -5597,7 +5365,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
     message.guild = FakeGuild(filesize_limit=1)  # below the 3-byte fake clip -> oversized
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="video", context_task=_ready_context_task()
     )
 
     # Only the hosted-URL message exists; the upload failed so no bare persona-base was orphaned.
@@ -5617,7 +5385,7 @@ async def test_handle_video_reply_refines_prompt_before_render() -> None:
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="video", context_task=_ready_context_task()
     )
 
     # The director runs on VIDEO_PROMPT first, then the streaming reply about the video.
@@ -5650,7 +5418,7 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="video", context_task=_ready_context_task()
     )
 
     # The raw prompt reaches omni as input text; the only create is the streaming persona reply
@@ -5661,22 +5429,22 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     assert _recorded(cog).responses.create_models == [cog.toolkit.runtime_models.fast_model.name]
 
 
+async def _one_source_clip(builder: object, message: object) -> list[LoadedMedia]:
+    """Stands in for `get_video_sources`: the message carries one raw source clip."""
+    del builder, message
+    return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
+
+
 async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
     """A source video is edited in place: uploaded and sent to omni with task=edit, no director."""
     cog = _cog()
-
-    async def fake_video_sources(builder: object, message: object) -> list[LoadedMedia]:
-        """Returns a fake raw source clip for the message."""
-        del builder, message
-        return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
-
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", _one_source_clip
     )
     message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="make it snowy", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="make it snowy", context_task=_ready_context_task()
     )
 
     create_input = _recorded_video(cog).create_inputs[0]
@@ -5724,11 +5492,6 @@ async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
     """
     cog = _cog()
 
-    async def fake_video_sources(builder: object, message: object) -> list[LoadedMedia]:
-        """Returns a fake raw source clip for the message."""
-        del builder, message
-        return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
-
     async def upload(*, file: object, config: dict[str, str]) -> object:
         """Refuses the upload or hands back the file under test."""
         del file, config
@@ -5737,7 +5500,7 @@ async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
         return uploaded
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", _one_source_clip
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.0)
     _recorded_video(cog).aio.files.upload = upload
@@ -5745,7 +5508,7 @@ async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
 
     with pytest.raises(type(expected)) as raised:
         await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-            user_prompt="make it snowy", context_task=asyncio.create_task(_ready_reply_context())
+            user_prompt="make it snowy", context_task=_ready_context_task()
         )
 
     assert type(raised.value) is type(expected)
@@ -5853,28 +5616,24 @@ async def test_a_stalled_source_video_upload_fails_the_edit_within_its_bound(
 
 
 async def test_handle_video_reply_passes_reference_images() -> None:
-    """Attached images ride as reference images (capped at three) with a real mime; task inferred."""
+    """Attached images ride as capped reference images with a real mime; task inferred."""
     cog = _cog()
 
     message = FakeMessage(content="把這些做成影片", author=FakeAuthor(user_id=1))
     message.attachments = [
-        FakeAttachment(
-            filename=f"pic{index}.png",
-            content_type="image/png",
-            payload=base64.b64decode(_png_b64()),
-        )
-        for index in range(4)
+        FakeAttachment(filename=f"pic{index}.png", content_type="image/png", payload=_png_bytes())
+        for index in range(MAX_VIDEO_REFERENCE_IMAGES + 1)
     ]
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="video", context_task=_ready_context_task()
     )
 
-    # Images cap at three and each MUST carry a real, non-empty image mime (omni 400s an empty mime,
+    # Images are capped and each MUST carry a real, non-empty image mime (omni 400s an empty mime,
     # the reported bug); the task is omitted so omni infers image_to_video vs reference_to_video.
     create_input = _recorded_video(cog).create_inputs[0]
     image_parts = [part for part in create_input if part["type"] == "image"]
-    assert len(image_parts) == 3
+    assert len(image_parts) == MAX_VIDEO_REFERENCE_IMAGES
     assert all(part["data"] for part in image_parts)
     assert all(part.get("mime_type", "").startswith("image/") for part in image_parts)
     assert _recorded_video(cog).create_configs[0] is None
@@ -5886,13 +5645,11 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> N
 
     message = FakeMessage(content="讓這張動起來", author=FakeAuthor(user_id=1))
     message.attachments = [
-        FakeAttachment(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
+        FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes())
     ]
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
-        user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        user_prompt="video", context_task=_ready_context_task()
     )
 
     # The single image carries its mime (this is exactly what was empty before, causing the 400);
@@ -5931,9 +5688,7 @@ async def test_a_video_outliving_the_ask_window_says_so_instead_of_hanging() -> 
     with pytest.raises(TimeoutError) as raised:
         await _media_routes(
             cog=cog, message=message, surface=_expiring_surface(message=message, seconds_left=0.05)
-        ).handle_video(
-            user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
-        )
+        ).handle_video(user_prompt="video", context_task=_ready_context_task())
 
     # The message is the whole point: a bare TimeoutError reaches the user as an empty code block.
     assert str(raised.value) == WINDOW_EXPIRED_NOTICE
@@ -5948,9 +5703,7 @@ async def test_an_image_outliving_the_ask_window_says_so_too() -> None:
     with pytest.raises(TimeoutError) as raised:
         await _media_routes(
             cog=cog, message=message, surface=_expiring_surface(message=message, seconds_left=0.05)
-        ).handle_image(
-            user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
-        )
+        ).handle_image(user_prompt="draw a cat", context_task=_ready_context_task())
 
     assert str(raised.value) == WINDOW_EXPIRED_NOTICE
 
@@ -5978,9 +5731,7 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
     with pytest.raises(TimeoutError) as raised:
         await _media_routes(
             cog=cog, message=message, surface=_expiring_surface(message=message, seconds_left=300)
-        ).handle_video(
-            user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
-        )
+        ).handle_video(user_prompt="video", context_task=_ready_context_task())
 
     assert str(raised.value) != WINDOW_EXPIRED_NOTICE
 
@@ -6016,7 +5767,7 @@ async def test_a_failed_media_generation_drains_the_speculative_context(
         await release.wait()
         return ReplyContext()
 
-    context_task = asyncio.create_task(pending_context())
+    context_task = asyncio.create_task(coro=pending_context())
     message = as_message(fake=FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1)))
     routes = _media_routes(cog=cog, message=message)
     handle = routes.handle_image if route == "IMAGE" else routes.handle_video
@@ -6028,18 +5779,11 @@ async def test_a_failed_media_generation_drains_the_speculative_context(
 
 
 @pytest.mark.parametrize(
-    argnames=("route", "expected_call", "expected_prep"),
-    argvalues=[
-        ("IMAGE", "handle_image", [HISTORY_MESSAGE_LIMIT]),
-        ("VIDEO", "handle_video", [HISTORY_MESSAGE_LIMIT]),
-        ("QA", "stream_answer", [HISTORY_MESSAGE_LIMIT]),
-    ],
+    argnames=("route", "expected_call"),
+    argvalues=[("IMAGE", "handle_image"), ("VIDEO", "handle_video"), ("QA", "stream_answer")],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orchestrates per-route stubs
-    monkeypatch: pytest.MonkeyPatch,
-    route: Literal["IMAGE", "VIDEO", "QA"],
-    expected_call: str,
-    expected_prep: list[int],
+    monkeypatch: pytest.MonkeyPatch, route: Literal["IMAGE", "VIDEO", "QA"], expected_call: str
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -6126,7 +5870,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     # Every route consumes the one speculative context, IMAGE/VIDEO once their media is on
     # screen, so each issues exactly one prep request and what is asserted is which request was
     # made, not the order two of them arrived in.
-    assert Counter(prep_requests) == Counter(expected_prep)
+    assert Counter(prep_requests) == Counter([HISTORY_MESSAGE_LIMIT])
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -6308,49 +6052,37 @@ async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
     assert build_cancelled.is_set()
 
 
-async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pure forward (empty content, payload only in snapshots) reaches the pipeline, not `?`."""
-    cog = _cog()
-
-    pipeline_calls: list[tuple[FakeMessage, str]] = []
-
-    async def record_pipeline(self: ReplyPipeline) -> None:
-        """Records that the reply pipeline was reached instead of the empty-message `?` reply."""
-        pipeline_calls.append((cast("FakeMessage", self.message), self.user_prompt))
-
-    monkeypatch.setattr(ReplyPipeline, "run", record_pipeline)
-
-    dm_forward = FakeMessage(content="", author=FakeAuthor(user_id=1))
-    dm_forward.guild = None
-    dm_forward.snapshots = [FakeSnapshot(content="draw a cat")]
-    await cog.on_message(message=as_message(fake=dm_forward))
-
-    assert dm_forward.replies == []  # not gated out with "?"
-    # The forwarded request reaches the pipeline as the prompt (so an IMAGE/VIDEO route is not blank).
-    assert pipeline_calls == [(dm_forward, "draw a cat")]
-
-
-async def test_on_message_commented_forward_merges_forwarded_text(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("content", "in_guild", "expected_prompt"),
+    [("", False, "draw a cat"), ("<@999> please", True, "please\ndraw a cat")],
+    ids=["pure-dm-forward", "commented-guild-forward"],
+)
+async def test_on_message_folds_a_forward_into_the_prompt(
+    monkeypatch: pytest.MonkeyPatch, content: str, in_guild: bool, expected_prompt: str
 ) -> None:
-    """A commented forward (@bot please) merges the forwarded request into the media prompt."""
-    cog = _cog()
+    """A forward's request reaches the pipeline as the prompt, after any comment of its own.
 
+    A pure forward (empty content, payload only in snapshots) is not gated as an empty `?`, so an
+    IMAGE/VIDEO route is not blank, and a commented one keeps the forwarded request rather than
+    dropping it because the comment is non-empty. A guild forward triggers only via the mention.
+    """
+    cog = _cog()
     calls: list[tuple[FakeMessage, str]] = []
 
     async def record_pipeline(self: ReplyPipeline) -> None:
-        """Records the prompt the pipeline receives for the media route."""
+        """Records the prompt the pipeline receives."""
         calls.append((cast("FakeMessage", self.message), self.user_prompt))
 
     monkeypatch.setattr(ReplyPipeline, "run", record_pipeline)
 
-    # Guild forward: it can only trigger via the mention, so the comment survives as "please".
-    message = FakeMessage(content="<@999> please", author=FakeAuthor(user_id=1))
+    message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
+    if not in_guild:
+        message.guild = None
     message.snapshots = [FakeSnapshot(content="draw a cat")]
     await cog.on_message(message=as_message(fake=message))
 
-    # The forwarded request is merged after the comment, not dropped because the comment is non-empty.
-    assert calls == [(message, "please\ndraw a cat")]
+    assert message.replies == []
+    assert calls == [(message, expected_prompt)]
 
 
 @pytest.mark.usefixtures("no_memory_review")
@@ -6484,11 +6216,6 @@ async def test_on_message_answers_a_keyless_video_route_as_qa(
 def _link_config(*, gemini_api_key: str) -> LLMConfig:
     """The config fields a QA reply carrying a linked post actually reads."""
     return _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-        deep_research_enabled=False,
         douyin_video_enabled=True,
         bilibili_video_enabled=True,
         file_api_enabled=True,
@@ -6801,7 +6528,6 @@ async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
     parent = FakeMessage(
         content=f"看看這篇 {SAMPLE_POST_URLS[name]}", author=FakeAuthor(user_id=4)
     )
-    parent.id = 988
     message = _link_message(text="這篇底下在吵什麼")
     message.reference = FakeReference(resolved=parent)
 
@@ -7159,7 +6885,6 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     parent_author = FakeAuthor(user_id=4)
     parent_author.name, parent_author.display_name = "parent", "Parent"
     parent = FakeMessage(content="原訊息", author=parent_author)
-    parent.id = 988
     message.reference = FakeReference(resolved=parent)
 
     _recorded(cog).responses.stream_queue = [
@@ -7252,13 +6977,7 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
     _seed_fact(scope=server_scope(server_id=1), text="社群風格", section="profile")
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
+    _seed_alias(subject_id=42, text="Boss(社群暱稱:李董)")
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆,句子精簡")
     write_tone(scope=user_scope(user_id=42), content="第三人語氣不該出現")
 
@@ -7322,20 +7041,9 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
     # Every inline marker off, so nothing is appended to the instructions checked below.
-    cog.config = _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-    )
+    cog.config = _config_stub()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:老闆)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
+    _seed_alias(subject_id=42, text="Boss(社群暱稱:老闆)")
 
     scheduled: list[dict[str, object]] = []
 
@@ -7386,12 +7094,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
     # Every inline marker off, so nothing is appended to the instructions checked below.
-    cog.config = _config_stub(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-    )
+    cog.config = _config_stub()
 
     scheduled: list[object] = []
 
@@ -7822,13 +7525,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
         _seed_fact(scope=user_scope(user_id=uid), text=body)
     if server_nick is not None:
         nick_id, nick_name, nick_alias = server_nick
-        _seed_fact(
-            scope=server_scope(server_id=1),
-            text=f"{nick_name}(社群暱稱:{nick_alias})",
-            section="member_alias",
-            durability="permanent",
-            subject_id=nick_id,
-        )
+        _seed_alias(subject_id=nick_id, text=f"{nick_name}(社群暱稱:{nick_alias})")
     message = FakeMessage(
         content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=channel_public
     )
@@ -7837,7 +7534,6 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
         parent_author = FakeAuthor(user_id=reference_author_id)
         parent_author.name, parent_author.display_name = "parent", "Parent"
         parent = FakeMessage(content="原訊息", author=parent_author)
-        parent.id = 988
         message.reference = FakeReference(resolved=parent)
 
     # Staged on every case, so a pick only lands where the route was actually offered one.
@@ -7871,7 +7567,6 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))
-    parent.id = 988
     message.reference = FakeReference(resolved=parent)
     message.mentions = [
         FakeAuthor(user_id=2),
@@ -7925,13 +7620,7 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(where
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
+    _seed_alias(subject_id=42, text="Boss(社群暱稱:李董)")
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     if where == "private-thread":
@@ -7959,25 +7648,20 @@ async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(where
 
 @pytest.mark.usefixtures("no_memory_review")
 async def test_optional_picks_use_only_the_remaining_memory_budget() -> None:
-    """Deterministic users fill seven slots, leaving one optional alias slot.
+    """Deterministic users fill all but one slot, leaving one optional alias slot.
 
     The route names a deterministic participant first, which must not take that slot: only the
     offered candidates can fill it, in the order the route named them.
     """
     cog = _cog()
-    for user_id in (*range(1, 8), 42, 43):
+    deterministic = range(1, MEMORY_CONTEXT_TARGET_USERS)
+    for user_id in (*deterministic, 42, 43):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
     for user_id, name in ((42, "李董"), (43, "阿伯")):
-        _seed_fact(
-            scope=server_scope(server_id=1),
-            text=f"Member{user_id}(社群暱稱:{name})",
-            section="member_alias",
-            durability="permanent",
-            subject_id=user_id,
-        )
+        _seed_alias(subject_id=user_id, text=f"Member{user_id}(社群暱稱:{name})")
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    message.mentions = [FakeAuthor(user_id=user_id) for user_id in range(2, 8)]
+    message.mentions = [FakeAuthor(user_id=user_id) for user_id in deterministic[1:]]
     _recorded(cog).responses.output_parsed = RecallRouteClassification(
         decision="QA", recall_user_ids=["2", "42", "43"]
     )
@@ -7986,7 +7670,7 @@ async def test_optional_picks_use_only_the_remaining_memory_budget() -> None:
 
     _assert_route_offered(cog=cog, candidates={42, 43})
     answer = request_input(responses=_recorded(cog).responses)
-    assert set(extract_user_memory_blocks(request=answer)) == {*range(1, 8), 42}
+    assert set(extract_user_memory_blocks(request=answer)) == {*deterministic, 42}
 
 
 @pytest.mark.usefixtures("no_memory_review")
@@ -8000,13 +7684,7 @@ async def test_the_route_is_offered_candidates_with_no_deterministic_memory() ->
     """
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=42), text="李董記憶")
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
+    _seed_alias(subject_id=42, text="Boss(社群暱稱:李董)")
     _recorded(cog).responses.output_parsed = RecallRouteClassification(
         decision="QA", recall_user_ids=["42"]
     )
@@ -8030,13 +7708,7 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
+    _seed_alias(subject_id=42, text="Boss(社群暱稱:李董)")
     contexts: list[ReplyContext] = []
 
     async def capture_answer(self: object, *, context: ReplyContext, **kwargs: object) -> None:
@@ -8133,13 +7805,7 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         _seed_fact(scope=user_scope(user_id=uid), text=f"記憶{uid}")
     if server_nick is not None:
         nick_id, nick_name, nick_alias = server_nick
-        _seed_fact(
-            scope=server_scope(server_id=1),
-            text=f"{nick_name}(社群暱稱:{nick_alias})",
-            section="member_alias",
-            durability="permanent",
-            subject_id=nick_id,
-        )
+        _seed_alias(subject_id=nick_id, text=f"{nick_name}(社群暱稱:{nick_alias})")
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     mention_authors: list[FakeAuthor] = []
@@ -8169,13 +7835,7 @@ async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_p
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="甲")
     _seed_fact(scope=user_scope(user_id=42), text="不該注入的第三人")
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
+    _seed_alias(subject_id=42, text="Boss(社群暱稱:李董)")
 
     with pytest.raises(ValidationError) as invalid:
         RecallRouteClassification.model_validate(obj={"decision": "QA", "recall_user_ids": 42})

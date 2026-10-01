@@ -16,47 +16,17 @@ from discordbot.cogs.gen_reply.files_api import (
 )
 
 from tests.helpers.casting import as_client
+from tests.helpers.gen_reply import FakeGeminiFiles, FakeGeminiClient
 
 
-class _Files:
-    """Fake async Files resource recording uploads and driving the PROCESSING poll."""
-
-    def __init__(
-        self, processing_rounds: int = 0, final_state: FileState = FileState.ACTIVE
-    ) -> None:
-        """Initializes the upload record and the processing-to-final schedule."""
-        self.uploads: list[tuple[object, str, str]] = []
-        self.get_calls = 0
-        self.processing_rounds = processing_rounds
-        self.final_state = final_state
-        self._remaining = 0
-
-    def _file(self, state: FileState) -> SimpleNamespace:
-        """Builds a fake file object carrying the uri the answer would reference."""
-        return SimpleNamespace(name="files/abc", uri="https://files.test/abc", state=state)
-
-    async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-        """Records the upload source and returns a PROCESSING or final file."""
-        self.uploads.append((file, config["mime_type"], config["display_name"]))
-        self._remaining = self.processing_rounds
-        return self._file(FileState.PROCESSING if self.processing_rounds else self.final_state)
-
-    async def get(self, name: str) -> SimpleNamespace:
-        """Polls the file, flipping to the final state once the rounds elapse."""
-        del name
-        self.get_calls += 1
-        self._remaining -= 1
-        return self._file(FileState.PROCESSING if self._remaining > 0 else self.final_state)
-
-
-def _client(files: _Files) -> genai.Client:
+def _client(files: FakeGeminiFiles) -> genai.Client:
     """Wraps a fake Files resource in the client shape the helper reaches through."""
-    return as_client(fake=SimpleNamespace(aio=SimpleNamespace(files=files)))
+    return as_client(fake=FakeGeminiClient(files=files))
 
 
 async def test_upload_returns_the_active_uri() -> None:
     """A file that is ACTIVE straight away yields its full uri."""
-    files = _Files()
+    files = FakeGeminiFiles()
     uri = await upload_to_files_api(
         client=_client(files),
         source=b"data",
@@ -64,17 +34,17 @@ async def test_upload_returns_the_active_uri() -> None:
         display_name="clip.mp4",
         timeout_seconds=5.0,
     )
-    assert uri == "https://files.test/abc"
-    uploaded_source, mime_type, display_name = files.uploads[0]
-    assert (mime_type, display_name) == ("video/mp4", "clip.mp4")
+    assert uri == "https://files.test/clip.mp4"
+    assert files.upload_calls == [("clip.mp4", "video/mp4")]
     # Bytes are wrapped in a stream because the SDK's `file` parameter takes no raw bytes.
+    (uploaded_source,) = files.uploaded_sources
     assert isinstance(uploaded_source, io.BytesIO)
     assert uploaded_source.getvalue() == b"data"
 
 
 async def test_upload_streams_from_a_path_without_reading_it(tmp_path: Path) -> None:
     """A path source is handed to the SDK as-is, so a large clip is never read into memory."""
-    files = _Files()
+    files = FakeGeminiFiles()
     path = tmp_path / "clip.mp4"
     await upload_to_files_api(
         client=_client(files),
@@ -83,12 +53,12 @@ async def test_upload_streams_from_a_path_without_reading_it(tmp_path: Path) -> 
         display_name="clip.mp4",
         timeout_seconds=5.0,
     )
-    assert files.uploads[0][0] is path
+    assert files.uploaded_sources[0] is path
 
 
 async def test_upload_polls_until_active() -> None:
     """A file still PROCESSING is polled until it flips to ACTIVE."""
-    files = _Files(processing_rounds=2)
+    files = FakeGeminiFiles(processing_rounds=2)
     uri = await upload_to_files_api(
         client=_client(files),
         source=b"data",
@@ -96,13 +66,13 @@ async def test_upload_polls_until_active() -> None:
         display_name="clip.mp4",
         timeout_seconds=30.0,
     )
-    assert uri == "https://files.test/abc"
+    assert uri == "https://files.test/clip.mp4"
     assert files.get_calls == 2
 
 
 async def test_upload_gives_up_when_activation_exceeds_the_bound() -> None:
     """A file that never leaves PROCESSING degrades to None rather than hanging or raising."""
-    files = _Files(processing_rounds=10_000)
+    files = FakeGeminiFiles(processing_rounds=10_000)
     uri = await upload_to_files_api(
         client=_client(files),
         source=b"data",
@@ -121,7 +91,7 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
     PROCESSING poll, gives its slot back.
     """
 
-    class _Hangs(_Files):
+    class _Hangs(FakeGeminiFiles):
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
             """Never returns, the way a black-holed connection behaves."""
             await asyncio.sleep(30)
@@ -138,7 +108,7 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
         for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)
     ]
     healthy = upload_to_files_api(
-        client=_client(_Files()),
+        client=_client(FakeGeminiFiles()),
         source=b"data",
         mime_type="video/mp4",
         display_name="clip.mp4",
@@ -147,7 +117,7 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
     results = await asyncio.wait_for(asyncio.gather(*hung, healthy), timeout=10.0)
 
     assert results[:-1] == [None] * LINK_MEDIA_UPLOAD_CONCURRENCY
-    assert results[-1] == "https://files.test/abc"
+    assert results[-1] == "https://files.test/clip.mp4"
 
 
 async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> None:
@@ -158,7 +128,7 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
     """
     release = asyncio.Event()
 
-    class _Slow(_Files):
+    class _Slow(FakeGeminiFiles):
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
             """Holds its slot until released, then succeeds."""
             await release.wait()
@@ -178,7 +148,7 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
     ]
     queued = asyncio.create_task(
         upload_to_files_api(
-            client=_client(_Files()),
+            client=_client(FakeGeminiFiles()),
             source=b"data",
             mime_type="video/mp4",
             display_name="queued.mp4",
@@ -190,12 +160,15 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
     release.set()
     results = await asyncio.wait_for(asyncio.gather(*holders, queued), timeout=5.0)
 
-    assert results == ["https://files.test/abc"] * (LINK_MEDIA_UPLOAD_CONCURRENCY + 1)
+    assert results == [
+        *(f"https://files.test/slow{index}.mp4" for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)),
+        "https://files.test/queued.mp4",
+    ]
 
 
 async def test_upload_degrades_on_a_failed_file() -> None:
     """A terminal non-ACTIVE state degrades to None."""
-    files = _Files(final_state=FileState.FAILED)
+    files = FakeGeminiFiles(final_state=FileState.FAILED)
     uri = await upload_to_files_api(
         client=_client(files),
         source=b"data",
@@ -209,7 +182,7 @@ async def test_upload_degrades_on_a_failed_file() -> None:
 async def test_upload_degrades_when_the_sdk_raises() -> None:
     """The helper is best-effort: an SDK failure returns None instead of raising."""
 
-    class _Boom(_Files):
+    class _Boom(FakeGeminiFiles):
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
             """Fails the upload the way a transport error would."""
             raise RuntimeError("network down")
@@ -231,7 +204,7 @@ async def test_input_file_part_carries_the_uri_and_a_real_extension() -> None:
     native Interactions path classifies the part by the filename's extension.
     """
     part = await upload_as_input_file(
-        client=_client(_Files()),
+        client=_client(FakeGeminiFiles()),
         source=b"data",
         mime_type="video/mp4",
         filename="douyin_123.mp4",
@@ -239,7 +212,7 @@ async def test_input_file_part_carries_the_uri_and_a_real_extension() -> None:
     )
     assert part == {
         "type": "input_file",
-        "file_id": "https://files.test/abc",
+        "file_id": "https://files.test/douyin_123.mp4",
         "filename": "douyin_123.mp4",
     }
 
@@ -247,7 +220,7 @@ async def test_input_file_part_carries_the_uri_and_a_real_extension() -> None:
 async def test_input_file_part_is_none_when_the_upload_fails() -> None:
     """A failed upload produces no part, so the caller degrades to text instead of a bad ref."""
     part = await upload_as_input_file(
-        client=_client(_Files(final_state=FileState.FAILED)),
+        client=_client(FakeGeminiFiles(final_state=FileState.FAILED)),
         source=b"data",
         mime_type="video/mp4",
         filename="douyin_123.mp4",
@@ -259,7 +232,7 @@ async def test_input_file_part_is_none_when_the_upload_fails() -> None:
 async def test_the_kill_switch_skips_the_upload_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
     """Switched off, the transfer never starts, so an outage costs no upload either."""
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
-    files = _Files()
+    files = FakeGeminiFiles()
     uri = await upload_to_files_api(
         client=_client(files),
         source=b"data",
@@ -268,4 +241,4 @@ async def test_the_kill_switch_skips_the_upload_entirely(monkeypatch: pytest.Mon
         timeout_seconds=5.0,
     )
     assert uri is None
-    assert files.uploads == []
+    assert files.upload_calls == []
