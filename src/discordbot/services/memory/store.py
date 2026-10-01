@@ -548,7 +548,9 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
         # file still honors the advertised hard cap (memory is best-effort,
         # and the truncated tail is the only loss not kept in the detail file).
         rendered = encoded[:RAW_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
-    raw_path.write_text(data=rendered + "\n", encoding="utf-8")
+    tmp_path = raw_path.with_suffix(".md.tmp")
+    tmp_path.write_text(data=rendered + "\n", encoding="utf-8")
+    os.replace(src=tmp_path, dst=raw_path)
     if evicted:
         # Move to the detail file only after the raw write succeeded so a
         # failed write cannot retire entries that still live in the raw file.
