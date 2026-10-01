@@ -502,8 +502,11 @@ class FacebookDownloader(PlatformDownloader):
         )
         return FacebookConversation(
             chain=[post],
+            # A `pfbid` link names no id, so the story's own keeps other stories' comments out.
             reply_branches=self._comment_branches(
-                payloads=payloads, post_url=post_url, post_id=post_id
+                payloads=payloads,
+                post_url=post_url,
+                post_id=post_id or str(story.get("post_id") or ""),
             ),
             selected_comment_id=facebook_url.comment_id,
         )

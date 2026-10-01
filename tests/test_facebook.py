@@ -490,6 +490,23 @@ def test_a_pfbid_link_reads_the_story_on_its_page(monkeypatch: pytest.MonkeyPatc
     assert post.text == "the pfbid post"
 
 
+def test_a_pfbid_page_keeps_only_its_storys_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The URL names no numeric id, so the story read off the page decides whose comments stay."""
+    comments = [
+        _comment(comment_id="11", text="on the linked post"),
+        _comment(comment_id="22", text="on another post", post_id="999"),
+    ]
+    downloader = _downloader(
+        monkeypatch,
+        html=_page(stories=[_story(), _story(post_id="999")], comments=comments),
+        final_url=f"https://www.facebook.com/NASA/posts/{_PFBID}",
+    )
+
+    conversation = downloader.parse_metadata(url=f"https://www.facebook.com/NASA/posts/{_PFBID}")
+
+    assert [comment.text for comment in conversation.comments] == ["on the linked post"]
+
+
 def test_a_login_wall_reads_as_an_unreadable_post(monkeypatch: pytest.MonkeyPatch) -> None:
     """A private post redirects to login, which is a normal outcome rather than a failure."""
     downloader = _downloader(
