@@ -8783,6 +8783,9 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     assert by_scope[user_job_scope]["writer"] is user_sentinel
     assert by_scope[user_job_scope]["token"] == 11
     assert by_scope[server_job_scope]["writer"] is server_sentinel
+    # The row's status decides whether the resumed review is its one retry.
+    assert by_scope[user_job_scope]["status"] == "failed"
+    assert by_scope[server_job_scope]["status"] == "pending"
     # Every over-threshold scope is swept, including the resumed ones: the scope
     # lock makes the resumed review and the consolidation sweep idempotent.
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}

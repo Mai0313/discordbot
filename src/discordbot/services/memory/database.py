@@ -2,13 +2,15 @@
 
 One row per scope (a user or a bot-per-server). The row durably stages a phase-1
 review turn so a bot restart resumes the work the in-memory pipeline had not
-yet flushed to `raw.md`. Success is *recorded* (`status='done'`, `transcript`
-cleared) rather than the row deleted, so the table doubles as an inspectable
-per-scope processing state; an LLM failure parks the row at `status='failed'`
-with its transcript kept, so the restart sweep retries it without any timeout
-tuning. A user-requested memory clear replaces the row with a transcript-free
-`cleared` tombstone, whose ordering token prevents a staging write captured before the
-clear from recreating the erased transcript after it commits.
+yet flushed to `raw.md`. A finished turn is *recorded* (`status='done'`,
+`transcript` cleared) rather than the row deleted, so the table doubles as an
+inspectable per-scope processing state; `done` means terminal, not successful,
+since a review that fails its one retry closes there too. An LLM failure parks
+the row at `status='failed'` with its transcript kept, so the next restart
+retries it once without any timeout tuning. A user-requested memory clear
+replaces the row with a transcript-free `cleared` tombstone, whose ordering
+token prevents a staging write captured before the clear from recreating the
+erased transcript after it commits.
 
 `reply.db` is shared with another table owned elsewhere, so this module keeps its own
 `Base`, its own bootstrap and a module-level `AsyncEngine` singleton (a per-instance

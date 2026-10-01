@@ -203,6 +203,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 writer=writer,
                 identity=job.identity,
                 token=job.token,
+                status=job.status,
             )
         if jobs:
             logfire.info("resumed persisted memory jobs", count=len(jobs))

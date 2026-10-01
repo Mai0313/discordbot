@@ -2039,6 +2039,7 @@ async def test_a_failed_review_still_writes_the_forgets_of_later_rounds(
         writer=writer,
         identity=IDENTITY,
         token=memory_db.new_token(),
+        status="pending",
     )
     await _wait_for_inflight()
 
@@ -4016,6 +4017,7 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
         writer=writer,
         identity=IDENTITY,
         token=42,
+        status="failed",
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
@@ -4040,6 +4042,7 @@ async def test_resume_of_a_row_predating_markers_writes_nothing(memory_isolated_
         writer=writer,
         identity=IDENTITY,
         token=42,
+        status="pending",
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -5360,3 +5363,150 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     assert job is not None
     assert job.status == "cleared"
     assert job.transcript is None
+
+
+async def _restart(writer: MemoryWriterAI) -> None:
+    """Resumes every persisted row the way the reply cog's restart sweep does, then drains."""
+    for job in await memory_db.list_resumable():
+        assert job.transcript is not None
+        pipeline.resume_memory_update(
+            scope=job.scope,
+            subject=job.subject,
+            transcript=job.transcript,
+            writer=writer,
+            identity=job.identity,
+            token=job.token,
+            status=job.status,
+        )
+    await _drain_scope()
+
+
+def _staged_forgets() -> int:
+    """Counts the forget requests the test user's evidence holds, raw and detail together."""
+    staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
+        scope=USER_SCOPE
+    )
+    return staged.count("### forget_request")
+
+
+async def test_a_review_refused_on_its_retry_is_not_retried_again(
+    memory_isolated_dir: Path,
+) -> None:
+    """A review the provider refuses every time gets one restart retry, not one per start (#874).
+
+    Its forget is filed once, by the attempt that failed: the retry files no second copy and
+    forces no second forget pass, and after it no restart has anything left to resume.
+    """
+    writer, fake_client = _writer()
+    answers = _answers()
+
+    async def review_refused(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Refuses every note review, as a content filter does; every other call answers."""
+        if text_format is RawMemoryDraft:
+            return None
+        return await answers(body=body, text_format=text_format)
+
+    fake_client.responses.answer = review_refused
+    # A stored fact gives the forget pass a compartment to call the model for.
+    write_fact(scope=USER_SCOPE, fact=_stored_fact())
+    _schedule(writer=writer, forget_notes=("別再提那台舊筆電",))
+    await _drain_scope()
+    calls = len(fake_client.responses.parse_instructions)
+    assert any("forget_request" in body for body in fake_client.responses.parse_bodies)
+
+    await _restart(writer=writer)
+    await _restart(writer=writer)
+
+    assert fake_client.responses.parse_instructions[calls:] == [PHASE1_EVALUATOR_PROMPT]
+    assert _staged_forgets() == 1
+    assert await memory_db.list_resumable() == []
+
+
+async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages(
+    memory_isolated_dir: Path,
+) -> None:
+    """A retry that re-stages an older round's notes files the newer round's forget behind them.
+
+    The attempt that failed filed both forgets ahead of anything the retry stages, so a newer
+    turn's forget left at that copy could not reach what the older turn asked to remember.
+    """
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _answers(review=_draft("住在台中", normalized_key="fact.city"))
+    pipeline.resume_memory_update(
+        scope=USER_SCOPE,
+        subject=_SUBJECT,
+        transcript=render_turn_payload(
+            transcript="Alice (alice) [id: 123456789]: 哈囉",
+            rounds=((("他住在台中",), ()), ((), ("他已經不住台中了",))),
+        ),
+        writer=writer,
+        identity=IDENTITY,
+        token=memory_db.new_token(),
+        status="failed",
+    )
+    await _drain_scope()
+
+    staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
+        scope=USER_SCOPE
+    )
+    assert staged.index("fact.city") < staged.index("### forget_request")
+
+
+async def test_a_retry_refused_again_files_no_forget_a_second_time(
+    memory_isolated_dir: Path,
+) -> None:
+    """With nothing re-staged ahead of it, a later round's forget is left at its first copy.
+
+    A second copy would reach nothing the first one does not, and would force a forget pass of
+    its own on a retry that is closing anyway.
+    """
+    writer, fake_client = _writer()
+    fake_client.responses.raises = RuntimeError("review refused")
+    pipeline.resume_memory_update(
+        scope=USER_SCOPE,
+        subject=_SUBJECT,
+        transcript=render_turn_payload(
+            transcript="Alice (alice) [id: 123456789]: 哈囉",
+            rounds=((("他住在台中",), ()), ((), ("他已經不住台中了",))),
+        ),
+        writer=writer,
+        identity=IDENTITY,
+        token=memory_db.new_token(),
+        status="failed",
+    )
+    await _drain_scope()
+
+    assert fake_client.responses.parse_instructions == [PHASE1_EVALUATOR_PROMPT]
+    assert _staged_forgets() == 0
+
+
+async def test_a_retry_merged_into_a_waiting_turn_still_files_that_turns_forget(
+    memory_isolated_dir: Path,
+) -> None:
+    """A merged payload opens with the waiting turn's round, whose forget nothing has filed yet.
+
+    Three turns, because that is what it takes to reach the merge: the first occupies the scope
+    and the other two queue behind it under the same subject, the resumed row arriving last.
+    """
+    payload = render_turn_payload(
+        transcript="Alice (alice) [id: 123456789]: 哈囉", rounds=((_NOTES, ()),)
+    )
+    # Left by the previous process, so its token is below every one this process mints.
+    await _stage_row(token=42, transcript=payload, subject=_SUBJECT, identity=IDENTITY)
+    await memory_db.mark_failed(scope=USER_SCOPE, token=42, error="evaluate failed")
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _answers(review=_draft("喜歡簡短"))
+    _schedule(writer=writer)
+    _schedule(writer=writer, remember_notes=(), forget_notes=("別再提那台舊筆電",))
+    pipeline.resume_memory_update(
+        scope=USER_SCOPE,
+        subject=_SUBJECT,
+        transcript=payload,
+        writer=writer,
+        identity=IDENTITY,
+        token=42,
+        status="failed",
+    )
+    await _drain_scope()
+
+    assert _staged_forgets() == 1
