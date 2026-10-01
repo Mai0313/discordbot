@@ -943,7 +943,8 @@ class ThreadsDownloader(PlatformDownloader):
             The Path to the downloaded file.
 
         Raises:
-            LinkRetryableError: The CDN refused the transfer or never answered.
+            LinkRetryableError: The CDN refused the transfer, never answered, or lost the
+                connection part-way through the body.
             RuntimeError: The transfer failed in a way HTTP does not classify.
             OSError: If the file cannot be written. A caller that removed the scratch dir gets
                 `FileNotFoundError` here, deliberately.

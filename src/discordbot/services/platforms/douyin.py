@@ -176,8 +176,9 @@ def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError
     """Wraps a failed Douyin request in the class that says whether it is worth retrying.
 
     A bot wall is not the only thing Douyin refuses with: a 429, a 5xx or a connection that
-    never answered all mean the same "come back later" the WAF does, and reporting one as a
-    missing post is what this module's docstring calls the worst failure it can produce.
+    never answered or dropped part-way through the body all mean the same "come back later"
+    the WAF does, and reporting one as a missing post is what this module's docstring calls
+    the worst failure it can produce.
     """
     if is_retryable_fetch_failure(error=error):
         return DouyinBlockedError(message)

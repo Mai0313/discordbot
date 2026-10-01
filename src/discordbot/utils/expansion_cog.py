@@ -240,10 +240,11 @@ def expansion_failure_emoji(*, error: Exception) -> str:
     """Picks the mark a failed read earns, the same way for every platform.
 
     Read off the exception's CLASS rather than its message: a platform refusing the request or a
-    transport that never answered is the retryable mark, since the link is fine and works later;
-    anything else `LinkReadError` covers means the platform answered and there is no post in it;
-    and an error from outside that tree is the bot's own. `utils/link_errors.py` owns which fetch
-    failures are classified at all and why a 403 deliberately is not.
+    transport that never answered or dropped part-way through the body is the retryable mark,
+    since the link is fine and works later; anything else `LinkReadError` covers means the
+    platform answered and there is no post in it; and an error from outside that tree is the
+    bot's own. `utils/link_errors.py` owns which fetch failures are classified at all and why a
+    403 deliberately is not.
 
     Args:
         error: What the read raised.
