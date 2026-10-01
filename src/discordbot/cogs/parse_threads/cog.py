@@ -286,7 +286,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         )
         if output.author_name:
             embed.set_author(
-                name=output.author_name, url=output.url, icon_url=output.author_icon_url
+                name=output.author_name, url=output.url, icon_url=output.author_icon_url or None
             )
         embed.set_footer(text=output.counters_line())
         return embed
