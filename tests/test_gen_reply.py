@@ -3047,18 +3047,6 @@ def _link_source(name: str) -> LinkContextSource:
     return next(source for source in LINK_CONTEXT_SOURCES if source.name == name)
 
 
-def test_link_url_for_source_searches_the_replied_to_message() -> None:
-    """Threads reads a link the user only replied to, like YouTube already does."""
-    referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")
-    message = FakeMessage(content="<@999> 這篇底下在吵什麼")
-    message.reference = FakeReference(resolved=referenced)
-
-    found = link_url_for_source(
-        source=_link_source(name="threads"), message=as_message(fake=message)
-    )
-    assert found == SAMPLE_POST_URLS["threads"]
-
-
 def test_link_url_for_source_finds_the_threads_share_form() -> None:
     """The share button copies `/share/<code>`, which the registry has to select like any post.
 
@@ -3134,25 +3122,6 @@ def test_link_url_for_source_skips_a_refused_link_in_the_replied_to_message(
 
     found = link_url_for_source(source=_link_source(name=name), message=as_message(fake=message))
     assert found == SAMPLE_POST_URLS[name]
-
-
-@pytest.mark.parametrize("name", ["douyin", "bilibili", "twitter"])
-def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(name: str) -> None:
-    """Three sources never widen to the replied-to message, for two different reasons.
-
-    Douyin and Bilibili carry a clip rather than a discussion and both are rate-limit sensitive,
-    so a passing mention one hop away is not worth a fetch. Twitter opts out because its endpoint
-    serves no replies at all: the three that DO widen are answering "what are people saying under
-    this", and a second read of a Twitter link finds exactly what the expansion already showed.
-    """
-    referenced = FakeMessage(content=f"看看這個 {SAMPLE_POST_URLS[name]}")
-    message = FakeMessage(content="<@999> 這在講什麼")
-    message.reference = FakeReference(resolved=referenced)
-
-    assert (
-        link_url_for_source(source=_link_source(name=name), message=as_message(fake=message))
-        is None
-    )
 
 
 def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message() -> None:
@@ -4449,13 +4418,14 @@ def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
     can no longer reach the model, and Douyin's is the WAF-sensitive path an incident most
     wants left alone. Facebook and Instagram fetch and downscale their images before the upload
     those images could no longer feed, which is the same cost through a different door. Read off
-    the live registry so the wiring is what is pinned, and asserted over every source that has a
-    media step at all rather than the two it was written for.
+    the live registry so the wiring is what is pinned, and asserted over every source whose media
+    a switch can turn off rather than the two it was written for. Threads is the one source with
+    a media step and no such switch: it fetches its media even with the Files API off.
     """
     monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
     monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
     monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
-    gated = ("douyin", "bilibili", "facebook", "instagram", "twitter")
+    gated = [name for name, case in _LINK_CASES.items() if case.media_switch is not None]
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
     on = LLMConfig()
@@ -6651,8 +6621,10 @@ async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
     """Mentioning the bot in a reply to someone else's link reads it only where that adds news.
 
     A discussion source reads the comments its expansion never shows, so a reply asking about
-    them has nothing else to answer from; a clip, or a Twitter post whose endpoint serves no
-    replies, would only be read a second time, and stays on the current message.
+    them has nothing else to answer from, the way a replied-to YouTube link is watched. A clip,
+    or a Twitter post whose endpoint serves no replies, would only be read a second time, and
+    stays on the current message; Douyin and Bilibili are rate-limit sensitive besides, so a
+    passing mention one hop away is not worth their fetch.
     """
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
