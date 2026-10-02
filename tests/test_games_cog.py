@@ -18,6 +18,7 @@ from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import MAX_SINGLE_BET, JackpotSnapshot
 from discordbot.cogs.games.lobby import BaseGameLobbyView
+from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.utils.message_cleanup import PendingPublicMessage, list_pending_public_messages
@@ -652,6 +653,34 @@ async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(
     assert "🂠" in hidden, "the peek shows the hole card face down first"
     assert "🂠" not in revealed
     assert message.edits[-1]["view"] is None
+
+
+async def test_a_blackjack_round_in_a_server_the_bot_is_not_in_is_recorded_under_that_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user install plays in servers the bot never joined, where nothing resolves a guild.
+
+    The press still carries the server's id, so the round's history is not filed as a DM's.
+    """
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    monkeypatch.setattr(blackjack_views, "PEEK_REVEAL_DELAY_SECONDS", 0)
+    await seed_balance(user_id=1, name="alice", amount=100)
+    # Alice 5 5, the dealer's hole an ace under a king: the start press settles the round.
+    lobby = _scripted_blackjack_lobby(
+        dealt=[card(rank="5")] * 2 + [card(rank="A"), card(rank="K")]
+    )
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+    start = FakeInteraction(user=FakeUser(user_id=1), message=message, guild_id=555)
+    start.guild = None
+
+    await lobby_button(view=lobby, label="開始").callback(as_interaction(fake=start))
+    table = message.edits[0]["view"]
+    assert isinstance(table, BlackjackView)
+    await table.wait_for_background_tasks()
+
+    rounds = await fetch_recent_blackjack_rounds(user_id=1, limit=5)
+    assert [record.guild_id for record in rounds] == [555]
 
 
 async def test_a_blackjack_natural_under_an_ace_settles_inside_the_insurance_press(

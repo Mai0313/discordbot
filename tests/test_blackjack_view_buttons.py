@@ -51,7 +51,7 @@ from tests.helpers.casting import (
     make_server_error,
 )
 from tests.helpers.economy import seed_balance
-from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs, capture_levels
 from tests.helpers.message_cleanup import ScheduledDeletes, record_scheduled_deletes
 
@@ -704,16 +704,12 @@ async def test_history_persistence_uses_the_dealer_hand_captured_at_settlement(
 
     monkeypatch.setattr(blackjack_views, "record_blackjack_history", record_blackjack_history)
 
-    await view.finalize(
-        message=as_message(fake=FakeDiscordMessage(guild=FakeGuild(guild_id=888))),
-        interaction=None,
-    )
+    await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
     round_state.dealer.append(card(rank="K", suit="♣"))
     await view.wait_for_background_tasks()
 
     assert recorded["dealer_cards"] == [card(rank="10", suit="♣"), card(rank="8", suit="♦")]
     assert recorded["dealer_total"] == 18
-    assert recorded["guild_id"] == 888
 
 
 # Settling a table ---------------------------------------------------------
