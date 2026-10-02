@@ -89,7 +89,7 @@ def skip_files_api_poll_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes every Files API activation poll re-read at once instead of waiting its interval.
 
     The interval is zeroed rather than `asyncio.sleep` patched, which would stop every other
-    await in the test from yielding too.
+    `asyncio.sleep` in the test from yielding too.
     """
 
     async def poll_at_once(**kwargs: Any) -> File:  # noqa: ANN401 -- forwarded untouched to the real poll
