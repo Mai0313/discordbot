@@ -522,6 +522,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
                 bot_user_id=self.bot_user_id,
                 shoe_store=self._shoe_store,
                 channel_id=self._channel_id,
+                # Off the payload: a user install in a server the bot is not in resolves no guild.
+                guild_id=interaction.guild_id or 0,
                 shoe_generation=shoe_generation,
             )
             view.message = message
@@ -562,6 +564,7 @@ class BlackjackView(GameView):
         bot_user_id: int | None = None,
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
+        guild_id: int = 0,
         shoe_generation: int = 0,
     ) -> None:
         """Initializes the active Blackjack table view."""
@@ -571,6 +574,7 @@ class BlackjackView(GameView):
         self.bot_user_id = bot_user_id
         self._shoe_store = shoe_store
         self._channel_id = channel_id
+        self._guild_id = guild_id
         self._shoe_generation = shoe_generation
         self.message: Message | None = None
         # The last press acknowledged on the table; the timeout's edits and delete ride its token.
@@ -1165,7 +1169,7 @@ class BlackjackView(GameView):
             await record_blackjack_history(
                 round_id=uuid4().hex,
                 channel_id=self._channel_id,
-                guild_id=message.guild.id if message.guild is not None else 0,
+                guild_id=self._guild_id,
                 message_id=message.id,
                 bot_user_id=self.bot_user_id,
                 results=results,
