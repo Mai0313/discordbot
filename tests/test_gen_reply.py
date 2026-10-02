@@ -1256,6 +1256,27 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
     assert "a Discord direct message (DM)" in dm_instructions
 
 
+@pytest.mark.parametrize(
+    argnames=("in_guild", "location"),
+    argvalues=[(True, "a Discord server (guild id 1)"), (False, "a Discord direct message (DM)")],
+    ids=["guild", "dm"],
+)
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_answer_is_told_where_its_turn_happens(in_guild: bool, location: str) -> None:
+    """The QA answer's instructions name the turn's own server, or a DM outside one."""
+    cog = _cog()
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    if not in_guild:
+        message.guild = None
+
+    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
+        system_prompt="SYS", context=ReplyContext()
+    )
+
+    (instructions,) = _recorded(cog).responses.create_instructions
+    assert location in instructions
+
+
 def _stream_events() -> AsyncIterator[ResponseStreamEvent]:
     """Yields a minimal streaming completion with token usage."""
     return _stream_events_from(
@@ -2904,6 +2925,11 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     assert interactions.calls[0].generation_config["thinking_level"] == "low"
     last_step_parts = interactions.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
+    # The video turn is told the request's time and place, exactly as a Responses one is.
+    _assert_runtime_time_context(
+        instructions=interactions.calls[0].system_instruction, system_prompt="SYS"
+    )
+    assert "a Discord server (guild id 1)" in interactions.calls[0].system_instruction
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
     assert "Hello world" in reply_content
