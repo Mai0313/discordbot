@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 import pytest
 
-from discordbot.typings.memory import MemoryOwner
+from discordbot.typings.memory import MemoryOwner, MemorySection, MemoryDurability
 from discordbot.services.memory.tone import tone_evidence_from_raw
 from discordbot.cogs.gen_reply.recall import (
     RecallContext,
@@ -55,6 +55,7 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     render_existing_facts,
 )
+from discordbot.services.memory.constants import RECENT_CONTEXT_TTL_DAYS
 
 from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
 
@@ -912,6 +913,33 @@ def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
         == 0
     )
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
+
+
+@pytest.mark.parametrize(
+    ("section", "durability"),
+    [("fact", "recent"), ("fact", "session"), ("preference", "volatile"), ("recent", "stable")],
+)
+def test_a_fact_not_displaced_as_stable_ages_on_the_ttl(
+    memory_isolated_dir: Path, section: MemorySection, durability: MemoryDurability
+) -> None:
+    """The delta schema lets the model pair any section with any durability, so a fact
+    that is neither exempt nor a `stable` one outside `recent` must still age instead of
+    being injected until a later pass happens to delete it. The fresh anchor puts the old
+    fact past the TTL but inside the stable window, so displacement alone would keep it.
+    """
+    scope = user_scope(user_id=111)
+    today = STAMPED_AT + timedelta(days=RECENT_CONTEXT_TTL_DAYS + 1)
+    write_fact(
+        scope=scope,
+        fact=_fact(
+            fact_id="a" * 16, section=section, durability=durability, last_confirmed=STAMPED_AT
+        ),
+    )
+    write_fact(scope=scope, fact=_fact(fact_id="b" * 16, last_confirmed=today))
+    assert sweep_stale_facts(scope=scope, compartment=GLOBAL_COMPARTMENT, today=today) == 1
+    assert [fact.fact_id for fact in read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)] == [
+        "b" * 16
+    ]
 
 
 @pytest.mark.parametrize(

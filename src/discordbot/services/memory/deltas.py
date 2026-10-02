@@ -481,10 +481,12 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
 
     Two rules, deterministic because `last_confirmed` is code-stamped:
 
-    * a `recent` fact expires `RECENT_CONTEXT_TTL_DAYS` after it was last confirmed;
-    * a `stable` fact is displaced once it falls `STABLE_FRESHNESS_WINDOW_DAYS` behind
-      the freshest stable fact in the SAME compartment, so a quiet compartment ages
-      nothing and forgets nothing while a busy one self-trims.
+    * a `stable` fact outside the `recent` section is displaced once it falls
+      `STABLE_FRESHNESS_WINDOW_DAYS` behind the freshest stable fact in the SAME
+      compartment, so a quiet compartment ages nothing and forgets nothing while a busy
+      one self-trims;
+    * every other fact expires `RECENT_CONTEXT_TTL_DAYS` after it was last confirmed,
+      whatever section and durability the model paired it with.
 
     `permanent` facts, anything filed in the `permanent` section, and member-alias
     rows never age.
@@ -503,14 +505,12 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
             # `render_existing_facts` feeds a mismatched pairing back on every later
             # update, so one slip would otherwise age out an enforced standing directive.
             continue
-        if fact.section == "recent":
-            expired = today - fact.last_confirmed > timedelta(days=RECENT_CONTEXT_TTL_DAYS)
-        elif fact.durability == "stable" and latest_stable is not None:
+        if fact.durability == "stable" and fact.section != "recent" and latest_stable is not None:
             expired = latest_stable - fact.last_confirmed > timedelta(
                 days=STABLE_FRESHNESS_WINDOW_DAYS
             )
         else:
-            expired = False
+            expired = today - fact.last_confirmed > timedelta(days=RECENT_CONTEXT_TTL_DAYS)
         if expired and delete_fact(scope=scope, compartment=compartment, fact_id=fact.fact_id):
             removed += 1
     return removed
