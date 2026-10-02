@@ -14,6 +14,7 @@ from collections.abc import Callable
 import pytest
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
+from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
@@ -36,17 +37,20 @@ from discordbot.services.platforms.facebook import FacebookOutput, FacebookDownl
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramDownloader
 from discordbot.cogs.gen_reply.link_sources.twitter import (
     TWITTER_SEPARATORS,
+    TWITTER_UNREADABLE_NOTICE,
     TWITTER_UNAVAILABLE_NOTICE,
     build_twitter_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.facebook import (
     FACEBOOK_SEPARATORS,
+    FACEBOOK_UNREADABLE_NOTICE,
     FACEBOOK_UNAVAILABLE_NOTICE,
     build_facebook_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 from discordbot.cogs.gen_reply.link_sources.instagram import (
     INSTAGRAM_SEPARATORS,
+    INSTAGRAM_UNREADABLE_NOTICE,
     INSTAGRAM_UNAVAILABLE_NOTICE,
     build_instagram_context_messages,
 )
@@ -67,6 +71,7 @@ from tests.helpers.link_sources import (
     link_build_deadline,
     accept_image_uploads,
 )
+from tests.helpers.logfire_capture import capture_levels
 
 
 class _PostSource(BaseModel):
@@ -87,7 +92,11 @@ class _PostSource(BaseModel):
         ..., description="Builds one of its comments; None for a source that carries none."
     )
     separators: PostSeparators = Field(..., description="Its wording around a readable post.")
-    unavailable_notice: str = Field(..., description="What an unreadable post becomes.")
+    unavailable_notice: str = Field(..., description="What a post that is not there becomes.")
+    unreadable_notice: str = Field(
+        ...,
+        description="What a read that failed for a reason saying nothing about the post becomes.",
+    )
     image_cap: int = Field(..., description="How many of a post's images one reply uploads.")
     comment_cap: int = Field(
         ..., description="How many of its comments ride; 0 for a source that carries none."
@@ -104,6 +113,7 @@ _SOURCES = [
         comment=FacebookOutput,
         separators=FACEBOOK_SEPARATORS,
         unavailable_notice=FACEBOOK_UNAVAILABLE_NOTICE,
+        unreadable_notice=FACEBOOK_UNREADABLE_NOTICE,
         image_cap=MAX_FACEBOOK_INGEST_IMAGES,
         comment_cap=MAX_FACEBOOK_COMMENTS,
     ),
@@ -116,6 +126,7 @@ _SOURCES = [
         comment=InstagramOutput,
         separators=INSTAGRAM_SEPARATORS,
         unavailable_notice=INSTAGRAM_UNAVAILABLE_NOTICE,
+        unreadable_notice=INSTAGRAM_UNREADABLE_NOTICE,
         image_cap=MAX_INSTAGRAM_INGEST_IMAGES,
         comment_cap=MAX_INSTAGRAM_COMMENTS,
     ),
@@ -128,6 +139,7 @@ _SOURCES = [
         comment=None,
         separators=TWITTER_SEPARATORS,
         unavailable_notice=TWITTER_UNAVAILABLE_NOTICE,
+        unreadable_notice=TWITTER_UNREADABLE_NOTICE,
         image_cap=MAX_TWITTER_INGEST_IMAGES,
         comment_cap=0,
     ),
@@ -283,15 +295,60 @@ async def test_a_post_that_answers_nothing_and_says_nothing_is_reported_unavaila
 
 
 @every_source
-async def test_a_read_failure_never_raises_into_the_pipeline(
+@pytest.mark.parametrize(
+    argnames="error",
+    argvalues=[
+        LinkRetryableError("429 Too Many Requests"),
+        RuntimeError("403 Forbidden"),
+        ValueError("the payload changed shape"),
+    ],
+    ids=["retryable", "unclassified", "unexpected"],
+)
+async def test_a_failed_read_never_says_the_post_is_gone(
+    monkeypatch: pytest.MonkeyPatch, source: _PostSource, error: Exception
+) -> None:
+    """A throttle, a refusal HTTP does not classify or a parse error says nothing about the post.
+
+    Told the post is deleted or private, the model sends the user off to re-check a link that
+    works. The builder also degrades rather than raising, which the reply pipeline relies on.
+    """
+    serve_conversation(monkeypatch, downloader=source.downloader, error=error)
+
+    blocks = await _build(source=source)
+
+    assert len(blocks) == 1
+    assert block_separator(blocks=blocks) == source.unreadable_notice
+
+
+@every_source
+async def test_a_post_the_platform_says_is_gone_is_reported_unavailable(
     monkeypatch: pytest.MonkeyPatch, source: _PostSource
 ) -> None:
-    """The reply pipeline relies on every builder degrading rather than raising."""
-    serve_conversation(monkeypatch, downloader=source.downloader, error=RuntimeError("boom"))
+    """A 404 or 410 is the platform saying there is no post, a routine outcome logged as one.
+
+    Logged at info with no traceback, as the expansion logs the same error.
+    """
+    serve_conversation(
+        monkeypatch, downloader=source.downloader, error=LinkUnavailableError("404 Not Found")
+    )
+    logs = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
 
     blocks = await _build(source=source)
 
     assert block_separator(blocks=blocks) == source.unavailable_notice
+    assert [(level, "_exc_info" in fields) for level, _message, fields in logs] == [
+        ("info", False)
+    ]
+
+
+@every_source
+def test_the_unreadable_notice_never_asserts_the_post_is_gone(source: _PostSource) -> None:
+    """Its whole point is the denial, so nothing ahead of it may claim the post is gone."""
+    assert source.unreadable_notice != source.unavailable_notice
+    claim, denial = source.unreadable_notice.split("does NOT mean the post is ")
+    assert "deleted" not in claim
+    assert "private" not in claim
+    assert denial
 
 
 @pytest.mark.parametrize(

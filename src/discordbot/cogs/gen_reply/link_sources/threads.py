@@ -821,9 +821,13 @@ async def build_threads_context_messages(
             # A non-empty chain rather than a readable target: a quote post with no text or media
             # of its own is still worth showing.
             readable=lambda conversation: bool(conversation.chain),
+            # One notice for both: it already never asserts the post is gone, since even an empty
+            # page can be Threads throttling a healthy post.
+            unavailable_notice=THREADS_UNAVAILABLE_NOTICE,
+            unreadable_notice=THREADS_UNAVAILABLE_NOTICE,
         )
-        if conversation is None:
-            return [system_block(text=THREADS_UNAVAILABLE_NOTICE)]
+        if isinstance(conversation, str):
+            return [system_block(text=conversation)]
 
         # Trim a long chain to the target plus its nearest ancestors before rendering, so the
         # text side is bounded like the media side (the tail is closest to the linked post).

@@ -83,6 +83,16 @@ FACEBOOK_UNAVAILABLE_NOTICE = (
     "in. Tell the user this plainly; do not invent the post's contents. ===="
 )
 
+# Used when the read failed for a reason that says nothing about the post: a throttle, a server
+# error, a dropped connection, a refusal HTTP does not classify such as a 403, a page it could
+# not parse. Kept apart from the notice above because telling someone a working post is gone is
+# the worst thing this can say.
+FACEBOOK_UNREADABLE_NOTICE = (
+    "==== We tried to read the Facebook link the user is asking about but could not read it this "
+    "time. This does NOT mean the post is deleted or private. Say only that you could not read it "
+    "right now, do not claim it is unavailable, and do not invent its contents. ===="
+)
+
 # Injected by gen_reply when the whole build exceeds the post-route grace. Keeps deterministic
 # context so a slow fetch does not re-expose the "I cannot open this link" fallback.
 FACEBOOK_TIMEOUT_NOTICE = (
@@ -155,6 +165,7 @@ async def build_facebook_context_messages(
         render=_render_conversation,
         separators=FACEBOOK_SEPARATORS,
         unavailable_notice=FACEBOOK_UNAVAILABLE_NOTICE,
+        unreadable_notice=FACEBOOK_UNREADABLE_NOTICE,
         image_cap=MAX_FACEBOOK_INGEST_IMAGES,
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,

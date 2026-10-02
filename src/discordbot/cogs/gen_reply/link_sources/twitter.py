@@ -90,6 +90,17 @@ TWITTER_UNAVAILABLE_NOTICE = (
     "Tell the user this plainly; do not invent the post's contents. ===="
 )
 
+# Used when the read failed for a reason that says nothing about the post: a throttle, a server
+# error, a dropped connection, a refusal HTTP does not classify such as a 403, a body that is not
+# the JSON the endpoint documents. Kept apart from the notice above because telling someone a
+# working post is gone is the worst thing this can say.
+TWITTER_UNREADABLE_NOTICE = (
+    "==== We tried to read the Twitter/X link in the user's message but could not read it this "
+    "time. This does NOT mean the post is deleted or from a protected account. Say only that you "
+    "could not read it right now, do not claim it is unavailable, and do not invent its "
+    "contents. ===="
+)
+
 # Injected by gen_reply when the whole build exceeds the post-route grace. Keeps deterministic
 # context so a slow fetch does not re-expose the "I cannot open this link" fallback.
 TWITTER_TIMEOUT_NOTICE = (
@@ -193,6 +204,7 @@ async def build_twitter_context_messages(
         render=_render_conversation,
         separators=TWITTER_SEPARATORS,
         unavailable_notice=TWITTER_UNAVAILABLE_NOTICE,
+        unreadable_notice=TWITTER_UNREADABLE_NOTICE,
         image_cap=MAX_TWITTER_INGEST_IMAGES,
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
