@@ -40,13 +40,30 @@ if TYPE_CHECKING:
     from nextcord.errors import ApplicationError
 
 
+class _LoopStub:
+    """Stands in for a `tasks.Loop`: running from its first start on, counting starts."""
+
+    def __init__(self) -> None:
+        """Not started yet."""
+        self.starts = 0
+
+    def is_running(self) -> bool:
+        """Whether `start` has been called."""
+        return self.starts > 0
+
+    def start(self) -> None:
+        """Counts a start."""
+        self.starts += 1
+
+
 class _ConnectStub:
-    """The two attributes `DiscordBot.on_connect` touches."""
+    """The attributes `DiscordBot.on_connect` touches."""
 
     def __init__(self) -> None:
         """Starts with no logged-in user, so the method stops at its own guard."""
         self.user = None
         self.rebuilds = 0
+        self.price_table_task = _LoopStub()
 
     def add_all_application_commands(self) -> None:
         """Stands in for nextcord's registry rebuild."""
@@ -60,6 +77,19 @@ async def test_on_connect_rebuilds_the_application_command_registry() -> None:
     await DiscordBot.on_connect(as_discord_bot(fake=stub))
 
     assert stub.rebuilds == 1
+
+
+async def test_on_connect_starts_the_price_table_refresh_once() -> None:
+    """The refresh starts at the first READY, ahead of a command sync that can raise.
+
+    A later READY finds it running and leaves it alone, since a second start raises.
+    """
+    stub = _ConnectStub()
+
+    await DiscordBot.on_connect(as_discord_bot(fake=stub))
+    await DiscordBot.on_connect(as_discord_bot(fake=stub))
+
+    assert stub.price_table_task.starts == 1
 
 
 def _on_ready_calls() -> list[str]:

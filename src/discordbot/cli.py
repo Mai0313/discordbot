@@ -118,6 +118,10 @@ class DiscordBot(commands.Bot):
         per process.
         """
         self.add_all_application_commands()
+        # Started at READY, ahead of `on_ready`'s command sync, which can raise; a READY that
+        # finds the loop already running leaves it be.
+        if not self.price_table_task.is_running():
+            self.price_table_task.start()
         bot_user = self.user
         if bot_user is None:
             return
@@ -183,7 +187,7 @@ class DiscordBot(commands.Bot):
         """Called when the bot is ready; performs first-time-only setup.
 
         `on_ready` re-fires on every gateway reconnect/resume, so the body
-        is gated on `_initial_setup_done` to keep sync + the task start
+        is gated on `_initial_setup_done` to keep sync + the startup sweeps
         idempotent.
         """
         if self._initial_setup_done:
@@ -231,7 +235,6 @@ class DiscordBot(commands.Bot):
             local_count=len(self.get_application_commands()),
             elapsed_seconds=round(monotonic() - sync_started_at, 3),
         )
-        self.price_table_task.start()
 
         app_info = await self.application_info()
         # Scopes and permissions are deliberately left off: they live in the Developer Portal's
