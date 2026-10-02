@@ -5,10 +5,20 @@ module, so their fakes live here once.
 """
 
 from types import SimpleNamespace
+from typing import Any
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator
 
-from google.genai.types import FileState
+import pytest
+from google.genai.types import File, FileState
+
+from discordbot.cogs.gen_reply.files_api import poll_while_processing
+
+# Every module that runs the Files API activation poll, each through its own name for it.
+_POLL_CALLERS = (
+    "discordbot.cogs.gen_reply.files_api",
+    "discordbot.cogs.gen_reply.attachment.gemini_file_api",
+)
 
 
 class FakeGeminiFiles:
@@ -17,6 +27,7 @@ class FakeGeminiFiles:
     A file is named after its display name. `processing_rounds` makes `upload` return a
     PROCESSING file that flips to `final_state` after that many `get` polls, so the poll loop is
     exercised; a non-ACTIVE `final_state` (FAILED, say) drives the failed-processing branch.
+    `download` answers any uri with fake MP4 bytes, the clip a finished video render names.
     """
 
     def __init__(
@@ -56,13 +67,38 @@ class FakeGeminiFiles:
         state = FileState.PROCESSING if self._remaining > 0 else self.final_state
         return self._file(name=name, state=state)
 
+    async def download(self, file: object) -> bytes:
+        """Returns fake MP4 bytes whatever the uri."""
+        del file
+        return b"mp4"
+
 
 class FakeGeminiClient:
-    """Fake Gemini client exposing a Files resource under `aio`, where the real one keeps it."""
+    """Fake Gemini client with its Files and Interactions resources under `aio`, as the real one.
 
-    def __init__(self, files: FakeGeminiFiles | None = None) -> None:
-        """Wires the Files resource under `aio.files`."""
-        self.aio = SimpleNamespace(files=files or FakeGeminiFiles())
+    Files defaults to a fresh `FakeGeminiFiles`. Interactions has no default, so a path that
+    reaches it in a test that staged none fails on the call instead of reading a canned answer.
+    """
+
+    def __init__(self, files: object | None = None, interactions: object | None = None) -> None:
+        """Wires the resources under `aio.files` and `aio.interactions`."""
+        self.aio = SimpleNamespace(files=files or FakeGeminiFiles(), interactions=interactions)
+
+
+def skip_files_api_poll_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes every Files API activation poll re-read at once instead of waiting its interval.
+
+    The interval is zeroed rather than `asyncio.sleep` patched, which would stop every other
+    await in the test from yielding too.
+    """
+
+    async def poll_at_once(**kwargs: Any) -> File:  # noqa: ANN401 -- forwarded untouched to the real poll
+        """Polls exactly as the real loop does, with no wait between two reads."""
+        kwargs["poll_interval_seconds"] = 0.0
+        return await poll_while_processing(**kwargs)
+
+    for module in _POLL_CALLERS:
+        monkeypatch.setattr(f"{module}.poll_while_processing", poll_at_once)
 
 
 async def event_stream(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace]:

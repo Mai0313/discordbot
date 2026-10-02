@@ -198,6 +198,7 @@ from tests.helpers.gen_reply import (
     FakeGeminiClient,
     event_stream,
     interactions_turn_events,
+    skip_files_api_poll_waits,
 )
 from tests.helpers.llm_input import (
     LINK_SOURCE_BLOCKS,
@@ -630,14 +631,15 @@ class FakeImages:
         return SimpleNamespace(data=[SimpleNamespace(b64_json=png)])
 
 
-class FakeGeminiVideoClient:
-    """Fake native Gemini client exposing the async omni Interactions video API.
+class FakeGeminiVideoClient(FakeGeminiClient):
+    """Fake native Gemini client whose async omni Interactions video API renders one clip.
 
-    `interactions.create` returns a completed interaction carrying one output video uri;
-    `files.download` returns fake MP4 bytes; `files.upload`/`get` return an ACTIVE file for both
-    the source-video edit upload and the post-generation "watch the video" reply. Records each
-    call's `input`, `response_format`, and `generation_config` (mirroring the real `create(**body)`)
-    so tests can assert the task, aspect ratio, and reference-image / source-video wiring.
+    `interactions.create` returns a completed interaction carrying one output video uri; the
+    Files resource is a `FakeGeminiFiles`, which downloads that uri as fake MP4 bytes and takes
+    both the source-video edit upload and the post-generation "watch the video" reply. Records
+    each call's `input`, `response_format`, and `generation_config` (mirroring the real
+    `create(**body)`) so tests can assert the task, aspect ratio, and reference-image /
+    source-video wiring.
     """
 
     def __init__(self) -> None:
@@ -645,12 +647,7 @@ class FakeGeminiVideoClient:
         self.create_inputs: list[Any] = []
         self.create_response_formats: list[Any] = []
         self.create_configs: list[Any] = []
-        self.aio = SimpleNamespace(
-            interactions=SimpleNamespace(create=self._interactions_create),
-            files=SimpleNamespace(
-                download=self._files_download, upload=self._files_upload, get=self._files_get
-            ),
-        )
+        super().__init__(interactions=SimpleNamespace(create=self._interactions_create))
 
     async def _interactions_create(self, **body: object) -> SimpleNamespace:
         """Records the request body and returns a completed interaction with one output video."""
@@ -663,25 +660,6 @@ class FakeGeminiVideoClient:
             output_video=SimpleNamespace(
                 uri="https://files.test/video", data=None, mime_type="video/mp4"
             ),
-        )
-
-    async def _files_download(self, file: object) -> bytes:
-        """Returns fake MP4 bytes for the completed video."""
-        del file
-        return b"mp4"
-
-    async def _files_upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-        """Returns an ACTIVE uploaded file for the edit upload and the post-generation reply."""
-        del file, config
-        return SimpleNamespace(
-            name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
-        )
-
-    async def _files_get(self, name: str) -> SimpleNamespace:
-        """Returns the ACTIVE uploaded file when a caller polls it."""
-        del name
-        return SimpleNamespace(
-            name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
         )
 
 
@@ -848,10 +826,8 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
-        # A fake of its own rather than the toolkit's video fake, whose uploads all answer
-        # with one uri; the keyless toolkit would hand the uploader no client at all.
-        files_client = as_client(fake=FakeGeminiClient())
-        handler.gemini_client = lambda: files_client
+        # The keyless toolkit would hand the uploader no client at all.
+        handler.gemini_client = lambda: toolkit.gemini_client
     # Seeded into the cached_property's slot, so every path reads this one rather than
     # building a real toolkit against the test deployment's empty credentials.
     cog.__dict__["toolkit"] = toolkit
@@ -2581,7 +2557,7 @@ async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
                 output_audio=SimpleNamespace(data="not-valid-base64-x", mime_type="audio/mpeg")
             )
 
-    client = SimpleNamespace(aio=SimpleNamespace(interactions=_Interactions()))
+    client = FakeGeminiClient(interactions=_Interactions())
     generator = MusicGenerator(client=client, music_model=RuntimeModelCatalog().music_model)
 
     # The decode failure is swallowed (best-effort), so the streamer's media gather is never aborted.
@@ -2750,7 +2726,7 @@ async def test_video_generator_drops_clip_on_provider_error() -> None:
             del kwargs
             raise RuntimeError("omni unavailable")
 
-    client = SimpleNamespace(aio=SimpleNamespace(interactions=_Interactions()))
+    client = FakeGeminiClient(interactions=_Interactions())
     generator = VideoGenerator(client=client, video_model=RuntimeModelCatalog().video_model)
 
     # The failure is swallowed (best-effort), so the streamer's media gather is never aborted.
@@ -2907,15 +2883,6 @@ class _FakeInteractionsResource:
         return _stream_events_from(events=self._events)
 
 
-class _FakeInteractionsClient:
-    """Fake Gemini client exposing the async Interactions resource."""
-
-    def __init__(self, events: list[SimpleNamespace]) -> None:
-        """Wires the recorder under `aio.interactions` like the real client."""
-        self.recorder = _FakeInteractionsResource(events=events)
-        self.aio = SimpleNamespace(interactions=self.recorder)
-
-
 @pytest.mark.usefixtures("no_memory_review")
 async def test_youtube_qa_uses_interactions_backend() -> None:
     """A watched YouTube URL streams the answer through Interactions, not Responses.
@@ -2924,8 +2891,8 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     """
     cog = _cog()
     cog.config = _config_stub(youtube_video_enabled=True, gemini_key_configured=True)
-    fake = _FakeInteractionsClient(events=interactions_turn_events())
-    cog.toolkit.__dict__["gemini_client"] = fake
+    interactions = _FakeInteractionsResource(events=interactions_turn_events())
+    cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
@@ -2935,9 +2902,9 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
     assert _recorded(cog).responses.create_streams == []
-    assert len(fake.recorder.calls) == 1
-    assert fake.recorder.calls[0].generation_config["thinking_level"] == "low"
-    last_step_parts = fake.recorder.calls[0].input[-1]["content"]
+    assert len(interactions.calls) == 1
+    assert interactions.calls[0].generation_config["thinking_level"] == "low"
+    last_step_parts = interactions.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
@@ -2992,8 +2959,8 @@ async def test_youtube_qa_falls_back_to_responses(
             "slow_model",
             property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
         )
-    fake = _FakeInteractionsClient(events=interactions_turn_events())
-    cog.toolkit.__dict__["gemini_client"] = fake
+    interactions = _FakeInteractionsResource(events=interactions_turn_events())
+    cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
     logged: list[tuple[str, dict[str, object]]] = []
 
     def record(message_text: str, **fields: object) -> None:
@@ -3009,7 +2976,7 @@ async def test_youtube_qa_falls_back_to_responses(
         system_prompt="SYS", context=ReplyContext(), yt_url=yt_url
     )
 
-    assert fake.recorder.calls == []
+    assert interactions.calls == []
     assert _recorded(cog).responses.create_streams == [True]
     # The fallback is silent to the user, so the log is the only place the reason survives. A
     # `no_url` turn never asked for the swap here, so it names no reason.
@@ -4129,17 +4096,6 @@ async def test_a_linked_page_that_is_not_an_image_still_raises(
         await load_image_bytes(source="https://cdn.test/gone.png")
 
 
-@pytest.fixture
-def files_api_poll_unslept(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Makes the Files API activation poll's backoff return at once."""
-
-    async def no_sleep(delay: float) -> None:
-        """Skips the backoff."""
-        del delay
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", no_sleep)
-
-
 def _jump_files_api_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes every clock read of the Files API upload jump well past its activation bound.
 
@@ -4156,11 +4112,11 @@ def _jump_files_api_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", monotonic)
 
 
-@pytest.mark.usefixtures("files_api_poll_unslept")
 async def test_upload_file_polls_active_and_drops_unready_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies the upload polls to ACTIVE and drops files that never become usable."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
         return _fake_uploader(files=files)
@@ -4202,11 +4158,11 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     )
 
 
-@pytest.mark.usefixtures("files_api_poll_unslept")
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A timed-out upload is cached as pending and re-polled, not re-uploaded, next time."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
     # The first reference times out to PENDING.
     _jump_files_api_clock(monkeypatch=monkeypatch)
 
@@ -4289,6 +4245,7 @@ async def test_a_stalled_activation_read_drops_only_that_attachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A poll read that never returns fails the poll, however far off the poll's own bound is."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
     files = FakeGeminiFiles(processing_rounds=1)
     monkeypatch.setattr(files, "get", _stalled(call=files.get))
     monkeypatch.setattr(
@@ -5810,7 +5767,7 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
         del delay
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.asyncio.sleep", fast_sleep)
-    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=flaky_download)))
+    client = FakeGeminiClient(files=SimpleNamespace(download=flaky_download))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -5832,9 +5789,7 @@ async def test_a_stalled_clip_download_fails_the_video_within_its_bound(
         return b"mp4"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.01)
-    client = SimpleNamespace(
-        aio=SimpleNamespace(files=SimpleNamespace(download=_stalled(call=download)))
-    )
+    client = FakeGeminiClient(files=SimpleNamespace(download=_stalled(call=download)))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -5855,7 +5810,7 @@ async def test_a_never_servable_clip_fails_with_the_download_error_at_the_bound(
         raise RuntimeError("404 NOT_FOUND: file is not servable yet")
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.05)
-    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=download)))
+    client = FakeGeminiClient(files=SimpleNamespace(download=download))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -5877,9 +5832,7 @@ async def test_a_stalled_source_video_upload_fails_the_edit_within_its_bound(
         )
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.01)
-    client = SimpleNamespace(
-        aio=SimpleNamespace(files=SimpleNamespace(upload=_stalled(call=upload)))
-    )
+    client = FakeGeminiClient(files=SimpleNamespace(upload=_stalled(call=upload)))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
