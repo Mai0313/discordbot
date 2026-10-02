@@ -7,7 +7,7 @@ from discordbot.cogs.economy.embeds import build_credit_status_embed
 from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT
 
 
-def _contract(*, contract_id: int, lender_name: str = "lender") -> LoanContractView:
+def _contract(contract_id: int, lender_name: str = "lender") -> LoanContractView:
     """Builds one active personal contract owed by viewer 1 to `lender_name`."""
     opened_at = datetime(2026, 1, 1, tzinfo=UTC)
     return LoanContractView(

@@ -31,7 +31,7 @@ _ROOTS = (PACKAGE, REPO_ROOT / "scripts", REPO_ROOT / "tests")
 _TEMPLATE_OWNED = frozenset({REPO_ROOT / "scripts" / "gen_docs.py"})
 
 
-def _classes(*, root: Path) -> list[tuple[Path, ast.ClassDef]]:
+def _classes(root: Path) -> list[tuple[Path, ast.ClassDef]]:
     """Every class under `root`, one entry each.
 
     A list rather than a name-keyed map because two modules can define the same name, and a map

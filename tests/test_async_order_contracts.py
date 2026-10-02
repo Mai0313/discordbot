@@ -254,7 +254,6 @@ def _argument_names(arguments: ast.arguments) -> set[str]:
 
 def _default_recorder_aliases(
     function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-    *,
     outer_environment: dict[str, str],
 ) -> dict[str, str]:
     """Maps parameters whose defaults capture an outer recorder."""
@@ -276,7 +275,7 @@ def _default_recorder_aliases(
 class _RecorderWriteVisitor(_OwnScopeVisitor):
     """Finds mutations that resolve to test-scope recorder bindings."""
 
-    def __init__(self, *, environment: dict[str, str], nonlocal_names: set[str]) -> None:
+    def __init__(self, environment: dict[str, str], nonlocal_names: set[str]) -> None:
         self.environment = environment
         self.nonlocal_names = nonlocal_names
         self.found: set[str] = set()
@@ -355,7 +354,7 @@ def _scope_details(
 class _NestedRecorderWriteFinder:
     """Resolves recorder mutations through nested lexical scopes."""
 
-    def __init__(self, *, recorders: set[str]) -> None:
+    def __init__(self, recorders: set[str]) -> None:
         self.initial_environment = {recorder: recorder for recorder in recorders}
         self.found: set[str] = set()
 
@@ -409,7 +408,7 @@ class _NestedRecorderWriteFinder:
         return self.found
 
 
-def _nested_function_writes(test: ast.AsyncFunctionDef, *, recorders: set[str]) -> set[str]:
+def _nested_function_writes(test: ast.AsyncFunctionDef, recorders: set[str]) -> set[str]:
     """Returns test-scope recorders mutated from lexically nested callables."""
     return _NestedRecorderWriteFinder(recorders=recorders).find(test)
 
@@ -431,7 +430,7 @@ def _root_subscript_name(node: ast.Subscript) -> str:
     return value.id if isinstance(value, ast.Name) else ""
 
 
-def _referenced_recorders(node: ast.AST, *, recorders: set[str]) -> set[str]:
+def _referenced_recorders(node: ast.AST, recorders: set[str]) -> set[str]:
     """Returns recorder names referenced anywhere under an expression."""
     return {
         child.id
@@ -440,7 +439,7 @@ def _referenced_recorders(node: ast.AST, *, recorders: set[str]) -> set[str]:
     }
 
 
-def _normalizer_encodes_positions(node: ast.AST, *, recorders: set[str]) -> bool:
+def _normalizer_encodes_positions(node: ast.AST, recorders: set[str]) -> bool:
     """Whether a nested transform preserves recorder positions as output values."""
     safe_nested_calls = _ORDER_INDEPENDENT_CALLS | _ORDER_PRESERVING_TRANSFORMS
     for child in ast.walk(node):
@@ -476,7 +475,7 @@ class _RecorderExpressionVisitor(ast.NodeVisitor):
 class _OrderedRecorderVisitor(_RecorderExpressionVisitor):
     """Finds recorder uses whose observed sequence remains part of an expression."""
 
-    def __init__(self, *, recorders: set[str]) -> None:
+    def __init__(self, recorders: set[str]) -> None:
         self.recorders = recorders
         self.found: set[str] = set()
 
@@ -511,7 +510,7 @@ class _OrderedRecorderVisitor(_RecorderExpressionVisitor):
 class _IndexedRecorderVisitor(_RecorderExpressionVisitor):
     """Finds explicit positions read from a recorder inside one assertion."""
 
-    def __init__(self, *, recorders: set[str]) -> None:
+    def __init__(self, recorders: set[str]) -> None:
         self.recorders = recorders
         self.found: set[tuple[str, int]] = set()
 
@@ -536,14 +535,14 @@ class _TestAssertionVisitor(_OwnScopeVisitor):
         self.found.append(node)
 
 
-def _ordered_recorders(node: ast.expr, *, recorders: set[str]) -> set[str]:
+def _ordered_recorders(node: ast.expr, recorders: set[str]) -> set[str]:
     """Returns recorder names whose order remains observable in an expression."""
     visitor = _OrderedRecorderVisitor(recorders=recorders)
     visitor.visit(node)
     return visitor.found
 
 
-def _indexed_recorders(node: ast.expr, *, recorders: set[str]) -> set[tuple[str, int]]:
+def _indexed_recorders(node: ast.expr, recorders: set[str]) -> set[tuple[str, int]]:
     """Returns explicit recorder positions inspected by an assertion expression."""
     visitor = _IndexedRecorderVisitor(recorders=recorders)
     visitor.visit(node)
@@ -598,7 +597,7 @@ def _comments_by_line(source: str) -> dict[int, list[str]]:
     return comments
 
 
-def _contract_reason(comments: dict[int, list[str]], *, lineno: int, end_lineno: int) -> str:
+def _contract_reason(comments: dict[int, list[str]], lineno: int, end_lineno: int) -> str:
     """Returns an inline or immediately preceding order-contract reason."""
     for candidate_lineno in (lineno - 1, *range(lineno, end_lineno + 1)):
         for comment in comments.get(candidate_lineno, []):
@@ -634,7 +633,7 @@ def _keyed_sort(node: ast.Call) -> bool:
     )
 
 
-def _resolved_position(index: int, *, length: int | None) -> int:
+def _resolved_position(index: int, length: int | None) -> int:
     """Maps one recorder index into a single namespace, using a length the test states.
 
     `calls[-1]` and `calls[1]` are the same slot of a two-record list and different slots of a
@@ -674,7 +673,7 @@ class _PositionCanonicalizer(ast.NodeTransformer):
     """
 
     def __init__(
-        self, *, recorder: str, swap: dict[int, int], length: int | None, boolean_context: set[int]
+        self, recorder: str, swap: dict[int, int], length: int | None, boolean_context: set[int]
     ) -> None:
         self.recorder = recorder
         self.swap = swap
@@ -732,7 +731,7 @@ class _PositionCanonicalizer(ast.NodeTransformer):
 
 
 def _swapped_assertion(
-    assertion: ast.Assert, *, recorder: str, swap: dict[int, int], length: int | None
+    assertion: ast.Assert, recorder: str, swap: dict[int, int], length: int | None
 ) -> str:
     """Returns a canonical dump of one assertion under an exchange of two positions."""
     rewritten = deepcopy(assertion.test)
@@ -745,9 +744,7 @@ def _swapped_assertion(
     return ast.dump(canonicalizer.visit(rewritten))
 
 
-def _pinned_recorder_lengths(
-    assertions: list[ast.Assert], *, recorders: set[str]
-) -> dict[str, int]:
+def _pinned_recorder_lengths(assertions: list[ast.Assert], recorders: set[str]) -> dict[str, int]:
     """Returns the recorder lengths a test states outright, as `len(recorder) == <int>`."""
     lengths: dict[str, int] = {}
     for assertion in assertions:
@@ -778,7 +775,7 @@ def _pinned_recorder_lengths(
 
 
 def _position_sensitive_recorders(
-    assertions: list[ast.Assert], *, recorders: set[str]
+    assertions: list[ast.Assert], recorders: set[str]
 ) -> list[set[str]]:
     """Returns, per assertion, the recorders whose recorded positions the test tells apart.
 
@@ -848,7 +845,7 @@ def _position_sensitive_recorders(
     return sensitive
 
 
-def _sequence_assertion_recorders(assertion: ast.Assert, *, recorders: set[str]) -> set[str]:
+def _sequence_assertion_recorders(assertion: ast.Assert, recorders: set[str]) -> set[str]:
     """Returns recorder names whose whole recorded sequence one assertion compares."""
     ordered: set[str] = set()
     comparison = assertion.test

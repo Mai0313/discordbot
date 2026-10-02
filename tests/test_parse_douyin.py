@@ -60,7 +60,6 @@ def _post(is_photo: bool = False, images: int = 0) -> DouyinMetadata:
 
 def _stub_douyin(
     monkeypatch: pytest.MonkeyPatch,
-    *,
     uploads: FakeUploads | None = None,
     **canned: Unpack[StubDouyinOptions],
 ) -> tuple[FakeUploads, list[StubDouyinDownloader]]:
@@ -407,7 +406,6 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     class _SlowUploads(FakeUploads):
         async def __call__(
             self,
-            *,
             client: object,
             source: object,
             mime_type: str,

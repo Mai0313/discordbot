@@ -137,7 +137,6 @@ class FakeDiscordMessage:
 
     def __init__(
         self,
-        *,
         author: FakeUser | None = None,
         content: str = "",
         guild: FakeGuild | SimpleNamespace | None = None,
@@ -194,7 +193,7 @@ class FakeDiscordMessage:
         self.deleted = True
 
 
-def expansion_payload(*, message: FakeDiscordMessage) -> DiscordPayload:
+def expansion_payload(message: FakeDiscordMessage) -> DiscordPayload:
     """Returns what an expansion cog edited onto the placeholder it replied with.
 
     Every link expansion claims its reply slot before it has anything to show, so the card a
@@ -205,7 +204,7 @@ def expansion_payload(*, message: FakeDiscordMessage) -> DiscordPayload:
     return placeholder.edits[-1]
 
 
-def placeholder_withdrawn(*, message: FakeDiscordMessage) -> bool:
+def placeholder_withdrawn(message: FakeDiscordMessage) -> bool:
     """Whether the placeholder was taken back with nothing delivered onto it.
 
     That is what a failed expansion leaves: the reaction says what happened and the channel

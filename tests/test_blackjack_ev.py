@@ -24,13 +24,12 @@ _DEALER_21 = 4
 _DEALER_BUST = 5
 
 
-def _dealer(*, total: int, soft: bool, shoe: tuple[int, ...]) -> tuple[float, ...]:
+def _dealer(total: int, soft: bool, shoe: tuple[int, ...]) -> tuple[float, ...]:
     """Returns the dealer's H17 final-total distribution from a known dealer hand."""
     return _dealer_distribution(total=total, soft=soft, shoe=shoe, memo={})
 
 
 def _evs(
-    *,
     hand: list[Card],
     dealer: list[Card],
     allowed: tuple[BotAction, ...],

@@ -133,7 +133,6 @@ _SUBJECT = user_subject(user_id=USER_ID, guild_id=42)
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
     summary: str,
-    *,
     normalized_key: str = "preference.test",
     category: str = "stable_preference",
     evidence_kind: str = "explicit_preference",
@@ -161,7 +160,7 @@ def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
     )
 
 
-def _draft(summary: str, *, normalized_key: str = "preference.test") -> RawMemoryDraft:
+def _draft(summary: str, normalized_key: str = "preference.test") -> RawMemoryDraft:
     """Builds one signalful structured memory draft."""
     return RawMemoryDraft(
         has_signal=True,
@@ -264,7 +263,6 @@ _stored_fact = partial(make_fact, owner=MemoryOwner(owner_id=USER_ID, owner_name
 
 
 def _consolidated(
-    *,
     text: str = "合併後",
     summary: str = "整理後的事實",
     section: MemorySection = "preference",
@@ -276,7 +274,7 @@ def _consolidated(
     )
 
 
-def _no_change(*, tone: str = "") -> ConsolidatedMemory:
+def _no_change(tone: str = "") -> ConsolidatedMemory:
     """Builds a consolidation result that asks for nothing; an empty batch is a valid no-op."""
     return ConsolidatedMemory(deltas=(), tone_markdown=tone)
 
@@ -319,9 +317,7 @@ def _memory_text(scope: str = USER_SCOPE, flavor: MemoryFlavor = "user") -> str:
     )
 
 
-def _consolidation_request(
-    *, compact: bool = False, emit_tone: bool = True
-) -> ConsolidationRequest:
+def _consolidation_request(compact: bool = False, emit_tone: bool = True) -> ConsolidationRequest:
     """Builds one compartment's consolidation request; every block but the two flags is fixed."""
     return ConsolidationRequest(
         compartment_note="cross-server safe memory",
@@ -2546,7 +2542,6 @@ _GUILD_222_NOTE = "Discord server 222"
 
 
 def _stage_raw_observation(  # noqa: PLR0913 -- one observation's routing fields plus its category
-    *,
     summary: str,
     key: str,
     sharing: str,
@@ -5213,7 +5208,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
     release_clear = asyncio.Event()
     real_clear_job = memory_db.clear_job
 
-    async def blocked_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+    async def blocked_clear_job(scope: str, flavor: str, token: int) -> bool:
         removed = await real_clear_job(
             scope=scope, flavor=memory_db.cast_flavor(value=flavor), token=token
         )
@@ -5297,7 +5292,7 @@ def _hold_clear_job(monkeypatch: pytest.MonkeyPatch) -> tuple[asyncio.Event, asy
     release = asyncio.Event()
     real_clear_job = memory_db.clear_job
 
-    async def blocked_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+    async def blocked_clear_job(scope: str, flavor: str, token: int) -> bool:
         started.set()
         await release.wait()
         return await real_clear_job(
@@ -5398,7 +5393,7 @@ async def test_cancelled_clear_propagates_a_critical_tombstone_failure(
     clear_job_started = asyncio.Event()
     release_clear_job = asyncio.Event()
 
-    async def failing_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+    async def failing_clear_job(scope: str, flavor: str, token: int) -> bool:
         del scope, flavor, token
         clear_job_started.set()
         await release_clear_job.wait()
@@ -5453,7 +5448,7 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
     real_upsert = memory_db.upsert_pending
 
     async def slow_upsert(  # noqa: PLR0913 -- mirrors the patched signature
-        *, scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
+        scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
     ) -> None:
         write_started.set()
         await release.wait()
@@ -5505,7 +5500,7 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
     real_upsert = memory_db.upsert_pending
 
     async def committed_upsert(  # noqa: PLR0913 -- mirrors the patched signature
-        *, scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
+        scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
     ) -> None:
         await real_upsert(
             scope=scope,
@@ -5551,7 +5546,7 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
 def _fail_the_file_delete(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes the clear's file half raise, as a read-only `tone.md` would."""
 
-    def exploding_clear(*, scope: str) -> bool:
+    def exploding_clear(scope: str) -> bool:
         raise PermissionError("tone.md is read-only")
 
     monkeypatch.setattr(pipeline, "delete_memory_files", exploding_clear)
@@ -5694,7 +5689,7 @@ async def test_memory_clear_failure_keeps_memory_and_says_so(
     """A reply.db failure must not half-clear: the tombstone write runs before any unlink."""
     _populate_every_tier()
 
-    async def exploding_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+    async def exploding_clear_job(scope: str, flavor: str, token: int) -> bool:
         raise RuntimeError("reply.db unavailable")
 
     monkeypatch.setattr(memory_db, "clear_job", exploding_clear_job)

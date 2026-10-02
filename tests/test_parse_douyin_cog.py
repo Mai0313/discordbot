@@ -50,7 +50,7 @@ def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> Fak
     return FakeDiscordMessage(content=content, guild=FakeGuild(filesize_limit=filesize_limit))
 
 
-def _reply_body(*, message: FakeDiscordMessage) -> str:
+def _reply_body(message: FakeDiscordMessage) -> str:
     """Returns the delivered text, failing loudly when nothing reached the placeholder."""
     content = expansion_payload(message=message)["content"]
     assert content is not None
@@ -167,7 +167,7 @@ async def test_a_non_post_link_does_not_hide_a_post_after_it() -> None:
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
-def _stall_every_read(*, cog: DouyinCogs, release: threading.Event) -> None:
+def _stall_every_read(cog: DouyinCogs, release: threading.Event) -> None:
     """Points the cog at a downloader whose every call holds its worker thread until `release`.
 
     That is how a stalling CDN read holds a thread `asyncio.to_thread` cannot cancel. The wait is

@@ -169,7 +169,7 @@ class _FakeChannel:
     double satisfy the `isinstance` in the sweep at all.
     """
 
-    def __init__(self, *, messages: dict[int, FakeDiscordMessage]) -> None:
+    def __init__(self, messages: dict[int, FakeDiscordMessage]) -> None:
         """Holds the messages by id; anything else answers the way a deleted one does."""
         self.id = 2
         self.messages = messages
@@ -185,7 +185,7 @@ class _FakeChannel:
 class _FakeBot:
     """A bot that resolves exactly one channel, the way `on_ready` finds a cached one."""
 
-    def __init__(self, *, channel: _FakeChannel | None) -> None:
+    def __init__(self, channel: _FakeChannel | None) -> None:
         """Holds the channel `get_channel` answers with, or None for one that is gone."""
         self.channel = channel
         # The sweep scopes its reaction removals to the bot, as every reaction path does.
@@ -207,13 +207,13 @@ class _FakeBot:
 class _RecordingExpand:
     """Stands in for a cog's `_expand`, recording the call and choosing its outcome."""
 
-    def __init__(self, *, deliver: bool = True) -> None:
+    def __init__(self, deliver: bool = True) -> None:
         """Records nothing yet; `deliver` picks between a successful and a failed expansion."""
         self.calls: list[dict[str, object]] = []
         self.deliver = deliver
 
     async def __call__(
-        self, *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+        self, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
     ) -> None:
         """Records what it was handed, then delivers or returns as a real `_expand` does."""
         self.calls.append({"message": message, "url": url, "current_emoji": current_emoji})
@@ -347,7 +347,7 @@ async def test_a_resumed_expansion_that_raises_still_marks_the_source() -> None:
     source, placeholder_message, channel = await _interrupted()
 
     async def explode(
-        *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+        message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
     ) -> None:
         """Fails the way a step outside `_expand`'s own guards does."""
         del message, url, current_emoji, placeholder

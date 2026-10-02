@@ -97,19 +97,14 @@ def test_every_downloader_declares_its_own_parse_metadata(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(_downloader_classes()))
-def test_parse_metadata_takes_a_keyword_only_url(name: str) -> None:
-    """One spelling at every call site, so a platform swap is not also a signature change.
-
-    Keyword-only rather than merely keyword-able: every caller already writes `url=`, so a
-    positional-or-keyword declaration is an invitation nothing has taken up yet. It had been taken
-    up by two test doubles, which is exactly how a convention stops being one.
-    """
+def test_parse_metadata_takes_only_a_url(name: str) -> None:
+    """One spelling at every call site, so a platform swap is not also a signature change."""
     # Read off the class, so the signature is the unbound function's and carries `self`.
     parameters = signature(_downloader_classes()[name].parse_metadata).parameters
     arguments = [parameter for parameter in parameters if parameter != "self"]
 
     assert arguments == ["url"], f"{name}.parse_metadata takes more than a url"
-    assert parameters["url"].kind is Parameter.KEYWORD_ONLY
+    assert parameters["url"].kind is Parameter.POSITIONAL_OR_KEYWORD
     assert parameters["url"].annotation is str
 
 
@@ -147,7 +142,7 @@ def test_a_download_folder_is_required_when_it_exists(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(_downloader_classes()))
-def test_a_parse_half_takes_the_same_keyword_only_url(name: str) -> None:
+def test_a_parse_half_takes_the_same_url(name: str) -> None:
     """`parse` is optional, but a platform that has one spells its url like `parse_metadata` does.
 
     Only Threads has it. Three platforms write files, but their second methods have nothing
@@ -162,5 +157,5 @@ def test_a_parse_half_takes_the_same_keyword_only_url(name: str) -> None:
 
     url = signature(parse).parameters["url"]
 
-    assert url.kind is Parameter.KEYWORD_ONLY
+    assert url.kind is Parameter.POSITIONAL_OR_KEYWORD
     assert url.annotation is str

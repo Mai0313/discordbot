@@ -34,7 +34,7 @@ from discordbot.utils.expansion_placeholder import (
 from discordbot.services.platforms.instagram import InstagramDownloader
 
 
-def _http_error(*, status: int) -> requests.HTTPError:
+def _http_error(status: int) -> requests.HTTPError:
     """Builds the error `raise_for_status` raises for one status code."""
     response = requests.Response()
     response.status_code = status

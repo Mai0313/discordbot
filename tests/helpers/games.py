@@ -24,7 +24,7 @@ def card(rank: str, suit: str = "♠") -> Card:
 
 
 def seat(
-    *, user_id: int = 1, display_name: str = "Alice", bet: int = 100, balance_at_start: int = 1_000
+    user_id: int = 1, display_name: str = "Alice", bet: int = 100, balance_at_start: int = 1_000
 ) -> GameParticipant:
     """Builds a seated player whose account name is the display name lower-cased."""
     return GameParticipant(

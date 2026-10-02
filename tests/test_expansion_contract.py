@@ -149,14 +149,14 @@ type _Outcome = Literal["readable", "unreadable"] | Exception
 class _Staged:
     """One cog whose downloader answers a staged outcome, and a guild message carrying its link."""
 
-    def __init__(self, *, cog: ExpansionCog[Any], message: FakeDiscordMessage) -> None:
+    def __init__(self, cog: ExpansionCog[Any], message: FakeDiscordMessage) -> None:
         """Holds the pair; nothing is served until `serve` installs a downloader factory."""
         self.cog = cog
         self.message = message
         # One entry per read the cog started: how many replies were already posted at that moment.
         self.reads: list[int] = []
 
-    def serve(self, *, factory: Callable[..., object]) -> None:
+    def serve(self, factory: Callable[..., object]) -> None:
         """Installs `factory` as the cog's per-read downloader seam, recording every read."""
 
         def recording(**kwargs: object) -> object:
@@ -168,7 +168,6 @@ class _Staged:
 
 
 def _stage_conversation(
-    *,
     cog: type[ExpansionCog[Any]],
     outcome: _Outcome,
     url: str,
@@ -187,7 +186,7 @@ def _stage_conversation(
     return staged
 
 
-def _stage_threads(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
+def _stage_threads(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     """Stages the Threads cog, whose unreadable post is a walk that found no chain."""
     url = "https://www.threads.com/@alice/post/ABC123"
     instance = cog(bot=stub_bot())
@@ -196,7 +195,7 @@ def _stage_threads(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Stage
     readable = ThreadsConversation(chain=[ThreadsOutput(text="post body", url=url)])
 
     @contextlib.contextmanager
-    def walk(*, url: str) -> Iterator[ThreadsConversation]:
+    def walk(url: str) -> Iterator[ThreadsConversation]:
         """Enters the way `ThreadsDownloader.parse` does, so the failure lands in the walk."""
         del url
         if isinstance(outcome, Exception):
@@ -207,7 +206,7 @@ def _stage_threads(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Stage
     return staged
 
 
-def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
+def _stage_douyin(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     """Stages the Douyin cog.
 
     Douyin has no empty post: what it reads and then refuses is media nothing can carry, staged
@@ -233,21 +232,21 @@ def _stage_douyin(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged
 _STAGES: dict[str, Callable[..., _Staged]] = {
     "parse_douyin": _stage_douyin,
     "parse_threads": _stage_threads,
-    "parse_facebook": lambda *, cog, outcome: _stage_conversation(
+    "parse_facebook": lambda cog, outcome: _stage_conversation(
         cog=cog,
         outcome=outcome,
         url=FACEBOOK_URL,
         readable=facebook_post(),
         unreadable=FacebookConversation(),
     ),
-    "parse_instagram": lambda *, cog, outcome: _stage_conversation(
+    "parse_instagram": lambda cog, outcome: _stage_conversation(
         cog=cog,
         outcome=outcome,
         url=INSTAGRAM_URL,
         readable=instagram_post(),
         unreadable=InstagramConversation(),
     ),
-    "parse_twitter": lambda *, cog, outcome: _stage_conversation(
+    "parse_twitter": lambda cog, outcome: _stage_conversation(
         cog=cog,
         outcome=outcome,
         url=TWITTER_URL,
@@ -257,7 +256,7 @@ _STAGES: dict[str, Callable[..., _Staged]] = {
 }
 
 
-def _stage(*, cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
+def _stage(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     """Stages `cog` through its entry in `_STAGES`, which a new cog needs one of."""
     return _STAGES[_cog_id(cog=cog)](cog=cog, outcome=outcome)
 
@@ -533,7 +532,7 @@ async def test_a_failure_outside_the_read_still_marks_the_message(
     staged = _stage(cog=cog, outcome="readable")
 
     async def explode(
-        *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+        message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
     ) -> None:
         """Fails the way a Discord API error outside the read and the send does."""
         del message, url, current_emoji, placeholder

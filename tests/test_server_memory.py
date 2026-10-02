@@ -51,7 +51,6 @@ _fact = partial(
 
 
 def _alias_fact(
-    *,
     fact_id: str,
     text: str,
     subject_id: int,
@@ -70,7 +69,6 @@ def _alias_fact(
 
 
 def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the delta schema
-    *,
     summary: str = "李董的社群暱稱",
     display_name: str = "小李",
     aliases: tuple[str, ...] = ("李董",),

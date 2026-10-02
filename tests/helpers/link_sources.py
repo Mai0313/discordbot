@@ -124,12 +124,12 @@ def instagram_post(**overrides: object) -> InstagramConversation:
 class StubConversationDownloader:
     """Stands in for the Facebook, Instagram or Twitter downloader, serving one canned outcome."""
 
-    def __init__(self, *, outcome: PlatformConversation[Any] | Exception) -> None:
+    def __init__(self, outcome: PlatformConversation[Any] | Exception) -> None:
         """Holds the conversation to answer with, or the error to raise."""
         self.outcome = outcome
         self.seen: list[str] = []
 
-    def parse_metadata(self, *, url: str) -> PlatformConversation[Any]:
+    def parse_metadata(self, url: str) -> PlatformConversation[Any]:
         """Records the URL asked for, then answers with the canned outcome."""
         self.seen.append(url)
         if isinstance(self.outcome, Exception):
@@ -143,7 +143,7 @@ def stub_bot() -> commands.Bot:
 
 
 def stub_conversation_cog[CogT: commands.Cog](
-    *, cog_type: type[CogT], outcome: PlatformConversation[Any] | Exception
+    cog_type: type[CogT], outcome: PlatformConversation[Any] | Exception
 ) -> tuple[CogT, StubConversationDownloader]:
     """Builds a Facebook, Instagram or Twitter expansion cog reading from a stub downloader."""
     cog = cog_type(bot=stub_bot())
@@ -152,7 +152,7 @@ def stub_conversation_cog[CogT: commands.Cog](
     return cog, stub
 
 
-def expansion_embeds(*, message: FakeDiscordMessage) -> list[Embed]:
+def expansion_embeds(message: FakeDiscordMessage) -> list[Embed]:
     """The embeds an expansion cog delivered onto its placeholder."""
     return list(expansion_payload(message=message)["embeds"])
 
@@ -204,7 +204,7 @@ class StubDouyinDownloader:
         self.total_images = total_images
         self.download_calls: list[dict[str, Any]] = []
 
-    def parse_metadata(self, *, url: str) -> DouyinMetadata:
+    def parse_metadata(self, url: str) -> DouyinMetadata:
         """Returns the canned post, or raises the canned parse failure."""
         del url
         if self.parse_error is not None:
@@ -273,7 +273,6 @@ def stub_douyin_downloads(
 
 def serve_conversation(
     monkeypatch: pytest.MonkeyPatch,
-    *,
     downloader: type[PlatformDownloader],
     post: PlatformConversation[Any] | None = None,
     error: Exception | None = None,
@@ -282,7 +281,7 @@ def serve_conversation(
     outcome = error if error is not None else post
     assert outcome is not None, "stage a post or an error"
 
-    def parse_metadata(self: PlatformDownloader, *, url: str) -> PlatformConversation[Any]:
+    def parse_metadata(self: PlatformDownloader, url: str) -> PlatformConversation[Any]:
         """Answers with the canned post, or raises the canned error."""
         del self, url
         if isinstance(outcome, Exception):
@@ -314,7 +313,7 @@ def serve_page(
     """
     fetched: list[str] = []
 
-    def fetch_page(self: PlatformDownloader, *, url: str) -> FetchedPage:
+    def fetch_page(self: PlatformDownloader, url: str) -> FetchedPage:
         """Records the URL asked for, then answers with the canned page."""
         del self
         fetched.append(url)
@@ -324,16 +323,16 @@ def serve_page(
     return fetched
 
 
-def accept_image_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> None:
+def accept_image_uploads(monkeypatch: pytest.MonkeyPatch, uploaded: list[str]) -> None:
     """Makes the shared image fetch and upload succeed, recording what was fetched."""
 
-    async def load_image_bytes(*, source: str) -> LoadedMedia:
+    async def load_image_bytes(source: str) -> LoadedMedia:
         """Pretends the CDN answered."""
         uploaded.append(source)
         return LoadedMedia(data=b"bytes", mime_type="image/jpeg")
 
     async def upload_as_input_file(
-        *, client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float
+        client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float
     ) -> dict[str, str]:
         """Stands in for the Files API upload."""
         del client, source, mime_type, timeout_seconds
@@ -345,17 +344,17 @@ def accept_image_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]
     )
 
 
-def block_separator(*, blocks: list[Any]) -> str:
+def block_separator(blocks: list[Any]) -> str:
     """The separator text a builder led with."""
     return blocks[0]["content"][0]["text"]
 
 
-def block_body(*, blocks: list[Any]) -> str:
+def block_body(blocks: list[Any]) -> str:
     """The rendered post text a builder injected."""
     return blocks[1]["content"][0]["text"]
 
 
-def block_parts(*, blocks: list[Any]) -> list[Any]:
+def block_parts(blocks: list[Any]) -> list[Any]:
     """Every content part of the injected user block, text and uploads alike."""
     return list(blocks[1]["content"])
 
@@ -369,13 +368,7 @@ class FakeUploads:
         self.fail = fail
 
     async def __call__(
-        self,
-        *,
-        client: object,
-        source: object,
-        mime_type: str,
-        filename: str,
-        timeout_seconds: float,
+        self, client: object, source: object, mime_type: str, filename: str, timeout_seconds: float
     ) -> dict[str, str] | None:
         """Stands in for `upload_as_input_file`, returning a Files-API-shaped part."""
         del client, timeout_seconds

@@ -128,7 +128,7 @@ def _generic_conversation_classes() -> set[str]:
 
 
 def _build(
-    *, cls: type[BaseModel], chain_length: int = 1
+    cls: type[BaseModel], chain_length: int = 1
 ) -> tuple[_Conversation, list[BaseModel], BaseModel]:
     """A conversation of the discovered class, plus the chain and the reply that built it."""
     output = cast("Any", _output_model(cls=cls))
@@ -138,12 +138,12 @@ def _build(
     return cast("_Conversation", conversation), chain, reply
 
 
-def _output_model(*, cls: type[BaseModel]) -> type[BaseModel]:
+def _output_model(cls: type[BaseModel]) -> type[BaseModel]:
     """The `<Platform>Output` a conversation's `chain` holds."""
     return cast("Any", cls.model_fields["chain"].annotation).__args__[0]
 
 
-def _properties(*, cls: type) -> set[str]:
+def _properties(cls: type) -> set[str]:
     """The public plain properties a caller can read off the class, inherited ones included.
 
     Walks the MRO rather than the class itself because `comments` and `posts` now come from

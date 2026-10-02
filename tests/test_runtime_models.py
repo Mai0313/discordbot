@@ -52,7 +52,7 @@ def _catalog_models() -> dict[str, ModelSettings]:
     return {name: value for name, value in found.items() if isinstance(value, ModelSettings)}
 
 
-def _catalog_at(*, monkeypatch: pytest.MonkeyPatch, now: datetime) -> RuntimeModelCatalog:
+def _catalog_at(monkeypatch: pytest.MonkeyPatch, now: datetime) -> RuntimeModelCatalog:
     """A catalog whose clock reads `now`, until the test ends or pins another instant."""
 
     def fixed_now(tz: object) -> datetime:

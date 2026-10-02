@@ -19,7 +19,6 @@ from tests.helpers.link_sources import hosting_planner, hosting_off_planner
 
 
 def _service(
-    *,
     serve_dir: Path,
     enabled: bool = True,
     base_url: str = "https://media.test",
@@ -43,14 +42,14 @@ def _hosted_files(serve_dir: Path) -> list[str]:
     return [p.name for p in serve_dir.iterdir() if not p.name.startswith(_TEMP_PREFIX)]
 
 
-def _host(service: MediaHostingService, *, data: bytes, suffix: str = ".png") -> str:
+def _host(service: MediaHostingService, data: bytes, suffix: str = ".png") -> str:
     """Hosts bytes and returns the resulting filename (asserts the publish succeeded)."""
     url = service.publish_bytes(data=data, suffix=suffix)
     assert url is not None
     return url.removeprefix("https://media.test/")
 
 
-def _age(path: Path, *, seconds: float) -> None:
+def _age(path: Path, seconds: float) -> None:
     """Backdates a file's mtime by `seconds` (so it is past the eviction grace / age cutoff)."""
     when = time.time() - seconds
     os.utime(path, (when, when))

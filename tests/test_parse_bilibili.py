@@ -47,7 +47,6 @@ def _metadata(
 
 def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder can hit
     monkeypatch: pytest.MonkeyPatch,
-    *,
     metadata: VideoMetadata | None = None,
     parse_error: Exception | None = None,
     download_error: Exception | None = None,
@@ -58,7 +57,7 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
     resolved = metadata or _metadata()
     recorded: dict[str, list[str]] = {"downloads": []}
 
-    def fake_parse_metadata(self: VideoDownloader, *, url: str) -> VideoMetadata:
+    def fake_parse_metadata(self: VideoDownloader, url: str) -> VideoMetadata:
         """Returns the canned metadata, or raises the canned parse failure."""
         del url
         if parse_error is not None:
@@ -359,9 +358,9 @@ async def test_a_raising_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyP
     """An upload that raises (the realistic SDK failure) must not claim the clip was watched."""
 
     class _RaisingUploads(FakeUploads):
-        async def __call__(self, **kwargs: object) -> dict[str, str] | None:
+        async def __call__(self, *args: object, **kwargs: object) -> dict[str, str] | None:
             """Raises the way a genai SDK failure would."""
-            del kwargs
+            del args, kwargs
             raise RuntimeError("upload exploded")
 
     _stub_bilibili(monkeypatch, uploads=_RaisingUploads())
@@ -453,7 +452,6 @@ async def test_the_fetch_bound_is_released_before_the_upload(
 
         async def __call__(
             self,
-            *,
             client: object,
             source: object,
             mime_type: str,
