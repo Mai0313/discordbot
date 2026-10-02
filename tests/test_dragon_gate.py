@@ -9,9 +9,7 @@ import contextlib
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
-import logfire
 from nextcord import Embed, HTTPException
-from nextcord.ui import StringSelect
 from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.games import GameParticipant
@@ -21,6 +19,7 @@ from discordbot.typings.economy import (
     JackpotSettlementRequest,
     JackpotSettlementBatchResult,
 )
+from discordbot.utils.discord_embeds import embed_text_length
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -61,7 +60,7 @@ from tests.helpers.games import (
     component_rows,
     everyone_stays,
     attached_button,
-    record_scheduled_deletes,
+    attached_select,
 )
 from tests.helpers.casting import (
     as_message,
@@ -73,6 +72,8 @@ from tests.helpers.casting import (
 )
 from tests.helpers.economy import seed_balance, get_jackpot_pool
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_levels
+from tests.helpers.message_cleanup import record_scheduled_deletes
 from tests.helpers.economy_invariants import assert_wallet_consistent
 
 if TYPE_CHECKING:
@@ -104,22 +105,6 @@ class RiggedRandom(Random):
         value = next(self._scripted_choices)
         assert value in [seq[index] for index in range(len(seq))]
         return cast("T", value)
-
-
-def _rendered_length(embed: Embed) -> int:
-    """What Discord counts one embed as, for the 6000-per-message budget it shares.
-
-    Every text part, not just the description: the final embed carries none of the others today,
-    so counting only what it happens to use would stop measuring the moment someone adds a
-    footer to it — which is the change this is here to catch.
-    """
-    return (
-        len(embed.description or "")
-        + len(embed.title or "")
-        + len(getattr(embed.footer, "text", None) or "")
-        + len(getattr(embed.author, "name", None) or "")
-        + sum(len(field.name or "") + len(field.value or "") for field in embed.fields)
-    )
 
 
 def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
@@ -179,14 +164,6 @@ def _record_jackpot_settlements(monkeypatch: pytest.MonkeyPatch) -> list[Jackpot
     monkeypatch.setattr("discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", settle_batch)
     record_scheduled_deletes(monkeypatch=monkeypatch)
     return requests
-
-
-def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
-    """Returns an attached select menu by custom ID."""
-    for child in view.children:
-        if isinstance(child, StringSelect) and child.custom_id == custom_id:
-            return child
-    raise AssertionError(f"Missing attached select: {custom_id}")
 
 
 def test_card_value_uses_ace_low_and_faces_above_ten() -> None:
@@ -484,13 +461,7 @@ async def test_a_final_render_the_press_cannot_make_goes_through_the_channel(
     So any failure of the press is recorded and the render retried through the channel.
     """
     record_scheduled_deletes(monkeypatch=monkeypatch)
-    reports: list[tuple[str, dict[str, object]]] = []
-    for level in ("info", "warn"):
-        monkeypatch.setattr(
-            target=logfire,
-            name=level,
-            value=lambda message, level=level, **fields: reports.append((level, fields)),
-        )
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     message = FakeDiscordMessage()
     press = FakeInteraction(message=message)
     press.edit_failure = failure
@@ -506,7 +477,7 @@ async def test_a_final_render_the_press_cannot_make_goes_through_the_channel(
 
     assert landed is True
     assert message.edits[-1]["view"] is None
-    assert [(level, "_exc_info" in fields) for level, fields in reports] == [report]
+    assert [(level, "_exc_info" in fields) for level, _, fields in reports] == [report]
 
 
 async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
@@ -525,7 +496,7 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     normal_view.sync_controls()
     assert component_ids(view=normal_view) == {"dg:bet", "dg:leave"}
     assert component_rows(view=normal_view) == {"dg:leave": 0, "dg:bet": 2}
-    assert _attached_select(view=normal_view, custom_id="dg:bet").disabled is False
+    assert attached_select(view=normal_view, custom_id="dg:bet").disabled is False
 
     pair_round = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("7", "♠", "7", "♥", "8", "♣")), participants=[owner]
@@ -544,7 +515,7 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     pair_view.sync_controls()
     assert component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
     assert component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
-    assert _attached_select(view=pair_view, custom_id="dg:bet").disabled is False
+    assert attached_select(view=pair_view, custom_id="dg:bet").disabled is False
 
 
 @pytest.mark.parametrize(
@@ -909,7 +880,7 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == "higher"
     assert component_ids(view=view) == {"dg:bet", "dg:leave"}
-    assert _attached_select(view=view, custom_id="dg:bet").disabled is False
+    assert attached_select(view=view, custom_id="dg:bet").disabled is False
 
     await view._handle_bet_choice(
         choice="min",
@@ -1541,7 +1512,7 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
         f"the history embed renders {len(embed.description)} characters at its worst, past "
         f"Discord's 4096 per description; lower DRAGON_GATE_VISIBLE_HISTORY_LINES"
     )
-    settled_message = _rendered_length(embed=final_embed) + _rendered_length(embed=embed)
+    settled_message = embed_text_length(embed=final_embed) + embed_text_length(embed=embed)
     assert settled_message <= 6000, (
         f"the settled table renders {settled_message} characters across its two embeds, past "
         f"Discord's 6000 per message; lower DRAGON_GATE_VISIBLE_HISTORY_LINES"

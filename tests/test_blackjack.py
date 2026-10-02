@@ -31,7 +31,7 @@ from discordbot.cogs.games.blackjack import (
 from discordbot.cogs.games.presentation import render_hand, blackjack_player_early_finish_note
 from discordbot.services.economy.database import buy_vip, get_casino_ledger
 
-from tests.helpers.games import card, seat, settle_only_seat
+from tests.helpers.games import card, seat, blackjack_hand, blackjack_round, settle_only_seat
 from tests.helpers.economy import seed_balance
 from tests.helpers.economy_invariants import (
     assert_wallet_consistent,
@@ -146,14 +146,9 @@ def test_is_bust_above_21() -> None:
     assert is_bust(cards=safe) is False
 
 
-def _settled_hand(cards: list[Card], bet: int = 100) -> BlackjackHandState:
-    """Builds a finished production hand state for settlement assertions."""
-    return BlackjackHandState(cards=cards, bet=bet, base_bet=bet, finished=True)
-
-
 def _settle_cards(player: list[Card], dealer: list[Card], bet: int = 100) -> tuple[str, int]:
     """Settles a finished hand state against dealer cards."""
-    return settle_hand(hand=_settled_hand(cards=player, bet=bet), dealer=dealer)
+    return settle_hand(hand=blackjack_hand(cards=player, bet=bet, finished=True), dealer=dealer)
 
 
 def test_settle_player_blackjack_pays_three_to_two() -> None:
@@ -178,11 +173,9 @@ def test_settle_double_blackjack_is_push() -> None:
 
 def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
     """A non-natural 21 should not be described as an early Blackjack finish."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Bob")]
-    )
-    player = round_state.players[0]
-    player.hands[0].cards = [card(rank="7", suit="♣"), card(rank="7", suit="♦"), card(rank="7")]
+    player = blackjack_round(
+        hands=[[card(rank="7", suit="♣"), card(rank="7", suit="♦"), card(rank="7")]], dealer=[]
+    ).players[0]
     assert (
         blackjack_player_early_finish_note(
             player=player,
@@ -195,11 +188,9 @@ def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
 
 def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
     """Peek notes tell players the dealer used the visible up-card plus hole card."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Bob")]
-    )
-    player = round_state.players[0]
-    player.hands[0].cards = [card(rank="9"), card(rank="8", suit="♥")]
+    player = blackjack_round(
+        hands=[[card(rank="9"), card(rank="8", suit="♥")]], dealer=[]
+    ).players[0]
 
     note = blackjack_player_early_finish_note(
         player=player,
@@ -267,7 +258,7 @@ def test_settle_equal_total_is_push() -> None:
 
 def test_settle_unfinished_hand_raises() -> None:
     """Trying to settle a still-live hand is a programmer error."""
-    hand = BlackjackHandState(cards=[card(rank="10")], bet=50, base_bet=50)
+    hand = blackjack_hand(cards=[card(rank="10")], bet=50)
     with pytest.raises(expected_exception=ValueError, match="unfinished"):
         settle_hand(hand=hand, dealer=[card(rank="9", suit="♣"), card(rank="8", suit="♦")])
 
@@ -291,13 +282,13 @@ def test_dealer_must_hit_under_h17(ranks: tuple[str, ...], must_hit: bool) -> No
 
 def test_blackjack_round_advances_players_then_leaves_the_dealer_to_draw() -> None:
     """The round advances in join order, and settling the players draws no dealer card."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=12345),
-        participants=[seat(user_id=1, display_name="Alice"), seat(user_id=2, display_name="Bob")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="8", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="8", suit="♦")],
+        ],
+        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
-    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="8", suit="♥")]
-    round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
-    round_state.dealer = [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
 
     assert round_state.active_player() == round_state.players[0]
     round_state.stand(user_id=1)
@@ -312,13 +303,13 @@ def test_blackjack_round_advances_players_then_leaves_the_dealer_to_draw() -> No
 
 def test_blackjack_round_rejects_action_from_non_active_player() -> None:
     """Only the current player can mutate the shared round."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0),
-        participants=[seat(user_id=1, display_name="Alice"), seat(user_id=2, display_name="Bob")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="8", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="8", suit="♦")],
+        ],
+        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
-    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="8", suit="♥")]
-    round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
-    round_state.dealer = [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
 
     with pytest.raises(expected_exception=ValueError, match="turn"):
         round_state.hit(user_id=2)
@@ -367,14 +358,9 @@ def test_is_soft_17_only_when_soft_and_seventeen() -> None:
     assert is_soft_17(cards=[card(rank="10"), card(rank="7", suit="♥")]) is False
 
 
-def _make_hand(cards: list[Card], bet: int = 100) -> BlackjackHandState:
-    """Helper for hand-state predicates."""
-    return BlackjackHandState(cards=cards, bet=bet, base_bet=bet)
-
-
 def test_can_double_only_on_two_cards() -> None:
     """Double is offered only on the initial deal before any action."""
-    fresh = _make_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
+    fresh = blackjack_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
     assert can_double(hand=fresh, balance_remaining=200) is True
     fresh.actions_taken = 1
     assert can_double(hand=fresh, balance_remaining=200) is False
@@ -382,47 +368,49 @@ def test_can_double_only_on_two_cards() -> None:
 
 def test_can_double_rejected_when_balance_low() -> None:
     """Double needs an extra wager equal to the original bet."""
-    fresh = _make_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
+    fresh = blackjack_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
     assert can_double(hand=fresh, balance_remaining=99) is False
 
 
 def test_can_double_is_closed_after_split() -> None:
     """A hand that came out of a Split cannot Double (no Double after Split)."""
-    split_hand = _make_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
+    split_hand = blackjack_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
     split_hand.is_split_hand = True
     assert can_double(hand=split_hand, balance_remaining=200) is False
 
 
 def test_can_double_rejected_when_doubling_exceeds_single_bet_cap() -> None:
     """Doubling cannot push the hand stake past MAX_SINGLE_BET."""
-    over_cap = _make_hand(
+    over_cap = blackjack_hand(
         cards=[card(rank="5"), card(rank="6", suit="♥")], bet=MAX_SINGLE_BET // 2 + 1
     )
     assert can_double(hand=over_cap, balance_remaining=MAX_SINGLE_BET) is False
-    at_cap = _make_hand(cards=[card(rank="5"), card(rank="6", suit="♥")], bet=MAX_SINGLE_BET // 2)
+    at_cap = blackjack_hand(
+        cards=[card(rank="5"), card(rank="6", suit="♥")], bet=MAX_SINGLE_BET // 2
+    )
     assert can_double(hand=at_cap, balance_remaining=MAX_SINGLE_BET) is True
 
 
 def test_can_split_only_on_same_value_pairs() -> None:
     """Split is offered on same-value pairs with enough balance."""
-    pair = _make_hand(cards=[card(rank="8"), card(rank="8", suit="♥")])
+    pair = blackjack_hand(cards=[card(rank="8"), card(rank="8", suit="♥")])
     assert can_split(hand=pair, balance_remaining=200) is True
-    face_pair = _make_hand(cards=[card(rank="10"), card(rank="K", suit="♥")])
+    face_pair = blackjack_hand(cards=[card(rank="10"), card(rank="K", suit="♥")])
     assert can_split(hand=face_pair, balance_remaining=200) is True
-    non_pair = _make_hand(cards=[card(rank="A"), card(rank="10", suit="♥")])
+    non_pair = blackjack_hand(cards=[card(rank="A"), card(rank="10", suit="♥")])
     assert can_split(hand=non_pair, balance_remaining=200) is False
     assert can_split(hand=pair, balance_remaining=50) is False
 
 
 def test_can_surrender_only_before_any_action() -> None:
     """Surrender is offered only on the very first action of the original hand."""
-    fresh = _make_hand(cards=[card(rank="10"), card(rank="6", suit="♥")])
+    fresh = blackjack_hand(cards=[card(rank="10"), card(rank="6", suit="♥")])
     assert can_surrender(hand=fresh, peeked_blackjack=False) is True
     fresh.actions_taken = 1
     assert can_surrender(hand=fresh, peeked_blackjack=False) is False
     assert (
         can_surrender(
-            hand=_make_hand(cards=[card(rank="10"), card(rank="6", suit="♥")]),
+            hand=blackjack_hand(cards=[card(rank="10"), card(rank="6", suit="♥")]),
             peeked_blackjack=True,
         )
         is False
@@ -432,25 +420,13 @@ def test_can_surrender_only_before_any_action() -> None:
 # Round actions -------------------------------------------------------------
 
 
-def _two_player_round(
-    cards_a: list[Card], cards_b: list[Card], dealer: list[Card]
-) -> BlackjackRound:
-    """Builds a deterministic two-player round skipping `deal_initial`."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0),
-        participants=[seat(user_id=1, display_name="Alice"), seat(user_id=2, display_name="Bob")],
-    )
-    round_state.players[0].hands[0].cards = cards_a
-    round_state.players[1].hands[0].cards = cards_b
-    round_state.dealer = dealer
-    return round_state
-
-
 def test_allowed_actions_list_the_active_hand_in_button_order() -> None:
     """A fresh pair that can cover a second bet may do everything, hit first; a settled round nothing."""
-    round_state = _two_player_round(
-        cards_a=[card(rank="8"), card(rank="8", suit="♥")],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="8"), card(rank="8", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+        ],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
 
@@ -490,13 +466,14 @@ def test_allowed_actions_follow_the_active_hand(
     expected: tuple[str, ...],
 ) -> None:
     """Each action is offered only while its rule allows it on the hand waiting to act."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(balance_at_start=balance_at_start)]
+    round_state = blackjack_round(
+        hands=[[]],
+        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
+        seats=[seat(balance_at_start=balance_at_start)],
     )
-    round_state.players[0].hands[0] = BlackjackHandState(
-        cards=[card(rank=rank) for rank in ranks], bet=100, base_bet=100
+    round_state.players[0].hands[0] = blackjack_hand(
+        cards=[card(rank=rank) for rank in ranks]
     ).model_copy(update=hand_flags)
-    round_state.dealer = [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
     round_state.peeked_blackjack = peeked_blackjack
 
     assert round_state.allowed_actions() == expected
@@ -508,9 +485,10 @@ def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
     """A round whose shoe has run out still deals, from `draw_card` rather than raising."""
     fallback_card = card(rank="9", suit="♦")
     monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", lambda rng: fallback_card)
-    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
-    round_state.players[0].hands[0].cards = [card(rank="2"), card(rank="3", suit="♥")]
-    round_state.dealer = [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
+    round_state = blackjack_round(
+        hands=[[card(rank="2"), card(rank="3", suit="♥")]],
+        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
+    )
     round_state.shoe = []
 
     assert round_state.hit(user_id=1) is fallback_card
@@ -522,14 +500,16 @@ def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
 )
 def test_hit_auto_stands_on_a_fifth_card_that_does_not_bust(fifth: str, total: int) -> None:
     """Five cards that do not bust stand on their own, at 21 or below it, and the turn moves on."""
-    round_state = _two_player_round(
-        cards_a=[
-            card(rank="2"),
-            card(rank="3", suit="♥"),
-            card(rank="4", suit="♣"),
-            card(rank="5", suit="♦"),
+    round_state = blackjack_round(
+        hands=[
+            [
+                card(rank="2"),
+                card(rank="3", suit="♥"),
+                card(rank="4", suit="♣"),
+                card(rank="5", suit="♦"),
+            ],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
         ],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     round_state.shoe = [card(rank=fifth)]
@@ -544,32 +524,25 @@ def test_hit_auto_stands_on_a_fifth_card_that_does_not_bust(fifth: str, total: i
 
 def test_split_hand_can_auto_stand_on_fifth_card_twenty_one() -> None:
     """Non-Ace split hands are evaluated independently for five-card 21."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
+    round_state = blackjack_round(
+        hands=[[]], dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")]
     )
     player = round_state.players[0]
     player.hands = [
-        BlackjackHandState(
-            cards=[card(rank="8"), card(rank="10", suit="♥")],
-            bet=100,
-            base_bet=100,
-            is_split_hand=True,
-            finished=True,
+        blackjack_hand(
+            cards=[card(rank="8"), card(rank="10", suit="♥")], is_split_hand=True, finished=True
         ),
-        BlackjackHandState(
+        blackjack_hand(
             cards=[
                 card(rank="2"),
                 card(rank="3", suit="♥"),
                 card(rank="4", suit="♣"),
                 card(rank="5", suit="♦"),
             ],
-            bet=100,
-            base_bet=100,
             is_split_hand=True,
         ),
     ]
     round_state.current_hand_index = 1
-    round_state.dealer = [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
     round_state.shoe = [card(rank="7")]
 
     round_state.hit(user_id=1)
@@ -582,9 +555,11 @@ def test_split_hand_can_auto_stand_on_fifth_card_twenty_one() -> None:
 
 def test_double_down_doubles_bet_and_finishes_hand() -> None:
     """Double Down doubles the wager, draws one card, and stops the hand."""
-    round_state = _two_player_round(
-        cards_a=[card(rank="5"), card(rank="6", suit="♥")],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="5"), card(rank="6", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+        ],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
 
@@ -600,9 +575,11 @@ def test_double_down_doubles_bet_and_finishes_hand() -> None:
 
 def test_split_creates_two_hands_with_fresh_draws() -> None:
     """Split turns one pair into two sibling sub-hands, each drawing once."""
-    round_state = _two_player_round(
-        cards_a=[card(rank="8"), card(rank="8", suit="♥")],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="8"), card(rank="8", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+        ],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
 
@@ -621,9 +598,11 @@ def test_split_creates_two_hands_with_fresh_draws() -> None:
 
 def test_split_accepts_ten_value_pairs() -> None:
     """Split accepts any two 10-value cards, not just identical ranks."""
-    round_state = _two_player_round(
-        cards_a=[card(rank="10"), card(rank="K", suit="♥")],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="K", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+        ],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
 
@@ -637,9 +616,11 @@ def test_split_accepts_ten_value_pairs() -> None:
 
 def test_split_aces_locks_each_hand_after_one_draw() -> None:
     """Splitting Aces marks both halves finished after a single draw each."""
-    round_state = _two_player_round(
-        cards_a=[card(rank="A"), card(rank="A", suit="♥")],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="A"), card(rank="A", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+        ],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
 
@@ -656,10 +637,8 @@ def test_split_aces_locks_each_hand_after_one_draw() -> None:
 
 def test_split_aces_twenty_one_settles_as_regular_win_not_blackjack() -> None:
     """Hitting 21 on a split hand counts as 1:1 win, not 3:2 Blackjack."""
-    hand = BlackjackHandState(
+    hand = blackjack_hand(
         cards=[card(rank="A"), card(rank="10", suit="♥")],
-        bet=100,
-        base_bet=100,
         is_split_hand=True,
         is_split_aces=True,
         finished=True,
@@ -671,10 +650,8 @@ def test_split_aces_twenty_one_settles_as_regular_win_not_blackjack() -> None:
 
 def test_split_twenty_one_loses_to_dealer_natural_blackjack() -> None:
     """A split-derived 21 is not natural and loses to dealer Blackjack."""
-    hand = BlackjackHandState(
+    hand = blackjack_hand(
         cards=[card(rank="A"), card(rank="10", suit="♥")],
-        bet=100,
-        base_bet=100,
         is_split_hand=True,
         is_split_aces=True,
         finished=True,
@@ -688,10 +665,8 @@ def test_split_twenty_one_loses_to_dealer_natural_blackjack() -> None:
 
 def test_split_twenty_one_pushes_dealer_non_natural_twenty_one() -> None:
     """A split-derived 21 pushes a dealer 21 made with more than two cards."""
-    hand = BlackjackHandState(
+    hand = blackjack_hand(
         cards=[card(rank="A"), card(rank="10", suit="♥")],
-        bet=100,
-        base_bet=100,
         is_split_hand=True,
         is_split_aces=True,
         finished=True,
@@ -705,12 +680,8 @@ def test_split_twenty_one_pushes_dealer_non_natural_twenty_one() -> None:
 
 def test_split_twenty_one_against_a_dealer_bust_reads_as_dealer_bust() -> None:
     """A split-derived 21 beats a busted dealer the way any other hand does, label included."""
-    hand = BlackjackHandState(
-        cards=[card(rank="A"), card(rank="K")],
-        bet=100,
-        base_bet=100,
-        is_split_hand=True,
-        finished=True,
+    hand = blackjack_hand(
+        cards=[card(rank="A"), card(rank="K")], is_split_hand=True, finished=True
     )
     outcome, delta = settle_hand(
         hand=hand,
@@ -722,9 +693,11 @@ def test_split_twenty_one_against_a_dealer_bust_reads_as_dealer_bust() -> None:
 
 def test_surrender_marks_hand_with_half_bet_refund() -> None:
     """Surrender stops the hand and books a half-bet loss at settlement."""
-    round_state = _two_player_round(
-        cards_a=[card(rank="10"), card(rank="6", suit="♥")],
-        cards_b=[card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="6", suit="♥")],
+            [card(rank="9", suit="♣"), card(rank="9", suit="♦")],
+        ],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
 
@@ -741,13 +714,10 @@ def test_surrender_marks_hand_with_half_bet_refund() -> None:
 @pytest.mark.parametrize(argnames=("bet", "expected_delta"), argvalues=[(1, -1), (101, -51)])
 def test_surrender_uses_ceil_half_loss_for_integer_chips(bet: int, expected_delta: int) -> None:
     """Surrender loses ceil(half bet), so a 1-point bet is not free."""
-    hand = BlackjackHandState(
-        cards=[card(rank="10"), card(rank="6", suit="♥")],
-        bet=bet,
-        base_bet=bet,
-        surrendered=True,
-        finished=True,
+    hand = blackjack_hand(
+        cards=[card(rank="10"), card(rank="6", suit="♥")], bet=bet, finished=True
     )
+    hand.surrendered = True
 
     outcome, delta = settle_hand(
         hand=hand, dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")]
@@ -759,9 +729,7 @@ def test_surrender_uses_ceil_half_loss_for_integer_chips(bet: int, expected_delt
 
 def test_take_insurance_requires_ace_phase() -> None:
     """Insurance can only be placed during the dedicated insurance phase."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
-    )
+    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
     with pytest.raises(expected_exception=InsuranceClosedError):
         round_state.take_insurance(user_id=1)
 
@@ -769,8 +737,7 @@ def test_take_insurance_requires_ace_phase() -> None:
 def test_take_insurance_requires_uncommitted_balance() -> None:
     """All-in players cannot add an insurance side bet on top of their wager."""
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0),
-        participants=[seat(user_id=1, display_name="Alice", bet=100, balance_at_start=100)],
+        rng=Random(x=0), participants=[seat(bet=100, balance_at_start=100)]
     )
     round_state.phase = "insurance"
 
@@ -785,8 +752,7 @@ def test_take_insurance_requires_uncommitted_balance() -> None:
 def test_take_insurance_rejects_zero_chip_half_bet() -> None:
     """A 1-point original bet cannot buy 0-cost insurance."""
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0),
-        participants=[seat(user_id=1, display_name="Alice", bet=1, balance_at_start=10)],
+        rng=Random(x=0), participants=[seat(bet=1, balance_at_start=10)]
     )
     round_state.phase = "insurance"
     player = round_state.players[0]
@@ -807,7 +773,7 @@ def test_each_insurance_refusal_has_its_own_class() -> None:
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[
-            seat(user_id=1, display_name="Alice", bet=1, balance_at_start=10),
+            seat(bet=1, balance_at_start=10),
             seat(user_id=2, display_name="Bob", bet=100, balance_at_start=120),
         ],
     )
@@ -868,9 +834,7 @@ def test_an_insurance_bet_counts_against_a_double_or_split() -> None:
 
 def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
     """Dealer up-card A puts the round into the insurance phase."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
-    )
+    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
     # Force a deterministic deal by pre-loading the shoe in FIFO order.
     round_state.shoe = [
         card(rank="10"),
@@ -887,9 +851,7 @@ def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
 
 def test_dealer_peek_blackjack_settles_round_immediately() -> None:
     """A 10-up dealer Blackjack short-circuits to the settled phase."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
-    )
+    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
     round_state.shoe = [
         card(rank="9"),
         card(rank="8", suit="♥"),  # player
@@ -906,9 +868,7 @@ def test_dealer_peek_blackjack_settles_round_immediately() -> None:
 
 def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
     """After each player decides, the round peeks and advances accordingly."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")]
-    )
+    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
     round_state.shoe = [
         card(rank="9"),
         card(rank="8", suit="♥"),  # player
@@ -941,7 +901,7 @@ def test_from_participants_deals_from_an_injected_shoe() -> None:
         card(rank="6", suit="♥"),
     ]
     round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(user_id=1, display_name="Alice")], shoe=injected
+        rng=Random(x=0), participants=[seat()], shoe=injected
     )
     assert round_state.shoe == injected
 
@@ -955,22 +915,15 @@ def test_from_participants_deals_from_an_injected_shoe() -> None:
 # Settlement against the ledger --------------------------------------------
 
 
-def _finished_round(bet: int, balance_at_start: int = 100) -> BlackjackRound:
-    """Builds a one-seat round already marked settled; each test deals its own cards."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0), participants=[seat(bet=bet, balance_at_start=balance_at_start)]
-    )
-    round_state.players[0].hands[0].finished = True
-    round_state.phase = "settled"
-    return round_state
-
-
 async def test_settle_blackjack_player_updates_player_and_casino() -> None:
     """Shared Blackjack settlement applies net delta and mirrors casino P&L."""
     await seed_balance(user_id=1, name="alice", amount=100)
-    round_state = _finished_round(bet=50)
-    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="Q", suit="♥")]
-    round_state.dealer = [card(rank="10", suit="♣"), card(rank="8", suit="♦")]
+    round_state = blackjack_round(
+        hands=[[card(rank="10"), card(rank="Q", suit="♥")]],
+        dealer=[card(rank="10", suit="♣"), card(rank="8", suit="♦")],
+        seats=[seat(bet=50)],
+        finished=True,
+    )
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -984,11 +937,13 @@ async def test_settle_blackjack_player_updates_player_and_casino() -> None:
 async def test_settle_blackjack_player_surrender_returns_half_bet() -> None:
     """Surrender books half the original bet as a loss and mirrors it into the casino ledger."""
     await seed_balance(user_id=1, name="alice", amount=100)
-    round_state = _finished_round(bet=50)
-    hand = round_state.players[0].hands[0]
-    hand.cards = [card(rank="10"), card(rank="6", suit="♥")]
-    hand.surrendered = True
-    round_state.dealer = [card(rank="10", suit="♣"), card(rank="8", suit="♦")]
+    round_state = blackjack_round(
+        hands=[[card(rank="10"), card(rank="6", suit="♥")]],
+        dealer=[card(rank="10", suit="♣"), card(rank="8", suit="♦")],
+        seats=[seat(bet=50)],
+        finished=True,
+    )
+    round_state.players[0].hands[0].surrendered = True
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1001,12 +956,15 @@ async def test_settle_blackjack_player_surrender_returns_half_bet() -> None:
 async def test_settle_blackjack_player_double_doubles_loss_when_dealer_higher() -> None:
     """Doubled hands lose 2x the original bet on settlement."""
     await seed_balance(user_id=1, name="alice", amount=200)
-    round_state = _finished_round(bet=50)
+    round_state = blackjack_round(
+        hands=[[card(rank="5"), card(rank="6", suit="♥"), card(rank="2", suit="♣")]],
+        dealer=[card(rank="10", suit="♣"), card(rank="9", suit="♦")],
+        seats=[seat(bet=50)],
+        finished=True,
+    )
     hand = round_state.players[0].hands[0]
-    hand.cards = [card(rank="5"), card(rank="6", suit="♥"), card(rank="2", suit="♣")]
     hand.bet = 100
     hand.doubled = True
-    round_state.dealer = [card(rank="10", suit="♣"), card(rank="9", suit="♦")]
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1022,9 +980,12 @@ async def test_settle_blackjack_player_reports_only_what_a_short_wallet_paid() -
     this delta.
     """
     await seed_balance(user_id=1, name="alice", amount=30)
-    round_state = _finished_round(bet=100)
-    round_state.players[0].hands[0].cards = [card(rank="10"), card(rank="6", suit="♥")]
-    round_state.dealer = [card(rank="10", suit="♣"), card(rank="9", suit="♦")]
+    round_state = blackjack_round(
+        hands=[[card(rank="10"), card(rank="6", suit="♥")]],
+        dealer=[card(rank="10", suit="♣"), card(rank="9", suit="♦")],
+        seats=[seat(bet=100)],
+        finished=True,
+    )
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1039,19 +1000,14 @@ async def test_settle_blackjack_player_reports_only_what_a_short_wallet_paid() -
 def _split_hands(second: Card) -> list[BlackjackHandState]:
     """Builds a finished split of eights: an 8-K hand and an 8 with `second`."""
     return [
-        BlackjackHandState(
+        blackjack_hand(
             cards=[card(rank="8"), card(rank="K", suit="♥")],
             bet=50,
-            base_bet=50,
             is_split_hand=True,
             finished=True,
         ),
-        BlackjackHandState(
-            cards=[card(rank="8", suit="♣"), second],
-            bet=50,
-            base_bet=50,
-            is_split_hand=True,
-            finished=True,
+        blackjack_hand(
+            cards=[card(rank="8", suit="♣"), second], bet=50, is_split_hand=True, finished=True
         ),
     ]
 
@@ -1059,9 +1015,13 @@ def _split_hands(second: Card) -> list[BlackjackHandState]:
 async def test_settle_blackjack_player_split_both_wins_aggregates_delta() -> None:
     """Both split hands' wins add up into the seat's one settlement."""
     await seed_balance(user_id=1, name="alice", amount=200)
-    round_state = _finished_round(bet=50)
+    round_state = blackjack_round(
+        hands=[[]],
+        dealer=[card(rank="10", suit="♣"), card(rank="6", suit="♦")],
+        seats=[seat(bet=50)],
+        finished=True,
+    )
     round_state.players[0].hands = _split_hands(second=card(rank="9", suit="♦"))
-    round_state.dealer = [card(rank="10", suit="♣"), card(rank="6", suit="♦")]
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1081,9 +1041,13 @@ async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
     await seed_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 200)
     purchase = await buy_vip(user_id=1, name="alice")
     assert purchase is not None
-    round_state = _finished_round(bet=50)
+    round_state = blackjack_round(
+        hands=[[]],
+        dealer=[card(rank="10", suit="♣"), card(rank="7", suit="♦")],
+        seats=[seat(bet=50)],
+        finished=True,
+    )
     round_state.players[0].hands = _split_hands(second=card(rank="2", suit="♦"))
-    round_state.dealer = [card(rank="10", suit="♣"), card(rank="7", suit="♦")]
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1132,15 +1096,20 @@ async def test_settle_blackjack_player_five_card(
     if is_vip:
         assert await buy_vip(user_id=1, name="alice") is not None
 
-    round_state = _finished_round(bet=bet, balance_at_start=starting)
-    round_state.players[0].hands[0].cards = [
-        card(rank="2"),
-        card(rank="3", suit="♥"),
-        card(rank="4", suit="♣"),
-        card(rank="5", suit="♦"),
-        card(rank=last_card),
-    ]
-    round_state.dealer = [card(rank=rank, suit=suit) for rank, suit in dealer]
+    round_state = blackjack_round(
+        hands=[
+            [
+                card(rank="2"),
+                card(rank="3", suit="♥"),
+                card(rank="4", suit="♣"),
+                card(rank="5", suit="♦"),
+                card(rank=last_card),
+            ]
+        ],
+        dealer=[card(rank=rank, suit=suit) for rank, suit in dealer],
+        seats=[seat(bet=bet, balance_at_start=starting)],
+        finished=True,
+    )
 
     settlement = await settle_only_seat(round_state=round_state)
 
@@ -1172,12 +1141,14 @@ async def test_settle_blackjack_player_five_card(
 async def test_settle_blackjack_player_insurance_won_with_dealer_blackjack() -> None:
     """Insurance pays 2:1 when peek confirms dealer Blackjack."""
     await seed_balance(user_id=1, name="alice", amount=300)
-    round_state = _finished_round(bet=100)
+    round_state = blackjack_round(
+        hands=[[card(rank="9"), card(rank="8", suit="♥")]],
+        dealer=[card(rank="K", suit="♣"), card(rank="A", suit="♦")],
+        finished=True,
+    )
     player = round_state.players[0]
-    player.hands[0].cards = [card(rank="9"), card(rank="8", suit="♥")]
     player.insurance_bet = 50
     player.insurance_resolved = True
-    round_state.dealer = [card(rank="K", suit="♣"), card(rank="A", suit="♦")]
     round_state.peeked_blackjack = True
 
     settlement = await settle_only_seat(round_state=round_state)
@@ -1193,17 +1164,14 @@ async def test_settle_blackjack_player_insurance_won_with_dealer_blackjack() -> 
 async def test_settle_blackjack_player_insurance_lost_when_no_dealer_blackjack() -> None:
     """Insurance loses when the peek shows no Blackjack."""
     await seed_balance(user_id=1, name="alice", amount=300)
-    round_state = _finished_round(bet=100)
+    round_state = blackjack_round(
+        hands=[[card(rank="K"), card(rank="Q", suit="♥")]],
+        dealer=[card(rank="9", suit="♣"), card(rank="A", suit="♦"), card(rank="9", suit="♥")],
+        finished=True,
+    )
     player = round_state.players[0]
-    player.hands[0].cards = [card(rank="K"), card(rank="Q", suit="♥")]
     player.insurance_bet = 50
     player.insurance_resolved = True
-    round_state.dealer = [
-        card(rank="9", suit="♣"),
-        card(rank="A", suit="♦"),
-        card(rank="9", suit="♥"),
-    ]
-    round_state.dealer_played = True
 
     settlement = await settle_only_seat(round_state=round_state)
 

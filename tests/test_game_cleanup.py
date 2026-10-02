@@ -9,7 +9,6 @@ from nextcord import Message, Interaction
 from nextcord.abc import Messageable
 from nextcord.ext import commands
 
-from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.utils.timezone import database_now
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
@@ -32,6 +31,7 @@ from tests.helpers.casting import (
     make_invalid_webhook_token,
 )
 from tests.helpers.discord_mocks import FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_logs, capture_levels
 
 
 class _CleanupMessage(FakeDiscordMessage):
@@ -251,17 +251,6 @@ class _ForbiddenChannelBotStub:
         raise make_forbidden(message="Missing Access")
 
 
-def _recorded_warns(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
-    """Captures what the sweep reports, the way the rest of the suite reads logfire."""
-    warns: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        target=cleanup_module.logfire,
-        name="warn",
-        value=lambda message, **fields: warns.append((message, fields)),
-    )
-    return warns
-
-
 async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -275,7 +264,7 @@ async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
     message = FakeDiscordMessage()
     await track_public_message(message=as_message(fake=message))
     bot = _ForbiddenChannelBotStub()
-    warns = _recorded_warns(monkeypatch=monkeypatch)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await delete_tracked_public_messages(bot=as_bot(fake=bot), tracked_before=_a_later_start())
 
@@ -303,7 +292,7 @@ async def test_a_transient_http_failure_keeps_its_traceback(
             raise make_server_error()
 
     await track_public_message(message=as_message(fake=FakeDiscordMessage()))
-    warns = _recorded_warns(monkeypatch=monkeypatch)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await delete_tracked_public_messages(
         bot=as_bot(fake=_ServerErrorBotStub()), tracked_before=_a_later_start()
@@ -351,7 +340,7 @@ async def test_a_refused_delete_is_reported_without_a_traceback(
     """The delete gets the same carve-out as the sweep's fetch; a 5xx keeps its traceback."""
     message = _CleanupMessage()
     message.delete_failure = failure
-    warns = _recorded_warns(monkeypatch=monkeypatch)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     assert await delete_public_message(message=as_message(fake=message)) is False
     assert [
@@ -385,13 +374,7 @@ async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
     routine, since the channel tells a message already gone apart, and only a failure that is
     neither keeps its traceback.
     """
-    reports: list[tuple[str, dict[str, object]]] = []
-    for level in ("info", "warn"):
-        monkeypatch.setattr(
-            target=cleanup_module.logfire,
-            name=level,
-            value=lambda message, level=level, **fields: reports.append((level, fields)),
-        )
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     message = _CleanupMessage()
     press = FakeInteraction()
     press.expired = expired
@@ -405,7 +388,9 @@ async def test_a_press_on_the_message_deletes_it_while_its_token_lives(
         through_token,
         0 if through_token else 1,
     )
-    assert Counter((level, "_exc_info" in fields) for level, fields in reports) == Counter(report)
+    assert Counter((level, "_exc_info" in fields) for level, _, fields in reports) == Counter(
+        report
+    )
     assert await list_pending_public_messages() == []
 
 

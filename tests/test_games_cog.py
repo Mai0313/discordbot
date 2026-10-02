@@ -7,7 +7,6 @@ from pathlib import Path
 import contextlib
 
 import pytest
-import logfire
 import nextcord
 from nextcord import Embed, Interaction, HTTPException
 
@@ -17,21 +16,13 @@ from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
-from discordbot.typings.economy import JackpotSnapshot
+from discordbot.typings.economy import MAX_SINGLE_BET, JackpotSnapshot
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
-from tests.helpers.games import (
-    card,
-    seat,
-    joins_as,
-    lobby_button,
-    everyone_stays,
-    attached_button,
-    record_scheduled_deletes,
-)
+from tests.helpers.games import card, seat, joins_as, lobby_button, everyone_stays, attached_button
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -42,6 +33,8 @@ from tests.helpers.casting import (
 )
 from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_levels
+from tests.helpers.message_cleanup import record_scheduled_deletes
 
 
 def _cog() -> GamesCogs:
@@ -210,18 +203,6 @@ def _scripted_blackjack_lobby(
     )
 
 
-def _recorded_reports(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
-    """Captures `(level, fields)` for every `info` and `warn` the lobby writes."""
-    reports: list[tuple[str, dict[str, object]]] = []
-    for level in ("info", "warn"):
-        monkeypatch.setattr(
-            target=logfire,
-            name=level,
-            value=lambda message, level=level, **fields: reports.append((level, fields)),
-        )
-    return reports
-
-
 @pytest.mark.parametrize(
     argnames=("failure", "level"),
     argvalues=[
@@ -240,7 +221,7 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     one.
     """
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
-    reports = _recorded_reports(monkeypatch=monkeypatch)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     # Nothing but fives: no natural and no insurance, so the deal leaves a table to show.
     lobby = _scripted_blackjack_lobby(dealt=[])
     message = FakeDiscordMessage()
@@ -253,7 +234,9 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
 
     assert len(owner_interaction.followup.sent) == 1
     assert owner_interaction.followup.sent[0]["ephemeral"] is True
-    assert reports == [(level, {"channel_id": 200, "message_id": 1, "code": failure.code})]
+    assert [(name, fields) for name, _, fields in reports] == [
+        (level, {"channel_id": 200, "message_id": 1, "code": failure.code})
+    ]
     assert not lobby.is_finished()
     await lobby.on_timeout()
     assert scheduled.messages == [message]
@@ -340,7 +323,7 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 ) -> None:
     """Nothing awaits a timeout, so its failure is logged here at the level its cause earns."""
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
-    reports = _recorded_reports(monkeypatch=monkeypatch)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     lobby = _scripted_blackjack_lobby(dealt=[])
     message = FakeDiscordMessage()
     message.edit_failure = failure
@@ -348,7 +331,7 @@ async def test_a_lobby_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     await lobby.on_timeout()
 
-    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
+    assert [(name, "_exc_info" in fields) for name, _, fields in reports] == [(level, traceback)]
     assert scheduled.messages == [message]
 
 
@@ -464,7 +447,7 @@ async def test_a_refusal_after_the_blackjack_table_is_up_is_not_a_failed_start(
             await super().edit_original_message(**kwargs)
             self.edit_failure = make_forbidden(message="Missing Access")
 
-    reports = _recorded_reports(monkeypatch=monkeypatch)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     bot = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
     # Alice 5 5, the bot 5 5, the dealer's hole 5 and an ace up: the bot owes an insurance call.
     lobby = _scripted_blackjack_lobby(dealt=[card(rank="5")] * 5 + [card(rank="A")], bot=bot)
@@ -567,7 +550,7 @@ async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_t
         await attached_button(view=table, custom_id="bj:hit").callback(as_interaction(fake=press))
     press.expired = expired
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
-    reports = _recorded_reports(monkeypatch=monkeypatch)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
 
     await table.on_timeout()
     await table.wait_for_background_tasks()
@@ -576,7 +559,7 @@ async def test_a_blackjack_table_left_to_time_out_in_a_shut_out_channel_closes_t
     assert (scheduled.messages, scheduled.interactions) == ([message], [press]), (
         "the delete rides the same press"
     )
-    assert [(level, "_exc_info" in fields) for level, fields in reports] == (
+    assert [(level, "_exc_info" in fields) for level, _, fields in reports] == (
         [("warn", False), ("warn", False)] if expired else []
     )
 
@@ -780,8 +763,8 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
 
     assert isinstance(lobby_view, BlackjackLobbyView)
     # The wager is parsed and the lobby is created, but the single-bet cap applies.
-    assert lobby_view.requested_bet == 1_000_000
-    assert lobby_view.participants[0].bet == 1_000_000
+    assert lobby_view.requested_bet == MAX_SINGLE_BET
+    assert lobby_view.participants[0].bet == MAX_SINGLE_BET
 
 
 async def test_blackjack_string_bet_rejects_invalid_text() -> None:
@@ -817,8 +800,8 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
     # All-in caps at the single-bet ceiling, so it is no longer a true all-in.
-    assert lobby_view.requested_bet == 1_000_000
-    assert lobby_view.participants[0].bet == 1_000_000
+    assert lobby_view.requested_bet == MAX_SINGLE_BET
+    assert lobby_view.participants[0].bet == MAX_SINGLE_BET
     assert lobby_view.participants[0].is_allin is False
 
 

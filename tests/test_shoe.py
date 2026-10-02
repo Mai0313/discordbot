@@ -23,7 +23,7 @@ from tests.helpers.games import card, seat
 def test_first_take_builds_a_fresh_shoe() -> None:
     """A channel with no stored shoe gets a full fresh shoe."""
     store = BlackjackShoeStore()
-    shoe, _generation = store.take_shoe(channel_id=1, rng=Random(0))
+    shoe, _generation = store.take_shoe(channel_id=1, rng=Random(x=0))
 
     assert len(shoe) == 208
 
@@ -34,7 +34,7 @@ def test_take_returns_the_stored_shoe_down_to_the_threshold() -> None:
     stored = [card(rank="10")] * RESHUFFLE_THRESHOLD_CARDS
     store.save_shoe(channel_id=7, cards=stored)
 
-    shoe, _generation = store.take_shoe(channel_id=7, rng=Random(0))
+    shoe, _generation = store.take_shoe(channel_id=7, rng=Random(x=0))
 
     assert shoe == stored
     # Taking removes it so a concurrent game cannot share the same list.
@@ -46,7 +46,7 @@ def test_take_reshuffles_below_the_threshold() -> None:
     store = BlackjackShoeStore()
     store.save_shoe(channel_id=3, cards=[card(rank="5")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
 
-    shoe, _generation = store.take_shoe(channel_id=3, rng=Random(0))
+    shoe, _generation = store.take_shoe(channel_id=3, rng=Random(x=0))
 
     assert len(shoe) == 208
 
@@ -74,8 +74,8 @@ def test_older_round_does_not_clobber_a_newer_shoe() -> None:
     store = BlackjackShoeStore()
     # Two tables open in the same channel: the first take pops the (empty) channel, the
     # second take starts from a fresh shoe; both carry their own generation token.
-    _first_shoe, first_generation = store.take_shoe(channel_id=5, rng=Random(0))
-    _second_shoe, second_generation = store.take_shoe(channel_id=5, rng=Random(1))
+    _first_shoe, first_generation = store.take_shoe(channel_id=5, rng=Random(x=0))
+    _second_shoe, second_generation = store.take_shoe(channel_id=5, rng=Random(x=1))
     assert second_generation > first_generation
 
     newer = [card(rank="K")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
@@ -96,8 +96,8 @@ def test_a_put_back_shoe_never_displaces_another_rounds_shoe() -> None:
     failed start had to take a fresh one.
     """
     store = BlackjackShoeStore()
-    _in_play, in_play_generation = store.take_shoe(channel_id=5, rng=Random(0))
-    unshown, _generation = store.take_shoe(channel_id=5, rng=Random(1))
+    _in_play, in_play_generation = store.take_shoe(channel_id=5, rng=Random(x=0))
+    unshown, _generation = store.take_shoe(channel_id=5, rng=Random(x=1))
     store.put_back_shoe(channel_id=5, cards=unshown)
 
     settled = [card(rank="2")] * (RESHUFFLE_THRESHOLD_CARDS + 2)

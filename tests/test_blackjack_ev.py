@@ -7,6 +7,9 @@ from random import Random
 from discordbot.typings.games import Card, BotAction
 from discordbot.cogs.games.blackjack import build_shoe
 from discordbot.cogs.games.blackjack_ev import (
+    _ACE_BUCKET,
+    _BUST_INDEX,
+    _TEN_BUCKET,
     _add_value,
     _make_context,
     recommend_action,
@@ -21,7 +24,6 @@ from tests.helpers.games import card
 # Positions in the dealer distribution `_dealer_distribution` returns.
 _DEALER_17 = 0
 _DEALER_21 = 4
-_DEALER_BUST = 5
 
 
 def _dealer(total: int, soft: bool, shoe: tuple[int, ...]) -> tuple[float, ...]:
@@ -54,7 +56,7 @@ def test_dealer_hard_17_always_stands() -> None:
     )
 
     assert outcome[_DEALER_17] == 1.0
-    assert outcome[_DEALER_BUST] == 0.0
+    assert outcome[_BUST_INDEX] == 0.0
 
 
 def test_dealer_bust_probability_is_exact_on_a_tiny_shoe() -> None:
@@ -62,7 +64,7 @@ def test_dealer_bust_probability_is_exact_on_a_tiny_shoe() -> None:
     shoe = build_shoe_value_counts(shoe=[card(rank="10"), card(rank="5")])
     outcome = _dealer(total=16, soft=False, shoe=shoe)
 
-    assert abs(outcome[_DEALER_BUST] - 0.5) < 1e-9
+    assert abs(outcome[_BUST_INDEX] - 0.5) < 1e-9
     assert abs(outcome[_DEALER_21] - 0.5) < 1e-9
 
 
@@ -74,7 +76,7 @@ def test_dealer_hits_soft_17_under_h17() -> None:
 
     assert hard[_DEALER_17] == 1.0
     assert soft[_DEALER_17] < 1.0
-    assert soft[_DEALER_BUST] > 0.0
+    assert soft[_BUST_INDEX] > 0.0
 
 
 def test_dealer_distribution_sums_to_one() -> None:
@@ -255,8 +257,8 @@ def test_shoe_value_counts_collapse_ten_values() -> None:
         shoe=[card(rank="10"), card(rank="J"), card(rank="Q"), card(rank="K"), card(rank="A")]
     )
 
-    assert counts[8] == 4
-    assert counts[9] == 1
+    assert counts[_TEN_BUCKET] == 4
+    assert counts[_ACE_BUCKET] == 1
     assert sum(counts) == 5
 
 
