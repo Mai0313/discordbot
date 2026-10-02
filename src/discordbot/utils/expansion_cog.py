@@ -619,12 +619,20 @@ class ExpansionCog[ParsedT](commands.Cog):
         current_emoji: str,
         placeholder: ExpansionPlaceholder,
     ) -> None:
-        """Edits the card onto the placeholder and marks the source message done."""
+        """Edits the card onto the placeholder and marks the source message done.
+
+        A card that never lands hands back the preview hidden for it, so the link is left with
+        its own preview rather than with nothing.
+        """
+        # Only a preview this call did hide is shown again: a guild that refused the hide would
+        # refuse showing it too.
+        preview_hidden = False
         # Broad on purpose: the delivery step must never escape into the listener, and the
         # severity its failure earns is `report_expansion_delivery_failure`'s to pick.
         try:
             try:
                 await message.edit(suppress=True)
+                preview_hidden = True
             # Deleting the link while the post was being read is a withdrawal: before the
             # placeholder existed the late reply was simply refused, and this keeps that, since
             # a reply outlives the message it answers.
@@ -667,6 +675,31 @@ class ExpansionCog[ParsedT](commands.Cog):
                 message_id=message.id,
                 channel_id=message.channel.id,
             )
+            if preview_hidden:
+                try:
+                    await message.edit(suppress=False)
+                # The link was deleted meanwhile, so there is no preview left to hand back.
+                except NotFound:
+                    pass
+                # The guild took Manage Messages away since the hide; the ids are the whole
+                # finding.
+                except Forbidden as restore_error:
+                    logfire.warn(
+                        "Could not restore the source message embed",
+                        message_id=message.id,
+                        guild_id=message.guild.id if message.guild else None,
+                        error_type=type(restore_error).__name__,
+                    )
+                # Broad on purpose: showing the preview again is as cosmetic as hiding it, and
+                # must not keep the failure mark off.
+                except Exception as restore_error:
+                    logfire.warn(
+                        "Could not restore the source message embed",
+                        message_id=message.id,
+                        guild_id=message.guild.id if message.guild else None,
+                        error_type=type(restore_error).__name__,
+                        _exc_info=restore_error,
+                    )
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
