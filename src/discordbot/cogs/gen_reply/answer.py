@@ -31,6 +31,7 @@ from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import (
     MUSIC_INSTRUCTION,
     VIDEO_INSTRUCTION,
+    VOICE_INSTRUCTION,
     INLINE_IMAGE_INSTRUCTION,
     DEEP_RESEARCH_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
@@ -315,7 +316,10 @@ class AnswerTurn(BaseModel):
         video_generator = toolkit.video_generator if self.config.video_available else None
         # Only advertise an inline marker when its renderer is actually active; with it disabled
         # the streamer would strip the block and produce nothing, silently dropping the request
-        # from the reply, so a disabled deployment must not be told about it.
+        # from the reply, so a disabled deployment must not be told about it. The voice bullet
+        # sits inside the prompt rather than after it, so it is cut out instead of appended.
+        if voice_generator is None:
+            system_prompt = system_prompt.replace(VOICE_INSTRUCTION, "")
         for instruction, offered in (
             (INLINE_IMAGE_INSTRUCTION, image_generator is not None),
             (MUSIC_INSTRUCTION, music_generator is not None),
@@ -328,7 +332,7 @@ class AnswerTurn(BaseModel):
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = toolkit.runtime_models.slow_model.model_copy(update={"effort": effort})
         dispatched_model.set(slow_model.name)
-        answer_input = context.answer_input()
+        answer_input = context.answer_input(config=self.config)
 
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is

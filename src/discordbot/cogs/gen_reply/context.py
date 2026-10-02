@@ -17,6 +17,7 @@ from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryCredits
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import sanitize_identity
@@ -107,7 +108,7 @@ class ReplyContext(BaseModel):
         """History, reference, and current blocks in transcript order."""
         return [*self.hist_messages, *self.reference_messages, *self.current_message]
 
-    def answer_input(self) -> ResponseInputParam:
+    def answer_input(self, config: LLMConfig) -> ResponseInputParam:
         """The QA answer's input, in the order the answer model reads it.
 
         The current message stays LAST so the model answers it. Memory rides early as
@@ -116,12 +117,12 @@ class ReplyContext(BaseModel):
         context rather than getting buried up near history. The linked posts ride just before the
         current message, each block led by its own separator; they are empty unless the route
         selected a source and `link_url_for_source` found its link. The feature reference leads:
-        it is the one block that is byte-identical on every reply, so the front is where it costs
-        the least against a prefix cache.
+        it is the one block that is byte-identical on every reply of a deployment, so the front is
+        where it costs the least against a prefix cache.
         """
         memory = (self.server_memory_block, self.memory_block, self.tone_block)
         return [
-            render_capabilities_block(),
+            render_capabilities_block(config=config),
             *self.hist_messages,
             *(block for block in memory if block is not None),
             *self.reference_messages,

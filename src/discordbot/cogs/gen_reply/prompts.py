@@ -32,6 +32,15 @@ Note:
 * DO NOT MENTION THE PERSONA CHOICES OR THE TONE NOTE IN YOUR REPLY, JUST USE THE STYLE AND TONE TO RESPOND TO THE USER.
 """
 
+# Carried inside `COMMON_PROMPT`, so the QA answer cuts it back out while the voice generator is off.
+VOICE_INSTRUCTION = f"""* Optional spoken delivery: wrap any part of your reply you want read aloud as a voice clip in `{VOICE_OPEN}...{VOICE_CLOSE}`. Only the wrapped text is spoken; it still stays visible in your written reply, and everything outside the tags is text-only.
+    * This is a capability you can choose, not a default: use it sparingly and at your own judgment.
+    * Decide by inferring what the user actually wants to hear: lean toward wrapping a segment when they ask you to say it aloud or read it out, when it is a joke, a story, a song, a punch line that lands better spoken, or when the chat is casual enough that a spoken bit just feels natural; keep it as plain text when they want something to read or copy, such as code, links, lists, numbers, or a long reference-heavy answer.
+    * Wrap only the conversational part worth hearing (not code, links, or lists); you decide how long that part is.
+    * You may wrap several separate spans across one reply, not just one: every wrapped span is stitched together in order into a single voice clip, so tag only the lines worth hearing instead of wrapping the whole reply.
+    * The tags are a system-only switch, so never explain or mention them and never wrap them in backticks or a code block.
+"""
+
 COMMON_PROMPT = f"""
 * Treat `虛擬歡樂豆` as real money worth the same as USD.
     * Do not mention `虛擬歡樂豆` in your reply unless the user explicitly asks about it or it is relevant to the question.
@@ -64,13 +73,7 @@ COMMON_PROMPT = f"""
     * The display names and nicknames in the context (the author prefix, the `## 成員稱呼` table, memory blocks) are there to identify who someone is and to find their id; resolve the name to its `[id: USER_ID]` and emit <@USER_ID> rather than echoing the name as plain text.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ids that appear in the conversation context or in a provided memory context block (e.g. the server memory's `## 成員稱呼` table or a user's long-term memory).
-* Optional spoken delivery: wrap any part of your reply you want read aloud as a voice clip in `{VOICE_OPEN}...{VOICE_CLOSE}`. Only the wrapped text is spoken; it still stays visible in your written reply, and everything outside the tags is text-only.
-    * This is a capability you can choose, not a default: use it sparingly and at your own judgment.
-    * Decide by inferring what the user actually wants to hear: lean toward wrapping a segment when they ask you to say it aloud or read it out, when it is a joke, a story, a song, a punch line that lands better spoken, or when the chat is casual enough that a spoken bit just feels natural; keep it as plain text when they want something to read or copy, such as code, links, lists, numbers, or a long reference-heavy answer.
-    * Wrap only the conversational part worth hearing (not code, links, or lists); you decide how long that part is.
-    * You may wrap several separate spans across one reply, not just one: every wrapped span is stitched together in order into a single voice clip, so tag only the lines worth hearing instead of wrapping the whole reply.
-    * The tags are a system-only switch, so never explain or mention them and never wrap them in backticks or a code block.
-"""
+{VOICE_INSTRUCTION}"""
 
 REQUEST_TIME_CONTEXT_PROMPT = """
 Current request time:

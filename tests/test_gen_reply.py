@@ -109,6 +109,7 @@ from discordbot.cogs.gen_reply.context import (
     history_media_over_budget,
 )
 from discordbot.cogs.gen_reply.markers import (
+    VOICE_OPEN,
     MAX_MEMORY_NOTES,
     MAX_INLINE_IMAGES,
     InlineMarkers,
@@ -119,7 +120,11 @@ from discordbot.cogs.gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
     VIDEO_PROMPT,
+    MUSIC_INSTRUCTION,
+    VIDEO_INSTRUCTION,
     ROUTE_RECALL_SECTION,
+    INLINE_IMAGE_INSTRUCTION,
+    DEEP_RESEARCH_INSTRUCTION,
     route_prompt,
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
@@ -165,7 +170,7 @@ from discordbot.cogs.gen_reply.references import (
 )
 from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaReplyRoutes
 from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
-from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
+from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
@@ -2903,6 +2908,44 @@ async def test_a_marker_switch_controls_its_generator(
         assert built[0][kwarg] is None
 
 
+@pytest.mark.parametrize("switched_on", [True, False], ids=["all-on", "all-off"])
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_on: bool) -> None:
+    """The QA turn's reference and instructions follow the switches.
+
+    All on with a key is the default deployment, whose prompt has to keep its bytes for the
+    prefix cache: the reference is the document verbatim and the instructions are the reply
+    prompt with every marker instruction appended. Keyless with every marker off, the voice
+    bullet is cut and the reference is the gated render.
+    """
+    cog = _cog()
+    cog.config = (
+        LLMConfig.model_construct(gemini_api_key="test-key") if switched_on else _config_stub()
+    )
+    message = FakeMessage(content="<@999> can you make me a song?", author=FakeAuthor(user_id=1))
+    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
+        system_prompt=REPLY_PROMPT, context=ReplyContext(), allow_research=True
+    )
+
+    (instructions,) = _recorded(cog).responses.create_instructions
+    (answer_input,) = _recorded(cog).responses.create_inputs
+    reference = cast("EasyInputMessageParam", answer_input[0])["content"]
+    assert isinstance(reference, str)
+    if switched_on:
+        appended = (
+            INLINE_IMAGE_INSTRUCTION,
+            MUSIC_INSTRUCTION,
+            VIDEO_INSTRUCTION,
+            DEEP_RESEARCH_INSTRUCTION,
+        )
+        assert instructions.endswith("\n".join((REPLY_PROMPT, *appended)))
+        assert reference.endswith(CAPABILITIES_DOC)
+    else:
+        assert VOICE_OPEN not in instructions
+        assert reference == render_capabilities_block(config=cog.config)["content"]
+        assert "write and record a short song" not in reference
+
+
 @pytest.mark.usefixtures("no_memory_review")
 async def test_the_answer_and_the_persona_reply_read_the_context_in_order(
     monkeypatch: pytest.MonkeyPatch,
@@ -2944,7 +2987,7 @@ async def test_the_answer_and_the_persona_reply_read_the_context_in_order(
 
     qa_input, persona_input = _recorded(cog).responses.create_inputs
     assert [cast("EasyInputMessageParam", item)["content"] for item in qa_input] == [
-        render_capabilities_block()["content"],
+        render_capabilities_block(config=cog.config)["content"],
         "history",
         "server memory",
         "user memory",
@@ -7151,7 +7194,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference() -> Non
 
     await _run_pipeline(cog=cog, message=message)
 
-    header = str(render_capabilities_block()["content"]).split("\n", 1)[0]
+    header = str(render_capabilities_block(config=cog.config)["content"]).split("\n", 1)[0]
     blocks = list(iter_text_blocks(request=request_input(responses=_recorded(cog).responses)))
     carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
     assert carried == [0]
@@ -7328,8 +7371,9 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
 ) -> None:
     """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
-    # Every inline marker off, so nothing is appended to the instructions checked below.
-    cog.config = _config_stub()
+    # Every appended marker off and voice, which rides inside REPLY_PROMPT, on, so the
+    # instructions checked below are REPLY_PROMPT whole.
+    cog.config = _config_stub(inline_voice_enabled=True)
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_alias(subject_id=42, text="Boss(社群暱稱:老闆)")
 
@@ -7381,8 +7425,9 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 ) -> None:
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
-    # Every inline marker off, so nothing is appended to the instructions checked below.
-    cog.config = _config_stub()
+    # Every appended marker off and voice, which rides inside REPLY_PROMPT, on, so the
+    # instructions checked below are REPLY_PROMPT whole.
+    cog.config = _config_stub(inline_voice_enabled=True)
 
     scheduled: list[object] = []
 
