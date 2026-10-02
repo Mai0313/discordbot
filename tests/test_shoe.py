@@ -89,6 +89,25 @@ def test_older_round_does_not_clobber_a_newer_shoe() -> None:
     assert store.shoes[5] == newer
 
 
+def test_a_put_back_shoe_never_displaces_another_rounds_shoe() -> None:
+    """A shoe returned from a start that never showed a card yields to every round that settles.
+
+    The table already in play when the start failed holds the channel's real shoe, while the
+    failed start had to take a fresh one.
+    """
+    store = BlackjackShoeStore()
+    _in_play, in_play_generation = store.take_shoe(channel_id=5, rng=Random(0))
+    unshown, _generation = store.take_shoe(channel_id=5, rng=Random(1))
+    store.put_back_shoe(channel_id=5, cards=unshown)
+
+    settled = [card(rank="2")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
+    store.save_shoe(channel_id=5, cards=settled, generation=in_play_generation)
+    assert store.shoes[5] == settled
+
+    store.put_back_shoe(channel_id=5, cards=unshown)
+    assert store.shoes[5] == settled
+
+
 def _longest_hand_the_dealer_must_draw_on() -> int:
     """Returns the most cards an H17 dealer can hold while the rules still make it draw.
 

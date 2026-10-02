@@ -533,10 +533,17 @@ class BlackjackLobbyView(BaseGameLobbyView):
             return True
         view.sync_buttons()
         seat_embeds = build_in_progress_embeds(round_state=round_state)
-        await self._show_table(
-            interaction=interaction,
-            payload=table_edit_kwargs(embeds=seat_embeds, view=view, target=message),
-        )
+        try:
+            await self._show_table(
+                interaction=interaction,
+                payload=table_edit_kwargs(embeds=seat_embeds, view=view, target=message),
+            )
+        except Exception:
+            # No card of this deal was shown and the round dealt from its own copy, so the shoe
+            # goes back whole.
+            if self._shoe_store is not None and shoe is not None:
+                self._shoe_store.put_back_shoe(channel_id=self._channel_id, cards=shoe)
+            raise
         await view.maybe_play_bot_turn(message=message, interaction=interaction)
         return True
 

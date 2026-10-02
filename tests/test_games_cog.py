@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from random import Random
 from typing import Any, cast
 from pathlib import Path
+import contextlib
 
 import pytest
 import logfire
@@ -256,6 +257,38 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     assert not lobby.is_finished()
     await lobby.on_timeout()
     assert scheduled.messages == [message]
+
+
+@pytest.mark.parametrize(
+    argnames="failure",
+    argvalues=[
+        make_forbidden(message="Missing Access"),
+        make_not_found(message="Unknown Message"),
+        make_server_error(),
+    ],
+    ids=["refused", "message_gone", "discord_failing"],
+)
+async def test_a_blackjack_start_whose_table_never_lands_keeps_the_channel_shoe(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException
+) -> None:
+    """No card of the failed deal was shown, so the next start deals from the shoe the bot counted."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    store = lobby._shoe_store
+    assert store is not None
+    before = list(store.shoes[7])
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_interaction.edit_failure = failure
+
+    # Only a refusal is answered in place; any other failure still reaches the view's on_error.
+    with contextlib.suppress(HTTPException):
+        await lobby_button(view=lobby, label="開始").callback(
+            as_interaction(fake=owner_interaction)
+        )
+
+    assert store.shoes.get(7) == before
 
 
 @pytest.mark.parametrize(

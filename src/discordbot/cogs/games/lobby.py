@@ -305,7 +305,12 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         if message is None:
             self._started = False
             return False
-        result = await self._settle_pregame_antes()
+        try:
+            result = await self._settle_pregame_antes()
+        except Exception:
+            # The charge rolls back whatever it raises on, so the table never started.
+            self._started = False
+            raise
         if result.rejected_player_ids:
             rejected = set(result.rejected_player_ids)
             owner_rejected = self.owner.user_id in rejected
@@ -330,6 +335,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
                 interaction=interaction, message=message, final_balances=result.player_balances
             )
         except Exception:
+            self._started = False
             await self._refund_pregame_antes()
             raise
         return True
@@ -381,5 +387,8 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         message: Message,
         final_balances: dict[int, int],
     ) -> None:
-        """Starts a jackpot-backed game after ante settlement succeeds."""
+        """Starts a jackpot-backed game after ante settlement succeeds.
+
+        Raising means the table never went up: the lobby refunds the antes and reopens.
+        """
         raise NotImplementedError
