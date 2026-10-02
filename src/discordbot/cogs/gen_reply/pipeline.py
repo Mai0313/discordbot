@@ -257,8 +257,9 @@ class ReplyPipeline(BaseModel):
         route_decision: str | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
-        link_tasks: dict[str, LinkTask] = {}
-        link_context_deadline: float | None = None
+        # The started link builds and the one deadline they share, set together; None until the
+        # route selects a source, so None means there is nothing to drain.
+        link_builds: tuple[dict[str, LinkTask], float] | None = None
         context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
         classifier = RouteClassifier(
             toolkit=self.toolkit,
@@ -318,6 +319,7 @@ class ReplyPipeline(BaseModel):
                     link_tasks = self._start_link_builds(
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
+                    link_builds = (link_tasks, link_context_deadline)
                     # Persistent markers (added directly, not via the status chain) naming which
                     # linked post was read. Added once every builder is started so the REST calls
                     # never sit between two of them.
@@ -345,9 +347,8 @@ class ReplyPipeline(BaseModel):
                     # The selected builds overlapped the remaining reply preparation. Resolve
                     # each under the same grace and fold the post blocks into the answer context
                     # in registry order so the splice stays deterministic.
-                    if link_tasks:
-                        if link_context_deadline is None:
-                            raise RuntimeError("Selected link tasks have no route deadline")
+                    if link_builds is not None:
+                        link_tasks, link_context_deadline = link_builds
                         link_blocks = await self._collect_link_blocks(
                             link_tasks=link_tasks, deadline=link_context_deadline
                         )
@@ -370,8 +371,8 @@ class ReplyPipeline(BaseModel):
             for task, label in ((prep_task, "prep"), (parts_task, "parts")):
                 if task is not None:
                     await discard_task(task=task, label=label, message_id=message.id)
-            # Set before any link build starts, so None means there is nothing to drain.
-            if link_context_deadline is not None:
+            if link_builds is not None:
+                link_tasks, link_context_deadline = link_builds
                 await discard_link_tasks(
                     link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
                 )
