@@ -12,6 +12,7 @@ from sqlalchemy import text, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei, database_now
+from discordbot.utils.stored_integer import StoredInteger
 from discordbot.typings.economy import (
     TRANSFER_TAX_BPS,
     VIP_PURCHASE_COST,
@@ -25,6 +26,7 @@ from discordbot.typings.economy import (
 )
 from discordbot.services.economy import database as economy_database
 from discordbot.services.economy.database import (
+    Base,
     UserWallet,
     JackpotPool,
     UserAccount,
@@ -164,29 +166,17 @@ async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dic
     return (cast("tuple[int, int, int, int, int]", tuple(jackpot_row)), jackpot_column_types)
 
 
-def _assert_money_columns_are_text(
-    table_column_types: dict[str, dict[str, str]], jackpot_column_types: dict[str, str]
-) -> None:
-    """Checks all decimal-string money columns use SQLite TEXT affinity."""
-    economy_money_columns = {
-        "user_wallet": ("balance", "total_earned", "total_spent"),
-        "loan_proposal": ("amount", "escrow_amount"),
-        "loan_contract": (
-            "original_principal",
-            "principal_remaining",
-            "interest_due",
-            "total_interest_paid",
-            "total_principal_paid",
-        ),
-        "casino_account": ("daily_loss", "daily_win", "daily_net"),
-        "casino_ledger": ("balance", "total_earned", "total_spent"),
-        "central_bank_ledger": ("balance", "total_earned"),
-    }
-    for table_name, column_names in economy_money_columns.items():
-        for column_name in column_names:
-            assert table_column_types[table_name][column_name] == "TEXT"
-    for column_name in ("pool_balance", "total_contributed", "total_claimed", "seeded_amount"):
-        assert jackpot_column_types[column_name] == "TEXT"
+def _assert_money_columns_are_text(table_column_types: dict[str, dict[str, str]]) -> None:
+    """Checks every `StoredInteger` column the models declare uses SQLite TEXT affinity."""
+    money_columns = [
+        (table.name, column.name)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, StoredInteger)
+    ]
+    assert money_columns
+    for table_name, column_name in money_columns:
+        assert table_column_types[table_name][column_name] == "TEXT", (table_name, column_name)
 
 
 async def test_adjust_balance_zero_is_noop() -> None:
@@ -346,7 +336,7 @@ async def test_ensure_schema_bootstraps_current_databases() -> None:
     ]
     assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
     _assert_money_columns_are_text(
-        table_column_types=table_column_types, jackpot_column_types=jackpot_column_types
+        table_column_types=table_column_types | {"jackpot_pool": jackpot_column_types}
     )
     assert "ix_user_wallet_balance" in wallet_index_names
     assert "ix_casino_account_day_loss" in casino_index_names
