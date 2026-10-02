@@ -2874,6 +2874,65 @@ async def test_a_marker_switch_controls_its_generator(
         assert built[0][kwarg] is None
 
 
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_answer_and_the_persona_reply_read_the_context_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each request lays the context out in its fixed order, the current message last.
+
+    The media persona reply carries neither the feature reference, the server memory nor a
+    linked post.
+    """
+    cog = _cog()
+    cog.config = _config_stub()
+    _install_streamer(monkeypatch=monkeypatch)
+    context = ReplyContext(
+        hist_messages=[EasyInputMessageParam(role="user", content="history")],
+        reference_messages=[EasyInputMessageParam(role="user", content="reference")],
+        current_message=[EasyInputMessageParam(role="user", content="current")],
+        server_memory_block=EasyInputMessageParam(role="assistant", content="server memory"),
+        memory_block=EasyInputMessageParam(role="assistant", content="user memory"),
+        tone_block=EasyInputMessageParam(role="assistant", content="tone"),
+        link_blocks=[EasyInputMessageParam(role="system", content="linked post")],
+    )
+
+    async def built() -> ReplyContext:
+        """Hands over the full context at once."""
+        return context
+
+    message = as_message(fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1)))
+    answer = _answer(cog=cog, message=message)
+    await answer.stream_answer(system_prompt="SYS", context=context)
+    await answer.stream_media_persona_reply(
+        reply=as_message(fake=FakeReply()),
+        context_task=asyncio.create_task(coro=built()),
+        system_prompt="SYS",
+        focus_part=ResponseInputImageParam(
+            image_url="data:image/png;base64,", detail="auto", type="input_image"
+        ),
+        media_noun="image",
+    )
+
+    qa_input, persona_input = _recorded(cog).responses.create_inputs
+    assert [cast("EasyInputMessageParam", item)["content"] for item in qa_input] == [
+        render_capabilities_block()["content"],
+        "history",
+        "server memory",
+        "user memory",
+        "tone",
+        "reference",
+        "linked post",
+        "current",
+    ]
+    assert [cast("EasyInputMessageParam", item)["content"] for item in persona_input[:-1]] == [
+        "history",
+        "user memory",
+        "tone",
+        "reference",
+        "current",
+    ]
+
+
 class _FakeInteractionsResource:
     """Records Interactions answer calls and returns a fake event stream."""
 
