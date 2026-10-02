@@ -29,12 +29,11 @@ that in a reply. When I do, a 📖 note under my reply says whose memory I read.
 is worth keeping while I answer, so you can also just tell me to remember something, or tell
 me something I remember is wrong and should go; when I take a note, my reply says 正在整理記憶⋯
 while I work on it, and that turns into a ✏️ line for what I took down or a 🩹 line for what I
-dropped. If only part of a note is wrong, I drop the whole note, and what in it was still true
-comes back once it comes up again.
-Something I judged too personal to repeat in the channel is counted there rather than
-quoted. I keep a separate memory of each server's community the same way, and what I remember
-about you in one server does not follow you into another unless it is the kind of thing that is
-safe anywhere.
+dropped. Something I judged too personal to repeat in the channel is counted there rather than
+quoted. If only part of a note is wrong, I drop the whole note, and what in it was still true
+can come back only if it comes up again. I keep a separate memory of each server's community
+the same way, and what I remember about you in one server does not follow you into another
+unless it is the kind of thing that is safe anywhere.
 
 ### Links I open on my own
 
