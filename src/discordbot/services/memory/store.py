@@ -602,8 +602,9 @@ def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
     """Passes `raw.md` and `detail.md` through `edit`, atomically replacing each one it changed.
 
     The one change to either file besides an append, an eviction or the oldest-first trim: a
-    forget taking the evidence of the facts it deleted with them (`deltas.drop_released_evidence`
-    has why). A file `edit` hands back unchanged is not rewritten.
+    forget taking out the evidence of what it removed, the facts it deleted or the tone
+    observations it named (`deltas.drop_released_evidence` has why). A file `edit` hands back
+    unchanged is not rewritten.
     """
     for path in (_raw_path(scope=scope), _detail_path(scope=scope)):
         text = _read_text(path=path)

@@ -12,7 +12,7 @@ replaces the row with a transcript-free `cleared` tombstone, whose ordering
 token prevents a staging write captured before the clear from recreating the
 erased transcript after it commits.
 
-`reply.db` is shared with another table owned elsewhere, so this module keeps its own
+`reply.db` is shared with tables owned elsewhere, so this module keeps its own
 `Base`, its own bootstrap and a module-level `AsyncEngine` singleton (a per-instance
 `cached_property` engine would leak the pool / dialect cache): separate metadata is what
 stops one of them creating or marking the other's table. No `from __future__ import

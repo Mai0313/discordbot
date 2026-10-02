@@ -2,9 +2,9 @@
 
 The write side speaks in *observations* (one conversational signal, phase-1) and the
 read side speaks in *facts* (one distilled memory, one file). ``MemorySection`` is the
-shared vocabulary between them: it is an ASCII key, never the rendered heading, so the
-structured LLM schema stays English while the injected document stays Traditional
-Chinese.
+facts' vocabulary, shared by the consolidation's delta schema and the rendered document: it
+is an ASCII key, never the rendered heading, so the structured LLM schema stays English
+while the injected document stays Traditional Chinese.
 
 A fact's fields split into two ownership zones. The model authors ``summary``,
 ``section``, ``durability`` and the body, and names ``subject_id`` plus the keys a fact
