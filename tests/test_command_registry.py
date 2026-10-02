@@ -57,7 +57,7 @@ class _LoopStub:
 
 
 class _ConnectStub:
-    """The three attributes `DiscordBot.on_connect` touches."""
+    """The attributes `DiscordBot.on_connect` touches."""
 
     def __init__(self) -> None:
         """Starts with no logged-in user, so the method stops at its own guard."""
