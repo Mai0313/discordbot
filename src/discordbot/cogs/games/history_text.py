@@ -15,6 +15,7 @@ from nextcord import Embed
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import SettleOutcome, BlackjackHistoryRecord, BlackjackHistoryPayload
+from discordbot.utils.number_text import grouped_amount
 from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT
 from discordbot.cogs.games.presentation import PUSH_COLOR, delta_color
 
@@ -59,11 +60,6 @@ def _summarize(records: Sequence[BlackjackHistoryRecord]) -> _HistorySummary:
     )
 
 
-def _signed(value: int) -> str:
-    """Formats a signed, comma-grouped amount; zero renders without a sign."""
-    return f"{value:+,}" if value != 0 else "0"
-
-
 def _truncate(text: str, width: int) -> str:
     """Clamps `text` to `width` characters with a trailing ellipsis."""
     if len(text) <= width:
@@ -103,8 +99,8 @@ def _build_rows(records: Sequence[BlackjackHistoryRecord]) -> list[_Row]:
             when=record.created_at.strftime("%m/%d %H:%M"),
             player=_truncate(text=_hand_cell(payload=record.payload), width=26),
             dealer=_truncate(text=_dealer_cell(payload=record.payload), width=16),
-            bet=f"{record.bet:,}",
-            pnl=_signed(value=record.delta),
+            bet=grouped_amount(amount=record.bet),
+            pnl=grouped_amount(amount=record.delta, signed=True),
             tag=result_tags.get(record.outcome, record.outcome.upper()),
         )
         for record in records
@@ -147,7 +143,7 @@ def build_blackjack_history_embed(
     summary_line = (
         f"近 {summary.rounds} 場 · "
         f"{summary.wins} 勝 {summary.losses} 敗 {summary.pushes} 和 · "
-        f"淨損益 {_signed(value=summary.net_delta)}"
+        f"淨損益 {grouped_amount(amount=summary.net_delta, signed=True)}"
     )
     parts = [summary_line, _render_block(rows=rows)]
     if omitted:

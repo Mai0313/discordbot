@@ -154,7 +154,9 @@ class BlackjackPlayerSettlement(BaseModel):
     casino_balance: int = Field(
         ..., description="Casino ledger balance after applying the casino-side settlement."
     )
-    base_delta: int = Field(..., description="Net point change before any VIP payout bonus.")
+    base_delta: int = Field(
+        ..., description="Net point change before the VIP and five-card bonuses."
+    )
     vip_bonus: int = Field(default=0, description="Extra points added by the VIP payout bonus.")
     is_vip: bool = Field(
         default=False, description="Whether the VIP perk was active for this settlement."

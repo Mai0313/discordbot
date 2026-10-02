@@ -1330,6 +1330,92 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
     assert invalid.followup.sent == [{"content": "下注金額要是整數", "ephemeral": True}]
 
 
+async def _refusing_table(gate: tuple[str, str], bob: bool, finished: bool) -> DragonGateView:
+    """Builds Alice's table on a 100,000 pool whose first gate is `gate`, dealt to her.
+
+    `bob` seats Bob after her. `finished` withdraws every seat, leaving a round that is over
+    while its view has not settled.
+    """
+    participants = [await _funded(user_id=1, display_name="Alice")]
+    if bob:
+        participants.append(await _funded(user_id=2, display_name="Bob"))
+    low, high = gate
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=(low, "♠", high, "♥")), participants=participants
+    )
+    if finished:
+        for participant in participants:
+            round_state.withdraw(user_id=participant.user_id)
+    return DragonGateView(
+        round_state=round_state,
+        owner=participants[0],
+        jackpot_snapshot=100_000,
+        final_balances={participant.user_id: 1_000_000 for participant in participants},
+    )
+
+
+@pytest.mark.parametrize(
+    argnames=("gate", "bob", "finished", "expected"),
+    argvalues=[
+        (("7", "7"), False, True, "這桌已經不能操作了"),
+        (("7", "7"), True, False, "現在輪到 Alice"),
+        (("3", "9"), False, False, "這手不需要猜大小"),
+    ],
+    ids=["table-over", "not-their-turn", "not-a-pair"],
+)
+async def test_a_refused_pair_guess_says_why(
+    gate: tuple[str, str], bob: bool, finished: bool, expected: str
+) -> None:
+    """A guess the round will not take answers with the notice for the rule it broke.
+
+    With Bob seated, he is the one pressing; otherwise Alice is.
+    """
+    view = await _refusing_table(gate=gate, bob=bob, finished=finished)
+    press = FakeInteraction(
+        user=FakeUser(user_id=2 if bob else 1), message=FakeDiscordMessage(), custom_id="dg:higher"
+    )
+
+    await view._choose_direction(interaction=as_interaction(fake=press), direction="higher")
+
+    assert press.followup.sent == [{"content": expected, "ephemeral": True}]
+
+
+@pytest.mark.parametrize(
+    argnames=("gate", "bob", "finished", "raw_amount", "expected"),
+    argvalues=[
+        (("7", "7"), False, False, "20", "同點門柱要先猜大或猜小"),
+        (("3", "9"), False, True, "20", "這桌已經不能操作了"),
+        (("3", "9"), True, False, "20", "現在輪到 Alice"),
+        (("3", "9"), False, False, "5", "下注金額需介於 20 虛擬歡樂豆 到 10萬 虛擬歡樂豆"),
+    ],
+    ids=["guess-first", "table-over", "not-their-turn", "out-of-range"],
+)
+async def test_a_refused_bet_says_why(
+    gate: tuple[str, str], bob: bool, finished: bool, raw_amount: str, expected: str
+) -> None:
+    """A bet the round will not take answers with the notice for the rule it broke.
+
+    With Bob seated, he is the one betting; otherwise Alice is.
+    """
+    view = await _refusing_table(gate=gate, bob=bob, finished=finished)
+    press = FakeInteraction(user=FakeUser(user_id=2 if bob else 1), message=FakeDiscordMessage())
+
+    await view.submit_custom_bet(interaction=as_interaction(fake=press), raw_amount=raw_amount)
+
+    assert press.followup.sent == [{"content": expected, "ephemeral": True}]
+
+
+async def test_a_press_on_a_round_with_no_turn_left_is_refused() -> None:
+    """A round that is over before its view settles turns every turn-bound control away."""
+    view = await _refusing_table(gate=("3", "9"), bob=False, finished=True)
+    press = FakeInteraction(
+        user=FakeUser(user_id=1), message=FakeDiscordMessage(), custom_id="dg:bet"
+    )
+
+    assert await view.interaction_check(interaction=as_interaction(fake=press)) is False
+    assert press.followup.sent == [{"content": "這桌已經不能操作了", "ephemeral": True}]
+
+
 async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
     """Custom bet input length matches the comma-stripping parser."""
     owner = _participant(user_id=1, display_name="Alice")

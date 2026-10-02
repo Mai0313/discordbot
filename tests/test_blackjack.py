@@ -201,6 +201,31 @@ def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
     assert note == "莊家明牌 K♦, peek 暗牌確認 Blackjack, 本局直接結算"
 
 
+@pytest.mark.parametrize(
+    argnames=("peeked_blackjack", "expected"),
+    argvalues=[
+        (False, "你起手 Blackjack, 本局直接結算"),
+        (True, "莊家明牌 K♦, peek 暗牌確認 Blackjack, 你也起手 Blackjack, 本局直接平手"),
+    ],
+    ids=["player-natural", "both-natural"],
+)
+def test_blackjack_early_finish_note_names_a_dealt_natural(
+    peeked_blackjack: bool, expected: str
+) -> None:
+    """A seat dealt a natural is told that is what ended its round."""
+    player = blackjack_round(
+        hands=[[card(rank="A"), card(rank="K", suit="♥")]], dealer=[]
+    ).players[0]
+
+    note = blackjack_player_early_finish_note(
+        player=player,
+        dealer=[card(rank="A", suit="♣"), card(rank="K", suit="♦")],
+        peeked_blackjack=peeked_blackjack,
+    )
+
+    assert note == expected
+
+
 def test_settle_player_bust_loses_bet() -> None:
     """When the player busts the dealer wins regardless of dealer total."""
     outcome, delta = _settle_cards(

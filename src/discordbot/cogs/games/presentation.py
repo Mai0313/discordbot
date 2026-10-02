@@ -4,7 +4,7 @@ from typing import Final
 
 from discordbot.typings.games import Card, SettleOutcome
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
-from discordbot.cogs.games.blackjack import BlackjackPlayerHand, is_blackjack, dealer_up_card
+from discordbot.cogs.games.blackjack import BlackjackPlayerHand, dealer_up_card
 from discordbot.services.economy.presentation import amount_code
 
 WIN_COLOR = DISCORD_GREEN
@@ -174,11 +174,7 @@ def blackjack_player_early_finish_note(
     if not player.hands:
         return None
     first_hand = player.hands[0]
-    player_bj = (
-        len(player.hands) == 1
-        and not first_hand.is_split_hand
-        and is_blackjack(cards=first_hand.cards)
-    )
+    player_bj = len(player.hands) == 1 and first_hand.is_blackjack()
     if peeked_blackjack and player_bj:
         return f"{_dealer_peek_note(dealer=dealer)}, 你也起手 Blackjack, 本局直接平手"
     if peeked_blackjack:

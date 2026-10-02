@@ -134,6 +134,12 @@ def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
     assert cleanup_module._engine.url.database == str(tmp_path / "game_cleanup.db")
 
 
+def _lobby_text(embed: Embed) -> tuple[str | None, str | None, list[tuple[str, str]], str | None]:
+    """Returns what a lobby embed says: its title, status line, fields and footer."""
+    fields = [(str(field.name), str(field.value)) for field in embed.fields]
+    return embed.title, embed.description, fields, embed.footer.text
+
+
 async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each game command opens its lobby as a public followup carrying the width spacer."""
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
@@ -149,6 +155,12 @@ async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch
         == DEFAULT_EMBED_SPACER_FILENAME
     )
     assert blackjack_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
+    assert _lobby_text(embed=blackjack_interaction.followup.sent[0]["embed"]) == (
+        "♠️ 二十一點 · 開桌準備",
+        None,
+        [("👥 桌上玩家 (1/6)", "**1. Alice** · 下注 `10`")],
+        "基本下注 10 虛擬歡樂豆",
+    )
 
     monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
     monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
@@ -161,6 +173,12 @@ async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch
         == DEFAULT_EMBED_SPACER_FILENAME
     )
     assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
+    assert _lobby_text(embed=dragon_gate_interaction.followup.sent[-1]["embed"]) == (
+        "♦️ 射龍門 · 開桌準備",
+        None,
+        [("👥 桌上玩家 (1)", "**1. Alice**"), ("💰 彩金池 (跨桌累積)", "`10萬`")],
+        "入場費 10 虛擬歡樂豆 進彩金池",
+    )
 
 
 @pytest.mark.parametrize(argnames="game", argvalues=["blackjack", "dragon_gate"])

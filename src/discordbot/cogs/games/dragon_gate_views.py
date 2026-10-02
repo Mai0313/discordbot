@@ -29,7 +29,6 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGateTurnResult,
     DragonGatePlayerResult,
     DragonGateBetRangeError,
-    DragonGateTableFinishedError,
     DragonGatePairChoiceRequiredError,
     DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
@@ -352,7 +351,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             initial_jackpot_generation=initial_jackpot_generation,
         )
 
-    def _build_lobby_embed(self, status: str) -> Embed:
+    def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the 射龍門 lobby embed from participants and jackpot state."""
         return build_dragon_gate_lobby_embed(
             owner=self.owner,
@@ -441,11 +440,7 @@ class DragonGateView(GameView):
             active_turn = self.round_state.active_turn
             if active_turn is not None and user_id == active_turn.participant.user_id:
                 return True
-            notice = (
-                f"現在輪到 {active_turn.participant.display_name}"
-                if active_turn is not None
-                else "這桌已經不能操作了"
-            )
+            notice = self._current_turn_notice()
         await self._send_notice(interaction=interaction, content=notice)
         return False
 
@@ -611,16 +606,10 @@ class DragonGateView(GameView):
                 self.round_state.choose_pair_direction(
                     user_id=interaction.user.id, direction=direction
                 )
-            except DragonGateTableFinishedError:
-                await self._send_notice(interaction=interaction, content="這桌已經不能操作了")
-                return
-            except DragonGateTurnError:
+            except DragonGateError as error:
                 await self._send_notice(
-                    interaction=interaction, content=self._current_turn_notice()
+                    interaction=interaction, content=self._rule_error_notice(error=error)
                 )
-                return
-            except DragonGatePairChoiceUnavailableError:
-                await self._send_notice(interaction=interaction, content="這手不需要猜大小")
                 return
             self.sync_controls()
             self.last_press = interaction
@@ -680,7 +669,9 @@ class DragonGateView(GameView):
                     user_id=interaction.user.id, amount=amount, jackpot=self._jackpot_snapshot
                 )
             except DragonGateError as error:
-                await self._send_bet_error_notice(interaction=interaction, error=error)
+                await self._send_notice(
+                    interaction=interaction, content=self._rule_error_notice(error=error)
+                )
                 return
             was_loss = turn_result.delta < 0
             settlement = await apply_jackpot_settlement(
@@ -861,30 +852,28 @@ class DragonGateView(GameView):
             return "這桌已經不能操作了"
         return f"現在輪到 {active_turn.participant.display_name}"
 
-    async def _send_bet_error_notice(
-        self, interaction: Interaction[commands.Bot], error: DragonGateError
-    ) -> None:
-        """Maps Dragon Gate rule errors to user-facing ephemeral notices."""
+    def _rule_error_notice(self, error: DragonGateError) -> str:
+        """Returns the ephemeral notice for a Dragon Gate rule error a press ran into.
+
+        A finished table has no notice of its own: it, and any error without one, reads as over.
+        """
         if isinstance(error, DragonGatePairChoiceRequiredError):
-            content = "同點門柱要先猜大或猜小"
-        elif isinstance(error, DragonGateTableFinishedError):
-            content = "這桌已經不能操作了"
-        elif isinstance(error, DragonGateTurnError):
-            content = self._current_turn_notice()
-        elif isinstance(error, DragonGateBetRangeError):
+            return "同點門柱要先猜大或猜小"
+        if isinstance(error, DragonGatePairChoiceUnavailableError):
+            return "這手不需要猜大小"
+        if isinstance(error, DragonGateTurnError):
+            return self._current_turn_notice()
+        if isinstance(error, DragonGateBetRangeError):
             minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
             maximum = self._active_max_bet()
             if maximum < minimum:
-                content = "餘額不足以下注，請先離桌"
-            else:
-                content = (
-                    "下注金額需介於 "
-                    f"{currency_text(amount=minimum, compact=True)} 到 "
-                    f"{currency_text(amount=maximum, compact=True)}"
-                )
-        else:
-            content = "這桌已經不能操作了"
-        await self._send_notice(interaction=interaction, content=content)
+                return "餘額不足以下注，請先離桌"
+            return (
+                "下注金額需介於 "
+                f"{currency_text(amount=minimum, compact=True)} 到 "
+                f"{currency_text(amount=maximum, compact=True)}"
+            )
+        return "這桌已經不能操作了"
 
 
 class DragonGateBetModal(LoggedModal):

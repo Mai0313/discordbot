@@ -52,6 +52,7 @@ SHOE_DECK_COUNT = 4
 CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
 CARD_SUITS = ("♠", "♥", "♦", "♣")
 TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
+FIVE_CARD_WIN_CARDS: Final[int] = 5
 
 
 def draw_card(rng: Random) -> Card:
@@ -131,12 +132,12 @@ def is_five_card_twenty_one(cards: list[Card]) -> bool:
     Returns:
         True only when the hand has at least five cards and totals 21.
     """
-    return len(cards) >= 5 and hand_value(cards=cards) == 21
+    return len(cards) >= FIVE_CARD_WIN_CARDS and hand_value(cards=cards) == 21
 
 
 def is_five_card_win(cards: list[Card]) -> bool:
     """Returns whether a hand qualifies for the non-bust five-card win."""
-    return len(cards) >= 5 and hand_value(cards=cards) <= 21
+    return len(cards) >= FIVE_CARD_WIN_CARDS and hand_value(cards=cards) <= 21
 
 
 def is_bust(cards: list[Card]) -> bool:
@@ -808,17 +809,6 @@ class BlackjackRound(BaseModel):
                 return True
         return False
 
-    def draw_dealer_card(self) -> Card:
-        """Draws one card into the dealer hand and returns it."""
-        card = self._draw_one_card()
-        self.dealer.append(card)
-        return card
-
-    def mark_dealer_played(self) -> None:
-        """Closes the dealer phase and settles the round."""
-        self.dealer_played = True
-        self.phase = "settled"
-
     def play_dealer(self) -> list[BlackjackDealerStep]:
         """Draws for the dealer under H17 rules, then closes the dealer phase.
 
@@ -831,7 +821,8 @@ class BlackjackRound(BaseModel):
         steps: list[BlackjackDealerStep] = []
         while dealer_must_hit(cards=self.dealer):
             total_before = self.dealer_total()
-            drawn_card = self.draw_dealer_card()
+            drawn_card = self._draw_one_card()
+            self.dealer.append(drawn_card)
             steps.append(
                 BlackjackDealerStep(
                     total_before=total_before,
@@ -843,7 +834,8 @@ class BlackjackRound(BaseModel):
         final_total = self.dealer_total()
         if final_total <= 21:
             steps.append(BlackjackDealerStep(total_before=final_total, action="stand"))
-        self.mark_dealer_played()
+        self.dealer_played = True
+        self.phase = "settled"
         return steps
 
     def find_player(self, user_id: int) -> BlackjackPlayerHand | None:
@@ -923,7 +915,6 @@ class BlackjackRound(BaseModel):
     def _finish_after_players_done(self) -> None:
         """Finishes the round after all player actions have resolved.
 
-        The dealer has not drawn yet; its draws come afterwards, one
-        `draw_dealer_card` at a time, closed by `mark_dealer_played`.
+        The dealer has not drawn yet; `play_dealer` draws for it afterwards.
         """
         self.phase = "settled"
