@@ -84,18 +84,16 @@ class MediaReplyRoutes(BaseModel):
             items=[item], upload_limit=upload_limit_for(guild=self.message.guild)
         )
         if plan.native:
-            return await self.answer.surface.send(
-                content=self.message.author.mention, file=plan.native[0].to_file()
+            return await self.answer.reply_or_send(
+                content=self.message.author.mention, media=plan.native[0]
             )
         if not plan.hosted_urls:
             # Hosting off/failed: attempt the native attach, which raises on oversize and keeps
             # the route on the outer error path exactly as before.
-            return await self.answer.surface.send(
-                content=self.message.author.mention, file=item.to_file()
-            )
+            return await self.answer.reply_or_send(content=self.message.author.mention, media=item)
         # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
         # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
-        await self.answer.surface.send(
+        await self.answer.reply_or_send(
             content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}"
         )
         return None

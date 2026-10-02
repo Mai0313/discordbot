@@ -150,6 +150,8 @@ from discordbot.cogs.gen_reply.streaming import (
     stream_answer_with_retry,
 )
 from discordbot.cogs.gen_reply.generation import (
+    INLINE_IMAGE_FILENAME,
+    INLINE_VIDEO_FILENAME,
     MusicClip,
     VoiceClip,
     VoiceOutcome,
@@ -297,8 +299,10 @@ class FakeChannel:
         embed: Embed | None = None,
         file: File | None = None,
         files: list[File] | None = None,
+        allowed_mentions: object | None = None,
     ) -> FakeReply:
         """Records an unparented channel send (the deleted-source fallback target)."""
+        del allowed_mentions
         sent = FakeReply()
         sent.content = content
         sent.embed = embed
@@ -5711,6 +5715,56 @@ async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> Non
         await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
             user_prompt="draw a cat", context_task=_ready_context_task()
         )
+
+
+@pytest.mark.parametrize("error", [make_invalid_form_body(), make_not_found()])
+@pytest.mark.parametrize(
+    argnames=("route", "filename"),
+    argvalues=[("IMAGE", INLINE_IMAGE_FILENAME), ("VIDEO", INLINE_VIDEO_FILENAME)],
+)
+async def test_media_lands_unparented_when_its_source_was_deleted_meanwhile(
+    route: Literal["IMAGE", "VIDEO"], filename: str, error: nextcord.HTTPException
+) -> None:
+    """Media made for a message deleted while it generated still lands, and the reply follows.
+
+    The generation is already paid for and the media message mentions its author, so it means
+    something without the message it answered, as the text answer already does.
+    """
+    cog = _cog()
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.reply_error = error
+    routes = _media_routes(cog=cog, message=as_message(fake=message))
+    handle = routes.handle_image if route == "IMAGE" else routes.handle_video
+
+    await handle(user_prompt="draw a cat", context_task=_ready_context_task())
+
+    assert message.replies == []
+    delivered = message.channel.sent[0]
+    assert delivered.file is not None
+    assert delivered.file.filename == filename
+    assert (delivered.content or "").startswith("done")
+
+
+async def test_a_hosted_image_and_its_reply_land_unparented_when_the_source_was_deleted(
+    tmp_path: Path,
+) -> None:
+    """The hosted URL and the persona reply's own message both land when the source is gone."""
+    cog = _cog()
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
+    message.reply_error = make_not_found()
+
+    await _media_routes(cog=cog, message=as_message(fake=message)).handle_image(
+        user_prompt="draw a cat", context_task=_ready_context_task()
+    )
+
+    assert message.replies == []
+    url_msg, persona = message.channel.sent
+    assert any(
+        line.startswith("https://media.test/") for line in (url_msg.content or "").splitlines()
+    )
+    assert (persona.content or "").startswith("done")
 
 
 async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
