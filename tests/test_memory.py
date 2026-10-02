@@ -3635,6 +3635,34 @@ async def test_an_idle_memory_view_disables_its_buttons(
     assert all(child.disabled for child in view.children if isinstance(child, Button))
 
 
+@pytest.mark.parametrize("last_button", ["previous_page", "next_page"])
+async def test_a_paged_memory_view_times_out_through_its_newest_press(last_button: str) -> None:
+    """Every press restarts the timer, so the timeout edit rides the newest press's token.
+
+    Paging long enough pushes the timeout past the command's own token, which can no longer
+    disable the buttons.
+    """
+    view = MemoryPagesView(
+        pages=["第一頁", "第二頁", "第三頁"],
+        footer_text=memory_footer_text(pending_count=0),
+        title="🧠 我對你的記憶",
+    )
+    command = FakeInteraction()
+    view.bind_origin(interaction=as_interaction(fake=command))
+    earlier_press = FakeInteraction()
+    newest_press = FakeInteraction()
+
+    await cast("Button[Any]", view.next_page).callback(as_interaction(fake=earlier_press))
+    await cast("Button[Any]", getattr(view, last_button)).callback(
+        as_interaction(fake=newest_press)
+    )
+    await view.on_timeout()
+
+    assert (command.edits, earlier_press.edits) == ([], [])
+    assert newest_press.edits[-1]["view"] is view
+    assert all(child.disabled for child in view.children if isinstance(child, Button))
+
+
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
     memory_isolated_dir: Path,
 ) -> None:
