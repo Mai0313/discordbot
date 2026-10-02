@@ -189,12 +189,26 @@ def _scope_has_memory(scope: str) -> bool:
     )
 
 
+def _is_scope_key(key: str) -> bool:
+    """Whether a directory key under the store names a scope, logging one that does not.
+
+    The store names a scope directory only after the id `scope_owner_id` parses back out of
+    the key, so any other name is a hand-made copy such as a backup. Handed out as a scope,
+    it would raise in the first caller that reads its owner.
+    """
+    if key.rsplit("/", maxsplit=1)[-1].isdecimal():
+        return True
+    logfire.info("Memory directory is not named after an id; skipping", directory=key)
+    return False
+
+
 def iter_scopes() -> list[str]:
     """Returns every scope with on-disk memory (user = flat, server = under the bot dir).
 
     Walks `data/memories/`: a top-level directory holding memory is a user scope
     (`<user_id>`), and the child directories of `bot_memories/` holding memory are the
-    `bot_memories/<server_id>` server scopes.
+    `bot_memories/<server_id>` server scopes. A directory at either level not named after
+    an id is skipped (`_is_scope_key`).
 
     `bot_memories` is the only directory descended into, and dot directories are
     skipped outright (the store is itself a git work tree), so nested memory anywhere
@@ -208,12 +222,12 @@ def iter_scopes() -> list[str]:
         if not top.is_dir() or top.name.startswith("."):
             continue
         if top.name != BOT_MEMORY_DIR_NAME:
-            if _scope_has_memory(scope=top.name):
+            if _is_scope_key(key=top.name) and _scope_has_memory(scope=top.name):
                 scopes.append(top.name)
             continue
         for nested in sorted(top.iterdir()):
             scope = f"{BOT_MEMORY_DIR_NAME}/{nested.name}"
-            if nested.is_dir() and _scope_has_memory(scope=scope):
+            if nested.is_dir() and _is_scope_key(key=scope) and _scope_has_memory(scope=scope):
                 scopes.append(scope)
     return scopes
 

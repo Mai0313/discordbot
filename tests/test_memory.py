@@ -4435,6 +4435,15 @@ def test_iter_scopes_only_descends_into_the_bot_memory_directory(
     assert iter_scopes() == [server]
 
 
+@pytest.mark.usefixtures("memory_isolated_dir")
+def test_iter_scopes_skips_a_directory_not_named_after_an_id() -> None:
+    """A backup copy holds memory but is no scope: its owner id cannot be parsed back out."""
+    scopes = [user_scope(user_id=111), server_scope(server_id=333)]
+    for key in [*scopes, *(f"{scope}.bak" for scope in scopes)]:
+        append_raw_entry(scope=key, entry_text="- s")
+    assert iter_scopes() == scopes
+
+
 def test_flavor_of_distinguishes_user_and_server() -> None:
     assert flavor_of(scope=user_scope(user_id=USER_ID)) == "user"
     assert flavor_of(scope=server_scope(server_id=2)) == "server"
