@@ -650,7 +650,8 @@ async def test_every_balance_write_invalidates_the_leaderboard_cache(
 ) -> None:
     """A leaderboard read right after any public balance write shows the write.
 
-    `moves_losses` marks the casino settlements, the only writes the loss board can show.
+    `moves_losses` marks the casino settlements, the only writes here that change what the loss
+    board shows.
     """
     pending_proposal_id = await _ledger_every_write_path_can_touch()
     cached = await top_n(limit=None)

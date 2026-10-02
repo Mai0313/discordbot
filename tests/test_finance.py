@@ -446,7 +446,7 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
     assert accepted is not None
     assert accepted.central_bank_available_credit == CENTRAL_BANK_BASE_CAPACITY
 
-    # Inside alice's own remaining ceiling of 5,460,000, so only the pool can refuse it.
+    # Inside alice's own remaining ceiling, so only the pool can refuse it.
     too_large = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=CENTRAL_BANK_BASE_CAPACITY + 1
     )
