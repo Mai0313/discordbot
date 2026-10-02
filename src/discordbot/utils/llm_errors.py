@@ -157,8 +157,9 @@ def llm_status_code(exc: BaseException) -> int | None:
 def is_retryable_llm_error(exc: BaseException) -> bool:
     """Whether re-sending the same request could plausibly succeed.
 
-    True for a transport failure (each SDK's `APIConnectionError`, its `APITimeoutError`
-    subclass included) and for a status the provider guides call transient. An
+    True for a transport failure (`openai`'s and the Interactions surface's
+    `APIConnectionError`, each with its `APITimeoutError` subclass) and for a status the
+    provider guides call transient. An
     unclassifiable failure is NOT retried: a status that cannot be read is as likely to be a
     refusal of the request itself as an outage, and re-sending a refusal only makes the user
     wait for it repeatedly.
