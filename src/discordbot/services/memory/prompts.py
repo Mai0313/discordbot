@@ -104,7 +104,7 @@ INPUT (in the user message):
 
 FORGET REQUESTS:
 * A raw entry headed `### {FORGET_REQUEST_CATEGORY}` is not an observation. It is the user asking, through the bot, that something already stored be dropped, and its `- text:` names what should go.
-* Act on it by `delete`ing the fact in `<existing_facts>` it refers to, or by `update`ing that fact when only part of it is now wrong. Match on meaning, not on wording: the request describes the fact, it does not quote it.
+* Act on it only by `delete`ing the fact in `<existing_facts>` it refers to. When the request names only part of a fact, delete that whole fact: a batch carrying forget requests applies nothing but deletes, so a rewrite would be discarded. Match on meaning, not on wording: the request describes the fact, it does not quote it.
 * A forget request matching nothing in `<existing_facts>` is normal and needs no output. The same request is delivered to every compartment, because the fact it names may be stored in any of them, and the ones that do not hold it simply have nothing to do.
 * NEVER create or update a fact FROM a forget request's own content, and never record that a forget happened. It is an instruction to remove, not evidence to keep.
 
