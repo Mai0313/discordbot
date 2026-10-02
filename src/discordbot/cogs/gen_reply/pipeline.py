@@ -8,17 +8,17 @@ speculative task outlives the turn.
 """
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 import asyncio
 from collections.abc import Callable
 
 import logfire
 from nextcord import Message
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.typings.models import RecallRouteClassification
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
@@ -63,7 +63,7 @@ class ReplyPipeline(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    config: SkipValidation[LLMConfig] = Field(
+    config: LLMConfig = Field(
         ..., description="Runtime LLM config, read for the per-feature kill-switches."
     )
     media_delivery: MediaDeliveryPlanner = Field(
@@ -101,7 +101,7 @@ class ReplyPipeline(BaseModel):
 
     async def _resolve_link_block(
         self,
-        source: str,
+        source: LinkSourceName,
         link_task: LinkTask,
         deadline: float,
         on_timeout: Callable[[], list[EasyInputMessageParam]],
@@ -206,20 +206,14 @@ class ReplyPipeline(BaseModel):
         return link_blocks
 
     async def _dispatch_media(
-        self, decision: str, context_task: asyncio.Task[ReplyContext]
+        self, decision: Literal["IMAGE", "VIDEO"], context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Runs the IMAGE or VIDEO route, which consumes the speculative context.
 
         The handler awaits `context_task` only after the media is on screen, so the context
         build overlaps generation instead of delaying it.
         """
-        routes = MediaReplyRoutes(
-            config=self.config,
-            media_delivery=self.media_delivery,
-            toolkit=self.toolkit,
-            surface=self.surface,
-            answer=self._answer_turn(),
-        )
+        routes = MediaReplyRoutes(answer=self._answer_turn())
         handler = routes.handle_image if decision == "IMAGE" else routes.handle_video
         await handler(user_prompt=self.user_prompt, context_task=context_task)
 
@@ -260,11 +254,12 @@ class ReplyPipeline(BaseModel):
         message = self.message
         # Named in the usage record below, which is written from this method's `finally`
         # because this is the one scope that has both outcomes and the route in hand.
-        route_decision: str | None = None
+        route_decision: Literal["IMAGE", "VIDEO", "QA"] | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
-        link_tasks: dict[str, LinkTask] = {}
-        link_context_deadline: float | None = None
+        # The started link builds and the one deadline they share, set together; None until the
+        # route selects a source, so None means there is nothing to drain.
+        link_builds: tuple[dict[str, LinkTask], float] | None = None
         context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
         classifier = RouteClassifier(
             toolkit=self.toolkit,
@@ -324,6 +319,7 @@ class ReplyPipeline(BaseModel):
                     link_tasks = self._start_link_builds(
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
+                    link_builds = (link_tasks, link_context_deadline)
                     # Persistent markers (added directly, not via the status chain) naming which
                     # linked post was read. Added once every builder is started so the REST calls
                     # never sit between two of them.
@@ -351,9 +347,8 @@ class ReplyPipeline(BaseModel):
                     # The selected builds overlapped the remaining reply preparation. Resolve
                     # each under the same grace and fold the post blocks into the answer context
                     # in registry order so the splice stays deterministic.
-                    if link_tasks:
-                        if link_context_deadline is None:
-                            raise RuntimeError("Selected link tasks have no route deadline")
+                    if link_builds is not None:
+                        link_tasks, link_context_deadline = link_builds
                         link_blocks = await self._collect_link_blocks(
                             link_tasks=link_tasks, deadline=link_context_deadline
                         )
@@ -376,8 +371,8 @@ class ReplyPipeline(BaseModel):
             for task, label in ((prep_task, "prep"), (parts_task, "parts")):
                 if task is not None:
                     await discard_task(task=task, label=label, message_id=message.id)
-            # Set before any link build starts, so None means there is nothing to drain.
-            if link_context_deadline is not None:
+            if link_builds is not None:
+                link_tasks, link_context_deadline = link_builds
                 await discard_link_tasks(
                     link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
                 )

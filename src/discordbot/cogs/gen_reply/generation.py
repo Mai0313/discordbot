@@ -6,10 +6,9 @@ changes one place.
 """
 
 import re
-from enum import StrEnum
 import time
 import base64
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 import asyncio
 
 from google import genai
@@ -143,13 +142,8 @@ def speechify_discord_markup(text: str, resolve_name: MentionNameResolver) -> st
     return cleaned.strip()
 
 
-class VoiceOutcome(StrEnum):
-    """Why a spoken-clip synthesis attempt ended, so the caller can hint appropriately."""
-
-    OK = "ok"
-    EMPTY = "empty"
-    TIMEOUT = "timeout"
-    ERROR = "error"
+# Why a spoken-clip synthesis attempt ended, so the caller can hint appropriately.
+VoiceOutcome = Literal["ok", "empty", "timeout", "error"]
 
 
 class VoiceClip(BaseModel):
@@ -394,7 +388,7 @@ class VoiceGenerator(BaseModel):
                 "Voice synthesis skipped: reply text was empty after stripping",
                 end_user_id=end_user_id,
             )
-            return VoiceClip(outcome=VoiceOutcome.EMPTY)
+            return VoiceClip(outcome="empty")
         try:
             responses = await self.client.audio.speech.create(
                 input=f"{TTS_STYLE_DIRECTIVE}\n\n{spoken}",
@@ -413,7 +407,7 @@ class VoiceGenerator(BaseModel):
                 text_chars=len(spoken),
                 audio_bytes=len(audio),
             )
-            return VoiceClip(audio=audio, outcome=VoiceOutcome.OK)
+            return VoiceClip(audio=audio, outcome="ok")
         except APITimeoutError:
             # The clip took longer than VOICE_TIMEOUT_SECONDS to render. The caller marks the
             # message with a timeout hint and still leaves a plain text reply.
@@ -424,7 +418,7 @@ class VoiceGenerator(BaseModel):
                 text_chars=len(spoken),
                 _exc_info=True,
             )
-            return VoiceClip(outcome=VoiceOutcome.TIMEOUT)
+            return VoiceClip(outcome="timeout")
         except Exception as exc:
             # Any other provider error (most often the clip was refused, e.g. policy), and broad
             # because the proxy can fail in any shape. The caller marks the message with a warning
@@ -437,7 +431,7 @@ class VoiceGenerator(BaseModel):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            return VoiceClip(outcome=VoiceOutcome.ERROR)
+            return VoiceClip(outcome="error")
 
 
 class _RenderedVideo(Protocol):
@@ -577,7 +571,6 @@ class VideoGenerator(BaseModel):
                     input=content,
                     response_format=response_format,
                     generation_config=generation_config,
-                    timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
                 ),
             )
         video = responses.output_video

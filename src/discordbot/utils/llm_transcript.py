@@ -1,9 +1,10 @@
 """Conventions for rendering a Discord message into an LLM transcript.
 
-The reply pipeline writes these markers and the memory pipeline reads them back, so they
-live here rather than in either one: the author-identity prefix both treat as the trusted
-authorship signal, the forwarded-content marker, and the usage footer the bot appends to
-its own replies.
+What one pipeline writes and another reads back lives here rather than in either one: the
+sanitizer that keeps a name from forging the author-identity prefix the reply and memory
+prompts trust as authorship (the prefix itself is spelled where each transcript is built), the
+one-line identities memory files are stamped with, the forwarded-content marker, and the usage
+footer the bot appends to its own replies and strips again before reading them back.
 """
 
 import re

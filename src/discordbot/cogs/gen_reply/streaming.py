@@ -2,6 +2,7 @@
 
 import re
 import time
+from typing import Literal
 import asyncio
 import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
@@ -25,8 +26,6 @@ from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
-    MediaHostingConfig,
-    MediaHostingService,
     MediaDeliveryPlanner,
     upload_limit_for,
 )
@@ -41,7 +40,6 @@ from discordbot.cogs.gen_reply.generation import (
     VOICE_REPLY_FILENAME,
     INLINE_IMAGE_FILENAME,
     INLINE_VIDEO_FILENAME,
-    VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
     VideoGenerator,
@@ -188,7 +186,7 @@ class ResponseStreamer(BaseModel):
         default="",
         description="Route-decided reasoning effort shown next to the model in the footer.",
     )
-    backend: str = Field(
+    backend: Literal["responses", "interactions"] = Field(
         default="responses",
         description="Which answer surface produced this stream, logged so a metric only one of "
         "them reports is not read as an absence on the other.",
@@ -238,18 +236,7 @@ class ResponseStreamer(BaseModel):
         description="Inline-video renderer; None disables inline <generate-video> for this reply.",
     )
     media_delivery: MediaDeliveryPlanner = Field(
-        default_factory=lambda: MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(
-                # model_validate: the alias kwarg form is invisible to type
-                # checkers without a pydantic plugin (ty), and env merging is
-                # irrelevant for an all-disabled config.
-                config=MediaHostingConfig.model_validate({"MEDIA_HOSTING_ENABLED": False})
-            )
-        ),
-        description=(
-            "Decides attach-vs-host-vs-drop for generated media; defaults to a disabled planner "
-            "so a streamer built without one drops oversize media exactly as the host-free path."
-        ),
+        ..., description="Decides attach-vs-host-vs-drop for generated media."
     )
     created_at: float = Field(
         default_factory=time.monotonic,
@@ -960,10 +947,10 @@ class ResponseStreamer(BaseModel):
         clip = await self.voice_generator.generate(
             text=self.voice_text, end_user_id=self.message.author.name
         )
-        if clip.outcome is VoiceOutcome.EMPTY:
+        if clip.outcome == "empty":
             # Nothing to say (the segment was empty after stripping): no hint.
             return None
-        if clip.outcome is VoiceOutcome.TIMEOUT:
+        if clip.outcome == "timeout":
             # generate() logged the timeout; cue the user that the clip ran out of time.
             await self.surface.hint(emoji=TIMEOUT_HINT_EMOJI)
             return None
@@ -1147,12 +1134,7 @@ class ResponseStreamer(BaseModel):
             # ⚠️ hint on their message would be noise about media they cannot see anyway.
             return
         if self.reply is None:
-            if (
-                self.markers.voice_requested
-                or self.markers.image_prompts
-                or self.markers.music_prompt
-                or self.markers.video_prompt
-            ):
+            if self.markers.media_requested:
                 logfire.warn(
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,

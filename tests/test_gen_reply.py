@@ -58,7 +58,7 @@ from discordbot.typings.models import (
     RecallRouteClassification,
 )
 from discordbot.services.memory import database as memory_db
-from discordbot.services.memory import inflight, consolidation
+from discordbot.services.memory import consolidation
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.typings.timeouts import (
     ANSWER_STREAM_MAX_ATTEMPTS,
@@ -169,7 +169,7 @@ from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
-from discordbot.cogs.gen_reply.research_bridge import can_launch_research
+from discordbot.cogs.gen_reply.research_bridge import can_launch_research, maybe_launch_research
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
@@ -182,7 +182,7 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
-from tests.helpers.memory import make_fact
+from tests.helpers.memory import make_fact, drain_memory_turns, wait_for_persisted_writes
 from tests.helpers.casting import (
     as_bot,
     as_client,
@@ -215,7 +215,8 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
 )
 from tests.helpers.usage_log import usage_records
-from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner
+from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner, hosting_off_planner
+from tests.helpers.discord_mocks import text_channel_granting
 from tests.helpers.logfire_capture import capture_logs
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
@@ -817,7 +818,11 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     reads the environment.
     """
     cog = ReplyGeneratorCogs(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
+        bot=as_bot(
+            fake=SimpleNamespace(
+                user=SimpleNamespace(id=bot_user_id, name="bot"), get_cog=lambda name: None
+            )
+        )
     )
     cog.config = LLMConfig.model_construct()
     cog.__dict__["openai_client"] = FakeClient()
@@ -918,7 +923,11 @@ def _classifier(
 
 
 def _streamer(message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
-    """A streamer answering `message` on the gateway surface `ReplyPipeline` would give it."""
+    """A streamer answering `message` on the gateway surface `ReplyPipeline` would give it.
+
+    Its media planner never hosts unless `fields` hands it one.
+    """
+    fields.setdefault("media_delivery", hosting_off_planner())
     return ResponseStreamer(
         message=message,
         surface=TurnSurface.for_message(message=as_message(fake=message)),
@@ -937,14 +946,17 @@ async def _attachment_parts(builder: MessageInputBuilder, message: object) -> li
 
 
 def _answer(
-    cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
+    cog: ReplyGeneratorCogs,
+    message: Message,
+    toolkit: ReplyToolkit | None = None,
+    surface: TurnSurface | None = None,
 ) -> AnswerTurn:
     """The answer turn `ReplyPipeline` would build for this message."""
     return AnswerTurn(
         config=cog.config,
         media_delivery=cog.media_delivery,
         toolkit=toolkit or cog.toolkit,
-        surface=TurnSurface.for_message(message=message),
+        surface=surface or TurnSurface.for_message(message=message),
     )
 
 
@@ -956,11 +968,7 @@ def _media_routes(
 ) -> MediaReplyRoutes:
     """The IMAGE / VIDEO routes `ReplyPipeline` would build for this message."""
     return MediaReplyRoutes(
-        config=cog.config,
-        media_delivery=cog.media_delivery,
-        toolkit=toolkit or cog.toolkit,
-        surface=surface or TurnSurface.for_message(message=message),
-        answer=_answer(cog=cog, message=message, toolkit=toolkit),
+        answer=_answer(cog=cog, message=message, toolkit=toolkit, surface=surface)
     )
 
 
@@ -1254,6 +1262,27 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
     )
     assert "Current conversation location:" in dm_instructions
     assert "a Discord direct message (DM)" in dm_instructions
+
+
+@pytest.mark.parametrize(
+    argnames=("in_guild", "location"),
+    argvalues=[(True, "a Discord server (guild id 1)"), (False, "a Discord direct message (DM)")],
+    ids=["guild", "dm"],
+)
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_answer_is_told_where_its_turn_happens(in_guild: bool, location: str) -> None:
+    """The QA answer's instructions name the turn's own server, or a DM outside one."""
+    cog = _cog()
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    if not in_guild:
+        message.guild = None
+
+    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
+        system_prompt="SYS", context=ReplyContext()
+    )
+
+    (instructions,) = _recorded(cog).responses.create_instructions
+    assert location in instructions
 
 
 def _stream_events() -> AsyncIterator[ResponseStreamEvent]:
@@ -1557,6 +1586,30 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     assert message.added_reactions == []
 
 
+@pytest.mark.parametrize(
+    argnames=("markers", "hinted"),
+    argvalues=[
+        (InlineMarkers(cleaned_text="", voice_requested=True), True),
+        (InlineMarkers(cleaned_text="", image_prompts=["a cat"]), True),
+        (InlineMarkers(cleaned_text="", music_prompt="a song"), True),
+        (InlineMarkers(cleaned_text="", video_prompt="a clip"), True),
+        (InlineMarkers(cleaned_text=""), False),
+    ],
+    ids=["voice", "image", "music", "video", "none"],
+)
+async def test_media_a_never_sent_reply_asked_for_leaves_a_hint(
+    markers: InlineMarkers, hinted: bool
+) -> None:
+    """With no reply to attach to, any requested media is dropped with a ⚠️; none, no hint."""
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    streamer.markers = markers
+
+    await streamer._attach_generated_media()
+
+    assert message.added_reactions == (["⚠️"] if hinted else [])
+
+
 # ---- voice (spoken reply) ----
 
 
@@ -1564,7 +1617,7 @@ class _FakeVoiceGenerator:
     """Records generate calls and returns a configurable VoiceClip for streamer voice tests."""
 
     def __init__(
-        self, audio: bytes | None = b"RIFFfake-wav", outcome: VoiceOutcome = VoiceOutcome.OK
+        self, audio: bytes | None = b"RIFFfake-wav", outcome: VoiceOutcome = "ok"
     ) -> None:
         """Stores the audio bytes (None to simulate failure) and the reported outcome."""
         self.audio = audio
@@ -1898,7 +1951,7 @@ async def test_voice_disabled_still_strips_marker() -> None:
 async def test_voice_synthesis_failure_leaves_text_reply() -> None:
     """A synthesis error leaves a clean text reply, no file, and hints with a warning emoji."""
     message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.ERROR)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome="error")
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
@@ -1913,7 +1966,7 @@ async def test_voice_synthesis_failure_leaves_text_reply() -> None:
 async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     """A synthesis timeout leaves a text reply and hints with the clock emoji, staying silent."""
     message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.TIMEOUT)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome="timeout")
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
@@ -1922,6 +1975,19 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
+
+
+async def test_voice_with_nothing_to_say_leaves_no_hint() -> None:
+    """An empty clip is not a failure: no file attaches and nothing follows the voice mark."""
+    message = FakeMessage()
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome="empty")
+
+    await _streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)).stream(
+        responses=_stream_events_from(events=_voice_marker_events())
+    )
+
+    assert message.replies[0].file is None
+    assert message.added_reactions == ["<:voice:1517558121092878376>"]
 
 
 async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
@@ -2747,7 +2813,7 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
 
     clip = await synth.generate(text="閉嘴", end_user_id="tester")
 
-    assert clip.outcome is VoiceOutcome.OK
+    assert clip.outcome == "ok"
     assert clip.audio == b"RIFFwav"
     assert speech.calls[0]["input"].endswith("閉嘴")
     assert speech.calls[0]["input"] != "閉嘴"
@@ -2767,7 +2833,7 @@ async def test_voice_generator_swallows_provider_errors() -> None:
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
     assert clip.audio is None
-    assert clip.outcome is VoiceOutcome.ERROR
+    assert clip.outcome == "error"
 
 
 async def test_voice_generator_reports_timeout() -> None:
@@ -2778,7 +2844,19 @@ async def test_voice_generator_reports_timeout() -> None:
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
     assert clip.audio is None
-    assert clip.outcome is VoiceOutcome.TIMEOUT
+    assert clip.outcome == "timeout"
+
+
+async def test_voice_generator_reports_blank_text_as_empty() -> None:
+    """Text that is blank after stripping is reported as EMPTY without a provider call."""
+    speech = _FakeSpeech(data=b"RIFFwav")
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
+
+    clip = await synth.generate(text=" \n ", end_user_id="tester")
+
+    assert clip.audio is None
+    assert clip.outcome == "empty"
+    assert speech.calls == []
 
 
 async def test_voice_oversized_clip_not_attached() -> None:
@@ -2823,6 +2901,65 @@ async def test_a_marker_switch_controls_its_generator(
         assert isinstance(built[0][kwarg], generator_type)
     else:
         assert built[0][kwarg] is None
+
+
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_answer_and_the_persona_reply_read_the_context_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each request lays the context out in its fixed order, the current message last.
+
+    The media persona reply carries neither the feature reference, the server memory nor a
+    linked post.
+    """
+    cog = _cog()
+    cog.config = _config_stub()
+    _install_streamer(monkeypatch=monkeypatch)
+    context = ReplyContext(
+        hist_messages=[EasyInputMessageParam(role="user", content="history")],
+        reference_messages=[EasyInputMessageParam(role="user", content="reference")],
+        current_message=[EasyInputMessageParam(role="user", content="current")],
+        server_memory_block=EasyInputMessageParam(role="assistant", content="server memory"),
+        memory_block=EasyInputMessageParam(role="assistant", content="user memory"),
+        tone_block=EasyInputMessageParam(role="assistant", content="tone"),
+        link_blocks=[EasyInputMessageParam(role="system", content="linked post")],
+    )
+
+    async def built() -> ReplyContext:
+        """Hands over the full context at once."""
+        return context
+
+    message = as_message(fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1)))
+    answer = _answer(cog=cog, message=message)
+    await answer.stream_answer(system_prompt="SYS", context=context)
+    await answer.stream_media_persona_reply(
+        reply=as_message(fake=FakeReply()),
+        context_task=asyncio.create_task(coro=built()),
+        system_prompt="SYS",
+        focus_part=ResponseInputImageParam(
+            image_url="data:image/png;base64,", detail="auto", type="input_image"
+        ),
+        media_noun="image",
+    )
+
+    qa_input, persona_input = _recorded(cog).responses.create_inputs
+    assert [cast("EasyInputMessageParam", item)["content"] for item in qa_input] == [
+        render_capabilities_block()["content"],
+        "history",
+        "server memory",
+        "user memory",
+        "tone",
+        "reference",
+        "linked post",
+        "current",
+    ]
+    assert [cast("EasyInputMessageParam", item)["content"] for item in persona_input[:-1]] == [
+        "history",
+        "user memory",
+        "tone",
+        "reference",
+        "current",
+    ]
 
 
 class _FakeInteractionsResource:
@@ -2879,6 +3016,11 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     assert interactions.calls[0].generation_config["thinking_level"] == "low"
     last_step_parts = interactions.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
+    # The video turn is told the request's time and place, exactly as a Responses one is.
+    _assert_runtime_time_context(
+        instructions=interactions.calls[0].system_instruction, system_prompt="SYS"
+    )
+    assert "a Discord server (guild id 1)" in interactions.calls[0].system_instruction
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
     assert "Hello world" in reply_content
@@ -6038,6 +6180,46 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert deleted.channel.sent[0].embed is not None
 
 
+async def test_the_research_cog_is_reached_through_the_bot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thread the research cog is driving gets no answer, and an emitted brief reaches it."""
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    launched: list[dict[str, object]] = []
+
+    class ResearchCogStub:
+        """Drives the message's own channel and records each launch."""
+
+        def is_research_thread(self, channel_id: int) -> bool:
+            """Only the message's channel is a live research thread."""
+            return channel_id == message.channel.id
+
+        async def launch(self, **kwargs: object) -> None:
+            """Records the brief handed over."""
+            launched.append(kwargs)
+
+    research = ResearchCogStub()
+    cog = _cog()
+    monkeypatch.setattr(
+        cog.bot, "get_cog", lambda name: research if name == "ResearchCogs" else None
+    )
+    built = _install_streamer(monkeypatch=monkeypatch)
+
+    await cog.on_message(message=as_message(fake=message))
+    assert message.replies == []
+    assert message.added_reactions == []
+    assert built == []
+
+    anchor = FakeReply()
+    await maybe_launch_research(
+        bot=cog.bot,
+        message=as_message(fake=message),
+        anchor=as_message(fake=anchor),
+        brief="compare the two papers",
+    )
+    assert launched == [{"message": message, "anchor": anchor, "brief": "compare the two papers"}]
+
+
 async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6045,7 +6227,11 @@ async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
     # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
     monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
     cog = ReplyGeneratorCogs(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+        bot=as_bot(
+            fake=SimpleNamespace(
+                user=SimpleNamespace(id=999, name="bot"), get_cog=lambda name: None
+            )
+        )
     )
     cog.config = LLMConfig.model_construct()
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -7885,6 +8071,27 @@ def test_the_route_prompt_says_qa_draws_inline_only_while_it_can() -> None:
     )
 
 
+# The route prompt's link-source lines, byte for byte. They are part of the measured route
+# prompt, so a new source, or one changing where its link may sit, fails here until these lines
+# are rewritten on purpose.
+_ROUTE_LINK_SOURCE_LINES = (
+    "Also fill in the `link_context_sources` field for registered linked-post sources "
+    "(`threads`, `facebook`, `instagram`, `twitter`, `douyin`, and `bilibili`):",
+    "- Include a source only when a matching link is present AND the user wants the bot to read "
+    "that post or video — for example summarizing, explaining, analyzing, comparing, reacting "
+    "to, or answering a question about its actual content. Threads, Facebook and Instagram "
+    "links may be in the latest message OR in the message it is replying to; Twitter, Douyin "
+    "and Bilibili links must be in the latest message.",
+)
+
+
+def test_the_route_prompt_names_the_link_sources_as_measured() -> None:
+    """Each registered link source, and where its link may be, reads exactly as measured."""
+    lines = route_prompt(inline_image_enabled=True).splitlines()
+
+    assert [line for line in _ROUTE_LINK_SOURCE_LINES if line not in lines] == []
+
+
 @pytest.mark.parametrize("inline_image_enabled", [True, False])
 @pytest.mark.usefixtures("no_memory_review")
 async def test_the_route_is_told_qa_draws_inline_only_while_the_answer_can(
@@ -8097,17 +8304,6 @@ async def test_handle_message_reply_server_memory_gating(
             assert update["identity"] == "Test Guild [id: 1]"
 
 
-async def _drain_memory_turns(scopes: tuple[str, ...]) -> None:
-    """Awaits every memory turn queued for `scopes`, then the reply.db writes they detached."""
-    for scope in scopes:
-        while (task := inflight._inflight_tasks.get(key=scope)) is not None:
-            await asyncio.gather(task, return_exceptions=True)
-            # Lets the done-callback run, which clears the slot or starts the next queued turn.
-            await asyncio.sleep(0)
-    while inflight._db_tasks:
-        await asyncio.gather(*list(inflight._db_tasks))
-
-
 @pytest.mark.parametrize(
     ("memory_notes", "server_memory_notes", "prompt"),
     [
@@ -8131,7 +8327,8 @@ async def test_a_memory_note_is_reviewed_under_its_scopes_own_prompt(
     await _run_pipeline(
         cog=cog, message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     )
-    await _drain_memory_turns(scopes=(user_scope(user_id=1), server_scope(server_id=1)))
+    await drain_memory_turns(scopes=(user_scope(user_id=1), server_scope(server_id=1)))
+    await wait_for_persisted_writes()
 
     responses = _recorded(cog).responses
     reviews = [
@@ -8685,25 +8882,21 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory() -> None:
     assert context.memory_credits.total == 0
 
 
-def _text_channel_granting(**permissions: bool) -> MagicMock:
-    """A guild text channel whose overwrites resolve to exactly these permissions for the bot."""
-    channel = MagicMock(spec=nextcord.TextChannel)
-    channel.permissions_for.return_value = nextcord.Permissions(**permissions)
-    return channel
-
-
 def test_can_launch_research_requires_guild_text_channel() -> None:
-    guild = SimpleNamespace(me=object())
-    granted = _text_channel_granting(
-        view_channel=True,
-        send_messages=True,
-        create_public_threads=True,
-        send_messages_in_threads=True,
-        attach_files=True,
+    granted = text_channel_granting(
+        permissions=nextcord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            create_public_threads=True,
+            send_messages_in_threads=True,
+            attach_files=True,
+        )
     )
+    # The bot's own member, whose token every research write uses, never the author's: the
+    # channel answers the grant for its guild's `me` alone.
+    guild = granted.guild
     text = SimpleNamespace(guild=guild, channel=granted)
     assert can_launch_research(message=as_message(fake=text)) is True
-    # The bot's own member, whose token every research write uses, never the author's.
     granted.permissions_for.assert_called_once_with(guild.me)
     thread = SimpleNamespace(guild=guild, channel=MagicMock(spec=nextcord.Thread))
     assert can_launch_research(message=as_message(fake=thread)) is False
@@ -8713,10 +8906,12 @@ def test_can_launch_research_requires_guild_text_channel() -> None:
 
 def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
     """A thread the bot may open but not post in would bill a run nobody ever sees."""
-    channel = _text_channel_granting(
-        view_channel=True, send_messages=True, create_public_threads=True, attach_files=True
+    channel = text_channel_granting(
+        permissions=nextcord.Permissions(
+            view_channel=True, send_messages=True, create_public_threads=True, attach_files=True
+        )
     )
-    message = SimpleNamespace(guild=SimpleNamespace(me=object()), channel=channel)
+    message = SimpleNamespace(guild=channel.guild, channel=channel)
 
     assert can_launch_research(message=as_message(fake=message)) is False
 
@@ -8834,7 +9029,8 @@ async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
     await cog._resume_memory()
     while cog._tasks:
         await asyncio.gather(*list(cog._tasks))
-    await _drain_memory_turns(scopes=(scope,))
+    await drain_memory_turns(scopes=(scope,))
+    await wait_for_persisted_writes()
 
     assert set(_recorded(cog).responses.parse_instructions) == prompts
 

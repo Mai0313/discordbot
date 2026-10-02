@@ -149,9 +149,10 @@ async def upload_as_input_file(
     Best-effort by design: every caller degrades rather than failing — the link builders to
     their text-only block, the generated-clip path by skipping its persona reply — so a
     failure here must not raise into the reply pipeline. The `file_api_enabled` kill-switch is
-    checked here as a backstop, a switched-off upload taking the same path a failed one does.
-    It saves no fetch: the media is fetched before this is called, so only a caller that checks
-    the switch itself avoids that.
+    checked here, which makes this the switch's gate for any caller that does not check it
+    first; a switched-off upload takes the same path a failed one does. It saves no fetch: the
+    media is fetched before this is called, so only a caller that checks the switch itself
+    avoids that.
 
     `source` accepts a path as well as bytes (mirroring `MediaItem`) because the SDK's
     `files.upload` takes `str | os.PathLike | io.IOBase`: a clip already written to a temp

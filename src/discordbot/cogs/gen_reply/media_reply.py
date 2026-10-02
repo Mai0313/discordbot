@@ -20,13 +20,12 @@ from collections.abc import AsyncIterator
 
 import logfire
 from nextcord import Message
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import to_data_uri
 from discordbot.typings.timeouts import GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS
-from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
+from discordbot.utils.media_delivery import MediaItem, upload_limit_for
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import (
@@ -35,8 +34,6 @@ from discordbot.cogs.gen_reply.prompts import (
     IMAGE_REPLY_PROMPT,
     VIDEO_REPLY_PROMPT,
 )
-from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.generation import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
@@ -61,29 +58,18 @@ WINDOW_EXPIRED_NOTICE = (
 class MediaReplyRoutes(BaseModel):
     """Runs the IMAGE and VIDEO routes for one message."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    config: SkipValidation[LLMConfig] = Field(
-        ..., description="Runtime LLM config, read for the two prompt-refine kill-switches."
-    )
-    media_delivery: MediaDeliveryPlanner = Field(
-        ..., description="Decides whether generated media attaches or is hosted as a URL."
-    )
-    toolkit: ReplyToolkit = Field(
-        ..., description="The generators, clients and model catalog this route renders through."
-    )
-    surface: TurnSurface = Field(..., description="Where the delivered media goes.")
     answer: AnswerTurn = Field(
         ...,
         description=(
-            "Streams the best-effort persona reply about the media once it has been delivered."
+            "Streams the best-effort persona reply about the delivered media, and carries the "
+            "config, toolkit, surface and media planner this route renders and delivers through."
         ),
     )
 
     @property
     def message(self) -> Message:
         """The message that asked for the media, read off the surface that carries it."""
-        return self.surface.message
+        return self.answer.message
 
     async def _deliver(self, data: bytes, filename: str) -> Message | None:
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
@@ -94,22 +80,24 @@ class MediaReplyRoutes(BaseModel):
         raising on oversize so the route stays on its existing hard-fail error path.
         """
         item = MediaItem(source=data, filename=filename)
-        plan = await self.media_delivery.plan(
+        plan = await self.answer.media_delivery.plan(
             items=[item], upload_limit=upload_limit_for(guild=self.message.guild)
         )
         if plan.native:
-            return await self.surface.send(
+            return await self.answer.surface.send(
                 content=self.message.author.mention, file=plan.native[0].to_file()
             )
         if not plan.hosted_urls:
             # Hosting off/failed: attempt the native attach, which raises on oversize and keeps
             # the route on the outer error path exactly as before.
-            return await self.surface.send(
+            return await self.answer.surface.send(
                 content=self.message.author.mention, file=item.to_file()
             )
         # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
         # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
-        await self.surface.send(content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}")
+        await self.answer.surface.send(
+            content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}"
+        )
         return None
 
     @contextlib.asynccontextmanager
@@ -128,7 +116,7 @@ class MediaReplyRoutes(BaseModel):
         exception type: a render's own bound raises the very same `TimeoutError`, and only this
         one knows the turn has nowhere left to answer.
         """
-        window = asyncio.timeout(delay=self.surface.delivery_budget_seconds())
+        window = asyncio.timeout(delay=self.answer.surface.delivery_budget_seconds())
         try:
             yield window
         except Exception as exc:
@@ -151,7 +139,7 @@ class MediaReplyRoutes(BaseModel):
         delivered the reply is best-effort: any failure leaves the delivered image untouched.
         """
         message = self.message
-        toolkit = self.toolkit
+        toolkit = self.answer.toolkit
         started = time.monotonic()
         async with self._delivery_window(context_task=context_task) as window:
             async with window:
@@ -176,7 +164,7 @@ class MediaReplyRoutes(BaseModel):
                     user_prompt=user_prompt,
                     instructions=IMAGE_PROMPT,
                     end_user_id=message.author.name,
-                    enabled=self.config.image_refine_prompt_enabled,
+                    enabled=self.answer.config.image_refine_prompt_enabled,
                     image_bytes_list=image_bytes_list or None,
                 )
                 # The director above is best-effort and swallows its own failures, so from here
@@ -226,7 +214,7 @@ class MediaReplyRoutes(BaseModel):
         screen so its build overlaps generation.
         """
         message = self.message
-        toolkit = self.toolkit
+        toolkit = self.answer.toolkit
         started = time.monotonic()
         logfire.info(
             "gen_reply video generation start",
@@ -275,7 +263,7 @@ class MediaReplyRoutes(BaseModel):
                         user_prompt=user_prompt,
                         instructions=VIDEO_PROMPT,
                         end_user_id=message.author.name,
-                        enabled=self.config.video_refine_prompt_enabled,
+                        enabled=self.answer.config.video_refine_prompt_enabled,
                         image_bytes_list=[loaded.data for loaded in images] or None,
                     )
                     video_bytes = await toolkit.video_generator.render(
@@ -312,7 +300,7 @@ class MediaReplyRoutes(BaseModel):
         not the clip's own URL.
         """
         video_part = await upload_as_input_file(
-            client=self.toolkit.gemini_client,
+            client=self.answer.toolkit.gemini_client,
             source=video_bytes,
             mime_type="video/mp4",
             filename=INLINE_VIDEO_FILENAME,
