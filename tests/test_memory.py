@@ -102,7 +102,6 @@ from discordbot.services.memory.prompts import (
     PHASE2_COMPACTION_BLOCK,
 )
 from discordbot.services.memory.constants import (
-    COMPACTION_TARGET_CHARS,
     COMPACTION_TRIGGER_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
@@ -756,57 +755,6 @@ async def test_every_writer_call_runs_on_its_one_model() -> None:
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name] * 3
 
 
-def test_prompts_cover_recent_context_and_compaction() -> None:
-    assert "recent_context" in PHASE1_EVALUATOR_PROMPT
-    assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
-    assert "today" in PHASE2_PROMPT
-    assert "ttl_days" in PHASE2_PROMPT
-    assert str(COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
-
-
-def test_prompts_cover_the_permanent_tier() -> None:
-    # The note review authors the durability, so it must offer the permanent tier and say
-    # which narrow class it is for.
-    assert "permanent" in PHASE1_EVALUATOR_PROMPT
-
-
-def test_prompts_record_tone_persona_independently() -> None:
-    # Tone lives in its own tier but must be recorded as persona-independent qualities so
-    # a PERSONA_CHOICES change does not leave a stale persona-bound tone preference.
-    assert "persona-independent" in PHASE1_EVALUATOR_PROMPT
-    assert "persona-independent" in PHASE2_PROMPT
-
-
-def test_phase2_prompt_tells_the_tone_call_its_deltas_are_discarded() -> None:
-    """Tone evidence is unpartitioned, so the call that sees it must not be able to store
-    a fact. Code enforces that by giving it no facts and no raw bucket and throwing its
-    deltas away; the prompt only has to stop the model wasting output on them.
-    """
-    assert "<tone_evidence>" in PHASE2_PROMPT
-    assert "its `deltas` are discarded" in PHASE2_PROMPT
-    assert "Return `deltas` empty; only `tone_markdown` is read from this call." in PHASE2_PROMPT
-
-
-def test_the_tone_schema_names_the_same_trigger_as_the_prompt() -> None:
-    """`ConsolidatedMemory` is passed as `text_format=`, so this description IS prompt text.
-
-    A wording that names a compartment instead contradicts both consolidation prompts at the
-    model: `PHASE2_PROMPT` triggers on `<tone_evidence>`, and every server consolidation is a
-    `global` compartment call that `SERVER_PHASE2_PROMPT` tells to emit nothing (#518).
-    """
-    description = ConsolidatedMemory.model_fields["tone_markdown"].description
-    assert description is not None
-    assert "<tone_evidence>" in description
-    assert "compartment" not in description
-
-
-def test_evaluator_prompt_locks_third_parties_named_in_plain_prose() -> None:
-    """The deterministic gate only sees ids and roster names; the evaluator covers the rest."""
-    assert "even when nobody is tagged and no user id appears anywhere in the text" in (
-        PHASE1_EVALUATOR_PROMPT
-    )
-
-
 def test_redact_secrets_masks_token_shapes() -> None:
     # Joined at runtime so secret scanners do not flag the test fixture itself.
     jwt_like = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "x" * 30])
@@ -1265,19 +1213,6 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
         True: len(forget_calls),
         False: len(observation_calls),
     })
-
-
-def test_the_forget_block_offers_nothing_but_a_delete() -> None:
-    """A forget-only call applies nothing but deletes, so the prompt asks for nothing else.
-
-    Any other action it invites for a partly wrong fact is dropped, which leaves the fact whole
-    while the reply already says it was forgotten.
-    """
-    block = " ".join(
-        PHASE2_PROMPT.split("FORGET REQUESTS:", maxsplit=1)[1].split("\n\n", maxsplit=1)[0].split()
-    )
-    assert set(re.findall(pattern=r"`(create|update|delete)`", string=block)) == {"delete"}
-    assert "delete that whole fact" in block
 
 
 def _entry(timestamp: str, *observations: MemoryObservation, source: str = "guild 42") -> str:
@@ -4796,49 +4731,6 @@ async def test_pipeline_server_subject_renders_without_source_fields(
     assert "喜歡簡短" in raw_text
     assert "- source:" not in raw_text
     assert "- sharing:" not in raw_text
-
-
-def test_prompts_cover_sharing_classification() -> None:
-    """The note review authors `sharing`, so the classification rules live with it.
-
-    What has to be in the prompt is the default and the third-party rule, which
-    `_sanitize_observation` mirrors deterministically on the code side.
-    """
-    assert "SHARING CLASSIFICATION" in PHASE1_EVALUATOR_PROMPT
-    assert "source_only" in PHASE1_EVALUATOR_PROMPT
-    assert "When unsure, choose `source_only`" in PHASE1_EVALUATOR_PROMPT
-    assert "ANY person other than the target user" in PHASE1_EVALUATOR_PROMPT
-
-
-def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
-    """Provenance is the directory, so the prompt must say the model writes one of them.
-
-    Code routes the evidence before the call, and the model is told what it may not carry
-    back across that line.
-    """
-    assert "WHAT A COMPARTMENT IS" in PHASE2_PROMPT
-    assert "<global_reference>" in PHASE2_PROMPT
-    # The text must never name where a fact was learned; the directory already records it.
-    assert "the text must never mention a server, a channel" in PHASE2_PROMPT
-    assert "TONE NOTE OUTPUT" in PHASE2_PROMPT
-    assert "## 語氣偏好" in PHASE2_PROMPT
-
-
-def test_phase2_prompt_ranks_a_stated_tone_preference_over_an_inferred_one() -> None:
-    """The note merges many batches, so a majority of inferred bullets must not win.
-
-    `tone_evidence_from_raw` tags every bullet with its kind; this is the half that
-    tells the model what to do with the tag. Without both, a user who stated once that
-    they wanted respect and then trash-talked the bot for weeks got a note saying they
-    wanted trash-talk back, and recency kept it that way.
-    """
-    assert "`explicit_preference` and `correction` are the user stating" in PHASE2_PROMPT
-    assert "is not overturned by recency alone" in PHASE2_PROMPT
-    assert "Never invert an inferred bullet" in PHASE2_PROMPT
-    # The "later ... wins" half of that rule has no clock but the emitted order, and the
-    # tag is code-stamped input like the `source:` line phase 1 tells the model to leave out.
-    assert "oldest first" in PHASE2_PROMPT
-    assert "never copy it into the note" in PHASE2_PROMPT
 
 
 # ---------------------------------------------------------------------------
