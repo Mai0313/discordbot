@@ -47,7 +47,6 @@ from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_
 from discordbot.services.memory.pipeline import schedule_memory_update
 from discordbot.cogs.gen_reply.references import source_channel_is_public
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
-from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
@@ -197,15 +196,7 @@ class AnswerTurn(BaseModel):
         try:
             context = await context_task
             base = await self.persona_base_reply(reply=reply)
-            # Mirror the answer path's order (history, memory, tone, reference, current),
-            # injecting only the selected user memory (already compartment-scoped by
-            # `recall_user_memories`) and the author's tone note, never the server memory block.
-            response_input: ResponseInputParam = [*context.hist_messages]
-            response_input.extend(
-                block for block in (context.memory_block, context.tone_block) if block is not None
-            )
-            response_input.extend(context.reference_messages)
-            response_input.extend(context.current_message)
+            response_input = context.persona_input()
             # The generated media is the focus, appended last right after the request it answers.
             response_input.append(
                 EasyInputMessageParam(
@@ -336,26 +327,7 @@ class AnswerTurn(BaseModel):
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = toolkit.runtime_models.slow_model.model_copy(update={"effort": effort})
         dispatched_model.set(slow_model.name)
-        # Keep the current user message LAST so the model answers it. Memory rides earliest as
-        # low-authority background; the reference message then sits just above the current
-        # message so the reply pair (reference -> current) stays adjacent and reads as the
-        # primary context rather than getting buried up near history. The feature reference
-        # leads: it is the one block that is byte-identical on every reply, so the front is
-        # where it costs the least against a prefix cache.
-        answer_input: ResponseInputParam = [render_capabilities_block()]
-        answer_input.extend(context.hist_messages)
-        answer_input.extend(
-            block
-            for block in (context.server_memory_block, context.memory_block, context.tone_block)
-            if block is not None
-        )
-        answer_input.extend(context.reference_messages)
-        # The linked post(s) the user pointed at ride just before the current message, each
-        # block led by its own separator; empty unless a registered source found a link to read
-        # (in this message, or for Threads the one it replies to). The order inside is
-        # LINK_CONTEXT_SOURCES order.
-        answer_input.extend(context.link_blocks)
-        answer_input.extend(context.current_message)
+        answer_input = context.answer_input()
 
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
@@ -436,6 +408,9 @@ class AnswerTurn(BaseModel):
                 if offered
             ),
         )
+        instructions = build_runtime_instructions(
+            system_prompt=system_prompt, message=self.message, guild_id=self.surface.guild_id
+        )
         with logfire.span(
             "gen_reply answer", model=slow_model.name, backend=backend, message_id=self.message.id
         ):
@@ -446,21 +421,13 @@ class AnswerTurn(BaseModel):
                     return create_interactions_answer_stream(
                         client=toolkit.gemini_client,
                         model=slow_model.name,
-                        system_instruction=build_runtime_instructions(
-                            system_prompt=system_prompt,
-                            message=self.message,
-                            guild_id=self.surface.guild_id,
-                        ),
+                        system_instruction=instructions,
                         steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
                         effort=slow_model.effort,
                     )
                 return await self.toolkit.openai_client.responses.create(
                     model=slow_model.name,
-                    instructions=build_runtime_instructions(
-                        system_prompt=system_prompt,
-                        message=self.message,
-                        guild_id=self.surface.guild_id,
-                    ),
+                    instructions=instructions,
                     input=answer_input,
                     reasoning=slow_model.reasoning,
                     tools=list(slow_model.tools),
