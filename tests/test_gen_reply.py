@@ -5464,13 +5464,13 @@ async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> Non
     """IMAGE route, hosting off + oversize: the native attach is attempted and its error propagates.
 
     With no host available the deliverable cannot degrade to a URL, so `MediaReplyRoutes._deliver`
-    falls through to the native attach (which Discord 400s on oversize); that error must stay on the
-    route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
+    falls through to the native attach (which Discord 413s on oversize); that error must stay on the
+    route's outer hard-fail path, never a silent drop. A FakeMessage models the 413 via reply_error.
     """
     cog = _cog()
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
-    # The native attach of an oversized file 400s on real Discord; the fake raises it on reply.
+    # The native attach of an oversized file 413s on real Discord; the fake raises it on reply.
     message.reply_error = nextcord.HTTPException(
         cast("ClientResponse", SimpleNamespace(status=413, reason="Payload Too Large")),
         {"code": 40005, "message": "Request entity too large"},
