@@ -13,7 +13,7 @@ import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import Message, AllowedMentions
+from nextcord import Message, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
@@ -24,8 +24,9 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
+from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
-from discordbot.utils.media_delivery import MediaDeliveryPlanner
+from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner
 from discordbot.services.memory.store import user_scope, server_scope
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.prompts import (
@@ -284,9 +285,40 @@ class AnswerTurn(BaseModel):
         """
         if reply is not None:
             return reply
-        return await self.surface.send(
+        return await self.reply_or_send(
             content=self.message.author.mention, allowed_mentions=AllowedMentions.none()
         )
+
+    async def reply_or_send(
+        self,
+        content: str,
+        media: MediaItem | None = None,
+        allowed_mentions: AllowedMentions | None = None,
+    ) -> Message:
+        """Replies to the source message, sending unparented if it was deleted meanwhile.
+
+        What the media routes send has already been paid for, so a source deleted while it was
+        generating costs the parent, not the delivery. Each attempt builds its own `File` from
+        `media`, since a sent one has already been read. Other HTTP errors still propagate.
+        """
+        try:
+            return await self.surface.send(
+                content=content,
+                file=media.to_file() if media else None,
+                allowed_mentions=allowed_mentions,
+            )
+        except HTTPException as exc:
+            if not is_reply_target_gone(error=exc):
+                raise
+            logfire.info(
+                "Source message deleted before the media reply; sending unparented",
+                message_id=self.message.id,
+            )
+            return await self.surface.send_unparented(
+                content=content,
+                file=media.to_file() if media else None,
+                allowed_mentions=allowed_mentions,
+            )
 
     async def stream_answer(
         self,
