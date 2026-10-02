@@ -45,7 +45,6 @@ from discordbot.typings.emojis import (
     INSTAGRAM_EMOJI,
 )
 from discordbot.typings.memory import (
-    MemoryFact,
     MemoryOwner,
     MemoryCredits,
     MemorySection,
@@ -69,7 +68,7 @@ from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.utils.media_delivery import MediaItem, MediaHostingService, MediaDeliveryPlanner
+from discordbot.utils.media_delivery import MediaItem
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
     count_media_parts,
@@ -89,7 +88,7 @@ from discordbot.cogs.gen_reply.recall import (
     render_callable_users_block,
     widen_allowlist_with_aliases,
 )
-from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
+from discordbot.services.memory.facts import mint_fact_id
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -183,6 +182,7 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
+from tests.helpers.memory import make_fact
 from tests.helpers.casting import (
     as_bot,
     as_client,
@@ -191,7 +191,6 @@ from tests.helpers.casting import (
     make_forbidden,
     make_not_found,
     make_invalid_form_body,
-    make_media_hosting_config,
 )
 from tests.helpers.gen_reply import (
     FakeGeminiFiles,
@@ -216,7 +215,7 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
 )
 from tests.helpers.usage_log import usage_records
-from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_off_planner
+from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner
 from tests.helpers.logfire_capture import capture_logs
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
@@ -810,18 +809,17 @@ def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
 
 
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
-    """Builds a ReplyGeneratorCogs over fake clients, its LLMConfig and media planner pinned.
+    """Builds a ReplyGeneratorCogs over fake clients, its LLMConfig pinned.
 
-    The config is every field's declared default, so a checkout's `.env` cannot decide a test,
-    and the planner never hosts, so an oversize item cannot reach a live serve directory; a test
-    about either sets it on the cog. Everything else, the usage recorder and the attachment
-    handler choice included, still reads the environment.
+    The config is every field's declared default, so a checkout's `.env` cannot decide a test;
+    a test about it sets it on the cog. Everything else, the media planner (which the suite
+    keeps from hosting), the usage recorder and the attachment handler choice included, still
+    reads the environment.
     """
     cog = ReplyGeneratorCogs(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
     )
     cog.config = LLMConfig.model_construct()
-    cog.__dict__["media_delivery"] = hosting_off_planner()
     cog.__dict__["openai_client"] = FakeClient()
     toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="")
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
@@ -994,19 +992,19 @@ def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
     return cast("FakeGeminiVideoClient", cog.toolkit.gemini_client)
 
 
-def _config_stub(**flags: object) -> LLMConfig:
-    """Views a namespace carrying just the flags a test reads as the cog's LLMConfig.
+def _config_stub(**fields: object) -> LLMConfig:
+    """The cog's LLMConfig with `fields` set and every other field at its declared default.
 
-    Every inline marker is off unless `flags` turns it on, so nothing is appended to the answer
-    instructions a test did not ask for.
+    Never read from the environment. Every inline marker is off unless `fields` turns it on, so
+    nothing is appended to the answer instructions a test did not ask for.
     """
     markers_off = {
         "inline_voice_enabled": False,
         "inline_image_enabled": False,
-        "music_available": False,
-        "video_available": False,
+        "inline_music_enabled": False,
+        "inline_video_enabled": False,
     }
-    return cast("LLMConfig", SimpleNamespace(**(markers_off | flags)))
+    return LLMConfig.model_construct().model_copy(update=markers_off | fields)
 
 
 def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test varies
@@ -1020,27 +1018,21 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
     """Seeds one stored fact, stamping everything consolidation owns.
 
     Memory is one fact per file, so a test states the body it wants injected and the
-    compartment it must be readable from; the id, the dates, the node type and the owner
-    follow from those exactly as the pipeline derives them.
+    compartment it must be readable from; the id, the node type and the owner follow from those
+    exactly as the pipeline derives them, and every seeded fact shares one date.
     """
     owner_id = scope_owner_id(scope=scope)
-    now = utc_now()
     write_fact(
         scope=scope,
-        fact=MemoryFact(
+        fact=make_fact(
+            owner=MemoryOwner(owner_id=owner_id, owner_name=f"U{owner_id} (u{owner_id})"),
             fact_id=mint_fact_id(compartment=compartment, summary=text),
             summary=text,
             section=section,
             durability=durability,
             text=text,
             compartment=compartment,
-            owner_id=owner_id,
-            owner_name=f"U{owner_id} (u{owner_id})",
             subject_id=subject_id,
-            node_type=node_type_for(section=section),
-            created=now,
-            last_confirmed=now,
-            keys=(),
         ),
     )
 
@@ -1941,7 +1933,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", synthesizer),
-        media_delivery=MediaDeliveryPlanner(media_hosting=_hosting_service(serve_dir=tmp_path)),
+        media_delivery=hosting_planner(serve_dir=tmp_path),
     ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
@@ -1960,15 +1952,6 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     # The media edit that appended the URL must carry AllowedMentions.none() so the already-pinged
     # author is never re-pinged; a regression dropping the kwarg would record None here.
     assert message.replies[0].allowed_mentions_seen[-1] is not None
-
-
-def _hosting_service(serve_dir: Path) -> MediaHostingService:
-    """Builds a real media-hosting service writing into a temp serve dir for the media routes."""
-    return MediaHostingService(
-        config=make_media_hosting_config(
-            enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
-        )
-    )
 
 
 async def test_finalize_media_edit_posts_followup_when_content_would_overflow() -> None:
@@ -2879,7 +2862,7 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     The graded effort is sent straight through as the Interactions thinking_level.
     """
     cog = _cog()
-    cog.config = _config_stub(youtube_video_enabled=True, gemini_key_configured=True)
+    cog.config = _config_stub(youtube_video_enabled=True, gemini_api_key="test-key")
     interactions = _FakeInteractionsResource(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
 
@@ -2940,7 +2923,7 @@ async def test_youtube_qa_falls_back_to_responses(
     cog = _cog()
     cog.config = _config_stub(
         youtube_video_enabled=scenario != "kill_switch_off",
-        gemini_key_configured=scenario != "no_key",
+        gemini_api_key="" if scenario == "no_key" else "test-key",
     )
     if scenario == "non_gemini_model":
         monkeypatch.setattr(
@@ -5461,9 +5444,7 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
 ) -> None:
     """An image too big to upload is hosted as a URL; the persona reply rides a separate message."""
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
 
@@ -5487,9 +5468,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
 ) -> None:
     """Hosted oversize image: a failed persona stream deletes the fresh base, leaving no orphan."""
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(
         filesize_limit=4
@@ -5538,9 +5517,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
 ) -> None:
     """Oversized video hosted as a URL: a failed Files-API upload leaves no empty persona message."""
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
 
     async def _no_upload(**kwargs: object) -> None:
         """Simulates the post-delivery Files-API upload failing."""
@@ -6374,7 +6351,7 @@ def _link_config(gemini_api_key: str) -> LLMConfig:
         douyin_video_enabled=True,
         bilibili_video_enabled=True,
         file_api_enabled=True,
-        gemini_key_configured=bool(gemini_api_key),
+        gemini_api_key=gemini_api_key,
     )
 
 
