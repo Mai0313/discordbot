@@ -40,6 +40,7 @@ from discordbot.utils.link_errors import (
     LinkReadError,
     LinkRetryableError,
     LinkUnavailableError,
+    link_fetch_error,
     is_retryable_fetch_failure,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
@@ -143,15 +144,16 @@ def is_douyin_post_url(url: str) -> bool:
 
 
 class DouyinError(LinkReadError):
-    """Base error for every Douyin lookup failure.
+    """Base error for a Douyin lookup failure this module can explain.
 
     Sits under the shared tree so the reaction an expansion answers with is picked the same
-    way here as for every other platform.
+    way here as for every other platform. A refused request that says nothing about the post,
+    a 403 among them, is raised as a bare `RuntimeError` instead.
     """
 
 
 class DouyinUnavailableError(DouyinError, LinkUnavailableError):
-    """The post exists as an id but Douyin will not serve it (deleted, private, region locked)."""
+    """Douyin will not serve the post (deleted, private, region locked) or has no such page."""
 
 
 class DouyinBlockedError(DouyinError, LinkRetryableError):
@@ -177,19 +179,30 @@ class DouyinTooLargeError(DouyinError):
     """The media exceeds the caller's cap. Deterministic, so it is never retried."""
 
 
-def _douyin_fetch_error(error: RequestException, message: str) -> DouyinError:
-    """Wraps a failed Douyin request in the class that says whether it is worth retrying.
+def _douyin_fetch_error(error: RequestException, url: str) -> RuntimeError:
+    """Returns the shared classifier's verdict on a failed Douyin request.
 
-    A 429, a 5xx or a connection that never answered or dropped part-way through the body all
-    mean "come back later", and reporting one as a missing post is what this module's
-    docstring calls the worst failure it can produce. Only the 429 is Douyin refusing us,
-    though; the rest are no wall, so they say the request did not get through.
+    `link_fetch_error` decides whether the failure is worth retrying, says there is no post, or
+    says nothing. A retryable one is split once more, since only a 429 is Douyin refusing us;
+    the rest are no wall, so they say the request did not get through.
+
+    Args:
+        error: What `requests` raised.
+        url: The URL requested, for the message.
+
+    Returns:
+        `DouyinBlockedError` for a 429, `DouyinTransferError` for any other retryable failure,
+        `DouyinUnavailableError` for a URL HTTP says is gone, and a bare `RuntimeError` for
+        everything else.
     """
-    if not is_retryable_fetch_failure(error=error):
-        return DouyinError(message)
+    verdict = link_fetch_error(error=error, url=url)
+    if isinstance(verdict, LinkUnavailableError):
+        return DouyinUnavailableError(str(verdict))
+    if not isinstance(verdict, LinkRetryableError):
+        return verdict
     if error.response is not None and error.response.status_code == 429:
-        return DouyinBlockedError(message)
-    return DouyinTransferError(message)
+        return DouyinBlockedError(str(verdict))
+    return DouyinTransferError(str(verdict))
 
 
 class DouyinMetadata(BaseModel):
@@ -468,6 +481,7 @@ class DouyinDownloader(PlatformDownloader):
 
         Raises:
             DouyinError: If the URL is not a Douyin post link or cannot be resolved.
+            RuntimeError: If a redirect probe failed in a way HTTP does not classify.
         """
         cached = _cached_link_id(url=url)
         if cached:
@@ -507,7 +521,8 @@ class DouyinDownloader(PlatformDownloader):
         Raises:
             DouyinBlockedError: If Douyin refused the probe with a 429.
             DouyinTransferError: If the probe never got an answer or Douyin's server failed it.
-            DouyinError: If the probe failed any other way.
+            DouyinUnavailableError: If Douyin answered that there is no such link.
+            RuntimeError: If the probe failed in a way HTTP does not classify, a 403 among them.
         """
         try:
             with requests.Session() as session:
@@ -522,9 +537,7 @@ class DouyinDownloader(PlatformDownloader):
                 response.close()
                 response.raise_for_status()
         except RequestException as e:
-            raise _douyin_fetch_error(
-                error=e, message=f"Failed to resolve Douyin link {url}: {e}"
-            ) from e
+            raise _douyin_fetch_error(error=e, url=url) from e
 
         if not location:
             return ""
@@ -548,7 +561,9 @@ class DouyinDownloader(PlatformDownloader):
         Raises:
             DouyinBlockedError: If a bot wall or a 429 answered instead of the post.
             DouyinTransferError: If the read never finished or Douyin's server failed it.
-            DouyinError: If the page could not be fetched or its structure changed.
+            DouyinUnavailableError: If Douyin answered that there is no such page.
+            DouyinError: If the page's structure changed.
+            RuntimeError: If the fetch failed in a way HTTP does not classify, a 403 among them.
         """
         with _PAYLOAD_CACHE_LOCK:
             cached = _PAYLOAD_CACHE.get(aweme_id)
@@ -567,9 +582,7 @@ class DouyinDownloader(PlatformDownloader):
                 response.raise_for_status()
                 html = response.text
         except RequestException as e:
-            raise _douyin_fetch_error(
-                error=e, message=f"Failed to fetch Douyin post {aweme_id}: {e}"
-            ) from e
+            raise _douyin_fetch_error(error=e, url=url) from e
 
         match = _ROUTER_DATA_RE.search(string=html)
         if not match:
@@ -665,6 +678,7 @@ class DouyinDownloader(PlatformDownloader):
 
         Raises:
             DouyinError: If the URL cannot be resolved or the post cannot be read.
+            RuntimeError: If a request failed in a way HTTP does not classify.
         """
         aweme_id = self._resolve_aweme_id(url=url)
         info = self._fetch_share_payload(aweme_id=aweme_id)
@@ -742,8 +756,8 @@ class DouyinDownloader(PlatformDownloader):
 
         Raises:
             DouyinTooLargeError: If the media exceeds `max_bytes`.
-            DouyinError: If HTTP refuses with a status a retry would not change, or every
-                attempt fails.
+            DouyinError: If every attempt fails.
+            RuntimeError: If HTTP refuses with a status a retry would not change.
         """
         filepath = Path(self.output_folder) / filename
 
@@ -763,7 +777,7 @@ class DouyinDownloader(PlatformDownloader):
                 # Only an HTTP answer is taken as final: a body cut off mid-transfer carries none,
                 # and is the stall this loop exists for.
                 if e.response is not None and not is_retryable_fetch_failure(error=e):
-                    raise DouyinError(f"Failed to download Douyin media from {url}: {e}") from e
+                    raise RuntimeError(f"Failed to download Douyin media from {url}: {e}") from e
                 last_error = e
                 logfire.debug(
                     "Retrying a stalled Douyin media download",
@@ -808,6 +822,7 @@ class DouyinDownloader(PlatformDownloader):
 
         Raises:
             DouyinError: If the post cannot be resolved, read, or downloaded.
+            RuntimeError: If a request failed in a way HTTP does not classify.
         """
         resolved = post if post is not None else self.parse_metadata(url=url)
         if resolved.is_photo:

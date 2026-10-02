@@ -16,7 +16,7 @@ import pytest
 import requests
 
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.link_errors import LinkRetryableError
+from discordbot.utils.link_errors import LinkReadError, LinkRetryableError
 import discordbot.services.platforms.douyin as douyin_module
 from discordbot.services.platforms.douyin import (
     DOUYIN_URL_RE,
@@ -730,21 +730,29 @@ def test_a_stalled_read_is_retryable_but_not_the_bot_wall(
 )
 @pytest.mark.parametrize(
     argnames=("status", "expected"),
-    argvalues=[(429, DouyinBlockedError), (503, DouyinTransferError), (404, DouyinError)],
+    argvalues=[
+        (429, DouyinBlockedError),
+        (503, DouyinTransferError),
+        (404, DouyinUnavailableError),
+        (410, DouyinUnavailableError),
+        (403, RuntimeError),
+    ],
 )
 def test_only_a_429_reads_as_douyin_refusing(
-    monkeypatch: pytest.MonkeyPatch, url: str, status: int, expected: type[DouyinError]
+    monkeypatch: pytest.MonkeyPatch, url: str, status: int, expected: type[RuntimeError]
 ) -> None:
-    """A 429 is a refusal, a 5xx the server's own failure, and a 404 no reason to retry.
+    """A 429 is a refusal, a 5xx the server's own failure, a 404 or 410 no post, a 403 unknown.
 
-    A refused short-link hop carries no `Location`, which is not the same as no post either.
+    A 404, 410 or 403 gets the shared verdict every platform's page read gets, so a 403 stays the
+    bare error rather than one this reader explains. A refused short-link hop carries no
+    `Location`, which is not the same as no post id either.
     """
     _install_session(
         monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
-    with pytest.raises(DouyinError) as raised:
+    with pytest.raises(RuntimeError) as raised:
         downloader.parse_metadata(url=url)
     assert type(raised.value) is expected
 
@@ -756,17 +764,21 @@ def test_only_a_429_reads_as_douyin_refusing(
 def test_a_refused_media_download_is_retried_only_when_http_says_so(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: int, retryable: bool
 ) -> None:
-    """A status a retry will not change is asked once and never earns the retry-later mark."""
+    """A status a retry will not change is asked once and left unclassified.
+
+    The page that just served the post says it exists, so a refused file says nothing about it.
+    """
     calls = _install_session(
         monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=status)
     )
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
 
-    with pytest.raises(DouyinError) as raised:
+    with pytest.raises(RuntimeError) as raised:
         downloader._download_to(url="https://cdn.test/v.mp4", filename="v.mp4")
 
     assert len(calls) == (downloader.max_retries if retryable else 1)
     assert isinstance(raised.value, LinkRetryableError) is retryable
+    assert isinstance(raised.value, LinkReadError) is retryable
 
 
 @pytest.mark.parametrize(
