@@ -31,30 +31,6 @@ def _service(
     )
 
 
-async def test_on_ready_starts_loop_and_sweeps_once_when_enabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With hosting + a cap configured, on_ready starts the loop and exactly one sweep runs."""
-    cog = MediaCleanupCogs(bot=as_bot(fake=SimpleNamespace()))
-    cog.media_hosting = _service(serve_dir=tmp_path)
-    swept: list[bool] = []
-    first_sweep = asyncio.Event()
-
-    async def _fake_sweep() -> None:
-        swept.append(True)
-        first_sweep.set()
-
-    monkeypatch.setattr(cog, "_sweep", _fake_sweep)
-
-    await cog.on_ready()
-    await asyncio.wait_for(fut=first_sweep.wait(), timeout=5)
-    await asyncio.sleep(delay=0.2)  # room for a second startup sweep, were one scheduled
-
-    assert cog.cleanup_loop.is_running()
-    assert swept == [True]
-    cog.cleanup_loop.cancel()
-
-
 async def test_on_ready_is_inert_when_cleanup_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -92,7 +68,8 @@ async def test_on_ready_starts_once_across_reconnects(
     await cog.on_ready()
     await cog.on_ready()  # a reconnect
     await asyncio.wait_for(fut=first_sweep.wait(), timeout=5)
-    await asyncio.sleep(delay=0.2)
+    await asyncio.sleep(delay=0.2)  # room for a second startup sweep, were one scheduled
 
+    assert cog.cleanup_loop.is_running()
     assert sweeps == [True]
     cog.cleanup_loop.cancel()

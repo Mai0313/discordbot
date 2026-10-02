@@ -19,6 +19,8 @@ from discordbot.utils.model_pricing import (
     get_supported_modalities,
 )
 
+from tests.helpers.logfire_capture import capture_logs
+
 _MODEL = "gemini-3.1-pro-preview"
 _TABLE = {
     _MODEL: {
@@ -166,13 +168,7 @@ def test_no_table_anywhere_degrades_to_the_documented_defaults(
 
 def test_a_total_outage_is_logged_as_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nothing reaches the user when there is no table, so this line is the whole signal."""
-    recorded: list[tuple[str, dict[str, object]]] = []
-
-    def record(message: str, **fields: object) -> None:
-        """Collects the module's error lines instead of emitting them."""
-        recorded.append((message, fields))
-
-    monkeypatch.setattr("discordbot.utils.model_pricing.logfire.error", record)
+    recorded = capture_logs(monkeypatch=monkeypatch, level="error")
     _refuse(monkeypatch=monkeypatch)
 
     assert load_model_info() == {}

@@ -56,7 +56,7 @@ async def test_template_logs_a_refused_reaction_at_warn(monkeypatch: pytest.Monk
     assert warns == [("Discord refused a trigger reaction", {"message_id": 1, "channel_id": 2})]
 
 
-def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_setup_functions_register_cogs() -> None:
     """EVERY cog module the loader picks up has a sync `setup` that adds its own cog.
 
     The modules come from `_load_cogs_sync` itself rather than a hand-written list, so a new
@@ -78,8 +78,6 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
         loaded.extend(modules)
 
     bot = SimpleNamespace(add_cog=record_cog)
-    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
-    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     cli.DiscordBot._load_cogs_sync(
         as_discord_bot(fake=SimpleNamespace(load_extensions=record_load_extensions))
     )
