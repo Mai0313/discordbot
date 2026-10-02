@@ -1440,7 +1440,7 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
 
     result = await _streamer(message=message).stream(responses=_stream_events())
 
-    assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
+    assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34"
     assert message.replies[0].content == result
 
 
@@ -1465,7 +1465,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
         )
     )
 
-    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000"
+    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2"
     assert result == f"{body}{usage_footer}"
 
     parent = message.replies[0]
@@ -8574,7 +8574,7 @@ async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
 ) -> None:
     """The footer prices the bare model name while showing it with its effort, byte for byte.
 
-    Pricing the label instead would find no rates and print `$0.00000000`.
+    Pricing the label instead would find no entry and show no cost.
     """
     rates = {
         TEST_LLM_MODEL: ModelPriceEntry(input_cost_per_token=1e-6, output_cost_per_token=2e-6)
@@ -8601,6 +8601,26 @@ async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
         "\n-# 📖 讀了 Tester (tester) 的記憶"
     )
     assert message.replies[0].content == result
+
+
+@pytest.mark.parametrize(
+    ("listed", "footer_cost", "logged_cost"),
+    [(TEST_LLM_MODEL, " · $0.00000000", 0.0), ("another-model", "", None)],
+    ids=["listed-free", "unlisted"],
+)
+async def test_streamer_footer_shows_a_cost_only_for_a_model_the_table_lists(
+    monkeypatch: pytest.MonkeyPatch, listed: str, footer_cost: str, logged_cost: float | None
+) -> None:
+    """A model listed at zero is free and says so; one the table lacks has no cost to show."""
+    rates = {listed: ModelPriceEntry(input_cost_per_token=0.0, output_cost_per_token=0.0)}
+    monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
+    recorded = capture_logs(monkeypatch=monkeypatch, level="info")
+
+    result = await _streamer(message=FakeMessage()).stream(responses=_stream_events())
+
+    assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34{footer_cost}"
+    finalized = [fields for message, fields in recorded if message == "gen_reply reply finalized"]
+    assert finalized[0]["cost"] == logged_cost
 
 
 async def test_route_classify_carries_decision_and_defaults_qa(

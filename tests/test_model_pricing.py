@@ -138,7 +138,7 @@ def test_a_non_utf8_mirror_degrades_like_an_absent_one(
     _refuse(monkeypatch=monkeypatch)
 
     assert load_model_info() == {}
-    assert get_token_rates(model_name=_MODEL) == (0.0, 0.0)
+    assert get_token_rates(model_name=_MODEL) is None
 
 
 def test_one_unreadable_entry_does_not_cost_the_whole_table(
@@ -154,6 +154,17 @@ def test_one_unreadable_entry_does_not_cost_the_whole_table(
     assert set(load_model_info()) == {_MODEL}
 
 
+def test_a_model_listed_at_zero_is_free_and_an_unlisted_one_is_unpriced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a rate the table lists may price a footer at zero; a missing entry has no rates."""
+    free = {"input_cost_per_token": 0.0, "output_cost_per_token": 0.0}
+    _serve(monkeypatch=monkeypatch, payload=json.dumps(obj={**_TABLE, "free-model": free}))
+
+    assert get_token_rates(model_name="free-model") == (0.0, 0.0)
+    assert get_token_rates(model_name="unlisted-model") is None
+
+
 def test_no_table_anywhere_degrades_to_the_documented_defaults(
     monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
 ) -> None:
@@ -161,7 +172,7 @@ def test_no_table_anywhere_degrades_to_the_documented_defaults(
     _refuse(monkeypatch=monkeypatch)
 
     assert load_model_info() == {}
-    assert get_token_rates(model_name=_MODEL) == (0.0, 0.0)
+    assert get_token_rates(model_name=_MODEL) is None
     assert get_supported_modalities(model_name=_MODEL) == {"text", "image"}
     assert not model_price_mirror_isolated.exists()
 
@@ -184,7 +195,7 @@ def test_a_failed_fetch_is_paid_once_per_process(monkeypatch: pytest.MonkeyPatch
     calls = _refuse(monkeypatch=monkeypatch)
 
     for _ in range(3):
-        assert get_token_rates(model_name=_MODEL) == (0.0, 0.0)
+        assert get_token_rates(model_name=_MODEL) is None
 
     assert calls == [MODEL_INFO_URL]
 

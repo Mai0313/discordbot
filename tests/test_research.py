@@ -991,7 +991,7 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
     if hosted:
         thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
         planner = hosting_planner(serve_dir=tmp_path)
-    footer = "-# antigravity-preview-09-2026 · ⬆ 1,234 ⬇ 567 · $0.00236800"
+    footer = "-# antigravity-preview-09-2026 · ⬆ 1,234 ⬇ 567"
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
@@ -1650,18 +1650,14 @@ def _running_cog(
 ) -> research_cog.ResearchCogs:
     """A cog that runs research on `client` end to end and delivers with hosting off.
 
-    `thread` is what a resume finds by id. The agent is priced, so the usage footer's cost is
-    a known number rather than whatever price table the worker holds.
+    `thread` is what a resume finds by id. The price table lists no agent, as production's does
+    not, so the usage footer is what a report really ends with rather than whatever price
+    table the worker holds.
     """
     cog = _launching_cog(monkeypatch=monkeypatch)
     cog.bot = as_bot(fake=_ThreadBot(thread=thread))
     cog.interactions_client = as_client(fake=client)
-    rates = {
-        cog.runtime_models.antigravity_model.name: ModelPriceEntry(
-            input_cost_per_token=1e-6, output_cost_per_token=2e-6
-        )
-    }
-    monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
+    monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: {})
     return cog
 
 
@@ -2066,12 +2062,10 @@ async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
 
     await _launch_run(cog=cog, thread=thread)
 
-    # 1,234 in at $1e-6 plus 567 out at $2e-6: the counts the interaction reported, priced.
+    # The counts the interaction reported, and no cost: the table has no entry for the agent.
     report = thread.writes[-1]
     agent_name = cog.runtime_models.antigravity_model.name
-    assert report["content"] == (
-        f"# Report\nbody\n\n<@300>\n\n-# {agent_name} · ⬆ 1,234 ⬇ 567 · $0.00236800"
-    )
+    assert report["content"] == f"# Report\nbody\n\n<@300>\n\n-# {agent_name} · ⬆ 1,234 ⬇ 567"
     _assert_pings_only_the_owner(write=report)
 
 
@@ -2084,13 +2078,19 @@ async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
     )
 
     # The row's own agent, not the catalog's: a restart after a repoint still names and prices
-    # the agent the run was launched on, which the patched table leaves unpriced.
+    # the agent the run was launched on, which a table pricing only the catalog's leaves unpriced.
+    rates = {
+        cog.runtime_models.antigravity_model.name: ModelPriceEntry(
+            input_cost_per_token=1e-6, output_cost_per_token=2e-6
+        )
+    }
+    monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
     await _resume_run(cog=cog, agent="antigravity-launched-agent")
 
     await _assert_owner_released(cog=cog, phase="done")
     report = thread.writes[-1]
     assert report["content"] == (
-        "# Report\nbody\n\n<@300>\n\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567 · $0.00000000"
+        "# Report\nbody\n\n<@300>\n\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567"
     )
     _assert_pings_only_the_owner(write=report)
 

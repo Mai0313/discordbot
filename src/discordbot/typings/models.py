@@ -215,7 +215,7 @@ class RuntimeModelCatalog(BaseModel):
         # failing the answer stream mid-reply.
         #
         # Whichever name this tier returns must have an entry in LiteLLM's price table: without
-        # one a reply prices at `$0.00000000` in the footer and the
+        # one a reply's footer shows no cost and the
         # attachment modality gate falls back to its `{"text", "image"}` baseline. That gate feeds
         # BOTH renders, so an audio or video attachment does not merely go unuploaded: its
         # `[attachment: video]` marker never reaches the route either, and the answer model is
