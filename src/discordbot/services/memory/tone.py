@@ -112,7 +112,7 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
     return True
 
 
-async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
+async def forget_tone(run: ConsolidationRun, forgets: str, evidence_only: bool = False) -> bool:
     """Takes what forget requests name out of the tone note and out of the evidence behind it.
 
     A tone preference is never stored as a fact, so the fact pass has nothing to delete for one,
@@ -121,13 +121,17 @@ async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
     since anything later restates what was forgotten. The call can only point at lines it was
     shown, so this drops and never writes: the forget's own sentence has nowhere to go.
 
+    `evidence_only` leaves the note out, for a rebuild that rewrites it from the evidence next:
+    the note's lines carry no stamp, so an older forget would be offered a preference restated
+    after it, and a rebuild failing past the replay would leave the note without it.
+
     Returns False when the call failed, so a caller that must not lose the forget keeps its
     batch for a retry; True when it ran or had nothing to do.
     """
     if run.flavor != "user" or not forgets:
         return True
     cutoff = newest_stamp(text=forgets)
-    note = read_tone(scope=run.scope)
+    note = "" if evidence_only else read_tone(scope=run.scope)
     # Anything after the header on its own line is content too: the rewrite below replaces
     # that line, so content left unoffered there would be deleted without being named.
     body = note.removeprefix(TONE_HEADER).lstrip(" ：:") if note.startswith(TONE_HEADER) else ""
