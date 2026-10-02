@@ -941,14 +941,17 @@ async def _attachment_parts(builder: MessageInputBuilder, message: object) -> li
 
 
 def _answer(
-    cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
+    cog: ReplyGeneratorCogs,
+    message: Message,
+    toolkit: ReplyToolkit | None = None,
+    surface: TurnSurface | None = None,
 ) -> AnswerTurn:
     """The answer turn `ReplyPipeline` would build for this message."""
     return AnswerTurn(
         config=cog.config,
         media_delivery=cog.media_delivery,
         toolkit=toolkit or cog.toolkit,
-        surface=TurnSurface.for_message(message=message),
+        surface=surface or TurnSurface.for_message(message=message),
     )
 
 
@@ -960,11 +963,7 @@ def _media_routes(
 ) -> MediaReplyRoutes:
     """The IMAGE / VIDEO routes `ReplyPipeline` would build for this message."""
     return MediaReplyRoutes(
-        config=cog.config,
-        media_delivery=cog.media_delivery,
-        toolkit=toolkit or cog.toolkit,
-        surface=surface or TurnSurface.for_message(message=message),
-        answer=_answer(cog=cog, message=message, toolkit=toolkit),
+        answer=_answer(cog=cog, message=message, toolkit=toolkit, surface=surface)
     )
 
 

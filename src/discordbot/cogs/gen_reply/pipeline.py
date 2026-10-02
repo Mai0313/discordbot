@@ -213,13 +213,7 @@ class ReplyPipeline(BaseModel):
         The handler awaits `context_task` only after the media is on screen, so the context
         build overlaps generation instead of delaying it.
         """
-        routes = MediaReplyRoutes(
-            config=self.config,
-            media_delivery=self.media_delivery,
-            toolkit=self.toolkit,
-            surface=self.surface,
-            answer=self._answer_turn(),
-        )
+        routes = MediaReplyRoutes(answer=self._answer_turn())
         handler = routes.handle_image if decision == "IMAGE" else routes.handle_video
         await handler(user_prompt=self.user_prompt, context_task=context_task)
 
