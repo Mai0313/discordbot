@@ -3,11 +3,12 @@
 import re
 import time
 from types import TracebackType, SimpleNamespace
-from typing import Any, Self, get_args
+from typing import TYPE_CHECKING, Any, Self, cast, get_args
 from pathlib import Path
 import threading
 
 import pytest
+import nextcord
 from requests.exceptions import RequestException
 
 from discordbot.cogs.video import cog as video
@@ -31,6 +32,10 @@ from discordbot.services.platforms.douyin import (
 from tests.helpers.casting import as_bot, as_interaction
 from tests.helpers.link_sources import hosting_planner
 from tests.helpers.discord_mocks import FakeInteraction
+from tests.helpers.logfire_capture import capture_logs
+
+if TYPE_CHECKING:
+    from aiohttp import ClientResponse
 
 # What `extract_info` answers for a finished download: the least `download` reads a result from.
 _DOWNLOADED_INFO = {"id": "video_id", "ext": "mp4"}
@@ -534,11 +539,50 @@ async def test_video_deliver_and_download_branches(
     )
 
     cog, _ = _install(monkeypatch=monkeypatch, outcome=RuntimeError("download failed"))
+    warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
     error_interaction = FakeInteraction()
     await VideoCogs.download_video.callback(
         cog, error_interaction, url="https://x.test", quality="best"
     )
     assert "檔案無法下載" in error_interaction.edits[-1]["content"]
+    assert [message for message, _ in warnings] == ["Video download failed"]
+
+
+class _RefusesAttachments(FakeInteraction):
+    """Answers an edit that attaches a file with the 413 Discord sends past its real limit."""
+
+    async def edit_original_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+        """Raises on an attaching edit; records any other."""
+        if "file" in kwargs:
+            raise nextcord.HTTPException(
+                cast("ClientResponse", SimpleNamespace(status=413, reason="Payload Too Large")),
+                {"code": 40005, "message": "Request entity too large"},
+            )
+        await super().edit_original_message(**kwargs)
+
+
+async def test_a_refused_attach_is_logged_as_a_delivery_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Discord refusing a finished file is a delivery failure, never a download one.
+
+    The upload limit the planner trusts can exceed what Discord accepts, so a file planned as an
+    attachment can still be refused after it downloaded fine. The user sees the same notice.
+    """
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(data=b"0" * 1024)
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=clip))
+    warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
+    interaction = _RefusesAttachments()
+
+    await VideoCogs.download_video.callback(
+        cog, as_interaction(fake=interaction), url="https://x.test", quality="best"
+    )
+
+    assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
+    assert [(message, fields["url"], fields["error_type"]) for message, fields in warnings] == [
+        ("Video delivery failed", "https://x.test", "HTTPException")
+    ]
 
 
 async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.MonkeyPatch) -> None:
