@@ -80,6 +80,25 @@ def test_shrink_keeps_palette_as_png() -> None:
     assert max(image.size) <= 3072
 
 
+@pytest.mark.parametrize("mode", ["RGB", "L"])
+@pytest.mark.parametrize("size", [(64, 64), (4000, 20)])
+def test_shrink_keeps_colour_key_transparency_as_png(size: tuple[int, int], mode: str) -> None:
+    """A PNG made transparent by a colour key stays a transparent PNG, in bounds or not."""
+    buffer = BytesIO()
+    Image.new(mode=mode, size=size, color=0).save(
+        fp=buffer, format="PNG", transparency=0 if mode == "L" else (0, 0, 0)
+    )
+
+    shrunk = shrink_image_bytes(
+        payload=buffer.getvalue(), content_type="image/png", filename="test.png"
+    )
+
+    assert shrunk.mime_type == "image/png"
+    image = Image.open(fp=BytesIO(initial_bytes=shrunk.data))
+    assert max(image.size) <= 3072
+    assert image.convert(mode="RGBA").getchannel(channel="A").getextrema() == (0, 0)
+
+
 def test_shrink_passes_gif_through() -> None:
     """GIFs pass through untouched so animation survives."""
     payload = _encoded_bytes(size=(4000, 20), mode="RGB", image_format="GIF")
