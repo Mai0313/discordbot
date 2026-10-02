@@ -346,11 +346,11 @@ async def _drive(
     The streamed deltas are the live view only; the result is ALWAYS read through
     `_poll_until_terminal` (a terminal non-stream `get(id)`) because `interaction.completed` carries
     an empty payload on purpose. Routing the terminal read through the poll (not a single `get`)
-    gives it the poll's retry-on-error and waits out any brief `in_progress` visibility lag, so a
-    completed run is never misread as failed; it also transparently finishes a run whose stream
-    died mid-way (the interaction lives server-side via `store=True`). A streaming failure BEFORE
-    any id (the create itself failed) re-raises so the cog hits its normal failure path; once an id
-    exists, streaming errors are swallowed and the poll settles the run.
+    gives it the poll's retry on a transient error and waits out any brief `in_progress` visibility
+    lag, so a completed run is never misread as failed; it also transparently finishes a run whose
+    stream died mid-way (the interaction lives server-side via `store=True`). A streaming failure
+    BEFORE any id (the create itself failed) re-raises so the cog hits its normal failure path;
+    once an id exists, streaming errors are swallowed and the poll settles the run.
     """
     try:
         await streamer.stream(
