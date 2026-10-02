@@ -2,6 +2,7 @@
 
 import re
 import time
+from typing import Literal
 import asyncio
 import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
@@ -185,7 +186,7 @@ class ResponseStreamer(BaseModel):
         default="",
         description="Route-decided reasoning effort shown next to the model in the footer.",
     )
-    backend: str = Field(
+    backend: Literal["responses", "interactions"] = Field(
         default="responses",
         description="Which answer surface produced this stream, logged so a metric only one of "
         "them reports is not read as an absence on the other.",

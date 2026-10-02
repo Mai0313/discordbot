@@ -8,7 +8,7 @@ speculative task outlives the turn.
 """
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 import asyncio
 from collections.abc import Callable
 
@@ -18,7 +18,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.typings.models import RecallRouteClassification
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
@@ -101,7 +101,7 @@ class ReplyPipeline(BaseModel):
 
     async def _resolve_link_block(
         self,
-        source: str,
+        source: LinkSourceName,
         link_task: LinkTask,
         deadline: float,
         on_timeout: Callable[[], list[EasyInputMessageParam]],
@@ -206,7 +206,7 @@ class ReplyPipeline(BaseModel):
         return link_blocks
 
     async def _dispatch_media(
-        self, decision: str, context_task: asyncio.Task[ReplyContext]
+        self, decision: Literal["IMAGE", "VIDEO"], context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Runs the IMAGE or VIDEO route, which consumes the speculative context.
 
@@ -254,7 +254,7 @@ class ReplyPipeline(BaseModel):
         message = self.message
         # Named in the usage record below, which is written from this method's `finally`
         # because this is the one scope that has both outcomes and the route in hand.
-        route_decision: str | None = None
+        route_decision: Literal["IMAGE", "VIDEO", "QA"] | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
         # The started link builds and the one deadline they share, set together; None until the
