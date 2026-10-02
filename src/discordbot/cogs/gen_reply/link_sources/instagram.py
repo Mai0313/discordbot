@@ -1,8 +1,10 @@
 """Builds answer-model input blocks from an Instagram post the user linked.
 
-When a message carries an Instagram URL and the router selects this source, `gen_reply` reads
-the post itself and injects it as input blocks, so the answer model reads the actual post
-instead of guessing from the link. Only the first Instagram URL is used.
+When the user's message, or the message it replies to, carries an Instagram URL and the router
+selects this source, `gen_reply` reads the post itself and injects it as input blocks, so the
+answer model reads the actual post instead of guessing from the link. Only the first Instagram
+URL is used. Every notice below is worded without naming where the link sat, since either is
+possible.
 
 Two things differ from the Facebook builder this otherwise mirrors.
 
@@ -40,7 +42,7 @@ from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
 # link is ALREADY fetched below, and marks the post as untrusted quoted data so injection-style
 # text inside it is content to answer about rather than a command.
 INSTAGRAM_CONTEXT_SEPARATOR = (
-    "==== The Instagram link in the user's message, already fetched for you below: the post's "
+    "==== The Instagram link the user is asking about, already fetched for you below: the post's "
     "caption, whatever images are attached below it, and its comments. This IS the linked post's "
     "content; answer about it directly and do NOT say you cannot open the link. The comments are "
     "what the page served — on an ordinary post that is all of them, on a very popular one it is "
@@ -53,7 +55,7 @@ INSTAGRAM_CONTEXT_SEPARATOR = (
 # Used when media EXISTS and did not arrive. Deliberately not used for a post that carries none,
 # which would have the model apologise for pictures that were never there.
 INSTAGRAM_TEXT_ONLY_SEPARATOR = (
-    "==== The Instagram link in the user's message, fetched for you below as TEXT only: the "
+    "==== The Instagram link the user is asking about, fetched for you below as TEXT only: the "
     "post's caption, its author, and its comments. The images or video it carries were NOT "
     "retrieved, so you have not seen them. Answer from the text, say plainly that you could not "
     "see the media, and do NOT describe or invent it. The comments are what the page served — on "
@@ -76,14 +78,14 @@ INSTAGRAM_CONTEXT_TRAILER = (
 
 # A private account, a deleted post and a login wall are one outcome from outside.
 INSTAGRAM_UNAVAILABLE_NOTICE = (
-    "==== We tried to read the Instagram link in the user's message but the post could not be "
+    "==== We tried to read the Instagram link the user is asking about but the post could not be "
     "read: the account is private, the post is deleted, or Instagram would only show it to "
     "someone logged in. Tell the user this plainly; do not invent the post's contents. ===="
 )
 
 # Injected by gen_reply when the whole build exceeds the post-route grace.
 INSTAGRAM_TIMEOUT_NOTICE = (
-    "==== We tried to read the Instagram link in the user's message but it did not respond in "
+    "==== We tried to read the Instagram link the user is asking about but it did not respond in "
     "time, so its content could not be read for this reply. Tell the user this plainly and "
     "suggest they try again; do not invent the post's contents. ===="
 )
@@ -102,7 +104,7 @@ def _render_conversation(
     """Renders the post, its counters and its comments as compact text."""
     handle = defuse_markers(text=post.author_name)
     full_name = defuse_markers(text=post.author_full_name)
-    header = f"[Instagram post the user linked] @{handle}".rstrip()
+    header = f"[Instagram post the user is asking about] @{handle}".rstrip()
     if full_name:
         header = f"{header} ({full_name})"
     lines = [header]

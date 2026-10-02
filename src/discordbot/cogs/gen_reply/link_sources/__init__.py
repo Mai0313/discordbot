@@ -319,7 +319,7 @@ def comment_lines[OutputT: LinkableCommentOutput](
     lines = [f"\n[{len(comments)} of the post's comments, {served_as}]"]
     for comment in comments:
         marker = (
-            " (this is the comment the user's link points at)"
+            " (this is the comment the link points at)"
             if comment.comment_id == conversation.selected_comment_id
             else ""
         )

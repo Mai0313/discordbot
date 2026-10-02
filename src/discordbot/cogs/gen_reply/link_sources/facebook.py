@@ -1,8 +1,9 @@
 """Builds answer-model input blocks from a Facebook post the user linked.
 
-When a message carries a Facebook URL and the router selects this source, `gen_reply` reads the
-post itself and injects it as input blocks, so the answer model reads the actual post instead
-of guessing from the link. Only the first Facebook URL is used.
+When the user's message, or the message it replies to, carries a Facebook URL and the router
+selects this source, `gen_reply` reads the post itself and injects it as input blocks, so the
+answer model reads the actual post instead of guessing from the link. Only the first Facebook URL
+is used. Every notice below is worded without naming where the link sat, since either is possible.
 
 Two things here differ from the other sources, both because of what a logged-out page carries.
 
@@ -40,7 +41,7 @@ from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
 # so injection-style text inside it is content to answer about, never a command. The line about
 # the comments being partial is the one this source cannot do without — see the module docstring.
 FACEBOOK_CONTEXT_SEPARATOR = (
-    "==== The Facebook link in the user's message, already fetched for you below: the post's "
+    "==== The Facebook link the user is asking about, already fetched for you below: the post's "
     "full text, whatever images are attached below it, and SOME of its comments. This IS the "
     "linked post's content; answer "
     "about it directly and do NOT say you cannot open the link. The comments shown are only the "
@@ -53,7 +54,7 @@ FACEBOOK_CONTEXT_SEPARATOR = (
 # Used when the images could not be attached, or the post carries none. Deliberately does not
 # claim anything was seen, so the model says what it actually has instead of inventing a scene.
 FACEBOOK_TEXT_ONLY_SEPARATOR = (
-    "==== The Facebook link in the user's message, fetched for you below as TEXT only: the "
+    "==== The Facebook link the user is asking about, fetched for you below as TEXT only: the "
     "post's words, its author, and SOME of its comments. Any images or video it carries were "
     "NOT retrieved, so you have not seen them. Answer from the text, say plainly that you could "
     "not see the media, and do NOT describe or invent it. The comments shown are only the few "
@@ -77,7 +78,7 @@ FACEBOOK_CONTEXT_TRAILER = (
 # A private post, a private group, a deleted post and a login wall all land here: from outside
 # they are one outcome, and none of them is a defect.
 FACEBOOK_UNAVAILABLE_NOTICE = (
-    "==== We tried to read the Facebook link in the user's message but the post could not be "
+    "==== We tried to read the Facebook link the user is asking about but the post could not be "
     "read: it is private, in a private group, deleted, or only visible to people who are logged "
     "in. Tell the user this plainly; do not invent the post's contents. ===="
 )
@@ -85,7 +86,7 @@ FACEBOOK_UNAVAILABLE_NOTICE = (
 # Injected by gen_reply when the whole build exceeds the post-route grace. Keeps deterministic
 # context so a slow fetch does not re-expose the "I cannot open this link" fallback.
 FACEBOOK_TIMEOUT_NOTICE = (
-    "==== We tried to read the Facebook link in the user's message but it did not respond in "
+    "==== We tried to read the Facebook link the user is asking about but it did not respond in "
     "time, so its content could not be read for this reply. Tell the user this plainly and "
     "suggest they try again; do not invent the post's contents. ===="
 )
@@ -102,7 +103,9 @@ def _render_conversation(
     post: FacebookOutput, conversation: FacebookConversation, attached_images: int
 ) -> str:
     """Renders the post, its counters and its preloaded comments as compact text."""
-    header = f"[Facebook post the user linked] {defuse_markers(text=post.author_name)}".rstrip()
+    header = (
+        f"[Facebook post the user is asking about] {defuse_markers(text=post.author_name)}"
+    ).rstrip()
     if post.group_name:
         header = f"{header} — posted in the group {defuse_markers(text=post.group_name)}"
     lines = [header]
