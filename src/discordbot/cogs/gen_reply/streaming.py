@@ -5,6 +5,7 @@ import time
 from typing import Literal
 import asyncio
 import contextlib
+import unicodedata
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
@@ -93,6 +94,18 @@ MEMORY_PENDING_NOTE = f"-# {MEMORY_WRITE_EMOJI} 正在整理記憶⋯"
 # model getting cut off mid-sentence.
 TRUNCATED_NOTICE = "\n-# 回覆太長，這裡放不下後面的內容了"
 
+# Discord pairs these in order: each opens a code block the next one closes, and one with nothing
+# after it to close it shows as plain text.
+_CODE_FENCE = "```"
+# A fence's language tag as Discord reads one. A block reopened past a cut carries it over, so the
+# second half keeps its highlighting. Bounded so a reopened block can never put back as much as a
+# cut took off, which would split the same text forever.
+_FENCE_LANGUAGE_RE = re.compile(pattern=r"[A-Za-z0-9_+\-.#]{0,20}")
+# A hard cut never lands beside one of these: combining and enclosing marks, format characters
+# (the zero-width joiner, emoji tags), emoji and their modifiers. Each belongs with its neighbour,
+# so a cut there tears an emoji sequence or a marked letter in two.
+_CLINGING_CATEGORIES = frozenset({"Mn", "Mc", "Me", "Cf", "Sk", "So"})
+
 # The thinking preview is a live glance, not a transcript: keep only the newest few subtext
 # lines so a long think never grows into a wall of text above the reply. The char budget is
 # the load-bearing half, since one thought line is often a whole paragraph that Discord wraps
@@ -118,6 +131,75 @@ def _count_url_citations(output: list[ResponseOutputItem]) -> int:
         for annotation in part.annotations
         if annotation.type == "url_citation"
     )
+
+
+def _in_code_block(text: str, cut: int) -> bool:
+    """Whether `cut` falls inside a code block of `text`, pairing fences the way Discord does."""
+    return text.count(_CODE_FENCE, 0, cut) % 2 == 1 and text.find(_CODE_FENCE, cut) != -1
+
+
+def _last_break(text: str, end: int, floor: int, outside_code: bool) -> int:
+    """Where a message holding at most `text[:end]` should end, never before `floor`.
+
+    The last paragraph break, else line break, else space, skipping any inside a code block when
+    `outside_code`. With none, the cut falls at `end`, moved back before a `<...>` it would split
+    (a mention, a channel, a custom emoji) and off any emoji or mark it would tear.
+    """
+    for separator in ("\n\n", "\n", " "):
+        cut = text.rfind(separator, 0, end)
+        while outside_code and cut >= floor and _in_code_block(text=text, cut=cut):
+            cut = text.rfind(separator, 0, cut)
+        if cut >= floor:
+            return cut
+    cut = end
+    opening = text.rfind("<", 0, end)
+    if opening >= floor and opening > text.rfind(">", 0, end):
+        cut = opening
+    while cut > floor and _CLINGING_CATEGORIES & {
+        unicodedata.category(text[cut - 1]),
+        unicodedata.category(text[cut]),
+    }:
+        cut -= 1
+    return cut
+
+
+def _cut_cleanly(text: str, budget: int, earliest: int) -> tuple[str, str]:
+    """Cuts a message of at most `budget` characters off the front of `text`, where a reader would.
+
+    The cut never comes before `earliest`, nor before the back half of the budget so no message
+    is left mostly empty for a break, except to keep a code block whole: when text comes before
+    the block the cut would land in, the message ends before the block instead. A block that
+    opens the message and still overruns it is closed at the cut and reopened, language tag and
+    all, on the next, so both halves render as code; without room for that, it is cut as is.
+    Nothing else is added or dropped: the break's whitespace opens the next message, where
+    Discord trims it away.
+
+    Returns:
+        The message, and the text still to place.
+    """
+    floor = max(budget // 2, earliest)
+    cut = _last_break(text=text, end=budget, floor=floor, outside_code=True)
+    if not _in_code_block(text=text, cut=cut):
+        return text[:cut], text[cut:]
+    opener = text.rfind(_CODE_FENCE, 0, cut)
+    if opener >= earliest and text[:opener].strip():
+        return text[:opener], text[opener:]
+    language = text[opener + len(_CODE_FENCE) :].split("\n", 1)[0]
+    fence = (
+        _CODE_FENCE + language if _FENCE_LANGUAGE_RE.fullmatch(string=language) else _CODE_FENCE
+    )
+    # The closing fence takes room from this message and the reopened one adds to the rest,
+    # which still has to fit where `earliest` left room for it.
+    end = budget - len(_CODE_FENCE) - 1
+    fenced_floor = max(floor, earliest + len(fence) + 1)
+    if fenced_floor > end:
+        return text[:cut], text[cut:]
+    cut = _last_break(text=text, end=end, floor=fenced_floor, outside_code=False)
+    head, rest = text[:cut], text[cut:]
+    if not _in_code_block(text=text, cut=cut):
+        return head, rest
+    reopened = f"{fence}{rest}" if rest.startswith("\n") else f"{fence}\n{rest}"
+    return f"{head}\n{_CODE_FENCE}", reopened
 
 
 class ResponseStreamer(BaseModel):
@@ -283,38 +365,56 @@ class ResponseStreamer(BaseModel):
     ) -> tuple[str, list[str]]:
         """Splits a completed reply into one parent message plus follow-up chunks.
 
+        Each message ends where a reader would end it (`_cut_cleanly`), so a code block, a word,
+        a mention or an emoji is never torn across two messages.
+
         `max_messages` bounds how many messages the split may occupy, for a surface that cannot
         create as many as it likes: a user-installed app gets five follow-up POSTs per
         interaction, and the sixth is refused. Over that bound the answer is cut back to what
         fits and told so on the last message, because an answer that simply stops reads as the
-        model having been interrupted rather than as the platform running out of room.
+        model having been interrupted rather than as the platform running out of room. A clean
+        cut leaves part of its message unused, so under the bound one comes early only by what
+        the rest of the answer can spare: whether an answer fits is decided by its length, never
+        by where its breaks fall.
         """
-        if max_messages is not None:
-            capacity = max_messages * DISCORD_MESSAGE_LIMIT
-            room = capacity - len(footer) - len(TRUNCATED_NOTICE)
-            if room > 0 and len(content) + len(footer) > capacity:
-                content = f"{content[:room]}{TRUNCATED_NOTICE}"
         if len(f"{content}{footer}") <= DISCORD_MESSAGE_LIMIT:
             return f"{content}{footer}", []
-
-        tail_capacity = DISCORD_MESSAGE_LIMIT - len(footer)
-        if tail_capacity <= 0:
+        if len(footer) >= DISCORD_MESSAGE_LIMIT:
             raise ValueError("Usage footer is too long for Discord message content")
 
-        parent_content = content[:DISCORD_MESSAGE_LIMIT]
-        remaining = content[DISCORD_MESSAGE_LIMIT:]
-        follow_up_chunks: list[str] = []
-
-        while len(remaining) > DISCORD_MESSAGE_LIMIT:
-            follow_up_chunks.append(remaining[:DISCORD_MESSAGE_LIMIT])
-            remaining = remaining[DISCORD_MESSAGE_LIMIT:]
-
-        if len(remaining) <= tail_capacity:
-            follow_up_chunks.append(f"{remaining}{footer}")
-        else:
-            follow_up_chunks.append(remaining[:tail_capacity])
-            follow_up_chunks.append(f"{remaining[tail_capacity:]}{footer}")
-        return parent_content, follow_up_chunks
+        messages: list[str] = []
+        remaining = content
+        while len(remaining) + len(footer) > DISCORD_MESSAGE_LIMIT:
+            left = None if max_messages is None else max_messages - len(messages)
+            if left == 1:
+                budget = DISCORD_MESSAGE_LIMIT - len(footer) - len(TRUNCATED_NOTICE)
+                # No message follows, so ending before a code block that opens early would only
+                # waste the room: such a block is closed where the cut falls instead.
+                head, _ = _cut_cleanly(text=remaining, budget=budget, earliest=budget // 2)
+                remaining = f"{head}{TRUNCATED_NOTICE}"
+                break
+            if not messages and len(remaining) <= DISCORD_MESSAGE_LIMIT:
+                # An answer that fits one message is not split for its footer, which follows alone.
+                messages.append(remaining)
+                remaining = ""
+                break
+            # Past the first message the footer keeps some text in front of it: alone, Discord
+            # trims the blank line `USAGE_FOOTER_RE` anchors on and the footer rides into history.
+            budget = (
+                DISCORD_MESSAGE_LIMIT
+                if len(remaining) > DISCORD_MESSAGE_LIMIT
+                else DISCORD_MESSAGE_LIMIT - len(footer)
+            )
+            # The earliest cut that leaves the rest room in the messages still allowed after this
+            # one. Past this whole message the answer overflows anyway, and the last one cuts it.
+            earliest = 0
+            if left is not None:
+                needed = len(remaining) + len(footer) - (left - 1) * DISCORD_MESSAGE_LIMIT
+                earliest = needed if needed <= budget else 0
+            head, remaining = _cut_cleanly(text=remaining, budget=budget, earliest=earliest)
+            messages.append(head)
+        messages.append(f"{remaining}{footer}")
+        return messages[0], messages[1:]
 
     def _render_preview(self) -> str:
         """Builds the current streaming preview: real content once started, else reasoning.
