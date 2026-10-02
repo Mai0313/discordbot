@@ -181,8 +181,8 @@ class VideoCogs(commands.Cog):
                     )
                     await self._edit_quietly(interaction=interaction, content=_DOWNLOAD_FAILED)
         except Exception as error:
-            # Broad on purpose: nothing answers the interaction on an error, so anything
-            # escaping here would strand the user on "正在下載影片..." forever.
+            # Broad on purpose: the command error handler cannot take "正在下載影片..." down, so
+            # anything escaping here would leave it up forever.
             logfire.warn(
                 "Video download failed",
                 url=url,
@@ -263,8 +263,8 @@ class VideoCogs(commands.Cog):
                     )
             except Exception as error:
                 # Deliberately catches everything, not just DouyinError: this runs outside the
-                # command's own try block and nothing answers the interaction on an error, so
-                # anything escaping here would strand the user on "正在下載影片..." forever.
+                # command's own try block and the command error handler cannot take
+                # "正在下載影片..." down, so anything escaping here would leave it up forever.
                 logfire.warn(
                     "Douyin download failed",
                     url=url,
@@ -309,7 +309,7 @@ class VideoCogs(commands.Cog):
                 )
             except Exception as error:
                 # Broad on purpose, for the same reason as the download step above: an escape
-                # leaves the interaction unanswered and the user on the placeholder.
+                # leaves the placeholder up.
                 logfire.warn(
                     "Douyin delivery failed",
                     url=url,

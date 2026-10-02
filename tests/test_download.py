@@ -747,8 +747,8 @@ async def test_cog_answers_a_failed_douyin_download_instead_of_hanging(
     """A failed Douyin download answers with its own wording, never an escaping exception.
 
     The Douyin branch runs before the command's own try block, and the bot's application-command
-    error handler only logs, so an escaping exception would leave the user looking at
-    "正在下載影片..." indefinitely.
+    error handler cannot take "正在下載影片..." down, so an escaping exception would leave it up
+    indefinitely.
     """
     cog, _stub = _install(monkeypatch=monkeypatch, outcome=error)
     interaction = FakeInteraction()

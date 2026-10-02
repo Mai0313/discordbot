@@ -27,9 +27,10 @@ from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
 from discordbot.services.economy.database import CreditResult
 
-from tests.helpers.casting import as_message, as_discord_bot
-from tests.helpers.discord_mocks import FakeUser, FakeGuild, on_ready_bot
+from tests.helpers.casting import as_message, as_discord_bot, make_invalid_webhook_token
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
+from tests.helpers.message_cleanup import record_scheduled_deletes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -359,6 +360,22 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: pytest.MonkeyPatc
     assert recorded_participation == [(100, 7)]
 
 
+async def _fail_command(fake: FakeInteraction) -> None:
+    """Hands the error handler a `/demo` that raised on `fake`'s interaction state."""
+    interaction = SimpleNamespace(
+        application_command=SimpleNamespace(qualified_name="demo"),
+        guild_id=fake.guild_id,
+        user=fake.user,
+        response=fake.response,
+        followup=fake.followup,
+    )
+    await cli.DiscordBot.on_application_command_error(
+        as_discord_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, bot=True))),
+        cast("Interaction[commands.Bot]", interaction),
+        cast("ApplicationError", ApplicationInvokeError(ValueError("boom"))),
+    )
+
+
 async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPatch) -> None:
     """A raising slash command reaches `./data/logs` naming the type nextcord wrapped.
 
@@ -369,21 +386,74 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
     this override the traceback reaches no file at all.
     """
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
-    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True))
-    interaction = SimpleNamespace(
-        application_command=SimpleNamespace(qualified_name="demo"),
-        guild_id=1,
-        user=FakeUser(user_id=1),
-    )
-    await cli.DiscordBot.on_application_command_error(
-        as_discord_bot(fake=bot),
-        cast("Interaction[commands.Bot]", interaction),
-        cast("ApplicationError", ApplicationInvokeError(ValueError("boom"))),
-    )
+    fake = FakeInteraction(slash_command=True)
+    await _fail_command(fake=fake)
     _message, fields = logged[-1]
     assert fields["error_type"] == "ValueError"
     assert fields["command"] == "demo"
-    assert fields["guild_id"] == 1
+    assert fields["guild_id"] == 100
+    # Unanswered, so Discord's own failure notice is the caller's.
+    assert fake.followup.sent == []
+
+
+@pytest.mark.parametrize("ephemeral", [False, True])
+async def test_cli_replaces_a_failed_commands_thinking_placeholder(
+    monkeypatch: pytest.MonkeyPatch, ephemeral: bool
+) -> None:
+    """A command that raised after deferring has its placeholder filled with a failure notice.
+
+    Discord shows nothing of its own once a command deferred, so the thinking placeholder would
+    otherwise stay up for good. The notice keeps the defer's flag, so a public one expires like
+    the commands' own public replies and an ephemeral one is the caller's alone.
+    """
+    capture_logs(monkeypatch=monkeypatch, level="error")
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    fake = FakeInteraction(slash_command=True)
+    await fake.response.defer(ephemeral=ephemeral)
+
+    await _fail_command(fake=fake)
+
+    assert not fake.response.placeholder_pending
+    assert len(fake.followup.sent) == 1
+    assert len(scheduled.messages) == (0 if ephemeral else 1)
+
+
+async def test_cli_tells_only_the_caller_when_an_answered_command_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raise after the command's own reply leaves it alone and tells the caller privately."""
+    capture_logs(monkeypatch=monkeypatch, level="error")
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    fake = FakeInteraction(slash_command=True)
+    await fake.response.defer()
+    await fake.followup.send(content="result")
+
+    await _fail_command(fake=fake)
+
+    assert len(fake.followup.sent) == 2
+    assert fake.followup.sent[-1]["ephemeral"] is True
+    assert scheduled.messages == []
+
+
+async def test_cli_logs_a_failure_notice_discord_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A notice Discord refuses, such as on a token past its life, is logged instead of raised."""
+    capture_logs(monkeypatch=monkeypatch, level="error")
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
+    fake = FakeInteraction(slash_command=True)
+    await fake.response.defer()
+
+    async def refuse(**kwargs: object) -> None:
+        """Answers the way Discord does for a dead interaction token."""
+        del kwargs
+        raise make_invalid_webhook_token()
+
+    monkeypatch.setattr(target=fake.followup, name="send", value=refuse)
+
+    await _fail_command(fake=fake)
+
+    message, fields = warned[-1]
+    assert message == "Could not tell the caller a slash command failed"
+    assert fields["command"] == "demo"
 
 
 async def test_cli_reports_an_exception_from_any_event_handler(

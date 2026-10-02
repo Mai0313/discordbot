@@ -308,8 +308,8 @@ class ResearchCogs(commands.Cog):
                 content=_launch_reply(outcome="forbidden", thread_id=None)
             )
             return
-        # Broad: whatever else stops the anchor, the requester still waits on this deferral, and
-        # the command error handler only logs.
+        # Broad: whatever else stops the anchor, nothing was launched, which the command error
+        # handler's generic notice cannot tell the requester.
         except Exception as exc:
             logfire.error(
                 "failed to post the deep research anchor",

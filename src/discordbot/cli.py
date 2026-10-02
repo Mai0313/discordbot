@@ -11,7 +11,7 @@ import platform
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
-from nextcord import Game, Intents, Message, Interaction
+from nextcord import Game, Intents, Message, Interaction, HTTPException
 from nextcord.ext import tasks, commands
 from nextcord.errors import ApplicationError
 
@@ -22,7 +22,10 @@ from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
-from discordbot.utils.message_cleanup import delete_tracked_public_messages
+from discordbot.utils.message_cleanup import (
+    delete_tracked_public_messages,
+    schedule_public_message_delete,
+)
 from discordbot.services.economy.database import (
     credit_with_repayment,
     record_guild_participant,
@@ -335,7 +338,7 @@ class DiscordBot(commands.Bot):
     async def on_application_command_error(
         self, interaction: Interaction[commands.Bot], exception: ApplicationError
     ) -> None:
-        """Records a slash command that raised, which nothing else in this process does.
+        """Records a slash command that raised, which nothing else here does, and tells its caller.
 
         No prefix command or `on_command_*` handler can fire: `on_message` never calls
         `process_commands`, and `command_prefix` is never passed to `commands.Bot`, so nextcord
@@ -344,22 +347,53 @@ class DiscordBot(commands.Bot):
 
         nextcord's own default here prints the traceback to `sys.stderr`, while `./data/logs`
         receives only logfire's console output (`_TeeStream`), so without this override a failing slash
-        command leaves no line in the file this project is debugged from. Logging only,
-        deliberately — a cog that wants to tell the user something answers its own interaction,
-        and an unanswered one already shows Discord's own failure notice.
+        command leaves no line in the file this project is debugged from.
+
+        An unanswered interaction already shows Discord's own failure notice, but one the command
+        answered or deferred shows none, and a deferred one keeps its thinking placeholder for
+        good, so the caller is told here. The raise can come after the command's write committed,
+        so the notice never says nothing happened. A command that reports its own failure
+        therefore catches it rather than re-raising, or the caller is told twice.
         """
         # nextcord wraps a command-body failure in ApplicationInvokeError, so report the
         # unwrapped type to name the real defect.
         original = getattr(exception, "original", exception)
         command = interaction.application_command
+        command_name = command.qualified_name if command is not None else None
+        user_id = interaction.user.id if interaction.user is not None else None
         logfire.error(
             "Unhandled application command error",
-            command=command.qualified_name if command is not None else None,
+            command=command_name,
             guild_id=interaction.guild_id,
-            user_id=interaction.user.id if interaction.user is not None else None,
+            user_id=user_id,
             error_type=type(original).__name__,
             _exc_info=exception,
         )
+        if not interaction.response.is_done():
+            return
+        try:
+            notice = await interaction.followup.send(
+                content="指令執行時出錯了，部分操作可能已經生效，重試前請先確認結果。",
+                ephemeral=True,
+                wait=True,
+            )
+        except HTTPException:
+            logfire.warn(
+                "Could not tell the caller a slash command failed",
+                command=command_name,
+                guild_id=interaction.guild_id,
+                user_id=user_id,
+                _exc_info=True,
+            )
+            return
+        # The first followup after a defer fills its placeholder and keeps the defer's flag, so a
+        # public defer's notice is public and expires like the commands' own public replies. That
+        # the returned flags are the kept ones is read off Discord's docs rather than measured.
+        if not notice.flags.ephemeral:
+            schedule_public_message_delete(
+                message=notice,
+                user_name=interaction.user.name if interaction.user is not None else None,
+            )
 
 
 def main() -> None:
