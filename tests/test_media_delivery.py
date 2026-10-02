@@ -120,7 +120,7 @@ def test_publish_bytes_failure_leaves_no_final_file(
     monkeypatch.setattr(os, "replace", _boom)
 
     assert service.publish_bytes(data=b"A" * 10, suffix=".png") is None
-    assert _hosted_files(tmp_path) == []  # only a (cleaned) temp ever existed, never a final name
+    assert list(tmp_path.iterdir()) == []  # no final name ever appeared, and the temp is gone
 
 
 def test_publish_path_hosts_and_consumes_source(tmp_path: Path) -> None:

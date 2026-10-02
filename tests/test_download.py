@@ -721,13 +721,14 @@ async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
 ) -> None:
     """An oversize clip is delivered as a hosted URL, the fallback the README advertises.
 
-    Uses a real hosting service because the bug this guards against only appears once hosting
-    actually moves the source file out of the download folder.
+    Uses a real hosting service because the bugs this guards against only appear once hosting
+    actually moves the source file out of the download folder: the URL discarded, or the size
+    read off the moved file and quoted as 0.0MB. The clip is big enough that a zero shows.
     """
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()
     clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"0" * 4096)
+    clip.write_bytes(b"0" * (300 * 1024))
 
     cog, _stub = _install(
         monkeypatch=monkeypatch, outcome=DouyinDownload(is_photo=False, filenames=[clip])
@@ -743,6 +744,7 @@ async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
     # Asserted per line rather than as a substring: the URL has to start its own line for Discord
     # to render it, so an anywhere-in-the-body match would accept a message Discord would not link.
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
+    assert content.splitlines()[0] == "-# 檔案大小: 0.3MB (過大，改用連結)"
     assert "檔案無法下載" not in content
     # The file really was hosted, so discarding the URL would have lost a completed upload.
     assert list(serve_dir.glob("*.mp4"))

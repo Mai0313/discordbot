@@ -14,7 +14,7 @@ import pytest
 from nextcord import Embed
 
 from discordbot.utils.expansion_cog import POST_CARD_MAX_IMAGES, ConversationExpansionCog
-from discordbot.utils.discord_embeds import utf16_length
+from discordbot.utils.discord_embeds import utf16_length, embed_text_length
 from discordbot.cogs.parse_twitter.cog import TwitterCogs
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
@@ -194,11 +194,7 @@ async def test_a_long_post_and_a_long_comment_fit_one_message(
 
     embeds = await _expand(cog_type=cog_type, outcome=outcome)
 
-    total = sum(
-        len(embed.description or "") + len(embed.footer.text or "") + len(embed.author.name or "")
-        for embed in embeds
-    )
-    assert total <= 6000
+    assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
 
 
 @commented_cards

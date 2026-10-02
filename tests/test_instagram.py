@@ -359,11 +359,12 @@ def test_a_video_post_yields_its_playable_url(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_a_login_wall_reads_as_an_empty_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A private account redirects to login, which is a normal outcome rather than a failure."""
+    """A private account redirects to login, which is a normal outcome rather than a failure.
+
+    The page carries the post anyway, so only where the fetch landed can make it unreadable.
+    """
     downloader = _downloader(
-        monkeypatch,
-        html="<html>login</html>",
-        final_url="https://www.instagram.com/accounts/login/?next=x",
+        monkeypatch, html=_page(), final_url="https://www.instagram.com/accounts/login/?next=x"
     )
 
     conversation = downloader.parse_metadata(url=_URL)

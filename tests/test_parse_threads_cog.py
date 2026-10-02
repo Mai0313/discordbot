@@ -234,7 +234,9 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     await cog.on_message(message=as_message(fake=success_message))
     assert success_message.suppressed
     delivered = expansion_payload(message=success_message)
-    assert delivered["files"]
+    # By name: the embed spacer rides as a file too, so a bare non-empty check would pass a card
+    # that lost its clip.
+    assert "clip.mp4" in [file.filename for file in delivered["files"]]
     assert success_message.reactions[-1] == EXPANSION_DONE_EMOJI
     # The parse carries the comments too, but the expansion shows the chain only: the 10-embed
     # cap belongs to the linked post, and a comment would push its own images out.
@@ -612,11 +614,13 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
 
     await cog.on_message(message=as_message(fake=message))
 
-    content = expansion_payload(message=message).get("content") or ""
+    delivered = expansion_payload(message=message)
+    content = delivered.get("content") or ""
     hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
     assert len(hosted) == 1  # only the oversize clip was linked
     assert big.exists() is False  # the big clip was moved into the serve dir
     assert small.exists() is True  # the small clip stayed on disk to attach natively
+    assert "small.mp4" in [file.filename for file in delivered["files"]]
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 

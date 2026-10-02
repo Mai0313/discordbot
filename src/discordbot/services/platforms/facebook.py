@@ -492,6 +492,8 @@ class FacebookDownloader(PlatformDownloader):
             ),
             image_urls=image_urls,
             video_urls=video_urls,
+            # Not the `i18n_reaction_count` beside it, which is locale-formatted ("1.7萬" under a
+            # zh-TW `Accept-Language`) where this one is the raw number.
             like_count=count_of(value=deep_get(story, "feedback", "reaction_count")),
             comment_count=_comment_total(story=story),
             share_count=count_of(value=deep_get(story, "feedback", "share_count")),
