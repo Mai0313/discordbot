@@ -1004,6 +1004,7 @@ def _config_stub(**fields: object) -> LLMConfig:
         "inline_music_enabled": False,
         "inline_video_enabled": False,
     }
+    assert fields.keys() <= LLMConfig.model_fields.keys(), fields
     return LLMConfig.model_construct().model_copy(update=markers_off | fields)
 
 
