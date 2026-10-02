@@ -83,9 +83,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         if post.comment_count:
             replies += "（Twitter 不提供留言）"
         parts = [f"♥ {post.like_count:,}", replies]
-        omitted = len(post.image_urls) - shown_images
-        if omitted > 0:
-            parts.append(f"另有 {omitted} 張圖片")
+        parts.extend(self._omitted_media_notes(post=post, shown_images=shown_images))
         return " · ".join(parts)
 
     def _context_embed(self, post: TwitterOutput, header: str, budget: int) -> Embed:

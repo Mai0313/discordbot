@@ -80,6 +80,21 @@ async def test_a_still_wins_the_preview_over_a_video_poster() -> None:
     assert expansion_embeds(message=message)[0].image.url == "https://pbs.twimg.com/media/a.jpg"
 
 
+async def test_a_post_counts_the_videos_nothing_linked() -> None:
+    """Only the first video gets a link, so the rest would go unmentioned."""
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=twitter_post(
+            image_urls=[],
+            video_urls=["https://video.twimg.com/a/1.mp4", "https://video.twimg.com/a/2.mp4"],
+        ),
+    )
+
+    footer = expansion_embeds(message=message)[0].footer.text
+    assert footer is not None
+    assert "🎬 另有 1 部影片" in footer
+
+
 async def test_a_truncated_post_says_so_on_the_card() -> None:
     """Twitter marks the cut in no way at all, so a quiet card passes a fragment off as the post."""
     message, _ = await expand(
