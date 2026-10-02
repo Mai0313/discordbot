@@ -257,6 +257,51 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled() -> None:
     assert press.followup.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
 
 
+@pytest.mark.parametrize(
+    argnames="custom_id",
+    argvalues=[
+        "bj:hit",
+        "bj:stand",
+        "bj:double",
+        "bj:split",
+        "bj:surrender",
+        "bj:insure_yes",
+        "bj:insure_no",
+    ],
+)
+async def test_a_press_that_reaches_a_settled_round_is_told_it_is_over(
+    custom_id: str, scheduled_cleanups: ScheduledDeletes
+) -> None:
+    """A press checked while the round was open but run after it settled hears it is over.
+
+    nextcord checks a press and runs its callback as two steps, so a press can pass the check
+    before the timeout settles the round and only reach the round after.
+    """
+    await seed_balance(user_id=1, name="alice", amount=1_000)
+    insurance = custom_id.startswith("bj:insure")
+    round_state = blackjack_round(
+        hands=[[card(rank="8"), card(rank="8", suit="♥")]],
+        dealer=[card(rank="A" if insurance else "5", suit="♣"), card(rank="6", suit="♦")],
+    )
+    if insurance:
+        round_state.phase = "insurance"
+    message = FakeDiscordMessage()
+    view = _make_view(round_state=round_state)
+    view.message = as_message(fake=message)
+    button = attached_button(view=view, custom_id=custom_id)
+    await view.on_timeout()
+    await view.wait_for_background_tasks()
+    settled_balance = await get_balance(user_id=1)
+    press = FakeInteraction(message=message)
+
+    await button.callback(as_interaction(fake=press))
+
+    assert press.followup.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
+    assert press.edits == []
+    assert await get_balance(user_id=1) == settled_balance
+    assert scheduled_cleanups.messages == [message]
+
+
 async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
     """A 1-point seat's half-bet rounds to zero, and no newer table will change that.
 

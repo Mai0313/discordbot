@@ -640,6 +640,9 @@ class BlackjackView(GameView):
             return
         async with self._round_lock:
             if self._settled or self.round_state.finished:
+                await self._send_notice(
+                    interaction=interaction, content="這局已經結束, 等下一局吧"
+                )
                 return
             active = self.round_state.active_player()
             if active is None:
@@ -724,6 +727,9 @@ class BlackjackView(GameView):
             return
         async with self._round_lock:
             if self._settled:
+                await self._send_notice(
+                    interaction=interaction, content="這局已經結束, 等下一局吧"
+                )
                 return
             if interaction.user is None:
                 return
