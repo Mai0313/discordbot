@@ -1470,6 +1470,46 @@ async def test_a_press_on_a_round_with_no_turn_left_is_refused() -> None:
     assert press.followup.sent == [{"content": "這桌已經不能操作了", "ephemeral": True}]
 
 
+@pytest.mark.parametrize(argnames="control", argvalues=["custom", "min", "higher", "leave"])
+async def test_an_action_that_reaches_a_settled_table_is_told_it_is_over(
+    monkeypatch: pytest.MonkeyPatch, control: str
+) -> None:
+    """An action landing after the table settled hears what a press on it does.
+
+    The custom bet form never passes the table's check, and a press that passed it before the
+    table settled can reach the table only after; neither may end in silence.
+    """
+    alice = await _funded(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[alice]
+    )
+    settlements = _record_jackpot_settlements(monkeypatch=monkeypatch)
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=100_000,
+        final_balances={1: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    await view.on_timeout()
+    assert view._settled
+    press = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    interaction = as_interaction(fake=press)
+
+    if control == "custom":
+        await view.submit_custom_bet(interaction=interaction, raw_amount="20000")
+    elif control == "min":
+        await view._handle_bet_choice(choice="min", interaction=interaction)
+    elif control == "higher":
+        await view._choose_direction(interaction=interaction, direction="higher")
+    else:
+        await view._handle_leave(interaction=interaction)
+
+    assert press.followup.sent == [{"content": "這桌已經結束, 等下一桌吧", "ephemeral": True}]
+    assert settlements == []
+
+
 async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
     """Custom bet input length matches the comma-stripping parser."""
     owner = _participant(user_id=1, display_name="Alice")

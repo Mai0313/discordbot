@@ -601,6 +601,9 @@ class DragonGateView(GameView):
             return
         async with self._round_lock:
             if self._settled:
+                await self._send_notice(
+                    interaction=interaction, content="這桌已經結束, 等下一桌吧"
+                )
                 return
             try:
                 self.round_state.choose_pair_direction(
@@ -655,6 +658,9 @@ class DragonGateView(GameView):
             return
         async with self._round_lock:
             if self._settled:
+                await self._send_notice(
+                    interaction=interaction, content="這桌已經結束, 等下一桌吧"
+                )
                 return
             jackpot_before = self._jackpot_snapshot
             try:
@@ -730,6 +736,9 @@ class DragonGateView(GameView):
             return
         async with self._round_lock:
             if self._settled:
+                await self._send_notice(
+                    interaction=interaction, content="這桌已經結束, 等下一桌吧"
+                )
                 return
             try:
                 delta = self.round_state.withdraw(user_id=interaction.user.id)
