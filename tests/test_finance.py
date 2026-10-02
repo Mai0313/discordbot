@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 import asyncio
 from datetime import timedelta
-from functools import partial
 
 import pytest
 from sqlalchemy import text, select, update
@@ -55,7 +54,8 @@ from tests.helpers.economy import (
     seed_participant,
     open_personal_loan,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage, on_ready_bot
+from tests.helpers.message_cleanup import record_scheduled_deletes
 from tests.helpers.economy_invariants import assert_wallet_consistent
 
 OTHER_GUILD = 777
@@ -224,11 +224,7 @@ async def test_a_press_past_the_window_closes_the_panel_as_expired(
     Every press restarts the view's own timer, so the view can outlive the request; once a
     press has expired it, the timeout finds nothing left to expire and leaves the buttons up.
     """
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.economy.views.schedule_public_message_delete",
-        lambda message, **_kwargs: scheduled.append(message),
-    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     await seed_balance(user_id=2, name="bob", amount=1_000)
     proposal = await create_personal_loan_request(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
@@ -248,7 +244,7 @@ async def test_a_press_past_the_window_closes_the_panel_as_expired(
     assert presser.edits[0]["embed"].title == "信貸申請已逾時"
     assert presser.edits[0]["view"] is None
     assert view.is_finished()
-    assert scheduled == [panel]
+    assert scheduled.messages == [panel]
     assert await get_balance(user_id=2) == 1_000
 
 
@@ -277,13 +273,8 @@ async def test_a_restart_rejects_the_requests_an_earlier_process_left_waiting() 
         """Ends `on_ready` at the command sync, which everything after needs a live bot for."""
         raise RuntimeError("stop")
 
-    stub = SimpleNamespace(
-        _initial_setup_done=False,
-        _startup_tasks=set(),
-        _started_at=started_at,
-        user=FakeUser(user_id=999, bot=True),
-        _count_registered_commands=partial(asyncio.sleep, delay=0),
-        sync_all_application_commands=stop_after_the_startup_sweeps,
+    stub = on_ready_bot(
+        started_at=started_at, sync_all_application_commands=stop_after_the_startup_sweeps
     )
     with pytest.raises(RuntimeError, match="stop"):
         await DiscordBot.on_ready(as_discord_bot(fake=stub))

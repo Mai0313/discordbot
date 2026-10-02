@@ -8,16 +8,14 @@ acknowledged before that write, and who gets to see the answer.
 from __future__ import annotations
 
 import ast
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from pathlib import Path
 from datetime import UTC, datetime
 from unittest.mock import ANY
 
 import pytest
-import logfire
 
-from discordbot.utils import interaction_responses as interactions
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.typings.economy import (
@@ -50,7 +48,7 @@ from discordbot.cogs.economy.embeds import (
 )
 from discordbot.utils.message_cleanup import list_pending_public_messages
 
-from tests.helpers.games import ScheduledDeletes, attached_button
+from tests.helpers.games import attached_button
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -61,6 +59,7 @@ from tests.helpers.casting import (
 )
 from tests.helpers.economy import personal_loan_contract
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_levels
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 if TYPE_CHECKING:
@@ -237,33 +236,6 @@ async def fake_get_central_bank_status(guild_id: int) -> CentralBankStatus:
 async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseResult:
     """Returns a successful fake VIP purchase result."""
     return VipPurchaseResult(new_balance=500_000, cost=VIP_PURCHASE_COST)
-
-
-def ignore_scheduled_public_message(
-    message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
-) -> None:
-    """Ignores cleanup scheduling in command smoke tests."""
-    return
-
-
-def _record_scheduled(
-    monkeypatch: pytest.MonkeyPatch, module: ModuleType
-) -> list[FakeDiscordMessage]:
-    """Replaces `module`'s public-message cleanup with a recorder; returns what it scheduled."""
-    scheduled: list[FakeDiscordMessage] = []
-
-    def record_scheduled(
-        message: FakeDiscordMessage,
-        delay: float = 180,
-        user_name: str | None = None,
-        interaction: object | None = None,
-    ) -> None:
-        """Records the message handed over for cleanup."""
-        del delay, user_name, interaction
-        scheduled.append(message)
-
-    monkeypatch.setattr(module, "schedule_public_message_delete", record_scheduled)
-    return scheduled
 
 
 def _record_transfers(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, int | str]]:
@@ -465,7 +437,7 @@ async def test_a_settled_loan_is_posted_to_the_channel(monkeypatch: pytest.Monke
     The defer stays ephemeral for the failure's sake, and the first followup after it fills that
     placeholder with its flag, so a settlement sent as that followup reaches only the caller.
     """
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     for command, ledger_call, kwargs in _LOAN_SETTLEMENTS:
         monkeypatch.setattr(economy, ledger_call, fake_loan_payment)
@@ -486,7 +458,7 @@ async def test_a_settled_loan_is_posted_to_the_channel(monkeypatch: pytest.Monke
             f"{command} posted its settlement only to the caller"
         )
         assert interaction.original_deleted is True, f"{command} left the caller a second copy"
-    assert len(scheduled) == len(_LOAN_SETTLEMENTS)
+    assert len(scheduled.messages) == len(_LOAN_SETTLEMENTS)
 
 
 def test_every_money_command_acknowledges_before_it_mutates() -> None:
@@ -552,7 +524,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies economy slash commands call the database facade and send embeds."""
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
     monkeypatch.setattr(economy, "get_vip", fake_get_vip)
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
@@ -616,7 +588,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.central_bank_status.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
     assert len(interaction.followup.sent) == 21
-    assert len(scheduled) == 12
+    assert len(scheduled.messages) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert interaction.followup.sent[1]["files"][0].filename == "economy_leaderboard.png"
@@ -907,7 +879,7 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
         )
 
     monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=views)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
 
     credit_message = FakeDiscordMessage()
     credit_view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -922,7 +894,7 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     # order-contract: each `on_timeout` is awaited to completion before the next view exists.
     assert rejected == [42, 43]
     # order-contract: same sequential awaits, so cleanup is scheduled in construction order.
-    assert scheduled == [credit_message, central_message]
+    assert scheduled.messages == [credit_message, central_message]
     assert credit_message.edits[0]["view"] is None
     assert central_message.edits[0]["view"] is None
     credit_timeout_title = credit_message.edits[0]["embed"].title
@@ -954,14 +926,8 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
         )
 
     monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=views)
-    reports: list[tuple[str, dict[str, object]]] = []
-    for name in ("info", "warn"):
-        monkeypatch.setattr(
-            target=logfire,
-            name=name,
-            value=lambda _message, name=name, **fields: reports.append((name, fields)),
-        )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     message = FakeDiscordMessage()
     message.edit_failure = failure
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -969,8 +935,10 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     await view.on_timeout()
 
-    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
-    assert scheduled == [message]
+    assert [(name, "_exc_info" in fields) for name, _message, fields in reports] == [
+        (level, traceback)
+    ]
+    assert scheduled.messages == [message]
 
 
 @pytest.mark.parametrize(
@@ -993,8 +961,7 @@ async def test_a_loan_panel_kept_open_by_a_refused_press_closes_through_it(
         )
 
     monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    scheduled = ScheduledDeletes()
-    monkeypatch.setattr(views, "schedule_public_message_delete", scheduled)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     followup = FakeDiscordMessage()
     followup.edit_failure = make_not_found(message="Unknown Webhook")
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -1022,8 +989,7 @@ async def test_a_decided_loan_panel_is_deleted_through_the_deciding_press(
     its end, so the delete cannot ride that one.
     """
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_loan_proposal)
-    scheduled = ScheduledDeletes()
-    monkeypatch.setattr(views, "schedule_public_message_delete", scheduled)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
     view.message = as_message(fake=FakeDiscordMessage())
     panel = FakeDiscordMessage()
@@ -1092,9 +1058,7 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
     monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     bot_member = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
@@ -1126,9 +1090,7 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     interaction = FakeInteraction(user=sender)
     interaction.guild = guild
     transfers = _record_transfers(monkeypatch=monkeypatch)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
 
     await EconomyCogs.give.callback(cog, interaction, member=receiver, amount="100")
@@ -1144,9 +1106,7 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     bot_receiver = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
     interaction = FakeInteraction(user=sender)
     transfers = _record_transfers(monkeypatch=monkeypatch)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=bot_receiver)))
 
     await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount="100")
@@ -1187,7 +1147,7 @@ async def test_a_refused_transfer_is_a_public_expiring_embed(
 
     monkeypatch.setattr(economy, "transfer", refuse_transfer)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
 
     await EconomyCogs.give.callback(
@@ -1201,7 +1161,7 @@ async def test_a_refused_transfer_is_a_public_expiring_embed(
     assert interaction.response.deferred_ephemeral is False
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert reason in (interaction.followup.sent[0]["embed"].description or "")
-    assert len(scheduled) == 1
+    assert len(scheduled.messages) == 1
 
 
 @pytest.mark.parametrize(
@@ -1236,9 +1196,7 @@ async def test_only_the_caller_is_recorded_as_taking_part_in_the_guild(
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     interaction = FakeInteraction(user=FakeUser(user_id=1), guild_id=321, administrator=True)
 
     await getattr(EconomyCogs, command).callback(
@@ -1325,9 +1283,7 @@ async def test_economy_money_commands_accept_large_string_amounts(  # noqa: PLR0
     monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
     monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
     big_text = "9,007,199,254,740,993"
@@ -1475,7 +1431,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
         ]
 
     monkeypatch.setattr(economy, "top_losers", daily_losses)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1489,7 +1445,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
     assert interaction.followup.sent[0]["files"][0].filename == "economy_loss_leaderboard.png"
     assert embed.footer.text is not None
     assert "贏回來不抵扣" in embed.footer.text
-    assert len(scheduled) == 1
+    assert len(scheduled.messages) == 1
 
 
 async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1500,7 +1456,7 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
         return []
 
     monkeypatch.setattr(economy, "top_losers", no_daily_losses)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1511,7 +1467,7 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
     assert "今日輸局累計" in embed.title
     assert embed.description is not None
     assert "今天還沒有人輸錢" in embed.description
-    assert len(scheduled) == 1
+    assert len(scheduled.messages) == 1
 
 
 async def test_an_empty_board_or_credit_list_answers_with_its_own_panel(
