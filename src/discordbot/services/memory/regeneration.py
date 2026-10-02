@@ -22,7 +22,7 @@ from discordbot.typings.memory import MemoryFact
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
-from discordbot.services.memory.tone import rebuild_tone_note
+from discordbot.services.memory.tone import forget_tone, rebuild_tone_note
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     clear_raw,
@@ -343,16 +343,23 @@ async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
     replay then takes that evidence out as the incremental pass does, so the next rebuild no
     longer sees it.
 
+    The tone evidence gets the same replay, since a tone preference is never a fact and the tone
+    rebuild reads whatever evidence is left: a forget whose tone pass failed, its batch kept in
+    `raw.md`, or missed a line would otherwise come back from it (#971). Only the evidence, as
+    the note is about to be rewritten from it (`forget_tone` has why).
+
     Replaying the requests afterwards fixes that without weakening anything: each runs as its
-    own `deletes_only` call, so the forget's own sentence still cannot be written anywhere.
-    Feeding a forget INTO the rebuild instead would hand a possibly-private sentence to a call
-    whose whole job is creating facts.
+    own `deletes_only` call, or for the tone evidence one answering line numbers only, so the
+    forget's own sentence still cannot be written anywhere. Feeding a forget INTO the rebuild
+    instead would hand a possibly-private sentence to a call whose whole job is creating facts.
 
     Returns False when a replay call failed. The caller then puts the replaced compartments
     back rather than keep them: a fact the replay did not reach can be one the user asked to
     forget, and nothing but a later rebuild that completes would remove it.
     """
-    return await apply_forget_buckets(run=run, forgets=forgets)
+    return await apply_forget_buckets(run=run, forgets=forgets) and await forget_tone(
+        run=run, forgets=forgets, evidence_only=True
+    )
 
 
 def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:

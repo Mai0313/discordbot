@@ -1913,6 +1913,114 @@ async def test_a_failed_tone_forget_keeps_the_batch(memory_isolated_dir: Path) -
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
+_ROAST_FORGET = _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再被粗口互嗆")
+
+
+def _roast_forget_answer(rebuilt: bool = True) -> MemoryAnswer:
+    """Builds an answer whose tone forget drops the roast and whose tone rebuild echoes its input.
+
+    The tone forget drops every offered line naming the roast; the tone rebuild writes one note
+    line per evidence bullet it was shown, oldest first, or fails when `rebuilt` is False.
+    """
+
+    def named(body: str, tag: str) -> tuple[int, ...]:
+        """Returns the numbers of the lines inside `tag` that name the roast."""
+        lines = body.split(f"<{tag}>")[1].split(f"</{tag}>", maxsplit=1)[0].splitlines()
+        return tuple(int(line.split("]")[0].lstrip("[")) for line in lines if "粗口互嗆" in line)
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Answers the tone forget and the tone rebuild by what they were shown."""
+        if text_format is ToneForget:
+            return ToneForget(
+                drop_lines=named(body=body, tag="tone_note"),
+                drop_evidence=named(body=body, tag="tone_evidence"),
+            )
+        if "<tone_evidence>" not in body:
+            return _no_change()
+        if not rebuilt:
+            return None
+        evidence = body.split("<tone_evidence>")[1].split("</tone_evidence>", maxsplit=1)[0]
+        bullets = [
+            f"- {line.split('] ', maxsplit=1)[1]}" for line in evidence.strip().splitlines()
+        ]
+        return _no_change(tone="\n".join(["## 語氣偏好", *bullets]))
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    ("note", "detail", "raw", "expected"),
+    [
+        pytest.param(
+            _TONE_NOTE,
+            (_entry("2026-09-01T00:00:00+00:00", _ROAST, _TERSE),),
+            (_ROAST_FORGET,),
+            "## 語氣偏好\n- 回答要簡潔",
+            id="tone-pass-never-ran",
+        ),
+        pytest.param(
+            "## 語氣偏好\n- 回答要簡潔",
+            (_entry("2026-09-01T00:00:00+00:00", _ROAST, _TERSE), _ROAST_FORGET),
+            (),
+            "## 語氣偏好\n- 回答要簡潔",
+            id="tone-pass-missed-the-evidence",
+        ),
+        pytest.param(
+            _TONE_NOTE,
+            (_entry("2026-09-01T00:00:00+00:00", _ROAST, _TERSE),),
+            (_ROAST_FORGET, _entry("2026-09-03T00:00:00+00:00", _ROAST)),
+            "## 語氣偏好\n- 回答要簡潔\n- 喜歡被高強度粗口互嗆",
+            id="restated-after-the-forget",
+        ),
+    ],
+)
+async def test_a_rebuild_replays_each_forget_over_the_tone_evidence(
+    memory_isolated_dir: Path,
+    note: str,
+    detail: tuple[str, ...],
+    raw: tuple[str, ...],
+    expected: str,
+) -> None:
+    """A tone preference is never a fact, so the fact replay cannot keep it out of the note (#971).
+
+    The tone rebuild writes the note from whatever evidence is left, so a forget whose tone pass
+    failed, or missed the evidence, came back the moment the user ran `/memory regenerate`, and
+    the retired forget was never applied to the tone tier again. A preference restated after
+    the forget is still not its to take.
+    """
+    write_tone(scope=USER_SCOPE, content=note)
+    append_detail(scope=USER_SCOPE, text="\n\n".join(detail))
+    if raw:
+        _stage_raw(*raw)
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _roast_forget_answer()
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    assert read_tone(scope=USER_SCOPE) == expected
+
+
+async def test_a_rebuild_failing_after_its_tone_replay_leaves_the_note_alone(
+    memory_isolated_dir: Path,
+) -> None:
+    """The replay reaches only the tone evidence; the note is the rebuild's to rewrite.
+
+    Its lines carry no stamp, so the older forget would be offered the roast the user restated
+    after it, and with the rebuild failing past the replay the note would stay without it.
+    """
+    write_tone(scope=USER_SCOPE, content=_TONE_NOTE)
+    append_detail(scope=USER_SCOPE, text=_entry("2026-09-01T00:00:00+00:00", _ROAST, _TERSE))
+    _stage_raw(_ROAST_FORGET, _entry("2026-09-03T00:00:00+00:00", _ROAST))
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _roast_forget_answer(rebuilt=False)
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "failed"
+    assert read_tone(scope=USER_SCOPE) == _TONE_NOTE
+
+
 async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:
     """What gets named under the reply is what is safe to repeat in that channel later.
 
