@@ -29,13 +29,13 @@ Three notes on what it deliberately does not paper over:
 from typing import Any
 
 import logfire
-from nextcord import File, Embed, Message, DMChannel, Interaction, AllowedMentions
+from nextcord import File, Embed, Message, DMChannel, ClientUser, Interaction, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from nextcord.enums import InteractionContextType
 from nextcord.utils import utcnow
 
-from discordbot.utils.reactions import update_reaction
+from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_conversation
@@ -254,6 +254,12 @@ class TurnSurface(BaseModel):
             channel_id=self.message.channel.id, user_id=self.message.author.id, limit=limit // 2
         )
         return rebuild_conversation(turns=turns, interaction=self.interaction)
+
+    def status_chain(self, bot_user: ClientUser | None) -> ReactionStatusChain:
+        """The turn's status-reaction chain, inert on `/ask`, which has nothing to react to."""
+        return ReactionStatusChain(
+            message=self.message, bot_user=bot_user, enabled=self.interaction is None
+        )
 
     async def mark(self, emoji: str) -> None:
         """Puts a status or provenance reaction on the source message, where there is one.

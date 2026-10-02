@@ -251,9 +251,7 @@ class ReplyGeneratorCogs(commands.Cog):
         report too, since that is what first builds the toolkit.
         """
         message = surface.message
-        reactions = ReactionStatusChain(
-            message=message, bot_user=self.bot.user, enabled=surface.interaction is None
-        )
+        reactions = surface.status_chain(bot_user=self.bot.user)
         try:
             await self._start_turn(surface=surface, content=content, reactions=reactions)
         except Exception as e:
