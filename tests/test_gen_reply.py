@@ -4608,10 +4608,8 @@ def test_the_file_api_kill_switch_inlines_gemini_attachments(
 async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
     """A clip the renderer cannot carry is dropped on its MIME type, before the download.
 
-    The kill-switch pairs this renderer with a Gemini answer model, and
-    `_supported_sources` gates on the slow model, so video passes, and a dropped part keeps
-    the WHOLE message out of the render cache. Downloading here would therefore re-fetch the
-    clip on every single reply, only to throw it away each time.
+    The modality gate keeps such a clip from reaching the renderer through the builder, so this
+    pins the renderer's own drop: a direct caller never downloads a whole clip to throw it away.
     """
     clip = FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"0" * 32)
 
@@ -5323,6 +5321,45 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
 
     text_markers, full_files = _attachment_slots(text_only=text_only, full=full)
     assert text_markers == full_files == 1
+
+
+@pytest.mark.parametrize(
+    ("file_api_enabled", "markers"),
+    [("true", ["[attachment: image]", "[attachment: file]"]), ("false", ["[attachment: image]"])],
+    ids=["files-api", "inline"],
+)
+async def test_the_gate_passes_only_what_the_selected_renderer_carries(
+    monkeypatch: pytest.MonkeyPatch, file_api_enabled: str, markers: list[str]
+) -> None:
+    """A clip the inline renderer drops is not marked or budgeted, nor keeps its message uncached.
+
+    The model accepts video either way; only the renderer the switch selects decides whether the
+    clip reaches the answer, so the route marker, the history budget and the render cache must
+    follow the renderer. A dropped part keeps its whole message out of the cache, which would
+    download the image beside it again on every reply.
+    """
+    monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image", "audio", "video"},
+    )
+    builder = _cog().toolkit.input_builder
+    pic = FakeAttachment(
+        filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
+    )
+    clip = FakeAttachment(filename="clip.mp4", content_type="video/mp4", attachment_id=2)
+    message = FakeMessage(content="<@999> look", author=FakeAuthor(user_id=1))
+    message.attachments = [pic, clip]
+
+    text_only = await builder.process_single_message(
+        message=as_message(fake=message), text_only=True
+    )
+    for _ in range(2):
+        await builder.process_single_message(message=as_message(fake=message))
+
+    assert [part["text"] for part in step_dicts(steps=text_only["content"])[1:]] == markers
+    assert builder.count_supported_sources(message=as_message(fake=message)) == len(markers)
+    assert pic.read_count == 1
 
 
 @pytest.mark.parametrize(

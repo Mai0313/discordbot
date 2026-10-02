@@ -1,7 +1,7 @@
 """The attachment renderer strategy interface, and the Files API upload renderer built on it."""
 
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, ClassVar
 from datetime import UTC, datetime, timedelta
 from collections import OrderedDict
 
@@ -69,6 +69,11 @@ class AttachmentRenderer(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Input modalities this renderer drops whatever the answer model accepts. The modality gate
+    # subtracts them, so the route marker, the history media budget and the render cache leave
+    # them out just as the answer does.
+    dropped_modalities: ClassVar[frozenset[str]] = frozenset()
 
     # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. Held here rather
     # than on each uploader so the Files-API uploaders cannot drift (the dict itself is per
