@@ -169,7 +169,7 @@ from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, RETRY_HINT_EMOJI
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
-from discordbot.cogs.gen_reply.research_bridge import can_launch_research
+from discordbot.cogs.gen_reply.research_bridge import can_launch_research, maybe_launch_research
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
@@ -817,7 +817,11 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     reads the environment.
     """
     cog = ReplyGeneratorCogs(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
+        bot=as_bot(
+            fake=SimpleNamespace(
+                user=SimpleNamespace(id=bot_user_id, name="bot"), get_cog=lambda name: None
+            )
+        )
     )
     cog.config = LLMConfig.model_construct()
     cog.__dict__["openai_client"] = FakeClient()
@@ -6087,6 +6091,46 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=as_message(fake=deleted))
     assert deleted.replies == []
     assert deleted.channel.sent[0].embed is not None
+
+
+async def test_the_research_cog_is_reached_through_the_bot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thread the research cog is driving gets no answer, and an emitted brief reaches it."""
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    launched: list[dict[str, object]] = []
+
+    class ResearchCogStub:
+        """Drives the message's own channel and records each launch."""
+
+        def is_research_thread(self, channel_id: int) -> bool:
+            """Only the message's channel is a live research thread."""
+            return channel_id == message.channel.id
+
+        async def launch(self, **kwargs: object) -> None:
+            """Records the brief handed over."""
+            launched.append(kwargs)
+
+    research = ResearchCogStub()
+    cog = _cog()
+    monkeypatch.setattr(
+        cog.bot, "get_cog", lambda name: research if name == "ResearchCogs" else None
+    )
+    built = _install_streamer(monkeypatch=monkeypatch)
+
+    await cog.on_message(message=as_message(fake=message))
+    assert message.replies == []
+    assert message.added_reactions == []
+    assert built == []
+
+    anchor = FakeReply()
+    await maybe_launch_research(
+        bot=cog.bot,
+        message=as_message(fake=message),
+        anchor=as_message(fake=anchor),
+        brief="compare the two papers",
+    )
+    assert launched == [{"message": message, "anchor": anchor, "brief": "compare the two papers"}]
 
 
 async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
