@@ -4,14 +4,14 @@ from typing import Any, Unpack, ClassVar, TypedDict
 import asyncio
 
 import logfire
-from nextcord import Embed, Message, NotFound, Forbidden, Interaction, HTTPException
+from nextcord import Embed, Message, NotFound, Forbidden, Interaction
 from nextcord.ui import Item, View, Button
 from nextcord.ext import commands
 
 from discordbot.utils.logged_ui import LoggedView
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import report_press_failure, schedule_public_message_delete
+from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
 from discordbot.utils.interaction_responses import send_ephemeral_notice
 
 
@@ -91,29 +91,6 @@ def set_view_item_visible(view: View, item: Item[View], visible: bool) -> None:
         view.remove_item(item=item)
 
 
-async def edit_game_message(
-    message: Message, interaction: Interaction[commands.Bot] | None, payload: dict[str, Any]
-) -> None:
-    """Edits a game message through a press on it while that press's token lives, else the channel.
-
-    A press's own token edits the message its control sits on whatever the channel allows, where
-    the channel endpoint answers 403 once the server shuts the bot out. An edit no press
-    triggered, a timeout's, rides the last press acknowledged on the message, so only a message
-    with no live press left has only the channel. That press must be one answered on the message
-    itself: a press answered with a private notice holds a token for that notice instead. A
-    token that fails hands the edit to the channel too, since only the channel tells a message
-    already gone from a token that cannot reach it.
-    """
-    if interaction is not None and not interaction.is_expired():
-        try:
-            await interaction.edit_original_message(**payload)
-        except HTTPException as error:
-            report_press_failure(error=error, message=message, action="edit")
-        else:
-            return
-    await message.edit(**payload)
-
-
 async def publish_final_table(
     message: Message,
     embeds: list[Embed],
@@ -126,7 +103,7 @@ async def publish_final_table(
 
     `interaction` is the press that settled the table or, on a timeout, the last press
     acknowledged on it; the render and the deletion both go through it while its token lives
-    (`edit_game_message`). Never raises: settlement is already committed when this runs, so a
+    (`edit_public_message`). Never raises: settlement is already committed when this runs, so a
     render that fails is logged (`failure_fields` ride the warning) and the deletion is
     scheduled regardless.
 
@@ -135,7 +112,7 @@ async def publish_final_table(
     """
     try:
         await asyncio.wait_for(
-            edit_game_message(
+            edit_public_message(
                 message=message,
                 interaction=interaction,
                 payload=table_edit_kwargs(embeds=embeds, view=None, target=message),

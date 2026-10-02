@@ -24,7 +24,7 @@ from discordbot.cogs.economy.embeds import (
     build_central_bank_approved_embed,
 )
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import schedule_public_message_delete
+from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
 from discordbot.services.economy.database import (
     accept_loan_proposal,
     cancel_loan_proposal,
@@ -83,6 +83,18 @@ class LoanDecisionViewBase(LoggedView):
         self.proposal_id = proposal_id
         self.creator_id = creator_id
         self.message: Message | None = None
+        # The last press acknowledged on the panel; the timeout's edit and every delete ride its
+        # token.
+        self.last_press: Interaction[commands.Bot] | None = None
+
+    def _keep_press(self, interaction: Interaction[commands.Bot]) -> None:
+        """Makes a press acknowledged on the panel the one its timeout edit and delete go through.
+
+        nextcord restarts the view's timer on every press, a refused one included, so only the
+        newest press holds a token sure to outlive that timer and the delete after it.
+        """
+        self.message = interaction.message or self.message
+        self.last_press = interaction
 
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user may approve or reject this request.
@@ -114,7 +126,9 @@ class LoanDecisionViewBase(LoggedView):
         user_name = None
         if interaction is not None and interaction.user is not None:
             user_name = interaction.user.name
-        schedule_public_message_delete(message=message, user_name=user_name)
+        schedule_public_message_delete(
+            message=message, user_name=user_name, interaction=self.last_press
+        )
 
     async def on_timeout(self) -> None:
         """Rejects a stale request and cleans up its message."""
@@ -124,10 +138,14 @@ class LoanDecisionViewBase(LoggedView):
         self.stop()
         embed = self._timeout_embed()
         try:
-            await self.message.edit(
-                embed=embed,
-                view=None,
-                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+            await edit_public_message(
+                message=self.message,
+                interaction=self.last_press,
+                payload={
+                    "embed": embed,
+                    "view": None,
+                    **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+                },
             )
         except NotFound:
             logfire.info(
@@ -137,8 +155,8 @@ class LoanDecisionViewBase(LoggedView):
                 message_id=self.message.id,
             )
         except Forbidden:
-            # The panel is the command's followup, so this edit rides the command's token rather
-            # than the channel; a refusal's stack is identical every time, so the ids are the
+            # Once a press has rebound the panel, an edit with no working press behind it goes
+            # through the channel, which the server can shut the bot out of; the ids are the
             # whole finding.
             logfire.warn(
                 "Discord refused the loan request's timeout edit",
@@ -164,6 +182,7 @@ class LoanDecisionViewBase(LoggedView):
         if interaction.user is None:
             return
         await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         if interaction.user.id != self.creator_id:
             embed = build_error_embed(title="權限不足", description=self.CANCEL_DENIED_NOTICE)
             await send_private_followup(interaction=interaction, embed=embed)
@@ -208,6 +227,7 @@ class LoanDecisionViewBase(LoggedView):
         if interaction.user is None:
             return
         await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         if not await self._may_decide(interaction=interaction):
             return
 
@@ -247,6 +267,7 @@ class LoanDecisionViewBase(LoggedView):
         if interaction.user is None:
             return
         await interaction.response.defer()
+        self._keep_press(interaction=interaction)
         if not await self._may_decide(interaction=interaction):
             return
 

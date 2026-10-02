@@ -35,9 +35,9 @@ from discordbot.cogs.games.blackjack import (
 )
 from discordbot.cogs.games.bot_player import choose_bot_action, bot_takes_insurance
 from discordbot.cogs.games.settlement import settle_blackjack_player
+from discordbot.utils.message_cleanup import edit_public_message
 from discordbot.cogs.games.interactions import (
     GameView,
-    edit_game_message,
     table_edit_kwargs,
     publish_final_table,
     set_view_item_visible,
@@ -1118,7 +1118,7 @@ class BlackjackView(GameView):
         """Edits the table on the way to settling; a failed edit is logged, never raised."""
         try:
             await asyncio.wait_for(
-                edit_game_message(message=message, interaction=interaction, payload=payload),
+                edit_public_message(message=message, interaction=interaction, payload=payload),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         except NotFound:

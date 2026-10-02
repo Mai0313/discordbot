@@ -11,8 +11,8 @@ from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interacti
 
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import schedule_public_message_delete
-from discordbot.cogs.games.interactions import GameView, edit_game_message
+from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
+from discordbot.cogs.games.interactions import GameView
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ class BaseGameLobbyView(GameView):
         self.stop()
         embed = self._build_lobby_embed(status="Lobby 已逾時")
         try:
-            await edit_game_message(
+            await edit_public_message(
                 message=self.message,
                 interaction=self.last_press,
                 payload={
