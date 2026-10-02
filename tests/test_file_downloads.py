@@ -1,9 +1,8 @@
 """Tests for the shared primitive that streams one remote file to disk.
 
-Every downloading platform hands its transfers to `stream_to_file`, so what it promises is pinned
-here once: the size cap, the partial file it removes, and the directory it never re-creates. Each
-platform's own tests keep only what it decides on top: what is retried, and what a failure is
-called.
+What `stream_to_file` promises a caller is pinned here once: the size cap, the partial file it
+removes, and the directory it never re-creates. A caller's own tests keep only what it decides on
+top: what is retried, and what a failure is called.
 """
 
 import shutil

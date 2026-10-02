@@ -172,7 +172,7 @@ async def expand(
     outcome: PlatformConversation[Any] | Exception,
     content: str | None = None,
 ) -> tuple[FakeDiscordMessage, StubConversationDownloader]:
-    """Runs a Facebook, Instagram or Twitter expansion of one guild message over a stub reader.
+    """Runs a conversation expansion cog over one guild message, reading from a stub.
 
     The message carries the platform's sample post link unless `content` is given.
 

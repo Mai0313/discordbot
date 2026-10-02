@@ -1,7 +1,7 @@
-"""Tests for the page-reading primitives the Facebook, Instagram and Threads readers share.
+"""Tests for the shared page-reading primitives in `page_json`.
 
 Each platform's own tests stub the fetch and serve canned payloads, so what the shared pieces
-promise is pinned here once rather than through whichever platform happened to need it first.
+promise is pinned here once.
 """
 
 import pytest
