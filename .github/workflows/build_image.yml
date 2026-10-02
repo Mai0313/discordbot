@@ -95,6 +95,7 @@ jobs:
           target: ${{ matrix.target.target_step }}
           tags: |
             ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           sbom: false
           provenance: false
           cache-from: |
