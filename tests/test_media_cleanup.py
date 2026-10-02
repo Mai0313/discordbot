@@ -66,6 +66,7 @@ async def test_on_ready_starts_once_across_reconnects(
     monkeypatch.setattr(cog, "_sweep", _fake_sweep)
 
     await cog.on_ready()
+    assert cog.cleanup_loop.is_running()
     await cog.on_ready()  # a reconnect
     await asyncio.wait_for(fut=first_sweep.wait(), timeout=5)
     await asyncio.sleep(delay=0.2)  # room for a second startup sweep, were one scheduled
