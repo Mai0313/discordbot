@@ -14,7 +14,7 @@ from collections.abc import Callable
 
 import logfire
 from nextcord import Message
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
@@ -63,7 +63,7 @@ class ReplyPipeline(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    config: SkipValidation[LLMConfig] = Field(
+    config: LLMConfig = Field(
         ..., description="Runtime LLM config, read for the per-feature kill-switches."
     )
     media_delivery: MediaDeliveryPlanner = Field(
