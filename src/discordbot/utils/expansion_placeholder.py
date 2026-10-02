@@ -129,12 +129,7 @@ class ExpansionRetry(Protocol):
     """A cog's own `_expand`, called with exactly what its listener passes it."""
 
     async def __call__(
-        self,
-        *,
-        message: Message,
-        url: str,
-        current_emoji: str,
-        placeholder: "ExpansionPlaceholder",
+        self, message: Message, url: str, current_emoji: str, placeholder: "ExpansionPlaceholder"
     ) -> None:
         """Runs the expansion and reports its own failures; never raises for a bad post."""
         ...
@@ -144,7 +139,7 @@ _database = SqliteBootstrap(metadata=Base.metadata)
 
 
 async def _record_pending(
-    *, placeholder: Message, source_message: Message, source: str, url: str
+    placeholder: Message, source_message: Message, source: str, url: str
 ) -> None:
     """Persists a posted placeholder so a restart can find it again.
 
@@ -175,7 +170,7 @@ async def _record_pending(
         )
 
 
-async def _forget_pending(*, message_id: int) -> None:
+async def _forget_pending(message_id: int) -> None:
     """Drops the row for a placeholder that is now settled, best effort."""
     try:
         async with _database.open_session(engine=_engine) as session, session.begin():
@@ -193,7 +188,7 @@ async def _forget_pending(*, message_id: int) -> None:
         )
 
 
-async def _load_pending(*, source: str) -> list[PendingExpansion]:
+async def _load_pending(source: str) -> list[PendingExpansion]:
     """Reads one cog's interrupted expansions, oldest first."""
     async with _database.open_session(engine=_engine) as session:
         rows = await session.scalars(
@@ -229,7 +224,7 @@ class ExpansionPlaceholder(BaseModel):
     )
 
     async def deliver(
-        self, *, content: str | None = None, embeds: list[Embed], files: list[File] | None = None
+        self, embeds: list[Embed], content: str | None = None, files: list[File] | None = None
     ) -> None:
         """Edits the finished expansion onto the placeholder.
 
@@ -247,9 +242,9 @@ class ExpansionPlaceholder(BaseModel):
         restart sweep something to find.
 
         Args:
+            embeds: The finished expansion.
             content: The text under the expansion, or None for an expansion that is embeds
                 and attachments alone.
-            embeds: The finished expansion.
             files: Media attaching natively beside the embeds.
         """
         await self.message.edit(
@@ -290,7 +285,7 @@ class ExpansionPlaceholder(BaseModel):
 
 
 async def send_expansion_placeholder(
-    *, message: Message, text: str, source: str, url: str
+    message: Message, text: str, source: str, url: str
 ) -> ExpansionPlaceholder | None:
     """Claims the reply slot under `message` with a line saying the expansion is coming.
 
@@ -333,9 +328,7 @@ async def send_expansion_placeholder(
     return ExpansionPlaceholder(message=placeholder)
 
 
-async def _resume_one(
-    *, bot: commands.Bot, record: PendingExpansion, expand: ExpansionRetry
-) -> None:
+async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: ExpansionRetry) -> None:
     """Re-runs one interrupted expansion, or removes what it left behind.
 
     Both messages are fetched rather than taken as partials: `embed_spacer_payload` reads the
@@ -399,7 +392,7 @@ async def _resume_one(
 
 
 async def resume_expansion_placeholders(
-    *, bot: commands.Bot, source: str, expand: ExpansionRetry
+    bot: commands.Bot, source: str, expand: ExpansionRetry
 ) -> None:
     """Runs again every expansion of `source` that a restart interrupted.
 

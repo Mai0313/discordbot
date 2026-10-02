@@ -59,7 +59,7 @@ class PendingPublicMessage(BaseModel):
     user_name: str | None = Field(default=None, description="Triggering user, for cleanup logs.")
 
 
-async def _create_pending_table(*, conn: AsyncConnection) -> None:
+async def _create_pending_table(conn: AsyncConnection) -> None:
     """Creates the cleanup table where it does not exist yet.
 
     A fresh file gets the columns the deployed `games.db` table has; an existing table is never

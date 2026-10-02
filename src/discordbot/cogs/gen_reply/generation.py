@@ -83,7 +83,7 @@ MUSIC_STYLE_DIRECTIVE = (
 )
 
 
-def music_filename(*, mime_type: str | None) -> str:
+def music_filename(mime_type: str | None) -> str:
     """The Discord attachment filename for a generated music clip, by its audio mime type."""
     # Discord's inline audio player keys off the extension, and `AudioContent.mime_type` can be a
     # non-obvious value (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would
@@ -120,10 +120,10 @@ _COLLAPSE_SPACES_RE = re.compile(r"[ \t]{2,}")
 class MentionNameResolver(Protocol):
     """Resolves a Discord snowflake (member/role/channel) to a name for the spoken reply."""
 
-    def __call__(self, *, target_id: int) -> str | None: ...
+    def __call__(self, target_id: int) -> str | None: ...
 
 
-def speechify_discord_markup(*, text: str, resolve_name: MentionNameResolver) -> str:
+def speechify_discord_markup(text: str, resolve_name: MentionNameResolver) -> str:
     """Rewrites Discord markup into plain spoken text before TTS synthesis.
 
     A mention becomes the resolved member/role/channel name (or is dropped when it cannot be
@@ -185,7 +185,7 @@ class ImageGenerator(BaseModel):
     )
 
     async def render(
-        self, *, prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
+        self, prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
     ) -> bytes:
         """Renders one image to PNG bytes, editing source bytes when present, else generating fresh.
 
@@ -232,7 +232,7 @@ class ImageGenerator(BaseModel):
         raise ValueError("Image operation returned no image data after one retry")
 
     async def generate(
-        self, *, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
+        self, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
     ) -> bytes | None:
         """Renders one image from the description; None on any failure or timeout.
 
@@ -297,7 +297,6 @@ class PromptGenerator(BaseModel):
 
     async def refine(
         self,
-        *,
         user_prompt: str,
         instructions: str,
         end_user_id: str,
@@ -387,7 +386,7 @@ class VoiceGenerator(BaseModel):
     # no tools; the caller reads the name off the catalog's `tts_model`.
     model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
 
-    async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
+    async def generate(self, text: str, end_user_id: str) -> VoiceClip:
         """Renders reply text to a VoiceClip, reporting why it ended for best-effort hinting."""
         spoken = text.strip()
         if not spoken:
@@ -510,7 +509,6 @@ class VideoGenerator(BaseModel):
 
     async def render(
         self,
-        *,
         prompt: str,
         reference_image_sources: list[LoadedMedia],
         source_video: LoadedMedia | None = None,
@@ -604,7 +602,7 @@ class VideoGenerator(BaseModel):
         return await self._download_output_video(uri=video.uri)
 
     async def generate(
-        self, *, user_prompt: str, reference_image_sources: list[LoadedMedia] | None = None
+        self, user_prompt: str, reference_image_sources: list[LoadedMedia] | None = None
     ) -> bytes | None:
         """Renders one inline `<generate-video>` clip to MP4 bytes; None on any failure or timeout.
 
@@ -638,7 +636,7 @@ class VideoGenerator(BaseModel):
         )
         return video
 
-    async def _download_output_video(self, *, uri: str) -> bytes:
+    async def _download_output_video(self, uri: str) -> bytes:
         """Downloads a URI-delivered clip, retrying while its Files entry finalizes; raises past the bound.
 
         With `delivery="uri"` the interaction reports `completed` while `files.get` can still show
@@ -674,7 +672,7 @@ class VideoGenerator(BaseModel):
                 raise
             raise failure from None
 
-    async def _upload_source_video(self, *, source_video: LoadedMedia) -> str:
+    async def _upload_source_video(self, source_video: LoadedMedia) -> str:
         """Uploads a source clip to the Files API and returns its ACTIVE uri; raises on failure.
 
         The edit path feeds the actual clip (not a poster frame), so the video IS the primary
@@ -724,7 +722,7 @@ class MusicGenerator(BaseModel):
         ..., description="Model settings for native Gemini (Lyria) music generation."
     )
 
-    async def generate(self, *, user_prompt: str) -> MusicClip | None:
+    async def generate(self, user_prompt: str) -> MusicClip | None:
         """Renders one music clip from the description; None on any failure or timeout.
 
         Best-effort wrapper for the QA-route `<generate-music>` marker: one non-streaming Interactions

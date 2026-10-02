@@ -91,7 +91,7 @@ _MEDIA_TYPE_VIDEO = 2
 _LOGIN_WALL_PATHS = ("/accounts/login", "/challenge", "/accounts/suspended")
 
 
-def is_instagram_post_url(*, url: str) -> bool:
+def is_instagram_post_url(url: str) -> bool:
     """Whether a matched Instagram URL names one post rather than a profile or the home page.
 
     The regex matches the host, so this is where `/`, `/<user>/`, `/explore/...` and the rest
@@ -185,12 +185,12 @@ class InstagramDownloader(PlatformDownloader):
     that touches the network.
     """
 
-    def _fetch_page(self, *, url: str) -> FetchedPage:
+    def _fetch_page(self, url: str) -> FetchedPage:
         """Fetches a page with the browser headers the full payload needs."""
         return fetch_page(url=url, headers=BROWSER_HEADERS, timeout=INSTAGRAM_PAGE_TIMEOUT_SECONDS)
 
     @staticmethod
-    def _find_media(*, payloads: list[Any], shortcode: str) -> dict[str, Any] | None:
+    def _find_media(payloads: list[Any], shortcode: str) -> dict[str, Any] | None:
         """The media node for the wanted post, or None when the page carries none.
 
         Matched on the shortcode alone. The page's "more posts by this author" rail serialises
@@ -209,7 +209,7 @@ class InstagramDownloader(PlatformDownloader):
         return fallback
 
     @staticmethod
-    def _media_urls_of(*, media: dict[str, Any]) -> tuple[list[str], list[str]]:
+    def _media_urls_of(media: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Original-resolution image URLs and playable video URLs, in carousel order.
 
         A carousel keeps its items under `carousel_media`; a single image or video is the node
@@ -238,7 +238,7 @@ class InstagramDownloader(PlatformDownloader):
         return image_urls, video_urls
 
     @staticmethod
-    def _comment_branches(*, payloads: list[Any], post_url: str) -> list[list[InstagramOutput]]:
+    def _comment_branches(payloads: list[Any], post_url: str) -> list[list[InstagramOutput]]:
         """Every comment on the page, grouped into branches by `thread_branches`.
 
         A comment carries `parent_comment_id` when it answers another one, so a reply is
@@ -272,7 +272,7 @@ class InstagramDownloader(PlatformDownloader):
                 )
         return thread_branches(comments=found, parents=parents)
 
-    def parse_metadata(self, *, url: str) -> InstagramConversation:
+    def parse_metadata(self, url: str) -> InstagramConversation:
         """Reads one public Instagram post and the comments under it.
 
         Writes nothing to disk, and there is no `parse` counterpart because nothing is

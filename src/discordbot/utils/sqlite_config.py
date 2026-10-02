@@ -49,7 +49,7 @@ def configure_sqlite_connection(
 class SqliteSchemaHook(Protocol):
     """Extra bootstrap a database runs inside its own `create_all` transaction."""
 
-    def __call__(self, *, conn: AsyncConnection) -> Awaitable[None]:
+    def __call__(self, conn: AsyncConnection) -> Awaitable[None]:
         """Runs the extra bootstrap against the open connection."""
         ...
 

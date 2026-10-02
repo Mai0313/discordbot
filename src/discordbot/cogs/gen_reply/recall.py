@@ -61,7 +61,7 @@ class RecallContext(BaseModel):
 
 
 def build_recall_context(
-    *, author_id: int, guild_id: int | None, is_direct_message: bool
+    author_id: int, guild_id: int | None, is_direct_message: bool
 ) -> RecallContext:
     """Builds the read context for one turn, from where that turn is actually happening.
 
@@ -143,7 +143,7 @@ def _user_label(user: Member | User) -> str:
 
 
 def build_recall_allowlist(
-    *, users: list[Member | User], bot_user_id: int
+    users: list[Member | User], bot_user_id: int
 ) -> dict[int, RecallCandidate]:
     """Builds an insertion-ordered id-to-label memory allowlist from trusted users.
 
@@ -161,7 +161,7 @@ def build_recall_allowlist(
     return allowed
 
 
-def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
+def allowlist_ids_from_server_memory(memory: str) -> dict[int, str]:
     """Parses askable user ids out of a server memory's `## 成員稱呼` nickname table.
 
     Each table row maps a member to the aliases the community uses and carries that
@@ -176,7 +176,7 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     }
 
 
-def widen_allowlist_with_aliases(*, allowed: dict[int, RecallCandidate], memory: str) -> None:
+def widen_allowlist_with_aliases(allowed: dict[int, RecallCandidate], memory: str) -> None:
     """Merges the server memory's nickname-table aliases into the allowlist's labels in place.
 
     A conversation participant already in the allowlist keeps their label and gains the
@@ -199,7 +199,7 @@ def widen_allowlist_with_aliases(*, allowed: dict[int, RecallCandidate], memory:
             )
 
 
-def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyInputMessageParam:
+def render_callable_users_block(allowed: dict[int, RecallCandidate]) -> EasyInputMessageParam:
     """Renders optional oblique-reference candidates as a system separator block."""
     lines = "\n".join(
         f"[id: {user_id}] {candidate.prompt_label}" for user_id, candidate in allowed.items()
@@ -209,7 +209,7 @@ def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyI
     )
 
 
-def render_memory_context_block(*, memories: list[UserMemory]) -> EasyInputMessageParam:
+def render_memory_context_block(memories: list[UserMemory]) -> EasyInputMessageParam:
     """Renders resolved user memories as a low-authority assistant context note.
 
     Code decides the direct participants while the route call may add an obliquely referenced
@@ -228,7 +228,7 @@ def render_memory_context_block(*, memories: list[UserMemory]) -> EasyInputMessa
     return EasyInputMessageParam(role="assistant", content=text)
 
 
-def render_server_memory_block(*, memory: str) -> EasyInputMessageParam:
+def render_server_memory_block(memory: str) -> EasyInputMessageParam:
     """Renders the bot's memory of the current server as a low-authority assistant note.
 
     There is exactly one server memory per guild, so unlike user memory it needs no
@@ -244,7 +244,7 @@ def render_server_memory_block(*, memory: str) -> EasyInputMessageParam:
     return EasyInputMessageParam(role="assistant", content=text)
 
 
-def render_tone_block(*, tone: str) -> EasyInputMessageParam:
+def render_tone_block(tone: str) -> EasyInputMessageParam:
     """Renders the reply target's tone-preference note as a low-authority assistant note.
 
     Unlike user memory, the tone note needs no selection, allowlist or source
@@ -287,7 +287,7 @@ def compartments_for_reading(owner_id: int, context: RecallContext) -> list[str]
 
 
 def recall_user_memories(
-    *, user_id_list: list[str], allowed: dict[int, RecallCandidate], context: RecallContext
+    user_id_list: list[str], allowed: dict[int, RecallCandidate], context: RecallContext
 ) -> list[UserMemory]:
     """Resolves requested ids to stored memory, enforcing the allowlist and the compartments.
 
@@ -325,7 +325,7 @@ def recall_user_memories(
     return results
 
 
-def memory_lookup_credits(*, memories: list[UserMemory]) -> MemoryCredits:
+def memory_lookup_credits(memories: list[UserMemory]) -> MemoryCredits:
     """Who to credit in the usage footer for the memory this reply actually read.
 
     Users that were queried but had no stored memory are omitted: they did not

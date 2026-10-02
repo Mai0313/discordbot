@@ -177,7 +177,7 @@ class DouyinTooLargeError(DouyinError):
     """The media exceeds the caller's cap. Deterministic, so it is never retried."""
 
 
-def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError:
+def _douyin_fetch_error(error: RequestException, message: str) -> DouyinError:
     """Wraps a failed Douyin request in the class that says whether it is worth retrying.
 
     A 429, a 5xx or a connection that never answered or dropped part-way through the body all
@@ -650,7 +650,7 @@ class DouyinDownloader(PlatformDownloader):
             raise DouyinUnavailableError(f"Douyin will not serve {aweme_id}: {reason}")
         raise DouyinUnavailableError(f"Douyin returned no post for {aweme_id}")
 
-    def parse_metadata(self, *, url: str) -> DouyinMetadata:
+    def parse_metadata(self, url: str) -> DouyinMetadata:
         """Parses a Douyin URL into post metadata WITHOUT downloading any media.
 
         The expansion cog and the reply pipeline both need the caption and media URLs before (or

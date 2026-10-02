@@ -69,7 +69,7 @@ def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "do
 
 
 def _media_content(
-    *, kind: Literal["image", "video", "audio", "document"], reference: str
+    kind: Literal["image", "video", "audio", "document"], reference: str
 ) -> ContentParam | None:
     """Builds one media content param from a Files API URI or from inlined bytes.
 
@@ -105,7 +105,7 @@ def _media_content(
     return cast("ContentParam", {"type": kind, "data": payload, "mime_type": mime_type})
 
 
-def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
+def _translate_part(part: ResponseInputContentParam) -> ContentParam | None:
     """Translates one OpenAI input content part into an Interactions content param.
 
     Returns None for an empty or unmappable part so the caller drops it instead of breaking
@@ -134,7 +134,7 @@ def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
     return None
 
 
-def _translate_content(*, content: "str | object") -> list[ContentParam]:
+def _translate_content(content: "str | object") -> list[ContentParam]:
     """Translates an OpenAI message's content (string shorthand or part list) into params."""
     if isinstance(content, str):
         return [TextContentParam(type="text", text=content)] if content else []
@@ -146,9 +146,7 @@ def _translate_content(*, content: "str | object") -> list[ContentParam]:
     return parts
 
 
-def to_interactions_input(
-    answer_input: ResponseInputParam, *, youtube_url: str
-) -> list[StepParam]:
+def to_interactions_input(answer_input: ResponseInputParam, youtube_url: str) -> list[StepParam]:
     """Translates the assembled OpenAI answer input into Interactions steps.
 
     Each OpenAI message becomes a user-input or model-output step (system / developer blocks
@@ -185,7 +183,7 @@ def to_interactions_input(
 
 
 async def adapt_interactions_stream(
-    *, stream: "AsyncIterator[InteractionSSEEvent]"
+    stream: "AsyncIterator[InteractionSSEEvent]",
 ) -> AsyncIterator[ResponseStreamEvent]:
     """Adapts Interactions stream events into the shapes `ResponseStreamer._consume` reads.
 
@@ -281,7 +279,6 @@ async def adapt_interactions_stream(
 
 
 async def create_interactions_answer_stream(
-    *,
     client: genai.Client,
     model: str,
     system_instruction: str,

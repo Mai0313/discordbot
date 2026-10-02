@@ -22,7 +22,7 @@ DISCORD_ATTACHMENT_LIMIT: Final[int] = 10
 DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 
 
-def utf16_length(*, value: str) -> int:
+def utf16_length(value: str) -> int:
     """Counts UTF-16 code units, the conservative reading of Discord's "characters".
 
     Discord's docs never define which unit its embed limits count, so an emoji is priced at the
@@ -31,7 +31,7 @@ def utf16_length(*, value: str) -> int:
     return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
 
 
-def clip_to_utf16_limit(*, text: str, limit: int, notice: str) -> str:
+def clip_to_utf16_limit(text: str, limit: int, notice: str) -> str:
     """Returns `text` within `limit` UTF-16 units, ending in `notice` when it had to cut.
 
     The cut is marked so a truncated post never reads as a whole one. A limit with no room for
@@ -80,13 +80,13 @@ def build_embed_spacer_file() -> File:
     )
 
 
-def _embed_has_real_image(*, embed: Embed, spacer_url: str) -> bool:
+def _embed_has_real_image(embed: Embed, spacer_url: str) -> bool:
     """Returns True when an embed already shows a real image via set_image."""
     image_url = embed.image.url if embed.image else None
     return bool(image_url and image_url != spacer_url)
 
 
-def _target_allows_file_uploads(*, target: object | None) -> bool:
+def _target_allows_file_uploads(target: object | None) -> bool:
     """Returns False only when the current channel clearly denies file uploads."""
     if target is None:
         return True
@@ -102,7 +102,7 @@ def _target_allows_file_uploads(*, target: object | None) -> bool:
     return bool(getattr(permissions, "attach_files", True))
 
 
-def apply_embed_spacer_image(*, embeds: list[Embed]) -> list[Embed]:
+def apply_embed_spacer_image(embeds: list[Embed]) -> list[Embed]:
     """Sets a transparent spacer only on embeds without an image of their own."""
     spacer_url = embed_spacer_url()
     for embed in embeds:
@@ -111,7 +111,7 @@ def apply_embed_spacer_image(*, embeds: list[Embed]) -> list[Embed]:
     return embeds
 
 
-def _existing_spacer_attachment(*, target: object | None) -> Attachment | None:
+def _existing_spacer_attachment(target: object | None) -> Attachment | None:
     """Returns an already-uploaded spacer attachment on the edit target, if present."""
     message = target if hasattr(target, "attachments") else getattr(target, "message", None)
     attachments = getattr(message, "attachments", None) or ()
@@ -122,7 +122,6 @@ def _existing_spacer_attachment(*, target: object | None) -> Attachment | None:
 
 
 def embed_spacer_payload(
-    *,
     embeds: list[Embed],
     is_edit: bool,
     target: object | None = None,

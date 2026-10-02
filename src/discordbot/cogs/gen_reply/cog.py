@@ -64,7 +64,7 @@ class _MessageLogFields(TypedDict):
     guild_name: str | None
 
 
-def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
+def _message_log_fields(surface: TurnSurface) -> _MessageLogFields:
     """Standard Discord identifying fields for correlating one reply's logs.
 
     The cog's arrival records and `gen_reply failed` carry the full set; every other log of the
@@ -211,7 +211,7 @@ class ReplyGeneratorCogs(commands.Cog):
         if swept:
             logfire.info("scheduled memory consolidation sweep", count=swept)
 
-    async def _deliver_failure_notice(self, *, surface: TurnSurface, error_embed: Embed) -> None:
+    async def _deliver_failure_notice(self, surface: TurnSurface, error_embed: Embed) -> None:
         """Shows the turn's failure, on the reply it was streaming into where there is one.
 
         Half the turns that fail here already painted something, and left beside that reply the
@@ -242,7 +242,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             await surface.send_unparented(embed=error_embed, **fresh_spacer)
 
-    async def _run_turn(self, *, surface: TurnSurface, content: str) -> None:
+    async def _run_turn(self, surface: TurnSurface, content: str) -> None:
         """Runs one turn and reports whatever it failed on, whichever entry point started it.
 
         Shared by `on_message` and `/ask` because everything that differs between them is
@@ -286,7 +286,7 @@ class ReplyGeneratorCogs(commands.Cog):
             await reactions.flush()
 
     async def _start_turn(
-        self, *, surface: TurnSurface, content: str, reactions: ReactionStatusChain
+        self, surface: TurnSurface, content: str, reactions: ReactionStatusChain
     ) -> None:
         """Runs a turn on the request, or answers `?` when the message asks for nothing.
 

@@ -47,7 +47,6 @@ class RouteClassifier(BaseModel):
 
     async def classify(
         self,
-        *,
         reference_messages: list[EasyInputMessageParam],
         current_message: list[EasyInputMessageParam],
         recall_candidates: dict[int, RecallCandidate],

@@ -60,9 +60,7 @@ from discordbot.cogs.gen_reply.status_marks import (
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
-def build_runtime_instructions(
-    *, system_prompt: str, message: Message, guild_id: int | None
-) -> str:
+def build_runtime_instructions(system_prompt: str, message: Message, guild_id: int | None) -> str:
     """Prepends per-request time and conversation-location context to the model instructions.
 
     The location line names the current guild (or DM) with developer authority so the
@@ -91,7 +89,7 @@ def build_runtime_instructions(
     return f"{request_time_context}\n\n{request_location_context}\n\n{system_prompt}"
 
 
-def count_media_parts(*, answer_input: ResponseInputParam) -> int:
+def count_media_parts(answer_input: ResponseInputParam) -> int:
     """Counts the media parts riding in an assembled answer request.
 
     An `input_file` (a Files API handle) or an `input_image` (inline base64) is the only shape a
@@ -108,7 +106,7 @@ def count_media_parts(*, answer_input: ResponseInputParam) -> int:
 
 
 def memory_report_for(
-    *, streamer: ResponseStreamer
+    streamer: ResponseStreamer,
 ) -> Callable[[MemoryWriteSummary], Awaitable[None]]:
     """Builds the callback that tells the user what this turn's memory work recorded.
 
@@ -175,7 +173,6 @@ class AnswerTurn(BaseModel):
 
     async def stream_media_persona_reply(
         self,
-        *,
         reply: Message | None,
         context_task: asyncio.Task[ReplyContext],
         system_prompt: str,
@@ -284,7 +281,7 @@ class AnswerTurn(BaseModel):
                 with contextlib.suppress(Exception):
                     await base.delete()
 
-    async def persona_base_reply(self, *, reply: Message | None) -> Message:
+    async def persona_base_reply(self, reply: Message | None) -> Message:
         """The message the persona stream edits: the delivered media message, or a fresh reply.
 
         When the media rode as a native attachment, that same message is reused (its content edits
@@ -300,7 +297,6 @@ class AnswerTurn(BaseModel):
 
     async def stream_answer(
         self,
-        *,
         system_prompt: str,
         context: ReplyContext,
         effort: Literal["low", "high"] = "high",
@@ -492,7 +488,7 @@ class AnswerTurn(BaseModel):
         self._schedule_memory_updates(context=context, full_reply=full_reply, streamer=streamer)
 
     def _schedule_memory_updates(
-        self, *, context: ReplyContext, full_reply: str, streamer: ResponseStreamer
+        self, context: ReplyContext, full_reply: str, streamer: ResponseStreamer
     ) -> None:
         """Schedules the per-author and per-server memory reviews this turn's markers asked for.
 

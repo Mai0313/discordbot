@@ -132,7 +132,7 @@ class ResearchResult(BaseModel):
         return self.status == "completed"
 
 
-def _extract_image(*, interaction: _ResearchInteraction) -> bytes | None:
+def _extract_image(interaction: _ResearchInteraction) -> bytes | None:
     """Returns the first generated image (decoded) from an interaction's model_output steps.
 
     A step that fails to decode is reported rather than swallowed: it is the one path that loses
@@ -159,7 +159,7 @@ def _extract_image(*, interaction: _ResearchInteraction) -> bytes | None:
     return None
 
 
-def _to_result(*, interaction: _ResearchInteraction) -> ResearchResult:
+def _to_result(interaction: _ResearchInteraction) -> ResearchResult:
     """Maps a terminal interaction to a `ResearchResult`, reading absent token counts as zero."""
     return ResearchResult(
         status=str(interaction.status),
@@ -174,9 +174,7 @@ def _to_result(*, interaction: _ResearchInteraction) -> ResearchResult:
     )
 
 
-async def _poll_until_terminal(
-    *, client: genai.Client, interaction_id: str
-) -> _ResearchInteraction:
+async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _ResearchInteraction:
     """Polls `interactions.get` until the status leaves `in_progress`.
 
     No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
@@ -226,7 +224,7 @@ async def _noop_created(_interaction_id: str) -> None:
     return
 
 
-def _is_terminal_event(*, event: "InteractionSSEEvent") -> bool:
+def _is_terminal_event(event: "InteractionSSEEvent") -> bool:
     """Whether an SSE event marks the interaction as settled (so the driver stops re-attaching).
 
     `interaction.completed` and `error` are terminal; a `status_update` is terminal once it leaves
@@ -268,9 +266,7 @@ class _StreamDriver(BaseModel):
         )
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
-    async def _persist_created(
-        self, *, interaction_id: str, on_created: "CreatedCallback"
-    ) -> None:
+    async def _persist_created(self, interaction_id: str, on_created: "CreatedCallback") -> None:
         """Records the captured interaction id and hands it to the caller's persist callback."""
         self.interaction_id = interaction_id
         try:
@@ -288,7 +284,6 @@ class _StreamDriver(BaseModel):
 
     async def events(
         self,
-        *,
         open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
         on_created: "CreatedCallback",
     ) -> "AsyncIterator[InteractionSSEEvent]":
@@ -334,7 +329,6 @@ class _StreamDriver(BaseModel):
 
 
 async def _drive(
-    *,
     driver: _StreamDriver,
     streamer: "ResearchProgressStreamer",
     open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
@@ -368,7 +362,6 @@ async def _drive(
 
 
 async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs plus the streamer + id callback
-    *,
     client: genai.Client,
     agent: str,
     brief: str,
@@ -404,7 +397,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
 
 
 async def resume_research_stream(
-    *, client: genai.Client, interaction_id: str, streamer: "ResearchProgressStreamer"
+    client: genai.Client, interaction_id: str, streamer: "ResearchProgressStreamer"
 ) -> ResearchResult:
     """Re-attaches a live stream to an already-running research (restart resume); returns the result."""
     driver = _StreamDriver(client=client, interaction_id=interaction_id)

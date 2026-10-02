@@ -205,7 +205,6 @@ def print_batch_results(result_path: str | Path) -> None:
 
 def retrieve_batch(
     batch_id: str,
-    *,
     result_path: str | Path = "./data/batch_dev_results.jsonl",
     error_path: str | Path = "./data/batch_dev_errors.jsonl",
     poll_interval_seconds: int = BATCH_POLL_INTERVAL_SECONDS,
@@ -247,7 +246,6 @@ def retrieve_batch(
 def submit_gen_reply_batch(
     user_prompts: Sequence[str],
     file_path: str | Path | None = None,
-    *,
     request_path: str | Path = "./data/batch_dev_requests.jsonl",
 ) -> str:
     """Submits a Responses API batch using the dev reply prompt.
@@ -296,7 +294,6 @@ def submit_gen_reply_batch(
 def gen_reply_batch(  # noqa: PLR0913 -- dev helper keeps file paths explicit at call sites.
     user_prompts: Sequence[str],
     file_path: str | Path | None = None,
-    *,
     request_path: str | Path = "./data/batch_dev_requests.jsonl",
     result_path: str | Path = "./data/batch_dev_results.jsonl",
     error_path: str | Path = "./data/batch_dev_errors.jsonl",

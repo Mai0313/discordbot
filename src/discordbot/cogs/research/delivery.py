@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from discordbot.cogs.research.agent import ResearchResult
 
 
-def owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
+def owner_allowed_mentions(owner_id: int) -> AllowedMentions:
     """Restricts a research message to pinging only its owner.
 
     The anchor carries the user's topic and the report text is agent-generated, so any
@@ -33,7 +33,7 @@ def owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
     return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
 
-def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+def split_report(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     """Splits report markdown into <=limit chunks, preferring paragraph then line breaks.
 
     A hard cut at `limit` is the last resort, used only when a single paragraph or line
@@ -55,7 +55,7 @@ def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-def split_report_by_sections(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+def split_report_by_sections(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     """Splits a report into one chunk list per `---` section, packing each section under `limit`.
 
     The report body is model-generated cited markdown whose major sections are divided by
@@ -101,7 +101,6 @@ def split_report_by_sections(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -
 
 
 async def deliver_report(  # noqa: PLR0913 -- the report body plus its completion-message inputs
-    *,
     thread: "Thread",
     status: Message | None,
     owner_id: int,
@@ -171,7 +170,6 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
 
 
 async def _place(  # noqa: PLR0913 -- target message plus its optional files / mention policy
-    *,
     status: Message | None,
     thread: "Thread",
     content: str,

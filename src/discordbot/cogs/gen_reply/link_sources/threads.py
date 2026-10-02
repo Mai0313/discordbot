@@ -228,7 +228,7 @@ class BranchSelection(BaseModel):
     )
 
 
-def _renderable_branch(*, branch: list[ThreadsOutput]) -> list[ThreadsOutput]:
+def _renderable_branch(branch: list[ThreadsOutput]) -> list[ThreadsOutput]:
     """Returns a branch's renderable comments, dropping the empty tail.
 
     A comment with neither text nor media has nothing to render, but dropping it wherever it
@@ -241,7 +241,7 @@ def _renderable_branch(*, branch: list[ThreadsOutput]) -> list[ThreadsOutput]:
     return branch[:end]
 
 
-def _select_replies(*, branches: list[list[ThreadsOutput]], limit: int) -> list[BranchSelection]:
+def _select_replies(branches: list[list[ThreadsOutput]], limit: int) -> list[BranchSelection]:
     """Picks which comments to render, breadth-first, keeping each branch's items adjacent.
 
     Filling depth by depth rather than branch by branch is what stops one deep argument from
@@ -273,7 +273,7 @@ def _select_replies(*, branches: list[list[ThreadsOutput]], limit: int) -> list[
     ]
 
 
-def _reply_label(*, post: ThreadsOutput, depth: int, target_author: str) -> str:
+def _reply_label(post: ThreadsOutput, depth: int, target_author: str) -> str:
     """Labels one comment by its place in the branch, and by whether the post's author wrote it.
 
     The self-reply case is not an edge case: an author answering under their own post is one of
@@ -288,7 +288,7 @@ def _reply_label(*, post: ThreadsOutput, depth: int, target_author: str) -> str:
     return f"REPLY (a nested comment by {who})"
 
 
-def _reply_media_note(*, post: ThreadsOutput) -> str:
+def _reply_media_note(post: ThreadsOutput) -> str:
     """Notes the media a comment carries, which is never fetched.
 
     `_media_plan` ingests the target's media and that of the post it quotes; a comment's is
@@ -307,7 +307,7 @@ def _reply_media_note(*, post: ThreadsOutput) -> str:
     return f"(carries {' and '.join(counts)}, NOT attached)"
 
 
-def _render_reply(*, post: ThreadsOutput, depth: int, target_author: str) -> str:
+def _render_reply(post: ThreadsOutput, depth: int, target_author: str) -> str:
     """Renders one comment compactly: who said it, how liked it is, and what it says.
 
     Deliberately leaner than `_render_post_text`, which was written for the handful of chain
@@ -328,7 +328,7 @@ def _render_reply(*, post: ThreadsOutput, depth: int, target_author: str) -> str
 
 
 def _render_reply_sections(
-    *, selected: list[BranchSelection], target: ThreadsOutput, carried: int
+    selected: list[BranchSelection], target: ThreadsOutput, carried: int
 ) -> list[str]:
     """Renders the comments, led by a header stating exactly how much of the discussion this is.
 
@@ -495,7 +495,7 @@ class MediaPlanEntry(BaseModel):
 
 
 async def _upload_post_media(
-    *, entry: MediaPlanEntry, gemini_client: genai.Client, download_dir: str
+    entry: MediaPlanEntry, gemini_client: genai.Client, download_dir: str
 ) -> PostMedia:
     """Fetches one post's media and uploads it, reporting what arrived and what did not.
 
@@ -571,7 +571,7 @@ async def _upload_post_media(
     )
 
 
-def _media_plan(*, target: ThreadsOutput) -> list[MediaPlanEntry]:
+def _media_plan(target: ThreadsOutput) -> list[MediaPlanEntry]:
     """Decides which posts' media is fetched and how much of the shared budget each may spend.
 
     The target keeps first claim and the post it quotes gets the leftovers, which is what makes
@@ -602,7 +602,7 @@ def _media_plan(*, target: ThreadsOutput) -> list[MediaPlanEntry]:
     return plan
 
 
-async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -> IngestedMedia:
+async def _ingest_media(target: ThreadsOutput, gemini_client: genai.Client) -> IngestedMedia:
     """Runs the media ingestion under `bounded_media_step`, degrading to no parts.
 
     A degrade returns no groups at all rather than groups reporting everything as missing: with
@@ -634,7 +634,7 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
 
 
 async def _upload_planned_media(
-    *, plan: list[MediaPlanEntry], gemini_client: genai.Client
+    plan: list[MediaPlanEntry], gemini_client: genai.Client
 ) -> IngestedMedia:
     """Uploads every planned post's media concurrently, their clips sharing one scratch dir."""
     with scratch_directory(prefix="threads-ai-") as download_dir:
@@ -652,7 +652,7 @@ async def _upload_planned_media(
         )
 
 
-def _media_url_lines(*, owner: str, image_urls: list[str], video_urls: list[str]) -> list[str]:
+def _media_url_lines(owner: str, image_urls: list[str], video_urls: list[str]) -> list[str]:
     """Renders media URLs as text for the media the model was NOT given.
 
     The count leads each line and is the TRUE one, so a list trimmed to the cap still says how
@@ -661,7 +661,7 @@ def _media_url_lines(*, owner: str, image_urls: list[str], video_urls: list[str]
     media it is, since a quote post puts two posts' URLs in the same block.
     """
 
-    def line(*, noun: str, urls: list[str]) -> str:
+    def line(noun: str, urls: list[str]) -> str:
         """Renders one line, naming what the trim itself left out."""
         shown = urls[:MAX_THREADS_MEDIA_PARTS]
         rendered = f"{noun} of {owner} NOT attached ({len(urls):,}), URLs only: " + ", ".join(
@@ -679,7 +679,7 @@ def _media_url_lines(*, owner: str, image_urls: list[str], video_urls: list[str]
     return lines
 
 
-def _attachment_order_notice(*, groups: list[PostMedia]) -> str:
+def _attachment_order_notice(groups: list[PostMedia]) -> str:
     """States which attached item belongs to which post, in the order the parts ride.
 
     Only emitted once a quote post makes ownership ambiguous. The parts are opaque and adjacent,
@@ -697,7 +697,7 @@ def _attachment_order_notice(*, groups: list[PostMedia]) -> str:
     )
 
 
-def _missing_media_notice(*, attached: int, media: IngestedMedia) -> str:
+def _missing_media_notice(attached: int, media: IngestedMedia) -> str:
     """States how much of the posts' media is attached, ahead of the URLs of the rest."""
     missing = sum(
         len(group.missing_image_urls) + len(group.missing_video_urls) for group in media.groups
@@ -710,7 +710,7 @@ def _missing_media_notice(*, attached: int, media: IngestedMedia) -> str:
     )
 
 
-def _quoted_post_header(*, target: ThreadsOutput, quoted: ThreadsOutput) -> str:
+def _quoted_post_header(target: ThreadsOutput, quoted: ThreadsOutput) -> str:
     """Leads the quoted post's section, naming who wrote it only when the payload says.
 
     An unnamed author yields no claim at all rather than the "different author" default: guessing
@@ -728,7 +728,7 @@ def _quoted_post_header(*, target: ThreadsOutput, quoted: ThreadsOutput) -> str:
 
 
 def _render_conversation_sections(
-    *, chain: list[ThreadsOutput], conversation: ThreadsConversation
+    chain: list[ThreadsOutput], conversation: ThreadsConversation
 ) -> list[str]:
     """Renders the whole conversation as text: the chain, the quoted post, then the comments.
 
@@ -782,7 +782,7 @@ def _render_conversation_sections(
 
 
 async def build_threads_context_messages(
-    *, url: str, answer_model_is_gemini: bool, gemini_client: genai.Client | None
+    url: str, answer_model_is_gemini: bool, gemini_client: genai.Client | None
 ) -> list[EasyInputMessageParam]:
     """Parses a Threads URL into answer-model input blocks.
 

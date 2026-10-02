@@ -169,7 +169,7 @@ def _spawn_db(coro: Awaitable[None], scope: str) -> None:
 
 
 async def stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capture time
-    *, scope: str, subject: str, transcript: str, identity: str, token: int, captured_at: float
+    scope: str, subject: str, transcript: str, identity: str, token: int, captured_at: float
 ) -> None:
     """Stages one turn only in the memory lifetime that captured it.
 

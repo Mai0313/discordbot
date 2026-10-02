@@ -70,7 +70,7 @@ def host_matches_domain(host: str, domain: str) -> bool:
     return host == domain or host.endswith(f".{domain}")
 
 
-def extract_first_url(*, text: str, patterns: Sequence[re.Pattern[str]] = ()) -> str:
+def extract_first_url(text: str, patterns: Sequence[re.Pattern[str]] = ()) -> str:
     """Returns the first URL in `text`, or the stripped text when there is none.
 
     `patterns` are tried in order before the generic one. A site-specific pattern knows where

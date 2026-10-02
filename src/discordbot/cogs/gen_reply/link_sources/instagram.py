@@ -96,7 +96,7 @@ INSTAGRAM_SEPARATORS = PostSeparators(
 
 
 def _render_conversation(
-    *, post: InstagramOutput, conversation: InstagramConversation, attached_images: int
+    post: InstagramOutput, conversation: InstagramConversation, attached_images: int
 ) -> str:
     """Renders the post, its counters and its comments as compact text."""
     handle = defuse_markers(text=post.author_name)
@@ -136,7 +136,6 @@ def _render_conversation(
 
 
 async def build_instagram_context_messages(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,

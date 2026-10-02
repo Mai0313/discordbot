@@ -14,7 +14,7 @@ from nextcord.ext import commands
 from discordbot.typings.research import has_research_permissions
 
 
-def can_launch_research(*, message: Message) -> bool:
+def can_launch_research(message: Message) -> bool:
     """Whether a research thread can be opened from this message.
 
     Only a guild text channel can host a nested thread, and only when its overwrites let the bot
@@ -27,21 +27,21 @@ def can_launch_research(*, message: Message) -> bool:
     return has_research_permissions(channel=message.channel, member=message.guild.me)
 
 
-def _research_cog(*, bot: commands.Bot) -> commands.Cog | None:
+def _research_cog(bot: commands.Bot) -> commands.Cog | None:
     """The loaded ResearchCogs cog, or None when it is not loaded."""
     # Read defensively because the test bots are plain namespaces with no `get_cog`.
     get_cog = getattr(bot, "get_cog", None)
     return get_cog("ResearchCogs") if callable(get_cog) else None
 
 
-def in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:
+def in_active_research_thread(bot: commands.Bot, channel_id: int) -> bool:
     """Whether a channel id is a research thread the ResearchCogs cog is actively driving."""
     checker = getattr(_research_cog(bot=bot), "is_research_thread", None)
     return bool(checker(channel_id=channel_id)) if checker is not None else False
 
 
 async def maybe_launch_research(
-    *, bot: commands.Bot, message: Message, anchor: Message | None, brief: str
+    bot: commands.Bot, message: Message, anchor: Message | None, brief: str
 ) -> None:
     """Hands a QA-emitted research brief to the ResearchCogs cog when it is loaded and enabled.
 

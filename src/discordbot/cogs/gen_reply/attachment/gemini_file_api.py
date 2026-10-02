@@ -71,7 +71,7 @@ class PendingUploadRepoll(BaseModel):
     )
 
 
-def _expiry_of(*, uploaded: File) -> datetime:
+def _expiry_of(uploaded: File) -> datetime:
     """The file's provider-reported expiry, or a conservative 47h when the provider omits it.
 
     47h sits under the ~48h a Gemini file lives, so a missing field never pins an unbounded

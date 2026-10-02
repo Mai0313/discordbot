@@ -116,7 +116,6 @@ class AttachmentRenderer(BaseModel):
 
     async def _load_source_bytes(
         self,
-        *,
         cache_key: int | str,
         filename: str,
         load_data: "FileBytesLoader",

@@ -129,7 +129,7 @@ def _render_post_text(post: DouyinMetadata, url: str) -> str:
 
 
 async def _upload_media(
-    *, url: str, download: DouyinDownload, gemini_client: genai.Client
+    url: str, download: DouyinDownload, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the downloaded files concurrently, keeping the parts that succeeded."""
     results = await asyncio.gather(
@@ -161,7 +161,7 @@ async def _upload_media(
 
 
 async def _fetch_and_upload(
-    *, url: str, post: DouyinMetadata, gemini_client: genai.Client
+    url: str, post: DouyinMetadata, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Downloads the post's media into a scratch dir and uploads it, returning what uploaded.
 
@@ -202,7 +202,6 @@ async def _fetch_and_upload(
 
 
 async def build_douyin_context_messages(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,

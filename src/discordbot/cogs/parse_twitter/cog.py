@@ -66,11 +66,11 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
     EMBED_COLOR = 0x1DA1F2
     downloader_factory = TwitterDownloader
 
-    def _author_label(self, *, post: TwitterOutput) -> str:
+    def _author_label(self, post: TwitterOutput) -> str:
         """The handle, which is the only name a post carries here."""
         return f"@{post.author_name}" if post.author_name else ""
 
-    def _footer_text(self, *, post: TwitterOutput, shown_images: int) -> str:
+    def _footer_text(self, post: TwitterOutput, shown_images: int) -> str:
         """The counters, and what the card could not show.
 
         The reply figure is the size of the whole thread under the post, which is the only reply
@@ -88,7 +88,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
             parts.append(f"另有 {omitted} 張圖片")
         return " · ".join(parts)
 
-    def _context_embed(self, *, post: TwitterOutput, header: str, budget: int) -> Embed:
+    def _context_embed(self, post: TwitterOutput, header: str, budget: int) -> Embed:
         """One grey card for a post this expansion only quotes or replies to.
 
         Its own URL rather than the target's, which is what keeps Discord from folding it into the
@@ -111,7 +111,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
             embed.set_author(name=author, url=post.url, icon_url=post.author_icon_url or None)
         return embed
 
-    def _build_embeds(self, *, conversation: TwitterConversation) -> list[Embed]:
+    def _build_embeds(self, conversation: TwitterConversation) -> list[Embed]:
         """Builds the whole expansion: the post it replies to, the post, its images, its quote."""
         post = conversation.target
         if post is None:

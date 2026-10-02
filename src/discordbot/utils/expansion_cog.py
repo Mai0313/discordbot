@@ -143,7 +143,7 @@ class CardConversation[PostT: CardPost](Protocol):
 class ConversationReader[ConversationT](Protocol):
     """A platform reader that fetches and parses a post in one blocking call."""
 
-    def parse_metadata(self, *, url: str) -> ConversationT:
+    def parse_metadata(self, url: str) -> ConversationT:
         """Reads the post at `url`."""
         ...
 
@@ -172,7 +172,6 @@ def with_gallery(card: Embed, images: list[str]) -> list[Embed]:
 
 
 def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform supplies
-    *,
     post: CardPost,
     color: int,
     author: str,
@@ -220,7 +219,7 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
     return with_gallery(card=main, images=images)
 
 
-def context_card_budget(*, card: Embed) -> int:
+def context_card_budget(card: Embed) -> int:
     """What the message-wide ceiling leaves the secondary cards once the post's embed is spent.
 
     Budgeted rather than clipping each card on its own, since cards clipped independently can
@@ -236,7 +235,7 @@ def context_card_budget(*, card: Embed) -> int:
     return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
 
 
-def expansion_failure_emoji(*, error: Exception) -> str:
+def expansion_failure_emoji(error: Exception) -> str:
     """Picks the mark a failed read earns, the same way for every platform.
 
     Read off the exception's CLASS rather than its message: a platform refusing the request or a
@@ -260,7 +259,7 @@ def expansion_failure_emoji(*, error: Exception) -> str:
 
 
 def report_expansion_read_failure(
-    *, error: Exception, platform: str, url: str, message_id: int
+    error: Exception, platform: str, url: str, message_id: int
 ) -> None:
     """Logs a failed read at the severity `.github/CONTRIBUTING.md#logging` gives its outcome.
 
@@ -303,7 +302,7 @@ def report_expansion_read_failure(
 
 
 def report_expansion_delivery_failure(
-    *, error: Exception, platform: str, url: str, message_id: int, channel_id: int
+    error: Exception, platform: str, url: str, message_id: int, channel_id: int
 ) -> None:
     """Logs a failed delivery at the severity it deserves, the same way for every platform.
 
@@ -395,7 +394,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         self._resume_started = False
 
     @staticmethod
-    def url_is_expandable(*, url: str) -> bool:
+    def url_is_expandable(url: str) -> bool:
         """Whether a matched URL is worth reading.
 
         Overridden by a cog whose pattern anchors on the host, where a profile or home page
@@ -411,9 +410,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         del url
         return True
 
-    async def read(
-        self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
-    ) -> ParsedT:
+    async def read(self, message: Message, url: str, stack: contextlib.AsyncExitStack) -> ParsedT:
         """Reads the post, under this platform's own wall-clock bound.
 
         Raises rather than reporting: the caller turns the exception into the reaction and the
@@ -438,7 +435,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         raise NotImplementedError
 
     async def build_delivery(
-        self, *, message: Message, url: str, parsed: ParsedT
+        self, message: Message, url: str, parsed: ParsedT
     ) -> ExpansionDelivery | None:
         """Turns a parsed post into the card, or refuses it.
 
@@ -470,7 +467,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         self._resume_started = True
         await resume_expansion_placeholders(bot=self.bot, source=self.SOURCE, expand=self._expand)
 
-    async def _mark_failed(self, *, message: Message, current_emoji: str | None) -> None:
+    async def _mark_failed(self, message: Message, current_emoji: str | None) -> None:
         """Paints the failure cross, naming the platform when nothing else on the message does.
 
         `current_emoji` is None only when claiming the reply slot failed, before either mark
@@ -561,7 +558,7 @@ class ExpansionCog[ParsedT](commands.Cog):
             await self._mark_failed(message=message, current_emoji=current_emoji)
 
     async def _expand(
-        self, *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+        self, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
     ) -> None:
         """Reads the post and puts it on screen, marking the outcome it earned.
 
@@ -612,7 +609,6 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     async def _deliver(
         self,
-        *,
         message: Message,
         url: str,
         delivery: ExpansionDelivery,
@@ -701,7 +697,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     """Builds the reader; the seam a test replaces to keep an expansion off the network."""
 
     async def read(
-        self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
+        self, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> ConversationT:
         """Reads the post under `READ_TIMEOUT_SECONDS`, off the event loop since it blocks.
 
@@ -719,7 +715,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             return await asyncio.to_thread(downloader.parse_metadata, url=url)
 
     async def build_delivery(
-        self, *, message: Message, url: str, parsed: ConversationT
+        self, message: Message, url: str, parsed: ConversationT
     ) -> ExpansionDelivery | None:
         """Builds the card, refusing a post with nothing showable in it.
 
@@ -744,7 +740,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             return None
         return ExpansionDelivery(embeds=self._build_embeds(conversation=parsed))
 
-    def _build_embeds(self, *, conversation: ConversationT) -> list[Embed]:
+    def _build_embeds(self, conversation: ConversationT) -> list[Embed]:
         """Builds the whole expansion: the post, its images, and the named comment if any.
 
         A video post carries a link to it, since nothing here attaches the clip and the card
@@ -773,7 +769,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             )
         return embeds
 
-    def _comment_embed(self, *, comment: PostT, post_url: str, budget: int) -> Embed:
+    def _comment_embed(self, comment: PostT, post_url: str, budget: int) -> Embed:
         """The card for the one comment the URL singled out.
 
         Grey rather than the post's colour, and headed by a line saying what it is: without both,
@@ -799,15 +795,15 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             embed.set_author(name=author, icon_url=comment.author_icon_url or None)
         return embed
 
-    def _author_label(self, *, post: PostT) -> str:
+    def _author_label(self, post: PostT) -> str:
         """The post card's author line, empty for none."""
         return post.author_name
 
-    def _comment_author_label(self, *, comment: PostT) -> str:
+    def _comment_author_label(self, comment: PostT) -> str:
         """The comment card's author line, empty for none."""
         return comment.author_name
 
-    def _video_link(self, *, post: PostT) -> str:
+    def _video_link(self, post: PostT) -> str:
         """Where a video post's link points; only its first video gets one."""
         return post.video_urls[0]
 
@@ -834,7 +830,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             notes.append(f"🎬 另有 {remaining_videos} 部影片")
         return notes
 
-    def _footer_text(self, *, post: PostT, shown_images: int) -> str:
+    def _footer_text(self, post: PostT, shown_images: int) -> str:
         """The post card's counter line, given how many of its images the card shows.
 
         Raises:
@@ -842,7 +838,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         """
         raise NotImplementedError
 
-    def _comment_url(self, *, post_url: str, comment: PostT) -> str:
+    def _comment_url(self, post_url: str, comment: PostT) -> str:
         """The comment card's own link, which must differ from the post's.
 
         Raises:

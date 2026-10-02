@@ -94,7 +94,7 @@ def _history_hand(hand: BlackjackHandSettlement) -> BlackjackHistoryHand:
 
 
 def _history_payload(
-    *, result: BlackjackPlayerResult, dealer_cards: Sequence[Card], dealer_total: int
+    result: BlackjackPlayerResult, dealer_cards: Sequence[Card], dealer_total: int
 ) -> BlackjackHistoryPayload:
     """Builds the full per-player snapshot stored in the history row."""
     settlement = result.settlement
@@ -120,7 +120,6 @@ def _history_payload(
 
 
 async def record_blackjack_history(  # noqa: PLR0913 -- round persistence needs full table context
-    *,
     round_id: str,
     channel_id: int,
     guild_id: int,
@@ -180,7 +179,7 @@ def _history_record(row: BlackjackRoundResult) -> BlackjackHistoryRecord:
 
 
 async def fetch_recent_blackjack_rounds(
-    *, user_id: int, limit: int
+    user_id: int, limit: int
 ) -> tuple[BlackjackHistoryRecord, ...]:
     """Returns the most recent settled rounds for one player, newest first."""
     async with open_session() as session:

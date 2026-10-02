@@ -50,7 +50,6 @@ from discordbot.cogs.gen_reply.link_sources.instagram import (
 
 
 async def _build_threads_link_context(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
@@ -67,7 +66,6 @@ async def _build_threads_link_context(
 
 
 async def _build_douyin_link_context(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
@@ -83,7 +81,6 @@ async def _build_douyin_link_context(
 
 
 async def _build_bilibili_link_context(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
@@ -99,7 +96,6 @@ async def _build_bilibili_link_context(
 
 
 async def _build_facebook_link_context(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
@@ -115,7 +111,6 @@ async def _build_facebook_link_context(
 
 
 async def _build_twitter_link_context(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
@@ -131,7 +126,6 @@ async def _build_twitter_link_context(
 
 
 async def _build_instagram_link_context(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,

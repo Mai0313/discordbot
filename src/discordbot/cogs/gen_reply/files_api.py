@@ -50,7 +50,7 @@ input_file_upload_semaphore = LoopLocalSemaphore(
 
 
 async def upload_file(
-    *, client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
+    client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
 ) -> File:
     """Starts one Files API upload and returns the file as the upload reported it.
 
@@ -68,7 +68,6 @@ async def upload_file(
 
 
 async def poll_while_processing(  # noqa: PLR0913 -- each bound is its caller's own decision
-    *,
     client: genai.Client,
     uploaded: File,
     name: str,
@@ -106,7 +105,7 @@ async def poll_while_processing(  # noqa: PLR0913 -- each bound is its caller's 
 
 
 async def upload_until_active(
-    *, client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
+    client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
 ) -> str:
     """Uploads media and polls it out of PROCESSING, returning its ACTIVE uri.
 
@@ -139,7 +138,6 @@ async def upload_until_active(
 
 
 async def upload_as_input_file(
-    *,
     client: genai.Client,
     source: Path | bytes,
     mime_type: str,

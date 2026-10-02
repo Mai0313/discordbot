@@ -79,7 +79,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         self.downloader_factory = DouyinDownloader
 
     @staticmethod
-    def url_is_expandable(*, url: str) -> bool:
+    def url_is_expandable(url: str) -> bool:
         """Whether the matched URL names a post.
 
         The pattern matches the host, not the path, so a profile or live-room link would
@@ -94,7 +94,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         return is_douyin_post_url(url=url)
 
     async def read(
-        self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
+        self, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> DouyinPost:
         """Parses the post and downloads its media into a scratch directory of its own.
 
@@ -128,7 +128,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         return DouyinPost(metadata=metadata, download=download)
 
     async def build_delivery(
-        self, *, message: Message, url: str, parsed: DouyinPost
+        self, message: Message, url: str, parsed: DouyinPost
     ) -> ExpansionDelivery | None:
         """Plans the media and builds the card, refusing a post nothing can carry.
 
@@ -172,7 +172,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         )
 
     @staticmethod
-    def _build_embed(*, post: DouyinMetadata, url: str) -> Embed:
+    def _build_embed(post: DouyinMetadata, url: str) -> Embed:
         """Builds the caption card that accompanies the expanded media."""
         embed = Embed(description=post.title, url=url, color=_EMBED_COLOR)
         if post.author_name:

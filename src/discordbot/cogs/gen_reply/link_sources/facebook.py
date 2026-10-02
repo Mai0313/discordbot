@@ -99,7 +99,7 @@ FACEBOOK_SEPARATORS = PostSeparators(
 
 
 def _render_conversation(
-    *, post: FacebookOutput, conversation: FacebookConversation, attached_images: int
+    post: FacebookOutput, conversation: FacebookConversation, attached_images: int
 ) -> str:
     """Renders the post, its counters and its preloaded comments as compact text."""
     header = f"[Facebook post the user linked] {defuse_markers(text=post.author_name)}".rstrip()
@@ -138,7 +138,6 @@ def _render_conversation(
 
 
 async def build_facebook_context_messages(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,

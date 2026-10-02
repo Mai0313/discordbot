@@ -111,7 +111,7 @@ _LOGIN_WALL_PATHS = ("/login", "/checkpoint", "/recover")
 _COMMENT_ID_RE = re.compile(pattern=r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
 
 
-def is_facebook_post_url(*, url: str) -> bool:
+def is_facebook_post_url(url: str) -> bool:
     """Whether a matched Facebook URL names one post rather than a profile or a feed.
 
     The regex matches the host, so this is where a profile, a group home page, a marketplace
@@ -254,12 +254,12 @@ class FacebookConversation(LinkableComments[FacebookOutput]):
     """
 
 
-def _text_of(*, value: JsonValue) -> str:
+def _text_of(value: JsonValue) -> str:
     """Reads a `{"text": ...}` node's string, tolerating the null the page sometimes serves."""
     return str_of(value=value.get("text")) if isinstance(value, dict) else ""
 
 
-def _comment_ids_of(*, node: dict[str, Any]) -> tuple[str, str]:
+def _comment_ids_of(node: dict[str, Any]) -> tuple[str, str]:
     """The post a comment hangs off and the comment's own id, either half empty when unreadable.
 
     Both come out of the base64 node id, which is what lets a group feed's other posts be told
@@ -291,12 +291,12 @@ class FacebookDownloader(PlatformDownloader):
     the network.
     """
 
-    def _fetch_page(self, *, url: str) -> FetchedPage:
+    def _fetch_page(self, url: str) -> FetchedPage:
         """Fetches a page with the browser headers Facebook will only answer in full to."""
         return fetch_page(url=url, headers=BROWSER_HEADERS, timeout=FACEBOOK_PAGE_TIMEOUT_SECONDS)
 
     @staticmethod
-    def _find_story(*, payloads: list[Any], post_id: str) -> dict[str, Any] | None:
+    def _find_story(payloads: list[Any], post_id: str) -> dict[str, Any] | None:
         """The story node for the wanted post, or None when the page carries none.
 
         A story is recognised by the fields it carries rather than by its path: the page nests
@@ -332,7 +332,7 @@ class FacebookDownloader(PlatformDownloader):
         return fallback
 
     @staticmethod
-    def _media_of(*, story: dict[str, Any]) -> tuple[list[str], list[str]]:
+    def _media_of(story: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Full-resolution image URLs and video permalinks carried by the story's attachments.
 
         `viewer_image` is the full-resolution rendition and `image` the feed thumbnail, so the
@@ -366,7 +366,7 @@ class FacebookDownloader(PlatformDownloader):
 
     @staticmethod
     def _comment_branches(
-        *, payloads: list[Any], post_url: str, post_id: str
+        payloads: list[Any], post_url: str, post_id: str
     ) -> list[list[FacebookOutput]]:
         """Every preloaded comment on THIS post, grouped into branches by `thread_branches`.
 
@@ -410,7 +410,7 @@ class FacebookDownloader(PlatformDownloader):
         return thread_branches(comments=found, parents=parents)
 
     @staticmethod
-    def _group_name_of(*, payloads: list[Any], group_id: str) -> str:
+    def _group_name_of(payloads: list[Any], group_id: str) -> str:
         """The name of the group the post sits in, empty for a page or profile post.
 
         Matched on the URL's own group id and never guessed without one, since a page also
@@ -429,7 +429,7 @@ class FacebookDownloader(PlatformDownloader):
                     return name
         return ""
 
-    def parse_metadata(self, *, url: str) -> FacebookConversation:
+    def parse_metadata(self, url: str) -> FacebookConversation:
         """Reads one public Facebook post and the comments the page preloaded with it.
 
         Writes nothing to disk, and there is no `parse` counterpart because nothing is
@@ -509,7 +509,7 @@ class FacebookDownloader(PlatformDownloader):
         )
 
 
-def _comment_total(*, story: dict[str, Any]) -> int:
+def _comment_total(story: dict[str, Any]) -> int:
     """The post's total comment count, which the page nests differently per surface."""
     for path in (
         ("feedback", "total_comment_count"),

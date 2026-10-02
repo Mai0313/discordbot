@@ -169,7 +169,7 @@ def new_token() -> int:
     return -sequence
 
 
-async def _reserve_token_block(*, engine: AsyncEngine) -> int:
+async def _reserve_token_block(engine: AsyncEngine) -> int:
     """Atomically reserves a token range and returns its exclusive lower bound."""
     async with _database.open_session(engine=engine) as session:
         await session.execute(statement=text("BEGIN IMMEDIATE"))
@@ -194,7 +194,7 @@ async def _reserve_token_block(*, engine: AsyncEngine) -> int:
         return block_base
 
 
-async def _resolve_token(*, token: int) -> int:
+async def _resolve_token(token: int) -> int:
     """Maps a local placeholder to this process's durable token range."""
     if token >= 0:
         return token
@@ -215,7 +215,7 @@ async def _resolve_token(*, token: int) -> int:
 
 
 async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call inputs
-    *, scope: str, flavor: MemoryFlavor, subject: str, transcript: str, identity: str, token: int
+    scope: str, flavor: MemoryFlavor, subject: str, transcript: str, identity: str, token: int
 ) -> None:
     """Records (newest-wins) a pending review turn for a scope.
 
@@ -257,7 +257,7 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
         await session.commit()
 
 
-async def mark_done(*, scope: str, token: int) -> None:
+async def mark_done(scope: str, token: int) -> None:
     """Marks a turn done and drops its now-consumed transcript (token-guarded)."""
     token = await _resolve_token(token=token)
     now = _database_now()
@@ -270,7 +270,7 @@ async def mark_done(*, scope: str, token: int) -> None:
         await session.commit()
 
 
-async def mark_failed(*, scope: str, token: int, error: str) -> None:
+async def mark_failed(scope: str, token: int, error: str) -> None:
     """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
     token = await _resolve_token(token=token)
     now = _database_now()
@@ -285,7 +285,7 @@ async def mark_failed(*, scope: str, token: int, error: str) -> None:
         await session.commit()
 
 
-async def clear_job(*, scope: str, flavor: MemoryFlavor, token: int) -> bool:
+async def clear_job(scope: str, flavor: MemoryFlavor, token: int) -> bool:
     """Scrubs a scope's row and leaves a token-guarded clear tombstone.
 
     The tombstone closes both possible commit orderings with a staging write. A

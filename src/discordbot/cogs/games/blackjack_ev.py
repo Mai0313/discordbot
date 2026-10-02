@@ -68,7 +68,7 @@ class _EvContext(BaseModel):
     player_memo: _PlayerMemo = Field(..., description="Memo cache for optimal player-hand EVs.")
 
 
-def _bucket_for_rank(*, rank: str) -> int:
+def _bucket_for_rank(rank: str) -> int:
     """Maps a card rank to its value bucket index."""
     if rank == "A":
         return _ACE_BUCKET
@@ -77,7 +77,7 @@ def _bucket_for_rank(*, rank: str) -> int:
     return int(rank) - 2
 
 
-def build_shoe_value_counts(*, shoe: list[Card]) -> tuple[int, ...]:
+def build_shoe_value_counts(shoe: list[Card]) -> tuple[int, ...]:
     """Collapses a card shoe into a 10-bucket value-count vector (2..9, ten, ace)."""
     counts = [0] * 10
     for card in shoe:
@@ -85,7 +85,7 @@ def build_shoe_value_counts(*, shoe: list[Card]) -> tuple[int, ...]:
     return tuple(counts)
 
 
-def compute_true_count(*, shoe: list[Card]) -> float:
+def compute_true_count(shoe: list[Card]) -> float:
     """Returns the Hi-Lo true count of the cards already dealt out of a shoe.
 
     Hi-Lo assigns +1 to 2-6, 0 to 7-9, and -1 to ten-value cards and aces. A
@@ -105,14 +105,14 @@ def compute_true_count(*, shoe: list[Card]) -> float:
     return running_count / decks_remaining if decks_remaining > 0 else 0.0
 
 
-def _decrement(*, shoe: tuple[int, ...], bucket: int) -> tuple[int, ...]:
+def _decrement(shoe: tuple[int, ...], bucket: int) -> tuple[int, ...]:
     """Returns a copy of the shoe vector with one card removed from a bucket."""
     mutable = list(shoe)
     mutable[bucket] -= 1
     return tuple(mutable)
 
 
-def _add_value(*, total: int, soft: bool, bucket: int) -> tuple[int, bool]:
+def _add_value(total: int, soft: bool, bucket: int) -> tuple[int, bool]:
     """Adds one drawn card to a running `(total, soft)` Blackjack hand state.
 
     Mirrors `hand_value`/`is_soft_total`: at most one ace is ever counted high,
@@ -138,7 +138,7 @@ def _add_value(*, total: int, soft: bool, bucket: int) -> tuple[int, bool]:
 
 
 def _dealer_distribution(
-    *, total: int, soft: bool, shoe: tuple[int, ...], memo: _DealerMemo
+    total: int, soft: bool, shoe: tuple[int, ...], memo: _DealerMemo
 ) -> _DealerDist:
     """Computes the exact dealer final-total distribution under H17.
 
@@ -178,7 +178,7 @@ def _dealer_distribution(
     return result
 
 
-def _dealer_dist_for(*, ctx: _EvContext, shoe: tuple[int, ...]) -> _DealerDist:
+def _dealer_dist_for(ctx: _EvContext, shoe: tuple[int, ...]) -> _DealerDist:
     """Returns the dealer's final-total distribution playing out its known hand over `shoe`."""
     return _dealer_distribution(
         total=ctx.dealer_total, soft=ctx.dealer_soft, shoe=shoe, memo=ctx.dealer_memo
@@ -186,7 +186,7 @@ def _dealer_dist_for(*, ctx: _EvContext, shoe: tuple[int, ...]) -> _DealerDist:
 
 
 def _stand_ev_unit(
-    *, player_total: int, five_card_eligible: bool, shoe: tuple[int, ...], ctx: _EvContext
+    player_total: int, five_card_eligible: bool, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
     """Returns the per-unit EV of standing on a non-bust hand against the dealer.
 
@@ -210,7 +210,7 @@ def _stand_ev_unit(
 
 
 def _player_optimal_ev(
-    *, total: int, soft: bool, num_cards: int, shoe: tuple[int, ...], ctx: _EvContext
+    total: int, soft: bool, num_cards: int, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
     """Returns the best EV reachable from a player state via optimal hit/stand."""
     if total > 21:
@@ -235,7 +235,7 @@ def _player_optimal_ev(
 
 
 def _hit_action_ev(
-    *, total: int, soft: bool, num_cards: int, shoe: tuple[int, ...], ctx: _EvContext
+    total: int, soft: bool, num_cards: int, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
     """Returns the EV of hitting now and then playing optimally."""
     shoe_total = sum(shoe)
@@ -256,7 +256,7 @@ def _hit_action_ev(
     return expected
 
 
-def _double_ev(*, total: int, soft: bool, shoe: tuple[int, ...], ctx: _EvContext) -> float:
+def _double_ev(total: int, soft: bool, shoe: tuple[int, ...], ctx: _EvContext) -> float:
     """Returns the EV of doubling: one card at double stake, then stand."""
     shoe_total = sum(shoe)
     if shoe_total == 0:
@@ -286,7 +286,7 @@ def _double_ev(*, total: int, soft: bool, shoe: tuple[int, ...], ctx: _EvContext
 
 
 def _single_split_hand_ev(
-    *, pair_bucket: int, is_ace_pair: bool, shoe: tuple[int, ...], ctx: _EvContext
+    pair_bucket: int, is_ace_pair: bool, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
     """Returns the optimal EV of one post-split hand under split constraints."""
     shoe_total = sum(shoe)
@@ -311,7 +311,7 @@ def _single_split_hand_ev(
     return expected
 
 
-def _split_estimate(*, hand_cards: list[Card], shoe: tuple[int, ...], ctx: _EvContext) -> float:
+def _split_estimate(hand_cards: list[Card], shoe: tuple[int, ...], ctx: _EvContext) -> float:
     """Estimates split EV as twice one independent split hand (shared-shoe approximation)."""
     pair_bucket = _bucket_for_rank(rank=hand_cards[0].rank)
     single = _single_split_hand_ev(
@@ -320,7 +320,7 @@ def _split_estimate(*, hand_cards: list[Card], shoe: tuple[int, ...], ctx: _EvCo
     return 2.0 * single
 
 
-def _select_recommended(*, ordered: tuple[ActionEv, ...]) -> ActionEv:
+def _select_recommended(ordered: tuple[ActionEv, ...]) -> ActionEv:
     """Picks the EV-max action, only preferring split past the safety margin."""
     best = ordered[0]
     if best.action != "split":
@@ -335,7 +335,6 @@ def _select_recommended(*, ordered: tuple[ActionEv, ...]) -> ActionEv:
 
 
 def _evaluate_actions(
-    *,
     ctx: _EvContext,
     deck: tuple[int, ...],
     hand_cards: list[Card],
@@ -383,7 +382,7 @@ def _evaluate_actions(
     return evs
 
 
-def _make_context(*, dealer_cards: list[Card]) -> _EvContext:
+def _make_context(dealer_cards: list[Card]) -> _EvContext:
     """Builds the fixed per-decision EV context from the dealer's cards."""
     return _EvContext(
         dealer_total=hand_value(cards=dealer_cards),
@@ -394,7 +393,6 @@ def _make_context(*, dealer_cards: list[Card]) -> _EvContext:
 
 
 def recommend_action(
-    *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],

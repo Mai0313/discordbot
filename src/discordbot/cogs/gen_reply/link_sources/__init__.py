@@ -55,7 +55,7 @@ from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_imag
 AI_INGEST_QUALITY: VideoQuality = "low"
 
 
-def system_block(*, text: str) -> EasyInputMessageParam:
+def system_block(text: str) -> EasyInputMessageParam:
     """Wraps one separator or notice string as a low-authority system block."""
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
@@ -63,7 +63,7 @@ def system_block(*, text: str) -> EasyInputMessageParam:
 
 
 def link_context_blocks(
-    *, separator: str, text: str, media_parts: Sequence[ResponseInputFileParam] = ()
+    separator: str, text: str, media_parts: Sequence[ResponseInputFileParam] = ()
 ) -> list[EasyInputMessageParam]:
     """The separator plus the post itself, the shape a readable source returns.
 
@@ -103,7 +103,6 @@ class PostSeparators(BaseModel):
 
 
 def post_context_blocks(
-    *,
     text: str,
     media_parts: Sequence[ResponseInputFileParam],
     post_carries_media: bool,
@@ -144,19 +143,18 @@ def post_context_blocks(
 class PostReader[ConversationT](Protocol):
     """Reads one post URL into its conversation; a platform downloader satisfies it."""
 
-    def parse_metadata(self, *, url: str) -> ConversationT: ...
+    def parse_metadata(self, url: str) -> ConversationT: ...
 
 
 class PostRenderer[OutputT, ConversationT](Protocol):
     """Renders a readable post and the conversation around it as the text the model reads."""
 
     def __call__(
-        self, *, post: OutputT, conversation: ConversationT, attached_images: int
+        self, post: OutputT, conversation: ConversationT, attached_images: int
     ) -> str: ...
 
 
 async def read_post[ConversationT: PlatformConversation[Any]](
-    *,
     platform: str,
     url: str,
     reader: Callable[[], PostReader[ConversationT]],
@@ -197,7 +195,6 @@ async def read_post[ConversationT: PlatformConversation[Any]](
 
 
 async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 -- a source's reader and wording plus the four per-call inputs every builder takes
-    *,
     platform: str,
     url: str,
     reader: Callable[[], PostReader[ConversationT]],
@@ -272,7 +269,7 @@ _MARKER_TAG_RE = re.compile(
 )
 
 
-def defuse_markers(*, text: str) -> str:
+def defuse_markers(text: str) -> str:
     """Breaks the pipeline's own inline markers where they appear inside quoted post text.
 
     `extract_inline_markers` reads the answer model's OWN output, so a `<generate-video>` tag
@@ -338,7 +335,6 @@ class LinkContextBuilder(Protocol):
 
     def __call__(
         self,
-        *,
         url: str,
         answer_model_is_gemini: bool,
         gemini_client: genai.Client | None,

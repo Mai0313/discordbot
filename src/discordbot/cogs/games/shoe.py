@@ -40,7 +40,7 @@ class BlackjackShoeStore(BaseModel):
     _take_generation: dict[int, int] = PrivateAttr(default_factory=dict)
     _saved_generation: dict[int, int] = PrivateAttr(default_factory=dict)
 
-    def take_shoe(self, *, channel_id: int, rng: Random) -> tuple[list[Card], int]:
+    def take_shoe(self, channel_id: int, rng: Random) -> tuple[list[Card], int]:
         """Returns `(shoe, generation)` for a new round, removing the shoe from the store.
 
         Rebuilds a fresh shoe when the channel has none or penetration crossed the
@@ -57,9 +57,7 @@ class BlackjackShoeStore(BaseModel):
             return build_shoe(rng=rng), generation
         return existing, generation
 
-    def save_shoe(
-        self, *, channel_id: int, cards: list[Card], generation: int | None = None
-    ) -> None:
+    def save_shoe(self, channel_id: int, cards: list[Card], generation: int | None = None) -> None:
         """Stores the cards remaining after a round for the next one in that channel.
 
         Copies the list so the stored shoe is decoupled from the live round object.
@@ -82,7 +80,7 @@ class BlackjackShoeStore(BaseModel):
         """
         self.shoes.setdefault(channel_id, list(cards))
 
-    def true_count(self, *, channel_id: int) -> float:
+    def true_count(self, channel_id: int) -> float:
         """Returns the Hi-Lo true count the next round in this channel will start from.
 
         A channel with no stored shoe, or one already due for a reshuffle, is neutral

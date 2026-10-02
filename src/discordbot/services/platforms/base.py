@@ -2,7 +2,7 @@
 
 Three bases, each answering a question that used to be answered once per platform:
 
-- `PlatformDownloader` is the entry point, and `parse_metadata(*, url=...)` is the whole of the
+- `PlatformDownloader` is the entry point, and `parse_metadata(url=...)` is the whole of the
   required surface. A platform that writes a file adds a second method of its own; see below.
 - `PlatformOutput` is the nine fields a renderer reads without knowing which platform served
   them. Each platform keeps its own extras on top; that is the platform's reality, not drift.
@@ -52,7 +52,7 @@ class PlatformDownloader(BaseModel):
     at all, so a single instance serves every caller.
     """
 
-    def parse_metadata(self, *, url: str) -> BaseModel:
+    def parse_metadata(self, url: str) -> BaseModel:
         """Parses what is at `url`, writing nothing to disk.
 
         The return type narrows per platform to that platform's own `<Platform>Conversation` or
@@ -209,7 +209,7 @@ class LinkableComments[OutputT: LinkableCommentOutput](PlatformConversation[Outp
 
 
 def thread_branches[OutputT: PlatformOutput](
-    *, comments: dict[str, OutputT], parents: dict[str, str]
+    comments: dict[str, OutputT], parents: dict[str, str]
 ) -> list[list[OutputT]]:
     """Groups comments into the `reply_branches` shape, each reply behind the comment it answers.
 

@@ -112,7 +112,6 @@ def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:
 
 
 async def insert_session(  # noqa: PLR0913 -- one row's columns are all per-call inputs
-    *,
     thread_id: int,
     owner_id: int,
     channel_id: int,
@@ -142,7 +141,7 @@ async def insert_session(  # noqa: PLR0913 -- one row's columns are all per-call
         await session.commit()
 
 
-async def set_interaction(*, thread_id: int, interaction_id: str) -> None:
+async def set_interaction(thread_id: int, interaction_id: str) -> None:
     """Records the running interaction id for a thread, so a restart can re-attach to it."""
     now = _database_now()
     async with open_session() as session:
@@ -154,7 +153,7 @@ async def set_interaction(*, thread_id: int, interaction_id: str) -> None:
         await session.commit()
 
 
-async def set_phase(*, thread_id: int, phase: ResearchPhase) -> None:
+async def set_phase(thread_id: int, phase: ResearchPhase) -> None:
     """Transitions a session to a new lifecycle phase."""
     now = _database_now()
     async with open_session() as session:
@@ -175,7 +174,7 @@ async def list_resumable() -> list[PersistentResearchSession]:
         return [_row_to_model(row=row) for row in result.scalars().all()]
 
 
-async def active_thread_for_owner(*, owner_id: int) -> int | None:
+async def active_thread_for_owner(owner_id: int) -> int | None:
     """Returns an owner's in-flight research thread id, or `None` when they have none.
 
     The concurrency guard: an owner may only have one `researching` session at a time, so a new

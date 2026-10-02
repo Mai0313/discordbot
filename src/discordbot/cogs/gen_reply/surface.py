@@ -48,7 +48,6 @@ INTERACTION_FOLLOWUP_LIMIT = 5
 
 
 def _payload(
-    *,
     content: str | None,
     embed: Embed | None,
     file: File | None,
@@ -97,7 +96,7 @@ class TurnSurface(BaseModel):
     # The failure hints reactions would have carried, in the order they happened.
     _hints: list[str] = PrivateAttr(default_factory=list)
 
-    def answer_capacity(self, *, has_landed_reply: bool) -> int | None:
+    def answer_capacity(self, has_landed_reply: bool) -> int | None:
         """How many messages one answer may occupy here, or None when nothing caps it.
 
         The follow-up POSTs Discord still allows, plus one for the message the answer is written
@@ -137,7 +136,7 @@ class TurnSurface(BaseModel):
         return max(0.0, remaining - INTERACTION_DELIVERY_MARGIN_SECONDS)
 
     @classmethod
-    def for_message(cls, *, message: Message) -> "TurnSurface":
+    def for_message(cls, message: Message) -> "TurnSurface":
         """The gateway surface: reply into the channel, read its history, react on the message."""
         return cls(
             message=message,
@@ -147,7 +146,7 @@ class TurnSurface(BaseModel):
 
     @classmethod
     def for_interaction(
-        cls, *, interaction: Interaction[commands.Bot], question: str
+        cls, interaction: Interaction[commands.Bot], question: str
     ) -> "TurnSurface":
         """The `/ask` surface: answer through the interaction, read the conversation store.
 
@@ -170,7 +169,6 @@ class TurnSurface(BaseModel):
 
     async def send(
         self,
-        *,
         content: str | None = None,
         embed: Embed | None = None,
         file: File | None = None,
@@ -195,7 +193,6 @@ class TurnSurface(BaseModel):
 
     async def send_unparented(
         self,
-        *,
         content: str | None = None,
         embed: Embed | None = None,
         file: File | None = None,
@@ -218,7 +215,7 @@ class TurnSurface(BaseModel):
         return await self.message.channel.send(**payload)
 
     async def follow_up(
-        self, *, previous: Message, content: str, allowed_mentions: AllowedMentions | None = None
+        self, previous: Message, content: str, allowed_mentions: AllowedMentions | None = None
     ) -> Message:
         """Continues past what one Discord message can hold.
 
@@ -238,7 +235,7 @@ class TurnSurface(BaseModel):
         self._followups_spent += 1
         return await self.interaction.followup.send(**payload, wait=True)
 
-    async def fetch_history(self, *, limit: int) -> list[Message]:
+    async def fetch_history(self, limit: int) -> list[Message]:
         """The conversation before this turn, oldest first and at most `limit` messages.
 
         The gateway path walks the channel. `/ask` cannot: the bot is not a member and holds no
@@ -258,7 +255,7 @@ class TurnSurface(BaseModel):
         )
         return rebuild_conversation(turns=turns, interaction=self.interaction)
 
-    async def mark(self, *, emoji: str) -> None:
+    async def mark(self, emoji: str) -> None:
         """Puts a status or provenance reaction on the source message, where there is one.
 
         Refused rather than attempted on `/ask`: the synthesized message names nothing Discord
@@ -270,7 +267,7 @@ class TurnSurface(BaseModel):
             return
         await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
-    async def hint(self, *, emoji: str) -> None:
+    async def hint(self, emoji: str) -> None:
         """Records that something best-effort was dropped, so it is never silent.
 
         On the gateway path this is the independent reaction it has always been. On `/ask` there
@@ -291,7 +288,7 @@ class TurnSurface(BaseModel):
         self._hints.clear()
         return hints
 
-    async def record_turn(self, *, answer: str) -> None:
+    async def record_turn(self, answer: str) -> None:
         """Appends this exchange to the conversation, so the next `/ask` has one to continue.
 
         A no-op on the gateway path, where Discord's own channel history is the record.

@@ -36,7 +36,7 @@ class LinkUnavailableError(LinkReadError):
     """The platform answered and there is no readable post in it (deleted, private, gone)."""
 
 
-def is_retryable_fetch_failure(*, error: requests.RequestException) -> bool:
+def is_retryable_fetch_failure(error: requests.RequestException) -> bool:
     """Reports whether a failed request is worth making again, exactly as HTTP frames it.
 
     Public rather than folded into `link_fetch_error` for the callers that raise a class or a
@@ -65,7 +65,7 @@ def is_retryable_fetch_failure(*, error: requests.RequestException) -> bool:
     return error.response.status_code == _TOO_MANY_REQUESTS or error.response.status_code >= 500
 
 
-def link_fetch_error(*, error: requests.RequestException, url: str) -> RuntimeError:
+def link_fetch_error(error: requests.RequestException, url: str) -> RuntimeError:
     """Maps a failed page fetch to the error whose class says what the reader should do.
 
     Args:

@@ -64,7 +64,7 @@ class DouyinDelivery(BaseModel):
 
 
 async def plan_douyin_delivery(
-    *, planner: MediaDeliveryPlanner, result: DownloadedPost, upload_limit: int
+    planner: MediaDeliveryPlanner, result: DownloadedPost, upload_limit: int
 ) -> DouyinDelivery:
     """Decides how one downloaded Douyin post reaches Discord.
 
@@ -82,12 +82,7 @@ async def plan_douyin_delivery(
 
 
 def douyin_delivery_lines(
-    *,
-    result: DownloadedPost,
-    plan: MediaPlan,
-    hosting_available: bool,
-    url: str,
-    dropped_event: str,
+    result: DownloadedPost, plan: MediaPlan, hosting_available: bool, url: str, dropped_event: str
 ) -> list[str]:
     """The subtext lines stating what a Douyin send left out, plus any hosted URLs.
 

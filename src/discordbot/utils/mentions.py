@@ -36,7 +36,7 @@ def bot_mention_pattern(bot_id: int) -> re.Pattern[str]:
     return re.compile(pattern=rf"<@!?{re.escape(pattern=str(bot_id))}>")
 
 
-def has_bot_mention(*, content: str, bot_user: ClientUser | None) -> bool:
+def has_bot_mention(content: str, bot_user: ClientUser | None) -> bool:
     """Whether the message body explicitly mentions the bot.
 
     Matches `<@id>` / `<@!id>` in the raw content rather than reading `message.mentions`: a reply
@@ -55,7 +55,7 @@ def has_bot_mention(*, content: str, bot_user: ClientUser | None) -> bool:
     return bot_mention_pattern(bot_id=bot_user.id).search(string=content) is not None
 
 
-def is_addressed_to_bot(*, message: Message, bot_user: ClientUser | None) -> bool:
+def is_addressed_to_bot(message: Message, bot_user: ClientUser | None) -> bool:
     """Whether the reply pipeline will treat this message as directed at the bot.
 
     A DM needs no mention (every DM reaches `gen_reply`), so it counts as addressed.

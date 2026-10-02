@@ -65,7 +65,7 @@ class GamesCogs(commands.Cog):
         self._blackjack_shoes = BlackjackShoeStore()
 
     async def _bot_blackjack_participant(
-        self, *, guild: Guild | None, table_bet: int, channel_id: int
+        self, guild: Guild | None, table_bet: int, channel_id: int
     ) -> GameParticipant | None:
         """Returns a Blackjack participant for the bot player, or None if it cannot join."""
         bot_user = self.bot.user

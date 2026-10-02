@@ -93,7 +93,7 @@ def open_session() -> AbstractAsyncContextManager[AsyncSession]:
     return _database.open_session(engine=_engine)
 
 
-async def load_ask_turns(*, channel_id: int, user_id: int, limit: int) -> list[AskTurn]:
+async def load_ask_turns(channel_id: int, user_id: int, limit: int) -> list[AskTurn]:
     """Reads the newest `limit` turns of one conversation, returned oldest-first.
 
     Oldest-first because that is the order `ReplyContextBuilder.fetch_history` returns channel
@@ -124,7 +124,7 @@ async def load_ask_turns(*, channel_id: int, user_id: int, limit: int) -> list[A
 
 
 async def record_ask_turn(
-    *, channel_id: int, user_id: int, message_id: int, question: str, answer: str
+    channel_id: int, user_id: int, message_id: int, question: str, answer: str
 ) -> None:
     """Appends one finished exchange and prunes that conversation to its retention bound.
 
