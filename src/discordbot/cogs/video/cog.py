@@ -171,7 +171,8 @@ class VideoCogs(commands.Cog):
                         interaction=interaction, url=url, result=result, upload_limit=upload_limit
                     )
                 except Exception as error:
-                    # Broad on purpose, for the same reason as the download handler below.
+                    # Broad on purpose: anything narrower falls through to the handler below
+                    # and is logged as a download failure.
                     logfire.warn(
                         "Video delivery failed",
                         url=url,
