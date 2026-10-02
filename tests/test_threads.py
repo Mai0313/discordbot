@@ -1086,6 +1086,26 @@ def test_the_target_url_never_carries_what_names_the_sharer(
     assert target.url == _REPLIES_TARGET_URL
 
 
+@pytest.mark.parametrize("user", [None, {"username": None}], ids=["user-null", "username-null"])
+def test_an_authorless_target_never_falls_back_to_the_share_link(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch, user: dict[str, None] | None
+) -> None:
+    """With no author to rebuild a URL from, the target still gets the post's, not the pasted one."""
+    target_payload = _thread_post_payload(code="TARGET", username="target_author", text="Target")
+    target_payload["user"] = user
+    _serve_pages(
+        monkeypatch,
+        share_lands_on=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        pages=[_sjs_html(target=target_payload)],
+    )
+
+    conversation = downloader.parse_metadata(url=_SHARE_URL)
+
+    target = conversation.target
+    assert target is not None
+    assert target.url == _REPLIES_TARGET_URL
+
+
 def test_a_share_links_retry_asks_for_the_resolved_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:

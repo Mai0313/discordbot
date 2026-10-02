@@ -627,7 +627,7 @@ class ThreadsPage(BaseModel):
 
     A post page serialises the target post, the thread above it and each branch of replies below
     it as separate fragments of one payload. This is those fragments joined back together, split
-    into the two parts the callers actually want.
+    into the two parts the callers actually want, plus the URL the page was read from.
     """
 
     chain: list[Post] = Field(
@@ -637,6 +637,10 @@ class ThreadsPage(BaseModel):
     reply_branches: list[list[Post]] = Field(
         default_factory=list,
         description="One list per reply branch under the target, each ordered from the direct reply outward, so an item's index in its branch is its nesting depth",
+    )
+    url: str = Field(
+        default="",
+        description="The canonical post URL the page was read from, query stripped; for a share link, where its redirect landed. Empty when a share link led to no post",
     )
 
 
@@ -1010,7 +1014,7 @@ class ThreadsDownloader(PlatformDownloader):
                 raise LinkUnavailableError(f"Threads refuses {post_code} from this region")
             parsed = self._parse_page_from_html(html=fetched.html, post_code=post_code)
             if parsed.page.chain or parsed.carried_post_json:
-                return parsed.page
+                return parsed.page.model_copy(update={"url": fetch_url})
             if attempt == THREADS_EMPTY_PAGE_RETRIES or time.monotonic() >= deadline:
                 break
             logfire.info(
@@ -1164,16 +1168,16 @@ class ThreadsDownloader(PlatformDownloader):
         if not page.chain:
             return ThreadsConversation()
         target_index = len(page.chain) - 1
-        # Every post gets a reconstructed canonical URL, the target included, and the caller's own
-        # URL survives only as its fallback with the query stripped. What lands here is posted in
-        # the expansion's embeds and quoted into the reply prompt, and a pasted link carries the
-        # sharer with it: a `share/<code>` link and the `?xmt=` token its redirect answers with are
-        # both minted per share, so echoing either names whoever sent it to the channel.
-        caller_url = ThreadsURL(raw_url=url).clean_url
+        # Every post gets a reconstructed canonical URL, the target included, and the URL its page
+        # was read from survives only as its fallback: for a share link that is where the redirect
+        # landed, not what was pasted. What lands here is posted in the expansion's embeds and
+        # quoted into the reply prompt, and a pasted link carries the sharer with it: a
+        # `share/<code>` link and the `?xmt=` token its redirect answers with are both minted per
+        # share, so echoing either names whoever sent it to the channel.
         chain = [
             self._build_output(
                 post=post,
-                url=self._post_url(post=post) or (caller_url if index == target_index else ""),
+                url=self._post_url(post=post) or (page.url if index == target_index else ""),
                 download=download and index == target_index,
             )
             for index, post in enumerate(page.chain)
