@@ -1,10 +1,17 @@
-"""Seeding and read helpers for tests that start from, or check, a known economy state."""
+"""Seeding, read and value helpers for tests that start from, or check, a known economy state."""
+
+from datetime import UTC, datetime
 
 from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import select, update
 
 from discordbot.utils.timezone import as_taipei, database_now
-from discordbot.typings.economy import LoanContractView, LoanProposalAcceptResult
+from discordbot.typings.economy import (
+    LoanLenderType,
+    LoanContractView,
+    LoanContractStatus,
+    LoanProposalAcceptResult,
+)
 from discordbot.services.economy.database import (
     UserAccount,
     CasinoAccount,
@@ -90,6 +97,27 @@ async def open_personal_loan(
     )
     assert accepted is not None
     return accepted.contract
+
+
+def personal_loan_contract(
+    contract_id: int = 1, borrower_id: int = 1, lender_name: str = "bob", interest_due: int = 0
+) -> LoanContractView:
+    """Builds an active personal contract that `borrower_id` (alice) owes lender 2."""
+    opened_at = datetime(2026, 1, 1, tzinfo=UTC)
+    return LoanContractView(
+        contract_id=contract_id,
+        lender_type=LoanLenderType.USER,
+        lender_id=2,
+        lender_name=lender_name,
+        borrower_id=borrower_id,
+        borrower_name="alice",
+        principal_remaining=100,
+        interest_due=interest_due,
+        monthly_rate_bps=300,
+        opened_at=opened_at,
+        last_interest_accrued_at=opened_at,
+        status=LoanContractStatus.ACTIVE,
+    )
 
 
 async def hide_from_leaderboard(user_id: int) -> None:
