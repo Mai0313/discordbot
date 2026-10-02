@@ -389,8 +389,7 @@ class LinkContextSource(BaseModel):
         ),
     )
     media_ingest_allowed: SkipValidation[MediaIngestPredicate] = Field(
-        ...,
-        description="Kill-switch predicate for media ingestion; a switchless source returns True.",
+        ..., description="Kill-switch predicate for media ingestion."
     )
 
     def timeout_blocks(self) -> list[EasyInputMessageParam]:

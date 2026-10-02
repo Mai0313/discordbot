@@ -4649,24 +4649,22 @@ def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
 
     Gating the upload alone would still spend a full Douyin / Bilibili download on media that
     can no longer reach the model, and Douyin's is the WAF-sensitive path an incident most
-    wants left alone. Facebook and Instagram fetch and downscale their images before the upload
-    those images could no longer feed, which is the same cost through a different door. Read off
-    the live registry so the wiring is what is pinned, and asserted over every source whose media
-    a switch can turn off rather than the two it was written for. Threads is the one source with
-    a media step and no such switch: it fetches its media even with the Files API off.
+    wants left alone. Facebook, Instagram and Threads fetch and downscale their images before the
+    upload those images could no longer feed, which is the same cost through a different door,
+    and Threads downloads its clips whole besides. Read off the live registry so the wiring is
+    what is pinned, and asserted over every source rather than the two it was written for.
     """
     monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
     monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
     monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
-    gated = [name for name, case in _LINK_CASES.items() if case.media_switch is not None]
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
     on = LLMConfig()
-    assert all(_link_source(name=name).media_ingest_allowed(on) for name in gated)
+    assert all(_link_source(name=name).media_ingest_allowed(on) for name in _LINK_SOURCES)
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     off = LLMConfig()
-    assert not any(_link_source(name=name).media_ingest_allowed(off) for name in gated)
+    assert not any(_link_source(name=name).media_ingest_allowed(off) for name in _LINK_SOURCES)
 
 
 async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
@@ -6613,9 +6611,7 @@ class _LinkCase(BaseModel):
     reads_replied_to: bool = Field(
         ..., description="Whether a link in the replied-to message is read as well."
     )
-    media_switch: str | None = Field(
-        ..., description="The config field that turns its media ingest off; None where none does."
-    )
+    media_switch: str = Field(..., description="The config field that turns its media ingest off.")
 
 
 # Keyed by registry name. Every family below is parametrized over the registry itself, so a source
@@ -6626,9 +6622,7 @@ _LINK_CASES: dict[str, _LinkCase] = {
         non_post_url="https://www.threads.com/@user",
         emoji=THREADS_EMOJI,
         reads_replied_to=True,
-        # No kill-switch of its own, and the registry adapter never hands its builder the flag:
-        # Threads' media is fetched even with the Files API off.
-        media_switch=None,
+        media_switch="file_api_enabled",
     ),
     "facebook": _LinkCase(
         builder="build_facebook_context_messages",
@@ -6767,7 +6761,7 @@ async def test_on_message_injects_a_selected_link_source_before_current(
     (call,) = builder.calls
     assert call["url"] == SAMPLE_POST_URLS[name]
     assert call["gemini_client"] is cog.toolkit.gemini_client
-    assert call.get("allow_media_ingest") is (None if case.media_switch is None else True)
+    assert call["allow_media_ingest"] is True
     answer = request_input(responses=_recorded(cog).responses)
     assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
     assert block_index(request=answer, kind=name) < block_index(request=answer, kind="current")
@@ -6819,7 +6813,6 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     ingest flag needs the key as well, or a builder would be told it may upload while holding no
     client to upload with.
     """
-    case = _LINK_CASES[name]
     cog = _link_cog(sources=[name], gemini_api_key="")
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
@@ -6829,22 +6822,19 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
 
     (call,) = builder.calls
     assert call["gemini_client"] is None
-    assert call.get("allow_media_ingest") is (None if case.media_switch is None else False)
+    assert call["allow_media_ingest"] is False
     assert has_link_context_block(
         request=request_input(responses=_recorded(cog).responses), source=name
     )
 
 
-@pytest.mark.parametrize(
-    "name", [name for name in _LINK_SOURCES if _LINK_CASES[name].media_switch is not None]
-)
+@pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_link_media_ingest_kill_switch(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """With the source's switch off the builder still runs, but is told not to fetch the media."""
     case = _LINK_CASES[name]
-    assert case.media_switch is not None
     cog = _link_cog(sources=[name])
     monkeypatch.setattr(cog.config, case.media_switch, False)
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
