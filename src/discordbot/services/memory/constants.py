@@ -63,9 +63,10 @@ COMPACTION_TARGET_CHARS = 15_000
 # Permanent facts and member-alias rows are exempt.
 STABLE_FRESHNESS_WINDOW_DAYS = 45
 
-# Lifetime of a `recent` fact, measured against `today`. A code sweep rather than a prompt rule,
-# because `last_confirmed` is code-stamped and a deterministic date beats a rule a rewrite has to
-# re-apply correctly every pass.
+# Lifetime of every fact the sweep neither exempts nor displaces as `stable` (a `recent`,
+# `volatile` or `session` one, or anything in the `recent` section), measured against `today`. A
+# code sweep rather than a prompt rule, because `last_confirmed` is code-stamped and a
+# deterministic date beats a rule a rewrite has to re-apply correctly every pass.
 RECENT_CONTEXT_TTL_DAYS = 30
 
 # Bound on the rendered-document cache. One live entry per (scope, reading context) is the working
