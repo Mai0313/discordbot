@@ -7936,6 +7936,27 @@ def test_the_route_prompt_says_qa_draws_inline_only_while_it_can() -> None:
     )
 
 
+# The route prompt's link-source lines, byte for byte. They are part of the measured route
+# prompt, so a new source, or one changing where its link may sit, fails here until these lines
+# are rewritten on purpose.
+_ROUTE_LINK_SOURCE_LINES = (
+    "Also fill in the `link_context_sources` field for registered linked-post sources "
+    "(`threads`, `facebook`, `instagram`, `twitter`, `douyin`, and `bilibili`):",
+    "- Include a source only when a matching link is present AND the user wants the bot to read "
+    "that post or video — for example summarizing, explaining, analyzing, comparing, reacting "
+    "to, or answering a question about its actual content. Threads, Facebook and Instagram "
+    "links may be in the latest message OR in the message it is replying to; Twitter, Douyin "
+    "and Bilibili links must be in the latest message.",
+)
+
+
+def test_the_route_prompt_names_the_link_sources_as_measured() -> None:
+    """Each registered link source, and where its link may be, reads exactly as measured."""
+    lines = route_prompt(inline_image_enabled=True).splitlines()
+
+    assert [line for line in _ROUTE_LINK_SOURCE_LINES if line not in lines] == []
+
+
 @pytest.mark.parametrize("inline_image_enabled", [True, False])
 @pytest.mark.usefixtures("no_memory_review")
 async def test_the_route_is_told_qa_draws_inline_only_while_the_answer_can(
