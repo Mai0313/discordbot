@@ -681,6 +681,95 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     ]
 
 
+def _fail_the_delivery(staged: _Staged) -> None:
+    """Makes the placeholder the shell claims refuse the card, the way a Discord 5xx does."""
+    claim = staged.message.reply
+
+    async def failing_slot(**kwargs: object) -> FakeDiscordMessage:
+        """Claims the slot, then breaks every later edit of it."""
+        placeholder = await claim(**cast("Any", kwargs))
+        placeholder.edit_failure = make_server_error()
+        return placeholder
+
+    staged.message.reply = failing_slot  # ty: ignore[invalid-assignment]
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_card_that_fails_to_land_gives_the_link_its_preview_back(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """The preview is hidden before the card lands, so a card that never lands hands it back.
+
+    Otherwise the link is left with the cross and nothing else: no card and no preview of its own.
+    """
+    staged = _stage(cog=cog, outcome="readable")
+    _fail_the_delivery(staged=staged)
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions == [
+        LINK_SOURCE_EMOJIS[cog.SOURCE],
+        EXPANSION_WORKING_EMOJI,
+        EXPANSION_FAILED_EMOJI,
+    ]
+    assert placeholder_withdrawn(message=staged.message)
+    # Hidden while the card was on its way, and given back once it was not coming.
+    assert {"suppress": True} in staged.message.edits
+    assert not staged.message.suppressed
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_refused_preview_restore_names_its_ids_and_the_cross_still_lands(
+    cog: type[ExpansionCog[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A permission the bot had while hiding the preview is not one it still has.
+
+    That refusal's stack is the same every time, so the ids are the whole finding
+    (`.github/CONTRIBUTING.md#logging`), and the expansion's own mark goes on regardless.
+    """
+    staged = _stage(cog=cog, outcome="readable")
+    _fail_the_delivery(staged=staged)
+    edit = staged.message.edit
+
+    async def refuse_restore(**kwargs: object) -> None:
+        """Hides the preview, then refuses to show it again."""
+        if kwargs.get("suppress") is False:
+            raise make_forbidden(message="Missing Permissions")
+        await edit(**cast("Any", kwargs))
+
+    staged.message.edit = refuse_restore  # ty: ignore[invalid-assignment]
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions[-1] == EXPANSION_FAILED_EMOJI
+    assert placeholder_withdrawn(message=staged.message)
+    assert warns == [
+        (
+            "Could not restore the source message embed",
+            {"message_id": 1, "guild_id": 100, "error_type": "Forbidden"},
+        )
+    ]
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_guild_that_refused_the_hide_is_not_asked_to_undo_it(
+    cog: type[ExpansionCog[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a preview the expansion did hide is shown again; that guild would refuse it again."""
+    staged = _stage(cog=cog, outcome="readable")
+    staged.message.edit_failure = make_forbidden(message="Missing Permissions")
+    _fail_the_delivery(staged=staged)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.message.reactions[-1] == EXPANSION_FAILED_EMOJI
+    assert [message for message, _fields in warns] == [
+        "Could not suppress the source message embed"
+    ]
+
+
 @pytest.mark.parametrize(
     argnames=("error", "level", "traceback"),
     argvalues=[
