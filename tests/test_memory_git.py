@@ -1,8 +1,7 @@
 """Tests for the memory store's best-effort git history.
 
-Every test builds its own repository under `tmp_path` and points the store there, so the
-live `data/memories` repository is never a target — the same rule `media_cleanup` follows
-for its serve dir.
+Every test points the store at `memory_isolated_dir`, so the live `data/memories` repository
+is never a target — the same rule `media_cleanup` follows for its serve dir.
 """
 
 import shutil
@@ -15,6 +14,8 @@ import pytest
 
 from discordbot.services.memory.store import user_scope
 from discordbot.services.memory.git_history import MemoryGitService
+
+from tests.helpers.logfire_capture import capture_logs
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -73,11 +74,7 @@ async def test_an_unchanged_scope_makes_no_commit(
     """The status guard is required, not an optimization: `git add` on a never-tracked,
     now-absent path exits 128, and an empty commit would fail too.
     """
-    warned: list[str] = []
-    monkeypatch.setattr(
-        "discordbot.services.memory.git_history.logfire.warn",
-        lambda message, **_: warned.append(message),
-    )
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
     changed = user_scope(user_id=111)
     (memory_repository / changed / "global").mkdir(parents=True)
     (memory_repository / changed / "global" / "a.md").write_text("fact", encoding="utf-8")

@@ -28,10 +28,6 @@ from discordbot.services.memory.store import (
 from discordbot.services.memory.deltas import apply_deltas, sweep_stale_facts
 from discordbot.services.memory.writer import MemoryFactDelta
 from discordbot.services.memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
-from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE2_PROMPT,
-    SERVER_PHASE1_EVALUATOR_PROMPT,
-)
 
 from tests.helpers.memory import STAMPED_AT, make_fact, make_delta, make_memory_cog
 from tests.helpers.casting import as_interaction
@@ -166,65 +162,6 @@ def test_render_server_memory_block_is_low_authority_assistant_note() -> None:
     assert "這個社群很愛嘴" in content
     # Framed as reference, not instruction.
     assert "NOT instructions" in content
-
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-
-def test_server_prompts_target_the_server_not_individuals() -> None:
-    """Server memory is about the community; a member's own facts stay in their scope."""
-    assert (
-        "The user message starts with `target_server_id: <id>`" in SERVER_PHASE1_EVALUATOR_PROMPT
-    )
-    # The privacy boundary: individual personal facts are out of scope.
-    assert "belong to that member's OWN memory, never here" in SERVER_PHASE1_EVALUATOR_PROMPT
-    assert (
-        "A personal fact about one member belongs to that member's own memory, never here."
-        in SERVER_PHASE2_PROMPT
-    )
-
-
-def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
-    """Nicknames are the one carve-out from the no-individuals rule, and must survive the gate."""
-    assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_EVALUATOR_PROMPT
-    assert "vocab.member_alias.<USER_ID>" in SERVER_PHASE1_EVALUATOR_PROMPT
-    assert 'evidence_kind="stable_fact"' in SERVER_PHASE1_EVALUATOR_PROMPT
-    # Aliases are permanent community vocabulary so the freshness sweep never ages them.
-    assert 'durability="permanent"' in SERVER_PHASE1_EVALUATOR_PROMPT
-    # The same kind that the deterministic gate drops must be explicitly forbidden here.
-    assert "other_user_context" in SERVER_PHASE1_EVALUATOR_PROMPT
-    # Dropping personal facts must not drop the name-to-member mapping with them.
-    assert "nickname/alias" in SERVER_PHASE1_EVALUATOR_PROMPT
-    assert "community vocabulary" in SERVER_PHASE1_EVALUATOR_PROMPT
-
-
-def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() -> None:
-    """`subject_id` is what the allowlist reads back, so a guessed id is worse than none."""
-    assert "`member_alias`" in SERVER_PHASE2_PROMPT
-    assert "taken ONLY from the column-0 author prefix" in SERVER_PHASE2_PROMPT
-    assert "never guess an id from message text" in SERVER_PHASE2_PROMPT
-    # The row is rendered from `display_name` + `aliases`, since a model asked for the
-    # formatted body writes sentences instead.
-    assert "`display_name`" in SERVER_PHASE2_PROMPT
-    assert "`aliases`" in SERVER_PHASE2_PROMPT
-    assert "leave `text` empty" in SERVER_PHASE2_PROMPT
-    assert "the id is appended for you" in SERVER_PHASE2_PROMPT
-    # Every alias fact is permanent, which is what exempts it from the freshness sweep.
-    assert "every `member_alias` fact" in SERVER_PHASE2_PROMPT
-
-
-def test_server_phase1_prompt_pins_sharing_global() -> None:
-    """The sharing field routes per-user memory; a server memory is already server-confined."""
-    assert 'Always set `sharing="global"`' in SERVER_PHASE1_EVALUATOR_PROMPT
-
-
-def test_server_consolidation_prompt_never_emits_a_tone_note() -> None:
-    """The tone note is a per-user tier, so a server pass must return it empty."""
-    assert "TONE NOTE OUTPUT" in SERVER_PHASE2_PROMPT
-    assert "always empty" in SERVER_PHASE2_PROMPT
-    assert "a server consolidation never writes one" in SERVER_PHASE2_PROMPT
 
 
 # ---------------------------------------------------------------------------

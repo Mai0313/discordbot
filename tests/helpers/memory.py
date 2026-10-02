@@ -1,5 +1,5 @@
-"""Builders for the memory store's stored facts and consolidation deltas, a row reader, and
-the `/memory` cog.
+"""Builders for the memory store's stored facts and consolidation deltas, a row reader, the
+`/memory` cog, a fake model client, and waits for the pipeline's background work.
 
 Every default is an ordinary per-user preference, so a test names only the fields it is about.
 A fact carries no default owner: the owner is what a scope's stored identity is read back from,
@@ -7,8 +7,11 @@ so each test module binds its own.
 """
 
 from types import SimpleNamespace
+from typing import Protocol
+import asyncio
 from datetime import UTC, datetime
 
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from discordbot.typings.memory import (
@@ -19,6 +22,7 @@ from discordbot.typings.memory import (
     MemoryDeltaAction,
 )
 from discordbot.cogs.memory.cog import MemoryCogs
+from discordbot.services.memory import inflight
 from discordbot.services.memory.facts import node_type_for
 from discordbot.services.memory.store import GLOBAL_COMPARTMENT
 from discordbot.services.memory.writer import MemoryFactDelta
@@ -104,6 +108,113 @@ async def get_job(scope: str) -> MemoryJob | None:
         )
         row = result.scalars().one_or_none()
         return _row_to_model(row=row) if row is not None else None
+
+
+async def assert_cleared_row(scope: str) -> MemoryJob:
+    """Asserts a scope's `memory_job` row is a clear tombstone keeping nothing of the turn.
+
+    Returns:
+        The tombstone row.
+    """
+    job = await get_job(scope=scope)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    assert job.subject == ""
+    assert job.identity == ""
+    assert job.last_error is None
+    return job
+
+
+async def drain_memory_turns(scopes: tuple[str, ...]) -> None:
+    """Awaits every memory turn queued for `scopes`, the deferred replays included.
+
+    A failed turn is not re-raised. Each replay is started by the previous task's
+    done-callback, so the next task only exists once the loop has run that callback.
+    """
+    for scope in scopes:
+        while (task := inflight._inflight_tasks.get(key=scope)) is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def wait_for_persisted_writes() -> None:
+    """Drains the pipeline's detached reply.db writes, for a DEFERRED turn's row.
+
+    An ordinary turn transitions its row from the in-flight review task itself, so awaiting
+    that task is enough. A deferred one stages its row, and a cleared one retires it, from a
+    fire-and-forget task instead, so there a finished turn says nothing about the scope's
+    `memory_job` row: reading it too early sees a state the writer is about to move on its own
+    `cleared_since` check.
+    """
+    while inflight._db_tasks:
+        await asyncio.gather(*list(inflight._db_tasks))
+
+
+class MemoryAnswer(Protocol):
+    """The model a test stages: one parsed output per request body and requested schema."""
+
+    async def __call__(self, body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Returns the call's parsed output; None is a call that produced nothing usable."""
+        ...
+
+
+class FakeMemoryResponses:
+    """Fake Responses API resource recording parse calls for memory tests.
+
+    Every call answers with `output_parsed` unless `answer` is set, in which case `answer`
+    decides from the request's user text and the schema it asked for.
+    """
+
+    def __init__(self) -> None:
+        """Initializes recorded calls and the configured parsed output."""
+        self.parse_models: list[str] = []
+        self.parse_instructions: list[str] = []
+        self.parse_bodies: list[str] = []
+        self.parse_extra_kwargs: list[dict[str, object]] = []
+        self.output_parsed: BaseModel | None = None
+        self.answer: MemoryAnswer | None = None
+        self.status: str = "completed"
+        self.raises: Exception | None = None
+
+    async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
+        self,
+        model: str,
+        instructions: str,
+        input: list[dict[str, str]],  # noqa: A002 -- SDK parameter
+        text_format: type[BaseModel],
+        reasoning: dict[str, str],
+        service_tier: str,
+        extra_headers: dict[str, str],
+        **unexpected: object,
+    ) -> SimpleNamespace:
+        """Records the call and returns or raises the configured result.
+
+        `**unexpected` captures any kwarg the memory calls are not expected to
+        pass (e.g. a reintroduced `max_output_tokens`) so a test can assert the
+        memory path leaves the output budget to the backend.
+        """
+        del reasoning, service_tier, extra_headers
+        body = input[0]["content"]
+        self.parse_models.append(model)
+        self.parse_instructions.append(instructions)
+        self.parse_bodies.append(body)
+        self.parse_extra_kwargs.append(unexpected)
+        if self.raises is not None:
+            raise self.raises
+        output = (
+            self.output_parsed
+            if self.answer is None
+            else await self.answer(body=body, text_format=text_format)
+        )
+        return SimpleNamespace(output_parsed=output, status=self.status, incomplete_details=None)
+
+
+class FakeMemoryClient:
+    """Fake OpenAI client exposing only the responses resource."""
+
+    def __init__(self) -> None:
+        """Initializes the fake responses resource."""
+        self.responses = FakeMemoryResponses()
 
 
 def make_memory_cog() -> MemoryCogs:

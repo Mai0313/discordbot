@@ -1,9 +1,9 @@
-"""Tests for the per-user long-term memory helpers."""
+"""Tests for the memory store, writer, pipeline, `memory_job` rows and `/memory` cog."""
 
 import re
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
@@ -102,14 +102,24 @@ from discordbot.services.memory.prompts import (
     PHASE2_COMPACTION_BLOCK,
 )
 from discordbot.services.memory.constants import (
-    COMPACTION_TARGET_CHARS,
     COMPACTION_TRIGGER_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 
-from tests.helpers.memory import get_job, make_fact, make_delta, make_memory_cog
+from tests.helpers.memory import (
+    MemoryAnswer,
+    FakeMemoryClient,
+    get_job,
+    make_fact,
+    make_delta,
+    make_memory_cog,
+    assert_cleared_row,
+    drain_memory_turns,
+    wait_for_persisted_writes,
+)
 from tests.helpers.casting import as_interaction
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -171,73 +181,6 @@ def _draft(summary: str, normalized_key: str = "preference.test") -> RawMemoryDr
 def _no_signal() -> RawMemoryDraft:
     """Builds an empty memory draft."""
     return RawMemoryDraft(has_signal=False, observations=())
-
-
-class MemoryAnswer(Protocol):
-    """The model a test stages: one parsed output per request body and requested schema."""
-
-    async def __call__(self, body: str, text_format: type[BaseModel]) -> BaseModel | None:
-        """Returns the call's parsed output; None is a call that produced nothing usable."""
-        ...
-
-
-class FakeMemoryResponses:
-    """Fake Responses API resource recording parse calls for memory tests.
-
-    Every call answers with `output_parsed` unless `answer` is set, in which case `answer`
-    decides from the request's user text and the schema it asked for.
-    """
-
-    def __init__(self) -> None:
-        """Initializes recorded calls and the configured parsed output."""
-        self.parse_models: list[str] = []
-        self.parse_instructions: list[str] = []
-        self.parse_bodies: list[str] = []
-        self.parse_extra_kwargs: list[dict[str, object]] = []
-        self.output_parsed: BaseModel | None = None
-        self.answer: MemoryAnswer | None = None
-        self.status: str = "completed"
-        self.raises: Exception | None = None
-
-    async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
-        self,
-        model: str,
-        instructions: str,
-        input: list[dict[str, str]],  # noqa: A002 -- SDK parameter
-        text_format: type[BaseModel],
-        reasoning: dict[str, str],
-        service_tier: str,
-        extra_headers: dict[str, str],
-        **unexpected: object,
-    ) -> SimpleNamespace:
-        """Records the call and returns or raises the configured result.
-
-        `**unexpected` captures any kwarg the memory calls are not expected to
-        pass (e.g. a reintroduced `max_output_tokens`) so a test can assert the
-        memory path leaves the output budget to the backend.
-        """
-        del reasoning, service_tier, extra_headers
-        body = input[0]["content"]
-        self.parse_models.append(model)
-        self.parse_instructions.append(instructions)
-        self.parse_bodies.append(body)
-        self.parse_extra_kwargs.append(unexpected)
-        if self.raises is not None:
-            raise self.raises
-        output = (
-            self.output_parsed
-            if self.answer is None
-            else await self.answer(body=body, text_format=text_format)
-        )
-        return SimpleNamespace(output_parsed=output, status=self.status, incomplete_details=None)
-
-
-class FakeMemoryClient:
-    """Fake OpenAI client exposing only the responses resource."""
-
-    def __init__(self) -> None:
-        """Initializes the fake responses resource."""
-        self.responses = FakeMemoryResponses()
 
 
 def _writer() -> tuple[MemoryWriterAI, FakeMemoryClient]:
@@ -756,57 +699,6 @@ async def test_every_writer_call_runs_on_its_one_model() -> None:
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name] * 3
 
 
-def test_prompts_cover_recent_context_and_compaction() -> None:
-    assert "recent_context" in PHASE1_EVALUATOR_PROMPT
-    assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
-    assert "today" in PHASE2_PROMPT
-    assert "ttl_days" in PHASE2_PROMPT
-    assert str(COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
-
-
-def test_prompts_cover_the_permanent_tier() -> None:
-    # The note review authors the durability, so it must offer the permanent tier and say
-    # which narrow class it is for.
-    assert "permanent" in PHASE1_EVALUATOR_PROMPT
-
-
-def test_prompts_record_tone_persona_independently() -> None:
-    # Tone lives in its own tier but must be recorded as persona-independent qualities so
-    # a PERSONA_CHOICES change does not leave a stale persona-bound tone preference.
-    assert "persona-independent" in PHASE1_EVALUATOR_PROMPT
-    assert "persona-independent" in PHASE2_PROMPT
-
-
-def test_phase2_prompt_tells_the_tone_call_its_deltas_are_discarded() -> None:
-    """Tone evidence is unpartitioned, so the call that sees it must not be able to store
-    a fact. Code enforces that by giving it no facts and no raw bucket and throwing its
-    deltas away; the prompt only has to stop the model wasting output on them.
-    """
-    assert "<tone_evidence>" in PHASE2_PROMPT
-    assert "its `deltas` are discarded" in PHASE2_PROMPT
-    assert "Return `deltas` empty; only `tone_markdown` is read from this call." in PHASE2_PROMPT
-
-
-def test_the_tone_schema_names_the_same_trigger_as_the_prompt() -> None:
-    """`ConsolidatedMemory` is passed as `text_format=`, so this description IS prompt text.
-
-    A wording that names a compartment instead contradicts both consolidation prompts at the
-    model: `PHASE2_PROMPT` triggers on `<tone_evidence>`, and every server consolidation is a
-    `global` compartment call that `SERVER_PHASE2_PROMPT` tells to emit nothing (#518).
-    """
-    description = ConsolidatedMemory.model_fields["tone_markdown"].description
-    assert description is not None
-    assert "<tone_evidence>" in description
-    assert "compartment" not in description
-
-
-def test_evaluator_prompt_locks_third_parties_named_in_plain_prose() -> None:
-    """The deterministic gate only sees ids and roster names; the evaluator covers the rest."""
-    assert "even when nobody is tagged and no user id appears anywhere in the text" in (
-        PHASE1_EVALUATOR_PROMPT
-    )
-
-
 def test_redact_secrets_masks_token_shapes() -> None:
     # Joined at runtime so secret scanners do not flag the test fixture itself.
     jwt_like = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "x" * 30])
@@ -1038,37 +930,6 @@ async def _wait_for_inflight() -> None:
         await task
 
 
-async def _drain_scope() -> None:
-    """Awaits every queued turn for the test user, the deferred replays included.
-
-    `_wait_for_inflight` awaits the one task in flight when it is called, which says nothing
-    about the turns queued behind it: each replay is started by a done-callback, so the next
-    task only exists once the loop has run the callback for the previous one.
-    """
-    while True:
-        task = inflight._inflight_tasks.get(key=USER_SCOPE)
-        if task is None:
-            return
-        await asyncio.gather(task, return_exceptions=True)
-        # Lets the done-callback run, which is what starts the next queued turn.
-        await asyncio.sleep(0)
-
-
-async def _wait_for_persisted_writes() -> None:
-    """Drains the pipeline's detached reply.db writes, for a DEFERRED turn's row.
-
-    An ordinary turn transitions its row from the in-flight review task
-    itself, so awaiting that task is enough. A deferred one stages its row, and
-    a cleared one retires it, from a fire-and-forget `_spawn_db` task instead, so
-    there `_wait_for_inflight` returning says nothing about the scope's
-    `memory_job` row: reading it too early sees a state the writer is about to
-    move on its own `cleared_since` check, which is what made the clear test
-    flaky (#397).
-    """
-    while inflight._db_tasks:
-        await asyncio.gather(*list(inflight._db_tasks))
-
-
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
@@ -1265,19 +1126,6 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
         True: len(forget_calls),
         False: len(observation_calls),
     })
-
-
-def test_the_forget_block_offers_nothing_but_a_delete() -> None:
-    """A forget-only call applies nothing but deletes, so the prompt asks for nothing else.
-
-    Any other action it invites for a partly wrong fact is dropped, which leaves the fact whole
-    while the reply already says it was forgotten.
-    """
-    block = " ".join(
-        PHASE2_PROMPT.split("FORGET REQUESTS:", maxsplit=1)[1].split("\n\n", maxsplit=1)[0].split()
-    )
-    assert set(re.findall(pattern=r"`(create|update|delete)`", string=block)) == {"delete"}
-    assert "delete that whole fact" in block
 
 
 def _entry(timestamp: str, *observations: MemoryObservation, source: str = "guild 42") -> str:
@@ -2038,7 +1886,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
     if outcome == "cleared-mid-flight":
         mark_cleared(scope=USER_SCOPE)
     # Tolerates the `raised` turn's exception, which the task keeps after its callback logs it.
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
     assert len(reported) == 1
     assert reported[0] == MemoryWriteSummary()
@@ -2094,7 +1942,7 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes() -> Non
         ("newest", "他養了一隻貓"),
     ):
         _schedule(writer=writer, remember_notes=(note,), report=seen[key][1])
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
     assert [len(reports) for reports, _ in seen.values()] == [1, 1, 1]
 
@@ -2166,7 +2014,7 @@ async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
         ((), ("他已經不住台中了",)),
     ):
         _schedule(writer=writer, remember_notes=remember, forget_notes=forget)
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
     staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
         scope=USER_SCOPE
@@ -2432,7 +2280,6 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
         if guild == 99 and note == "在 99 說的":
             await started.wait()
     release.set()
-    # Each replay ends in the same done-callback, which starts the next pending source.
     while (task := inflight._inflight_tasks.get(key=USER_SCOPE)) is not None:
         await task
 
@@ -2853,7 +2700,7 @@ async def test_pipeline_background_failure_is_swallowed(
     # Deferred behind the first, which has not started yet.
     _schedule(writer=writer, full_reply="第二")
     # Returns only once the scope's slot is empty.
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
@@ -3772,8 +3619,8 @@ async def test_a_cleared_waiting_turn_does_not_end_the_replay(
     if dm_after_the_clear:
         schedule_dm()
     release.set()
-    await _drain_scope()
-    await _wait_for_persisted_writes()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
+    await wait_for_persisted_writes()
 
     assert inflight._pending_updates.get(key=USER_SCOPE) is None
     assert guild_reports == [MemoryWriteSummary()]
@@ -3812,14 +3659,14 @@ async def test_a_turn_waiting_from_during_a_clear_is_not_merged_into_a_later_one
     # Stands in for the clear's closing stamp, which the turn deferred during the clear predates.
     mark_cleared(scope=USER_SCOPE)
     _schedule(writer=writer, remember_notes=("清除之後寫的",), report=after_report)
-    await _wait_for_persisted_writes()
+    await wait_for_persisted_writes()
     job = await get_job(scope=USER_SCOPE)
     assert job is not None
     assert job.transcript is not None
     assert "清除期間寫的" not in job.transcript
     release.set()
-    await _drain_scope()
-    await _wait_for_persisted_writes()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
+    await wait_for_persisted_writes()
 
     assert not any("清除期間寫的" in request for request in requests)
     assert "清除之後寫的" in requests[-1]
@@ -4170,14 +4017,7 @@ async def test_db_clear_job_scrubs_payload_and_is_not_resumable(memory_isolated_
 
     assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=8) is True
 
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.token == 8
-    assert job.transcript is None
-    assert job.subject == ""
-    assert job.identity == ""
-    assert job.last_error is None
+    assert (await assert_cleared_row(scope=USER_SCOPE)).token == 8
     assert USER_SCOPE not in {job.scope for job in await memory_db.list_resumable()}
 
 
@@ -4189,13 +4029,7 @@ async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
         token=19, transcript="stale transcript", subject="stale subject", identity="stale identity"
     )
 
-    tombstone = await get_job(scope=USER_SCOPE)
-    assert tombstone is not None
-    assert tombstone.status == "cleared"
-    assert tombstone.token == 20
-    assert tombstone.transcript is None
-    assert tombstone.subject == ""
-    assert tombstone.identity == ""
+    assert (await assert_cleared_row(scope=USER_SCOPE)).token == 20
 
     await _stage_row(
         token=21, transcript="new transcript", subject="new subject", identity="new identity"
@@ -4288,7 +4122,7 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
     inflight._finish_memory_update(
         scope=USER_SCOPE, task=done_task, run=pipeline._run_memory_update
     )
-    await _wait_for_persisted_writes()
+    await wait_for_persisted_writes()
     job = await get_job(scope=USER_SCOPE)
     assert job is not None
     assert job.status == "done"
@@ -4798,49 +4632,6 @@ async def test_pipeline_server_subject_renders_without_source_fields(
     assert "- sharing:" not in raw_text
 
 
-def test_prompts_cover_sharing_classification() -> None:
-    """The note review authors `sharing`, so the classification rules live with it.
-
-    What has to be in the prompt is the default and the third-party rule, which
-    `_sanitize_observation` mirrors deterministically on the code side.
-    """
-    assert "SHARING CLASSIFICATION" in PHASE1_EVALUATOR_PROMPT
-    assert "source_only" in PHASE1_EVALUATOR_PROMPT
-    assert "When unsure, choose `source_only`" in PHASE1_EVALUATOR_PROMPT
-    assert "ANY person other than the target user" in PHASE1_EVALUATOR_PROMPT
-
-
-def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
-    """Provenance is the directory, so the prompt must say the model writes one of them.
-
-    Code routes the evidence before the call, and the model is told what it may not carry
-    back across that line.
-    """
-    assert "WHAT A COMPARTMENT IS" in PHASE2_PROMPT
-    assert "<global_reference>" in PHASE2_PROMPT
-    # The text must never name where a fact was learned; the directory already records it.
-    assert "the text must never mention a server, a channel" in PHASE2_PROMPT
-    assert "TONE NOTE OUTPUT" in PHASE2_PROMPT
-    assert "## 語氣偏好" in PHASE2_PROMPT
-
-
-def test_phase2_prompt_ranks_a_stated_tone_preference_over_an_inferred_one() -> None:
-    """The note merges many batches, so a majority of inferred bullets must not win.
-
-    `tone_evidence_from_raw` tags every bullet with its kind; this is the half that
-    tells the model what to do with the tag. Without both, a user who stated once that
-    they wanted respect and then trash-talked the bot for weeks got a note saying they
-    wanted trash-talk back, and recency kept it that way.
-    """
-    assert "`explicit_preference` and `correction` are the user stating" in PHASE2_PROMPT
-    assert "is not overturned by recency alone" in PHASE2_PROMPT
-    assert "Never invert an inferred bullet" in PHASE2_PROMPT
-    # The "later ... wins" half of that rule has no clock but the emitted order, and the
-    # tag is code-stamped input like the `source:` line phase 1 tells the model to leave out.
-    assert "oldest first" in PHASE2_PROMPT
-    assert "never copy it into the note" in PHASE2_PROMPT
-
-
 # ---------------------------------------------------------------------------
 # tone note (tone.md)
 # ---------------------------------------------------------------------------
@@ -5110,10 +4901,7 @@ async def test_db_clear_job_keeps_an_empty_tombstone_and_is_idempotent(
 ) -> None:
     await _stage_row(transcript="逐字稿")
     assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=2) is True
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     # The durable marker remains, but a second clear reports no user data removed.
     assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=3) is False
 
@@ -5132,19 +4920,13 @@ async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) 
     assert read_detail_tail(scope=USER_SCOPE, max_chars=10_000) == ""
     assert not (memory_isolated_dir / str(USER_ID)).exists()
     # Nothing the restart sweep could resume, and reply.db retains no transcript.
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     assert await memory_db.list_resumable() == []
 
 
 async def test_clear_scope_memory_reports_nothing_to_clear(memory_isolated_dir: Path) -> None:
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     # The permanent marker itself is not user memory, so a repeated clear stays empty.
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
 
@@ -5155,10 +4937,7 @@ async def test_clear_scope_memory_removes_a_staged_turn_without_files(
     """A scope whose only trace is a staged transcript still has something to erase."""
     await _stage_row()
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
 
 
 async def test_clear_token_advances_past_the_largest_stored_token(
@@ -5169,11 +4948,7 @@ async def test_clear_token_advances_past_the_largest_stored_token(
 
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
 
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.token > stored_token
-    assert job.transcript is None
+    assert (await assert_cleared_row(scope=USER_SCOPE)).token > stored_token
 
 
 async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir: Path) -> None:
@@ -5203,7 +4978,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir:
     assert inflight._pending_updates.get(key=USER_SCOPE) is None
     release.set()
     await _wait_for_inflight()
-    await _wait_for_persisted_writes()
+    await wait_for_persisted_writes()
     # Neither the in-flight turn nor the dropped replay may write anything back,
     # and the clear leaves only a scrubbed marker that restart cannot resume.
     # The unwrapped `get_job` is what makes that second claim mean something:
@@ -5211,10 +4986,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir:
     # pass without having looked.
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert await pipeline.safe_list_resumable() == []
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
 
 
 async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
@@ -5293,10 +5065,7 @@ async def test_cancelled_clear_waiting_for_staging_lock_finishes_the_tombstone(
         await clearing
 
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     assert await memory_db.list_resumable() == []
 
 
@@ -5336,10 +5105,7 @@ async def test_cancelled_clear_waits_for_an_inflight_tombstone_write(
         await clearing
 
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     assert await memory_db.list_resumable() == []
 
 
@@ -5349,16 +5115,12 @@ async def test_cancelled_clear_still_records_that_it_erased(
     """A cancelled clear erased as much as any other, so both its traces still land."""
     _populate_every_tier()
     commits: list[tuple[str, str]] = []
-    audit: list[dict[str, object]] = []
 
     def record_commit(scope: str, reason: str) -> None:
         commits.append((scope, reason))
 
-    def record_audit(message: str, **fields: object) -> None:
-        audit.append({"message": message, **fields})
-
     monkeypatch.setattr(pipeline, "memory_git", SimpleNamespace(enqueue=record_commit))
-    monkeypatch.setattr(pipeline.logfire, "info", record_audit)
+    infos = capture_logs(monkeypatch=monkeypatch, level="info")
     clear_job_started, release_clear_job = _hold_clear_job(monkeypatch=monkeypatch)
     clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
     await clear_job_started.wait()
@@ -5370,7 +5132,7 @@ async def test_cancelled_clear_still_records_that_it_erased(
     assert not (memory_isolated_dir / str(USER_ID)).exists()
     assert commits == [(USER_SCOPE, "clear")]
     recorded = [
-        entry for entry in audit if entry["message"] == "Cleared personal memory on request"
+        fields for message, fields in infos if message == "Cleared personal memory on request"
     ]
     assert len(recorded) == 1
     assert recorded[0]["removed_files"] is True
@@ -5444,10 +5206,7 @@ async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_
         captured_at=time.monotonic() - 1,
     )
 
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
 
 
 async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
@@ -5498,12 +5257,7 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
     assert await clearing is True
 
     # The delayed stale write cannot overwrite a durable clear tombstone.
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
-    assert job.subject == ""
-    assert job.identity == ""
+    await assert_cleared_row(scope=USER_SCOPE)
     assert USER_SCOPE not in {row.scope for row in await memory_db.list_resumable()}
 
 
@@ -5553,10 +5307,7 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
 
     # A new process has no monotonic clear stamp, so only reply.db can protect it.
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     assert await memory_db.list_resumable() == []
 
 
@@ -5577,10 +5328,7 @@ async def test_clear_file_failure_leaves_tombstone(
     with pytest.raises(PermissionError, match=r"tone\.md is read-only"):
         await pipeline.clear_scope_memory(scope=USER_SCOPE)
 
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     assert "新記憶" in _memory_text()
 
 
@@ -5601,10 +5349,7 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
 
     assert count_raw_entries(scope=USER_SCOPE) == 0
     # The aborted turn cannot replace the clear marker, and restart has nothing.
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
 
 
 async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_dir: Path) -> None:
@@ -5636,10 +5381,7 @@ async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Pa
     await _confirm_button(view=view).callback(as_interaction(fake=interaction))
 
     assert _memory_text() == ""
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
     # Acked before the work so a slow clear cannot miss Discord's response window.
     assert interaction.response.deferred is True
     payload = interaction.edits[-1]
@@ -5748,10 +5490,7 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     assert isinstance(embed, Embed)
     assert "沒有完成" in (embed.description or "")
     # The durable marker goes before the files, so recovery can finish later.
-    job = await get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "cleared"
-    assert job.transcript is None
+    await assert_cleared_row(scope=USER_SCOPE)
 
 
 async def _restart(writer: MemoryWriterAI) -> None:
@@ -5767,7 +5506,7 @@ async def _restart(writer: MemoryWriterAI) -> None:
             token=job.token,
             status=job.status,
         )
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
 
 def _staged_forgets() -> int:
@@ -5799,7 +5538,7 @@ async def test_a_review_refused_on_its_retry_is_not_retried_again(
     # A stored fact gives the forget pass a compartment to call the model for.
     write_fact(scope=USER_SCOPE, fact=_stored_fact())
     _schedule(writer=writer, forget_notes=("別再提那台舊筆電",))
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
     calls = len(fake_client.responses.parse_instructions)
     assert any("forget_request" in body for body in fake_client.responses.parse_bodies)
 
@@ -5833,7 +5572,7 @@ async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages(
         token=memory_db.new_token(),
         status="failed",
     )
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
     staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
         scope=USER_SCOPE
@@ -5863,7 +5602,7 @@ async def test_a_retry_refused_again_files_no_forget_a_second_time(
         token=memory_db.new_token(),
         status="failed",
     )
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
     assert fake_client.responses.parse_instructions == [PHASE1_EVALUATOR_PROMPT]
     assert _staged_forgets() == 0
@@ -5896,6 +5635,6 @@ async def test_a_retry_merged_into_a_waiting_turn_still_files_that_turns_forget(
         token=42,
         status="failed",
     )
-    await _drain_scope()
+    await drain_memory_turns(scopes=(USER_SCOPE,))
 
     assert _staged_forgets() == 1

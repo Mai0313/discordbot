@@ -172,7 +172,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **Every store write except the clear's serializes under `scope_lock(scope)`.** The clear skips the lock on purpose, so every file write must sit right after its `cleared_since` check with no `await` in between or an in-flight update resurrects what was cleared (`pipeline.py::clear_scope_memory`). Tests take `memory_isolated_dir`, which also turns the git committer off.
 - **`scope` is the owner key and `compartment` the visibility axis; they are never the same word.** `user_scope` / `server_scope` build a scope and `store.py::flavor_of` reads its flavor back, so one store and one pipeline serve both flavors.
 - **Every clear goes through `pipeline.py::clear_scope_memory`**; `/memory clear` only opens `MemoryClearConfirmView`, whose button calls it. A clear is whole only when every tier its docstring lists is neutralized, so an offline wipe with the bot stopped must also create a tombstone or remove that scope's row, and an online clear must use this protocol because staging writers can still exist.
-- **A test reading a DEFERRED turn's `memory_job` row must first drain `inflight._db_tasks`** through `tests/test_memory.py::_wait_for_persisted_writes`.
+- **A test reading a DEFERRED turn's `memory_job` row must first drain `inflight._db_tasks`** through `tests/helpers/memory.py::wait_for_persisted_writes`.
 
 ## Other Cogs
 
