@@ -253,8 +253,7 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     The `requests` calls under `parse` are per-read only, so a slow-drip CDN can hold one paste
     open indefinitely; the bound is what stops it. `asyncio.to_thread` cannot cancel the walk,
     so it is the scratch directory going away that both deletes what it wrote and fails its next
-    write. The exit is deliberately not called on this path: the walk is still driving that
-    generator on its own thread.
+    write.
 
     The mark is the retryable one rather than the cross, which is the shared vocabulary every
     expansion cog answers with: the post is fine and the same link works later.
@@ -262,7 +261,7 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     monkeypatch.setattr(target=parse_threads, name="THREADS_EXPAND_TIMEOUT_SECONDS", value=0.05)
     cog = _cog()
     downloader = _wire_threads(
-        cog=cog, downloader=ThreadsDownloaderStub(results=[], enter_delay_seconds=0.3)
+        cog=cog, downloader=ThreadsDownloaderStub(results=[], parse_delay_seconds=0.3)
     )
 
     message = guild_message(content=_URL)
@@ -271,11 +270,10 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     scratch = Path(downloader.output_folders[0])
     assert not await asyncio.to_thread(scratch.exists)
-    assert downloader.parsed[0].exited is False
     # The abandoned walk runs on past the give-up and writes where it was told to; what it
     # produces has to be gone with the directory rather than stranded in the system temp dir.
-    assert await asyncio.to_thread(downloader.parsed[0].finished.wait, 5.0)
-    wrote = downloader.parsed[0].wrote
+    assert await asyncio.to_thread(downloader.finished.wait, 5.0)
+    wrote = downloader.wrote
     assert wrote is not None
     assert not await asyncio.to_thread(wrote.exists)
     assert not await asyncio.to_thread(scratch.exists)
@@ -390,38 +388,16 @@ async def test_threads_cog_states_the_images_the_embed_cap_left_behind() -> None
     assert "🖼️ 另有 5 張" in cast("str", embeds[0].footer.text)
 
 
-async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() -> None:
-    """A temp file the user cannot see must never repaint a delivered expansion as failed."""
-    cog = _cog()
-    downloader = ThreadsDownloaderStub(
-        results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
-    )
-    _wire_threads(cog=cog, downloader=downloader)
-    message = guild_message(content=_URL)
-
-    await cog.on_message(message=as_message(fake=message))
-
-    # The cleanup really ran and really failed, so the ✅ below is the guard's doing.
-    assert downloader.parsed[0].exited
-    assert len(message.replies) == 1
-    assert expansion_payload(message=message)["embeds"]
-    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
-
-
-async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_after_it(
+async def test_threads_cog_logs_a_failed_step_with_its_own_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Swallowing the cleanup must not swallow the failure the cleanup used to replace."""
+    """A step failing after the read withdraws the placeholder and is logged as what it was."""
     cog = _cog()
-    downloader = ThreadsDownloaderStub(
-        results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
+    _wire_threads(
+        cog=cog, downloader=ThreadsDownloaderStub(results=[_thread_output(text="貼文內容")])
     )
-    _wire_threads(cog=cog, downloader=downloader)
     message = guild_message(content=_URL)
     errors = capture_logs(monkeypatch, level="error")
-    # A warning rather than an error: the scratch directory around the cleanup removes what a
-    # failing unlink left, so it is a degraded step rather than a leak nobody clears.
-    warnings = capture_logs(monkeypatch, level="warn")
 
     def exploding_plan(results: list[ThreadsOutput]) -> list[Embed]:
         del results
@@ -430,14 +406,8 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     cog._build_embeds = exploding_plan  # ty: ignore[invalid-assignment]
     await cog.on_message(message=as_message(fake=message))
 
-    assert downloader.parsed[0].exited
     assert placeholder_withdrawn(message=message)
     assert message.reactions[-1] == EXPANSION_FAILED_EMOJI
-    # The step that lost the expansion is logged with its own cause rather than with the
-    # OSError the cleanup used to overwrite it with, and the cleanup gets its own line.
-    assert ("Could not clean up the Threads scratch files", "OSError") in [
-        (text, fields.get("error_type")) for text, fields in warnings
-    ]
     assert ("Threads expansion failed outside the read and the send", "RuntimeError") in [
         (text, fields.get("error_type")) for text, fields in errors
     ]

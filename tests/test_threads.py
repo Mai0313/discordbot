@@ -193,12 +193,11 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
         html=_thread_html(post_code=threads_url.post_code),
     )
 
-    with downloader.parse(url=url) as conversation:
-        target = conversation.target
-        assert target is not None
-        assert target.text == f"Target post {threads_url.post_code}"
-        assert target.author_name == "target_author"
-        assert target.taken_at is not None, "taken_at should not be None"
+    target = downloader.parse(url=url).target
+    assert target is not None
+    assert target.text == f"Target post {threads_url.post_code}"
+    assert target.author_name == "target_author"
+    assert target.taken_at is not None, "taken_at should not be None"
     assert fetched_urls == [threads_url.clean_url]
 
 
@@ -564,12 +563,11 @@ def test_a_quoted_posts_video_stays_a_url_and_is_never_downloaded(
         ),
     )
 
-    with downloader.parse(url=_REPLIES_TARGET_URL) as conversation:
-        quoted = conversation.chain[-1].quoted
+    quoted = downloader.parse(url=_REPLIES_TARGET_URL).chain[-1].quoted
 
-        assert quoted is not None
-        assert quoted.video_urls == ["https://cdn.example/QUOTED.mp4"]
-        assert quoted.video_paths == []
+    assert quoted is not None
+    assert quoted.video_urls == ["https://cdn.example/QUOTED.mp4"]
+    assert quoted.video_paths == []
 
 
 def test_a_quoted_post_is_read_only_one_level_deep(
@@ -1235,17 +1233,45 @@ def test_parse_downloads_the_target_video_and_no_others(
     )
     serve_page(monkeypatch, downloader=ThreadsDownloader, html=html)
 
-    with downloader.parse(url=_REPLIES_TARGET_URL) as conversation:
-        target = conversation.target
-        assert target is not None
-        assert len(target.video_paths) == 1
-        assert target.video_paths[0].exists()
-        reply = conversation.reply_branches[0][0]
-        assert reply.video_urls == ["https://cdn.example/reply.mp4"]
-        assert reply.video_paths == []
-        downloaded = target.video_paths[0]
+    conversation = downloader.parse(url=_REPLIES_TARGET_URL)
 
-    assert not downloaded.exists()  # the context manager cleans up what it downloaded
+    target = conversation.target
+    assert target is not None
+    assert len(target.video_paths) == 1
+    assert target.video_paths[0].exists()
+    reply = conversation.reply_branches[0][0]
+    assert reply.video_urls == ["https://cdn.example/reply.mp4"]
+    assert reply.video_paths == []
+
+
+def test_parse_never_rebuilds_a_removed_output_folder(
+    downloader: ThreadsDownloader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A walk that starts after its caller removed the folder fails instead of rebuilding it.
+
+    Removing the folder is the caller's only stop signal for a walk it gave up on; a rebuilt one
+    would be written into and never cleaned up.
+    """
+    serve_page(
+        monkeypatch,
+        downloader=ThreadsDownloader,
+        html=_sjs_html(
+            target=_thread_post_payload(
+                code="TARGET",
+                username="target_author",
+                text="Target post",
+                video_url="https://cdn.example/target.mp4",
+            )
+        ),
+    )
+    removed = tmp_path / "removed"
+
+    with pytest.raises(FileNotFoundError):
+        downloader.model_copy(update={"output_folder": str(removed)}).parse(
+            url=_REPLIES_TARGET_URL
+        )
+
+    assert not removed.exists()
 
 
 def test_parse_and_parse_metadata_agree_when_nothing_downloads(
@@ -1255,8 +1281,7 @@ def test_parse_and_parse_metadata_agree_when_nothing_downloads(
     serve_page(monkeypatch, downloader=ThreadsDownloader, html=_thread_html_with_replies())
 
     metadata = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
-    with downloader.parse(url=_REPLIES_TARGET_URL) as parsed:
-        assert parsed == metadata
+    assert downloader.parse(url=_REPLIES_TARGET_URL) == metadata
 
 
 def test_post_tolerates_null_string_fields() -> None:

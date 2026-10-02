@@ -6,7 +6,7 @@ and the block accessors live here once rather than in each platform's two test f
 
 import json
 import time
-from types import TracebackType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any, Unpack, TypedDict
 from pathlib import Path
 from datetime import UTC, datetime
@@ -190,82 +190,18 @@ async def expand(
 THREADS_STUB_COMMENT_TEXT = "a stranger's comment the expansion must ignore"
 
 
-class ParseResultStub:
-    """Stands in for the context manager `ThreadsDownloader.parse` returns."""
-
-    def __init__(
-        self,
-        results: list[ThreadsOutput] | BaseException,
-        exit_error: Exception | None = None,
-        enter_delay_seconds: float = 0.0,
-        output_folder: str | None = None,
-    ) -> None:
-        """Stores parsed results, the entry and exit errors, and how long the entry blocks."""
-        self.results = results
-        self.exit_error = exit_error
-        self.enter_delay_seconds = enter_delay_seconds
-        self.output_folder = output_folder
-        self.exited = False
-        self.wrote: Path | None = None
-        self.finished = threading.Event()
-
-    def __enter__(self) -> ThreadsConversation:
-        """Returns the parsed conversation or raises the configured parsing error.
-
-        A readable post always comes back carrying a comment, because that is what production
-        yields: the expansion is supposed to ignore them, and a stub with no comments in it
-        cannot tell "ignores them" apart from "never saw any".
-
-        `enter_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
-        can reach the caller's give-up path with the walk still running. What happens after that
-        delay is `download_media`'s shape: the media write is attempted against the folder the
-        caller handed over, and never against one this rebuilds.
-        """
-        time.sleep(self.enter_delay_seconds)
-        if self.output_folder is not None:
-            # Named before the write, so an abandoned walk still says where it aimed once the
-            # removal turned that write into a FileNotFoundError. Suppressed for the same
-            # reason production discards it: nothing is awaiting this thread any more.
-            self.wrote = Path(self.output_folder) / "clip.mp4"
-            with contextlib.suppress(OSError):
-                self.wrote.write_bytes(b"clip")
-        self.finished.set()
-        if isinstance(self.results, BaseException):
-            raise self.results
-        comment = ThreadsOutput(
-            text=THREADS_STUB_COMMENT_TEXT, image_urls=["https://x.test/c.png"]
-        )
-        return ThreadsConversation(
-            chain=self.results, reply_branches=[[comment]] if self.results else []
-        )
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Keeps fake parsed outputs available after context exit, or fails the cleanup."""
-        self.exited = True
-        if self.exit_error:
-            raise self.exit_error
-
-
 class ThreadsDownloaderStub:
     """Stands in for ThreadsDownloader, answering every walk with the configured parse."""
 
     def __init__(
-        self,
-        results: list[ThreadsOutput] | BaseException,
-        exit_error: Exception | None = None,
-        enter_delay_seconds: float = 0.0,
+        self, results: list[ThreadsOutput] | BaseException, parse_delay_seconds: float = 0.0
     ) -> None:
-        """Stores parsed results, both failures, and how long each parse blocks on entry."""
+        """Stores parsed results or the parsing error, and how long each parse blocks."""
         self.results = results
-        self.exit_error = exit_error
-        self.enter_delay_seconds = enter_delay_seconds
-        self.parsed: list[ParseResultStub] = []
+        self.parse_delay_seconds = parse_delay_seconds
         self.output_folders: list[str] = []
+        self.wrote: Path | None = None
+        self.finished = threading.Event()
 
     def factory(self, output_folder: str) -> "ThreadsDownloaderStub":
         """Stands in for the ThreadsDownloader class, recording the scratch dir it was handed.
@@ -277,16 +213,36 @@ class ThreadsDownloaderStub:
         self.output_folders.append(output_folder)
         return self
 
-    def parse(self, url: str) -> ParseResultStub:
-        """Returns a fake parse context manager, recorded so a test can inspect its exit."""
-        result = ParseResultStub(
-            results=self.results,
-            exit_error=self.exit_error,
-            enter_delay_seconds=self.enter_delay_seconds,
-            output_folder=self.output_folders[-1] if self.output_folders else None,
+    def parse(self, url: str) -> ThreadsConversation:
+        """Returns the parsed conversation or raises the configured parsing error.
+
+        A readable post always comes back carrying a comment, because that is what production
+        yields: the expansion is supposed to ignore them, and a stub with no comments in it
+        cannot tell "ignores them" apart from "never saw any".
+
+        `parse_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
+        can reach the caller's give-up path with the walk still running. What happens after that
+        delay is `download_media`'s shape: the media write is attempted against the folder the
+        caller handed over, and never against one this rebuilds.
+        """
+        del url
+        time.sleep(self.parse_delay_seconds)
+        if self.output_folders:
+            # Named before the write, so an abandoned walk still says where it aimed once the
+            # removal turned that write into a FileNotFoundError. Suppressed for the same
+            # reason production discards it: nothing is awaiting this thread any more.
+            self.wrote = Path(self.output_folders[-1]) / "clip.mp4"
+            with contextlib.suppress(OSError):
+                self.wrote.write_bytes(b"clip")
+        self.finished.set()
+        if isinstance(self.results, BaseException):
+            raise self.results
+        comment = ThreadsOutput(
+            text=THREADS_STUB_COMMENT_TEXT, image_urls=["https://x.test/c.png"]
         )
-        self.parsed.append(result)
-        return result
+        return ThreadsConversation(
+            chain=self.results, reply_branches=[[comment]] if self.results else []
+        )
 
 
 def hosting_off_planner() -> MediaDeliveryPlanner:

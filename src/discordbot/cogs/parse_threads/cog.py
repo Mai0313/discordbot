@@ -24,6 +24,7 @@ from discordbot.utils.expansion_cog import (
     ExpansionCog,
     ExpansionDelivery,
     with_gallery,
+    omitted_images_note,
 )
 from discordbot.utils.discord_embeds import (
     DISCORD_EMBED_COUNT_LIMIT,
@@ -96,7 +97,7 @@ def _remainder_notes(omitted_posts: int, omitted_images: int) -> list[str]:
     """
     notes = []
     if omitted_images > 0:
-        notes.append(f"🖼️ 另有 {omitted_images} 張")
+        notes.append(omitted_images_note(count=omitted_images))
     if omitted_posts > 0:
         notes.append(f"📝 另有 {omitted_posts} 篇未展開")
     return notes
@@ -137,51 +138,21 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         and `asyncio.to_thread` cannot cancel the walk it holds. Removing the directory is the
         only stop signal that reaches it, and only once it tries to write.
 
-        The walk's cleanup is registered only after its enter RETURNED. A failed enter leaves the
-        walk still driving that generator on its own thread, so exiting it would be a second
-        driver; the directory going away is what both deletes whatever it wrote and fails its next
-        write.
-
         Args:
-            message: The message carrying the link, so the cleanup warning can be joined to it.
+            message: Unused; nothing here logs.
             url: The post to read.
-            stack: Holds the scratch directory and the walk until delivery is done.
+            stack: Holds the scratch directory, and with it the downloaded media, until delivery
+                is done.
 
         Returns:
             The parsed conversation.
         """
+        del message
         download_dir = stack.enter_context(scratch_directory(prefix="parse-threads-"))
         downloader = self.downloader_factory(output_folder=download_dir)
-        # parse() blocks on HTTP fetch + media downloads, so run its enter off the event loop; the
-        # reply runs while the temp files still exist and the matching exit cleans them up.
-        parse_cm = downloader.parse(url=url)
         async with asyncio.timeout(delay=THREADS_EXPAND_TIMEOUT_SECONDS):
-            conversation = await asyncio.to_thread(parse_cm.__enter__)
-        stack.push_async_callback(
-            self._close_walk, parse_cm=parse_cm, url=url, message_id=message.id
-        )
+            conversation = await asyncio.to_thread(downloader.parse, url=url)
         return conversation
-
-    @staticmethod
-    async def _close_walk(
-        parse_cm: contextlib.AbstractContextManager[ThreadsConversation], url: str, message_id: int
-    ) -> None:
-        """Closes the walk's generator and unlinks its media.
-
-        Swallows its own failure: it is the last step, nothing downstream can act on it, and
-        letting it raise would replace whatever the expansion itself reported. A warning rather
-        than an error because the enclosing scratch directory removes what this missed.
-        """
-        try:
-            await asyncio.to_thread(parse_cm.__exit__, None, None, None)
-        except Exception as error:
-            logfire.warn(
-                "Could not clean up the Threads scratch files",
-                url=url,
-                message_id=message_id,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
 
     async def build_delivery(
         self, message: Message, url: str, parsed: ThreadsConversation
@@ -232,11 +203,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         # Videos too big to attach are hosted on the external static server and linked instead of
         # refusing the whole post; the rest attach natively. The planner reserves the multipart
         # envelope and reads the destination's real limit.
-        items = [
-            MediaItem(source=path, filename=path.name)
-            for path in target.video_paths
-            if path.exists()
-        ]
+        items = [MediaItem(source=path, filename=path.name) for path in target.video_paths]
         plan = await self.media_delivery.plan(
             items=items,
             upload_limit=upload_limit_for(guild=message.guild),
