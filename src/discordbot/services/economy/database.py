@@ -1823,6 +1823,8 @@ async def top_losers(limit: int = LEADERBOARD_SIZE) -> list[LossLeaderboardEntry
     query filters by today's `day_started_at` so yesterday's counters
     never leak into a new day.
 
+    Accounts hidden from public leaderboards are dropped.
+
     Args:
         limit: Maximum number of accounts to return.
 

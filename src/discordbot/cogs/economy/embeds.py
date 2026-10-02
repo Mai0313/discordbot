@@ -236,7 +236,7 @@ def build_balance_embed(
 
 
 def build_empty_leaderboard_embed() -> Embed:
-    """Builds the public balance leaderboard shown while nobody holds a balance."""
+    """Builds the public balance leaderboard shown when no visible account exists to rank."""
     return Embed(
         title=LEADERBOARD_TITLE,
         description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
@@ -258,7 +258,7 @@ def build_leaderboard_embed(champion: LeaderboardEntry) -> Embed:
 
 
 def build_empty_loss_leaderboard_embed() -> Embed:
-    """Builds the public daily loss leaderboard shown while nobody has lost today."""
+    """Builds the public daily loss leaderboard shown when no visible account has lost today."""
     return Embed(
         title=LOSS_LEADERBOARD_TITLE,
         description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
