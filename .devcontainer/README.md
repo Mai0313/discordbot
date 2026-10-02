@@ -11,7 +11,7 @@ There is no Dockerfile. The environment is assembled from a stock image plus [De
     - `common-utils`: git, curl, zsh, oh-my-zsh, and a non-root `vscode` user with passwordless sudo. zsh is the default shell.
     - `uv`: the Python package manager the `Makefile` and CI depend on.
 - **devcontainer.json**: extension recommendations (Python, Pylance, debugpy, Jupyter, Docker, GitLens, YAML/TOML) and a zsh terminal profile.
-- **updateContentCommand**: runs `uv sync && uv cache clean`, so the virtualenv is ready when the container opens.
+- **updateContentCommand**: runs `uv sync --all-groups && uv cache clean`, so the virtualenv, with the test and docs tools, is ready when the container opens.
 
 ## Git and SSH
 
