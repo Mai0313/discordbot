@@ -365,7 +365,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         return result
 
     async def _refund_pregame_antes(self) -> None:
-        """Returns every participant's `ante` from the pool, in one DB transaction."""
+        """Returns every participant's whole `ante` from the pool, in one DB transaction."""
         result = await apply_jackpot_settlement_batch(
             game_id=self.game_id,
             settlements=[
@@ -374,6 +374,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
                     player_account_name=participant.account_name,
                     player_avatar_url=participant.avatar_url,
                     player_delta=self.ante,
+                    refund=True,
                 )
                 for participant in self.participants
             ],

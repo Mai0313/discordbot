@@ -34,6 +34,7 @@ from discordbot.cogs.games.dragon_gate import (
 )
 from discordbot.cogs.games.interactions import publish_final_table
 from discordbot.services.economy.database import (
+    top_losers,
     get_jackpot_snapshot,
     apply_jackpot_settlement,
     apply_jackpot_settlement_batch,
@@ -74,7 +75,7 @@ from tests.helpers.economy import seed_balance, get_jackpot_pool
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_levels
 from tests.helpers.message_cleanup import record_scheduled_deletes
-from tests.helpers.economy_invariants import assert_wallet_consistent
+from tests.helpers.economy_invariants import assert_wallet_consistent, assert_daily_casino_stats
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -724,6 +725,9 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
     await assert_wallet_consistent(user_id=1, expected_balance=1_000)
     await assert_wallet_consistent(user_id=2, expected_balance=1_000)
     assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
+    for user_id in (1, 2):
+        await assert_daily_casino_stats(user_id=user_id, loss=0, win=0, net=0)
+    assert await top_losers() == []
     assert len(batches) == 2, "the antes go back in one transaction, as they were charged"
     # order-contract: the refund is awaited after the ante batch it reverses.
     assert {request.player_id: request.player_delta for request in batches[-1]} == {
@@ -733,6 +737,56 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
     assert not view.is_finished()
     await view.on_timeout()
     assert scheduled.messages == [message]
+
+
+async def test_a_start_whose_table_never_lands_returns_every_whole_ante_from_a_drained_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another table's win can leave the shared pool short of one ante before the refund lands."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    async def win_elsewhere_before_the_refund(
+        game_id: str, settlements: Sequence[JackpotSettlementRequest]
+    ) -> JackpotSettlementBatchResult:
+        """Leaves the pool holding 5 just before the antes go back."""
+        if settlements[0].player_delta > 0:
+            pool = await get_jackpot_pool(game_id=game_id)
+            await apply_jackpot_settlement(
+                player_id=3, player_account_name="carol", player_delta=pool - 5, game_id=game_id
+            )
+        return await apply_jackpot_settlement_batch(game_id=game_id, settlements=settlements)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch",
+        win_elsewhere_before_the_refund,
+    )
+    owner = await _funded(user_id=1, display_name="Alice", balance=1_000)
+    bob = await _funded(user_id=2, display_name="Bob", balance=1_000)
+    seed = await get_jackpot_snapshot(game_id=GAME_ID)
+
+    message = FakeDiscordMessage()
+    view = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
+        initial_jackpot=seed.balance,
+    )
+    view.message = as_message(fake=message)
+    await lobby_button(view=view, label="加入").callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
+    owner_start = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_start.edit_failure = make_server_error()
+    with pytest.raises(HTTPException):
+        await lobby_button(view=view, label="開始").callback(as_interaction(fake=owner_start))
+
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000)
+    await assert_wallet_consistent(user_id=2, expected_balance=1_000)
+    # The first refund overdraws the 5 left, so the pool is topped back up before the second.
+    assert await get_jackpot_snapshot(game_id=GAME_ID) == JackpotSnapshot(
+        balance=seed.balance - ANTE, generation=seed.generation + 1
+    )
 
 
 @pytest.mark.parametrize(

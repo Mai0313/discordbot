@@ -1328,6 +1328,26 @@ async def test_apply_jackpot_settlement_batch_rejects_required_full_debit() -> N
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
 
 
+async def test_a_jackpot_refund_never_takes_back_more_loss_than_today_has_booked() -> None:
+    """A refund whose debit was booked before midnight leaves today's smaller loss as it is."""
+    await seed_balance(user_id=1, name="alice", amount=100)
+    await apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=-5, game_id="dragon_gate"
+    )
+
+    await apply_jackpot_settlement_batch(
+        game_id="dragon_gate",
+        settlements=(
+            JackpotSettlementRequest(
+                player_id=1, player_account_name="alice", player_delta=10, refund=True
+            ),
+        ),
+    )
+
+    await assert_wallet_consistent(user_id=1, expected_balance=105)
+    await assert_daily_casino_stats(user_id=1, loss=5, win=0, net=-5)
+
+
 async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
