@@ -523,11 +523,18 @@ class ReplyContextBuilder(BaseModel):
         )
 
     def _resolve_picks(self, recall: RecallPlan, picked_ids: list[str]) -> list[UserMemory]:
-        """Reads the members the route picked, held to the offered candidates and the budget."""
-        picked = recall_user_memories(
-            user_id_list=picked_ids,
-            allowed=recall.optional_candidates,
-            context=recall.recall_context,
+        """Reads the members the route picked, held to the offered candidates and the budget.
+
+        A pick with no stored memory ranks after every pick that has some, so it only takes a
+        slot no stored pick wanted.
+        """
+        picked = sorted(
+            recall_user_memories(
+                user_id_list=picked_ids,
+                allowed=recall.optional_candidates,
+                context=recall.recall_context,
+            ),
+            key=lambda memory: memory.memory == NO_STORED_MEMORY,
         )
         kept = picked[: recall.remaining_slots]
         if len(picked) > len(kept):

@@ -7961,6 +7961,30 @@ async def test_optional_picks_use_only_the_remaining_memory_budget() -> None:
     assert set(extract_user_memory_blocks(request=answer)) == {*deterministic, 42}
 
 
+@pytest.mark.parametrize("picks", [["41", "42"], ["42", "41"]])
+@pytest.mark.usefixtures("no_memory_review")
+async def test_a_memoryless_pick_never_takes_a_stored_picks_slot(picks: list[str]) -> None:
+    """The one slot left goes to the pick with stored memory, whichever the route names first."""
+    cog = _cog()
+    deterministic = range(1, MEMORY_CONTEXT_TARGET_USERS)
+    for user_id in (*deterministic, 42):
+        _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
+    for user_id, name in ((41, "阿伯"), (42, "李董")):
+        _seed_alias(subject_id=user_id, text=f"Member{user_id}(社群暱稱:{name})")
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    message.mentions = [FakeAuthor(user_id=user_id) for user_id in deterministic[1:]]
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=picks
+    )
+
+    await _run_pipeline(cog=cog, message=message)
+
+    _assert_route_offered(cog=cog, candidates={41, 42})
+    answer = request_input(responses=_recorded(cog).responses)
+    assert set(extract_user_memory_blocks(request=answer)) == {*deterministic, 42}
+
+
 @pytest.mark.usefixtures("no_memory_review")
 async def test_the_route_is_offered_candidates_with_no_deterministic_memory() -> None:
     """The oblique-reference offer must not be gated on the deterministic lookup finding something.
