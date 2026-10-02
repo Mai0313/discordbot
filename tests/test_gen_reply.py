@@ -8231,6 +8231,28 @@ def test_the_route_prompt_names_the_link_sources_as_measured() -> None:
     assert [line for line in _ROUTE_LINK_SOURCE_LINES if line not in lines] == []
 
 
+# The route prompt's VIDEO rule, byte for byte. Unmeasured wording: how often it moves a clip edit
+# off QA would take paid route calls.
+_ROUTE_VIDEO_LINE = (
+    "- VIDEO: two cases: (1) the user explicitly wants the bot to create, generate, or make a "
+    "video or animation; (2) the user attached a video file, or replied to a message with one "
+    "attached, and explicitly wants that clip modified, edited, altered, transformed, or "
+    "restyled, with the edited clip as what they want back."
+)
+
+
+def test_the_route_prompt_sends_a_clip_edit_to_video() -> None:
+    """The VIDEO rule names editing an attached or replied-to clip, as the IMAGE rule names its edit.
+
+    Only the VIDEO route reads a source clip, and only an uploaded one in the message or the one it
+    replies to; the QA answer's inline video marker never does, so an edit request left on QA comes
+    back as an unrelated new clip.
+    """
+    lines = route_prompt(inline_image_enabled=True).splitlines()
+
+    assert _ROUTE_VIDEO_LINE in lines
+
+
 @pytest.mark.parametrize("inline_image_enabled", [True, False])
 @pytest.mark.usefixtures("no_memory_review")
 async def test_the_route_is_told_qa_draws_inline_only_while_the_answer_can(

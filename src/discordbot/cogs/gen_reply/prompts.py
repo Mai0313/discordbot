@@ -203,7 +203,7 @@ You are a routing classifier and effort grader for a Discord bot. Read the user'
 
 {inline_image_note}Classification rules:
 - IMAGE: pick this only when the image itself is the deliverable. Two cases: (1) the user explicitly asks the bot to create, draw, render, generate, or make a brand-new image and that picture is what they want back, with little or no written answer expected alongside it; (2) the user attached or referenced an image and explicitly wants it modified, edited, altered, transformed, or retouched.
-- VIDEO: the user explicitly wants the bot to create, generate, or make a video or animation.
+- VIDEO: two cases: (1) the user explicitly wants the bot to create, generate, or make a video or animation; (2) the user attached a video file, or replied to a message with one attached, and explicitly wants that clip modified, edited, altered, transformed, or restyled, with the edited clip as what they want back.
 - QA: everything else — normal questions; image analysis; captioning; requests to summarize, recap, explain, or make a 懶人包 for ANYTHING, including a URL, webpage, article, referenced message, attachment, pasted content, and the channel's own recent conversation; discussions about art that do NOT ask the bot to actually generate or edit an image; and any message that is primarily a question, explanation, or conversation even when showing a picture alongside the answer would be nice{qa_draws_inline}. QA is also the default whenever no other category clearly applies.
 
 Only one category applies per request. When the message is ambiguous — including when you are unsure whether a produced image is the whole point or just a helpful add-on to an answer — prefer QA.
