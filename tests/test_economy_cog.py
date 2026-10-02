@@ -41,6 +41,13 @@ from discordbot.typings.economy import (
 )
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.cogs.economy.embeds import (
+    BORROW_COLOR,
+    LEADERBOARD_COLOR,
+    LEADERBOARD_TITLE,
+    LOSS_LEADERBOARD_COLOR,
+    LOSS_LEADERBOARD_TITLE,
+)
 from discordbot.utils.message_cleanup import list_pending_public_messages
 
 from tests.helpers.games import ScheduledDeletes, attached_button
@@ -54,6 +61,7 @@ from tests.helpers.casting import (
 )
 from tests.helpers.economy import personal_loan_contract
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.message_cleanup import record_scheduled_deletes
 
 if TYPE_CHECKING:
     from typing import Unpack
@@ -1508,3 +1516,50 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
     assert embed.description is not None
     assert "今天還沒有人輸錢" in embed.description
     assert len(scheduled) == 1
+
+
+async def test_an_empty_board_or_credit_list_answers_with_its_own_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing to rank or list, each command still answers with its titled, coloured panel."""
+
+    async def nothing(**_kwargs: object) -> list[object]:
+        """Answers an empty board or contract list."""
+        return []
+
+    for facade in ("top_n", "top_losers", "list_loan_contracts"):
+        monkeypatch.setattr(economy, facade, nothing)
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    cog = EconomyCogs(bot=_bot())
+    panels: list[tuple[str | None, str | None, int | None, bool]] = []
+    for command in (
+        EconomyCogs.leaderboard,
+        EconomyCogs.loss_leaderboard,
+        EconomyCogs.credit_status,
+    ):
+        interaction = FakeInteraction(user=FakeUser(user_id=1))
+        await command.callback(cog, interaction)
+        sent = interaction.followup.sent[0]
+        embed = sent["embed"]
+        panels.append((
+            embed.title,
+            embed.description,
+            embed.colour.value if embed.colour else None,
+            sent.get("ephemeral") is True,
+        ))
+
+    assert panels == [
+        (
+            LEADERBOARD_TITLE,
+            "### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
+            LEADERBOARD_COLOR,
+            False,
+        ),
+        (
+            LOSS_LEADERBOARD_TITLE,
+            "### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
+            LOSS_LEADERBOARD_COLOR,
+            False,
+        ),
+        ("信貸狀態", "### 目前沒有有效信貸", BORROW_COLOR, True),
+    ]
