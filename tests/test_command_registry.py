@@ -28,7 +28,7 @@ from discordbot.utils.timezone import database_now
 from discordbot.services.economy.database import CreditResult
 
 from tests.helpers.casting import as_message, as_discord_bot
-from tests.helpers.discord_mocks import FakeUser
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
@@ -113,14 +113,7 @@ async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails
         raise RuntimeError("sync failed")
 
     monkeypatch.setattr(cli, "delete_tracked_public_messages", record_sweep)
-    stub = SimpleNamespace(
-        _initial_setup_done=False,
-        _startup_tasks=set(),
-        _started_at=database_now(),
-        user=FakeUser(user_id=999, bot=True),
-        _count_registered_commands=partial(asyncio.sleep, delay=0),
-        sync_all_application_commands=fail_sync,
-    )
+    stub = on_ready_bot(started_at=database_now(), sync_all_application_commands=fail_sync)
     bot = as_discord_bot(fake=stub)
 
     with pytest.raises(RuntimeError, match="sync failed"):
@@ -318,9 +311,12 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
     monkeypatch.setattr(cli, "record_guild_participant", fake_record_guild_participant)
     author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
-    cached_member = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
-    cached_member.__dict__["guild_avatar"] = SimpleNamespace(url="https://cdn.test/server.png")
-    guild = SimpleNamespace(id=100, get_member={cached_member.id: cached_member}.get)
+    cached_member = FakeUser(
+        user_id=7,
+        avatar_url="https://cdn.test/global.png",
+        guild_avatar_url="https://cdn.test/server.png",
+    )
+    guild = FakeGuild(members=[cached_member], cached=True)
     message = SimpleNamespace(author=author, guild=guild)
 
     await cli.DiscordBot.on_message(

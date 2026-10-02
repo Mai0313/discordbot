@@ -3,7 +3,7 @@
 from io import BytesIO
 from types import SimpleNamespace
 
-from nextcord import File, Embed
+from nextcord import File, Embed, Permissions
 
 from discordbot.utils.discord_embeds import (
     DEFAULT_EMBED_SPACER_FILENAME,
@@ -15,6 +15,8 @@ from discordbot.utils.discord_embeds import (
     apply_embed_spacer_image,
 )
 
+from tests.helpers.discord_mocks import text_channel_granting
+
 
 def _media_file(filename: str) -> File:
     """Builds a caller's own upload, the kind the spacer has to ride beside."""
@@ -22,20 +24,9 @@ def _media_file(filename: str) -> File:
 
 
 def _permission_target(attach_files: bool) -> SimpleNamespace:
-    """Builds a Discord target stub with channel permissions."""
-    member = object()
-    guild = SimpleNamespace(me=member)
-
-    class _Channel:
-        def __init__(self) -> None:
-            self.guild = guild
-
-        @staticmethod
-        def permissions_for(target_member: object) -> SimpleNamespace:
-            assert target_member is member
-            return SimpleNamespace(attach_files=attach_files)
-
-    return SimpleNamespace(guild=guild, channel=_Channel())
+    """Builds a message-like target whose channel grants the bot `attach_files` or not."""
+    channel = text_channel_granting(permissions=Permissions(attach_files=attach_files))
+    return SimpleNamespace(guild=channel.guild, channel=channel)
 
 
 def test_apply_embed_spacer_image_sets_attachment_url() -> None:

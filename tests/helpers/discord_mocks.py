@@ -10,11 +10,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, TypedDict
+import asyncio
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from unittest.mock import MagicMock
+
+from nextcord import Permissions, TextChannel
 
 from tests.helpers.casting import make_not_found
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Awaitable
+
     from nextcord import File, Embed, Attachment, AllowedMentions
     from nextcord.ui import View
 
@@ -51,21 +58,29 @@ class OriginalEditPayload(TypedDict, total=False):
 class FakeUser:
     """Minimal Discord user/member stub recording identity and avatar fields."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- optional knobs for the strictest consumer
         self,
         user_id: int = 1,
         name: str = "alice",
         display_name: str = "Alice",
         bot: bool = False,
         avatar_url: str = "https://example.test/avatar.png",
+        guild_avatar_url: str | None = None,
     ) -> None:
-        """Initializes identity, avatar, bot flag, and account-age fields."""
+        """Initializes identity, avatar, bot flag, and account-age fields.
+
+        `guild_avatar_url` makes this a member with a server avatar, which a nextcord `Member`
+        shows as its `display_avatar` over the global one.
+        """
         self.id = user_id
         self.name = name
         self.display_name = display_name
         self.bot = bot
         self.mention = f"<@{user_id}>"
-        self.display_avatar = SimpleNamespace(url=avatar_url)
+        self.guild_avatar = (
+            None if guild_avatar_url is None else SimpleNamespace(url=guild_avatar_url)
+        )
+        self.display_avatar = SimpleNamespace(url=guild_avatar_url or avatar_url)
         # Commands that surface snowflake-derived account age read created_at (`/balance`
         # renders `now - created_at`); pinning it years back keeps that a plausible number
         # instead of the zero a stub created "now" would show.
@@ -87,6 +102,7 @@ class FakeResponse:
         self.placeholder_pending = False
         self.sent: list[DiscordPayload] = []
         self.edited: list[DiscordPayload] = []
+        self.modal_opened = False
 
     async def defer(self, ephemeral: bool = False) -> None:
         """Records that the interaction response was deferred."""
@@ -103,12 +119,13 @@ class FakeResponse:
         self.edited.append(kwargs)
 
     async def send_modal(self, modal: object) -> None:
-        """Accepts a modal opened in response to the interaction."""
+        """Records that a modal was opened in response to the interaction."""
         del modal
+        self.modal_opened = True
 
     def is_done(self) -> bool:
-        """Returns whether the fake response has already been used."""
-        return self.deferred or bool(self.sent)
+        """Returns whether the response was used, by any of the calls nextcord marks as one."""
+        return self.deferred or bool(self.sent) or bool(self.edited) or self.modal_opened
 
 
 class FakeFollowup:
@@ -220,9 +237,9 @@ class FakeGuild:
 
     A real Guild has `get_member` and `fetch_member` unconditionally, so production calls them
     unguarded and this double owes both. The bot runs without the members intent, so an
-    uncached member is the ordinary case: this answers None from the cache and a `NotFound`
-    from the fetch, which `guild_avatar_url` handles by falling back to the global avatar. A
-    test wanting the guild-avatar branch hands in a member of its own.
+    uncached member is the ordinary case: `members` answer only the fetch, unless `cached` puts
+    them in the cache too, and anyone else is None from the cache and a `NotFound` from the
+    fetch. `fetch_count` counts the fetches.
     """
 
     def __init__(
@@ -230,20 +247,65 @@ class FakeGuild:
         filesize_limit: int = 25 * 1024 * 1024,
         guild_id: int = 100,
         guild_name: str = "test guild",
+        members: list[FakeUser] | None = None,
+        cached: bool = False,
     ) -> None:
-        """Initializes the upload limit and identity a guild is read for."""
+        """Initializes the upload limit, the identity a guild is read for, and its members."""
         self.filesize_limit = filesize_limit
         self.id = guild_id
         self.name = guild_name
+        self._members = {member.id: member for member in members or []}
+        self._cached = cached
+        self.fetch_count = 0
 
-    def get_member(self, user_id: int) -> None:
-        """Answers the member cache, which is empty without the members intent."""
-        del user_id
+    def get_member(self, user_id: int) -> FakeUser | None:
+        """Answers the member cache, which holds the members only when `cached` says so."""
+        return self._members.get(user_id) if self._cached else None
 
-    async def fetch_member(self, user_id: int) -> None:
-        """Answers the REST lookup the way Discord does for a member this guild has not got."""
-        del user_id
-        raise make_not_found(message="member not found")
+    async def fetch_member(self, user_id: int) -> FakeUser:
+        """Answers the REST lookup, which Discord refuses for a member this guild has not got."""
+        self.fetch_count += 1
+        if user_id not in self._members:
+            raise make_not_found(message="member not found")
+        return self._members[user_id]
+
+
+def text_channel_granting(permissions: Permissions | None = None) -> MagicMock:
+    """A guild text channel, id 20, whose overwrites resolve to `permissions` (default: all).
+
+    The grant is answered only for the bot's own member, `channel.guild.me`, so code that checks
+    some other member fails the test instead of reading the bot's grant.
+    """
+    channel = MagicMock(spec=TextChannel)
+    channel.id = 20
+    channel.guild = SimpleNamespace(me=object())
+
+    def permissions_for(member: object) -> Permissions:
+        """Answers the grant for the bot's own member."""
+        assert member is channel.guild.me, "permissions read for a member other than the bot"
+        return Permissions.all() if permissions is None else permissions
+
+    channel.permissions_for.side_effect = permissions_for
+    return channel
+
+
+def on_ready_bot(
+    started_at: datetime, sync_all_application_commands: Callable[[], Awaitable[None]]
+) -> SimpleNamespace:
+    """A bot double carrying what `DiscordBot.on_ready` reads up to its command sync.
+
+    `on_ready` is called unbound on it, so it answers the first-run latch, the startup task
+    registry, the process start the sweeps cut off at, the logged-in user and the registered
+    command count; the sync is the caller's, since what it does decides the test.
+    """
+    return SimpleNamespace(
+        _initial_setup_done=False,
+        _startup_tasks=set(),
+        _started_at=started_at,
+        user=FakeUser(user_id=999, bot=True),
+        _count_registered_commands=partial(asyncio.sleep, delay=0),
+        sync_all_application_commands=sync_all_application_commands,
+    )
 
 
 class FakeInteraction:
