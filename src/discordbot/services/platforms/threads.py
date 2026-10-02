@@ -81,9 +81,9 @@ class _ThreadsModel(BaseModel):
     Threads sometimes serialises an optional string field (e.g. a link
     preview's image_url) as an explicit null instead of omitting it. Those
     fields are declared as str with an empty default, so the null would raise a
-    ValidationError, which the parser treats as a corrupt block and silently
-    drops the whole post. Coercing null to the empty string keeps the default
-    semantics for both absent and null values.
+    ValidationError, which the parser answers by dropping, with a warning, the
+    post, branch or fragment holding it. Coercing null to the empty string keeps
+    the default semantics for both absent and null values.
     """
 
     @field_validator("*", mode="before")
@@ -595,7 +595,7 @@ class Post(MediaContainer):
         Deliberately NOT the rule `PlatformOutput.is_readable` answers with, which every source
         shares: that one asks whether there is anything worth showing, while this one also honours
         Threads' own unavailable flag and counts a bare author or shortcode as enough, having a
-        permalink to fall back on. This gates the parse.
+        permalink to fall back on. This gates whether a quoted post is built at all.
 
         Returns:
             True when the post is not reported unavailable and has an author, code, text or
@@ -972,7 +972,7 @@ class ThreadsDownloader(PlatformDownloader):
             url: The raw Threads post URL, canonical or share form.
 
         Returns:
-            The parsed page; its `target` is None when the post could not be found.
+            The parsed page; its `chain` is empty when the post could not be found.
 
         Raises:
             LinkUnavailableError: The platform served a refusal naming this post, which no
