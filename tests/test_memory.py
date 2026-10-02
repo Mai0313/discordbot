@@ -359,10 +359,12 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     append_raw_entry(scope=USER_SCOPE, entry_text="穩定事實:\n- 慣用繁體中文")
     assert count_raw_entries(scope=USER_SCOPE) == 2
-    raw_text = read_raw_entries(scope=USER_SCOPE)
-    assert raw_text.startswith("## ")
-    assert "喜歡簡短回覆" in raw_text
-    assert "慣用繁體中文" in raw_text
+    raw_file = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
+    stamp = r"## \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00"
+    assert re.fullmatch(
+        pattern=rf"{stamp}\n偏好訊號:\n- 喜歡簡短回覆\n\n{stamp}\n穩定事實:\n- 慣用繁體中文\n",
+        string=raw_file,
+    )
 
 
 def test_render_author_identity_is_single_line_and_sanitized() -> None:

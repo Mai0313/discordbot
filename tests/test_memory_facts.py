@@ -544,7 +544,15 @@ def test_raw_entries_partition_by_sharing_and_source() -> None:
     assert "本群祕密" in buckets["g/222"]
     assert "私訊祕密" in buckets["dm"]
     assert "本群祕密" not in buckets["global"]
-    assert buckets["g/222"].startswith("## 2026-07-01T00:00:00+00:00")
+    # The form the consolidation prompt reads: a blank line follows the entry header.
+    assert buckets["g/222"] == (
+        "## 2026-07-01T00:00:00+00:00\n\n"
+        "### stable_fact\n"
+        "- normalized_key: fact.b\n"
+        "- source: guild 222\n"
+        "- sharing: source_only\n"
+        "- summary_zh: 本群祕密"
+    )
 
 
 def test_server_evidence_all_lands_in_the_single_compartment() -> None:
