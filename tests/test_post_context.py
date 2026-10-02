@@ -4,7 +4,8 @@
 source: which separator opens the block, where the trailer closes it, what a failed read or a
 failed image leaves, and which quoted text is defused. Each source's own test file keeps only how
 its post is rendered. The timeout notice, injected in place of any build that outran the grace,
-is checked against every registered source.
+is checked against every registered source, and so is the wording of every source that may read
+its link off the message being replied to, which must never say whose message the link sat in.
 """
 
 from typing import Any
@@ -302,6 +303,54 @@ def test_the_timeout_notice_is_a_single_block(source: LinkContextSource) -> None
     assert block_separator(blocks=blocks) == LINK_SOURCE_BLOCKS[source.name].timeout_notice
 
 
+# What the wording of a source reading a replied-to link must not say: the link may sit in
+# someone else's message, and a model told the asker posted it says "the link you posted".
+_LOCATION_CLAIMS = ("in the user's message", "the user linked", "the user's link")
+
+_REPLIED_TO_SOURCE_NAMES = {
+    source.name for source in LINK_CONTEXT_SOURCES if source.search_replied_to_message
+}
+
+
+def _location_claims(texts: list[str]) -> list[str]:
+    """The texts among `texts` that place the link in the asker's own message."""
+    return [text for text in texts if any(claim in text for claim in _LOCATION_CLAIMS)]
+
+
+@pytest.mark.parametrize(
+    argnames="source",
+    argvalues=[source for source in LINK_CONTEXT_SOURCES if source.search_replied_to_message],
+    ids=lambda source: source.name,
+)
+def test_a_replied_to_link_source_never_says_where_its_link_sat(source: LinkContextSource) -> None:
+    """Every separator and notice of a source that reads the replied-to message's link."""
+    blocks = LINK_SOURCE_BLOCKS[source.name]
+
+    assert _location_claims(texts=[*blocks.separators, *blocks.notices]) == []
+
+
+@pytest.mark.parametrize(
+    argnames="source",
+    argvalues=[source for source in _SOURCES if source.name in _REPLIED_TO_SOURCE_NAMES],
+    ids=lambda source: source.name,
+)
+async def test_a_replied_to_link_post_never_says_where_its_link_sat(
+    monkeypatch: pytest.MonkeyPatch, source: _PostSource
+) -> None:
+    """The rendered post names the link too: in its header, and on the comment it points at."""
+    assert source.comment is not None
+    comment = source.comment(comment_id="111", text="the linked one", author_name="a")
+    serve_conversation(
+        monkeypatch,
+        downloader=source.downloader,
+        post=source.post(comments=[comment], selected_comment_id="111"),
+    )
+
+    blocks = await _build(source=source)
+
+    assert _location_claims(texts=[block_body(blocks=blocks)]) == []
+
+
 @every_source
 async def test_a_video_post_says_it_was_not_watched(
     monkeypatch: pytest.MonkeyPatch, source: _PostSource
@@ -442,8 +491,8 @@ async def test_the_comments_are_rendered_and_the_linked_one_is_marked(
     body = block_body(blocks=blocks)
     assert "first" in body
     # The marker sits on the linked comment and nowhere else.
-    assert "(this is the comment the user's link points at): the linked one" in body
-    assert body.count("the comment the user's link points at") == 1
+    assert "(this is the comment the link points at): the linked one" in body
+    assert body.count("the comment the link points at") == 1
 
 
 @commented_sources
@@ -466,8 +515,8 @@ async def test_the_linked_comment_rides_even_past_the_comment_cap(
 
     body = block_body(blocks=blocks)
     linked = f"comment {source.comment_cap + 4:03d}"
-    assert f"(this is the comment the user's link points at): {linked}" in body
-    assert body.count("the comment the user's link points at") == 1
+    assert f"(this is the comment the link points at): {linked}" in body
+    assert body.count("the comment the link points at") == 1
     # One more rather than in the last slot, whose comment may be the one it replies to.
     assert f"comment {source.comment_cap - 1:03d}" in body
     assert f"comment {source.comment_cap:03d}" not in body
