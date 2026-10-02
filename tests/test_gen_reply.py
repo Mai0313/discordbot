@@ -150,7 +150,6 @@ from discordbot.cogs.gen_reply.streaming import (
     stream_answer_with_retry,
 )
 from discordbot.cogs.gen_reply.generation import (
-    VOICE_TIMEOUT_SECONDS,
     MusicClip,
     VoiceClip,
     VoiceOutcome,
@@ -2863,8 +2862,6 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     assert speech.calls[0]["model"] == "tts-test"
     # response_format is intentionally never sent (the proxy 500s on it).
     assert "response_format" not in speech.calls[0]
-    # The per-request timeout is applied so a slow clip cannot stall the message pipeline.
-    assert speech.calls[0]["timeout"] == VOICE_TIMEOUT_SECONDS
 
 
 async def test_voice_generator_swallows_provider_errors() -> None:
@@ -2881,6 +2878,19 @@ async def test_voice_generator_swallows_provider_errors() -> None:
 async def test_voice_generator_reports_timeout() -> None:
     """A request timeout is reported as TIMEOUT so the caller can hint distinctly."""
     speech = _FakeSpeech(error=APITimeoutError(request=httpx2.Request("POST", "http://proxy")))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
+
+    clip = await synth.generate(text="嗆你", end_user_id="tester")
+
+    assert clip.audio is None
+    assert clip.outcome == "timeout"
+
+
+async def test_voice_generator_gives_up_at_its_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synthesis call that outlasts the bound is given up on, whatever the SDK does inside it."""
+    speech = _FakeSpeech(data=b"RIFFwav")
+    monkeypatch.setattr(target=speech, name="create", value=_stalled(call=speech.create))
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.VOICE_TIMEOUT_SECONDS", 0.01)
     synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="嗆你", end_user_id="tester")
@@ -4367,7 +4377,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
 
 
 def _stalled(call: Callable[..., Awaitable[object]]) -> Callable[..., Awaitable[object]]:
-    """Wraps a fake Files API call so it answers only after outlasting any bound under test.
+    """Wraps a fake provider call so it answers only after outlasting any bound under test.
 
     It does answer, and successfully, so a test can tell a call that was given up on from one
     that was waited out.
