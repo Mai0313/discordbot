@@ -597,26 +597,34 @@ async def test_top_n_short_cache_hit_and_manual_invalidation() -> None:
 async def test_a_balance_write_clears_the_leaderboard_caches_only_once_committed() -> None:
     """A clear before the commit lets a read in between cache the rows the write replaces."""
     await top_n(limit=None)
-    cached_at_commit: list[bool] = []
+    await top_losers()
+    cached_at_commit: list[tuple[bool, bool]] = []
 
     async def commit() -> None:
-        """Notes whether the leaderboard rows were still cached when the write committed."""
-        cached_at_commit.append(bool(economy_database._top_n_cache))
+        """Notes whether both boards' rows were still cached when the write committed."""
+        cached_at_commit.append((
+            bool(economy_database._top_n_cache),
+            bool(economy_database._top_losers_cache),
+        ))
 
     await _commit_balance_write(session=cast("AsyncSession", SimpleNamespace(commit=commit)))
 
-    assert cached_at_commit == [True]
+    assert cached_at_commit == [(True, True)]
     assert economy_database._top_n_cache == {}
+    assert economy_database._top_losers_cache == {}
 
 
 async def _ledger_every_write_path_can_touch() -> int:
     """Seeds what every leaderboard write below needs and returns a pending request's id.
 
     alice (1) can afford VIP and owes both bob (2) and the central bank; bob has asked
-    alice for a loan she has not answered yet.
+    alice for a loan she has not answered yet, and has lost at the table today.
     """
     await seed_participant(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
     await seed_balance(user_id=2, name="bob", amount=1_000)
+    await apply_blackjack_settlement(
+        player_id=2, player_account_name="bob", player_delta=-10, casino_delta=10
+    )
     await open_personal_loan(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
     )
@@ -636,78 +644,94 @@ async def _ledger_every_write_path_can_touch() -> int:
 
 
 @pytest.mark.parametrize(
-    argnames="write",
+    argnames=("write", "moves_losses"),
     argvalues=[
         pytest.param(
             lambda _: credit_with_repayment(user_id=2, name="bob", amount=10),
+            False,
             id="credit_with_repayment",
         ),
         pytest.param(
-            lambda _: adjust_balance(user_id=2, name="bob", delta=10), id="adjust_balance"
+            lambda _: adjust_balance(user_id=2, name="bob", delta=10), False, id="adjust_balance"
         ),
         pytest.param(
             lambda _: apply_blackjack_settlement(
-                player_id=2, player_account_name="bob", player_delta=10, casino_delta=-10
+                player_id=2, player_account_name="bob", player_delta=-10, casino_delta=10
             ),
+            True,
             id="apply_blackjack_settlement",
         ),
         pytest.param(
             lambda _: apply_jackpot_settlement(
                 player_id=2, player_account_name="bob", player_delta=-10, game_id="dragon_gate"
             ),
+            True,
             id="apply_jackpot_settlement",
         ),
-        pytest.param(lambda _: buy_vip(user_id=1, name="alice"), id="buy_vip"),
+        pytest.param(lambda _: buy_vip(user_id=1, name="alice"), False, id="buy_vip"),
         pytest.param(
             lambda _: transfer(
                 sender_id=2, sender_name="bob", receiver_id=1, receiver_name="alice", amount=100
             ),
+            False,
             id="transfer",
         ),
         pytest.param(
             lambda proposal_id: accept_loan_proposal(
                 proposal_id=proposal_id, actor_id=1, actor_name="alice"
             ),
+            False,
             id="accept_loan_proposal",
         ),
         pytest.param(
             lambda _: repay_personal_loans(
                 borrower_id=1, borrower_name="alice", lender_id=2, amount=10
             ),
+            False,
             id="repay_personal_loans",
         ),
         pytest.param(
             lambda _: call_personal_loans(
                 lender_id=2, borrower_id=1, borrower_name="alice", amount=10
             ),
+            False,
             id="call_personal_loans",
         ),
         pytest.param(
             lambda _: repay_central_bank_loans(borrower_id=1, borrower_name="alice", amount=10),
+            False,
             id="repay_central_bank_loans",
         ),
         pytest.param(
             lambda _: call_central_bank_loans(
                 guild_id=LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=10
             ),
+            False,
             id="call_central_bank_loans",
         ),
     ],
 )
 async def test_every_balance_write_invalidates_the_leaderboard_cache(
-    write: Callable[[int], Awaitable[object]],
+    write: Callable[[int], Awaitable[object]], moves_losses: bool
 ) -> None:
-    """A leaderboard read right after any public balance write shows the write."""
+    """A leaderboard read right after any public balance write shows the write.
+
+    `moves_losses` marks the casino settlements, the only writes the loss board can show.
+    """
     pending_proposal_id = await _ledger_every_write_path_can_touch()
     cached = await top_n(limit=None)
+    cached_losses = await top_losers()
 
     await write(pending_proposal_id)
     after = await top_n(limit=None)
+    after_losses = await top_losers()
     invalidate_economy_leaderboard_cache()
 
     assert after == await top_n(limit=None)
-    # Otherwise the write moved no balance and the check above proves nothing.
+    assert after_losses == await top_losers()
+    # Otherwise the write moved nothing the reads could show, and the checks above prove nothing.
     assert after != cached
+    assert (after_losses != cached_losses) is moves_losses
 
 
 async def test_apply_blackjack_settlement_casino_accumulates_gross_flows() -> None:
