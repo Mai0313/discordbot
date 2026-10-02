@@ -22,6 +22,7 @@ from discordbot.cogs.gen_reply.markers import (
     WRITE_SERVER_MEMORY_OPEN,
     WRITE_SERVER_MEMORY_CLOSE,
 )
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 PERSONA_CHOICES = """
 * Your identity is 破貓 [id: 1134904996178182225]; DO NOT MENTION YOURSELF IN REPLY.
@@ -150,6 +151,15 @@ DEEP_RESEARCH_INSTRUCTION = f"""
 """
 
 
+def _spoken_list(items: list[str], serial_comma: bool) -> str:
+    """Joins `items` as prose: `a`, `a and b`, `a, b and c` (`a, b, and c` with `serial_comma`)."""
+    *head, last = items
+    if not head:
+        return last
+    comma = "," if serial_comma and len(head) > 1 else ""
+    return f"{', '.join(head)}{comma} and {last}"
+
+
 def route_prompt(inline_image_enabled: bool) -> str:
     """The route call's instructions, which say QA draws inline only while it can.
 
@@ -166,6 +176,25 @@ def route_prompt(inline_image_enabled: bool) -> str:
         else ""
     )
     qa_draws_inline = " (QA draws that picture inline itself)" if inline_image_enabled else ""
+    source_names = _spoken_list(
+        items=[f"`{source.name}`" for source in LINK_CONTEXT_SOURCES], serial_comma=True
+    )
+    replied_to_sources = _spoken_list(
+        items=[
+            source.name.capitalize()
+            for source in LINK_CONTEXT_SOURCES
+            if source.search_replied_to_message
+        ],
+        serial_comma=False,
+    )
+    latest_only_sources = _spoken_list(
+        items=[
+            source.name.capitalize()
+            for source in LINK_CONTEXT_SOURCES
+            if not source.search_replied_to_message
+        ],
+        serial_comma=False,
+    )
     return f"""
 You are a routing classifier and effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in every field according to the rules below.
 
@@ -181,8 +210,8 @@ Also fill in the `watch_video` field:
 - Set it false when there is no YouTube link, or when the link is incidental: the user is just sharing it, the message is about something else, or the question can be answered from the link's title or surrounding text without watching the footage.
 - This field is independent of `decision`; it is only acted on when `decision` is QA. When in doubt, leave it false.
 
-Also fill in the `link_context_sources` field for registered linked-post sources (`threads`, `facebook`, `instagram`, `twitter`, `douyin`, and `bilibili`):
-- Include a source only when a matching link is present AND the user wants the bot to read that post or video — for example summarizing, explaining, analyzing, comparing, reacting to, or answering a question about its actual content. Threads, Facebook and Instagram links may be in the latest message OR in the message it is replying to; Twitter, Douyin and Bilibili links must be in the latest message.
+Also fill in the `link_context_sources` field for registered linked-post sources ({source_names}):
+- Include a source only when a matching link is present AND the user wants the bot to read that post or video — for example summarizing, explaining, analyzing, comparing, reacting to, or answering a question about its actual content. {replied_to_sources} links may be in the latest message OR in the message it is replying to; {latest_only_sources} links must be in the latest message.
 - Leave a source out when its link is incidental: the user is just sharing it, citing it as background, asking about something else, or can be answered from the surrounding text without reading the linked content. Judge each source separately when several kinds of link are present.
 - This field is independent of `decision`; it is only acted on when `decision` is QA. Include each source at most once, and when in doubt leave it out.
 
