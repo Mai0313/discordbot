@@ -217,6 +217,7 @@ from tests.helpers.llm_input import (
 )
 from tests.helpers.usage_log import usage_records
 from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_off_planner
+from tests.helpers.logfire_capture import capture_logs
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
 # stays off the live store.
@@ -1536,13 +1537,7 @@ async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
     )
     streamer.content_started = True
     streamer.stored_content = "partial answer"
-    warned: list[tuple[str, dict[str, object]]] = []
-
-    def record_warn(message_text: str, **fields: object) -> None:
-        """Keeps every warn record with its fields."""
-        warned.append((message_text, fields))
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.logfire.warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
 
@@ -2024,24 +2019,18 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
     if refused:
         reply.edit_error = RuntimeError("file uploads are limited here")
     streamer = _streamer(message=message, reply=as_message(fake=reply))
-    logged: list[str] = []
 
     async def voice_clip() -> MediaItem:
         """Stands in for a synthesized clip ready to attach."""
         return MediaItem(source=b"RIFF", filename="reply.wav")
 
-    def record(message_text: str, **kwargs: object) -> None:
-        """Records each info line's message."""
-        del kwargs
-        logged.append(message_text)
-
     monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
-    monkeypatch.setattr(streaming_module.logfire, "info", record)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     await streamer._attach_generated_media()
 
     assert ("⚠️" in message.added_reactions) is refused
-    assert ("Generated media attached" in logged) is not refused
+    assert ("Generated media attached" in [text for text, _ in logged]) is not refused
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -2961,13 +2950,7 @@ async def test_youtube_qa_falls_back_to_responses(
         )
     interactions = _FakeInteractionsResource(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
-    logged: list[tuple[str, dict[str, object]]] = []
-
-    def record(message_text: str, **fields: object) -> None:
-        """Captures the info records the dispatch path emits."""
-        logged.append((message_text, fields))
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.logfire.info", record)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     url = "https://youtu.be/jNQXAC9IVRw"
     yt_url = None if scenario == "no_url" else url
@@ -4591,28 +4574,12 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
     )
 
 
-def _message_recorder(into: list[str]) -> Callable[..., None]:
-    """A logfire level stand-in that keeps each record's message and drops its fields."""
-
-    def record(message: str, **kwargs: object) -> None:
-        """Records the message."""
-        del kwargs
-        into.append(message)
-
-    return record
-
-
 async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
     monkeypatch.setenv(name="XAI_API_KEY", value="")
-    logged: list[str] = []
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.grok_file_api.logfire.error",
-        _message_recorder(into=logged),
-    )
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     renderer = GrokFileUploader()
     assert (
         await renderer._upload_file(
@@ -4620,7 +4587,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
         )
         is None
     )
-    assert logged == ["xAI Files API key missing; dropping attachment"]
+    assert [text for text, _ in logged] == ["xAI Files API key missing; dropping attachment"]
 
 
 async def test_gemini_uploader_uploads_through_the_toolkit_client(
@@ -4637,12 +4604,7 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
     assert isinstance(keyed_handler, GeminiFileUploader)
     assert keyed_handler.gemini_client() is keyed.gemini_client
 
-    logged: list[str] = []
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.logfire.error",
-        _message_recorder(into=logged),
-    )
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     keyless = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
     keyless_handler = keyless.input_builder.attachment_handler
     assert isinstance(keyless_handler, GeminiFileUploader)
@@ -4652,7 +4614,7 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
         )
         is None
     )
-    assert logged == ["gemini Files API key missing; dropping attachment"]
+    assert [text for text, _ in logged] == ["gemini Files API key missing; dropping attachment"]
 
 
 def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:
@@ -5226,14 +5188,7 @@ async def test_a_render_degrades_when_the_modality_gate_raises(
 ) -> None:
     """A raising modality gate degrades either render to empty text, not a pipeline abort."""
     cog = _cog()
-    warned: list[str] = []
-
-    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records which render reported the failure."""
-        del kwargs
-        warned.append(message)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.input.logfire.warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     def boom(model_name: str) -> set[str]:
         """Stands in for any unexpected failure inside the gate; the lookup itself cannot."""
@@ -5251,7 +5206,7 @@ async def test_a_render_degrades_when_the_modality_gate_raises(
     )
 
     assert rendered == EasyInputMessageParam(role="user", content="")
-    assert warned == [logged]
+    assert [text for text, _ in warned] == [logged]
 
 
 # ---- prompt director (PromptGenerator) ----
@@ -5346,14 +5301,7 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
-    started: list[dict[str, object]] = []
-
-    def record_info(message_text: str, **fields: object) -> None:
-        """Keeps the fields of the route's start record."""
-        if message_text == "gen_reply image generation start":
-            started.append(fields)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.logfire.info", record_info)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
     message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes())
@@ -5366,7 +5314,11 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     assert _recorded(cog).images.edit_calls == 1
     assert _recorded(cog).images.generate_calls == 0
     # The message replies to nothing, yet its own image is what makes this an edit.
-    assert [fields["has_source_images"] for fields in started] == [True]
+    assert [
+        fields["has_source_images"]
+        for text, fields in logged
+        if text == "gen_reply image generation start"
+    ] == [True]
 
 
 async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
@@ -6318,22 +6270,16 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
         raise RuntimeError("This model is currently experiencing high demand")
 
     monkeypatch.setattr(_recorded(cog).responses, "create", failing_create)
-    failures: list[dict[str, object]] = []
-
-    def record_error(message_text: str, **fields: object) -> None:
-        """Captures the failure record the turn's outer handler emits."""
-        failures.append({"text": message_text, **fields})
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.error", record_error)
+    failures = capture_logs(monkeypatch=monkeypatch, level="error")
 
     # The route fake answers QA, so the answer is the turn's only `responses.create`.
     message = FakeMessage(content="<@999> 幫我總結", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
     # The answer tier, not the triage tier the route ran on a moment earlier.
-    assert [
-        fields.get("model") for fields in failures if fields["text"] == "gen_reply failed"
-    ] == ["gemini-answer-tier"]
+    assert [fields.get("model") for text, fields in failures if text == "gen_reply failed"] == [
+        "gemini-answer-tier"
+    ]
 
 
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6889,7 +6835,6 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
     cog = _link_cog(sources=["douyin"])
     builder_started = asyncio.Event()
     resolving = asyncio.Event()
-    warned: list[dict[str, Any]] = []
 
     async def failing_builder(**kwargs: object) -> list[EasyInputMessageParam]:
         """Runs until cancelled, then fails instead of cancelling."""
@@ -6906,12 +6851,7 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
         resolving.set()
         return await await_deadline_bound_task(**kwargs)
 
-    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the fields of the off-route build failure report."""
-        if message == "Discarded speculative task failed":
-            warned.append(kwargs)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.speculation.logfire.warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         failing_builder,
@@ -6928,7 +6868,11 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
 
     with pytest.raises(asyncio.CancelledError):
         await message_task
-    assert [record["message_id"] for record in warned] == [message.id]
+    assert [
+        fields["message_id"]
+        for text, fields in warned
+        if text == "Discarded speculative task failed"
+    ] == [message.id]
 
 
 async def test_run_until_deadline_keeps_result_completed_before_delayed_resume() -> None:
@@ -8457,17 +8401,16 @@ async def test_route_classify_carries_decision_and_defaults_qa(
     assert routed.link_context_sources == ["threads", "bilibili"]
     assert routed.effort == "low"
 
-    warned: list[str] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.routing.logfire.warn", _message_recorder(into=warned)
-    )
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
     _recorded(cog).responses.output_parsed = None
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
     assert fallback.effort == "high"
     # Nothing raised, so this record is the only trace that the route was never read.
-    assert warned == ["RouteClassification returned no parsed output; defaulting to QA"]
+    assert [text for text, _ in warned] == [
+        "RouteClassification returned no parsed output; defaulting to QA"
+    ]
 
 
 async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:
