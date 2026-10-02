@@ -682,6 +682,30 @@ async def _apply_daily_casino_delta_in_session(
     )
 
 
+async def _take_back_daily_casino_loss_in_session(
+    session: AsyncSession, user_id: int, amount: int, now: datetime
+) -> None:
+    """Takes a refunded debit back off today's `casino_account` counters, as if never booked.
+
+    A row that cannot be holding the debit is left alone: one still on an earlier Taipei day,
+    which no leaderboard reads any more, or one whose loss today is smaller than the debit,
+    which was then booked before the last midnight.
+    """
+    await session.execute(
+        statement=update(CasinoAccount)
+        .where(
+            CasinoAccount.user_id == user_id,
+            CasinoAccount.day_started_at == _taipei_midnight(now=now),
+            CasinoAccount.daily_loss >= amount,
+        )
+        .values(
+            daily_loss=CasinoAccount.daily_loss - amount,
+            daily_net=CasinoAccount.daily_net + amount,
+            updated_at=now,
+        )
+    )
+
+
 async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper keeps income writes atomic
     session: AsyncSession, user_id: int, name: str, avatar_url: str, amount: int, now: datetime
 ) -> CreditResult:
@@ -933,13 +957,21 @@ async def get_casino_ledger() -> CasinoLedgerSnapshot:
 
 
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and the delta
-    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
+    session: AsyncSession,
+    user_id: int,
+    name: str,
+    avatar_url: str,
+    delta: int,
+    now: datetime,
+    refund: bool = False,
 ) -> tuple[int, int]:
     """Applies a casino or jackpot player delta and returns the balance plus applied delta.
 
-    Positive deltas take the shared income path and count as fully applied.
-    Negative deltas clamp at zero so a casino or Dragon Gate loss cannot drive
-    the player account negative; the returned delta is the actual debit.
+    Positive deltas take the shared income path and count as fully applied; a
+    `refund` takes the debit it returns back off today's loss instead of
+    counting as a win. Negative deltas clamp at zero so a casino or Dragon Gate
+    loss cannot drive the player account negative; the returned delta is the
+    actual debit.
     """
     if delta > 0:
         credit_result = await _credit_with_repayment_in_session(
@@ -950,9 +982,14 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             amount=delta,
             now=now,
         )
-        await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, name=name, delta=delta, now=now
-        )
+        if refund:
+            await _take_back_daily_casino_loss_in_session(
+                session=session, user_id=user_id, amount=delta, now=now
+            )
+        else:
+            await _apply_daily_casino_delta_in_session(
+                session=session, user_id=user_id, name=name, delta=delta, now=now
+            )
         return credit_result.new_balance, delta
     if delta < 0:
         new_balance, applied_delta = await _apply_clamped_delta_in_session(
@@ -1163,8 +1200,8 @@ async def _apply_jackpot_delta_in_session(
 
     Positive deltas accumulate `total_contributed` (player losses /
     antes flowing into the pool); negative deltas accumulate
-    `total_claimed` with the absolute value (winning payouts flowing
-    out). Seeded pools are topped back up automatically after a drain, so
+    `total_claimed` with the absolute value (refunds flowing back out).
+    Seeded pools are topped back up automatically after a drain, so
     the returned balance is always ready for the next table.
 
     Args:
@@ -1370,7 +1407,9 @@ async def apply_jackpot_settlement_batch(
     """Coordinates one or more player settlements against a jackpot pool.
 
     Positive player deltas (wins) are capped to the live pool balance inside
-    this transaction, then credited through the shared income path. Negative
+    this transaction, then credited through the shared income path. A refund is
+    not capped: the pool pays it in full, and a pool another table has drained
+    in the meantime is reseeded to cover the shortfall. Negative
     deltas normally clamp at zero and feed the pool with the actual debit.
     Required-full-debit settlements reject the whole batch instead. If a seeded
     pool is drained, the same transaction restores its on-the-house seed. The
@@ -1405,7 +1444,7 @@ async def apply_jackpot_settlement_batch(
 
             for settlement in settlements:
                 effective_player_delta = settlement.player_delta
-                if effective_player_delta > 0:
+                if effective_player_delta > 0 and not settlement.refund:
                     claim, jackpot_snapshot, depleted = await _claim_jackpot_payout_in_session(
                         session=session,
                         game_id=game_id,
@@ -1423,6 +1462,7 @@ async def apply_jackpot_settlement_batch(
                     avatar_url=settlement.player_avatar_url,
                     delta=effective_player_delta,
                     now=now,
+                    refund=settlement.refund,
                 )
                 if (
                     settlement.require_full_debit
@@ -1446,7 +1486,7 @@ async def apply_jackpot_settlement_batch(
                     )
                     continue
 
-                if applied_player_delta < 0:
+                if applied_player_delta < 0 or settlement.refund:
                     jackpot_snapshot, depleted = await _apply_jackpot_delta_in_session(
                         session=session, game_id=game_id, delta=-applied_player_delta, now=now
                     )

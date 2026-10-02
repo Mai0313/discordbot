@@ -227,6 +227,10 @@ class JackpotSettlementRequest(BaseModel):
         default=False,
         description="Whether a negative delta must be applied in full, rejecting the whole batch instead of clamping at the player's current balance.",
     )
+    refund: bool = Field(
+        default=False,
+        description="Whether a positive delta hands back the player's own earlier debit rather than paying a win: credited in full whatever the pool holds, and taken back off today's casino loss instead of counted as a win.",
+    )
     expected_jackpot_generation: int | None = Field(
         default=None,
         description="Optional jackpot generation observed by the game view; positive payouts only claim from this generation, so a stale action cannot spend a freshly reseeded pool.",
