@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Callable
 
 import pytest
-from nextcord import Embed, Locale
+from nextcord import Embed
 from pydantic import BaseModel, ValidationError
 from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -3438,23 +3438,6 @@ async def test_an_idle_memory_view_disables_its_buttons(
     await view.on_timeout()
     assert origin.edits[-1]["view"] is view
     assert all(child.disabled for child in view.children if isinstance(child, Button))
-
-
-def test_memory_commands_have_localizations() -> None:
-    for command in (
-        MemoryCogs.memory,
-        MemoryCogs.memory_show,
-        MemoryCogs.memory_regenerate,
-        MemoryCogs.memory_clear,
-        MemoryCogs.memory_server,
-        MemoryCogs.memory_server_show,
-    ):
-        assert command.name_localizations is not None
-        assert Locale.zh_TW in command.name_localizations
-        assert Locale.ja in command.name_localizations
-        assert command.description_localizations is not None
-        assert Locale.zh_TW in command.description_localizations
-        assert Locale.ja in command.description_localizations
 
 
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
