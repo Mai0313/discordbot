@@ -1924,6 +1924,19 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
 
 
+async def test_voice_with_nothing_to_say_leaves_no_hint() -> None:
+    """An empty clip is not a failure: no file attaches and nothing follows the voice mark."""
+    message = FakeMessage()
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.EMPTY)
+
+    await _streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)).stream(
+        responses=_stream_events_from(events=_voice_marker_events())
+    )
+
+    assert message.replies[0].file is None
+    assert message.added_reactions == ["<:voice:1517558121092878376>"]
+
+
 async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     """A voice clip past the upload limit is hosted and its URL appended, not silently dropped."""
     message = FakeMessage()
@@ -2779,6 +2792,18 @@ async def test_voice_generator_reports_timeout() -> None:
 
     assert clip.audio is None
     assert clip.outcome is VoiceOutcome.TIMEOUT
+
+
+async def test_voice_generator_reports_blank_text_as_empty() -> None:
+    """Text that is blank after stripping is reported as EMPTY without a provider call."""
+    speech = _FakeSpeech(data=b"RIFFwav")
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
+
+    clip = await synth.generate(text=" \n ", end_user_id="tester")
+
+    assert clip.audio is None
+    assert clip.outcome is VoiceOutcome.EMPTY
+    assert speech.calls == []
 
 
 async def test_voice_oversized_clip_not_attached() -> None:
