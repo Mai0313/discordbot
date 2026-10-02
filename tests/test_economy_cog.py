@@ -44,7 +44,6 @@ from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoa
 from discordbot.utils.message_cleanup import list_pending_public_messages
 
 from tests.helpers.games import ScheduledDeletes, attached_button
-from tests.helpers.economy import personal_loan_contract
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -53,6 +52,7 @@ from tests.helpers.casting import (
     make_not_found,
     make_server_error,
 )
+from tests.helpers.economy import personal_loan_contract
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:

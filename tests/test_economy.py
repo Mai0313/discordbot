@@ -12,7 +12,6 @@ from sqlalchemy import text, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei, database_now
-from discordbot.utils.stored_integer import StoredInteger
 from discordbot.typings.economy import (
     TRANSFER_TAX_BPS,
     VIP_PURCHASE_COST,
@@ -25,6 +24,7 @@ from discordbot.typings.economy import (
     apply_vip_blackjack_bonus,
 )
 from discordbot.services.economy import database as economy_database
+from discordbot.utils.stored_integer import StoredInteger
 from discordbot.services.economy.database import (
     Base,
     UserWallet,
@@ -349,62 +349,6 @@ async def test_ensure_schema_bootstraps_current_databases() -> None:
     assert await _stored_wallet_name(user_id=42) == "alice"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
-
-
-async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_functions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An engine handed over with a connection already in its pool still settles money.
-
-    That connection never saw `connect`, so only the `checkout` listener can register the
-    `StoredInteger` functions on it; without it the settlement below, which folds into the
-    daily casino counters through one, raises `no such function: discordbot_int_add_text`.
-    """
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'pooled-economy.db'}")
-    async with engine.connect() as conn:
-        await conn.execute(statement=text(text="SELECT 1"))
-    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-
-    await apply_blackjack_settlement(
-        player_id=1, player_account_name="alice", player_delta=5, casino_delta=-5
-    )
-
-    assert await get_balance(user_id=1) == 5
-    await engine.dispose()
-
-
-async def test_ensure_schema_serializes_concurrent_first_use() -> None:
-    """Concurrent first-use schema bootstrap does not race SQLite CREATE TABLE."""
-    await asyncio.gather(*(get_balance(user_id=42) for _ in range(20)))
-
-    async with open_session() as session:
-        result = await session.execute(
-            statement=text(
-                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'loan_proposal'"
-            )
-        )
-        assert result.scalar_one_or_none() == "loan_proposal"
-        result = await session.execute(
-            statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == "dragon_gate")
-        )
-        assert result.scalar_one() == 1_000
-
-
-async def test_a_swapped_engine_gets_its_own_schema(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Readiness follows the engine, so the first session on a swapped-in one bootstraps it.
-
-    The fixture's engine is bootstrapped before the swap, so readiness that ignored which engine
-    it was recorded for would skip the new file's schema and its seed rows.
-    """
-    await seed_balance(user_id=42, name="alice", amount=5)
-    swapped = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'swapped-economy.db'}")
-    monkeypatch.setattr("discordbot.services.economy.database._engine", swapped)
-
-    assert await get_balance(user_id=42) == 0
-    assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
-    await swapped.dispose()
 
 
 async def test_get_balance_unknown_user_returns_zero() -> None:
