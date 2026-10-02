@@ -41,7 +41,7 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
         image = Image.open(fp=BytesIO(initial_bytes=payload))
         if getattr(image, "is_animated", False):
             return unchanged
-        keep_png = image.mode in {"RGBA", "LA", "PA", "P"}
+        keep_png = image.has_transparency_data or image.mode == "P"
         within_bounds = max(image.size) <= _MAX_IMAGE_DIMENSION
         if within_bounds and (content_type == "image/jpeg" or keep_png):
             return unchanged
