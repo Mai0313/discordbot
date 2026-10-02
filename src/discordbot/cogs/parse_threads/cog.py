@@ -27,6 +27,7 @@ from discordbot.utils.expansion_cog import (
     omitted_images_note,
 )
 from discordbot.utils.discord_embeds import (
+    DISCORD_ATTACHMENT_LIMIT,
     DISCORD_EMBED_COUNT_LIMIT,
     DISCORD_EMBED_TOTAL_LIMIT,
     DISCORD_EMBED_DESCRIPTION_LIMIT,
@@ -222,8 +223,17 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
             return None
 
+        # Clips past the attachment cap cost the post nothing but themselves, so the card says how
+        # many it left out rather than refusing.
+        lines: list[str] = []
+        if plan.clamped_items:
+            lines.append(
+                f"-# 已省略 {len(plan.clamped_items)} 部影片 (Discord 單則訊息最多 "
+                f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
+            )
+        lines.extend(plan.hosted_urls)
         return ExpansionDelivery(
-            content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
+            content="\n".join(lines) if lines else None,
             embeds=embeds,
             files=[item.to_file() for item in plan.native],
         )

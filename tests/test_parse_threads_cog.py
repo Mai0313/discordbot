@@ -616,6 +616,37 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
     assert video_file.exists() is True
 
 
+async def test_threads_cog_delivers_the_clips_one_message_can_attach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post with more clips than one message attaches shows the first ten and counts the rest.
+
+    The clip past the cap was never offered to the host, so it is not a hosting failure: neither
+    a ⚠️ refusal nor a log line blaming the host.
+    """
+    cog = _cog()
+    serve = tmp_path / "serve"
+    serve.mkdir()  # pre-existing host mount; the bot never creates the serve dir
+    cog.media_delivery = hosting_planner(serve_dir=serve)
+    clips = [tmp_path / f"clip{index}.mp4" for index in range(11)]
+    for clip in clips:
+        clip.write_bytes(data=b"0" * 10)
+    _wire_threads(
+        cog=cog, downloader=ThreadsDownloaderStub(results=[_thread_output(video_paths=clips)])
+    )
+    warnings = capture_logs(monkeypatch, level="warn")
+    message = guild_message(content=_URL)
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+    delivered = expansion_payload(message=message)
+    assert [file.filename for file in delivered["files"]] == [clip.name for clip in clips[:10]]
+    assert delivered["content"] == "-# 已省略 1 部影片 (Discord 單則訊息最多 10 個附件)"
+    assert list(serve.iterdir()) == []
+    assert all("could not be hosted" not in text for text, _ in warnings)
+
+
 async def test_threads_cog_sends_no_author_icon_for_an_author_without_a_picture() -> None:
     """An author Threads serves without a picture gets no icon, rather than an empty icon URL."""
     cog = _cog()

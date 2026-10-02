@@ -1177,7 +1177,7 @@ class ResponseStreamer(BaseModel):
             reply=reply, files=files, hosted_urls=plan.hosted_urls
         ):
             return
-        if plan.dropped_items:
+        if plan.dropped_items or plan.clamped_items:
             await self.surface.hint(emoji=DROPPED_HINT_EMOJI)
         logfire.info(
             "Generated media attached",
