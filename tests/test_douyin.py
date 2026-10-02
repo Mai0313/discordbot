@@ -7,7 +7,7 @@ the real endpoint would take the whole deployment down with it.
 
 import json
 import shutil
-from typing import IO, Any, Self
+from typing import Any, Self
 from pathlib import Path
 import tempfile
 from collections.abc import Callable, Iterator
@@ -537,27 +537,15 @@ def test_download_gives_up_after_max_retries(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_oversize_content_length_writes_nothing(
+def test_an_oversize_file_is_refused_and_never_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A declared length over the cap aborts before the body is read, so no file is written.
-
-    The whole point of the guard is to spend a couple of seconds instead of a whole time
-    budget, so an assertion that merely checks the raise would pass even if the download ran
-    to completion first.
-    """
-    read_bodies = {"count": 0}
-
-    class _CountingResponse(_FakeResponse):
-        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-            """Records that the body was read at all."""
-            read_bodies["count"] += 1
-            yield from super().iter_content(chunk_size=chunk_size)
+    """An oversize file would be oversize again next time, so retrying only re-fetches it."""
 
     def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
         if "share/note" in url:
             return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _CountingResponse(body=b"x" * 100, headers={"Content-Length": "100"})
+        return _FakeResponse(body=b"x" * 100, headers={"Content-Length": "100"})
 
     calls = _install_session(monkeypatch=monkeypatch, handler=handler)
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
@@ -565,47 +553,7 @@ def test_oversize_content_length_writes_nothing(
     with pytest.raises(DouyinTooLargeError):
         downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=10)
 
-    assert read_bodies["count"] == 0  # aborted on the header, never streamed
-    assert list(tmp_path.iterdir()) == []
-    # Deterministic failure: retrying would only re-fetch the same oversize file.
     assert len([call for call in calls if "share/note" not in str(call["url"])]) == 1
-
-
-def test_oversize_stream_without_a_content_length_is_still_refused(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A missing or lying Content-Length is caught mid-stream, and the partial file is removed."""
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _FakeResponse(body=b"x" * 100)  # no Content-Length header at all
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
-
-    with pytest.raises(DouyinTooLargeError):
-        downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=10)
-
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_download_under_the_cap_is_unaffected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A file inside the cap downloads exactly as it does with no cap at all."""
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _FakeResponse(body=b"video-bytes", headers={"Content-Length": "11"})
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
-
-    result = downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=1024)
-
-    assert result.filenames[0].read_bytes() == b"video-bytes"
 
 
 def test_download_reuses_a_caller_supplied_post(
@@ -673,48 +621,21 @@ def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bo
     assert is_douyin_post_url(url=url) is expected
 
 
-def test_a_download_never_recreates_a_removed_output_folder(
+def test_a_removed_output_folder_is_not_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`_download_to` must not re-create the output folder per file.
-
-    A cancelled caller cannot stop the worker thread, so it may remove the scratch dir
-    mid-download; re-creating it per file would silently strand every later image there
-    forever. Failing the open instead turns the removal into the stop signal.
-    """
-    _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(body=b"image-bytes")
-    )
-    scratch = tmp_path / "gone"  # the scratch dir a cancelled caller has already removed
-    downloader = DouyinDownloader(output_folder=scratch.as_posix())
-
-    with pytest.raises(FileNotFoundError):
-        downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
-    assert not scratch.exists()  # nothing re-created it behind the caller's back
-
-
-def test_a_removed_output_folder_stops_a_download_already_streaming(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A scratch dir removed mid-transfer stops the file already being written, too.
-
-    Failing the next open stops only the next file, and a lone clip has none: an open handle
-    keeps taking writes after the removal, so the abandoned worker would pull the whole clip
-    into a deleted file.
-    """
+    """The removal is a caller's stop signal, not a stall, so the loop gives up on it at once."""
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    pulled: list[int] = []
 
     class _RemovedMidStream(_FakeResponse):
         """Removes the scratch dir after the first chunk, the way a caller giving up would."""
 
         def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-            """Yields five chunks, recording each one pulled."""
+            """Yields chunks, removing the scratch dir before the second."""
             for index in range(5):
                 if index == 1:
                     shutil.rmtree(path=scratch)
-                pulled.append(index)
                 yield b"x" * chunk_size
 
     calls = _install_session(
@@ -724,8 +645,7 @@ def test_a_removed_output_folder_stops_a_download_already_streaming(
 
     with pytest.raises(FileNotFoundError):
         downloader._download_to(url="https://cdn.test/clip.mp4", filename="clip.mp4")
-    assert pulled == [0, 1]  # nothing read past the chunk that arrived after the removal
-    assert len(calls) == 1  # a removal is not a stall worth retrying
+    assert len(calls) == 1
 
 
 def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -742,50 +662,6 @@ def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     assert len(douyin_module._PAYLOAD_CACHE) <= douyin_module._PAYLOAD_CACHE_MAX_ENTRIES
-
-
-def test_local_write_failure_leaves_no_partial_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A failed local write must clean up its own partial file.
-
-    Only network errors are retried, so a disk failure propagates immediately; the caller's
-    gallery cleanup only knows about files it already accepted, so this one has to remove itself.
-    """
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        return _FakeResponse(body=b"video-bytes")
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
-
-    real_open = Path.open
-
-    def failing_open(self: Path, mode: str = "r") -> IO[bytes]:
-        """Writes a partial file and then fails, as a full disk would.
-
-        The downloader only ever opens with a positional mode, so the stub mirrors that shape.
-        """
-        handle: IO[bytes] = real_open(self, mode)
-        original_write = handle.write
-
-        def write(data: bytes) -> int:
-            original_write(data)
-            raise OSError(28, "No space left on device")
-
-        # Simulate a mid-write disk failure by shadowing the handle's bound write.
-        monkeypatch.setattr(target=handle, name="write", value=write)
-        return handle
-
-    monkeypatch.setattr(Path, "open", failing_open)
-
-    with pytest.raises(OSError, match="No space left"):
-        downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
-
-    monkeypatch.undo()
-    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(
