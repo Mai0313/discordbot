@@ -6140,7 +6140,11 @@ async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
     # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
     monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
     cog = ReplyGeneratorCogs(
-        bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+        bot=as_bot(
+            fake=SimpleNamespace(
+                user=SimpleNamespace(id=999, name="bot"), get_cog=lambda name: None
+            )
+        )
     )
     cog.config = LLMConfig.model_construct()
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))

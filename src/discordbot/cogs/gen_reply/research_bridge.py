@@ -29,9 +29,7 @@ def can_launch_research(message: Message) -> bool:
 
 def _research_cog(bot: commands.Bot) -> commands.Cog | None:
     """The loaded ResearchCogs cog, or None when it is not loaded."""
-    # Read defensively because the test bots are plain namespaces with no `get_cog`.
-    get_cog = getattr(bot, "get_cog", None)
-    return get_cog("ResearchCogs") if callable(get_cog) else None
+    return bot.get_cog(name="ResearchCogs")
 
 
 def in_active_research_thread(bot: commands.Bot, channel_id: int) -> bool:
