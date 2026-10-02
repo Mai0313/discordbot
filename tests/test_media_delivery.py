@@ -519,10 +519,10 @@ async def test_plan_drops_largest_on_combined_overflow_when_hosting_disabled() -
 
 
 async def test_plan_clamps_to_attachment_limit() -> None:
-    """Eleven items all fitting clamp to 10, dropping the trailing one."""
+    """Eleven items all fitting clamp to 10, setting the trailing one aside unhosted."""
     planner = hosting_off_planner()
     # Limit is well above the combined size + envelope margin, so nothing is hosted; only the
-    # 10-attachment count cap applies, dropping the trailing item while native keeps input order.
+    # 10-attachment count cap applies, clamping the trailing item while native keeps input order.
     limit = 1024 * 1024 + 1000
     items = [MediaItem(source=b"x" * 10, filename=f"f{i}.png") for i in range(11)]
 
@@ -532,7 +532,9 @@ async def test_plan_clamps_to_attachment_limit() -> None:
 
     assert [item.filename for item in plan.native] == [f"f{i}.png" for i in range(10)]
     assert plan.hosted_urls == []
-    assert [item.filename for item in plan.dropped_items] == ["f10.png"]
+    # Not a hosting failure: a caller refusing on `dropped_items` must not refuse over the cap.
+    assert plan.dropped_items == []
+    assert [item.filename for item in plan.clamped_items] == ["f10.png"]
 
 
 async def test_plan_count_clamp_precedes_peel_so_marginal_overflow_keeps_voice() -> None:
@@ -555,4 +557,5 @@ async def test_plan_count_clamp_precedes_peel_so_marginal_overflow_keeps_voice()
     assert "reply.wav" in native_names  # the voice clip survived (not peeled for size)
     assert len(plan.native) == 10
     assert plan.hosted_urls == []
-    assert [item.filename for item in plan.dropped_items] == ["generated_9.png"]
+    assert plan.dropped_items == []
+    assert [item.filename for item in plan.clamped_items] == ["generated_9.png"]

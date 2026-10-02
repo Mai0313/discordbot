@@ -2088,6 +2088,43 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
     assert ("Generated media attached" in [text for text, _ in logged]) is not refused
 
 
+async def test_media_past_the_attachment_cap_earns_the_dropped_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every inline marker at once outnumbers one message's attachments; the overflow is a loss.
+
+    The planner reports it apart from a hosting failure, which this site treats alike.
+    """
+    message = FakeMessage()
+    reply = FakeReply()
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
+
+    async def clip(name: str) -> MediaItem:
+        """Stands in for one rendered clip ready to attach."""
+        return MediaItem(source=b"clip", filename=name)
+
+    async def images(source_images_task: object) -> list[MediaItem]:
+        """Stands in for every inline image a reply may carry."""
+        del source_images_task
+        return [
+            MediaItem(source=b"png", filename=f"generated_{index}.png")
+            for index in range(MAX_INLINE_IMAGES)
+        ]
+
+    monkeypatch.setattr(streamer, "_build_voice_candidate", lambda: clip(name="reply.wav"))
+    monkeypatch.setattr(streamer, "_build_music_candidate", lambda: clip(name="music.mp3"))
+    monkeypatch.setattr(
+        streamer, "_build_video_candidate", lambda source_images_task: clip(name="video.mp4")
+    )
+    monkeypatch.setattr(streamer, "_build_image_candidates", images)
+
+    await streamer._attach_generated_media()
+
+    assert reply.files is not None
+    assert len(reply.files) == 10
+    assert "⚠️" in message.added_reactions
+
+
 def test_extract_inline_markers_voice_keeps_content() -> None:
     """A <generate-voice> segment stays in the visible text; only the tags are stripped."""
     markers = extract_inline_markers(text="嗆爆你 <generate-voice>聽好了</generate-voice> 滾")

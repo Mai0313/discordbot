@@ -633,8 +633,15 @@ class MediaPlan(BaseModel):
     dropped_items: list[MediaItem] = Field(
         default_factory=list,
         description=(
-            "Items lost to a hosting failure or the count clamp; what happens to them is the "
-            "caller's own policy, which with hosting off must be that site's host-free behavior."
+            "Items lost to a hosting failure; what happens to them is the caller's own policy, "
+            "which with hosting off must be that site's host-free behavior."
+        ),
+    )
+    clamped_items: list[MediaItem] = Field(
+        default_factory=list,
+        description=(
+            "Items that fit on their own but fell past Discord's per-message attachment cap; "
+            "never offered to the host, and what happens to them is the caller's own policy."
         ),
     )
 
@@ -662,15 +669,15 @@ class MediaDeliveryPlanner(BaseModel):
     async def plan(
         self, items: list[MediaItem], upload_limit: int, envelope_margin: int = 0
     ) -> MediaPlan:
-        """Splits items into native attachments, hosted URLs, and dropped items.
+        """Splits items into native attachments, hosted URLs, dropped and clamped items.
 
         (a) Each individually-oversize item is hosted (or dropped when hosting is off / fails),
         concurrently. (b) The native list is clamped to `DISCORD_ATTACHMENT_LIMIT` first, the
-        trailing overflow dropped, so a marginal combined overflow then sheds a low-priority
-        trailing image rather than a prioritized voice/music clip. (c) The largest remaining are
-        peeled to hosted URLs until the combined body clears `upload_limit - envelope_margin`.
-        Input order is preserved in `native`, so a caller leading with voice/music keeps a trailing
-        image as the drop.
+        trailing overflow set aside unhosted as clamped, so a marginal combined overflow then sheds
+        a low-priority trailing image rather than a prioritized voice/music clip. (c) The largest
+        remaining are peeled to hosted URLs until the combined body clears
+        `upload_limit - envelope_margin`. Input order is preserved in `native`, so a caller leading
+        with voice/music keeps a trailing image as the one left out.
 
         Args:
             items: The built media items to deliver, in caller-preferred order.
@@ -697,12 +704,11 @@ class MediaDeliveryPlanner(BaseModel):
                     dropped.append(item)
 
         # (b) Discord's per-message attachment cap, applied BEFORE byte peeling: items past the cap
-        # cannot ride the edit anyway, so dropping the trailing overflow first means a marginal
+        # cannot ride the edit anyway, so setting the trailing overflow aside first means a marginal
         # combined overflow sheds a low-priority trailing image instead of peeling the prioritized
         # voice/music clip (callers lead with those).
-        if len(fitting) > DISCORD_ATTACHMENT_LIMIT:
-            dropped.extend(fitting[DISCORD_ATTACHMENT_LIMIT:])
-            fitting = fitting[:DISCORD_ATTACHMENT_LIMIT]
+        clamped = fitting[DISCORD_ATTACHMENT_LIMIT:]
+        fitting = fitting[:DISCORD_ATTACHMENT_LIMIT]
 
         # (c) Combined total: peel the largest remaining to a URL until the multipart body fits.
         total = sum(sizes[id(item)] for item in fitting)
@@ -715,7 +721,9 @@ class MediaDeliveryPlanner(BaseModel):
                 hosted_urls.append(url)
             else:
                 dropped.append(largest)
-        return MediaPlan(native=fitting, hosted_urls=hosted_urls, dropped_items=dropped)
+        return MediaPlan(
+            native=fitting, hosted_urls=hosted_urls, dropped_items=dropped, clamped_items=clamped
+        )
 
 
 def build_media_delivery_planner() -> MediaDeliveryPlanner:
