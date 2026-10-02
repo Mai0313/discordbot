@@ -325,6 +325,19 @@ def test_an_ace_or_king_pair_refuses_the_guess_that_cannot_win(
     assert round_state.active_turn.direction == expected
 
 
+def test_a_gate_that_is_not_a_pair_offers_no_guess() -> None:
+    """Only a pair takes a high/low guess, even when a pillar is an ace."""
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("A", "♠", "5", "♥")),
+        participants=[_participant(user_id=1, display_name="Alice")],
+    )
+
+    assert round_state.active_turn is not None
+    assert round_state.active_turn.direction is None
+    with pytest.raises(expected_exception=DragonGatePairChoiceUnavailableError):
+        round_state.choose_pair_direction(user_id=1, direction="higher")
+
+
 def test_turns_rotate_through_active_seats() -> None:
     """The next active player is dealt a fresh gate after a bet resolves."""
     round_state = DragonGateRound.from_participants(
