@@ -39,7 +39,6 @@ from discordbot.cogs.gen_reply.generation import (
     VOICE_REPLY_FILENAME,
     INLINE_IMAGE_FILENAME,
     INLINE_VIDEO_FILENAME,
-    VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
     VideoGenerator,
@@ -947,10 +946,10 @@ class ResponseStreamer(BaseModel):
         clip = await self.voice_generator.generate(
             text=self.voice_text, end_user_id=self.message.author.name
         )
-        if clip.outcome is VoiceOutcome.EMPTY:
+        if clip.outcome == "empty":
             # Nothing to say (the segment was empty after stripping): no hint.
             return None
-        if clip.outcome is VoiceOutcome.TIMEOUT:
+        if clip.outcome == "timeout":
             # generate() logged the timeout; cue the user that the clip ran out of time.
             await self.surface.hint(emoji=TIMEOUT_HINT_EMOJI)
             return None

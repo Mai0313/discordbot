@@ -1616,7 +1616,7 @@ class _FakeVoiceGenerator:
     """Records generate calls and returns a configurable VoiceClip for streamer voice tests."""
 
     def __init__(
-        self, audio: bytes | None = b"RIFFfake-wav", outcome: VoiceOutcome = VoiceOutcome.OK
+        self, audio: bytes | None = b"RIFFfake-wav", outcome: VoiceOutcome = "ok"
     ) -> None:
         """Stores the audio bytes (None to simulate failure) and the reported outcome."""
         self.audio = audio
@@ -1950,7 +1950,7 @@ async def test_voice_disabled_still_strips_marker() -> None:
 async def test_voice_synthesis_failure_leaves_text_reply() -> None:
     """A synthesis error leaves a clean text reply, no file, and hints with a warning emoji."""
     message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.ERROR)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome="error")
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
@@ -1965,7 +1965,7 @@ async def test_voice_synthesis_failure_leaves_text_reply() -> None:
 async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     """A synthesis timeout leaves a text reply and hints with the clock emoji, staying silent."""
     message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.TIMEOUT)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome="timeout")
 
     result = await _streamer(
         message=message, voice_generator=cast("VoiceGenerator", synthesizer)
@@ -1979,7 +1979,7 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
 async def test_voice_with_nothing_to_say_leaves_no_hint() -> None:
     """An empty clip is not a failure: no file attaches and nothing follows the voice mark."""
     message = FakeMessage()
-    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.EMPTY)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome="empty")
 
     await _streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)).stream(
         responses=_stream_events_from(events=_voice_marker_events())
@@ -2812,7 +2812,7 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
 
     clip = await synth.generate(text="閉嘴", end_user_id="tester")
 
-    assert clip.outcome is VoiceOutcome.OK
+    assert clip.outcome == "ok"
     assert clip.audio == b"RIFFwav"
     assert speech.calls[0]["input"].endswith("閉嘴")
     assert speech.calls[0]["input"] != "閉嘴"
@@ -2832,7 +2832,7 @@ async def test_voice_generator_swallows_provider_errors() -> None:
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
     assert clip.audio is None
-    assert clip.outcome is VoiceOutcome.ERROR
+    assert clip.outcome == "error"
 
 
 async def test_voice_generator_reports_timeout() -> None:
@@ -2843,7 +2843,7 @@ async def test_voice_generator_reports_timeout() -> None:
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
     assert clip.audio is None
-    assert clip.outcome is VoiceOutcome.TIMEOUT
+    assert clip.outcome == "timeout"
 
 
 async def test_voice_generator_reports_blank_text_as_empty() -> None:
@@ -2854,7 +2854,7 @@ async def test_voice_generator_reports_blank_text_as_empty() -> None:
     clip = await synth.generate(text=" \n ", end_user_id="tester")
 
     assert clip.audio is None
-    assert clip.outcome is VoiceOutcome.EMPTY
+    assert clip.outcome == "empty"
     assert speech.calls == []
 
 
