@@ -101,23 +101,28 @@ def _stub_parse(
 
 def _stub_media(
     monkeypatch: pytest.MonkeyPatch, uploads: FakeUploads, image_fetch_fails: bool = False
-) -> None:
-    """Stubs the image fetch, the clip download and the Files API upload: no network or SDK."""
+) -> list[str]:
+    """Stubs the image fetch, the clip download and the Files API upload: no network or SDK.
 
-    def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
-        """Writes a stand-in clip into the builder's scratch directory."""
-        del url
-        path = Path(self.output_folder) / filename
-        path.write_bytes(b"clip-bytes")
-        return path
-
-    accept_image_uploads(
+    Returns:
+        Every image and clip URL fetched.
+    """
+    fetched = accept_image_uploads(
         monkeypatch=monkeypatch,
         uploads=uploads,
         refused=(lambda source: True) if image_fetch_fails else None,
     )
+
+    def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
+        """Writes a stand-in clip into the builder's scratch directory."""
+        fetched.append(url)
+        path = Path(self.output_folder) / filename
+        path.write_bytes(b"clip-bytes")
+        return path
+
     monkeypatch.setattr(target=threads_builder, name="upload_as_input_file", value=uploads)
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
+    return fetched
 
 
 async def _build(  # noqa: PLR0913 -- one knob per way a test varies the read
@@ -142,6 +147,7 @@ async def _build(  # noqa: PLR0913 -- one knob per way a test varies the read
         url=_URL,
         answer_model_is_gemini=gemini,
         gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
         deadline=link_build_deadline(),
     )
 
@@ -701,6 +707,7 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
         url=_URL,
         answer_model_is_gemini=True,
         gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
         deadline=link_build_deadline(),
     )
 
@@ -744,6 +751,7 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
         url=_URL,
         answer_model_is_gemini=True,
         gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
         deadline=link_build_deadline(media_seconds=0.01),
     )
 
@@ -790,6 +798,7 @@ async def test_a_slow_read_still_returns_the_post_inside_the_build_deadline(
             url=_URL,
             answer_model_is_gemini=True,
             gemini_client=make_stub_gemini_client(),
+            allow_media_ingest=True,
             deadline=deadline,
         ),
         deadline=deadline,
@@ -925,7 +934,11 @@ async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.Monkey
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=None, deadline=link_build_deadline()
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=None,
+        allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
@@ -950,6 +963,36 @@ async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPat
     assert "https://cdn.test/a.jpg" in text
     assert "https://cdn.test/v.mp4" in text
     assert uploads.calls == []  # a Files uri is Gemini-only, so nothing is uploaded
+
+
+async def test_media_ingest_off_fetches_nothing_and_rides_urls_as_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the Files API switched off the media is never fetched, not merely never uploaded.
+
+    Every upload would be refused at the switch, so fetching first only kept the reply waiting
+    on CDN reads and a whole clip download for the block the URLs alone already produce.
+    """
+    _stub_parse(
+        monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
+    )
+    uploads = FakeUploads()
+    fetched = _stub_media(monkeypatch, uploads=uploads)
+
+    blocks = await build_threads_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
+    )
+
+    assert fetched == []
+    assert uploads.calls == []
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    text = block_body(blocks=blocks)
+    assert "Images of the linked post NOT attached (1), URLs only: https://cdn.test/a.jpg" in text
+    assert "Videos of the linked post NOT attached (1), URLs only: https://cdn.test/v.mp4" in text
 
 
 async def test_failed_media_degrades_to_an_honest_text_block(
@@ -1076,6 +1119,7 @@ async def test_build_empty_post_returns_unavailable_notice(
         url=_URL,
         answer_model_is_gemini=True,
         gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
         deadline=link_build_deadline(),
     )
 
@@ -1094,6 +1138,7 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
         url=_URL,
         answer_model_is_gemini=True,
         gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
         deadline=link_build_deadline(),
     )
 

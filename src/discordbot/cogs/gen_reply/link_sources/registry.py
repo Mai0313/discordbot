@@ -56,15 +56,12 @@ async def _build_threads_link_context(
     allow_media_ingest: bool,
     deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Threads builder to the registry signature.
-
-    Threads media ingestion has no kill-switch, so the flag is accepted and dropped.
-    """
-    del allow_media_ingest
+    """Adapts the Threads builder to the registry signature (a straight pass-through)."""
     return await build_threads_context_messages(
         url=url,
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
+        allow_media_ingest=allow_media_ingest,
         deadline=deadline,
     )
 
@@ -154,12 +151,6 @@ async def _build_instagram_link_context(
     )
 
 
-def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
-    """Threads media ingestion has no kill-switch; the Gemini checks alone gate it."""
-    del config
-    return True
-
-
 def _needs_files_api(config: LLMConfig) -> bool:
     """A source with no kill-switch of its own: the Files API and its key are the whole gate.
 
@@ -198,7 +189,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_threads_link_context,
         timeout_notice=THREADS_TIMEOUT_NOTICE,
-        media_ingest_allowed=_threads_media_ingest_allowed,
+        media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="facebook",

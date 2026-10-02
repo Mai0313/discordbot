@@ -784,7 +784,11 @@ def _render_conversation_sections(
 
 
 async def build_threads_context_messages(
-    url: str, answer_model_is_gemini: bool, gemini_client: genai.Client | None, deadline: float
+    url: str,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Parses a Threads URL into answer-model input blocks.
 
@@ -801,6 +805,7 @@ async def build_threads_context_messages(
         answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
         gemini_client: Direct-to-Google client used for the media upload, or None when no key
             is configured, which reads the post as text just like a non-Gemini answer model.
+        allow_media_ingest: Kill-switch plus key check; when false the media rides as URLs only.
         deadline: Event-loop time the pipeline cancels this build at, which the media step
             stops short of so the text still comes back.
 
@@ -830,7 +835,7 @@ async def build_threads_context_messages(
             logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
         text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
         media = IngestedMedia()
-        if answer_model_is_gemini and gemini_client is not None:
+        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
             media = await _ingest_media(
                 target=target, gemini_client=gemini_client, deadline=deadline
             )
@@ -855,12 +860,12 @@ async def build_threads_context_messages(
                     )
                 )
     else:
-        # No media parts: either the answer model cannot read a Files uri, the posts carry no
-        # media, or every fetch/upload failed. All three supply the URLs as text under a
-        # separator that does NOT claim the media was seen, so the model never describes what it
-        # never got. The quoted post's URLs ride here too, named separately: they are as
-        # unattached as the target's, and a block that listed only the target's would hide half
-        # the post.
+        # No media parts: either the answer model cannot read a Files uri, media ingestion is
+        # off, the posts carry no media, or every fetch/upload failed. All four supply the URLs
+        # as text under a separator that does NOT claim the media was seen, so the model never
+        # describes what it never got. The quoted post's URLs ride here too, named separately:
+        # they are as unattached as the target's, and a block that listed only the target's
+        # would hide half the post.
         url_owners = [(target, _TARGET_MEDIA_OWNER)]
         if target.quoted is not None:
             url_owners.append((target.quoted, _QUOTED_MEDIA_OWNER))
