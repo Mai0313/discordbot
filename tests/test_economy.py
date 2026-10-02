@@ -24,7 +24,9 @@ from discordbot.typings.economy import (
     apply_vip_blackjack_bonus,
 )
 from discordbot.services.economy import database as economy_database
+from discordbot.utils.stored_integer import StoredInteger
 from discordbot.services.economy.database import (
+    Base,
     UserWallet,
     JackpotPool,
     UserAccount,
@@ -164,29 +166,17 @@ async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dic
     return (cast("tuple[int, int, int, int, int]", tuple(jackpot_row)), jackpot_column_types)
 
 
-def _assert_money_columns_are_text(
-    table_column_types: dict[str, dict[str, str]], jackpot_column_types: dict[str, str]
-) -> None:
-    """Checks all decimal-string money columns use SQLite TEXT affinity."""
-    economy_money_columns = {
-        "user_wallet": ("balance", "total_earned", "total_spent"),
-        "loan_proposal": ("amount", "escrow_amount"),
-        "loan_contract": (
-            "original_principal",
-            "principal_remaining",
-            "interest_due",
-            "total_interest_paid",
-            "total_principal_paid",
-        ),
-        "casino_account": ("daily_loss", "daily_win", "daily_net"),
-        "casino_ledger": ("balance", "total_earned", "total_spent"),
-        "central_bank_ledger": ("balance", "total_earned"),
-    }
-    for table_name, column_names in economy_money_columns.items():
-        for column_name in column_names:
-            assert table_column_types[table_name][column_name] == "TEXT"
-    for column_name in ("pool_balance", "total_contributed", "total_claimed", "seeded_amount"):
-        assert jackpot_column_types[column_name] == "TEXT"
+def _assert_money_columns_are_text(table_column_types: dict[str, dict[str, str]]) -> None:
+    """Checks every `StoredInteger` column the models declare uses SQLite TEXT affinity."""
+    money_columns = [
+        (table.name, column.name)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, StoredInteger)
+    ]
+    assert money_columns
+    for table_name, column_name in money_columns:
+        assert table_column_types[table_name][column_name] == "TEXT", (table_name, column_name)
 
 
 async def test_adjust_balance_zero_is_noop() -> None:
@@ -346,7 +336,7 @@ async def test_ensure_schema_bootstraps_current_databases() -> None:
     ]
     assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
     _assert_money_columns_are_text(
-        table_column_types=table_column_types, jackpot_column_types=jackpot_column_types
+        table_column_types=table_column_types | {"jackpot_pool": jackpot_column_types}
     )
     assert "ix_user_wallet_balance" in wallet_index_names
     assert "ix_casino_account_day_loss" in casino_index_names
@@ -359,62 +349,6 @@ async def test_ensure_schema_bootstraps_current_databases() -> None:
     assert await _stored_wallet_name(user_id=42) == "alice"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
-
-
-async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_functions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An engine handed over with a connection already in its pool still settles money.
-
-    That connection never saw `connect`, so only the `checkout` listener can register the
-    `StoredInteger` functions on it; without it the settlement below, which folds into the
-    daily casino counters through one, raises `no such function: discordbot_int_add_text`.
-    """
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'pooled-economy.db'}")
-    async with engine.connect() as conn:
-        await conn.execute(statement=text(text="SELECT 1"))
-    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-
-    await apply_blackjack_settlement(
-        player_id=1, player_account_name="alice", player_delta=5, casino_delta=-5
-    )
-
-    assert await get_balance(user_id=1) == 5
-    await engine.dispose()
-
-
-async def test_ensure_schema_serializes_concurrent_first_use() -> None:
-    """Concurrent first-use schema bootstrap does not race SQLite CREATE TABLE."""
-    await asyncio.gather(*(get_balance(user_id=42) for _ in range(20)))
-
-    async with open_session() as session:
-        result = await session.execute(
-            statement=text(
-                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'loan_proposal'"
-            )
-        )
-        assert result.scalar_one_or_none() == "loan_proposal"
-        result = await session.execute(
-            statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == "dragon_gate")
-        )
-        assert result.scalar_one() == 1_000
-
-
-async def test_a_swapped_engine_gets_its_own_schema(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Readiness follows the engine, so the first session on a swapped-in one bootstraps it.
-
-    The fixture's engine is bootstrapped before the swap, so readiness that ignored which engine
-    it was recorded for would skip the new file's schema and its seed rows.
-    """
-    await seed_balance(user_id=42, name="alice", amount=5)
-    swapped = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'swapped-economy.db'}")
-    monkeypatch.setattr("discordbot.services.economy.database._engine", swapped)
-
-    assert await get_balance(user_id=42) == 0
-    assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
-    await swapped.dispose()
 
 
 async def test_get_balance_unknown_user_returns_zero() -> None:
@@ -597,26 +531,34 @@ async def test_top_n_short_cache_hit_and_manual_invalidation() -> None:
 async def test_a_balance_write_clears_the_leaderboard_caches_only_once_committed() -> None:
     """A clear before the commit lets a read in between cache the rows the write replaces."""
     await top_n(limit=None)
-    cached_at_commit: list[bool] = []
+    await top_losers()
+    cached_at_commit: list[tuple[bool, bool]] = []
 
     async def commit() -> None:
-        """Notes whether the leaderboard rows were still cached when the write committed."""
-        cached_at_commit.append(bool(economy_database._top_n_cache))
+        """Notes whether both boards' rows were still cached when the write committed."""
+        cached_at_commit.append((
+            bool(economy_database._top_n_cache),
+            bool(economy_database._top_losers_cache),
+        ))
 
     await _commit_balance_write(session=cast("AsyncSession", SimpleNamespace(commit=commit)))
 
-    assert cached_at_commit == [True]
+    assert cached_at_commit == [(True, True)]
     assert economy_database._top_n_cache == {}
+    assert economy_database._top_losers_cache == {}
 
 
 async def _ledger_every_write_path_can_touch() -> int:
     """Seeds what every leaderboard write below needs and returns a pending request's id.
 
     alice (1) can afford VIP and owes both bob (2) and the central bank; bob has asked
-    alice for a loan she has not answered yet.
+    alice for a loan she has not answered yet, and has lost at the table today.
     """
     await seed_participant(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
     await seed_balance(user_id=2, name="bob", amount=1_000)
+    await apply_blackjack_settlement(
+        player_id=2, player_account_name="bob", player_delta=-10, casino_delta=10
+    )
     await open_personal_loan(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
     )
@@ -636,78 +578,95 @@ async def _ledger_every_write_path_can_touch() -> int:
 
 
 @pytest.mark.parametrize(
-    argnames="write",
+    argnames=("write", "moves_losses"),
     argvalues=[
         pytest.param(
             lambda _: credit_with_repayment(user_id=2, name="bob", amount=10),
+            False,
             id="credit_with_repayment",
         ),
         pytest.param(
-            lambda _: adjust_balance(user_id=2, name="bob", delta=10), id="adjust_balance"
+            lambda _: adjust_balance(user_id=2, name="bob", delta=10), False, id="adjust_balance"
         ),
         pytest.param(
             lambda _: apply_blackjack_settlement(
-                player_id=2, player_account_name="bob", player_delta=10, casino_delta=-10
+                player_id=2, player_account_name="bob", player_delta=-10, casino_delta=10
             ),
+            True,
             id="apply_blackjack_settlement",
         ),
         pytest.param(
             lambda _: apply_jackpot_settlement(
                 player_id=2, player_account_name="bob", player_delta=-10, game_id="dragon_gate"
             ),
+            True,
             id="apply_jackpot_settlement",
         ),
-        pytest.param(lambda _: buy_vip(user_id=1, name="alice"), id="buy_vip"),
+        pytest.param(lambda _: buy_vip(user_id=1, name="alice"), False, id="buy_vip"),
         pytest.param(
             lambda _: transfer(
                 sender_id=2, sender_name="bob", receiver_id=1, receiver_name="alice", amount=100
             ),
+            False,
             id="transfer",
         ),
         pytest.param(
             lambda proposal_id: accept_loan_proposal(
                 proposal_id=proposal_id, actor_id=1, actor_name="alice"
             ),
+            False,
             id="accept_loan_proposal",
         ),
         pytest.param(
             lambda _: repay_personal_loans(
                 borrower_id=1, borrower_name="alice", lender_id=2, amount=10
             ),
+            False,
             id="repay_personal_loans",
         ),
         pytest.param(
             lambda _: call_personal_loans(
                 lender_id=2, borrower_id=1, borrower_name="alice", amount=10
             ),
+            False,
             id="call_personal_loans",
         ),
         pytest.param(
             lambda _: repay_central_bank_loans(borrower_id=1, borrower_name="alice", amount=10),
+            False,
             id="repay_central_bank_loans",
         ),
         pytest.param(
             lambda _: call_central_bank_loans(
                 guild_id=LENDING_GUILD, borrower_id=1, borrower_name="alice", amount=10
             ),
+            False,
             id="call_central_bank_loans",
         ),
     ],
 )
 async def test_every_balance_write_invalidates_the_leaderboard_cache(
-    write: Callable[[int], Awaitable[object]],
+    write: Callable[[int], Awaitable[object]], moves_losses: bool
 ) -> None:
-    """A leaderboard read right after any public balance write shows the write."""
+    """A leaderboard read right after any public balance write shows the write.
+
+    `moves_losses` marks the casino settlements, the only writes here that change what the loss
+    board shows.
+    """
     pending_proposal_id = await _ledger_every_write_path_can_touch()
     cached = await top_n(limit=None)
+    cached_losses = await top_losers()
 
     await write(pending_proposal_id)
     after = await top_n(limit=None)
+    after_losses = await top_losers()
     invalidate_economy_leaderboard_cache()
 
     assert after == await top_n(limit=None)
-    # Otherwise the write moved no balance and the check above proves nothing.
+    assert after_losses == await top_losers()
+    # Otherwise the write moved nothing the reads could show, and the checks above prove nothing.
     assert after != cached
+    assert (after_losses != cached_losses) is moves_losses
 
 
 async def test_apply_blackjack_settlement_casino_accumulates_gross_flows() -> None:

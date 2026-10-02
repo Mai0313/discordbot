@@ -33,7 +33,6 @@ from discordbot.typings.economy import (
     CentralBankStatus,
     LoanPaymentResult,
     VipPurchaseResult,
-    LoanContractStatus,
     LoanProposalStatus,
     CasinoLedgerSnapshot,
     LossLeaderboardEntry,
@@ -44,7 +43,7 @@ from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.utils.message_cleanup import list_pending_public_messages
 
-from tests.helpers.games import ScheduledDeletes
+from tests.helpers.games import ScheduledDeletes, attached_button
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -53,6 +52,7 @@ from tests.helpers.casting import (
     make_not_found,
     make_server_error,
 )
+from tests.helpers.economy import personal_loan_contract
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
@@ -126,21 +126,6 @@ async def fake_get_casino_ledger() -> CasinoLedgerSnapshot:
     )
 
 
-async def fake_transfer(  # noqa: PLR0913 -- mirrors transfer signature
-    sender_id: int,
-    sender_name: str,
-    receiver_id: int,
-    receiver_name: str,
-    amount: int,
-    sender_avatar_url: str = "",
-    receiver_avatar_url: str = "",
-) -> TransferResult | None:
-    """Returns a successful fake transfer result."""
-    return TransferResult(
-        sender_balance=50, receiver_balance=100, received_amount=100, tax_amount=0
-    )
-
-
 async def fake_adjust_balance(
     user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
 ) -> BalanceAdjustmentResult:
@@ -193,22 +178,8 @@ async def fake_cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProp
 
 async def fake_accept_loan_proposal(**_kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
     """Returns a fake accepted proposal result."""
-    contract = LoanContractView(
-        contract_id=1,
-        lender_type=LoanLenderType.USER,
-        lender_id=2,
-        lender_name="bob",
-        borrower_id=1,
-        borrower_name="alice",
-        principal_remaining=100,
-        interest_due=0,
-        monthly_rate_bps=300,
-        opened_at=datetime.now(tz=UTC),
-        last_interest_accrued_at=datetime.now(tz=UTC),
-        status=LoanContractStatus.ACTIVE,
-    )
     return LoanProposalAcceptResult(
-        contract=contract,
+        contract=personal_loan_contract(),
         borrower_balance=250,
         lender_balance=100,
         central_bank_available_credit=1_000,
@@ -217,22 +188,7 @@ async def fake_accept_loan_proposal(**_kwargs: Any) -> LoanProposalAcceptResult:
 
 async def fake_list_loan_contracts(user_id: int) -> list[LoanContractView]:
     """Returns one active loan contract."""
-    return [
-        LoanContractView(
-            contract_id=1,
-            lender_type=LoanLenderType.USER,
-            lender_id=2,
-            lender_name="bob",
-            borrower_id=user_id,
-            borrower_name="alice",
-            principal_remaining=100,
-            interest_due=3,
-            monthly_rate_bps=300,
-            opened_at=datetime.now(tz=UTC),
-            last_interest_accrued_at=datetime.now(tz=UTC),
-            status=LoanContractStatus.ACTIVE,
-        )
-    ]
+    return [personal_loan_contract(borrower_id=user_id, interest_due=3)]
 
 
 async def fake_loan_payment(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
@@ -598,7 +554,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "top_losers", fake_top_losers)
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "get_casino_ledger", fake_get_casino_ledger)
-    monkeypatch.setattr(economy, "transfer", fake_transfer)
+    _record_transfers(monkeypatch=monkeypatch)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
     monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
     monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
@@ -774,11 +730,7 @@ async def test_central_bank_decision_buttons_require_admin_and_allow_self_approv
     view = CentralBankLoanDecisionView(
         bot=_bot(), proposal_id=42, creator_id=1, allow_self_approval=True
     )
-    approve_button = next(
-        child
-        for child in view.children
-        if getattr(child, "custom_id", "") == "central_bank:approve"
-    )
+    approve_button = attached_button(view=view, custom_id="central_bank:approve")
 
     denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"), administrator=False)
     await approve_button.callback(as_interaction(fake=denied))
@@ -804,11 +756,7 @@ async def test_central_bank_decision_buttons_require_admin_and_allow_self_approv
     assert allowed.edits[0]["view"] is None
 
     cancel_view = CentralBankLoanDecisionView(bot=_bot(), proposal_id=43, creator_id=1)
-    cancel_button = next(
-        child
-        for child in cancel_view.children
-        if getattr(child, "custom_id", "") == "central_bank:cancel"
-    )
+    cancel_button = attached_button(view=cancel_view, custom_id="central_bank:cancel")
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
     assert denied_cancel.followup.sent[0]["ephemeral"] is True
@@ -849,9 +797,7 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     monkeypatch.setattr(views, "reject_loan_proposal", fake_reject_for_button)
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
-    approve_button = next(
-        child for child in view.children if getattr(child, "custom_id", "") == "credit:approve"
-    )
+    approve_button = attached_button(view=view, custom_id="credit:approve")
 
     denied_approve = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
     await approve_button.callback(as_interaction(fake=denied_approve))
@@ -865,11 +811,7 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     assert allowed_approve.edits[0]["view"] is None
 
     reject_view = CreditLoanDecisionView(proposal_id=43, lender_id=2, creator_id=1)
-    reject_button = next(
-        child
-        for child in reject_view.children
-        if getattr(child, "custom_id", "") == "credit:reject"
-    )
+    reject_button = attached_button(view=reject_view, custom_id="credit:reject")
     denied_reject = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
     await reject_button.callback(as_interaction(fake=denied_reject))
     assert denied_reject.followup.sent[0]["ephemeral"] is True
@@ -881,11 +823,7 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     assert allowed_reject.edits[0]["view"] is None
 
     cancel_view = CreditLoanDecisionView(proposal_id=44, lender_id=2, creator_id=1)
-    cancel_button = next(
-        child
-        for child in cancel_view.children
-        if getattr(child, "custom_id", "") == "credit:cancel"
-    )
+    cancel_button = attached_button(view=cancel_view, custom_id="credit:cancel")
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
     assert denied_cancel.followup.sent[0]["ephemeral"] is True
@@ -940,7 +878,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
     ]
 
     for view, custom_id in buttons:
-        button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
+        button = attached_button(view=view, custom_id=custom_id)
         interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
         clicked.append((custom_id, interaction))
         await button.callback(as_interaction(fake=interaction))
@@ -1061,7 +999,7 @@ async def test_a_loan_panel_kept_open_by_a_refused_press_closes_through_it(
     view.message = as_message(fake=followup)
     panel = FakeDiscordMessage()
     press = FakeInteraction(user=FakeUser(user_id=user_id, name="charlie"), message=panel)
-    button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
+    button = attached_button(view=view, custom_id=custom_id)
 
     await button.callback(as_interaction(fake=press))
     await view.on_timeout()
@@ -1088,7 +1026,7 @@ async def test_a_decided_loan_panel_is_deleted_through_the_deciding_press(
     view.message = as_message(fake=FakeDiscordMessage())
     panel = FakeDiscordMessage()
     press = FakeInteraction(user=FakeUser(user_id=1, name="alice"), message=panel)
-    button = next(c for c in view.children if getattr(c, "custom_id", "") == "credit:cancel")
+    button = attached_button(view=view, custom_id="credit:cancel")
 
     await button.callback(as_interaction(fake=press))
 

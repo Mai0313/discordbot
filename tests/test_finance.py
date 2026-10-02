@@ -46,6 +46,7 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
+from tests.helpers.games import attached_button
 from tests.helpers.casting import as_bot, as_message, as_discord_bot, as_interaction
 from tests.helpers.economy import (
     LENDING_GUILD,
@@ -238,7 +239,7 @@ async def test_a_press_past_the_window_closes_the_panel_as_expired(
     panel = FakeDiscordMessage()
     view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
     view.message = as_message(fake=panel)
-    button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
+    button = attached_button(view=view, custom_id=custom_id)
     presser = FakeInteraction(user=FakeUser(user_id=presser_id, name="presser"), message=panel)
 
     await button.callback(as_interaction(fake=presser))
@@ -445,7 +446,7 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
     assert accepted is not None
     assert accepted.central_bank_available_credit == CENTRAL_BANK_BASE_CAPACITY
 
-    # Inside alice's own remaining ceiling of 6,000,000, so only the pool can refuse it.
+    # Inside alice's own remaining ceiling, so only the pool can refuse it.
     too_large = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=CENTRAL_BANK_BASE_CAPACITY + 1
     )
@@ -744,7 +745,8 @@ async def test_minting_is_bounded_when_each_account_holds_its_own_guild() -> Non
         holder = following
 
     circulating = sum([await get_balance(user_id=user_id) for user_id in accounts])
-    assert circulating < CENTRAL_BANK_BASE_CAPACITY
+    # Above the seed, or a pool that refused every loan would pass the bound.
+    assert 1_000 < circulating < CENTRAL_BANK_BASE_CAPACITY
 
 
 async def test_a_fully_leveraged_guild_has_no_capacity_left() -> None:
@@ -899,11 +901,7 @@ async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() 
         proposal_id=proposal.proposal_id,
         creator_id=1,
     )
-    reject_button = next(
-        child
-        for child in view.children
-        if getattr(child, "custom_id", "") == "central_bank:reject"
-    )
+    reject_button = attached_button(view=view, custom_id="central_bank:reject")
     admin = FakeInteraction(
         user=FakeUser(user_id=99, name="banker"), guild_id=LENDING_GUILD, administrator=True
     )
