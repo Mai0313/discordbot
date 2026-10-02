@@ -297,11 +297,12 @@ def comment_lines[OutputT: LinkableCommentOutput](
 
     The named comment is labelled rather than moved to the front: its position in the thread is
     part of reading it, and a model told which one was linked can answer about it without losing
-    what came before.
+    what came before. One sitting past the cap rides after the others as one more, since it is the
+    comment the user is asking about, and the header counts it.
 
     Args:
         conversation: The post's conversation.
-        cap: How many comments ride.
+        cap: How many comments ride, not counting a named one past it.
         served_as: Closes the header, saying in the source's own words how much of the
             discussion the page served.
         handle_prefix: Written before each author's name, e.g. `@` where names are handles.
@@ -310,6 +311,9 @@ def comment_lines[OutputT: LinkableCommentOutput](
         Lines to append to the rendered post, none when it has no comments.
     """
     comments = conversation.comments[:cap]
+    selected = conversation.selected_comment
+    if selected is not None and selected not in comments:
+        comments.append(selected)
     if not comments:
         return []
     lines = [f"\n[{len(comments)} of the post's comments, {served_as}]"]

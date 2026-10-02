@@ -19,6 +19,8 @@ from discordbot.services.platforms.base import (
     PlatformConversation,
 )
 from discordbot.typings.context_budgets import (
+    MAX_FACEBOOK_COMMENTS,
+    MAX_INSTAGRAM_COMMENTS,
     MAX_TWITTER_INGEST_IMAGES,
     MAX_FACEBOOK_INGEST_IMAGES,
     MAX_INSTAGRAM_INGEST_IMAGES,
@@ -85,6 +87,9 @@ class _PostSource(BaseModel):
     separators: PostSeparators = Field(..., description="Its wording around a readable post.")
     unavailable_notice: str = Field(..., description="What an unreadable post becomes.")
     image_cap: int = Field(..., description="How many of a post's images one reply uploads.")
+    comment_cap: int = Field(
+        ..., description="How many of its comments ride; 0 for a source that carries none."
+    )
 
 
 _SOURCES = [
@@ -98,6 +103,7 @@ _SOURCES = [
         separators=FACEBOOK_SEPARATORS,
         unavailable_notice=FACEBOOK_UNAVAILABLE_NOTICE,
         image_cap=MAX_FACEBOOK_INGEST_IMAGES,
+        comment_cap=MAX_FACEBOOK_COMMENTS,
     ),
     _PostSource(
         name="instagram",
@@ -109,6 +115,7 @@ _SOURCES = [
         separators=INSTAGRAM_SEPARATORS,
         unavailable_notice=INSTAGRAM_UNAVAILABLE_NOTICE,
         image_cap=MAX_INSTAGRAM_INGEST_IMAGES,
+        comment_cap=MAX_INSTAGRAM_COMMENTS,
     ),
     _PostSource(
         name="twitter",
@@ -120,6 +127,7 @@ _SOURCES = [
         separators=TWITTER_SEPARATORS,
         unavailable_notice=TWITTER_UNAVAILABLE_NOTICE,
         image_cap=MAX_TWITTER_INGEST_IMAGES,
+        comment_cap=0,
     ),
 ]
 
@@ -436,6 +444,34 @@ async def test_the_comments_are_rendered_and_the_linked_one_is_marked(
     # The marker sits on the linked comment and nowhere else.
     assert "(this is the comment the user's link points at): the linked one" in body
     assert body.count("the comment the user's link points at") == 1
+
+
+@commented_sources
+async def test_the_linked_comment_rides_even_past_the_comment_cap(
+    monkeypatch: pytest.MonkeyPatch, source: _PostSource
+) -> None:
+    """The cap must not cost the one comment the user is asking about."""
+    assert source.comment is not None
+    comments = [
+        source.comment(comment_id=str(index), text=f"comment {index:03d}", author_name="a")
+        for index in range(source.comment_cap + 5)
+    ]
+    serve_conversation(
+        monkeypatch,
+        downloader=source.downloader,
+        post=source.post(comments=comments, selected_comment_id=str(source.comment_cap + 4)),
+    )
+
+    blocks = await _build(source=source)
+
+    body = block_body(blocks=blocks)
+    linked = f"comment {source.comment_cap + 4:03d}"
+    assert f"(this is the comment the user's link points at): {linked}" in body
+    assert body.count("the comment the user's link points at") == 1
+    # One more rather than in the last slot, whose comment may be the one it replies to.
+    assert f"comment {source.comment_cap - 1:03d}" in body
+    assert f"comment {source.comment_cap:03d}" not in body
+    assert f"[{source.comment_cap + 1} of the post's comments" in body
 
 
 @commented_sources
