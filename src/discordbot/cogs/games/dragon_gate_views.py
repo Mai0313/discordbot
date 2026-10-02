@@ -853,7 +853,7 @@ class DragonGateView(GameView):
         return f"現在輪到 {active_turn.participant.display_name}"
 
     def _rule_error_notice(self, error: DragonGateError) -> str:
-        """Returns the ephemeral notice for a rule error the round raised.
+        """Returns the ephemeral notice for a Dragon Gate rule error a press ran into.
 
         A finished table has no notice of its own: it, and any error without one, reads as over.
         """
