@@ -60,7 +60,7 @@ A link that is only incidental to the question is left alone.
 ## Casino games
 
 - `/games blackjack` — open a Blackjack table; a hand of five cards that has not busted wins outright
-- `/games dragon_gate` — open a Dragon Gate table backed by a shared jackpot pool
+- `/games dragon_gate` — open a Dragon Gate table backed by a shared jackpot pool; on a pair of aces only higher can win and on a pair of kings only lower, so that guess is made for you
 - `/games blackjack_history` — recent Blackjack rounds, optionally for one member
 
 ## 虛擬歡樂豆 and the economy
