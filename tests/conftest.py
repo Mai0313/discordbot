@@ -1,12 +1,12 @@
 """Shared pytest fixtures.
 
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
-`tmp_path` SQLite file for one test, all through `_isolate_engine`; the economy and
-games-history ones are autouse, the others are requested by the tests that need them.
-`memory_isolated_dir` covers more than a directory: the store dir, the `memory_job` engine,
-the process-local caches, counters and task registries the store and pipeline hold, and the
-git committer. The autouse fixtures are the other half of that isolation, keeping a real
-deployment's `.env` and `data/` out of every test whether or not it asked for them.
+`tmp_path` SQLite file for one test, all through `_isolate_engine`, and every one is autouse.
+`memory_isolated_dir` is the one a test requests, and it covers more than a directory: the
+store dir, the `memory_job` engine, the process-local caches, counters and task registries the
+store and pipeline hold, and the git committer. The autouse fixtures are the other half of that
+isolation, keeping a real deployment's `.env` and `data/` out of every test whether or not it
+asked for them.
 """
 
 import os
@@ -49,9 +49,14 @@ def economy_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("discordbot.services.economy.database._top_losers_cache", {})
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def research_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Per-test SQLite file for the research table (reply.db)."""
+    """Points the research session table at a throwaway `reply.db`.
+
+    Autouse for the reason `expansion_store_isolated` is: a test that launches a run without the
+    swap would leave a `researching` row in the live `reply.db`, which the next real start would
+    try to resume.
+    """
     _isolate_engine(
         monkeypatch=monkeypatch,
         target="discordbot.cogs.research.database._engine",
@@ -59,9 +64,14 @@ def research_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Per-test SQLite file for the `/ask` conversation table (reply.db)."""
+    """Points the `/ask` conversation table at a throwaway `reply.db`.
+
+    Autouse for the reason `expansion_store_isolated` is: every `/ask` turn records itself and a
+    failed write is swallowed, so a test missing the swap would pass green while writing its fake
+    turns into the live table.
+    """
     _isolate_engine(
         monkeypatch=monkeypatch,
         target="discordbot.cogs.gen_reply.ask_store._engine",
@@ -69,9 +79,14 @@ def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def messages_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Per-test SQLite file for the message log (messages.db)."""
+    """Points the message log at a throwaway `messages.db`.
+
+    Autouse for the reason `expansion_store_isolated` is: the log writes in a background task
+    whose failure is swallowed, so a test missing the swap would pass green while inserting its
+    fake messages into the live file.
+    """
     _isolate_engine(
         monkeypatch=monkeypatch,
         target="discordbot.cogs.log_msg.cog._engine",

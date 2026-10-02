@@ -3,13 +3,9 @@
 from typing import Any
 import asyncio
 
-import pytest
 from sqlalchemy import text
 
 from discordbot.cogs.log_msg import cog as log_msg
-
-pytestmark = pytest.mark.usefixtures("messages_isolated_db")
-
 
 _SAMPLE_ROW: dict[str, str] = {
     "discord_message_id": "1001",

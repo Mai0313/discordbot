@@ -8,6 +8,7 @@ from pathlib import Path
 
 from nextcord import InteractionType
 
+from discordbot.cli import DiscordBot
 from discordbot.cogs.usage.cog import UsageCogs, command_path
 from discordbot.utils.timezone import database_now
 from discordbot.utils.usage_log import UsageRecord, UsageRecorder, UsageLogConfig
@@ -17,20 +18,6 @@ from tests.helpers.usage_log import usage_records
 
 if TYPE_CHECKING:
     import pytest
-
-
-def _recorder(directory: Path, enabled: bool = True) -> UsageRecorder:
-    """Builds a recorder pointed at a throwaway directory.
-
-    `model_validate` over the env-alias names keeps the alias spelling type-clean and,
-    unlike `__init__`, never merges the ambient environment in.
-    """
-    return UsageRecorder(
-        config=UsageLogConfig.model_validate({
-            "USAGE_LOG_ENABLED": enabled,
-            "USAGE_LOG_DIR": str(directory),
-        })
-    )
 
 
 class FakeCommandInteraction:
@@ -51,11 +38,9 @@ class FakeCommandInteraction:
         self.channel_id = channel_id
 
 
-async def test_a_record_lands_in_its_own_month_file(tmp_path: Path) -> None:
+async def test_a_record_lands_in_its_own_month_file(usage_log_isolated_dir: Path) -> None:
     """One use is one JSON line, in the file named after the month it happened in."""
-    usage_dir = tmp_path / "usage"
-
-    await _recorder(directory=usage_dir).record(
+    await UsageRecorder().record(
         kind="slash",
         name="games blackjack",
         user_id=1,
@@ -64,9 +49,9 @@ async def test_a_record_lands_in_its_own_month_file(tmp_path: Path) -> None:
         channel_id=3,
     )
 
-    month_file = usage_dir / f"{database_now():%Y-%m}.jsonl"
-    assert [path.name for path in usage_dir.iterdir()] == [month_file.name]
-    (record,) = usage_records(directory=usage_dir)
+    month_file = usage_log_isolated_dir / f"{database_now():%Y-%m}.jsonl"
+    assert [path.name for path in usage_log_isolated_dir.iterdir()] == [month_file.name]  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+    (record,) = usage_records(directory=usage_log_isolated_dir)
     # The exact key set is the privacy decision: who and where, and nothing about what
     # they typed. The username rides along so an operator can read the file, but it is a
     # label beside the id rather than a second identifier. Nothing prunes these files.
@@ -81,10 +66,9 @@ async def test_a_record_lands_in_its_own_month_file(tmp_path: Path) -> None:
     assert record["at"].startswith(f"{database_now():%Y-%m-%d}")
 
 
-async def test_each_use_appends_its_own_line(tmp_path: Path) -> None:
+async def test_each_use_appends_its_own_line(usage_log_isolated_dir: Path) -> None:
     """A record never rewrites the ones before it."""
-    usage_dir = tmp_path / "usage"
-    recorder = _recorder(directory=usage_dir)
+    recorder = UsageRecorder()
 
     await recorder.record(
         kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
@@ -93,7 +77,7 @@ async def test_each_use_appends_its_own_line(tmp_path: Path) -> None:
         kind="reply", name="QA", user_id=1, user_name="a", guild_id=None, channel_id=3
     )
 
-    records = usage_records(directory=usage_dir)
+    records = usage_records(directory=usage_log_isolated_dir)
     assert [(record["kind"], record["name"]) for record in records] == [
         ("slash", "ping"),
         ("reply", "QA"),
@@ -102,27 +86,28 @@ async def test_each_use_appends_its_own_line(tmp_path: Path) -> None:
     assert records[1]["guild_id"] is None
 
 
-async def test_the_kill_switch_writes_nothing(tmp_path: Path) -> None:
+async def test_the_kill_switch_writes_nothing(
+    usage_log_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`USAGE_LOG_ENABLED=false` records nothing and creates no directory."""
-    usage_dir = tmp_path / "usage"
+    monkeypatch.setenv(name="USAGE_LOG_ENABLED", value="false")
 
-    await _recorder(directory=usage_dir, enabled=False).record(
+    await UsageRecorder().record(
         kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
     )
 
-    assert not usage_dir.exists()
+    assert not usage_log_isolated_dir.exists()  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
 
 
-async def test_a_write_failure_never_reaches_the_caller(tmp_path: Path) -> None:
+async def test_a_write_failure_never_reaches_the_caller(usage_log_isolated_dir: Path) -> None:
     """Recording must never cost the thing it records."""
-    blocked = tmp_path / "usage"
-    blocked.write_text(data="not a directory", encoding="utf-8")
+    usage_log_isolated_dir.write_text(data="not a directory", encoding="utf-8")  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
 
-    await _recorder(directory=blocked).record(
+    await UsageRecorder().record(
         kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
     )
 
-    assert blocked.read_text(encoding="utf-8") == "not a directory"
+    assert usage_log_isolated_dir.read_text(encoding="utf-8") == "not a directory"  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
 
 
 def test_a_record_written_before_usernames_still_parses() -> None:
@@ -191,11 +176,9 @@ def test_command_path_walks_to_the_invoked_subcommand() -> None:
     )
 
 
-async def test_the_listener_records_one_invocation(tmp_path: Path) -> None:
+async def test_the_listener_records_one_invocation(usage_log_isolated_dir: Path) -> None:
     """The listener writes a record for an application command, wherever it was run."""
-    usage_dir = tmp_path / "usage"
     cog = UsageCogs(bot=as_bot(fake=SimpleNamespace()))
-    cog.usage_recorder = _recorder(directory=usage_dir)
 
     await cog.on_interaction(
         interaction=as_interaction(
@@ -216,7 +199,7 @@ async def test_the_listener_records_one_invocation(tmp_path: Path) -> None:
         )
     )
 
-    records = usage_records(directory=usage_dir)
+    records = usage_records(directory=usage_log_isolated_dir)
     assert [record["name"] for record in records] == ["memory clear", "ping"]
     assert all(record["kind"] == "slash" for record in records)
     assert (records[0]["user_id"], records[0]["user_name"]) == (42, "tester")
@@ -235,13 +218,14 @@ def test_the_recorder_hooks_in_as_a_listener_not_an_override() -> None:
 
     assert "on_interaction" in listeners
     assert getattr(UsageCogs.on_interaction, "__cog_listener__", False) is True
+    assert "on_interaction" not in vars(DiscordBot)
 
 
-async def test_the_listener_ignores_everything_that_is_not_a_command(tmp_path: Path) -> None:
+async def test_the_listener_ignores_everything_that_is_not_a_command(
+    usage_log_isolated_dir: Path,
+) -> None:
     """Buttons, autocomplete and modals share the event; only invocations are usage."""
-    usage_dir = tmp_path / "usage"
     cog = UsageCogs(bot=as_bot(fake=SimpleNamespace()))
-    cog.usage_recorder = _recorder(directory=usage_dir)
 
     for interaction_type in (
         InteractionType.component,
@@ -265,7 +249,7 @@ async def test_the_listener_ignores_everything_that_is_not_a_command(tmp_path: P
     anonymous.user = None
     await cog.on_interaction(interaction=as_interaction(fake=anonymous))
 
-    assert not usage_dir.exists()
+    assert not usage_log_isolated_dir.exists()  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
 
 
 def test_the_recorder_defaults_to_the_data_directory(monkeypatch: pytest.MonkeyPatch) -> None:

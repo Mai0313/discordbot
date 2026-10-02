@@ -9,15 +9,7 @@ import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import (
-    File,
-    Embed,
-    Thread,
-    Permissions,
-    TextChannel,
-    AllowedMentions,
-    PartialMessageable,
-)
+from nextcord import File, Embed, Thread, Permissions, AllowedMentions, PartialMessageable
 from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.llm import LLMConfig
@@ -26,11 +18,9 @@ from discordbot.cogs.research import agent
 from discordbot.cogs.research import database as rdb
 from discordbot.cogs.research import streaming as research_streaming
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs.research.delivery import (
     split_report,
@@ -49,25 +39,25 @@ from tests.helpers.casting import (
     make_not_found,
     make_server_error,
     make_invalid_form_body,
-    make_media_hosting_config,
     as_interaction_event_stream,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.link_sources import hosting_planner, hosting_off_planner
+from tests.helpers.discord_mocks import (
+    FakeUser,
+    FakeInteraction,
+    FakeDiscordMessage,
+    text_channel_granting,
+)
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from google.genai.interactions import InteractionSSEEvent
 
+    from discordbot.utils.media_delivery import MediaDeliveryPlanner
     from discordbot.cogs.research.database import ResearchPhase
     from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
-
-
-def _disabled_delivery() -> MediaDeliveryPlanner:
-    """A planner whose host is off, so report files attach natively."""
-    return MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
-    )
 
 
 # ----- marker extraction --------------------------------------------------------------------
@@ -316,16 +306,13 @@ async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) 
     )
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
 
-    async def _persist(_interaction_id: str) -> None:
-        return None
-
     result = await agent.stream_antigravity(
         client=as_client(fake=client),
         agent="a",
         brief="b",
         system_instruction="s",
         streamer=streamer,
-        on_created=_persist,
+        on_created=agent._noop_created,
     )
     stream_gets = client.aio.interactions.stream_get_calls
     assert stream_gets
@@ -346,16 +333,13 @@ async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  
     )
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
 
-    async def _persist(_interaction_id: str) -> None:
-        return None
-
     result = await agent.stream_antigravity(
         client=as_client(fake=client),
         agent="a",
         brief="b",
         system_instruction="s",
         streamer=streamer,
-        on_created=_persist,
+        on_created=agent._noop_created,
     )
     assert client.aio.interactions.stream_get_calls[0]["last_event_id"] == "e2"
     assert result.ok is True
@@ -373,10 +357,7 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
         terminal=_terminal_interaction(),
     )
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
-
-    async def _persist(_interaction_id: str) -> None:
-        return None
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     # Streaming exhausts its reconnects, so the driver degrades to the poll and still returns the
     # authoritative terminal result.
@@ -386,7 +367,7 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
         brief="b",
         system_instruction="s",
         streamer=streamer,
-        on_created=_persist,
+        on_created=agent._noop_created,
     )
     # The bound's worth of re-attaches that made no progress, plus the one that gave up.
     assert len(client.aio.interactions.stream_get_calls) == agent.MAX_STREAM_RECONNECTS + 1
@@ -404,9 +385,6 @@ async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> N
     )
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
 
-    async def _persist(_interaction_id: str) -> None:
-        return None
-
     # No interaction.created ever arrived, so there is no id to resume: the error propagates to the
     # cog's failure path instead of being swallowed into a poll.
     raised = False
@@ -417,7 +395,7 @@ async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> N
             brief="b",
             system_instruction="s",
             streamer=streamer,
-            on_created=_persist,
+            on_created=agent._noop_created,
         )
     except RuntimeError:
         raised = True
@@ -536,25 +514,27 @@ async def test_streamer_write_snapshot_edits_and_skips_unchanged(
     monkeypatch.setattr(
         target=research_streaming, name="time", value=SimpleNamespace(monotonic=lambda: 100.0)
     )
-    status = _FakeStatusMessage()
+    thread = _RunThread()
     streamer = ResearchProgressStreamer(
-        status=status, label="Antigravity", reasoning="thinking", started_at=100.0
+        status=_RunStatus(thread=thread),
+        label="Antigravity",
+        reasoning="thinking",
+        started_at=100.0,
     )
     await streamer._write_preview_snapshot()
-    assert len(status.edits) == 1
-    assert cast("AllowedMentions", status.edits[0]["allowed_mentions"]).everyone is False
+    assert len(thread.writes) == 1
+    assert cast("AllowedMentions", thread.writes[0]["allowed_mentions"]).everyone is False
     # A second write of the same rendered snapshot is a no-op, so the editor never spams edits.
     await streamer._write_preview_snapshot()
-    assert len(status.edits) == 1
+    assert len(thread.writes) == 1
     streamer.reasoning += " more"
     await streamer._write_preview_snapshot()
-    assert len(status.edits) == 2
+    assert len(thread.writes) == 2
 
 
 async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
-    status = _FakeStatusMessage()
     streamer = ResearchProgressStreamer(
-        status=status, label="Antigravity", preview_interval_seconds=0.01
+        status=_RunStatus(thread=_RunThread()), label="Antigravity", preview_interval_seconds=0.01
     )
     await streamer.stream(
         events=as_interaction_event_stream(
@@ -598,7 +578,9 @@ async def test_a_status_message_that_can_no_longer_be_edited_stops_the_preview(
     streamer = ResearchProgressStreamer(
         status=status, label="Antigravity", reasoning="thinking", preview_interval_seconds=0.01
     )
-    records = {name: _recorded(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")}
+    records = {
+        name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
+    }
 
     await asyncio.wait_for(streamer._preview_editor(), timeout=5)
 
@@ -616,7 +598,7 @@ async def test_a_failing_preview_edit_is_logged_once_and_the_editor_keeps_going(
     streamer = ResearchProgressStreamer(
         status=status, label="Antigravity", reasoning="thinking", preview_interval_seconds=0.01
     )
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     streamer._ensure_editor_started()
     await asyncio.wait_for(status.seen.wait(), timeout=5)
@@ -645,9 +627,7 @@ def test_terminal_phase_mapping() -> None:
 
 
 def test_deep_research_available_requires_enabled_and_key() -> None:
-    config = LLMConfig()
-    config.deep_research_enabled = True
-    config.gemini_api_key = "AIza-key"
+    config = LLMConfig.model_construct(deep_research_enabled=True, gemini_api_key="AIza-key")
     assert config.deep_research_available is True
     config.gemini_api_key = "   "
     assert config.deep_research_available is False
@@ -679,7 +659,7 @@ async def _only_resumable(thread_id: int) -> rdb.PersistentResearchSession | Non
     return next((row for row in await rdb.list_resumable() if row.thread_id == thread_id), None)
 
 
-async def test_session_round_trip(research_isolated_db: None) -> None:
+async def test_session_round_trip() -> None:
     await rdb.insert_session(
         thread_id=1,
         owner_id=99,
@@ -696,7 +676,7 @@ async def test_session_round_trip(research_isolated_db: None) -> None:
     assert await _only_resumable(thread_id=999) is None
 
 
-async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
+async def test_set_interaction_and_phase() -> None:
     await rdb.insert_session(
         thread_id=2,
         owner_id=1,
@@ -716,7 +696,7 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
     assert await rdb.active_thread_for_owner(owner_id=1) is None
 
 
-async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: None) -> None:
+async def test_active_thread_for_owner_excludes_terminal() -> None:
     await rdb.insert_session(
         thread_id=10,
         owner_id=500,
@@ -732,7 +712,7 @@ async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: N
     assert await rdb.active_thread_for_owner(owner_id=12345) is None
 
 
-async def test_list_resumable_only_returns_researching(research_isolated_db: None) -> None:
+async def test_list_resumable_only_returns_researching() -> None:
     # A researching session beside two terminal ones: only the first may come back resumable.
     seeded: tuple[tuple[int, ResearchPhase], ...] = (
         (20, "researching"),
@@ -755,9 +735,7 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
     assert {session.thread_id for session in resumable} == {20}
 
 
-async def test_a_legacy_planning_row_no_longer_blocks_its_owner(
-    research_isolated_db: None,
-) -> None:
+async def test_a_legacy_planning_row_no_longer_blocks_its_owner() -> None:
     # Written the way the removed escalation wrote it: the phase literal is gone from the model, so
     # seed it through the ORM. A stuck row must not hold the one-per-owner slot forever.
     async with rdb.open_session() as session:
@@ -782,31 +760,6 @@ async def test_a_legacy_planning_row_no_longer_blocks_its_owner(
 # ----- delivery completion footer -----------------------------------------------------------
 
 
-class _FakeStatusMessage:
-    """Records `edit` calls on the opening status message."""
-
-    id = 2
-
-    def __init__(self) -> None:
-        self.edits: list[dict[str, object]] = []
-
-    async def edit(self, **kwargs: object) -> None:
-        self.edits.append(kwargs)
-
-
-class _FakeThread:
-    """Records `send` calls and exposes a guild upload limit, like a real Thread."""
-
-    id = 1
-
-    def __init__(self) -> None:
-        self.sends: list[dict[str, object]] = []
-        self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
-
-    async def send(self, **kwargs: object) -> None:
-        self.sends.append(kwargs)
-
-
 def _completed_result(report_text: str, image_bytes: bytes | None = None) -> agent.ResearchResult:
     return agent.ResearchResult(
         status="completed", report_text=report_text, image_bytes=image_bytes
@@ -814,8 +767,8 @@ def _completed_result(report_text: str, image_bytes: bytes | None = None) -> age
 
 
 async def test_delivery_keeps_footer_message_under_the_limit() -> None:
-    status = _FakeStatusMessage()
-    thread = _FakeThread()
+    thread = _RunThread()
+    status = _RunStatus(thread=thread)
     footer = "-# antigravity-preview-09-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
     # A report chunk that sits just under the 2000-char message cap; appending the footer inline
     # would overflow, so it must ride its own trailing message.
@@ -825,13 +778,12 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
         owner_id=1,
         result=_completed_result(report_text="X" * 1990),
         footer=footer,
-        media_delivery=_disabled_delivery(),
+        media_delivery=hosting_off_planner(),
     )
-    contents = [str(edit["content"]) for edit in status.edits]
-    contents += [str(send["content"]) for send in thread.sends]
-    assert all(len(content) <= 2000 for content in contents)
+    assert all(len(str(write["content"])) <= 2000 for write in thread.writes)
     # The footer + owner ping + research.md ride the trailing send, not the near-limit chunk.
-    footer_send = thread.sends[-1]
+    assert thread.sends == 1
+    footer_send = thread.writes[-1]
     assert "<@1>" in str(footer_send["content"])
     assert footer in str(footer_send["content"])
     assert footer_send["files"]
@@ -841,49 +793,42 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     assert mentions.roles is False
     assert isinstance(mentions.users, list)
     assert [user.id for user in mentions.users] == [1]
-    assert status.edits[0]["allowed_mentions"] is mentions
+    assert thread.writes[0]["allowed_mentions"] is mentions
 
 
 async def test_delivery_inlines_footer_for_short_reports() -> None:
-    status = _FakeStatusMessage()
-    thread = _FakeThread()
+    thread = _RunThread()
+    status = _RunStatus(thread=thread)
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
         owner_id=1,
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        media_delivery=_disabled_delivery(),
+        media_delivery=hosting_off_planner(),
     )
     # One message: the opening status edited into report + footer + the research.md attachment.
-    assert not thread.sends
-    assert len(status.edits) == 1
-    assert "<@1>" in str(status.edits[0]["content"])
-    assert status.edits[0]["files"]
+    assert thread.sends == 0
+    assert len(thread.writes) == 1
+    assert "<@1>" in str(thread.writes[0]["content"])
+    assert thread.writes[0]["files"]
 
 
 async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
     """A report file too big to attach is hosted and its URL linked instead of silently dropped."""
-    status = _FakeStatusMessage()
-    thread = _FakeThread()
+    thread = _RunThread()
+    status = _RunStatus(thread=thread)
     thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
-    planner = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path)
-            )
-        )
-    )
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
         owner_id=1,
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        media_delivery=planner,
+        media_delivery=hosting_planner(serve_dir=tmp_path),
     )
     # The report .md was hosted (no native attachment); its URL rides the message content.
-    edit = status.edits[0]
+    edit = thread.writes[0]
     assert not edit.get("files")
     content = str(edit["content"])
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
@@ -895,8 +840,8 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
     Routing both through one `plan()` call would fire the planner's combined-peel and drop the
     larger (the report), so delivery decides each attachment on its own.
     """
-    status = _FakeStatusMessage()
-    thread = _FakeThread()
+    thread = _RunThread()
+    status = _RunStatus(thread=thread)
     thread.guild = SimpleNamespace(filesize_limit=100)  # each file fits, md + png together do not
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
@@ -904,9 +849,9 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
         owner_id=1,
         result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
         footer="-# footer",
-        media_delivery=_disabled_delivery(),
+        media_delivery=hosting_off_planner(),
     )
-    edit = status.edits[0]
+    edit = thread.writes[0]
     files = edit["files"]
     assert isinstance(files, list)
     assert len(files) == 2  # research.md AND research.png both attached, neither dropped
@@ -915,9 +860,9 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
 
 async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.MonkeyPatch) -> None:
     """With hosting off, a file too big to attach is left out, and the log says which one."""
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
-    status = _FakeStatusMessage()
-    thread = _FakeThread()
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    thread = _RunThread()
+    status = _RunStatus(thread=thread)
     thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
@@ -925,13 +870,13 @@ async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.Mo
         owner_id=1,
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        media_delivery=_disabled_delivery(),
+        media_delivery=hosting_off_planner(),
     )
-    assert not status.edits[0].get("files")
+    assert not thread.writes[0].get("files")
     assert warns == [
         (
             "research report file too big to attach and not hosted; left out",
-            {"thread_id": 1, "filename": "research.md"},
+            {"thread_id": _THREAD_ID, "filename": "research.md"},
         )
     ]
 
@@ -945,18 +890,12 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
     tmp_path: Path, report_text: str, hosted: bool
 ) -> None:
     """Every delivered shape renders back as the bot's own history with the footer gone."""
-    status = _FakeStatusMessage()
-    thread = _FakeThread()
-    planner = _disabled_delivery()
+    thread = _RunThread()
+    status = _RunStatus(thread=thread)
+    planner = hosting_off_planner()
     if hosted:
         thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
-        planner = MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(
-                config=make_media_hosting_config(
-                    enabled=True, base_url="https://media.test", serve_dir=str(tmp_path)
-                )
-            )
-        )
+        planner = hosting_planner(serve_dir=tmp_path)
     footer = "-# antigravity-preview-09-2026 · ⬆ 1,234 ⬇ 567 · $0.00236800"
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
@@ -966,7 +905,7 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
         footer=footer,
         media_delivery=planner,
     )
-    posted = [str(write["content"]) for write in [*status.edits, *thread.sends]]
+    posted = [str(write["content"]) for write in thread.writes]
     assert footer in posted[-1]
     builder = MessageInputBuilder(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))),
@@ -999,18 +938,14 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
 
 
 def _research_cog(enabled: bool) -> research_cog.ResearchCogs:
-    """A cog carrying only what the resume sweep touches: no bot, no client, no gateway.
+    """A cog on a bot with no gateway, whose config no deployment's `.env` reaches.
 
-    The key is always present so the switch alone decides `deep_research_available`, and neither
-    field is left to a deployment's `.env`.
+    The key is always present so the switch alone decides `deep_research_available`.
     """
-    cog = research_cog.ResearchCogs.__new__(research_cog.ResearchCogs)
-    config = LLMConfig()
-    config.deep_research_enabled = enabled
-    config.gemini_api_key = "AIza-key"
-    cog.config = config
-    cog._active_threads = set()
-    cog._tasks = set()
+    cog = research_cog.ResearchCogs(bot=as_bot(fake=SimpleNamespace()))
+    cog.config = LLMConfig.model_construct(
+        deep_research_enabled=enabled, gemini_api_key="AIza-key"
+    )
     return cog
 
 
@@ -1038,7 +973,7 @@ async def _seed_researching(
 
 
 async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _boom(**_kwargs: object) -> None:
         raise AssertionError("the resume must not reach the provider while the switch is off")
@@ -1058,7 +993,7 @@ async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
 
 
 async def test_resume_sweep_stays_off_without_a_gemini_key(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _boom(**_kwargs: object) -> None:
         raise AssertionError("a keyless deployment must not reach the provider either")
@@ -1077,7 +1012,7 @@ async def test_resume_sweep_stays_off_without_a_gemini_key(
 
 
 async def test_resume_sweep_still_resumes_when_the_switch_is_on(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cog = _research_cog(enabled=True)
     resumed: list[int] = []
@@ -1131,19 +1066,9 @@ class _Anchor(FakeDiscordMessage):
         return self.thread
 
 
-def _text_channel(permissions: Permissions | None = None) -> MagicMock:
-    """A guild text channel resolving `permissions` (default: all) for the bot's own member."""
-    channel = MagicMock(spec=TextChannel)
-    channel.id = 20
-    channel.guild = SimpleNamespace(me=object())
-    channel.permissions_for.return_value = permissions or Permissions.all()
-    return channel
-
-
 def _launching_cog(monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs:
     """A cog that gets as far as `create_thread` without a title model behind it."""
     cog = _research_cog(enabled=True)
-    cog._owner_locks = KeyedLockManager()
 
     async def _title(brief: str) -> str:
         del brief
@@ -1153,25 +1078,14 @@ def _launching_cog(monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs
     return cog
 
 
-def _recorded(monkeypatch: pytest.MonkeyPatch, level: str) -> list[tuple[str, dict[str, object]]]:
-    """Captures what the cog reports at one level, the way the rest of the suite reads logfire."""
-    records: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        target=research_cog.logfire,
-        name=level,
-        value=lambda message, **fields: records.append((message, fields)),
-    )
-    return records
-
-
 async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A slash command reaches a channel the bot may not post in, so the answer rides the token."""
-    channel = _text_channel()
+    channel = text_channel_granting()
     channel.send = AsyncMock(side_effect=make_forbidden(message="Missing Access"))
     interaction = _ResearchInteraction(channel=channel)
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await _launching_cog(monkeypatch=monkeypatch).deep_research(
         as_interaction(fake=interaction), topic="topic"
@@ -1192,13 +1106,13 @@ async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
     ids=["server_error", "transport"],
 )
 async def test_deep_research_answers_when_its_anchor_fails_for_another_reason(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, error: Exception, error_type: str
+    monkeypatch: pytest.MonkeyPatch, error: Exception, error_type: str
 ) -> None:
     """Only a refusal drops the traceback; any other failure still answers on the token."""
-    channel = _text_channel()
+    channel = text_channel_granting()
     channel.send = AsyncMock(side_effect=error)
     interaction = _ResearchInteraction(channel=channel)
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
 
     await _launching_cog(monkeypatch=monkeypatch).deep_research(
         as_interaction(fake=interaction), topic="topic"
@@ -1214,14 +1128,14 @@ async def test_deep_research_answers_when_its_anchor_fails_for_another_reason(
 
 
 async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The anchor posted but the thread did not, so the requester is told why, not to retry."""
-    channel = _text_channel()
+    channel = text_channel_granting()
     anchor = _Anchor(error=make_forbidden(message="Missing Permissions"), channel=channel)
     channel.send = AsyncMock(return_value=anchor)
     interaction = _ResearchInteraction(channel=channel)
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await _launching_cog(monkeypatch=monkeypatch).deep_research(
         as_interaction(fake=interaction), topic="topic"
@@ -1235,11 +1149,13 @@ async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
 
 
 async def test_a_marker_launch_says_so_when_the_thread_is_refused(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The `<deep-research>` entry shares `_start_for`, so it answers the refusal the same way."""
-    anchor = _Anchor(error=make_forbidden(message="Missing Permissions"), channel=_text_channel())
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    anchor = _Anchor(
+        error=make_forbidden(message="Missing Permissions"), channel=text_channel_granting()
+    )
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await _launching_cog(monkeypatch=monkeypatch).launch(
         message=as_message(fake=anchor), brief="b"
@@ -1257,11 +1173,11 @@ async def test_a_marker_launch_says_so_when_the_thread_is_refused(
 
 
 async def test_both_entry_points_name_the_owners_running_research_alike(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A second launch points at the running thread in one wording, however it was asked for."""
     await _seed_researching(thread_id=_THREAD_ID, owner_id=_OWNER_ID)
-    channel = _text_channel()
+    channel = text_channel_granting()
     request = _Anchor(channel=channel)
     slash_anchor = _Anchor(channel=channel)
     channel.send = AsyncMock(return_value=slash_anchor)
@@ -1279,11 +1195,11 @@ async def test_both_entry_points_name_the_owners_running_research_alike(
 
 
 async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The carve-out is for `Forbidden` alone; a 5xx is still something to look at."""
-    anchor = _Anchor(error=make_server_error(), channel=_text_channel())
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    anchor = _Anchor(error=make_server_error(), channel=text_channel_granting())
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
 
     await _launching_cog(monkeypatch=monkeypatch).launch(
         message=as_message(fake=anchor), brief="b"
@@ -1307,14 +1223,10 @@ async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
     ids=["refused", "message_gone", "reply_target_gone", "broke"],
 )
 async def test_a_launch_that_cannot_say_why_it_stopped_logs_it(
-    research_isolated_db: None,
-    monkeypatch: pytest.MonkeyPatch,
-    failure: Exception,
-    level: str,
-    traceback: bool,
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str, traceback: bool
 ) -> None:
     """The launch has already ended, so its notice failing is logged here and raises nothing."""
-    anchor = _Anchor(error=make_server_error(), channel=_text_channel())
+    anchor = _Anchor(error=make_server_error(), channel=text_channel_granting())
 
     async def refuse(**kwargs: object) -> NoReturn:
         """Fails the reply the way Discord does."""
@@ -1322,7 +1234,9 @@ async def test_a_launch_that_cannot_say_why_it_stopped_logs_it(
         raise failure
 
     anchor.reply = refuse  # ty: ignore[invalid-assignment]
-    records = {name: _recorded(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")}
+    records = {
+        name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
+    }
 
     await _launching_cog(monkeypatch=monkeypatch).launch(
         message=as_message(fake=anchor), brief="b"
@@ -1350,7 +1264,9 @@ async def test_a_thread_the_bot_lost_access_to_is_not_reported_as_deleted(
             get_channel=lambda channel_id: None, fetch_channel=AsyncMock(side_effect=failure)
         )
     )
-    records = {name: _recorded(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")}
+    records = {
+        name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
+    }
 
     assert await cog._fetch_thread(thread_id=5) is None
     assert [(name, fields) for name, found in records.items() for _, fields in found] == [
@@ -1359,10 +1275,10 @@ async def test_a_thread_the_bot_lost_access_to_is_not_reported_as_deleted(
 
 
 async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The channel already says so, so nothing is posted, pinged or titled before the refusal."""
-    channel = _text_channel(
+    channel = text_channel_granting(
         permissions=Permissions(
             view_channel=True, send_messages=True, send_messages_in_threads=True, attach_files=True
         )
@@ -1433,50 +1349,43 @@ async def test_deep_research_names_why_it_cannot_open_here(
     channel.send.assert_not_called()
 
 
-class _RefusingThread(_FakeThread):
-    """A research thread whose parent channel stopped letting the bot write mid-run."""
-
-    async def send(self, **kwargs: object) -> None:
-        """Refuses the way Discord refuses a thread the bot may no longer write in."""
-        del kwargs
-        raise make_forbidden(message="Missing Permissions")
-
-
 async def test_a_refused_thread_write_is_reported_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A permission that changed mid-run is expected, so it is a warn carrying only the id."""
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    thread = _RunThread(error=make_forbidden(message="Missing Permissions"), status_posts=False)
 
     sent = await _research_cog(enabled=True)._safe_send(
-        thread=cast("Thread", _RefusingThread()), content="-# Researching..."
+        thread=cast("Thread", thread), content="-# Researching..."
     )
 
     assert sent is None
-    assert warns == [("research thread refused a message", {"thread_id": 1})]
+    assert warns == [("research thread refused a message", {"thread_id": _THREAD_ID})]
 
 
 async def test_a_refused_report_is_a_warn_even_on_its_last_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The last chunk logs `error` for a real failure, but a refusal is the server's setting."""
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    thread = _RunThread(error=make_forbidden(message="Missing Permissions"), status_posts=False)
 
     await deliver_report(
-        thread=cast("Thread", _RefusingThread()),
+        thread=cast("Thread", thread),
         status=None,
         owner_id=1,
         result=_completed_result(report_text="report"),
         footer="-# footer",
-        media_delivery=_disabled_delivery(),
+        media_delivery=hosting_off_planner(),
     )
 
     assert errors == []
     assert warns == [
         (
             "research thread refused a report message",
-            {"thread_id": 1, "chunk_index": 0, "is_last": True},
+            {"thread_id": _THREAD_ID, "chunk_index": 0, "is_last": True},
         )
     ]
 
@@ -1512,7 +1421,7 @@ async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The refused edit already read the file, so the fallback send must get it rewound."""
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
     thread = _ReadingThread()
 
     await deliver_report(
@@ -1521,7 +1430,7 @@ async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file
         owner_id=1,
         result=_completed_result(report_text="the whole report"),
         footer="-# footer",
-        media_delivery=_disabled_delivery(),
+        media_delivery=hosting_off_planner(),
     )
 
     assert thread.bodies == [b"the whole report"]
@@ -1651,8 +1560,6 @@ def _running_cog(
     """
     cog = _launching_cog(monkeypatch=monkeypatch)
     cog.bot = as_bot(fake=_ThreadBot(thread=thread))
-    cog.runtime_models = RuntimeModelCatalog()
-    cog.media_delivery = _disabled_delivery()
     cog.interactions_client = as_client(fake=client)
     rates = {
         cog.runtime_models.antigravity_model.name: ModelPriceEntry(
@@ -1665,7 +1572,7 @@ def _running_cog(
 
 async def _launch_run(cog: research_cog.ResearchCogs, thread: _RunThread) -> None:
     """Launches a research from a marker and waits out the run it spawned."""
-    anchor = _Anchor(channel=_text_channel(), thread=thread)
+    anchor = _Anchor(channel=text_channel_granting(), thread=thread)
     await cog.launch(message=as_message(fake=anchor), brief="b")
     await asyncio.gather(*cog._tasks)
 
@@ -1714,10 +1621,7 @@ def _assert_pings_only_the_owner(write: dict[str, object]) -> None:
     ids=["completed", "cancelled", "budget_exceeded", "create_fails"],
 )
 async def test_every_exit_of_a_launched_run_records_its_phase_and_frees_the_owner(
-    research_isolated_db: None,
-    monkeypatch: pytest.MonkeyPatch,
-    settles: str | Exception,
-    phase: str,
+    monkeypatch: pytest.MonkeyPatch, settles: str | Exception, phase: str
 ) -> None:
     client = (
         _failing_client(error=settles)
@@ -1733,7 +1637,7 @@ async def test_every_exit_of_a_launched_run_records_its_phase_and_frees_the_owne
 
 @pytest.mark.parametrize("resumed", [False, True], ids=["launched", "resumed"])
 async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, resumed: bool
+    monkeypatch: pytest.MonkeyPatch, resumed: bool
 ) -> None:
     thread = _RunThread()
     cog = _running_cog(
@@ -1766,7 +1670,7 @@ def _lock_reply_db(
         raise OperationalError("research", None, sqlite3.OperationalError("database is locked"))
 
     monkeypatch.setattr(target=rdb, name=call, value=_locked)
-    return _recorded(monkeypatch=monkeypatch, level="error")
+    return capture_logs(monkeypatch=monkeypatch, level="error")
 
 
 # What `_release` logs when the store refuses a run's terminal phase.
@@ -1775,7 +1679,7 @@ _UNRECORDED = "failed to record how a research run ended"
 
 @pytest.mark.parametrize("resumed", [False, True], ids=["launched", "resumed"])
 async def test_a_delivered_report_stays_delivered_when_its_phase_write_fails(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, resumed: bool
+    monkeypatch: pytest.MonkeyPatch, resumed: bool
 ) -> None:
     errors = _lock_reply_db(monkeypatch=monkeypatch, call="set_phase")
     thread = _RunThread()
@@ -1825,7 +1729,6 @@ async def test_a_delivered_report_stays_delivered_when_its_phase_write_fails(
     ids=["cancelled", "create_fails", "resume_lost"],
 )
 async def test_a_failed_run_whose_phase_write_fails_still_tells_its_owner_and_frees_its_thread(
-    research_isolated_db: None,
     monkeypatch: pytest.MonkeyPatch,
     settles: str | Exception | None,
     writes: list[str],
@@ -1853,10 +1756,10 @@ async def test_a_failed_run_whose_phase_write_fails_still_tells_its_owner_and_fr
 
 @pytest.mark.parametrize("call", ["active_thread_for_owner", "insert_session"])
 async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, call: str
+    monkeypatch: pytest.MonkeyPatch, call: str
 ) -> None:
     errors = _lock_reply_db(monkeypatch=monkeypatch, call=call)
-    channel = _text_channel()
+    channel = text_channel_granting()
     thread = _RunThread()
     anchor = _Anchor(channel=channel, thread=thread)
     channel.send = AsyncMock(return_value=anchor)
@@ -1878,12 +1781,12 @@ async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails
 
 @pytest.mark.parametrize("refused", [False, True], ids=["deleted", "delete_refused"])
 async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fails(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, refused: bool
+    monkeypatch: pytest.MonkeyPatch, refused: bool
 ) -> None:
     _lock_reply_db(monkeypatch=monkeypatch, call="insert_session")
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
     thread = _RunThread(error=make_forbidden(message="Missing Permissions") if refused else None)
-    anchor = _Anchor(channel=_text_channel(), thread=thread)
+    anchor = _Anchor(channel=text_channel_granting(), thread=thread)
     cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace())
 
     await cog.launch(message=as_message(fake=anchor), brief="b")
@@ -1908,7 +1811,7 @@ async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fa
 
 @pytest.mark.parametrize("stored_id", [True, False], ids=["resume_fails", "no_stored_id"])
 async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, stored_id: bool
+    monkeypatch: pytest.MonkeyPatch, stored_id: bool
 ) -> None:
     async def _expired(**_kwargs: object) -> None:
         raise RuntimeError("interaction expired")
@@ -1926,7 +1829,7 @@ async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them
 
 
 async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _expired(**_kwargs: object) -> None:
         raise RuntimeError("interaction expired")
@@ -1934,7 +1837,7 @@ async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
     monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
     thread = _RunThread()
     cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
 
     await _resume_run(cog=cog)
 
@@ -1960,11 +1863,7 @@ async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
     ids=["delivers", "resume_fails", "no_stored_id"],
 )
 async def test_a_resume_ends_the_status_line_posted_before_the_restart(
-    research_isolated_db: None,
-    monkeypatch: pytest.MonkeyPatch,
-    settles: str | Exception,
-    stored_id: bool,
-    ends_as: str,
+    monkeypatch: pytest.MonkeyPatch, settles: str | Exception, stored_id: bool, ends_as: str
 ) -> None:
     """The resume takes the pre-restart line over, so nothing is left claiming to research."""
     if isinstance(settles, Exception):
@@ -1996,11 +1895,11 @@ async def test_a_resume_ends_the_status_line_posted_before_the_restart(
 
 @pytest.mark.parametrize("refused", [True, False], ids=["missing_access", "failing"])
 async def test_a_resume_whose_history_read_fails_runs_on_a_status_line_of_its_own(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch, refused: bool
+    monkeypatch: pytest.MonkeyPatch, refused: bool
 ) -> None:
     """A 403 is the server's setting and logs the id alone; any other failure keeps its trace."""
     error = make_forbidden(message="Missing Access") if refused else make_server_error()
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
     thread = _RunThread()
 
     def _failed(**_kwargs: object) -> NoReturn:
@@ -2026,7 +1925,7 @@ async def test_a_resume_whose_history_read_fails_runs_on_a_status_line_of_its_ow
 
 
 async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="cancelled"))
 
@@ -2041,11 +1940,7 @@ async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
     ids=["create_fails", "cancelled"],
 )
 async def test_a_failed_run_tells_only_its_owner_why(
-    research_isolated_db: None,
-    monkeypatch: pytest.MonkeyPatch,
-    settles: str | Exception,
-    reason: str,
-    footer: str | None,
+    monkeypatch: pytest.MonkeyPatch, settles: str | Exception, reason: str, footer: str | None
 ) -> None:
     client = (
         _failing_client(error=settles)
@@ -2069,7 +1964,7 @@ async def test_a_failed_run_tells_only_its_owner_why(
 
 
 async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
     thread = _RunThread()
@@ -2086,7 +1981,7 @@ async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
 
 
 async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     thread = _RunThread()
     cog = _running_cog(
@@ -2133,16 +2028,12 @@ _FAILED_RUN_WRITE_LOGS = {
     ids=["status_posted", "status_lost"],
 )
 async def test_a_failed_run_on_a_broken_thread_logs_each_write_and_still_ends(
-    research_isolated_db: None,
-    monkeypatch: pytest.MonkeyPatch,
-    refused: bool,
-    status_posts: bool,
-    writes: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch, refused: bool, status_posts: bool, writes: tuple[str, ...]
 ) -> None:
     """A refusal is the server's setting and logs the id alone; any other failure keeps its trace."""
     error = make_forbidden(message="Missing Access") if refused else make_server_error()
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
     cog = _running_cog(
         monkeypatch=monkeypatch, client=_failing_client(error=RuntimeError("quota"))
     )
@@ -2159,10 +2050,10 @@ async def test_a_failed_run_on_a_broken_thread_logs_each_write_and_still_ends(
 
 
 async def test_a_refused_report_logs_each_write_without_a_traceback_and_still_ends(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
 
     await _launch_run(cog=cog, thread=_RunThread(error=make_forbidden(message="Missing Access")))
@@ -2177,11 +2068,11 @@ async def test_a_refused_report_logs_each_write_without_a_traceback_and_still_en
 
 
 async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_ends(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     error = make_server_error()
-    warns = _recorded(monkeypatch=monkeypatch, level="warn")
-    errors = _recorded(monkeypatch=monkeypatch, level="error")
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
 
     await _launch_run(cog=cog, thread=_RunThread(error=error))
@@ -2200,7 +2091,7 @@ async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_end
 
 
 async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_can_be_built(
-    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The title is best-effort: an empty proxy key costs the generated title, not the run."""
     # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
@@ -2210,12 +2101,12 @@ async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_ca
     # The real title generator, which `_launching_cog` stubs out.
     monkeypatch.delattr(target=cog, name="_generate_thread_name")
     cog.config.api_key = ""
-    channel = _text_channel()
+    channel = text_channel_granting()
     anchor = _Anchor(channel=channel, thread=thread)
     anchor.create_thread = AsyncMock(return_value=thread)
     channel.send = AsyncMock(return_value=anchor)
     interaction = _ResearchInteraction(channel=channel)
-    infos = _recorded(monkeypatch=monkeypatch, level="info")
+    infos = capture_logs(monkeypatch=monkeypatch, level="info")
 
     await cog.deep_research(as_interaction(fake=interaction), topic="TPU landscape\nand history")
     await asyncio.gather(*cog._tasks)

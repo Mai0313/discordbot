@@ -118,8 +118,9 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     A pinned snapshot's set can at least be looked up; an alias resolves elsewhere, so it cannot.
     Which snapshot a branch names is free to change; that none of them is an alias is not free,
     and nothing else in the tree reports it. Whether two branches may name the SAME snapshot is
-    not this test's question either way — the peak-hour dispatch test below pins the peak split,
-    so parking the branch again is answered there rather than here.
+    not this test's question either way — the peak-window test below pins that peak and off-peak
+    hours answer on the same model, so splitting the branch again is answered there rather than
+    here.
 
     Every hour of a week is swept rather than one instant per branch the catalog has today: the
     dispatch condition is the catalog's own to change, so a branch added on a second condition
@@ -147,10 +148,10 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     assert wrong_effort == {}, f"Every slow-model branch ships `high`. Offenders: {wrong_effort}"
 
 
-def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
+def test_the_peak_window_is_computed_but_the_slow_model_does_not_dispatch_on_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies slow-model peak-hour and off-peak dispatch."""
+    """The catalog still knows the peak window, and peak and off-peak hours share a slow model."""
 
     def snapshot_at(now: datetime) -> tuple[ModelSettings, bool, bool]:
         """Returns the peak-sensitive fields with the catalog clock pinned to `now`."""
