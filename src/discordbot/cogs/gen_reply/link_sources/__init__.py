@@ -38,6 +38,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
+from discordbot.utils.link_errors import LinkUnavailableError
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
 from discordbot.services.platforms.base import (
     PlatformOutput,
@@ -154,15 +155,17 @@ class PostRenderer[OutputT, ConversationT](Protocol):
     ) -> str: ...
 
 
-async def read_post[ConversationT: PlatformConversation[Any]](
+async def read_post[ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 -- a source's reader and readability rule plus the two notices it chooses between
     platform: str,
     url: str,
     reader: Callable[[], PostReader[ConversationT]],
     readable: Callable[[ConversationT], bool],
-) -> ConversationT | None:
-    """Reads a post URL into its conversation, or None when there is nothing to show.
+    unavailable_notice: str,
+    unreadable_notice: str,
+) -> ConversationT | str:
+    """Reads a post URL into its conversation, or the notice to inject in its place.
 
-    Never raises, and logs whichever way it fails, so a caller only has to inject its notice.
+    Never raises, and logs whichever way it fails, so a caller only has to inject the notice.
 
     Args:
         platform: The platform's display name, for the log lines.
@@ -170,27 +173,40 @@ async def read_post[ConversationT: PlatformConversation[Any]](
         reader: Builds the platform's downloader.
         readable: Whether the conversation holds a post worth showing. The source's own rule,
             since what counts as readable differs per platform.
+        unavailable_notice: Returned when the platform answered and there is no post in it.
+        unreadable_notice: Returned when the read failed for a reason that says nothing about
+            the post, such as a throttle, a dropped connection or a 403.
 
     Returns:
-        The conversation, or None when the read failed or `readable` refused it.
+        The conversation, or the notice chosen for why there is none.
     """
     try:
         conversation = await asyncio.to_thread(reader().parse_metadata, url=url)
-    # Broad on purpose: a parse error must degrade to the unavailable notice rather than break
-    # the reply pipeline, which relies on every builder never raising.
+    except LinkUnavailableError as error:
+        # A deleted or private post is a routine remote outcome, not a defect; the message is the
+        # only place the platform's own reason lives.
+        logfire.info(
+            f"{platform} post is gone or private; injecting unavailable notice",
+            url=url,
+            reason=str(error),
+        )
+        return unavailable_notice
+    # Broad on purpose: a parse error must degrade to a notice rather than break the reply
+    # pipeline, which relies on every builder never raising. Anything but the platform saying
+    # there is no post says nothing about the post, so it never gets the unavailable notice.
     except Exception as error:
         logfire.warn(
-            f"{platform} post read failed; injecting unavailable notice",
+            f"{platform} post read failed; injecting unreadable notice",
             url=url,
             error_type=type(error).__name__,
             _exc_info=error,
         )
-        return None
+        return unreadable_notice
     if not readable(conversation):
         logfire.info(
             f"{platform} post unavailable for context; injecting unavailable notice", url=url
         )
-        return None
+        return unavailable_notice
     return conversation
 
 
@@ -201,6 +217,7 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
     render: PostRenderer[OutputT, ConversationT],
     separators: PostSeparators,
     unavailable_notice: str,
+    unreadable_notice: str,
     image_cap: int,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
@@ -219,7 +236,10 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
         reader: Builds the platform's downloader.
         render: Renders the readable post; handed the number of images that actually rode in.
         separators: The source's own wording around the post.
-        unavailable_notice: What the model is told instead when the post could not be read.
+        unavailable_notice: What the model is told instead when the platform answered and there
+            is no post in it.
+        unreadable_notice: What it is told instead when the read failed for a reason that says
+            nothing about the post.
         image_cap: How many of the post's images one reply may pay a fetch and an upload for.
         answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
         gemini_client: Direct-to-Google client used for the image upload, or None when no key
@@ -239,8 +259,12 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
             readable=lambda conversation: (
                 conversation.target is not None and conversation.target.is_readable
             ),
+            unavailable_notice=unavailable_notice,
+            unreadable_notice=unreadable_notice,
         )
-        if conversation is None or conversation.target is None:
+        if isinstance(conversation, str):
+            return [system_block(text=conversation)]
+        if conversation.target is None:
             return [system_block(text=unavailable_notice)]
 
         target = conversation.target
