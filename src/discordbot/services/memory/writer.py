@@ -5,7 +5,7 @@ so the per-user and the per-server memory share every gate, renderer and redacti
 """
 
 import re
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, cast
 
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
@@ -14,7 +14,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.memory import (
     TONE_HEADER,
-    FORGET_REQUEST_CATEGORY,
     MemoryFlavor,
     MemorySection,
     MemorySharing,
@@ -50,8 +49,6 @@ from discordbot.services.memory.server_prompts import (
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
-
-_OutputT = TypeVar("_OutputT", bound=BaseModel)
 
 # Both phases run on model output that originated in user conversations, so
 # secrets are scrubbed before upload and again on the model output. Patterns
@@ -360,7 +357,7 @@ class MemoryWriterAI(BaseModel):
         `<forget-memory>` notes do NOT come through here. A forget is an instruction to
         consolidation rather than something to store, so it needs none of the fields this call
         authors and none of the gates that decide whether a fact is worth keeping;
-        `render_forget_requests` writes it straight into the raw batch.
+        `raw_entries.py::render_forget_requests` writes it straight into the raw batch.
         """
         if not notes:
             return RawMemoryDraft(has_signal=False)
@@ -449,9 +446,9 @@ class MemoryWriterAI(BaseModel):
             end_user_label="memory_tone_forget",
         )
 
-    async def _parse(
-        self, instructions: str, user_text: str, text_format: type[_OutputT], end_user_label: str
-    ) -> _OutputT | None:
+    async def _parse[OutputT: BaseModel](
+        self, instructions: str, user_text: str, text_format: type[OutputT], end_user_label: str
+    ) -> OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
         Delegates to the shared `parse_responses_or_none`, which owns the call surface and
@@ -590,37 +587,6 @@ def target_centered_memory_messages(
     ]
 
 
-def render_memory_observations(
-    observations: tuple[MemoryObservation, ...], source: str | None
-) -> str:
-    """Renders structured observations as timestamp-entry body markdown.
-
-    `source` names the conversation the observations came from (`guild <id>` /
-    `dm`), stamped deterministically here — never LLM-echoed — so consolidation
-    can scope each bullet. None is the server flavor, whose subject carries no
-    source line; it renders neither the source nor the sharing field.
-    """
-    blocks: list[str] = []
-    for observation in observations:
-        ttl_text = "null" if observation.ttl_days is None else str(observation.ttl_days)
-        lines = [
-            f"### {observation.category}",
-            f"- normalized_key: {observation.normalized_key}",
-            f"- evidence_kind: {observation.evidence_kind}",
-            f"- confidence: {observation.confidence}",
-            f"- durability: {observation.durability}",
-            f"- promotion_eligible: {str(observation.promotion_eligible).lower()}",
-            f"- ttl_days: {ttl_text}",
-        ]
-        if source is not None:
-            lines.append(f"- source: {source}")
-            lines.append(f"- sharing: {observation.sharing}")
-        lines.append(f"- summary_zh: {observation.summary_zh}")
-        lines.append(f"- evidence_quote: {observation.evidence_quote}")
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
-
-
 # One turn's inline memory notes, `(remember, forget)`. A payload merged from several waiting
 # turns carries one per turn, oldest first; `parse_turn_payload` has why.
 type NoteRound = tuple[tuple[str, ...], tuple[str, ...]]
@@ -641,7 +607,7 @@ def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
     blocks = [transcript]
     for position, (remember, forget) in enumerate(rounds, start=1):
         for kind, notes in (("remember", remember), ("forget", forget)):
-            lines = [text for note in notes if (text := _note_text(note=note))]
+            lines = [text for note in notes if (text := note_text(note=note))]
             # A round with another after it always ends in its forget block, empty or not,
             # since that block is where `parse_turn_payload` closes a round.
             if lines or (kind == "forget" and position < len(rounds)):
@@ -678,35 +644,11 @@ def parse_turn_payload(payload: str) -> tuple[str, tuple[NoteRound, ...]]:
 def render_memory_notes(notes: tuple[str, ...]) -> str:
     """Renders the answer model's notes as the numbered candidate list the evaluator reviews."""
     return "\n".join(
-        f"{index}. {_note_text(note=note)}" for index, note in enumerate(notes, start=1)
+        f"{index}. {note_text(note=note)}" for index, note in enumerate(notes, start=1)
     )
 
 
-def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
-    """Renders `<forget-memory>` notes as raw entries consolidation can act on.
-
-    A forget is deliberately NOT a `MemoryObservation`. It is not something to store, so it needs
-    no category, durability, sharing or dedupe key, and running it through the gates that decide
-    whether a fact is worth keeping would only find reasons to drop it. Its own
-    `### forget_request` header — deliberately not a `MemoryCategory` — is what keeps it
-    invisible to every reader that walks observation fields.
-
-    `source` is stamped for the record rather than for routing: routing a forget by its source
-    would leave it unable to reach a fact stored anywhere else.
-    """
-    blocks = [
-        "\n".join([
-            f"### {FORGET_REQUEST_CATEGORY}",
-            *([f"- source: {source}"] if source is not None else []),
-            f"- text: {_note_text(note=note)}",
-        ])
-        for note in notes
-        if _note_text(note=note)
-    ]
-    return "\n\n".join(blocks)
-
-
-def _note_text(note: str) -> str:
+def note_text(note: str) -> str:
     """Collapses one inline memory note to a single redacted, bounded line."""
     return _trim_text(text=redact_secrets(text=note), max_chars=MEMORY_NOTE_MAX_CHARS)
 

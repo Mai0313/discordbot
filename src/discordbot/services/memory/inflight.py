@@ -123,8 +123,8 @@ type TurnRunner = Callable[[MemoryTurn], Coroutine[Any, Any, None]]
 _inflight_tasks: LoopLocalRegistry[str, asyncio.Task[None]] = LoopLocalRegistry()
 _pending_updates: LoopLocalRegistry[str, dict[str, MemoryTurn]] = LoopLocalRegistry()
 
-# Detached best-effort reply.db writes (the deferred-turn persist), held so the
-# event loop keeps a strong reference until they finish; reset by the test fixture.
+# Detached best-effort tasks, held so the event loop keeps a strong reference until they
+# finish; reset by the test fixture.
 _db_tasks: set[asyncio.Task[None]] = set()
 
 # A clear and the short reply.db staging transaction must not pass each other:
@@ -162,7 +162,11 @@ async def safe_db_write(coro: Awaitable[None], scope: str) -> None:
 
 
 def _spawn_db(coro: Awaitable[None], scope: str) -> None:
-    """Runs a detached best-effort DB write, tracked so it is not GC'd mid-flight."""
+    """Runs a detached best-effort coroutine, tracked so it is not GC'd mid-flight.
+
+    A failure is logged as a `memory_job` persistence write, so anything that is not one must
+    swallow its own.
+    """
     spawn_tracked(
         coro=safe_db_write(coro=coro, scope=scope), tasks=_db_tasks, name="memory-db-write"
     )

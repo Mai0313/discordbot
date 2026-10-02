@@ -13,6 +13,7 @@ from collections.abc import Callable
 import pytest
 
 from discordbot.typings.memory import MemoryOwner
+from discordbot.services.memory.tone import tone_evidence_from_raw
 from discordbot.cogs.gen_reply.recall import (
     RecallContext,
     compartments_for_reading,
@@ -53,7 +54,6 @@ from discordbot.services.memory.deltas import (
     sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
-    tone_evidence_from_raw,
 )
 
 from tests.helpers.memory import STAMPED_AT, make_fact, make_delta
@@ -544,7 +544,15 @@ def test_raw_entries_partition_by_sharing_and_source() -> None:
     assert "本群祕密" in buckets["g/222"]
     assert "私訊祕密" in buckets["dm"]
     assert "本群祕密" not in buckets["global"]
-    assert buckets["g/222"].startswith("## 2026-07-01T00:00:00+00:00")
+    # The form the consolidation prompt reads: a blank line follows the entry header.
+    assert buckets["g/222"] == (
+        "## 2026-07-01T00:00:00+00:00\n\n"
+        "### stable_fact\n"
+        "- normalized_key: fact.b\n"
+        "- source: guild 222\n"
+        "- sharing: source_only\n"
+        "- summary_zh: 本群祕密"
+    )
 
 
 def test_server_evidence_all_lands_in_the_single_compartment() -> None:

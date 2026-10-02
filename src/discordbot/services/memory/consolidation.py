@@ -121,8 +121,8 @@ async def consolidate_after_turn(
     side.
 
     `forced` says the batch carries a forget request; `_should_consolidate` owns what that
-    skips. The cooldown is stamped at attempt time, not success time, so repeated LLM
-    failures are rate-limited by the same cooldown instead of retrying on every turn.
+    skips. The cooldown is stamped at attempt time, not success time, so a failed call waits
+    out the same cooldown as a successful one wherever `_should_consolidate` applies it.
     """
     if not _should_consolidate(scope=scope, forced=forced):
         return
