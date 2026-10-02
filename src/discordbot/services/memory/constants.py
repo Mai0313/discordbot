@@ -1,4 +1,4 @@
-"""Tunable thresholds for long-term memory, user and server scopes alike.
+"""Tunable thresholds for long-term memory.
 
 What lives here bounds the memory pipeline's own work — how often a consolidation runs, how
 much of it the process does at once, how much a stored observation may hold, how large a file

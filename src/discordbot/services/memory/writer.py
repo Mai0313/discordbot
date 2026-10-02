@@ -357,7 +357,7 @@ class MemoryWriterAI(BaseModel):
         `<forget-memory>` notes do NOT come through here. A forget is an instruction to
         consolidation rather than something to store, so it needs none of the fields this call
         authors and none of the gates that decide whether a fact is worth keeping;
-        `render_forget_requests` writes it straight into the raw batch.
+        `raw_entries.py::render_forget_requests` writes it straight into the raw batch.
         """
         if not notes:
             return RawMemoryDraft(has_signal=False)
