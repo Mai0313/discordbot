@@ -29,21 +29,14 @@ from discordbot.cogs.games.dragon_gate import ANTE, GAME_ID
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR
 from discordbot.services.economy.database import get_balance, get_jackpot_snapshot
-from discordbot.cogs.games.blackjack_views import (
-    MAX_BLACKJACK_PLAYERS,
-    BlackjackLobbyView,
-    build_blackjack_lobby_embed,
-)
+from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
 from discordbot.utils.interaction_responses import (
     send_ephemeral_notice,
     send_private_followup,
     send_expiring_followup,
     send_ephemeral_response,
 )
-from discordbot.cogs.games.dragon_gate_views import (
-    DragonGateLobbyView,
-    build_dragon_gate_lobby_embed,
-)
+from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency
 
 
@@ -198,14 +191,13 @@ class GamesCogs(commands.Cog):
         )
 
     @staticmethod
-    async def _open_lobby(
-        interaction: Interaction[commands.Bot], view: BaseGameLobbyView, embed: Embed
-    ) -> None:
+    async def _open_lobby(interaction: Interaction[commands.Bot], view: BaseGameLobbyView) -> None:
         """Posts a lobby as the interaction's public followup and binds the message to it.
 
         The message is recorded so a restart still deletes it; while the bot runs, the lobby's
         timeout or its table's final render schedules that deletion.
         """
+        embed = view.lobby_embed()
         message = await interaction.followup.send(
             embed=embed,
             view=view,
@@ -297,13 +289,7 @@ class GamesCogs(commands.Cog):
             shoe_store=self._blackjack_shoes,
             channel_id=channel_id,
         )
-        embed = build_blackjack_lobby_embed(
-            owner=owner,
-            participants=view.participants,
-            requested_bet=table_bet,
-            max_players=MAX_BLACKJACK_PLAYERS,
-        )
-        await self._open_lobby(interaction=interaction, view=view, embed=embed)
+        await self._open_lobby(interaction=interaction, view=view)
 
     @games.subcommand(
         name="dragon_gate",
@@ -347,10 +333,7 @@ class GamesCogs(commands.Cog):
             initial_jackpot=initial_jackpot.balance,
             initial_jackpot_generation=initial_jackpot.generation,
         )
-        embed = build_dragon_gate_lobby_embed(
-            owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
-        )
-        await self._open_lobby(interaction=interaction, view=view, embed=embed)
+        await self._open_lobby(interaction=interaction, view=view)
 
     @games.subcommand(
         name="blackjack_history",

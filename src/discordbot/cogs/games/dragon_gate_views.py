@@ -351,7 +351,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             initial_jackpot_generation=initial_jackpot_generation,
         )
 
-    def _build_lobby_embed(self, status: str) -> Embed:
+    def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the 射龍門 lobby embed from participants and jackpot state."""
         return build_dragon_gate_lobby_embed(
             owner=self.owner,

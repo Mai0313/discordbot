@@ -490,7 +490,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self._shoe_store = shoe_store
         self._channel_id = channel_id
 
-    def _build_lobby_embed(self, status: str) -> Embed:
+    def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
         return build_blackjack_lobby_embed(
             owner=self.owner,

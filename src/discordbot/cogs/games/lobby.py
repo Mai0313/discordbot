@@ -90,7 +90,7 @@ class BaseGameLobbyView(GameView):
             return
         self._disable_buttons()
         self.stop()
-        embed = self._build_lobby_embed(status="Lobby 已逾時")
+        embed = self.lobby_embed(status="Lobby 已逾時")
         try:
             await edit_public_message(
                 message=self.message,
@@ -243,7 +243,7 @@ class BaseGameLobbyView(GameView):
             return
         self.message = message
         self.last_press = interaction
-        embed = self._build_lobby_embed(status=status)
+        embed = self.lobby_embed(status=status)
         await interaction.edit_original_message(
             embed=embed,
             view=self,
@@ -263,7 +263,7 @@ class BaseGameLobbyView(GameView):
             self._started = False
             raise
 
-    def _build_lobby_embed(self, status: str) -> Embed:
+    def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the lobby embed for a concrete game type."""
         raise NotImplementedError
 
