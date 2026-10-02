@@ -143,7 +143,6 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
         dealer_cards=[card(rank="A", suit="♣"), card(rank="9", suit="♦")],
     )
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
@@ -181,7 +180,6 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
     assert "bj:insure_no" not in ids
 
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     view.sync_buttons()
 
     ids = component_ids(view=view)
@@ -297,7 +295,6 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
         player=seat(bet=1),
     )
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     view = _make_view(round_state=round_state)
     message = FakeDiscordMessage()
     press = FakeInteraction(message=message)
@@ -468,7 +465,6 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
     round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
     round_state.dealer = [card(rank="A", suit="♣"), card(rank="9", suit="♦")]
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     round_state.players[0].insurance_resolved = True
     view = _make_view(round_state=round_state)
     view.bot_user_id = 1
@@ -502,7 +498,6 @@ async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
     round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
     round_state.dealer = [card(rank="9", suit="♦"), card(rank="A", suit="♣")]
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     # All tens: the bot's count says insurance is worth buying.
     round_state.shoe = [card(rank="10")] * 20
     view = _make_view(round_state=round_state)

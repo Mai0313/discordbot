@@ -480,9 +480,6 @@ class BlackjackRound(BaseModel):
     phase: RoundPhase = Field(
         default="player_actions", description="Lifecycle phase of the round."
     )
-    insurance_offered: bool = Field(
-        default=False, description="True only when the dealer up-card is an Ace."
-    )
     peeked_blackjack: bool = Field(
         default=False,
         description="True once the dealer's hole-card peek revealed a natural Blackjack.",
@@ -545,7 +542,6 @@ class BlackjackRound(BaseModel):
         up = dealer_up_card(dealer=self.dealer)
         if up is not None and up.rank == "A":
             self.phase = "insurance"
-            self.insurance_offered = True
             return
 
         ten_value_up = up is not None and up.rank in TEN_VALUE_RANKS
