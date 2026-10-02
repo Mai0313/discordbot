@@ -512,6 +512,24 @@ async def test_ask_defers_before_anything_slower_than_three_seconds(
     assert surface.message.id == ASK_SNOWFLAKE
 
 
+async def test_an_ask_turn_never_reacts_to_its_synthesized_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody posted that message, so every status reaction would be a REST call that 404s."""
+    enabled: list[bool] = []
+
+    async def _run(pipeline: ReplyPipeline) -> None:
+        """Records whether the turn's status chain would react."""
+        enabled.append(pipeline.reactions.enabled)
+
+    interaction = _interaction()
+    cog = _ask_cog(interaction=interaction, monkeypatch=monkeypatch, run=_run)
+
+    await cog.ask(interaction, question="在幹嘛", attachment=None)
+
+    assert enabled == [False]
+
+
 async def test_ask_answers_a_blank_question_without_running_a_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
