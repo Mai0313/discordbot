@@ -746,8 +746,6 @@ class BlackjackView(GameView):
         self, interaction: Interaction[commands.Bot], message: Message, user_id: int
     ) -> bool:
         """Buys half-bet insurance for one seat; False when the round refused it."""
-        if self.round_state.find_player(user_id=user_id) is None:
-            return False
         try:
             self.round_state.take_insurance(user_id=user_id)
         except ValueError as error:
@@ -923,15 +921,6 @@ class BlackjackView(GameView):
         if hand is None:
             return
         allowed = self.round_state.allowed_actions()
-        if not allowed:
-            with contextlib.suppress(ValueError):
-                self.round_state.stand(user_id=active.participant.user_id)
-            self._state_revision += 1
-            if self.round_state.finished:
-                await self._finalize_locked(message=message, interaction=interaction)
-            else:
-                await self._edit_in_progress_locked(message=message, interaction=interaction)
-            return
         chosen_action = choose_bot_action(
             hand_cards=list(hand.cards),
             dealer_cards=list(self.round_state.dealer),
