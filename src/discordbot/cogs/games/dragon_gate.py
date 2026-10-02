@@ -330,8 +330,8 @@ class DragonGateRound(BaseModel):
     def withdraw(self, user_id: int) -> int:
         """Removes a player from the rotation and returns their running delta.
 
-        The caller settles "逆贏不拿": when the returned delta is positive,
-        it pushes that many points back into the jackpot.
+        A caller that claws back "逆贏不拿" writes it before calling this, so a
+        clawback that never lands leaves the player seated.
 
         Args:
             user_id: Discord user ID of the leaver.

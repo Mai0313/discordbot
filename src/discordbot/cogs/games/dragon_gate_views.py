@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 
+import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
 from nextcord.ui import View, Button, TextInput, StringSelect
@@ -30,7 +31,6 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGatePlayerResult,
     DragonGateBetRangeError,
     DragonGatePairChoiceRequiredError,
-    DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
 )
 from discordbot.cogs.games.interactions import (
@@ -451,7 +451,7 @@ class DragonGateView(GameView):
         async with self._round_lock:
             if self._settled:
                 return
-            await self._refund_remaining_winners_locked()
+            await self._refund_remaining_winners_locked(message=self.message)
             await self._finalize_locked(
                 message=self.message, reason="逾時未操作", interaction=self.last_press
             )
@@ -737,7 +737,10 @@ class DragonGateView(GameView):
             )
 
     async def _handle_leave(self, interaction: Interaction[commands.Bot]) -> None:
-        """Withdraws a seated player and refunds positive table delta to the jackpot."""
+        """Refunds a seated player's positive table delta to the jackpot, then withdraws them.
+
+        A refund that raises leaves the player seated: they are told, and may press again.
+        """
         if interaction.user is None:
             return
         await interaction.response.defer()
@@ -750,15 +753,24 @@ class DragonGateView(GameView):
                     interaction=interaction, content="這桌已經結束, 等下一桌吧"
                 )
                 return
-            try:
-                delta = self.round_state.withdraw(user_id=interaction.user.id)
-            except DragonGateParticipantUnknownError:
+            if not self.round_state.is_active(user_id=interaction.user.id):
                 await self._send_notice(interaction=interaction, content="你不在這桌")
                 return
+            delta = self.round_state.player_delta(user_id=interaction.user.id)
             if delta > 0:
-                await self._refund_winnings_to_pool_locked(
-                    user_id=interaction.user.id, delta=delta
-                )
+                try:
+                    await self._refund_winnings_to_pool_locked(
+                        user_id=interaction.user.id, delta=delta
+                    )
+                except Exception:
+                    # Broad on purpose: whatever the write raised on, it rolled back and the
+                    # player is still seated, so they only need telling; the re-raise reaches
+                    # on_error, which logs it.
+                    await self._send_notice(
+                        interaction=interaction, content="離桌失敗, 請再按一次離桌"
+                    )
+                    raise
+            self.round_state.withdraw(user_id=interaction.user.id)
             if self.round_state.finished:
                 await self._finalize_locked(
                     message=message, reason="所有玩家已離桌", interaction=interaction
@@ -805,17 +817,33 @@ class DragonGateView(GameView):
         if refunded_to_pool > 0:
             self._refunded_to_pool[user_id] = refunded_to_pool
 
-    async def _refund_remaining_winners_locked(self) -> None:
+    async def _refund_remaining_winners_locked(self, message: Message) -> None:
         """Returns seated players' positive in-flight deltas to the jackpot.
 
         Only an abandoned table claws winnings back; a table that ends because the
-        pool was cleared deliberately lets the winner keep what emptied it.
+        pool was cleared deliberately lets the winner keep what emptied it. A seat
+        whose refund raises keeps its winnings, and the final table shows them kept.
         """
         for participant in self.round_state.active_participants():
             delta = self.round_state.player_delta(user_id=participant.user_id)
             if delta <= 0:
                 continue
-            await self._refund_winnings_to_pool_locked(user_id=participant.user_id, delta=delta)
+            try:
+                await self._refund_winnings_to_pool_locked(
+                    user_id=participant.user_id, delta=delta
+                )
+            except Exception as exc:
+                # Broad on purpose: whatever the write raised on, it rolled back, and the table
+                # must still settle, refund the other seats and be cleaned up.
+                logfire.error(
+                    "Dragon Gate timeout refund failed; the player keeps the winnings",
+                    user_id=participant.user_id,
+                    delta=delta,
+                    channel_id=message.channel.id,
+                    message_id=message.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
 
     async def _finalize_locked(
         self, message: Message, reason: str, interaction: Interaction[commands.Bot] | None

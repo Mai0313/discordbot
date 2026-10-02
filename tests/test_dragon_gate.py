@@ -73,7 +73,7 @@ from tests.helpers.casting import (
 )
 from tests.helpers.economy import seed_balance, get_jackpot_pool
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
-from tests.helpers.logfire_capture import capture_levels
+from tests.helpers.logfire_capture import capture_logs, capture_levels
 from tests.helpers.message_cleanup import record_scheduled_deletes
 from tests.helpers.economy_invariants import assert_wallet_consistent, assert_daily_casino_stats
 
@@ -1437,6 +1437,82 @@ async def test_a_bet_whose_settlement_raises_counts_nowhere_at_the_table(
     assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
 
 
+async def test_a_leave_whose_refund_raises_keeps_the_player_seated_until_one_lands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leave takes the player off the table only once its 逆贏不拿 refund is written.
+
+    Withdrawn first, a player whose refund raised walked off with the winnings: a second press
+    was turned away, and nothing refunds a withdrawn seat later. A press queued behind the one
+    that landed must not refund twice.
+    """
+    alice = await _funded(user_id=1, display_name="Alice")
+    bob = _participant(user_id=2, display_name="Bob")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[alice, bob]
+    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    failures = iter([
+        OperationalError("refund", None, sqlite3.OperationalError("database is locked"))
+    ])
+    settled: list[int] = []
+
+    async def settle(**kwargs: Any) -> JackpotSettlementResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Refuses the first refund as a locked database would, then settles every write."""
+        failure = next(failures, None) if kwargs["player_delta"] < 0 else None
+        if failure is not None:
+            raise failure
+        settled.append(kwargs["player_delta"])
+        return await apply_jackpot_settlement(**kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", settle)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=pool_before,
+        final_balances={1: 1_000_000, 2: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+    await view._handle_bet_choice(
+        choice="min",
+        interaction=as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+        ),
+    )
+    assert round_state.player_delta(user_id=1) == 20
+    leave_button = attached_button(view=view, custom_id="dg:leave")
+
+    refused = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+    # Called directly, the press skips the view's on_error, so the raise reaches the test.
+    with pytest.raises(OperationalError):
+        await leave_button.callback(as_interaction(fake=refused))
+
+    assert refused.followup.sent == [{"content": "離桌失敗, 請再按一次離桌", "ephemeral": True}]
+    assert round_state.is_active(user_id=1)
+    assert view._refunded_to_pool == {}
+
+    await leave_button.callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
+    )
+    queued = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+    # Called directly, the press skips the view's interaction check, as one queued on the round
+    # lock behind the press that landed has already passed it.
+    await leave_button.callback(as_interaction(fake=queued))
+
+    assert queued.followup.sent == [{"content": "你不在這桌", "ephemeral": True}]
+    assert round_state.is_active(user_id=1) is False
+    # order-contract: the leave hands back winnings the bet already wrote.
+    assert settled == [20, -20]
+    assert view._refunded_to_pool == {1: 20}
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000_000)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
+
+
 async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> None:
     """Only the active player can bet; the leave button is open to all seated."""
     alice = _participant(user_id=1, display_name="Alice")
@@ -1652,6 +1728,66 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert all(isinstance(embed, Embed) for embed in embeds)
+
+
+async def test_a_timeout_whose_refund_raises_for_one_seat_still_settles_the_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refund that raises on timeout costs that seat's refund alone, never the table's close.
+
+    Raising out of the timeout skipped every later seat's refund and the close itself, so the
+    table showed no result and stayed up until a restart. The seat whose refund never landed
+    keeps its winnings, and the final table claims no refund for it.
+    """
+    alice = await _funded(user_id=1, display_name="Alice")
+    bob = await _funded(user_id=2, display_name="Bob")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣", "4", "♦", "Q", "♣", "7", "♦")),
+        participants=[alice, bob],
+    )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+
+    async def settle(**kwargs: Any) -> JackpotSettlementResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Refuses Alice's refund as a locked database would, then settles every other write."""
+        if kwargs["player_id"] == 1 and kwargs["player_delta"] < 0:
+            raise OperationalError("refund", None, sqlite3.OperationalError("database is locked"))
+        return await apply_jackpot_settlement(**kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", settle)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=pool_before,
+        final_balances={1: 1_000_000, 2: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+    for user_id in (1, 2):
+        await view._handle_bet_choice(
+            choice="min",
+            interaction=as_interaction(
+                fake=FakeInteraction(
+                    user=FakeUser(user_id=user_id), message=message, custom_id="dg:bet"
+                )
+            ),
+        )
+    assert [round_state.player_delta(user_id=user_id) for user_id in (1, 2)] == [20, 20]
+
+    await view.on_timeout()
+
+    assert view._settled
+    assert message.edits[-1]["view"] is None, "the final table landed"
+    assert scheduled.messages == [message]
+    assert view._refunded_to_pool == {2: 20}
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before - 20
+    assert [fields["user_id"] for _, fields in errors] == [1]
+    final = message.edits[-1]["embeds"]
+    assert isinstance(final, list)
+    assert isinstance(final[0].description, str)
+    assert final[0].description.count("逆贏退回") == 1
 
 
 @pytest.mark.parametrize(argnames="expired", argvalues=[False, True], ids=["live", "expired"])
