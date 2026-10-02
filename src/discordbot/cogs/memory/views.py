@@ -158,12 +158,14 @@ def build_clear_cancelled_embed() -> Embed:
 
 
 class _OriginBoundView(LoggedView):
-    """A view that remembers the interaction it was sent on, so a timeout can reach it.
+    """A view that keeps its prompt's newest interaction, so a timeout can reach the prompt.
 
     Both memory views are ephemeral, which is why they need this: there is no message
-    object to edit afterwards, so the originating interaction is the only handle back to
-    the prompt. It is also why neither carries an author check — only the invoker can see
-    or press an ephemeral prompt.
+    object to edit afterwards, so an interaction is the only handle back to the prompt.
+    That is the command until a press is answered on the prompt, then the newest such
+    press: nextcord restarts the timer on every press, so only the newest one holds a
+    token sure to outlive it. Being ephemeral is also why neither view carries an author check — only
+    the invoker can see or press an ephemeral prompt.
     """
 
     def __init__(self, timeout: float) -> None:
@@ -172,7 +174,7 @@ class _OriginBoundView(LoggedView):
         self._origin: Interaction[commands.Bot] | None = None
 
     def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records the originating interaction so timeout can disable the buttons."""
+        """Records the interaction the timeout disables the buttons through."""
         self._origin = interaction
 
     async def on_timeout(self) -> None:
@@ -298,6 +300,7 @@ class MemoryPagesView(_OriginBoundView):
         self.page_index = max(self.page_index - 1, 0)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
+        self.bind_origin(interaction=interaction)
 
     @nextcord.ui.button(label="下一頁 ▶", style=ButtonStyle.secondary)
     async def next_page(
@@ -307,3 +310,4 @@ class MemoryPagesView(_OriginBoundView):
         self.page_index = min(self.page_index + 1, len(self.pages) - 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
+        self.bind_origin(interaction=interaction)
