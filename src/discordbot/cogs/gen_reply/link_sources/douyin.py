@@ -98,8 +98,7 @@ DOUYIN_TRANSFER_NOTICE = (
 )
 
 # Used when the read failed for a reason that says nothing about the post: a link that is not
-# a post at all, a refusal HTTP does not classify such as a 403 (which ones is
-# `services/platforms/douyin.py::_douyin_fetch_error`'s call), an unexpected response shape.
+# a post at all, a refusal HTTP does not classify such as a 403, an unexpected response shape.
 # Kept apart from the deleted / private notice because asserting a working link is dead is
 # the worst thing this can say.
 DOUYIN_UNREADABLE_NOTICE = (
