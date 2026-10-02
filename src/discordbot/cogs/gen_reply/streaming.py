@@ -654,7 +654,7 @@ class ResponseStreamer(BaseModel):
         async for response in responses:
             if response.type == "response.created":
                 # Capture the model on `created` too so the usage footer never falls back
-                # to an empty model name (and $0.00000000) when a stream ends without a
+                # to an empty model name (and no cost) when a stream ends without a
                 # clean `completed` event.
                 self.model_name = response.response.model
             elif response.type == "response.completed":

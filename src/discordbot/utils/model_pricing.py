@@ -8,7 +8,7 @@ instead of a hardcoded table that rots.
 
 A lookup never raises. The table only feeds a cosmetic cost estimate and the attachment
 modality gate, so an unreachable upstream degrades to the mirror and then to an empty
-table, where every model is unknown: `(0.0, 0.0)` rates and a `$0.00000000` footer, and
+table, where every model is unknown: no rates, so a usage footer with no cost, and
 the `{"text", "image"}` modality baseline, which keeps text, images and documents flowing
 and drops only audio and video instead of the whole message's attachments.
 
@@ -45,10 +45,10 @@ class ModelPriceEntry(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     input_cost_per_token: float = Field(
-        default=0.0, description="Per-token input price in USD; 0.0 when the model is unknown."
+        default=0.0, description="Per-token input price in USD; 0.0 when the entry lists none."
     )
     output_cost_per_token: float = Field(
-        default=0.0, description="Per-token output price in USD; 0.0 when the model is unknown."
+        default=0.0, description="Per-token output price in USD; 0.0 when the entry lists none."
     )
     supported_modalities: list[str] = Field(
         default_factory=lambda: ["text", "image"],
@@ -268,20 +268,22 @@ def refresh_model_info() -> None:
     logfire.info("recovered the upstream model price table", entries=len(prices))
 
 
-def get_token_rates(model_name: str) -> tuple[float, float]:
+def get_token_rates(model_name: str) -> tuple[float, float] | None:
     """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`.
 
-    Returns `(0.0, 0.0)` for unknown models so the reply footer shows
-    `$0.00000000` instead of an estimate.
+    An unknown model has no rates rather than zero ones: a listed rate of zero is a free
+    model, and folding the two together would price every unknown model as free.
 
     Args:
         model_name: Model identifier to look up in the cached price table.
 
     Returns:
-        Input and output token rates for the model.
+        Input and output token rates for the model, or None when the table has no entry for it.
     """
     model_info = load_model_info()
-    info = model_info.get(model_name, ModelPriceEntry())
+    info = model_info.get(model_name)
+    if info is None:
+        return None
     return info.input_cost_per_token, info.output_cost_per_token
 
 

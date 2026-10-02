@@ -43,25 +43,30 @@ FORWARDED_MESSAGE_MARKER = "[forwarded message]"
 
 def render_usage_footer(
     model_name: str, label: str, input_tokens: int, output_tokens: int
-) -> tuple[str, float]:
+) -> tuple[str, float | None]:
     """Renders the usage footer's model, token-count and cost line.
 
-    Its `⬆` / `⬇` icons are what `USAGE_FOOTER_RE` anchors on.
+    Its `⬆` / `⬇` icons are what `USAGE_FOOTER_RE` anchors on. The cost is left off when the
+    price table has no entry for `model_name`, since `$0.00000000` would read as a price.
 
     Args:
         model_name: The model the tokens are priced as. Kept apart from `label` because a name
-            the price table does not know prices at zero, so pricing a label that carries
-            anything beyond the bare name (a reasoning effort) would show `$0.00000000`.
+            the price table does not know shows no cost, so pricing a label that carries
+            anything beyond the bare name (a reasoning effort) would drop the cost.
         label: What the line shows as the model.
         input_tokens: Input tokens the request reported.
         output_tokens: Output tokens the request reported.
 
     Returns:
-        The line, and the cost in dollars it shows.
+        The line, and the cost in dollars it shows, or None when it shows none.
     """
-    input_rate, output_rate = get_token_rates(model_name=model_name)
+    line = f"-# {label} · ⬆ {input_tokens:,} ⬇ {output_tokens:,}"
+    rates = get_token_rates(model_name=model_name)
+    if rates is None:
+        return line, None
+    input_rate, output_rate = rates
     cost = input_rate * input_tokens + output_rate * output_tokens
-    return f"-# {label} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}", cost
+    return f"{line} · ${cost:.8f}", cost
 
 
 def sanitize_identity(value: str) -> str:
