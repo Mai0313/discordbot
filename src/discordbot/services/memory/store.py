@@ -29,8 +29,6 @@ import re
 import time
 import asyncio
 from pathlib import Path
-from datetime import UTC, datetime
-import itertools
 import contextlib
 from collections.abc import Callable
 
@@ -56,6 +54,11 @@ from discordbot.services.memory.constants import (
     RENDER_CACHE_MAX_ENTRIES,
     DETAIL_FILE_TRIM_TARGET_BYTES,
 )
+from discordbot.services.memory.raw_entries import (
+    RAW_ENTRY_HEADER_RE,
+    stamp_entry,
+    split_raw_entries,
+)
 
 _MEMORY_DIR = Path("./data/memories")
 
@@ -71,13 +74,6 @@ GLOBAL_COMPARTMENT = "global"
 DM_COMPARTMENT = "dm"
 _COMPARTMENT_RE = re.compile(r"^(?:global|dm|g/\d{1,20})$")
 _GUILD_DIR_NAME = "g"
-
-# Raw entries start with a `## <ISO-8601 timestamp>` header line. An entry's
-# body is bullet-style prose, so the date prefix doubles as the split marker;
-# `timestamp` is the rest of the header line.
-RAW_ENTRY_HEADER_RE = re.compile(
-    r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T.*?)\s*$", flags=re.MULTILINE
-)
 
 # Per-scope file-write locks, rebuilt per event loop by the shared registry.
 _scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
@@ -531,13 +527,10 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
     provenance of where a conversation happened, not identity.
     """
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
-    # Microseconds, so the stamp orders entries the way they were written: a forget is set
-    # against everything stamped before it, and a deferred turn can land in the same second as
-    # the one it follows.
-    timestamp = datetime.now(UTC).isoformat(timespec="microseconds")
+    entry = stamp_entry(body=entry_text)
     raw_path = _raw_path(scope=scope)
-    combined = f"{_read_text(path=raw_path)}\n\n## {timestamp}\n{entry_text.strip()}"
-    entries = _split_raw_entries(text=combined)
+    combined = f"{_read_text(path=raw_path)}\n\n{entry}"
+    entries = split_raw_entries(text=combined)
     evicted: list[str] = []
     while len(entries) > 1 and _entries_bytes(entries=entries) > RAW_FILE_MAX_BYTES:
         evicted.append(entries.pop(0))
@@ -588,7 +581,7 @@ def _trim_detail(path: Path) -> None:
     target is what amortizes this O(file) rewrite; the write goes through
     tmp + os.replace so a crash cannot leave a half-trimmed file.
     """
-    entries = _split_raw_entries(text=_read_text(path=path))
+    entries = split_raw_entries(text=_read_text(path=path))
     # Track the rendered size incrementally; recomputing the joined size per
     # dropped entry would be O(n^2) on a megabyte-scale file and stall the
     # event loop, since store IO is synchronous by design.
@@ -665,7 +658,7 @@ def read_evidence(scope: str) -> str:
 
 def count_raw_entries(scope: str) -> int:
     """Returns how many raw entries are waiting for consolidation."""
-    return len(_split_raw_entries(text=_read_text(path=_raw_path(scope=scope))))
+    return len(split_raw_entries(text=_read_text(path=_raw_path(scope=scope))))
 
 
 def raw_file_bytes(scope: str) -> int:
@@ -744,16 +737,6 @@ def delete_memory_files(scope: str) -> bool:
         scope_dir.rmdir()
     _bump_generation(scope=scope)
     return removed
-
-
-def _split_raw_entries(text: str) -> list[str]:
-    """Splits raw file text into stripped per-entry blocks including headers."""
-    starts = [match.start() for match in RAW_ENTRY_HEADER_RE.finditer(text)]
-    if not starts:
-        return []
-    bounds = [*starts, len(text)]
-    blocks = [text[begin:end].strip() for begin, end in itertools.pairwise(bounds)]
-    return [block for block in blocks if block]
 
 
 def _entries_bytes(entries: list[str]) -> int:

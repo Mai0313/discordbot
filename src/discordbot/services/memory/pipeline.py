@@ -39,9 +39,7 @@ from discordbot.services.memory.writer import (
     parse_turn_payload,
     render_turn_payload,
     parse_subject_source,
-    render_forget_requests,
     transcript_from_messages,
-    render_memory_observations,
 )
 from discordbot.services.memory.inflight import (
     MemoryTurn,
@@ -55,6 +53,10 @@ from discordbot.services.memory.inflight import (
     enqueue_memory_update,
 )
 from discordbot.services.memory.git_history import memory_git
+from discordbot.services.memory.raw_entries import (
+    render_forget_requests,
+    render_memory_observations,
+)
 from discordbot.services.memory.consolidation import consolidate_after_turn
 
 

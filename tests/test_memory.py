@@ -91,9 +91,7 @@ from discordbot.services.memory.writer import (
     parse_turn_payload,
     render_turn_payload,
     parse_subject_source,
-    render_forget_requests,
     transcript_from_messages,
-    render_memory_observations,
     target_centered_memory_messages,
 )
 from discordbot.services.memory.prompts import (
@@ -104,6 +102,10 @@ from discordbot.services.memory.prompts import (
 from discordbot.services.memory.constants import (
     COMPACTION_TRIGGER_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
+)
+from discordbot.services.memory.raw_entries import (
+    render_forget_requests,
+    render_memory_observations,
 )
 
 from tests.helpers.memory import (

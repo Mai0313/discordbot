@@ -13,6 +13,7 @@ from collections.abc import Callable
 import pytest
 
 from discordbot.typings.memory import MemoryOwner
+from discordbot.services.memory.tone import tone_evidence_from_raw
 from discordbot.cogs.gen_reply.recall import (
     RecallContext,
     compartments_for_reading,
@@ -53,7 +54,6 @@ from discordbot.services.memory.deltas import (
     sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
-    tone_evidence_from_raw,
 )
 
 from tests.helpers.memory import STAMPED_AT, make_fact, make_delta

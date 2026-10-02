@@ -27,13 +27,18 @@ from discordbot.services.memory.store import (
     read_evidence,
     rewrite_evidence,
 )
-from discordbot.services.memory.deltas import (
-    newest_stamp,
-    drop_observations,
-    tone_observations,
-    tone_evidence_from_raw,
-)
 from discordbot.services.memory.writer import ConsolidationRequest
+from discordbot.services.memory.raw_entries import (
+    fields_of,
+    newest_stamp,
+    iter_observations,
+    render_file_entries,
+    observation_category,
+)
+
+# Observation categories that carry how the user wants the bot to SOUND. Everything
+# else is a fact and has no business in the always-injected tone note.
+_TONE_CATEGORIES = frozenset({"interaction_style", "stable_preference"})
 
 
 async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> bool:
@@ -129,7 +134,7 @@ async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
     note_lines = tuple(line for line in body.splitlines() if line.strip())
     evidence = [
         observation
-        for observation in tone_observations(text=read_evidence(scope=run.scope))
+        for observation in _tone_observations(text=read_evidence(scope=run.scope))
         if observation[0] < cutoff
     ]
     if not note_lines and not evidence:
@@ -156,8 +161,55 @@ async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
         if number in result.drop_evidence
     }
     if doomed:
-        rewrite_evidence(scope=run.scope, edit=partial(drop_observations, doomed=doomed))
+        rewrite_evidence(scope=run.scope, edit=partial(_drop_observations, doomed=doomed))
     return True
+
+
+def tone_evidence_from_raw(raw_text: str) -> str:
+    """Returns the whole batch's tone-bearing observations, ignoring compartments.
+
+    Each line carries its `evidence_kind` and then the summary, oldest-first — the note's "a
+    later stated preference wins" rule has no other clock.
+
+    The kind is what tells a preference the user stated apart from one inferred off their
+    own behaviour, and the note is a merge of many batches, so without it every bullet reads
+    alike and the note converges on whichever reading has the most bullets. That is not
+    hypothetical: in the live store one stated preference lost to five inferred from the
+    user's own trash-talk across a guild, and the note came out telling the bot to trash-talk
+    them back.
+    """
+    return "\n".join(f"* {line}" for _, _, line in _tone_observations(text=raw_text))
+
+
+def _tone_observations(text: str) -> list[tuple[str, str, str]]:
+    """Returns each tone-bearing observation of a raw or detail text as `(stamp, block, line)`.
+
+    `line` is how it reads as tone evidence, `[evidence_kind] summary`; a block with no summary
+    carries no signal and is left out.
+    """
+    observations: list[tuple[str, str, str]] = []
+    for timestamp, block in iter_observations(text=text):
+        # The category is the block's `### <category>` header, not one of its fields.
+        if observation_category(block=block) not in _TONE_CATEGORIES:
+            continue
+        fields = fields_of(block=block)
+        summary = fields.get("summary_zh", "")
+        if summary:
+            line = f"[{fields.get('evidence_kind', 'unknown')}] {summary}"
+            observations.append((timestamp, block, line))
+    return observations
+
+
+def _drop_observations(text: str, doomed: set[tuple[str, str]]) -> str:
+    """Removes the given `(stamp, block)` observations from a raw or detail text.
+
+    Returns `text` itself when none of them is there, so the caller can skip the rewrite.
+    """
+    pairs = iter_observations(text=text)
+    kept = [pair for pair in pairs if pair not in doomed]
+    if len(kept) == len(pairs):
+        return text
+    return render_file_entries(pairs=kept)
 
 
 def _tone_request(existing_tone: str, tone_evidence: str, today: str) -> ConsolidationRequest:

@@ -21,20 +21,12 @@ main jobs:
   the memory of one the user visits less often.
 """
 
-import re
 from datetime import UTC, datetime, timedelta
-from itertools import groupby
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import (
-    FORGET_REQUEST_CATEGORY,
-    MemoryFact,
-    MemoryOwner,
-    MemoryFlavor,
-    MemorySection,
-)
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor, MemorySection
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
     utc_now,
@@ -46,7 +38,6 @@ from discordbot.services.memory.facts import (
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
-    RAW_ENTRY_HEADER_RE,
     read_facts,
     write_fact,
     delete_fact,
@@ -58,14 +49,15 @@ from discordbot.services.memory.constants import (
     MAX_NET_FACT_DELETIONS_FLOOR,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
-
-# One observation block's header inside a raw entry.
-_OBSERVATION_HEADER_RE = re.compile(r"^### (?P<category>\S+)")
-# Observation categories that carry how the user wants the bot to SOUND. Everything
-# else is a fact and has no business in the always-injected tone note.
-_TONE_CATEGORIES = frozenset({"interaction_style", "stable_preference"})
-_FIELD_RE = re.compile(r"^\s*-\s*(?P<name>[a-z_]+):\s*(?P<value>.*?)\s*$")
-_GUILD_SOURCE_RE = re.compile(r"^guild (?P<guild_id>\d+)$")
+from discordbot.services.memory.raw_entries import (
+    fields_of,
+    newest_stamp,
+    render_entries,
+    source_guild_id,
+    is_forget_request,
+    iter_observations,
+    render_file_entries,
+)
 
 
 class DeltaOutcome(BaseModel):
@@ -114,14 +106,14 @@ def partition_raw_entries(raw_text: str, flavor: MemoryFlavor) -> dict[str, str]
     the consolidation prompt still sees dated, oldest-first evidence.
     """
     buckets: dict[str, list[tuple[str, str]]] = {}
-    for timestamp, block in _iter_observations(text=raw_text):
-        if _is_forget_request(block=block):
+    for timestamp, block in iter_observations(text=raw_text):
+        if is_forget_request(block=block):
             continue
         compartment = (
             GLOBAL_COMPARTMENT if flavor == "server" else _compartment_for_block(block=block)
         )
         buckets.setdefault(compartment, []).append((timestamp, block))
-    return {compartment: _render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
+    return {compartment: render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
 
 
 def partition_forget_requests(raw_text: str, compartments: tuple[str, ...]) -> dict[str, str]:
@@ -139,18 +131,12 @@ def partition_forget_requests(raw_text: str, compartments: tuple[str, ...]) -> d
     `compartments` yields nothing at all.
     """
     buckets: dict[str, list[tuple[str, str]]] = {}
-    for timestamp, block in _iter_observations(text=raw_text):
-        if not _is_forget_request(block=block):
+    for timestamp, block in iter_observations(text=raw_text):
+        if not is_forget_request(block=block):
             continue
         for compartment in _forget_targets(block=block, compartments=compartments):
             buckets.setdefault(compartment, []).append((timestamp, block))
-    return {compartment: _render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
-
-
-def _is_forget_request(block: str) -> bool:
-    """Whether one raw block is a forget request rather than an observation."""
-    header = _OBSERVATION_HEADER_RE.match(block)
-    return header is not None and header.group("category") == FORGET_REQUEST_CATEGORY
+    return {compartment: render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
 
 
 def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...]:
@@ -172,13 +158,13 @@ def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...
     that field and only ever writes those two shapes, so the branch is unreachable today; it is
     the direction to fail in, not a case being handled.
     """
-    source = _fields_of(block=block).get("source", "")
+    source = fields_of(block=block).get("source", "")
     if source == "dm" or not source:
         return compartments
-    match = _GUILD_SOURCE_RE.match(source)
-    if match is None:
+    guild_id = source_guild_id(source=source)
+    if guild_id is None:
         return compartments
-    guild = guild_compartment(guild_id=int(match.group("guild_id")))
+    guild = guild_compartment(guild_id=guild_id)
     return tuple(
         compartment for compartment in compartments if compartment in {GLOBAL_COMPARTMENT, guild}
     )
@@ -208,7 +194,7 @@ def drop_released_evidence(
         for compartment, keys in released.items()
         if keys
     }
-    pairs = _iter_observations(text=text)
+    pairs = iter_observations(text=text)
     kept = [
         (timestamp, block)
         for timestamp, block in pairs
@@ -216,12 +202,7 @@ def drop_released_evidence(
     ]
     if len(kept) == len(pairs):
         return text
-    return _render_file_entries(pairs=kept)
-
-
-def newest_stamp(text: str) -> str:
-    """Returns the latest entry stamp in a raw or detail text, or "" when it has none."""
-    return max((timestamp for timestamp, _ in _iter_observations(text=text)), default="")
+    return render_file_entries(pairs=kept)
 
 
 def forget_segments(raw_text: str) -> list[tuple[str, str]]:
@@ -237,92 +218,32 @@ def forget_segments(raw_text: str) -> list[tuple[str, str]]:
     segments: list[tuple[str, str]] = []
     observations: list[tuple[str, str]] = []
     forgets: list[tuple[str, str]] = []
-    for pair in _iter_observations(text=raw_text):
-        if _is_forget_request(block=pair[1]):
+    for pair in iter_observations(text=raw_text):
+        if is_forget_request(block=pair[1]):
             forgets.append(pair)
             continue
         if forgets:
             segments.append((
-                _render_file_entries(pairs=observations),
-                _render_file_entries(pairs=forgets),
+                render_file_entries(pairs=observations),
+                render_file_entries(pairs=forgets),
             ))
             observations, forgets = [], []
         observations.append(pair)
-    segments.append((
-        _render_file_entries(pairs=observations),
-        _render_file_entries(pairs=forgets),
-    ))
+    segments.append((render_file_entries(pairs=observations), render_file_entries(pairs=forgets)))
     return segments
-
-
-def _render_file_entries(pairs: list[tuple[str, str]]) -> str:
-    """Renders observation blocks the way `raw.md` and `detail.md` hold them on disk."""
-    entries: list[str] = []
-    for timestamp, group in groupby(pairs, key=lambda pair: pair[0]):
-        body = "\n\n".join(block for _, block in group)
-        entries.append(f"## {timestamp}\n{body}" if timestamp else body)
-    return "\n\n".join(entries)
 
 
 def _is_released(
     timestamp: str, block: str, released: dict[str, tuple[str, ...]], cutoffs: dict[str, str]
 ) -> bool:
     """Whether one observation is evidence a forget released; see `drop_released_evidence`."""
-    if _is_forget_request(block=block):
+    if is_forget_request(block=block):
         return False
     compartment = _compartment_for_block(block=block)
     return (
-        _fields_of(block=block).get("normalized_key") in released.get(compartment, ())
+        fields_of(block=block).get("normalized_key") in released.get(compartment, ())
         and timestamp < cutoffs[compartment]
     )
-
-
-def tone_evidence_from_raw(raw_text: str) -> str:
-    """Returns the whole batch's tone-bearing observations, ignoring compartments.
-
-    Each line carries its `evidence_kind` and then the summary, oldest-first — the note's "a
-    later stated preference wins" rule has no other clock.
-
-    The kind is what tells a preference the user stated apart from one inferred off their
-    own behaviour, and the note is a merge of many batches, so without it every bullet reads
-    alike and the note converges on whichever reading has the most bullets. That is not
-    hypothetical: in the live store one stated preference lost to five inferred from the
-    user's own trash-talk across a guild, and the note came out telling the bot to trash-talk
-    them back.
-    """
-    return "\n".join(f"* {line}" for _, _, line in tone_observations(text=raw_text))
-
-
-def tone_observations(text: str) -> list[tuple[str, str, str]]:
-    """Returns each tone-bearing observation of a raw or detail text as `(stamp, block, line)`.
-
-    `line` is how it reads as tone evidence, `[evidence_kind] summary`; a block with no summary
-    carries no signal and is left out.
-    """
-    observations: list[tuple[str, str, str]] = []
-    for timestamp, block in _iter_observations(text=text):
-        # The category is the block's `### <category>` header, not one of its fields.
-        header = _OBSERVATION_HEADER_RE.match(block)
-        if header is None or header.group("category") not in _TONE_CATEGORIES:
-            continue
-        fields = _fields_of(block=block)
-        summary = fields.get("summary_zh", "")
-        if summary:
-            line = f"[{fields.get('evidence_kind', 'unknown')}] {summary}"
-            observations.append((timestamp, block, line))
-    return observations
-
-
-def drop_observations(text: str, doomed: set[tuple[str, str]]) -> str:
-    """Removes the given `(stamp, block)` observations from a raw or detail text.
-
-    Returns `text` itself when none of them is there, so the caller can skip the rewrite.
-    """
-    pairs = _iter_observations(text=text)
-    kept = [pair for pair in pairs if pair not in doomed]
-    if len(kept) == len(pairs):
-        return text
-    return _render_file_entries(pairs=kept)
 
 
 def render_existing_facts(facts: list[MemoryFact]) -> str:
@@ -543,8 +464,8 @@ def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[
     ids are skipped, since the batch stamped them itself.
     """
     observed = {
-        _fields_of(block=block).get("normalized_key")
-        for _, block in _iter_observations(text=raw_text)
+        fields_of(block=block).get("normalized_key")
+        for _, block in iter_observations(text=raw_text)
     }
     now = utc_now()
     reconfirmed = 0
@@ -597,7 +518,7 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
 
 def _compartment_for_block(block: str) -> str:
     """Routes one observation block to its compartment from its stamped fields."""
-    fields = _fields_of(block=block)
+    fields = fields_of(block=block)
     if fields.get("sharing") != "source_only":
         # Anything not marked `source_only`, a block with no `sharing` field included, is
         # cross-server safe.
@@ -605,60 +526,13 @@ def _compartment_for_block(block: str) -> str:
     source = fields.get("source", "")
     if source == "dm":
         return DM_COMPARTMENT
-    match = _GUILD_SOURCE_RE.match(source)
-    if match is not None:
-        return guild_compartment(guild_id=int(match.group("guild_id")))
+    guild_id = source_guild_id(source=source)
+    if guild_id is not None:
+        return guild_compartment(guild_id=guild_id)
     # `source_only` with no usable source cannot be placed in a guild, and putting it
     # in `global` would publish exactly what the flag asked to confine, so it goes to
     # the owner's own DMs — visible to them alone.
     return DM_COMPARTMENT
-
-
-def _fields_of(block: str) -> dict[str, str]:
-    """Extracts one observation block's `- name: value` fields."""
-    fields: dict[str, str] = {}
-    for line in block.splitlines():
-        match = _FIELD_RE.match(line)
-        if match is not None:
-            fields[match.group("name")] = match.group("value")
-    return fields
-
-
-def _iter_observations(text: str) -> list[tuple[str, str]]:
-    """Splits a raw or detail file into `(entry timestamp, observation block)` pairs."""
-    pairs: list[tuple[str, str]] = []
-    timestamp = ""
-    current: list[str] = []
-
-    def flush() -> None:
-        block = "\n".join(current).strip()
-        if block:
-            pairs.append((timestamp, block))
-        current.clear()
-
-    for line in text.splitlines():
-        header = RAW_ENTRY_HEADER_RE.match(line)
-        if header is not None:
-            flush()
-            timestamp = header.group("timestamp")
-            continue
-        if _OBSERVATION_HEADER_RE.match(line):
-            flush()
-        current.append(line)
-    flush()
-    return pairs
-
-
-def _render_entries(blocks: list[tuple[str, str]]) -> str:
-    """Re-renders bucketed observation blocks under their original entry headers."""
-    rendered: list[str] = []
-    previous = ""
-    for timestamp, block in blocks:
-        if timestamp and timestamp != previous:
-            rendered.append(f"## {timestamp}")
-            previous = timestamp
-        rendered.append(block)
-    return "\n\n".join(rendered)
 
 
 def today_utc() -> datetime:
