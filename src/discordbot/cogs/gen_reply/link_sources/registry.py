@@ -54,6 +54,7 @@ async def _build_threads_link_context(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Adapts the Threads builder to the registry signature.
 
@@ -61,7 +62,10 @@ async def _build_threads_link_context(
     """
     del allow_media_ingest
     return await build_threads_context_messages(
-        url=url, answer_model_is_gemini=answer_model_is_gemini, gemini_client=gemini_client
+        url=url,
+        answer_model_is_gemini=answer_model_is_gemini,
+        gemini_client=gemini_client,
+        deadline=deadline,
     )
 
 
@@ -70,6 +74,7 @@ async def _build_douyin_link_context(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Adapts the Douyin builder to the registry signature (a straight pass-through)."""
     return await build_douyin_context_messages(
@@ -77,6 +82,7 @@ async def _build_douyin_link_context(
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
         allow_media_ingest=allow_media_ingest,
+        deadline=deadline,
     )
 
 
@@ -85,6 +91,7 @@ async def _build_bilibili_link_context(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Adapts the Bilibili builder to the registry signature (a straight pass-through)."""
     return await build_bilibili_context_messages(
@@ -92,6 +99,7 @@ async def _build_bilibili_link_context(
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
         allow_media_ingest=allow_media_ingest,
+        deadline=deadline,
     )
 
 
@@ -100,6 +108,7 @@ async def _build_facebook_link_context(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Adapts the Facebook builder to the registry signature (a straight pass-through)."""
     return await build_facebook_context_messages(
@@ -107,6 +116,7 @@ async def _build_facebook_link_context(
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
         allow_media_ingest=allow_media_ingest,
+        deadline=deadline,
     )
 
 
@@ -115,6 +125,7 @@ async def _build_twitter_link_context(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Adapts the Twitter builder to the registry signature (a straight pass-through)."""
     return await build_twitter_context_messages(
@@ -122,6 +133,7 @@ async def _build_twitter_link_context(
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
         allow_media_ingest=allow_media_ingest,
+        deadline=deadline,
     )
 
 
@@ -130,6 +142,7 @@ async def _build_instagram_link_context(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Adapts the Instagram builder to the registry signature (a straight pass-through)."""
     return await build_instagram_context_messages(
@@ -137,6 +150,7 @@ async def _build_instagram_link_context(
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
         allow_media_ingest=allow_media_ingest,
+        deadline=deadline,
     )
 
 

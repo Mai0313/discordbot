@@ -205,6 +205,7 @@ async def build_douyin_context_messages(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Reads a Douyin URL into answer-model input blocks.
 
@@ -218,6 +219,8 @@ async def build_douyin_context_messages(
         gemini_client: Direct-to-Google client used for the media upload, or None when no key
             is configured, which reads the caption just like a non-Gemini answer model.
         allow_media_ingest: Kill-switch plus key check; when false only the caption is read.
+        deadline: Event-loop time the pipeline cancels this build at, which the media step
+            stops short of so the caption still comes back.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.
@@ -276,7 +279,7 @@ async def build_douyin_context_messages(
                 fallback="the caption",
                 degraded=[],
                 url=url,
-                timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+                deadline=deadline,
             )
 
     return link_context_blocks(

@@ -8,6 +8,7 @@ import json
 import time
 from types import SimpleNamespace
 from typing import Any, Unpack, TypedDict
+import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
 import tempfile
@@ -21,6 +22,10 @@ from nextcord.ext import commands
 
 from discordbot.utils import scratch_dir
 from discordbot.typings.media import LoadedMedia
+from discordbot.typings.timeouts import (
+    LINK_MEDIA_TIMEOUT_SECONDS,
+    LINK_MEDIA_DEGRADE_MARGIN_SECONDS,
+)
 from discordbot.utils.expansion_cog import ConversationExpansionCog
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.base import PlatformDownloader, PlatformConversation
@@ -54,6 +59,14 @@ SAMPLE_POST_URLS: dict[str, str] = {
 
 # The id every stub bot answers to, so a test mentions it as `<@999>`.
 BOT_USER_ID = 999
+
+
+def link_build_deadline(media_seconds: float = LINK_MEDIA_TIMEOUT_SECONDS) -> float:
+    """The deadline a link-source build started now carries, leaving its media step that long.
+
+    The default is the whole production grace, for a build whose timing the test is not about.
+    """
+    return asyncio.get_running_loop().time() + LINK_MEDIA_DEGRADE_MARGIN_SECONDS + media_seconds
 
 
 def twitter_output(**overrides: object) -> TwitterOutput:

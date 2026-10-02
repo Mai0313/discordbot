@@ -55,21 +55,25 @@ ANSWER_STREAM_MAX_ATTEMPTS: Final[int] = 3
 # An intent-selected linked-post context build gets this grace once the QA path resolves it.
 # Far wider than the rest of the turn's waits because it fetches the post's media and uploads it to the Files
 # API, and because answering blind about a link the user explicitly pointed at is the failure
-# this feature exists to prevent. The builder bounds its own media step just under this and
-# degrades to text, so the grace is a backstop rather than the usual exit. It starts only after
-# routing so an incidental link never begins network work, then overlaps any remaining context
-# preparation. Tune against the `gen_reply link context done` latency log.
+# this feature exists to prevent. The builder ends its own media step short of this deadline and
+# degrades to text, so the grace is a backstop that fires only on a read that outlasts it. It
+# starts only after routing so an incidental link never begins network work, then overlaps any
+# remaining context preparation. Tune against the `gen_reply link context done` latency log.
 LINK_CONTEXT_GRACE_SECONDS: Final[float] = 180.0
 
-# How far under the grace the media step gives up, so the builder degrades to its text block
-# itself instead of being cancelled with nothing to show. Two healthy fetches fit in it.
+# How long before the build's deadline the media step gives up, so the builder degrades to its
+# text block itself instead of being cancelled with nothing to show. It has to hold what a builder
+# still does once that bound fires: an abandoned download's stop join
+# (`DOWNLOAD_STOP_JOIN_SECONDS`), the scratch dir's removal, and rendering the text.
 LINK_MEDIA_DEGRADE_MARGIN_SECONDS: Final[float] = 10.0
 
-# Bound on the whole fetch + upload step for the media of a linked post, shared by every link
-# context builder. Derived rather than restated, because expiring before the grace does is the
-# whole reason the bound exists. Set well above a normal clip's cost -- watching the linked
-# video is the point, and the text block is already on hand, so waiting is cheaper than
-# answering blind.
+# The most the fetch + upload step for a linked post's media can get: the whole grace bar the
+# margin, which it has only when the read before it took no time. The step itself ends at the
+# build's deadline less the margin, so whatever the read spent comes out of it; each upload inside
+# the step carries this as its own bound, which the step's bound always reaches first. Derived
+# rather than restated, because expiring before the grace does is the whole reason the bound
+# exists. Set well above a normal clip's cost -- watching the linked video is the point, and the
+# text block is already on hand, so waiting is cheaper than answering blind.
 LINK_MEDIA_TIMEOUT_SECONDS: Final[float] = (
     LINK_CONTEXT_GRACE_SECONDS - LINK_MEDIA_DEGRADE_MARGIN_SECONDS
 )
@@ -226,10 +230,11 @@ VIDEO_DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 600.0
 
 # Ceiling on the Threads empty-page retry loop, measured from the first attempt, and sized
 # against the reply pipeline rather than against the fetch: a retry that eventually succeeds is
-# followed by the media step, which already claims almost all of `LINK_CONTEXT_GRACE_SECONDS` on
-# its own (`LINK_MEDIA_TIMEOUT_SECONDS`). Two more healthy fetches (~3s each) fit inside this; a
-# run of slow ones stops early instead of pushing the whole block past the grace. A retry that
-# never succeeds costs nothing extra downstream, since an unreadable post skips the media step.
+# followed by the media step, which ends short of the build's deadline however long the read
+# took, so every second spent retrying is a second the post's media does not get. Two more
+# healthy fetches (~3s each) fit inside this; a run of slow ones stops early instead of eating
+# that time. A retry that never succeeds costs nothing extra downstream, since an unreadable post
+# skips the media step.
 THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS: Final[float] = 10.0
 
 # --------------------------------------------------------------------------------------

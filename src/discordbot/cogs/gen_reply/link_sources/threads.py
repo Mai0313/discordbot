@@ -17,8 +17,8 @@ YouTube video) forwards it to Gemini untouched, which resolves only Files uris a
 Uploading is the one shape both paths accept; `files_api` has the details.
 
 The parse never waits on the `parse_threads` expansion, since reading a posted expansion back
-races the route gate, and the media fetch is bounded internally so this always returns inside
-the pipeline's post-route grace.
+races the route gate, and the media fetch stops short of the build's deadline so a post that was
+read always comes back inside the pipeline's post-route grace.
 """
 
 import asyncio
@@ -602,7 +602,9 @@ def _media_plan(target: ThreadsOutput) -> list[MediaPlanEntry]:
     return plan
 
 
-async def _ingest_media(target: ThreadsOutput, gemini_client: genai.Client) -> IngestedMedia:
+async def _ingest_media(
+    target: ThreadsOutput, gemini_client: genai.Client, deadline: float
+) -> IngestedMedia:
     """Runs the media ingestion under `bounded_media_step`, degrading to no parts.
 
     A degrade returns no groups at all rather than groups reporting everything as missing: with
@@ -624,7 +626,7 @@ async def _ingest_media(target: ThreadsOutput, gemini_client: genai.Client) -> I
         fallback="text only",
         degraded=IngestedMedia(),
         url=target.url,
-        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+        deadline=deadline,
         timeout_fields={
             "posts": len(plan),
             "image_count": sum(len(entry.post.image_urls) for entry in plan),
@@ -782,7 +784,7 @@ def _render_conversation_sections(
 
 
 async def build_threads_context_messages(
-    url: str, answer_model_is_gemini: bool, gemini_client: genai.Client | None
+    url: str, answer_model_is_gemini: bool, gemini_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Parses a Threads URL into answer-model input blocks.
 
@@ -799,6 +801,8 @@ async def build_threads_context_messages(
         answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
         gemini_client: Direct-to-Google client used for the media upload, or None when no key
             is configured, which reads the post as text just like a non-Gemini answer model.
+        deadline: Event-loop time the pipeline cancels this build at, which the media step
+            stops short of so the text still comes back.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.
@@ -827,7 +831,9 @@ async def build_threads_context_messages(
         text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
         media = IngestedMedia()
         if answer_model_is_gemini and gemini_client is not None:
-            media = await _ingest_media(target=target, gemini_client=gemini_client)
+            media = await _ingest_media(
+                target=target, gemini_client=gemini_client, deadline=deadline
+            )
 
     url_lines: list[str] = []
     if media.parts:

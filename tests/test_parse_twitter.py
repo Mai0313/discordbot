@@ -13,6 +13,7 @@ from tests.helpers.link_sources import (
     twitter_output,
     block_separator,
     serve_conversation,
+    link_build_deadline,
     accept_image_uploads,
 )
 
@@ -22,7 +23,11 @@ async def test_the_post_names_its_author_by_handle(monkeypatch: pytest.MonkeyPat
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=twitter_post(image_urls=[]))
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
 
     assert "@Dbacks" in block_body(blocks=blocks)
@@ -37,7 +42,11 @@ async def test_the_block_says_no_replies_are_included(monkeypatch: pytest.Monkey
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=twitter_post(image_urls=[]))
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
 
     assert "NONE of its replies are included" in block_separator(blocks=blocks)
@@ -53,7 +62,11 @@ async def test_a_truncated_post_says_so_in_the_body(monkeypatch: pytest.MonkeyPa
     )
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
 
     assert "longer than what is shown" in block_body(blocks=blocks)
@@ -64,7 +77,11 @@ async def test_an_ordinary_post_does_not_claim_to_be_cut(monkeypatch: pytest.Mon
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=twitter_post(image_urls=[]))
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
 
     assert "longer than what is shown" not in block_body(blocks=blocks)
@@ -83,7 +100,11 @@ async def test_the_post_it_replies_to_is_rendered_before_it(
     serve_conversation(monkeypatch, downloader=TwitterDownloader, post=conversation)
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
     body = block_body(blocks=blocks)
 
@@ -99,7 +120,11 @@ async def test_a_quoted_post_is_rendered_after_it(monkeypatch: pytest.MonkeyPatc
     )
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
     body = block_body(blocks=blocks)
 
@@ -129,6 +154,7 @@ async def test_the_quoted_post_says_its_pictures_are_not_attached(
         answer_model_is_gemini=True,
         gemini_client=make_stub_gemini_client(),
         allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     assert fetched == []
@@ -148,7 +174,11 @@ async def test_a_marker_in_a_quoted_post_is_defused(monkeypatch: pytest.MonkeyPa
     )
 
     blocks = await build_twitter_context_messages(
-        url=TWITTER_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=False
+        url=TWITTER_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=False,
+        deadline=link_build_deadline(),
     )
 
     assert "<forget-memory>" not in block_body(blocks=blocks)

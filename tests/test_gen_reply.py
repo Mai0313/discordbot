@@ -6729,6 +6729,39 @@ async def test_on_message_injects_a_selected_link_source_before_current(
 
 @pytest.mark.parametrize("name", _LINK_SOURCES)
 @pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_hands_each_link_build_the_deadline_it_is_held_to(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A builder is told the very deadline its build is cancelled at.
+
+    Its media step stops short of that deadline so the post's text still comes back; told any
+    other one, a slow read would again leave the step running into the cancellation.
+    """
+    cog = _link_cog(sources=[name])
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
+    enforced: list[float] = []
+
+    async def recording_run_until_deadline(
+        awaitable: Awaitable[list[EasyInputMessageParam]], deadline: float
+    ) -> list[EasyInputMessageParam]:
+        """Notes the deadline the pipeline holds the build to, then enforces it as usual."""
+        enforced.append(deadline)
+        return await run_until_deadline(awaitable=awaitable, deadline=deadline)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.pipeline.run_until_deadline", recording_run_until_deadline
+    )
+
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
+    )
+
+    (call,) = builder.calls
+    assert enforced == [call["deadline"]]
+
+
+@pytest.mark.parametrize("name", _LINK_SOURCES)
+@pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
