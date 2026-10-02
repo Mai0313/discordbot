@@ -114,7 +114,7 @@ async def assert_cleared_row(scope: str) -> MemoryJob:
     """Asserts a scope's `memory_job` row is a clear tombstone keeping nothing of the turn.
 
     Returns:
-        The tombstone, for a test that also checks its token.
+        The tombstone row.
     """
     job = await get_job(scope=scope)
     assert job is not None
@@ -135,8 +135,6 @@ async def drain_memory_turns(scopes: tuple[str, ...]) -> None:
     for scope in scopes:
         while (task := inflight._inflight_tasks.get(key=scope)) is not None:
             await asyncio.gather(task, return_exceptions=True)
-            # Lets the done-callback run, which clears the slot or starts the next queued turn.
-            await asyncio.sleep(0)
 
 
 async def wait_for_persisted_writes() -> None:

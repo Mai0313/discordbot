@@ -2280,7 +2280,8 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
         if guild == 99 and note == "在 99 說的":
             await started.wait()
     release.set()
-    await drain_memory_turns(scopes=(USER_SCOPE,))
+    while (task := inflight._inflight_tasks.get(key=USER_SCOPE)) is not None:
+        await task
 
     by_note = {
         note: request
@@ -4598,7 +4599,9 @@ async def test_a_members_new_nickname_is_staged_beside_the_one_already_waiting(
         observations=(_member_alias(summary="社群都叫 [id: 42] 李董，最近也叫他老李"),),
     )
     _schedule(writer=writer, subject=server_subject(server_id=555), scope=scope)
-    await drain_memory_turns(scopes=(scope,))
+    task = inflight._inflight_tasks.get(key=scope)
+    assert task is not None
+    await task
     assert "老李" in read_raw_entries(scope=scope)
 
 
@@ -4620,7 +4623,9 @@ async def test_pipeline_server_subject_renders_without_source_fields(
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     _schedule(writer=writer, subject=server_subject(server_id=555), scope=scope)
-    await drain_memory_turns(scopes=(scope,))
+    task = inflight._inflight_tasks.get(key=scope)
+    assert task is not None
+    await task
     raw_text = read_raw_entries(scope=scope)
     assert "喜歡簡短" in raw_text
     assert "- source:" not in raw_text
