@@ -269,9 +269,14 @@ class ResearchCogs(commands.Cog):
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
         if interaction.user is None or not isinstance(interaction.channel, TextChannel):
-            await interaction.response.send_message(
-                content=_launch_reply(outcome="unsupported", thread_id=None), ephemeral=True
+            # A user install also runs this in servers the bot was never added to, which carry a
+            # guild id but resolve no guild, so none of their channels resolves to a text channel.
+            content = (
+                "我沒有被加進這個伺服器,深度研究只能在我所在的伺服器裡開"
+                if interaction.guild is None and interaction.guild_id is not None
+                else _launch_reply(outcome="unsupported", thread_id=None)
             )
+            await interaction.response.send_message(content=content, ephemeral=True)
             return
         # Read for the bot's own member, whose token every later write uses, so a channel it cannot
         # run in is refused before a title call and an anchor ping are spent on it.

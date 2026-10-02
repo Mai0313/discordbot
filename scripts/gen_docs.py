@@ -164,9 +164,6 @@ class DocsGenerator(BaseModel):
     def source_files(self) -> list[Path]:
         """The source files selected for documentation generation.
 
-        Reading this clears `output_path` when `source_path` is a directory, so the
-        previously generated tree is gone before anything regenerates it.
-
         Returns:
             list[Path]: Source files under `source_path`, excluding configured entries and
             default skipped paths when `source_path` is a directory. Returns the
@@ -174,8 +171,6 @@ class DocsGenerator(BaseModel):
             when it is neither a valid file nor directory.
         """
         if self.source_path.is_dir():
-            if self.output_path.exists():
-                shutil.rmtree(self.output_path.absolute())
             exclude_list = [ex.strip() for ex in self.exclude.split(",")]
             need_to_exclude = list({*exclude_list, ".venv", "__init__.py"})
             all_files = self._get_all_files(suffix="py,ipynb")
@@ -288,7 +283,13 @@ class DocsGenerator(BaseModel):
         return await asyncio.gather(*tasks)
 
     async def gen_docs(self) -> None:
-        """Generates per-module markdown pages from the source files."""
+        """Generates per-module markdown pages from the source files.
+
+        When `source_path` is a directory, `output_path` is deleted first, so pages for sources
+        that no longer exist do not survive the run.
+        """
+        if self.source_path.is_dir() and self.output_path.exists():
+            shutil.rmtree(path=self.output_path.absolute())
         with Progress() as progress:
             total_files = len(self.source_files)
             task = progress.add_task(f"[green]Generating {total_files}...", total=total_files)

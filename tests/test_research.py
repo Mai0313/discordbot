@@ -9,7 +9,15 @@ import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import File, Embed, Thread, Permissions, TextChannel, AllowedMentions
+from nextcord import (
+    File,
+    Embed,
+    Thread,
+    Permissions,
+    TextChannel,
+    AllowedMentions,
+    PartialMessageable,
+)
 from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.llm import LLMConfig
@@ -1377,6 +1385,57 @@ async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
     ]
     channel.send.assert_not_called()
     channel.permissions_for.assert_called_once_with(channel.guild.me)
+
+
+@pytest.mark.parametrize(
+    ("channel_type", "bot_in_guild", "guild_id", "reply"),
+    [
+        (
+            PartialMessageable,
+            False,
+            100,
+            "我沒有被加進這個伺服器,深度研究只能在我所在的伺服器裡開",
+        ),
+        (
+            PartialMessageable,
+            False,
+            None,
+            "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)",
+        ),
+        (
+            Thread,
+            True,
+            100,
+            "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)",
+        ),
+    ],
+    ids=["server_without_the_bot", "dm", "thread"],
+)
+async def test_deep_research_names_why_it_cannot_open_here(
+    monkeypatch: pytest.MonkeyPatch,
+    channel_type: type,
+    bot_in_guild: bool,
+    guild_id: int | None,
+    reply: str,
+) -> None:
+    """A server the bot was never added to is named as the reason the command refuses there.
+
+    A user install reaches such servers, whose channels never resolve; a DM or a thread keeps the
+    channel-type reply.
+    """
+    channel = MagicMock(spec=channel_type)
+    channel.send = AsyncMock()
+    interaction = _ResearchInteraction(channel=channel)
+    if not bot_in_guild:
+        interaction.guild = None
+    interaction.guild_id = guild_id
+
+    await _launching_cog(monkeypatch=monkeypatch).deep_research(
+        as_interaction(fake=interaction), topic="topic"
+    )
+
+    assert interaction.response.sent == [{"content": reply, "ephemeral": True}]
+    channel.send.assert_not_called()
 
 
 class _RefusingThread(_FakeThread):

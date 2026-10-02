@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from random import Random
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, NoReturn, cast
+import sqlite3
 import contextlib
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
@@ -11,6 +12,7 @@ import pytest
 import logfire
 from nextcord import Embed, HTTPException
 from nextcord.ui import StringSelect
+from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.economy import (
@@ -658,6 +660,63 @@ async def test_a_start_whose_table_never_lands_returns_the_antes_and_reopens_the
         1: ANTE,
         2: ANTE,
     }
+    assert not view.is_finished()
+    await view.on_timeout()
+    assert scheduled.messages == [message]
+
+
+@pytest.mark.parametrize(
+    argnames=("failing_step", "error"),
+    argvalues=[
+        (
+            "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch",
+            OperationalError("ante", None, sqlite3.OperationalError("database is locked")),
+        ),
+        (
+            "discordbot.cogs.games.dragon_gate_views.DragonGateView.in_progress_embeds",
+            ValueError("table"),
+        ),
+    ],
+    ids=["ante_charge_fails", "table_build_fails"],
+)
+async def test_a_start_that_raises_before_its_table_is_up_charges_nothing_and_reopens_the_lobby(
+    monkeypatch: pytest.MonkeyPatch, failing_step: str, error: Exception
+) -> None:
+    """Whichever step of the start raises, the antes end where they were and the lobby reopens.
+
+    Left marked started, the lobby would refuse every press and skip its own timeout cleanup.
+    """
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    def failing(*_args: object, **_kwargs: object) -> NoReturn:
+        raise error
+
+    monkeypatch.setattr(failing_step, failing)
+    owner = await _funded(user_id=1, display_name="Alice", balance=1_000)
+    bob = await _funded(user_id=2, display_name="Bob", balance=1_000)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+
+    message = FakeDiscordMessage()
+    view = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
+        prepare_participant=joins_as(participant=bob),
+        refresh_participants=everyone_stays,
+        initial_jackpot=pool_before,
+    )
+    view.message = as_message(fake=message)
+    await lobby_button(view=view, label="加入").callback(
+        as_interaction(fake=FakeInteraction(user=FakeUser(user_id=2), message=message))
+    )
+    # Called directly, the press skips the view's on_error, so the raise reaches the test.
+    with pytest.raises(type(error)):
+        await lobby_button(view=view, label="開始").callback(
+            as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
+        )
+
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000)
+    await assert_wallet_consistent(user_id=2, expected_balance=1_000)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
     assert not view.is_finished()
     await view.on_timeout()
     assert scheduled.messages == [message]

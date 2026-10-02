@@ -3770,6 +3770,53 @@ async def test_a_cleared_waiting_turn_does_not_end_the_replay(
     assert count_raw_entries(scope=USER_SCOPE) == int(dm_after_the_clear)
 
 
+async def test_a_turn_waiting_from_during_a_clear_is_not_merged_into_a_later_one(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiting turn the clear's closing stamp postdates is dropped even when superseded.
+
+    The newer turn from the same source then waits alone: neither its staged row nor its review
+    carries the older turn's note, and the older reply is told nothing was recorded.
+    """
+    _consolidate_at(monkeypatch=monkeypatch, entries=10)
+    writer, fake_client = _writer()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    requests: list[str] = []
+
+    async def first_call_waits(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        requests.append(body)
+        started.set()
+        await release.wait()
+        return _draft("清除之後說的")
+
+    fake_client.responses.answer = first_call_waits
+    _schedule(writer=writer)
+    await started.wait()
+    during_reports, during_report = _report_recorder()
+    after_reports, after_report = _report_recorder()
+    _schedule(writer=writer, remember_notes=("清除期間寫的",), report=during_report)
+    # Stands in for the clear's closing stamp, which the turn deferred during the clear predates.
+    mark_cleared(scope=USER_SCOPE)
+    _schedule(writer=writer, remember_notes=("清除之後寫的",), report=after_report)
+    await _wait_for_persisted_writes()
+    job = await get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.transcript is not None
+    assert "清除期間寫的" not in job.transcript
+    release.set()
+    await _drain_scope()
+    await _wait_for_persisted_writes()
+
+    assert not any("清除期間寫的" in request for request in requests)
+    assert "清除之後寫的" in requests[-1]
+    assert during_reports == [MemoryWriteSummary()]
+    assert len(after_reports) == 1
+    assert after_reports[0].remembered
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+
+
 # ---------------------------------------------------------------------------
 # two-tier detail store
 # ---------------------------------------------------------------------------
@@ -4571,6 +4618,58 @@ async def test_the_bot_stays_out_of_the_roster_when_its_reply_carried_an_attachm
     assert {
         observation.normalized_key: observation.sharing for observation in draft.observations
     } == {"pattern.drawing": "global", "pattern.duo": "source_only"}
+
+
+async def test_a_quoted_mention_of_the_bot_does_not_lock_an_observation() -> None:
+    """In a server the user's own words usually open with the bot's mention.
+
+    That token, like the bot's author prefix, names nobody but the bot, so quoting it keeps
+    the model's `global`, while a mention of anyone else in the same quote still locks.
+    """
+    bot_user_id = 999
+    fake_client = FakeMemoryClient()
+    writer = MemoryWriterAI(
+        client=cast("AsyncOpenAI", fake_client), model=TEST_MEMORY_MODEL, bot_user_id=bot_user_id
+    )
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者常請破貓幫忙畫圖",
+                normalized_key="pattern.drawing",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                evidence_quote=f"<@{bot_user_id}> 幫我畫一隻貓",
+            ),
+            _observation(
+                summary="使用者偏好簡短回覆",
+                normalized_key="preference.brevity",
+                evidence_quote=f"<@!{bot_user_id}> 回短一點",
+            ),
+            _observation(
+                summary="使用者喜歡貓的圖",
+                normalized_key="preference.cat_art",
+                evidence_quote=f"破貓 (破貓) [id: {bot_user_id}]: 這是你要的圖",
+            ),
+            _observation(
+                summary="使用者常常揪團",
+                normalized_key="pattern.party",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                evidence_quote=f"<@{bot_user_id}> 幫我約 <@55> 打排位",
+            ),
+        ),
+    )
+    draft = await _evaluate(writer=writer)
+    assert draft is not None
+    assert {
+        observation.normalized_key: observation.sharing for observation in draft.observations
+    } == {
+        "pattern.drawing": "global",
+        "preference.brevity": "global",
+        "preference.cat_art": "global",
+        "pattern.party": "source_only",
+    }
 
 
 @pytest.mark.usefixtures("memory_isolated_dir")
