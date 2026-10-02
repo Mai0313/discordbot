@@ -2,8 +2,9 @@
 
 from types import SimpleNamespace
 from random import Random
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 from pathlib import Path
+import contextlib
 
 import pytest
 import logfire
@@ -253,6 +254,73 @@ async def test_a_blackjack_start_discord_refuses_reopens_the_lobby_and_tells_the
     assert len(owner_interaction.followup.sent) == 1
     assert owner_interaction.followup.sent[0]["ephemeral"] is True
     assert reports == [(level, {"channel_id": 200, "message_id": 1, "code": failure.code})]
+    assert not lobby.is_finished()
+    await lobby.on_timeout()
+    assert scheduled.messages == [message]
+
+
+@pytest.mark.parametrize(
+    argnames="failure",
+    argvalues=[
+        make_forbidden(message="Missing Access"),
+        make_not_found(message="Unknown Message"),
+        make_server_error(),
+    ],
+    ids=["refused", "message_gone", "discord_failing"],
+)
+async def test_a_blackjack_start_whose_table_never_lands_keeps_the_channel_shoe(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException
+) -> None:
+    """No card of the failed deal was shown, so the next start deals from the shoe the bot counted."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    store = lobby._shoe_store
+    assert store is not None
+    before = list(store.shoes[7])
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    owner_interaction.edit_failure = failure
+
+    # Only a refusal is answered in place; any other failure still reaches the view's on_error.
+    with contextlib.suppress(HTTPException):
+        await lobby_button(view=lobby, label="開始").callback(
+            as_interaction(fake=owner_interaction)
+        )
+
+    assert store.shoes.get(7) == before
+
+
+@pytest.mark.parametrize(
+    argnames="failing_step", argvalues=["build_in_progress_embeds", "table_edit_kwargs"]
+)
+async def test_a_blackjack_start_that_raises_before_its_table_is_up_reopens_and_keeps_the_shoe(
+    monkeypatch: pytest.MonkeyPatch, failing_step: str
+) -> None:
+    """A start whose table is never sent reopens the lobby, whichever step raised.
+
+    Left marked started, the lobby would refuse every press and skip its own timeout cleanup.
+    """
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    def failing(**_kwargs: object) -> NoReturn:
+        raise ValueError(failing_step)
+
+    monkeypatch.setattr(target=blackjack_views, name=failing_step, value=failing)
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    store = lobby._shoe_store
+    assert store is not None
+    before = list(store.shoes[7])
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+
+    # Called directly, the press skips the view's on_error, so the raise reaches the test.
+    with pytest.raises(ValueError, match=failing_step):
+        await lobby_button(view=lobby, label="開始").callback(
+            as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
+        )
+
+    assert store.shoes.get(7) == before
     assert not lobby.is_finished()
     await lobby.on_timeout()
     assert scheduled.messages == [message]

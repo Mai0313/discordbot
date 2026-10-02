@@ -74,6 +74,14 @@ class BlackjackShoeStore(BaseModel):
             self._saved_generation[channel_id] = generation
         self.shoes[channel_id] = list(cards)
 
+    def put_back_shoe(self, channel_id: int, cards: list[Card]) -> None:
+        """Returns a shoe taken for a round that never showed a card, as it was taken.
+
+        A shoe another round saved to the channel since is kept instead, and no generation is
+        recorded, so a round already in play still saves over the returned shoe.
+        """
+        self.shoes.setdefault(channel_id, list(cards))
+
     def true_count(self, *, channel_id: int) -> float:
         """Returns the Hi-Lo true count the next round in this channel will start from.
 
