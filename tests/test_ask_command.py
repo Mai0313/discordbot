@@ -279,7 +279,7 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     interaction = _interaction(guild_id=guild_id, context=context)
     surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     turn = AnswerTurn(
-        config=LLMConfig(),
+        config=LLMConfig.model_construct(),
         media_delivery=hosting_off_planner(),
         toolkit=_toolkit(interaction=interaction),
         surface=surface,
@@ -485,7 +485,6 @@ def _ask_cog(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
     )
     cog.__dict__["toolkit"] = _toolkit(interaction=interaction)
-    cog.__dict__["media_delivery"] = hosting_off_planner()
     monkeypatch.setattr(ReplyPipeline, "run", run)
     return cog
 

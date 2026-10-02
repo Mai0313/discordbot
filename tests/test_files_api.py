@@ -12,7 +12,7 @@ from google.genai.types import FileState
 from discordbot.cogs.gen_reply.files_api import INPUT_FILE_UPLOAD_CONCURRENCY, upload_as_input_file
 
 from tests.helpers.casting import as_client
-from tests.helpers.gen_reply import FakeGeminiFiles, FakeGeminiClient
+from tests.helpers.gen_reply import FakeGeminiFiles, FakeGeminiClient, skip_files_api_poll_waits
 
 
 def _client(files: FakeGeminiFiles) -> genai.Client:
@@ -57,8 +57,9 @@ async def test_upload_streams_from_a_path_without_reading_it(tmp_path: Path) -> 
     assert files.uploaded_sources[0] is path
 
 
-async def test_upload_polls_until_active() -> None:
+async def test_upload_polls_until_active(monkeypatch: pytest.MonkeyPatch) -> None:
     """A file still PROCESSING is polled until it flips to ACTIVE."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
     files = FakeGeminiFiles(processing_rounds=2)
     uri = await _uploaded_uri(files=files, timeout_seconds=30.0)
     assert uri == "https://files.test/clip.mp4"

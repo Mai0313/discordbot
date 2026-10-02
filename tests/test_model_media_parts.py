@@ -16,7 +16,7 @@ flagged, and only where the part is built in place as a TypedDict call or a dict
 
 import ast
 
-from tests.helpers.source_tree import PACKAGE, python_modules
+from tests.helpers.source_tree import PACKAGE, called_name, python_modules
 
 # The helper that turns bytes already in hand into a `data:` URI. An `image_url` built by it is
 # inlined on purpose (the non-Gemini renderer and the generated-media reply paths).
@@ -26,23 +26,13 @@ _MEDIA_PART_CALLS = frozenset({"ResponseInputImageParam", "ResponseInputFilePara
 _MEDIA_PART_TYPES = frozenset({"input_image", "input_file"})
 
 
-def _called_name(node: ast.expr) -> str:
-    """Returns the bare name of a call target, or an empty string for anything else."""
-    if isinstance(node, ast.Call):
-        if isinstance(node.func, ast.Name):
-            return node.func.id
-        if isinstance(node.func, ast.Attribute):
-            return node.func.attr
-    return ""
-
-
 def _media_part_fields(node: ast.expr) -> list[tuple[str, ast.expr]] | None:
     """Returns the fields a media part is built with, or None when `node` builds none.
 
     A part reaches the model the same way whether it is built through its TypedDict or written
     as a dict literal whose `type` names a media part, so both shapes are read.
     """
-    if isinstance(node, ast.Call) and _called_name(node=node) in _MEDIA_PART_CALLS:
+    if isinstance(node, ast.Call) and called_name(node=node.func) in _MEDIA_PART_CALLS:
         return [(keyword.arg, keyword.value) for keyword in node.keywords if keyword.arg]
     if isinstance(node, ast.Dict):
         fields = [
@@ -62,7 +52,9 @@ def _offending_arguments(fields: list[tuple[str, ast.expr]]) -> list[str]:
     for name, value in fields:
         if name == "file_url":
             offenders.append("file_url")
-        elif name == "image_url" and _called_name(node=value) != _DATA_URI_BUILDER:
+        elif name == "image_url" and not (
+            isinstance(value, ast.Call) and called_name(node=value.func) == _DATA_URI_BUILDER
+        ):
             offenders.append("image_url")
     return offenders
 
@@ -70,6 +62,7 @@ def _offending_arguments(fields: list[tuple[str, ast.expr]]) -> list[str]:
 def test_no_media_part_is_built_from_a_remote_url() -> None:
     """No media part in src/ carries a remote URL; media reaches the model via the Files API."""
     findings: list[str] = []
+    inspected = 0
     for path in python_modules(root=PACKAGE):
         tree = ast.parse(source=path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -78,10 +71,12 @@ def test_no_media_part_is_built_from_a_remote_url() -> None:
             fields = _media_part_fields(node=node)
             if fields is None:
                 continue
+            inspected += 1
             findings.extend(
                 f"{path.relative_to(PACKAGE.parent)}:{node.lineno} passes {argument}"
                 for argument in _offending_arguments(fields=fields)
             )
+    assert inspected, "the scan read no media part, so it could not have flagged one"
     assert findings == [], (
         "media parts must reference an uploaded Files API uri via file_id, not a remote URL "
         f"(see the module docstring): {findings}"

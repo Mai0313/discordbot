@@ -45,7 +45,6 @@ from discordbot.typings.emojis import (
     INSTAGRAM_EMOJI,
 )
 from discordbot.typings.memory import (
-    MemoryFact,
     MemoryOwner,
     MemoryCredits,
     MemorySection,
@@ -69,7 +68,7 @@ from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.utils.media_delivery import MediaItem, MediaHostingService, MediaDeliveryPlanner
+from discordbot.utils.media_delivery import MediaItem
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
     count_media_parts,
@@ -89,7 +88,7 @@ from discordbot.cogs.gen_reply.recall import (
     render_callable_users_block,
     widen_allowlist_with_aliases,
 )
-from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
+from discordbot.services.memory.facts import mint_fact_id
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -183,6 +182,7 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
+from tests.helpers.memory import make_fact
 from tests.helpers.casting import (
     as_bot,
     as_client,
@@ -191,13 +191,13 @@ from tests.helpers.casting import (
     make_forbidden,
     make_not_found,
     make_invalid_form_body,
-    make_media_hosting_config,
 )
 from tests.helpers.gen_reply import (
     FakeGeminiFiles,
     FakeGeminiClient,
     event_stream,
     interactions_turn_events,
+    skip_files_api_poll_waits,
 )
 from tests.helpers.llm_input import (
     LINK_SOURCE_BLOCKS,
@@ -215,7 +215,8 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
 )
 from tests.helpers.usage_log import usage_records
-from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_off_planner
+from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner
+from tests.helpers.logfire_capture import capture_logs
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
 # stays off the live store.
@@ -630,14 +631,15 @@ class FakeImages:
         return SimpleNamespace(data=[SimpleNamespace(b64_json=png)])
 
 
-class FakeGeminiVideoClient:
-    """Fake native Gemini client exposing the async omni Interactions video API.
+class FakeGeminiVideoClient(FakeGeminiClient):
+    """Fake native Gemini client whose async omni Interactions video API renders one clip.
 
-    `interactions.create` returns a completed interaction carrying one output video uri;
-    `files.download` returns fake MP4 bytes; `files.upload`/`get` return an ACTIVE file for both
-    the source-video edit upload and the post-generation "watch the video" reply. Records each
-    call's `input`, `response_format`, and `generation_config` (mirroring the real `create(**body)`)
-    so tests can assert the task, aspect ratio, and reference-image / source-video wiring.
+    `interactions.create` returns a completed interaction carrying one output video uri; the
+    Files resource is a `FakeGeminiFiles`, which downloads that uri as fake MP4 bytes and takes
+    both the source-video edit upload and the post-generation "watch the video" reply. Records
+    each call's `input`, `response_format`, and `generation_config` (mirroring the real
+    `create(**body)`) so tests can assert the task, aspect ratio, and reference-image /
+    source-video wiring.
     """
 
     def __init__(self) -> None:
@@ -645,12 +647,7 @@ class FakeGeminiVideoClient:
         self.create_inputs: list[Any] = []
         self.create_response_formats: list[Any] = []
         self.create_configs: list[Any] = []
-        self.aio = SimpleNamespace(
-            interactions=SimpleNamespace(create=self._interactions_create),
-            files=SimpleNamespace(
-                download=self._files_download, upload=self._files_upload, get=self._files_get
-            ),
-        )
+        super().__init__(interactions=SimpleNamespace(create=self._interactions_create))
 
     async def _interactions_create(self, **body: object) -> SimpleNamespace:
         """Records the request body and returns a completed interaction with one output video."""
@@ -663,25 +660,6 @@ class FakeGeminiVideoClient:
             output_video=SimpleNamespace(
                 uri="https://files.test/video", data=None, mime_type="video/mp4"
             ),
-        )
-
-    async def _files_download(self, file: object) -> bytes:
-        """Returns fake MP4 bytes for the completed video."""
-        del file
-        return b"mp4"
-
-    async def _files_upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-        """Returns an ACTIVE uploaded file for the edit upload and the post-generation reply."""
-        del file, config
-        return SimpleNamespace(
-            name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
-        )
-
-    async def _files_get(self, name: str) -> SimpleNamespace:
-        """Returns the ACTIVE uploaded file when a caller polls it."""
-        del name
-        return SimpleNamespace(
-            name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
         )
 
 
@@ -831,27 +809,24 @@ def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
 
 
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
-    """Builds a ReplyGeneratorCogs over fake clients, its LLMConfig and media planner pinned.
+    """Builds a ReplyGeneratorCogs over fake clients, its LLMConfig pinned.
 
-    The config is every field's declared default, so a checkout's `.env` cannot decide a test,
-    and the planner never hosts, so an oversize item cannot reach a live serve directory; a test
-    about either sets it on the cog. Everything else, the usage recorder and the attachment
-    handler choice included, still reads the environment.
+    The config is every field's declared default, so a checkout's `.env` cannot decide a test;
+    a test about it sets it on the cog. Everything else, the media planner (which the suite
+    keeps from hosting), the usage recorder and the attachment handler choice included, still
+    reads the environment.
     """
     cog = ReplyGeneratorCogs(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
     )
     cog.config = LLMConfig.model_construct()
-    cog.__dict__["media_delivery"] = hosting_off_planner()
     cog.__dict__["openai_client"] = FakeClient()
     toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="")
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
-        # A fake of its own rather than the toolkit's video fake, whose uploads all answer
-        # with one uri; the keyless toolkit would hand the uploader no client at all.
-        files_client = as_client(fake=FakeGeminiClient())
-        handler.gemini_client = lambda: files_client
+        # The keyless toolkit would hand the uploader no client at all.
+        handler.gemini_client = lambda: toolkit.gemini_client
     # Seeded into the cached_property's slot, so every path reads this one rather than
     # building a real toolkit against the test deployment's empty credentials.
     cog.__dict__["toolkit"] = toolkit
@@ -1017,19 +992,20 @@ def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
     return cast("FakeGeminiVideoClient", cog.toolkit.gemini_client)
 
 
-def _config_stub(**flags: object) -> LLMConfig:
-    """Views a namespace carrying just the flags a test reads as the cog's LLMConfig.
+def _config_stub(**fields: object) -> LLMConfig:
+    """The cog's LLMConfig with `fields` set and every other field at its declared default.
 
-    Every inline marker is off unless `flags` turns it on, so nothing is appended to the answer
-    instructions a test did not ask for.
+    Never read from the environment. Every inline marker is off unless `fields` turns it on, so
+    nothing is appended to the answer instructions a test did not ask for.
     """
     markers_off = {
         "inline_voice_enabled": False,
         "inline_image_enabled": False,
-        "music_available": False,
-        "video_available": False,
+        "inline_music_enabled": False,
+        "inline_video_enabled": False,
     }
-    return cast("LLMConfig", SimpleNamespace(**(markers_off | flags)))
+    assert fields.keys() <= LLMConfig.model_fields.keys(), fields
+    return LLMConfig.model_construct().model_copy(update=markers_off | fields)
 
 
 def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test varies
@@ -1043,27 +1019,21 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
     """Seeds one stored fact, stamping everything consolidation owns.
 
     Memory is one fact per file, so a test states the body it wants injected and the
-    compartment it must be readable from; the id, the dates, the node type and the owner
-    follow from those exactly as the pipeline derives them.
+    compartment it must be readable from; the id, the node type and the owner follow from those
+    exactly as the pipeline derives them, and every seeded fact shares one date.
     """
     owner_id = scope_owner_id(scope=scope)
-    now = utc_now()
     write_fact(
         scope=scope,
-        fact=MemoryFact(
+        fact=make_fact(
+            owner=MemoryOwner(owner_id=owner_id, owner_name=f"U{owner_id} (u{owner_id})"),
             fact_id=mint_fact_id(compartment=compartment, summary=text),
             summary=text,
             section=section,
             durability=durability,
             text=text,
             compartment=compartment,
-            owner_id=owner_id,
-            owner_name=f"U{owner_id} (u{owner_id})",
             subject_id=subject_id,
-            node_type=node_type_for(section=section),
-            created=now,
-            last_confirmed=now,
-            keys=(),
         ),
     )
 
@@ -1560,13 +1530,7 @@ async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
     )
     streamer.content_started = True
     streamer.stored_content = "partial answer"
-    warned: list[tuple[str, dict[str, object]]] = []
-
-    def record_warn(message_text: str, **fields: object) -> None:
-        """Keeps every warn record with its fields."""
-        warned.append((message_text, fields))
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.logfire.warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
 
@@ -1970,7 +1934,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     result = await _streamer(
         message=message,
         voice_generator=cast("VoiceGenerator", synthesizer),
-        media_delivery=MediaDeliveryPlanner(media_hosting=_hosting_service(serve_dir=tmp_path)),
+        media_delivery=hosting_planner(serve_dir=tmp_path),
     ).stream(responses=_stream_events_from(events=_voice_marker_events()))
 
     _assert_no_voice_tags(result)
@@ -1989,15 +1953,6 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     # The media edit that appended the URL must carry AllowedMentions.none() so the already-pinged
     # author is never re-pinged; a regression dropping the kwarg would record None here.
     assert message.replies[0].allowed_mentions_seen[-1] is not None
-
-
-def _hosting_service(serve_dir: Path) -> MediaHostingService:
-    """Builds a real media-hosting service writing into a temp serve dir for the media routes."""
-    return MediaHostingService(
-        config=make_media_hosting_config(
-            enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
-        )
-    )
 
 
 async def test_finalize_media_edit_posts_followup_when_content_would_overflow() -> None:
@@ -2048,24 +2003,18 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
     if refused:
         reply.edit_error = RuntimeError("file uploads are limited here")
     streamer = _streamer(message=message, reply=as_message(fake=reply))
-    logged: list[str] = []
 
     async def voice_clip() -> MediaItem:
         """Stands in for a synthesized clip ready to attach."""
         return MediaItem(source=b"RIFF", filename="reply.wav")
 
-    def record(message_text: str, **kwargs: object) -> None:
-        """Records each info line's message."""
-        del kwargs
-        logged.append(message_text)
-
     monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
-    monkeypatch.setattr(streaming_module.logfire, "info", record)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     await streamer._attach_generated_media()
 
     assert ("⚠️" in message.added_reactions) is refused
-    assert ("Generated media attached" in logged) is not refused
+    assert ("Generated media attached" in [text for text, _ in logged]) is not refused
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -2581,7 +2530,7 @@ async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
                 output_audio=SimpleNamespace(data="not-valid-base64-x", mime_type="audio/mpeg")
             )
 
-    client = SimpleNamespace(aio=SimpleNamespace(interactions=_Interactions()))
+    client = FakeGeminiClient(interactions=_Interactions())
     generator = MusicGenerator(client=client, music_model=RuntimeModelCatalog().music_model)
 
     # The decode failure is swallowed (best-effort), so the streamer's media gather is never aborted.
@@ -2750,7 +2699,7 @@ async def test_video_generator_drops_clip_on_provider_error() -> None:
             del kwargs
             raise RuntimeError("omni unavailable")
 
-    client = SimpleNamespace(aio=SimpleNamespace(interactions=_Interactions()))
+    client = FakeGeminiClient(interactions=_Interactions())
     generator = VideoGenerator(client=client, video_model=RuntimeModelCatalog().video_model)
 
     # The failure is swallowed (best-effort), so the streamer's media gather is never aborted.
@@ -2907,15 +2856,6 @@ class _FakeInteractionsResource:
         return _stream_events_from(events=self._events)
 
 
-class _FakeInteractionsClient:
-    """Fake Gemini client exposing the async Interactions resource."""
-
-    def __init__(self, events: list[SimpleNamespace]) -> None:
-        """Wires the recorder under `aio.interactions` like the real client."""
-        self.recorder = _FakeInteractionsResource(events=events)
-        self.aio = SimpleNamespace(interactions=self.recorder)
-
-
 @pytest.mark.usefixtures("no_memory_review")
 async def test_youtube_qa_uses_interactions_backend() -> None:
     """A watched YouTube URL streams the answer through Interactions, not Responses.
@@ -2923,9 +2863,9 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     The graded effort is sent straight through as the Interactions thinking_level.
     """
     cog = _cog()
-    cog.config = _config_stub(youtube_video_enabled=True, gemini_key_configured=True)
-    fake = _FakeInteractionsClient(events=interactions_turn_events())
-    cog.toolkit.__dict__["gemini_client"] = fake
+    cog.config = _config_stub(youtube_video_enabled=True, gemini_api_key="test-key")
+    interactions = _FakeInteractionsResource(events=interactions_turn_events())
+    cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
@@ -2935,9 +2875,9 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
     assert _recorded(cog).responses.create_streams == []
-    assert len(fake.recorder.calls) == 1
-    assert fake.recorder.calls[0].generation_config["thinking_level"] == "low"
-    last_step_parts = fake.recorder.calls[0].input[-1]["content"]
+    assert len(interactions.calls) == 1
+    assert interactions.calls[0].generation_config["thinking_level"] == "low"
+    last_step_parts = interactions.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
@@ -2984,7 +2924,7 @@ async def test_youtube_qa_falls_back_to_responses(
     cog = _cog()
     cog.config = _config_stub(
         youtube_video_enabled=scenario != "kill_switch_off",
-        gemini_key_configured=scenario != "no_key",
+        gemini_api_key="" if scenario == "no_key" else "test-key",
     )
     if scenario == "non_gemini_model":
         monkeypatch.setattr(
@@ -2992,15 +2932,9 @@ async def test_youtube_qa_falls_back_to_responses(
             "slow_model",
             property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
         )
-    fake = _FakeInteractionsClient(events=interactions_turn_events())
-    cog.toolkit.__dict__["gemini_client"] = fake
-    logged: list[tuple[str, dict[str, object]]] = []
-
-    def record(message_text: str, **fields: object) -> None:
-        """Captures the info records the dispatch path emits."""
-        logged.append((message_text, fields))
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.logfire.info", record)
+    interactions = _FakeInteractionsResource(events=interactions_turn_events())
+    cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
 
     url = "https://youtu.be/jNQXAC9IVRw"
     yt_url = None if scenario == "no_url" else url
@@ -3009,7 +2943,7 @@ async def test_youtube_qa_falls_back_to_responses(
         system_prompt="SYS", context=ReplyContext(), yt_url=yt_url
     )
 
-    assert fake.recorder.calls == []
+    assert interactions.calls == []
     assert _recorded(cog).responses.create_streams == [True]
     # The fallback is silent to the user, so the log is the only place the reason survives. A
     # `no_url` turn never asked for the swap here, so it names no reason.
@@ -3114,18 +3048,6 @@ def _link_source(name: str) -> LinkContextSource:
     return next(source for source in LINK_CONTEXT_SOURCES if source.name == name)
 
 
-def test_link_url_for_source_searches_the_replied_to_message() -> None:
-    """Threads reads a link the user only replied to, like YouTube already does."""
-    referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")
-    message = FakeMessage(content="<@999> 這篇底下在吵什麼")
-    message.reference = FakeReference(resolved=referenced)
-
-    found = link_url_for_source(
-        source=_link_source(name="threads"), message=as_message(fake=message)
-    )
-    assert found == SAMPLE_POST_URLS["threads"]
-
-
 def test_link_url_for_source_finds_the_threads_share_form() -> None:
     """The share button copies `/share/<code>`, which the registry has to select like any post.
 
@@ -3201,25 +3123,6 @@ def test_link_url_for_source_skips_a_refused_link_in_the_replied_to_message(
 
     found = link_url_for_source(source=_link_source(name=name), message=as_message(fake=message))
     assert found == SAMPLE_POST_URLS[name]
-
-
-@pytest.mark.parametrize("name", ["douyin", "bilibili", "twitter"])
-def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(name: str) -> None:
-    """Three sources never widen to the replied-to message, for two different reasons.
-
-    Douyin and Bilibili carry a clip rather than a discussion and both are rate-limit sensitive,
-    so a passing mention one hop away is not worth a fetch. Twitter opts out because its endpoint
-    serves no replies at all: the three that DO widen are answering "what are people saying under
-    this", and a second read of a Twitter link finds exactly what the expansion already showed.
-    """
-    referenced = FakeMessage(content=f"看看這個 {SAMPLE_POST_URLS[name]}")
-    message = FakeMessage(content="<@999> 這在講什麼")
-    message.reference = FakeReference(resolved=referenced)
-
-    assert (
-        link_url_for_source(source=_link_source(name=name), message=as_message(fake=message))
-        is None
-    )
 
 
 def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message() -> None:
@@ -4129,17 +4032,6 @@ async def test_a_linked_page_that_is_not_an_image_still_raises(
         await load_image_bytes(source="https://cdn.test/gone.png")
 
 
-@pytest.fixture
-def files_api_poll_unslept(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Makes the Files API activation poll's backoff return at once."""
-
-    async def no_sleep(delay: float) -> None:
-        """Skips the backoff."""
-        del delay
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.asyncio.sleep", no_sleep)
-
-
 def _jump_files_api_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes every clock read of the Files API upload jump well past its activation bound.
 
@@ -4156,11 +4048,11 @@ def _jump_files_api_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("discordbot.cogs.gen_reply.files_api.time.monotonic", monotonic)
 
 
-@pytest.mark.usefixtures("files_api_poll_unslept")
 async def test_upload_file_polls_active_and_drops_unready_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies the upload polls to ACTIVE and drops files that never become usable."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
         return _fake_uploader(files=files)
@@ -4202,11 +4094,11 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     )
 
 
-@pytest.mark.usefixtures("files_api_poll_unslept")
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A timed-out upload is cached as pending and re-polled, not re-uploaded, next time."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
     # The first reference times out to PENDING.
     _jump_files_api_clock(monkeypatch=monkeypatch)
 
@@ -4289,6 +4181,7 @@ async def test_a_stalled_activation_read_drops_only_that_attachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A poll read that never returns fails the poll, however far off the poll's own bound is."""
+    skip_files_api_poll_waits(monkeypatch=monkeypatch)
     files = FakeGeminiFiles(processing_rounds=1)
     monkeypatch.setattr(files, "get", _stalled(call=files.get))
     monkeypatch.setattr(
@@ -4526,13 +4419,14 @@ def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
     can no longer reach the model, and Douyin's is the WAF-sensitive path an incident most
     wants left alone. Facebook and Instagram fetch and downscale their images before the upload
     those images could no longer feed, which is the same cost through a different door. Read off
-    the live registry so the wiring is what is pinned, and asserted over every source that has a
-    media step at all rather than the two it was written for.
+    the live registry so the wiring is what is pinned, and asserted over every source whose media
+    a switch can turn off rather than the two it was written for. Threads is the one source with
+    a media step and no such switch: it fetches its media even with the Files API off.
     """
     monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
     monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
     monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
-    gated = ("douyin", "bilibili", "facebook", "instagram", "twitter")
+    gated = [name for name, case in _LINK_CASES.items() if case.media_switch is not None]
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
     on = LLMConfig()
@@ -4634,28 +4528,12 @@ async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
     )
 
 
-def _message_recorder(into: list[str]) -> Callable[..., None]:
-    """A logfire level stand-in that keeps each record's message and drops its fields."""
-
-    def record(message: str, **kwargs: object) -> None:
-        """Records the message."""
-        del kwargs
-        into.append(message)
-
-    return record
-
-
 async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
     monkeypatch.setenv(name="XAI_API_KEY", value="")
-    logged: list[str] = []
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.grok_file_api.logfire.error",
-        _message_recorder(into=logged),
-    )
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     renderer = GrokFileUploader()
     assert (
         await renderer._upload_file(
@@ -4663,7 +4541,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
         )
         is None
     )
-    assert logged == ["xAI Files API key missing; dropping attachment"]
+    assert [text for text, _ in logged] == ["xAI Files API key missing; dropping attachment"]
 
 
 async def test_gemini_uploader_uploads_through_the_toolkit_client(
@@ -4680,12 +4558,7 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
     assert isinstance(keyed_handler, GeminiFileUploader)
     assert keyed_handler.gemini_client() is keyed.gemini_client
 
-    logged: list[str] = []
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.attachment.gemini_file_api.logfire.error",
-        _message_recorder(into=logged),
-    )
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
     keyless = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
     keyless_handler = keyless.input_builder.attachment_handler
     assert isinstance(keyless_handler, GeminiFileUploader)
@@ -4695,7 +4568,7 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
         )
         is None
     )
-    assert logged == ["gemini Files API key missing; dropping attachment"]
+    assert [text for text, _ in logged] == ["gemini Files API key missing; dropping attachment"]
 
 
 def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:
@@ -5269,14 +5142,7 @@ async def test_a_render_degrades_when_the_modality_gate_raises(
 ) -> None:
     """A raising modality gate degrades either render to empty text, not a pipeline abort."""
     cog = _cog()
-    warned: list[str] = []
-
-    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records which render reported the failure."""
-        del kwargs
-        warned.append(message)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.input.logfire.warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     def boom(model_name: str) -> set[str]:
         """Stands in for any unexpected failure inside the gate; the lookup itself cannot."""
@@ -5294,7 +5160,7 @@ async def test_a_render_degrades_when_the_modality_gate_raises(
     )
 
     assert rendered == EasyInputMessageParam(role="user", content="")
-    assert warned == [logged]
+    assert [text for text, _ in warned] == [logged]
 
 
 # ---- prompt director (PromptGenerator) ----
@@ -5389,14 +5255,7 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
-    started: list[dict[str, object]] = []
-
-    def record_info(message_text: str, **fields: object) -> None:
-        """Keeps the fields of the route's start record."""
-        if message_text == "gen_reply image generation start":
-            started.append(fields)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.logfire.info", record_info)
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
     message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(filename="pic.png", content_type="image/png", payload=_png_bytes())
@@ -5409,7 +5268,11 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     assert _recorded(cog).images.edit_calls == 1
     assert _recorded(cog).images.generate_calls == 0
     # The message replies to nothing, yet its own image is what makes this an edit.
-    assert [fields["has_source_images"] for fields in started] == [True]
+    assert [
+        fields["has_source_images"]
+        for text, fields in logged
+        if text == "gen_reply image generation start"
+    ] == [True]
 
 
 async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
@@ -5552,9 +5415,7 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
 ) -> None:
     """An image too big to upload is hosted as a URL; the persona reply rides a separate message."""
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
 
@@ -5578,9 +5439,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
 ) -> None:
     """Hosted oversize image: a failed persona stream deletes the fresh base, leaving no orphan."""
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(
         filesize_limit=4
@@ -5606,13 +5465,13 @@ async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> Non
     """IMAGE route, hosting off + oversize: the native attach is attempted and its error propagates.
 
     With no host available the deliverable cannot degrade to a URL, so `MediaReplyRoutes._deliver`
-    falls through to the native attach (which Discord 400s on oversize); that error must stay on the
-    route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
+    falls through to the native attach (which Discord 413s on oversize); that error must stay on the
+    route's outer hard-fail path, never a silent drop. A FakeMessage models the 413 via reply_error.
     """
     cog = _cog()
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
-    # The native attach of an oversized file 400s on real Discord; the fake raises it on reply.
+    # The native attach of an oversized file 413s on real Discord; the fake raises it on reply.
     message.reply_error = nextcord.HTTPException(
         cast("ClientResponse", SimpleNamespace(status=413, reason="Payload Too Large")),
         {"code": 40005, "message": "Request entity too large"},
@@ -5629,9 +5488,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
 ) -> None:
     """Oversized video hosted as a URL: a failed Files-API upload leaves no empty persona message."""
     cog = _cog()
-    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
-        media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
+    cog.__dict__["media_delivery"] = hosting_planner(serve_dir=tmp_path)
 
     async def _no_upload(**kwargs: object) -> None:
         """Simulates the post-delivery Files-API upload failing."""
@@ -5810,7 +5667,7 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
         del delay
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.asyncio.sleep", fast_sleep)
-    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=flaky_download)))
+    client = FakeGeminiClient(files=SimpleNamespace(download=flaky_download))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -5832,9 +5689,7 @@ async def test_a_stalled_clip_download_fails_the_video_within_its_bound(
         return b"mp4"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.01)
-    client = SimpleNamespace(
-        aio=SimpleNamespace(files=SimpleNamespace(download=_stalled(call=download)))
-    )
+    client = FakeGeminiClient(files=SimpleNamespace(download=_stalled(call=download)))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -5855,7 +5710,7 @@ async def test_a_never_servable_clip_fails_with_the_download_error_at_the_bound(
         raise RuntimeError("404 NOT_FOUND: file is not servable yet")
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.05)
-    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=download)))
+    client = FakeGeminiClient(files=SimpleNamespace(download=download))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -5877,9 +5732,7 @@ async def test_a_stalled_source_video_upload_fails_the_edit_within_its_bound(
         )
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.generation.FILES_READY_TIMEOUT_SECONDS", 0.01)
-    client = SimpleNamespace(
-        aio=SimpleNamespace(files=SimpleNamespace(upload=_stalled(call=upload)))
-    )
+    client = FakeGeminiClient(files=SimpleNamespace(upload=_stalled(call=upload)))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
@@ -6365,22 +6218,16 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
         raise RuntimeError("This model is currently experiencing high demand")
 
     monkeypatch.setattr(_recorded(cog).responses, "create", failing_create)
-    failures: list[dict[str, object]] = []
-
-    def record_error(message_text: str, **fields: object) -> None:
-        """Captures the failure record the turn's outer handler emits."""
-        failures.append({"text": message_text, **fields})
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.error", record_error)
+    failures = capture_logs(monkeypatch=monkeypatch, level="error")
 
     # The route fake answers QA, so the answer is the turn's only `responses.create`.
     message = FakeMessage(content="<@999> 幫我總結", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
     # The answer tier, not the triage tier the route ran on a moment earlier.
-    assert [
-        fields.get("model") for fields in failures if fields["text"] == "gen_reply failed"
-    ] == ["gemini-answer-tier"]
+    assert [fields.get("model") for text, fields in failures if text == "gen_reply failed"] == [
+        "gemini-answer-tier"
+    ]
 
 
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6475,7 +6322,7 @@ def _link_config(gemini_api_key: str) -> LLMConfig:
         douyin_video_enabled=True,
         bilibili_video_enabled=True,
         file_api_enabled=True,
-        gemini_key_configured=bool(gemini_api_key),
+        gemini_api_key=gemini_api_key,
     )
 
 
@@ -6775,8 +6622,10 @@ async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
     """Mentioning the bot in a reply to someone else's link reads it only where that adds news.
 
     A discussion source reads the comments its expansion never shows, so a reply asking about
-    them has nothing else to answer from; a clip, or a Twitter post whose endpoint serves no
-    replies, would only be read a second time, and stays on the current message.
+    them has nothing else to answer from, the way a replied-to YouTube link is watched. A clip,
+    or a Twitter post whose endpoint serves no replies, would only be read a second time, and
+    stays on the current message; Douyin and Bilibili are rate-limit sensitive besides, so a
+    passing mention one hop away is not worth their fetch.
     """
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
@@ -6936,7 +6785,6 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
     cog = _link_cog(sources=["douyin"])
     builder_started = asyncio.Event()
     resolving = asyncio.Event()
-    warned: list[dict[str, Any]] = []
 
     async def failing_builder(**kwargs: object) -> list[EasyInputMessageParam]:
         """Runs until cancelled, then fails instead of cancelling."""
@@ -6953,12 +6801,7 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
         resolving.set()
         return await await_deadline_bound_task(**kwargs)
 
-    def record_warn(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the fields of the off-route build failure report."""
-        if message == "Discarded speculative task failed":
-            warned.append(kwargs)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.speculation.logfire.warn", record_warn)
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages",
         failing_builder,
@@ -6975,7 +6818,11 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
 
     with pytest.raises(asyncio.CancelledError):
         await message_task
-    assert [record["message_id"] for record in warned] == [message.id]
+    assert [
+        fields["message_id"]
+        for text, fields in warned
+        if text == "Discarded speculative task failed"
+    ] == [message.id]
 
 
 async def test_run_until_deadline_keeps_result_completed_before_delayed_resume() -> None:
@@ -8504,17 +8351,16 @@ async def test_route_classify_carries_decision_and_defaults_qa(
     assert routed.link_context_sources == ["threads", "bilibili"]
     assert routed.effort == "low"
 
-    warned: list[str] = []
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.routing.logfire.warn", _message_recorder(into=warned)
-    )
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
     _recorded(cog).responses.output_parsed = None
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
     assert fallback.effort == "high"
     # Nothing raised, so this record is the only trace that the route was never read.
-    assert warned == ["RouteClassification returned no parsed output; defaulting to QA"]
+    assert [text for text, _ in warned] == [
+        "RouteClassification returned no parsed output; defaulting to QA"
+    ]
 
 
 async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:

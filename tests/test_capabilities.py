@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
-from nextcord import IntegrationType, InteractionContextType
+from nextcord import Locale, IntegrationType, InteractionContextType
 
 # The whole module, not the five tag constants by name: reading its namespace is what lets a
 # sixth marker be noticed instead of quietly falling outside a fixed import list.
@@ -85,6 +85,8 @@ _TABLE_CELL_RE = re.compile(pattern=r"(?<!\\)\|")
 # argument (`@bot`) is not one, and ends the path.
 _PATH_WORD_RE = re.compile(pattern=r"[\w\\|-]+")
 _COGS_DIR = PACKAGE / "cogs"
+# The locales every command name and description carries beside English.
+_REQUIRED_LOCALES = frozenset({Locale.zh_TW.name, Locale.ja.name})
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -441,6 +443,23 @@ def _undeclared_context_keywords(decorator: ast.Call) -> list[str]:
     ]
 
 
+def _localized_locales(decorator: ast.Call, keyword: str, label: str) -> set[str]:
+    """Returns the `Locale` members one localization dict of a declaration names, none if absent."""
+    for argument in decorator.keywords:
+        if argument.arg == keyword:
+            assert isinstance(argument.value, ast.Dict), (
+                f"{label}: {keyword} must be a literal dict"
+            )
+            return {
+                key.attr
+                for key in argument.value.keys
+                if isinstance(key, ast.Attribute)
+                and isinstance(key.value, ast.Name)
+                and key.value.id == "Locale"
+            }
+    return set()
+
+
 def _root_commands_missing_a_context() -> dict[str, list[str]]:
     """Returns the root commands not declaring both shared tuples, each with what it is missing."""
     missing: dict[str, list[str]] = {}
@@ -756,6 +775,22 @@ def test_every_root_command_declares_both_context_fields() -> None:
         "these root commands do not hand Discord the shared context tuples, so each is missing "
         f"from a surface it should reach: {missing}"
     )
+
+
+def test_every_command_localizes_its_name_and_description() -> None:
+    """Every command and group hands Discord its name and description in each required locale.
+
+    Read off every declaration in the cogs, so a command added anywhere is held to it with no
+    list kept here.
+    """
+    missing = [
+        f"/{path} {keyword}"
+        for path, (decorator, _, label) in _command_declarations().items()
+        for keyword in ("name_localizations", "description_localizations")
+        if not _localized_locales(decorator=decorator, keyword=keyword, label=f"{label} {path}")
+        >= _REQUIRED_LOCALES
+    ]
+    assert not missing, f"these declarations miss a required locale: {sorted(missing)}"
 
 
 def test_the_shared_context_tuples_reach_every_surface_discord_offers() -> None:
