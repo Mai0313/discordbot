@@ -193,7 +193,7 @@ class DragonGateRound(BaseModel):
         default=None, description="Turn awaiting a bet, None when the table is finished."
     )
     last_result: DragonGateTurnResult | None = Field(
-        default=None, description="Most recently resolved turn result."
+        default=None, description="Most recently recorded turn result."
     )
     player_deltas: dict[int, int] = Field(
         default_factory=dict,
@@ -255,8 +255,11 @@ class DragonGateRound(BaseModel):
             and self.active_turn.direction is None
         )
 
-    def place_bet(self, user_id: int, amount: int, jackpot: int) -> DragonGateTurnResult:
-        """Resolves the active player's bet by drawing the third card.
+    def resolve_bet(self, user_id: int, amount: int, jackpot: int) -> DragonGateTurnResult:
+        """Resolves the active player's bet by drawing the third card, booking nothing.
+
+        The table moves only when the caller hands the result to `record_result`, so a bet whose
+        settlement never lands leaves the round as it was.
 
         Args:
             user_id: Discord user ID that must match the active player.
@@ -284,8 +287,7 @@ class DragonGateRound(BaseModel):
 
         third_card = draw_card(rng=self.rng)
         outcome, delta = self._resolve_turn(turn=active_turn, third_card=third_card, amount=amount)
-        self.player_deltas[active_turn.participant.user_id] += delta
-        result = DragonGateTurnResult(
+        return DragonGateTurnResult(
             turn_number=active_turn.turn_number,
             participant=active_turn.participant,
             pillars=list(active_turn.pillars),
@@ -295,29 +297,20 @@ class DragonGateRound(BaseModel):
             delta=delta,
             direction=active_turn.direction,
         )
+
+    def record_result(self, result: DragonGateTurnResult) -> None:
+        """Books a settled bet into its player's running delta and deals the next turn.
+
+        Call it only once the result's settlement has landed, carrying the delta that settlement
+        applied.
+        """
+        self.player_deltas[result.participant.user_id] += result.delta
         self.last_result = result
         self._advance_to_next_active_turn()
-        return result
 
     def player_delta(self, user_id: int) -> int:
         """Returns a player's cumulative net delta for the table."""
         return self.player_deltas.get(user_id, 0)
-
-    def replace_last_result_delta(self, user_id: int, delta: int) -> DragonGateTurnResult:
-        """Replaces the latest result delta after database-side clamping.
-
-        Raises:
-            DragonGateParticipantUnknownError: No turn has resolved yet, or the
-                latest one belongs to another player.
-        """
-        result = self.last_result
-        if result is None or result.participant.user_id != user_id:
-            raise DragonGateParticipantUnknownError("No latest result for user")
-        previous_delta = result.delta
-        self.player_deltas[user_id] += delta - previous_delta
-        adjusted = result.model_copy(update={"delta": delta})
-        self.last_result = adjusted
-        return adjusted
 
     def is_active(self, user_id: int) -> bool:
         """Returns whether the given user is still seated and not withdrawn."""

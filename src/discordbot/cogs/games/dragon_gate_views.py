@@ -647,10 +647,14 @@ class DragonGateView(GameView):
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
-    async def _place_bet_locked_by_interaction(
+    async def _place_bet_locked_by_interaction(  # noqa: C901 -- resolve, settle and book share one hold of the round lock
         self, interaction: Interaction[commands.Bot], amount: int
     ) -> None:
-        """Resolves a bet, settles it against the jackpot, and refreshes the table."""
+        """Resolves a bet, settles it against the jackpot, then books it and refreshes the table.
+
+        A settlement that raises books nothing: the player is told, and the same gate takes the
+        next bet.
+        """
         if interaction.user is None:
             return
         message = interaction.message or self.message
@@ -671,7 +675,7 @@ class DragonGateView(GameView):
                 )
                 if amount > self._max_bet_for(user_id=interaction.user.id):
                     raise DragonGateBetRangeError("Bet exceeds the player's balance")
-                turn_result = self.round_state.place_bet(
+                turn_result = self.round_state.resolve_bet(
                     user_id=interaction.user.id, amount=amount, jackpot=self._jackpot_snapshot
                 )
             except DragonGateError as error:
@@ -680,20 +684,26 @@ class DragonGateView(GameView):
                 )
                 return
             was_loss = turn_result.delta < 0
-            settlement = await apply_jackpot_settlement(
-                player_id=interaction.user.id,
-                player_account_name=turn_result.participant.account_name,
-                player_avatar_url=turn_result.participant.avatar_url,
-                player_delta=turn_result.delta,
-                game_id=GAME_ID,
-                expected_jackpot_generation=self._jackpot_generation,
-            )
+            try:
+                settlement = await apply_jackpot_settlement(
+                    player_id=interaction.user.id,
+                    player_account_name=turn_result.participant.account_name,
+                    player_avatar_url=turn_result.participant.avatar_url,
+                    player_delta=turn_result.delta,
+                    game_id=GAME_ID,
+                    expected_jackpot_generation=self._jackpot_generation,
+                )
+            except Exception:
+                # Broad on purpose: whatever the write raised on, it rolled back and nothing was
+                # booked, so the player only needs telling; the re-raise reaches on_error, which
+                # logs it.
+                await self._send_notice(interaction=interaction, content="下注失敗, 這注不算")
+                raise
             player_balance = settlement.player_balance
             applied_delta = settlement.applied_player_delta
             if applied_delta != turn_result.delta:
-                turn_result = self.round_state.replace_last_result_delta(
-                    user_id=interaction.user.id, delta=applied_delta
-                )
+                turn_result = turn_result.model_copy(update={"delta": applied_delta})
+            self.round_state.record_result(result=turn_result)
             self._history.append(turn_result)
             self._jackpot_snapshot = settlement.jackpot_balance
             self._jackpot_generation = settlement.jackpot_generation

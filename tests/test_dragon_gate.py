@@ -189,7 +189,7 @@ def test_adjacent_non_pair_pillars_are_redealt_without_counting_turn() -> None:
     assert round_state.active_turn is not None
     assert [card.rank for card in round_state.active_turn.pillars] == ["5", "9"]
 
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
     assert result.outcome == "gate_win"
     assert result.delta == 10_000
 
@@ -200,7 +200,8 @@ def test_gate_win_returns_positive_delta() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")),
         participants=[_participant(user_id=1, display_name="Alice")],
     )
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
+    round_state.record_result(result=result)
 
     assert result.outcome == "gate_win"
     assert result.delta == 10_000
@@ -213,7 +214,8 @@ def test_outside_card_returns_negative_one_bet() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "K", "♣", "A", "♦", "K", "♥")),
         participants=[_participant(user_id=1, display_name="Alice")],
     )
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
+    round_state.record_result(result=result)
 
     assert result.outcome == "outside_lose"
     assert result.delta == -10_000
@@ -226,7 +228,8 @@ def test_pillar_hit_returns_negative_double_bet() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "9", "♣", "A", "♦", "K", "♥")),
         participants=[_participant(user_id=1, display_name="Alice")],
     )
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
+    round_state.record_result(result=result)
 
     assert result.outcome == "pillar_hit"
     assert result.delta == -20_000
@@ -241,10 +244,10 @@ def test_pair_gate_requires_high_or_low_choice() -> None:
     )
 
     with pytest.raises(expected_exception=ValueError, match="direction"):
-        round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+        round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
 
     round_state.choose_pair_direction(user_id=1, direction="higher")
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
     assert result.outcome == "pair_win"
     assert result.delta == 10_000
 
@@ -256,7 +259,8 @@ def test_pair_pillar_hit_returns_triple_loss() -> None:
         participants=[_participant(user_id=1, display_name="Alice")],
     )
     round_state.choose_pair_direction(user_id=1, direction="lower")
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
+    round_state.record_result(result=result)
 
     assert result.outcome == "pair_pillar_hit"
     assert result.delta == -30_000
@@ -275,7 +279,8 @@ def test_a_pair_card_on_the_side_not_called_loses_one_bet(
         participants=[_participant(user_id=1, display_name="Alice")],
     )
     round_state.choose_pair_direction(user_id=1, direction=direction)
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
+    round_state.record_result(result=result)
 
     assert (result.outcome, result.delta) == ("pair_lose", -10_000)
     assert round_state.player_delta(user_id=1) == -10_000
@@ -297,7 +302,7 @@ def test_an_ace_or_king_pair_is_dealt_with_the_only_guess_that_can_win(
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == expected
 
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
     assert (result.outcome, result.delta, result.direction) == ("pair_win", 10_000, expected)
 
 
@@ -344,7 +349,9 @@ def test_turns_rotate_through_active_seats() -> None:
         ],
     )
 
-    round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    round_state.record_result(
+        result=round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
+    )
 
     assert round_state.finished is False
     assert round_state.active_turn is not None
@@ -415,7 +422,9 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     assert "11萬" in progress.description
     assert "輪到 Alice" in progress.description
 
-    assert round_state.place_bet(user_id=1, amount=10_000, jackpot=110_000).outcome == "gate_win"
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=110_000)
+    assert result.outcome == "gate_win"
+    round_state.record_result(result=result)
     results = [
         DragonGatePlayerResult(
             participant=owner,
@@ -1352,6 +1361,82 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     assert 1 not in view._refunded_to_pool
 
 
+@pytest.mark.parametrize(
+    argnames=("third_cards", "paid_bets", "written"),
+    argvalues=[(("7", "♣"), 0, []), (("K", "♣", "4", "♦", "Q", "♣", "7", "♣"), 1, [20, -20])],
+    ids=["unpaid-win", "unpaid-loss-then-paid-win"],
+)
+async def test_a_bet_whose_settlement_raises_counts_nowhere_at_the_table(
+    monkeypatch: pytest.MonkeyPatch,
+    third_cards: tuple[str, ...],
+    paid_bets: int,
+    written: list[int],
+) -> None:
+    """A bet the ledger never wrote leaves no trace, so leaving takes back only paid winnings.
+
+    Counted, an unpaid win is taken from the wallet on leave, and an unpaid loss hides a later
+    paid win from that clawback.
+    """
+    alice = await _funded(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", *third_cards)), participants=[alice]
+    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    failures = iter([
+        OperationalError("bet", None, sqlite3.OperationalError("database is locked"))
+    ])
+    settled: list[int] = []
+
+    async def settle(**kwargs: Any) -> JackpotSettlementResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Refuses the first write as a locked database would, then settles every later one."""
+        failure = next(failures, None)
+        if failure is not None:
+            raise failure
+        settled.append(kwargs["player_delta"])
+        return await apply_jackpot_settlement(**kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", settle)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
+    message = FakeDiscordMessage()
+    view = DragonGateView(
+        round_state=round_state,
+        owner=alice,
+        jackpot_snapshot=pool_before,
+        final_balances={1: 1_000_000},
+    )
+    view.message = as_message(fake=message)
+    view.sync_controls()
+
+    refused = FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+    # Called directly, the press skips the view's on_error, so the raise reaches the test.
+    with pytest.raises(OperationalError):
+        await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=refused))
+
+    assert refused.followup.sent == [{"content": "下注失敗, 這注不算", "ephemeral": True}]
+    assert round_state.player_delta(user_id=1) == 0
+    assert round_state.last_result is None
+    assert round_state.turn_number == 1, "the same gate takes the next bet"
+    assert view._history == []
+
+    for _ in range(paid_bets):
+        await view._handle_bet_choice(
+            choice="min",
+            interaction=as_interaction(
+                fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:bet")
+            ),
+        )
+    await attached_button(view=view, custom_id="dg:leave").callback(
+        as_interaction(
+            fake=FakeInteraction(user=FakeUser(user_id=1), message=message, custom_id="dg:leave")
+        )
+    )
+
+    # order-contract: the leave hands back winnings a bet already wrote.
+    assert settled == written
+    await assert_wallet_consistent(user_id=1, expected_balance=1_000_000)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
+
+
 async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> None:
     """Only the active player can bet; the leave button is open to all seated."""
     alice = _participant(user_id=1, display_name="Alice")
@@ -1637,7 +1722,7 @@ def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[participant]
     )
-    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
 
     embed = build_dragon_gate_history_embed(history=[result], round_state=round_state)
 
