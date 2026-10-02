@@ -1,6 +1,6 @@
 """Timed cleanup helpers for public Discord messages."""
 
-from typing import Final
+from typing import Any, Final
 import asyncio
 from datetime import UTC, datetime
 
@@ -230,6 +230,29 @@ def report_press_failure(error: HTTPException, message: Message, action: str) ->
         logfire.warn(
             text, message_id=message_id, channel_id=channel_id, code=error.code, _exc_info=error
         )
+
+
+async def edit_public_message(
+    message: Message, interaction: Interaction[commands.Bot] | None, payload: dict[str, Any]
+) -> None:
+    """Edits a public message through a press on it while that press's token lives, else the channel.
+
+    A press's own token edits the message its control sits on whatever the channel allows, where
+    the channel endpoint answers 403 once the server shuts the bot out. An edit no press
+    triggered, a timeout's, rides the last press acknowledged on the message, so only a message
+    with no live press left has only the channel. That press must be one answered on the message
+    itself: a press answered with a private notice holds a token for that notice instead. A
+    token that fails hands the edit to the channel too, since only the channel tells a message
+    already gone from a token that cannot reach it.
+    """
+    if interaction is not None and not interaction.is_expired():
+        try:
+            await interaction.edit_original_message(**payload)
+        except HTTPException as error:
+            report_press_failure(error=error, message=message, action="edit")
+        else:
+            return
+    await message.edit(**payload)
 
 
 async def _deleted_through_press(

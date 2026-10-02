@@ -44,6 +44,7 @@ from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.utils.message_cleanup import list_pending_public_messages
 
+from tests.helpers.games import ScheduledDeletes
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -290,10 +291,13 @@ def _record_scheduled(
     scheduled: list[FakeDiscordMessage] = []
 
     def record_scheduled(
-        message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
+        message: FakeDiscordMessage,
+        delay: float = 180,
+        user_name: str | None = None,
+        interaction: object | None = None,
     ) -> None:
         """Records the message handed over for cleanup."""
-        del delay, user_name
+        del delay, user_name, interaction
         scheduled.append(message)
 
     monkeypatch.setattr(module, "schedule_public_message_delete", record_scheduled)
@@ -1027,6 +1031,69 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
     assert scheduled == [message]
+
+
+@pytest.mark.parametrize(
+    argnames=("custom_id", "user_id"),
+    argvalues=[("credit:approve", 3), ("credit:reject", 3), ("credit:cancel", 2)],
+    ids=["bystander_approves", "bystander_rejects", "lender_cancels"],
+)
+async def test_a_loan_panel_kept_open_by_a_refused_press_closes_through_it(
+    monkeypatch: pytest.MonkeyPatch, custom_id: str, user_id: int
+) -> None:
+    """A refused press restarts the panel's timer, so the timeout closes the panel through it.
+
+    By then the slash command's own token, the only other way to the panel, can be past its life.
+    """
+
+    async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
+        """Answers the rejection the timeout asks for."""
+        return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
+            update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
+        )
+
+    monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
+    scheduled = ScheduledDeletes()
+    monkeypatch.setattr(views, "schedule_public_message_delete", scheduled)
+    followup = FakeDiscordMessage()
+    followup.edit_failure = make_not_found(message="Unknown Webhook")
+    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view.message = as_message(fake=followup)
+    panel = FakeDiscordMessage()
+    press = FakeInteraction(user=FakeUser(user_id=user_id, name="charlie"), message=panel)
+    button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
+
+    await button.callback(as_interaction(fake=press))
+    await view.on_timeout()
+
+    assert [(edit["embed"].title, edit["view"]) for edit in press.edits] == [
+        ("信貸申請已逾時", None)
+    ]
+    assert (scheduled.messages, scheduled.interactions) == ([panel], [press])
+    assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
+
+
+async def test_a_decided_loan_panel_is_deleted_through_the_deciding_press(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The delete runs three minutes after the deciding press, while that press's token lives.
+
+    Refused presses can have kept the panel open until the slash command's own token is near
+    its end, so the delete cannot ride that one.
+    """
+    monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_loan_proposal)
+    scheduled = ScheduledDeletes()
+    monkeypatch.setattr(views, "schedule_public_message_delete", scheduled)
+    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view.message = as_message(fake=FakeDiscordMessage())
+    panel = FakeDiscordMessage()
+    press = FakeInteraction(user=FakeUser(user_id=1, name="alice"), message=panel)
+    button = next(c for c in view.children if getattr(c, "custom_id", "") == "credit:cancel")
+
+    await button.callback(as_interaction(fake=press))
+
+    assert press.edits[0]["embed"].title == "信貸申請已取消"
+    assert (scheduled.messages, scheduled.interactions) == ([panel], [press])
 
 
 async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) -> None:

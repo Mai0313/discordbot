@@ -61,7 +61,7 @@ def lobby_button(view: View, label: str) -> Button[Any]:
 
 
 class ScheduledDeletes:
-    """What the games handed to the public-message cleanup, recorded in place of a deletion."""
+    """What a view handed to the public-message cleanup, recorded in place of a deletion."""
 
     def __init__(self) -> None:
         """Initializes one list per argument, in call order."""
