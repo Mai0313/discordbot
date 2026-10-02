@@ -294,7 +294,7 @@ class MessageInputBuilder(BaseModel):
     def _split_on_modality(
         self, sources: list[AttachmentSource], model_name: str
     ) -> tuple[list[AttachmentSource], list[tuple[AttachmentSource, str]]]:
-        """Splits sources into those the named model accepts and those it does not.
+        """Splits sources into what the named model accepts and the renderer carries, and the rest.
 
         Takes the name rather than reading it, because `slow_model` rebuilds its settings on
         every read and a tier that dispatches on the hour would hand the gate one model and the
@@ -303,7 +303,10 @@ class MessageInputBuilder(BaseModel):
         Returns:
             The accepted sources, and each rejected one beside the modality it needed.
         """
-        modalities = get_supported_modalities(model_name=model_name)
+        modalities = (
+            get_supported_modalities(model_name=model_name)
+            - self.attachment_handler.dropped_modalities
+        )
         accepted: list[AttachmentSource] = []
         rejected: list[tuple[AttachmentSource, str]] = []
         for source in sources:
@@ -336,7 +339,7 @@ class MessageInputBuilder(BaseModel):
     def _supported_sources(
         self, sources: list[AttachmentSource], message_id: int
     ) -> list[AttachmentSource]:
-        """Drops sources whose required modality the slow model cannot accept.
+        """Drops sources whose required modality the slow model or the renderer cannot take.
 
         Gating once on the shared source list keeps the text-only marker render and the
         Files-API upload render in agreement: the route never marks an attachment the
@@ -351,6 +354,7 @@ class MessageInputBuilder(BaseModel):
                 "gen_reply skipping unsupported attachment",
                 modality=required,
                 model=model_name,
+                renderer=type(self.attachment_handler).__name__,
                 cache_key=loggable_cache_key(cache_key=source.cache_key),
                 content_type=source.content_type,
                 message_id=message_id,

@@ -39,6 +39,8 @@ class InlineRenderer(AttachmentRenderer):
     files as `input_text`, and anything else is dropped.
     """
 
+    dropped_modalities = frozenset({"video", "audio"})
+
     async def render_image(
         self,
         source: Attachment | StickerItem | str,
@@ -71,13 +73,9 @@ class InlineRenderer(AttachmentRenderer):
                 url=attachment.url,
             )
             return None
-        if mime_type.startswith(("video/", "audio/")):
-            # `_inline_file_part` drops these anyway, and reaching it means downloading the
-            # whole clip first. Free until `file_api_enabled` made this renderer reachable for
-            # a Gemini answer model: every other provider's modality gate (`_supported_sources`,
-            # keyed on the slow model) already rejects them before any renderer runs. A dropped
-            # part also keeps the whole message out of the render cache, so without this the
-            # clip is re-downloaded on every single reply.
+        if mime_type.partition("/")[0] in self.dropped_modalities:
+            # The modality gate already keeps these out, so only a direct caller gets here;
+            # `_inline_file_part` would drop the clip too, but only after downloading all of it.
             logfire.warn(
                 "dropping video / audio attachment the inline renderer cannot carry",
                 filename=attachment.filename,

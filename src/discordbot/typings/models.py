@@ -218,7 +218,7 @@ class RuntimeModelCatalog(BaseModel):
         # one a reply's footer shows no cost and the
         # attachment modality gate falls back to its `{"text", "image"}` baseline. That gate feeds
         # BOTH renders, so an audio or video attachment does not merely go unuploaded: its
-        # `[attachment: video]` marker never reaches the route either, and the answer model is
+        # `[attachment: file]` marker never reaches the route either, and the answer model is
         # not told the file existed. A clip posted with one line of text is then answered as if
         # the line were the whole message, which is a wrong answer rather than a degraded one.
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
