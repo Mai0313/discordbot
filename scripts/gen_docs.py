@@ -215,6 +215,15 @@ class DocsGenerator(BaseModel):
                     note_content += (
                         f"::: {file.with_suffix('').as_posix().replace('/', '.')}.{node.name}\n"
                     )
+            # A class directive renders only that class, so a module with classes also names its
+            # public functions; a module without one keeps the whole-module directive below.
+            if note_content:
+                note_content += "".join(
+                    f"::: {file.with_suffix('').as_posix().replace('/', '.')}.{node.name}\n"
+                    for node in tree.body
+                    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and not node.name.startswith("_")
+                )
         else:
             raise ValueError("Invalid mode")
         if not note_content:
