@@ -109,7 +109,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                          |
 | `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                                  |
 | `/balance [member]`                         | Privately shows a member's 虛擬歡樂豆 balance, debt, net worth, and VIP status.                                                                            |
-| `/vip`                                      | Buys permanent VIP perks.                                                                                                                                  |
+| `/vip`                                      | Buys permanent VIP perks; overlapping purchases charge once and report existing VIP status.                                                                |
 | `/leaderboard`                              | Shows the global top balances.                                                                                                                             |
 | `/loss_leaderboard`                         | Shows today's accumulated casino losses.                                                                                                                   |
 | `/credit status\|borrow\|call\|repay`       | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.                                         |
