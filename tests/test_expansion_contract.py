@@ -440,6 +440,57 @@ async def test_a_link_the_cog_refuses_does_not_hide_a_post_after_it(
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+@pytest.mark.parametrize(
+    argnames="wrapping",
+    argvalues=["||{url}||", "||look at this {url} ||", "<{url}>"],
+    ids=["spoiler", "spoiler-around-text", "angle-brackets"],
+)
+async def test_a_link_the_poster_hid_is_left_alone(
+    cog: type[ExpansionCog[Any]], wrapping: str
+) -> None:
+    """A card would show everyone a link its poster spoilered or kept Discord from previewing."""
+    staged = _stage(cog=cog, outcome="readable")
+    staged.message.content = wrapping.format(url=staged.message.content)
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.reads == []
+    assert staged.message.reactions == []
+    assert staged.message.replies == []
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_hidden_link_does_not_hide_the_open_one_after_it(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """Hiding is read per link, and a link glued to someone's mention is still in the open."""
+    staged = _stage(cog=cog, outcome="readable")
+    post = staged.message.content
+    hidden = [f"{post}?h=1", f"{post}?h=2"]
+    # A hidden copy the pattern cut back to `post`, or one it refuses, could not tell which was read.
+    assert all(
+        cog.URL_PATTERN.fullmatch(string=url) and cog.url_is_expandable(url=url) for url in hidden
+    )
+    staged.message.content = f"||{hidden[0]}|| 跟 <{hidden[1]}> 跟 <@42>{post}"
+    read = staged.cog.read
+    urls: list[str] = []
+
+    async def recording_read(
+        message: Message, url: str, stack: contextlib.AsyncExitStack
+    ) -> object:
+        """Notes which link the shell chose, then reads it."""
+        urls.append(url)
+        return await read(message=message, url=url, stack=stack)
+
+    staged.cog.__dict__["read"] = recording_read
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert urls == [post]
+    assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_bot_author_is_ignored(cog: type[ExpansionCog[Any]]) -> None:
     """Otherwise the bot's own posts, and other bots' link cards, would be expanded again."""
     staged = _stage(cog=cog, outcome="readable")
