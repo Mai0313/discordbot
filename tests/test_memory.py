@@ -1,4 +1,4 @@
-"""Tests for the per-user long-term memory helpers."""
+"""Tests for the memory store, writer, pipeline, `memory_job` rows and `/memory` cog."""
 
 import re
 import time
@@ -119,6 +119,7 @@ from tests.helpers.memory import (
 )
 from tests.helpers.casting import as_interaction
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -5109,16 +5110,12 @@ async def test_cancelled_clear_still_records_that_it_erased(
     """A cancelled clear erased as much as any other, so both its traces still land."""
     _populate_every_tier()
     commits: list[tuple[str, str]] = []
-    audit: list[dict[str, object]] = []
 
     def record_commit(scope: str, reason: str) -> None:
         commits.append((scope, reason))
 
-    def record_audit(message: str, **fields: object) -> None:
-        audit.append({"message": message, **fields})
-
     monkeypatch.setattr(pipeline, "memory_git", SimpleNamespace(enqueue=record_commit))
-    monkeypatch.setattr(pipeline.logfire, "info", record_audit)
+    infos = capture_logs(monkeypatch=monkeypatch, level="info")
     clear_job_started, release_clear_job = _hold_clear_job(monkeypatch=monkeypatch)
     clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
     await clear_job_started.wait()
@@ -5130,7 +5127,7 @@ async def test_cancelled_clear_still_records_that_it_erased(
     assert not (memory_isolated_dir / str(USER_ID)).exists()
     assert commits == [(USER_SCOPE, "clear")]
     recorded = [
-        entry for entry in audit if entry["message"] == "Cleared personal memory on request"
+        fields for message, fields in infos if message == "Cleared personal memory on request"
     ]
     assert len(recorded) == 1
     assert recorded[0]["removed_files"] is True
