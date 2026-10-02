@@ -241,6 +241,17 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def _replace_file(path: Path, text: str) -> None:
+    """Replaces a memory file atomically, writing a `.md.tmp` sibling and moving it over `path`.
+
+    The sibling's name is what `delete_memory_files` and `_is_store_file` recognise a stranded
+    one by.
+    """
+    tmp_path = path.with_suffix(".md.tmp")
+    tmp_path.write_text(data=text, encoding="utf-8")
+    os.replace(src=tmp_path, dst=path)
+
+
 def _fact_paths(directory: Path) -> list[Path]:
     """Returns the fact files in one compartment directory, missing dir counting as none.
 
@@ -350,10 +361,7 @@ def write_fact(scope: str, fact: MemoryFact) -> None:
     """Atomically writes one fact file into its compartment."""
     directory = compartment_dir(scope=scope, compartment=fact.compartment)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{fact.fact_id}.md"
-    tmp_path = path.with_suffix(".md.tmp")
-    tmp_path.write_text(data=render_fact_file(fact=fact), encoding="utf-8")
-    os.replace(src=tmp_path, dst=path)
+    _replace_file(path=directory / f"{fact.fact_id}.md", text=render_fact_file(fact=fact))
     _bump_generation(scope=scope)
 
 
@@ -512,10 +520,7 @@ def write_tone(scope: str, content: str) -> None:
     encoded = rendered.encode("utf-8")
     if len(encoded) > TONE_FILE_MAX_BYTES:
         rendered = encoded[:TONE_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
-    tone_path = _tone_path(scope=scope)
-    tmp_path = tone_path.with_suffix(".md.tmp")
-    tmp_path.write_text(data=rendered + "\n", encoding="utf-8")
-    os.replace(src=tmp_path, dst=tone_path)
+    _replace_file(path=_tone_path(scope=scope), text=rendered + "\n")
 
 
 def append_raw_entry(scope: str, entry_text: str) -> None:
@@ -541,9 +546,7 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
         # file still honors the advertised hard cap (memory is best-effort,
         # and the truncated tail is the only loss not kept in the detail file).
         rendered = encoded[:RAW_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
-    tmp_path = raw_path.with_suffix(".md.tmp")
-    tmp_path.write_text(data=rendered + "\n", encoding="utf-8")
-    os.replace(src=tmp_path, dst=raw_path)
+    _replace_file(path=raw_path, text=rendered + "\n")
     if evicted:
         # Move to the detail file only after the raw write succeeded so a
         # failed write cannot retire entries that still live in the raw file.
@@ -592,9 +595,7 @@ def _trim_detail(path: Path) -> None:
         # Dropping an entry also drops one "\n\n" separator (2 bytes).
         total -= sizes[start] + 2
         start += 1
-    tmp_path = path.with_suffix(".md.tmp")
-    tmp_path.write_text(data="\n\n".join(entries[start:]) + "\n", encoding="utf-8")
-    os.replace(src=tmp_path, dst=path)
+    _replace_file(path=path, text="\n\n".join(entries[start:]) + "\n")
 
 
 def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
@@ -609,9 +610,7 @@ def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
         edited = edit(text)
         if edited == text:
             continue
-        tmp_path = path.with_suffix(".md.tmp")
-        tmp_path.write_text(data=edited + "\n", encoding="utf-8")
-        os.replace(src=tmp_path, dst=path)
+        _replace_file(path=path, text=edited + "\n")
 
 
 def read_detail_tail(scope: str, max_chars: int) -> str:
