@@ -43,6 +43,7 @@ def _hand_settlement_from_state(
         bet=hand.bet,
         outcome=outcome,
         delta=delta,
+        # One bet: `blackjack_ev.py::_stand_ev_unit` prices a five-card 21 on that size.
         five_card_bonus=hand.bet if five_card_twenty_one else 0,
         five_card_twenty_one=five_card_twenty_one,
         doubled=hand.doubled,

@@ -30,6 +30,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.typings.games import Card, ActionEv, BotAction
 from discordbot.cogs.games.blackjack import (
     TEN_VALUE_RANKS,
+    FIVE_CARD_WIN_CARDS,
     hand_value,
     is_soft_total,
     surrender_loss,
@@ -195,6 +196,7 @@ def _stand_ev_unit(
     """
     if five_card_eligible:
         if player_total == 21:
+            # The bonus is one bet, as `settlement.py::_hand_settlement_from_state` pays it.
             return 2.0 - _dealer_dist_for(ctx=ctx, shoe=shoe)[4]
         return 1.0
     distribution = _dealer_dist_for(ctx=ctx, shoe=shoe)
@@ -216,9 +218,9 @@ def _player_optimal_ev(
     if total > 21:
         return -1.0
     stand_ev = _stand_ev_unit(
-        player_total=total, five_card_eligible=num_cards >= 5, shoe=shoe, ctx=ctx
+        player_total=total, five_card_eligible=num_cards >= FIVE_CARD_WIN_CARDS, shoe=shoe, ctx=ctx
     )
-    if num_cards >= 5:
+    if num_cards >= FIVE_CARD_WIN_CARDS:
         # A five-card non-bust hand auto-finishes; hitting is impossible.
         return stand_ev
     key = (total, soft, num_cards, shoe)
@@ -348,7 +350,10 @@ def _evaluate_actions(
     evs: list[ActionEv] = []
     if "stand" in allowed_actions:
         stand_ev = _stand_ev_unit(
-            player_total=player_total, five_card_eligible=num_cards >= 5, shoe=deck, ctx=ctx
+            player_total=player_total,
+            five_card_eligible=num_cards >= FIVE_CARD_WIN_CARDS,
+            shoe=deck,
+            ctx=ctx,
         )
         evs.append(ActionEv(action="stand", expected_value=stand_ev))
     if "hit" in allowed_actions:

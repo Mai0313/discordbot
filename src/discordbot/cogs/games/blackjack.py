@@ -52,6 +52,7 @@ SHOE_DECK_COUNT = 4
 CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
 CARD_SUITS = ("♠", "♥", "♦", "♣")
 TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
+FIVE_CARD_WIN_CARDS: Final[int] = 5
 
 
 def draw_card(rng: Random) -> Card:
@@ -131,12 +132,12 @@ def is_five_card_twenty_one(cards: list[Card]) -> bool:
     Returns:
         True only when the hand has at least five cards and totals 21.
     """
-    return len(cards) >= 5 and hand_value(cards=cards) == 21
+    return len(cards) >= FIVE_CARD_WIN_CARDS and hand_value(cards=cards) == 21
 
 
 def is_five_card_win(cards: list[Card]) -> bool:
     """Returns whether a hand qualifies for the non-bust five-card win."""
-    return len(cards) >= 5 and hand_value(cards=cards) <= 21
+    return len(cards) >= FIVE_CARD_WIN_CARDS and hand_value(cards=cards) <= 21
 
 
 def is_bust(cards: list[Card]) -> bool:
