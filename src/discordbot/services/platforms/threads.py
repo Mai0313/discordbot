@@ -595,7 +595,7 @@ class Post(MediaContainer):
         Deliberately NOT the rule `PlatformOutput.is_readable` answers with, which every source
         shares: that one asks whether there is anything worth showing, while this one also honours
         Threads' own unavailable flag and counts a bare author or shortcode as enough, having a
-        permalink to fall back on. This gates whether a quoted post is built at all.
+        permalink to fall back on.
 
         Returns:
             True when the post is not reported unavailable and has an author, code, text or
