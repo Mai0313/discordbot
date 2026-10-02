@@ -3,7 +3,7 @@
 While a scope's update runs, later turns for that scope are held rather than dropped and
 replayed one at a time afterwards. Within ONE conversation source only the newest is kept, its
 history window already covering the earlier ones, and its memory notes merged in so nothing a
-marker wrote is lost.
+marker wrote is lost, unless a clear has since erased it.
 
 The turn's own body is not here: `enqueue_memory_update` takes it as `run`, and the replay
 carries it on through the done-callback. That is what keeps this module below `pipeline.py`
@@ -206,7 +206,13 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
     if running is not None and not running.done():
         by_subject = _pending_updates.setdefault(key=turn.scope, default={})
         superseded = by_subject.get(turn.subject)
-        if superseded is not None:
+        if superseded is not None and cleared_since(
+            scope=turn.scope, started_at=superseded.captured_at
+        ):
+            # Captured before a clear finished, so its notes belong to the memory that clear
+            # erased: it is dropped as it would be on its own, and this turn waits unmerged.
+            _release_pending_report(pending=superseded)
+        elif superseded is not None:
             turn = turn.model_copy(
                 update={
                     "transcript": _merged_payload(
@@ -369,8 +375,8 @@ def _release_pending_report(pending: MemoryTurn) -> None:
     """Tells a dropped turn's reply that nothing was recorded, detached.
 
     A deferred turn is dropped rather than replayed when the scope was cleared under it, and
-    its reply is still showing `正在整理記憶⋯`. Detached because both callers are synchronous —
-    a done-callback and the clear orchestration — while the report reaches Discord.
+    its reply is still showing `正在整理記憶⋯`. Detached because every caller is synchronous
+    while the report reaches Discord.
     """
     if pending.report is None:
         return

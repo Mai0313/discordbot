@@ -3770,6 +3770,53 @@ async def test_a_cleared_waiting_turn_does_not_end_the_replay(
     assert count_raw_entries(scope=USER_SCOPE) == int(dm_after_the_clear)
 
 
+async def test_a_turn_waiting_from_during_a_clear_is_not_merged_into_a_later_one(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiting turn the clear's closing stamp postdates is dropped even when superseded.
+
+    The newer turn from the same source then waits alone: neither its staged row nor its review
+    carries the older turn's note, and the older reply is told nothing was recorded.
+    """
+    _consolidate_at(monkeypatch=monkeypatch, entries=10)
+    writer, fake_client = _writer()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    requests: list[str] = []
+
+    async def first_call_waits(body: str, text_format: type[BaseModel]) -> BaseModel:
+        del text_format
+        requests.append(body)
+        started.set()
+        await release.wait()
+        return _draft("清除之後說的")
+
+    fake_client.responses.answer = first_call_waits
+    _schedule(writer=writer)
+    await started.wait()
+    during_reports, during_report = _report_recorder()
+    after_reports, after_report = _report_recorder()
+    _schedule(writer=writer, remember_notes=("清除期間寫的",), report=during_report)
+    # Stands in for the clear's closing stamp, which the turn deferred during the clear predates.
+    mark_cleared(scope=USER_SCOPE)
+    _schedule(writer=writer, remember_notes=("清除之後寫的",), report=after_report)
+    await _wait_for_persisted_writes()
+    job = await get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.transcript is not None
+    assert "清除期間寫的" not in job.transcript
+    release.set()
+    await _drain_scope()
+    await _wait_for_persisted_writes()
+
+    assert not any("清除期間寫的" in request for request in requests)
+    assert "清除之後寫的" in requests[-1]
+    assert during_reports == [MemoryWriteSummary()]
+    assert len(after_reports) == 1
+    assert after_reports[0].remembered
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+
+
 # ---------------------------------------------------------------------------
 # two-tier detail store
 # ---------------------------------------------------------------------------
