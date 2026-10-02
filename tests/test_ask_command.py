@@ -288,7 +288,9 @@ def test_an_ask_turn_stamps_its_memory_with_where_it_happens(
     turn._schedule_memory_updates(
         context=ReplyContext(),
         full_reply="好",
-        streamer=ResponseStreamer(message=surface.message, surface=surface),
+        streamer=ResponseStreamer(
+            message=surface.message, surface=surface, media_delivery=hosting_off_planner()
+        ),
     )
 
     assert [update["subject"] for update in scheduled] == [
@@ -615,7 +617,9 @@ async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> N
     surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
     reply = _EditableReply()
-    streamer = ResponseStreamer(message=surface.message, surface=surface, reply=reply)
+    streamer = ResponseStreamer(
+        message=surface.message, surface=surface, reply=reply, media_delivery=hosting_off_planner()
+    )
     streamer.stored_content = f"答案{footer}"
     streamer._usage_footer = footer
     await surface.hint(emoji="⚠️")
@@ -632,7 +636,9 @@ async def test_a_capped_surface_stops_chunking_where_its_budget_ends() -> None:
     surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
     reply = _EditableReply()
-    streamer = ResponseStreamer(message=surface.message, surface=surface, reply=reply)
+    streamer = ResponseStreamer(
+        message=surface.message, surface=surface, reply=reply, media_delivery=hosting_off_planner()
+    )
 
     await streamer._write_final_message(content="字" * 40000, footer=footer)
 

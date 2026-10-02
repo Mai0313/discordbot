@@ -215,7 +215,7 @@ from tests.helpers.llm_input import (
     extract_server_memory_block,
 )
 from tests.helpers.usage_log import usage_records
-from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner
+from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner, hosting_off_planner
 from tests.helpers.logfire_capture import capture_logs
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
@@ -922,7 +922,11 @@ def _classifier(
 
 
 def _streamer(message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
-    """A streamer answering `message` on the gateway surface `ReplyPipeline` would give it."""
+    """A streamer answering `message` on the gateway surface `ReplyPipeline` would give it.
+
+    Its media planner never hosts unless `fields` hands it one.
+    """
+    fields.setdefault("media_delivery", hosting_off_planner())
     return ResponseStreamer(
         message=message,
         surface=TurnSurface.for_message(message=as_message(fake=message)),

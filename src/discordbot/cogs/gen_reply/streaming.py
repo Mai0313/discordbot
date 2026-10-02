@@ -25,8 +25,6 @@ from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
-    MediaHostingConfig,
-    MediaHostingService,
     MediaDeliveryPlanner,
     upload_limit_for,
 )
@@ -238,18 +236,7 @@ class ResponseStreamer(BaseModel):
         description="Inline-video renderer; None disables inline <generate-video> for this reply.",
     )
     media_delivery: MediaDeliveryPlanner = Field(
-        default_factory=lambda: MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(
-                # model_validate: the alias kwarg form is invisible to type
-                # checkers without a pydantic plugin (ty), and env merging is
-                # irrelevant for an all-disabled config.
-                config=MediaHostingConfig.model_validate({"MEDIA_HOSTING_ENABLED": False})
-            )
-        ),
-        description=(
-            "Decides attach-vs-host-vs-drop for generated media; defaults to a disabled planner "
-            "so a streamer built without one drops oversize media exactly as the host-free path."
-        ),
+        ..., description="Decides attach-vs-host-vs-drop for generated media."
     )
     created_at: float = Field(
         default_factory=time.monotonic,

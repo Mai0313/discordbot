@@ -222,6 +222,7 @@ class AnswerTurn(BaseModel):
                 carries_turn_notices=False,
                 memory_lookups=context.memory_credits,
                 model_effort=model.effort or "",
+                media_delivery=self.media_delivery,
             )
             with logfire.span(
                 f"gen_reply {media_noun} reply", model=model.name, message_id=self.message.id
