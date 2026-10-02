@@ -262,8 +262,8 @@ async def adapt_interactions_stream(
             # error type", not a status, so an in-band failure here carries no HTTP status at
             # all and `is_retryable_llm_error` leaves it alone. Passing a decimal one through
             # is a hedge against the payload diverging from that doc, not a path anything has
-            # been seen to take -- on this backend only a failure `interactions.create` itself
-            # raises as a typed genai error is actually retried today.
+            # been seen to take. What this backend does retry is what the SDK itself raises
+            # for a transient status or a lost connection.
             failure = event.error
             code = failure.code if failure is not None else None
             raise APIError(
