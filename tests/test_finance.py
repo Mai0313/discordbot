@@ -446,7 +446,7 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
     assert accepted is not None
     assert accepted.central_bank_available_credit == CENTRAL_BANK_BASE_CAPACITY
 
-    # Inside alice's own remaining ceiling of 6,000,000, so only the pool can refuse it.
+    # Inside alice's own remaining ceiling of 5,460,000, so only the pool can refuse it.
     too_large = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=CENTRAL_BANK_BASE_CAPACITY + 1
     )
@@ -745,7 +745,8 @@ async def test_minting_is_bounded_when_each_account_holds_its_own_guild() -> Non
         holder = following
 
     circulating = sum([await get_balance(user_id=user_id) for user_id in accounts])
-    assert circulating < CENTRAL_BANK_BASE_CAPACITY
+    # Above the seed, or a pool that refused every loan would pass the bound.
+    assert 1_000 < circulating < CENTRAL_BANK_BASE_CAPACITY
 
 
 async def test_a_fully_leveraged_guild_has_no_capacity_left() -> None:
