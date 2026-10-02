@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from unittest.mock import MagicMock
 
-from nextcord import Permissions, TextChannel
+from nextcord import Permissions, TextChannel, MessageFlags
 
 from tests.helpers.casting import make_not_found
 
@@ -140,13 +140,16 @@ class FakeFollowup:
         """Records the followup payload and returns a fake message.
 
         The first followup after a slash command's defer fills its placeholder, and Discord keeps
-        the defer's ephemeral flag over this one's, so that is the flag recorded.
+        the defer's ephemeral flag over this one's, so that is the flag recorded and the one the
+        returned message carries.
         """
         if self._response.placeholder_pending:
             self._response.placeholder_pending = False
             kwargs["ephemeral"] = self._response.deferred_ephemeral
         self.sent.append(kwargs)
-        return FakeDiscordMessage()
+        message = FakeDiscordMessage()
+        message.flags.ephemeral = kwargs.get("ephemeral", False)
+        return message
 
 
 class FakeDiscordMessage:
@@ -168,6 +171,7 @@ class FakeDiscordMessage:
         self.guild = guild
         self.id = 1
         self.channel = SimpleNamespace(id=2)
+        self.flags = MessageFlags()
         self.edit_failure: Exception | None = None
         self.edits: list[DiscordPayload] = []
         self.reactions: list[str] = []

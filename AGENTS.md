@@ -31,7 +31,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **`services/` sits below the cogs** (#403): Discord-free (`tests/test_package_layering.py::test_services_never_reaches_discord`, transitively) and never importing `cogs/`; `utils/` and `typings/` import from neither.
 - **A module goes in `services/` only if a second cog needs it, an engine there needs it, or it is that engine's own vocabulary** (single-caller `services/memory/server_prompts.py` sits beside `prompts.py`, a platform's bare URL pattern in `services/platforms/`); else it stays in its one cog directory. A feature with a Discord surface and a shared engine (economy, memory, each link platform) deliberately spans both.
 - **Adding a platform (one file in `services/platforms/`, behind `base.py`) or a link source trips deliberate tripwires**: each test pinned to the known names fails until the new name is added to it.
-- **No prefix command or `on_command_*` handler can fire**: no `command_prefix` is passed and `on_message` dispatches nothing, so adding one needs both. A raising slash command is logged only by `DiscordBot.on_application_command_error`.
+- **No prefix command or `on_command_*` handler can fire**: no `command_prefix` is passed and `on_message` dispatches nothing, so adding one needs both. A raising slash command is logged only by `DiscordBot.on_application_command_error`, which also tells the caller once the command has answered or deferred, so a command that reports its own failure must catch it rather than re-raise.
 
 ## Cog Rules
 

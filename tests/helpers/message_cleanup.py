@@ -33,6 +33,7 @@ def record_scheduled_deletes(monkeypatch: pytest.MonkeyPatch) -> ScheduledDelete
     """
     scheduled = ScheduledDeletes()
     for module in (
+        "discordbot.cli",
         "discordbot.cogs.economy.views",
         "discordbot.cogs.games.interactions",
         "discordbot.cogs.games.lobby",
