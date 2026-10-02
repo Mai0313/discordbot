@@ -807,9 +807,9 @@ def _sanitize_observation(
     )
     # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
     # are private by construction, and an observation about ANOTHER participant is
-    # about a relationship, not a portable fact (the target's own id and the bot's name
-    # nobody else and stay exempt). Scans the pre-trim text so a token past the
-    # truncation point cannot dodge the gate. Code only ever tightens
+    # about a relationship, not a portable fact (neither the target's own id nor the
+    # bot's names anybody else, so both stay exempt). Scans the pre-trim text so a token
+    # past the truncation point cannot dodge the gate. Code only ever tightens
     # sharing to source_only; it never loosens a source_only call back to global.
     #
     # The roster half exists because `global` is permanent cross-server reach with no
