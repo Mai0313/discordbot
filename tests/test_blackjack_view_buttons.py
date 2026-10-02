@@ -143,7 +143,6 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
         dealer_cards=[card(rank="A", suit="♣"), card(rank="9", suit="♦")],
     )
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
@@ -181,7 +180,6 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
     assert "bj:insure_no" not in ids
 
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     view.sync_buttons()
 
     ids = component_ids(view=view)
@@ -297,7 +295,6 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
         player=seat(bet=1),
     )
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     view = _make_view(round_state=round_state)
     message = FakeDiscordMessage()
     press = FakeInteraction(message=message)
@@ -468,7 +465,6 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
     round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
     round_state.dealer = [card(rank="A", suit="♣"), card(rank="9", suit="♦")]
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     round_state.players[0].insurance_resolved = True
     view = _make_view(round_state=round_state)
     view.bot_user_id = 1
@@ -482,6 +478,35 @@ async def test_a_bot_that_has_decided_insurance_waits_for_the_other_seats() -> N
     assert message.edits == []
     assert round_state.phase == "insurance"
     assert round_state.players[1].insurance_resolved is False
+
+
+async def test_a_bot_call_closing_insurance_without_a_natural_keeps_the_hole_face_down() -> None:
+    """The bot's insurance call can be the last one, and a peek finding no natural shows nothing.
+
+    The hole is the bot's private edge, so the table re-rendered after that call still hides it.
+    """
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[seat(user_id=2, display_name="Bob"), seat(user_id=1, display_name="Bot")],
+    )
+    round_state.players[0].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
+    round_state.players[1].hands[0].cards = [card(rank="10"), card(rank="7", suit="♥")]
+    round_state.dealer = [card(rank="9", suit="♦"), card(rank="A", suit="♣")]
+    round_state.phase = "insurance"
+    round_state.players[0].insurance_resolved = True
+    view = _make_view(round_state=round_state)
+    view.bot_user_id = 1
+    message = FakeDiscordMessage()
+
+    await view.maybe_play_bot_turn(
+        message=as_message(fake=message),
+        interaction=as_interaction(fake=FakeInteraction(message=message)),
+    )
+
+    assert round_state.phase == "player_actions"
+    dealer_seats = [cast("str", edit["embeds"][0].description) for edit in message.edits]
+    assert dealer_seats, "the bot's call re-renders the table"
+    assert all("🂠" in dealer_seat for dealer_seat in dealer_seats), "the hole stays face down"
 
 
 async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
@@ -502,7 +527,6 @@ async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
     round_state.players[1].hands[0].cards = [card(rank="9", suit="♣"), card(rank="8", suit="♦")]
     round_state.dealer = [card(rank="9", suit="♦"), card(rank="A", suit="♣")]
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     # All tens: the bot's count says insurance is worth buying.
     round_state.shoe = [card(rank="10")] * 20
     view = _make_view(round_state=round_state)
