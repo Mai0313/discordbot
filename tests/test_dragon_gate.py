@@ -263,6 +263,24 @@ def test_pair_pillar_hit_returns_triple_loss() -> None:
 
 
 @pytest.mark.parametrize(
+    argnames=("direction", "third"), argvalues=[("higher", "3"), ("lower", "9")]
+)
+def test_a_pair_card_on_the_side_not_called_loses_one_bet(
+    direction: DragonGateDirection, third: str
+) -> None:
+    """A third card off the pillar pays only on the side the player called."""
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("7", "♠", "7", "♥", third, "♣")),
+        participants=[_participant(user_id=1, display_name="Alice")],
+    )
+    round_state.choose_pair_direction(user_id=1, direction=direction)
+    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+
+    assert (result.outcome, result.delta) == ("pair_lose", -10_000)
+    assert round_state.player_delta(user_id=1) == -10_000
+
+
+@pytest.mark.parametrize(
     argnames=("rank", "expected"), argvalues=[("A", "higher"), ("K", "lower")], ids=["ace", "king"]
 )
 def test_an_ace_or_king_pair_is_dealt_with_the_only_guess_that_can_win(
@@ -1298,7 +1316,7 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
         user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:bet"
     )
     assert await view.interaction_check(interaction=as_interaction(fake=non_active)) is False
-    assert non_active.followup.sent
+    assert non_active.followup.sent == [{"content": "現在輪到 Alice", "ephemeral": True}]
 
     leave_ok = FakeInteraction(
         user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:leave"
@@ -1309,7 +1327,7 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
     await view.submit_custom_bet(
         interaction=as_interaction(fake=invalid), raw_amount="not a number"
     )
-    assert invalid.followup.sent
+    assert invalid.followup.sent == [{"content": "下注金額要是整數", "ephemeral": True}]
 
 
 async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:

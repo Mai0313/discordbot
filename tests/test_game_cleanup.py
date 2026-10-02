@@ -334,7 +334,7 @@ async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
     ],
     ids=["refused", "broke"],
 )
-async def test_a_refused_delete_is_reported_without_a_traceback(
+async def test_a_failed_delete_keeps_its_traceback_only_when_discord_broke(
     monkeypatch: pytest.MonkeyPatch, failure: Exception, text: str, traceback: bool
 ) -> None:
     """The delete gets the same carve-out as the sweep's fetch; a 5xx keeps its traceback."""

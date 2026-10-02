@@ -17,8 +17,10 @@ from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import MAX_SINGLE_BET, JackpotSnapshot
+from discordbot.cogs.games.lobby import BaseGameLobbyView
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
+from discordbot.utils.message_cleanup import PendingPublicMessage, list_pending_public_messages
 from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
@@ -159,6 +161,31 @@ async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch
         == DEFAULT_EMBED_SPACER_FILENAME
     )
     assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
+
+
+@pytest.mark.parametrize(argnames="game", argvalues=["blackjack", "dragon_gate"])
+async def test_an_opened_lobby_is_recorded_for_the_restart_sweep(
+    monkeypatch: pytest.MonkeyPatch, game: str
+) -> None:
+    """A lobby the bot restarts under is deleted by the next start's sweep, from this record."""
+    monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
+    cog = _cog()
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+    if game == "blackjack":
+        monkeypatch.setattr(games, "get_balance", fake_game_balance)
+        await GamesCogs.blackjack.callback(cog, interaction, bet="10")
+    else:
+        monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
+        await GamesCogs.dragon_gate.callback(cog, interaction)
+
+    lobby = interaction.followup.sent[-1]["view"]
+    assert isinstance(lobby, BaseGameLobbyView)
+    assert lobby.message is not None
+    assert await list_pending_public_messages() == [
+        PendingPublicMessage(
+            channel_id=lobby.message.channel.id, message_id=lobby.message.id, user_name="alice"
+        )
+    ]
 
 
 async def test_a_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:

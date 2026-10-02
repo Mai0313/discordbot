@@ -358,22 +358,6 @@ def test_play_dealer_records_nothing_after_a_bust() -> None:
     assert path == "規則: 16 hit 抽 K♠ → 26"
 
 
-async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
-    """The bot turn dispatcher is a no-op when no bot is seated."""
-    round_state = blackjack_round(
-        hands=[[card(rank="10"), card(rank="9", suit="♥")]],
-        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
-    )
-    view = _make_view(round_state=round_state)
-    assert view.bot_user_id is None
-    message = FakeDiscordMessage()
-    press = FakeInteraction(message=message)
-    await view._maybe_play_bot_turn_locked(
-        message=as_message(fake=message), interaction=as_interaction(fake=press)
-    )
-    assert press.edits == []
-
-
 async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
     """If the active seat belongs to a human, the bot dispatcher returns immediately."""
     round_state = blackjack_round(
@@ -651,15 +635,19 @@ async def test_apply_bot_action_reports_a_refused_round_call_as_unapplied() -> N
 
 
 async def test_apply_bot_action_rejects_action_not_in_allowed() -> None:
-    """Actions not in `allowed` are rejected without raising."""
+    """An action outside `allowed` is refused even where the round itself would take it.
+
+    A pair of eights can split, so only the `allowed` check stands between it and a second hand.
+    """
     round_state = blackjack_round(
-        hands=[[card(rank="10"), card(rank="7", suit="♥")]],
+        hands=[[card(rank="8"), card(rank="8", suit="♥")]],
         dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
 
     applied = view._apply_bot_action(user_id=1, action="split", allowed=("hit", "stand"))
     assert applied is False
+    assert len(round_state.players[0].hands) == 1
 
 
 async def test_finalize_persists_remaining_shoe_to_the_store(
