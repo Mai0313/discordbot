@@ -60,7 +60,7 @@ from tests.helpers.casting import (
     make_server_error,
 )
 from tests.helpers.economy import personal_loan_contract
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 if TYPE_CHECKING:
@@ -1112,21 +1112,17 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     """Transfer writes should cache guild avatars instead of only global avatars."""
     sender = FakeUser(user_id=1, name="alice")
     receiver = FakeUser(user_id=2, name="bob")
-    cached_sender = FakeUser(user_id=1, name="alice")
-    cached_sender.__dict__["guild_avatar"] = SimpleNamespace(
-        url="https://example.test/alice-server.png"
+    guild = FakeGuild(
+        members=[
+            FakeUser(
+                user_id=1, name="alice", guild_avatar_url="https://example.test/alice-server.png"
+            ),
+            FakeUser(
+                user_id=2, name="bob", guild_avatar_url="https://example.test/bob-server.png"
+            ),
+        ],
+        cached=True,
     )
-    cached_receiver = FakeUser(user_id=2, name="bob")
-    cached_receiver.__dict__["guild_avatar"] = SimpleNamespace(
-        url="https://example.test/bob-server.png"
-    )
-    members = {cached_sender.id: cached_sender, cached_receiver.id: cached_receiver}
-
-    async def fail_fetch_member(user_id: int) -> FakeUser:
-        """Fails if the helper ignores the cached member path."""
-        raise AssertionError(f"unexpected fetch_member({user_id})")
-
-    guild = SimpleNamespace(get_member=members.get, fetch_member=fail_fetch_member)
     interaction = FakeInteraction(user=sender)
     interaction.guild = guild
     transfers = _record_transfers(monkeypatch=monkeypatch)
@@ -1139,6 +1135,7 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
 
     assert transfers[0]["sender_avatar_url"] == "https://example.test/alice-server.png"
     assert transfers[0]["receiver_avatar_url"] == "https://example.test/bob-server.png"
+    assert guild.fetch_count == 0
 
 
 async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None:

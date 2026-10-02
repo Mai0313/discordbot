@@ -28,7 +28,6 @@ async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
     Returns:
         The member's guild avatar URL when available, otherwise the user's global display avatar.
     """
-    fallback_url = user.display_avatar.url
     member: Member | None = None
     if isinstance(user, Member):
         member = user
@@ -37,9 +36,5 @@ async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
         if member is None:
             with contextlib.suppress(HTTPException):
                 member = await guild.fetch_member(user.id)
-
-    if member is None:
-        return fallback_url
-    if member.guild_avatar is not None:
-        return member.guild_avatar.url
-    return fallback_url
+    # A Member's display avatar is its guild avatar when it has one.
+    return (user if member is None else member).display_avatar.url
