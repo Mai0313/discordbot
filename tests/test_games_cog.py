@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from random import Random
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 from pathlib import Path
 import contextlib
 
@@ -289,6 +289,41 @@ async def test_a_blackjack_start_whose_table_never_lands_keeps_the_channel_shoe(
         )
 
     assert store.shoes.get(7) == before
+
+
+@pytest.mark.parametrize(
+    argnames="failing_step", argvalues=["build_in_progress_embeds", "table_edit_kwargs"]
+)
+async def test_a_blackjack_start_that_raises_before_its_table_is_up_reopens_and_keeps_the_shoe(
+    monkeypatch: pytest.MonkeyPatch, failing_step: str
+) -> None:
+    """A start whose table is never sent reopens the lobby, whichever step raised.
+
+    Left marked started, the lobby would refuse every press and skip its own timeout cleanup.
+    """
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+
+    def failing(**_kwargs: object) -> NoReturn:
+        raise ValueError(failing_step)
+
+    monkeypatch.setattr(target=blackjack_views, name=failing_step, value=failing)
+    lobby = _scripted_blackjack_lobby(dealt=[])
+    store = lobby._shoe_store
+    assert store is not None
+    before = list(store.shoes[7])
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+
+    # Called directly, the press skips the view's on_error, so the raise reaches the test.
+    with pytest.raises(ValueError, match=failing_step):
+        await lobby_button(view=lobby, label="開始").callback(
+            as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
+        )
+
+    assert store.shoes.get(7) == before
+    assert not lobby.is_finished()
+    await lobby.on_timeout()
+    assert scheduled.messages == [message]
 
 
 @pytest.mark.parametrize(
