@@ -390,15 +390,15 @@ class VoiceGenerator(BaseModel):
             )
             return VoiceClip(outcome="empty")
         try:
-            responses = await self.client.audio.speech.create(
-                input=f"{TTS_STYLE_DIRECTIVE}\n\n{spoken}",
-                model=self.model_name,
-                voice=TTS_VOICE,
-                speed=TTS_SPEED,
-                extra_headers={"x-litellm-end-user-id": end_user_id},
-                timeout=VOICE_TIMEOUT_SECONDS,
-            )
-            audio = await responses.aread()
+            async with asyncio.timeout(delay=VOICE_TIMEOUT_SECONDS):
+                responses = await self.client.audio.speech.create(
+                    input=f"{TTS_STYLE_DIRECTIVE}\n\n{spoken}",
+                    model=self.model_name,
+                    voice=TTS_VOICE,
+                    speed=TTS_SPEED,
+                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                )
+                audio = await responses.aread()
             logfire.debug(
                 "Voice synthesis succeeded",
                 model=self.model_name,
@@ -408,9 +408,10 @@ class VoiceGenerator(BaseModel):
                 audio_bytes=len(audio),
             )
             return VoiceClip(audio=audio, outcome="ok")
-        except APITimeoutError:
-            # The clip took longer than VOICE_TIMEOUT_SECONDS to render. The caller marks the
-            # message with a timeout hint and still leaves a plain text reply.
+        except (TimeoutError, APITimeoutError):
+            # The clip did not arrive within VOICE_TIMEOUT_SECONDS, or the SDK gave up on its own
+            # transport timeout first. The caller marks the message with a timeout hint and still
+            # leaves a plain text reply.
             logfire.warn(
                 "Voice synthesis timed out; replying without audio",
                 model=self.model_name,

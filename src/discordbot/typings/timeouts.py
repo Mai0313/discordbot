@@ -153,11 +153,12 @@ MUSIC_RENDER_TIMEOUT_SECONDS: Final[float] = 300.0
 # VOICE_TIMEOUT_SECONDS) so a slower render still has room to land.
 INLINE_IMAGE_TIMEOUT_SECONDS: Final[float] = 300.0
 
-# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its final
-# status reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text
-# is already on screen, so the wait only delays its own message, never others; it is generous so a
-# longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
-# model decides how much to say.
+# Bound on the whole synthesis call, the `openai` client's own retries included (a per-request
+# timeout would be multiplied by them), so a slow/hung clip cannot keep this message's own
+# pipeline (its final status reaction + memory scheduling) waiting. The synthesis is per-message
+# and runs after the text is already on screen, so the wait only delays its own message, never
+# others; it is generous so a longer spoken reply has room to render. There is deliberately no
+# spoken-length cap: the answer model decides how much to say.
 VOICE_TIMEOUT_SECONDS: Final[float] = 300.0
 
 # Bound for the prompt-refinement call: it sits SERIALLY before the image/video render on the
