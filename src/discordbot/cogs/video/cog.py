@@ -166,9 +166,20 @@ class VideoCogs(commands.Cog):
                     result = await download_with_stop_signal(
                         downloader=downloader, url=url, quality=quality
                     )
-                await self._deliver_download(
-                    interaction=interaction, url=url, result=result, upload_limit=upload_limit
-                )
+                try:
+                    await self._deliver_download(
+                        interaction=interaction, url=url, result=result, upload_limit=upload_limit
+                    )
+                except Exception as error:
+                    # Broad on purpose: anything narrower falls through to the handler below
+                    # and is logged as a download failure.
+                    logfire.warn(
+                        "Video delivery failed",
+                        url=url,
+                        error_type=type(error).__name__,
+                        _exc_info=error,
+                    )
+                    await self._edit_quietly(interaction=interaction, content=_DOWNLOAD_FAILED)
         except Exception as error:
             # Broad on purpose: nothing answers the interaction on an error, so anything
             # escaping here would strand the user on "正在下載影片..." forever.
