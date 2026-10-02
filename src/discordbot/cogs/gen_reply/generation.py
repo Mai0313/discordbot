@@ -571,7 +571,6 @@ class VideoGenerator(BaseModel):
                     input=content,
                     response_format=response_format,
                     generation_config=generation_config,
-                    timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
                 ),
             )
         video = responses.output_video
