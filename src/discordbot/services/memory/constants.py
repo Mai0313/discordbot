@@ -77,8 +77,12 @@ RENDER_CACHE_MAX_ENTRIES = 512
 # `deletes - creates > max(this, existing // 2)`. Net rather than raw, because merging four
 # near-duplicates into one is consolidation's primary job and the median scope holds only a
 # handful of facts, so a raw-delete cap would reject the common case. A rebuild's replace pass is
-# exempt: rebuilding from evidence legitimately replaces the whole set. Its forget replay and the
-# passes that merge what came after a forget are not, and a refusal in either fails the rebuild.
+# exempt, since rebuilding from evidence legitimately replaces the whole set. So is every forget
+# pass, a rebuild's replay included: it can only delete, so the cap would count raw deletes, and
+# its refusal recurs on every retry and holds back the whole scope. Nothing then bounds what one
+# forget answer removes, including a delete the prompt's general rules allow beyond the fact the
+# forget names. The passes that merge what came after a forget are not exempt, and a refusal
+# there fails the rebuild.
 MAX_NET_FACT_DELETIONS_FLOOR = 3
 
 # Store-level backstop for the per-user tone note. The note is injected on every reply for the

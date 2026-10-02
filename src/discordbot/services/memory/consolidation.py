@@ -399,7 +399,8 @@ async def _consolidate_compartment(
         flavor=run.flavor,
         deltas=result.deltas,
         owner=run.owner,
-        allow_mass_delete=False,
+        # A forget pass is exempt from the ceiling; `MAX_NET_FACT_DELETIONS_FLOOR` has why.
+        allow_mass_delete=deletes_only,
         deletes_only=deletes_only,
     )
     if not outcome.applied:

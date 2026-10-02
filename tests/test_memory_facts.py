@@ -743,7 +743,9 @@ def test_a_median_merge_is_not_mistaken_for_a_wipe(memory_isolated_dir: Path) ->
 
 
 def test_a_wipe_is_refused_and_changes_nothing(memory_isolated_dir: Path) -> None:
-    """A batch that only deletes is a lossy rewrite, so it never touches the disk."""
+    """Outside a forget or a rebuild, a batch that only deletes is a lossy rewrite, so it never
+    touches the disk.
+    """
     scope = user_scope(user_id=111)
     ids = [f"{index:016x}" for index in range(10)]
     for fact_id in ids:
