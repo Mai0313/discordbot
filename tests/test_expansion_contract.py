@@ -23,13 +23,12 @@ What deliberately is NOT here: how a post is rendered. A Threads chain, a Facebo
 preload and a Douyin clip are different things and their cards should differ.
 """
 
-from types import SimpleNamespace
 from typing import Any, Literal, cast
 import inspect
 from pathlib import Path
 import importlib
 import contextlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 
 import pytest
 from nextcord import Message, Forbidden
@@ -45,7 +44,7 @@ from discordbot.utils.expansion_cog import (
     report_expansion_delivery_failure,
 )
 from discordbot.services.platforms.base import PlatformConversation
-from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
+from discordbot.services.platforms.threads import ThreadsOutput
 from discordbot.services.platforms.twitter import TwitterConversation
 from discordbot.services.platforms.facebook import FacebookConversation
 from discordbot.utils.expansion_placeholder import (
@@ -66,11 +65,12 @@ from tests.helpers.link_sources import (
     FACEBOOK_URL,
     INSTAGRAM_URL,
     StubDouyinDownloader,
+    ThreadsDownloaderStub,
     stub_bot,
     twitter_post,
     facebook_post,
+    guild_message,
     instagram_post,
-    hosting_off_planner,
     stub_conversation_cog,
 )
 from tests.helpers.discord_mocks import (
@@ -79,6 +79,7 @@ from tests.helpers.discord_mocks import (
     FakeDiscordMessage,
     placeholder_withdrawn,
 )
+from tests.helpers.logfire_capture import capture_logs
 
 _COGS_DIR = PACKAGE / "cogs"
 
@@ -145,6 +146,9 @@ def _cog_source(cog: type) -> str:
 # error its downloader raises.
 type _Outcome = Literal["readable", "unreadable"] | Exception
 
+_THREADS_URL = "https://www.threads.com/@alice/post/ABC123"
+_DOUYIN_URL = "https://v.douyin.com/abc123"
+
 
 class _Staged:
     """One cog whose downloader answers a staged outcome, and a guild message carrying its link."""
@@ -181,28 +185,23 @@ def _stage_conversation(
         instance, stub = stub_conversation_cog(
             cog_type=cog, outcome=readable if outcome == "readable" else unreadable
         )
-    staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
+    staged = _Staged(cog=instance, message=guild_message(content=url))
     staged.serve(factory=lambda: stub)
     return staged
 
 
 def _stage_threads(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
-    """Stages the Threads cog, whose unreadable post is a walk that found no chain."""
-    url = "https://www.threads.com/@alice/post/ABC123"
-    instance = cog(bot=stub_bot())
-    instance.__dict__["media_delivery"] = hosting_off_planner()
-    staged = _Staged(cog=instance, message=FakeDiscordMessage(content=url, guild=FakeGuild()))
-    readable = ThreadsConversation(chain=[ThreadsOutput(text="post body", url=url)])
+    """Stages the Threads cog, whose unreadable post is a walk that found no chain.
 
-    @contextlib.contextmanager
-    def walk(url: str) -> Iterator[ThreadsConversation]:
-        """Enters the way `ThreadsDownloader.parse` does, so the failure lands in the walk."""
-        del url
-        if isinstance(outcome, Exception):
-            raise outcome
-        yield readable if outcome == "readable" else ThreadsConversation()
-
-    staged.serve(factory=lambda output_folder: SimpleNamespace(parse=walk))
+    A failure is raised as the walk is entered, where `ThreadsDownloader.parse` raises one.
+    """
+    url = _THREADS_URL
+    staged = _Staged(cog=cog(bot=stub_bot()), message=guild_message(content=url))
+    if isinstance(outcome, Exception):
+        results: list[ThreadsOutput] | Exception = outcome
+    else:
+        results = [ThreadsOutput(text="post body", url=url)] if outcome == "readable" else []
+    staged.serve(factory=ThreadsDownloaderStub(results=results).factory)
     return staged
 
 
@@ -213,13 +212,9 @@ def _stage_douyin(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     here as a clip past a four-byte upload ceiling with hosting off. A failure is raised by the
     download, the read's last step, so it crosses everything `read` does before reaching the shell.
     """
-    instance = cog(bot=stub_bot())
-    instance.__dict__["media_delivery"] = hosting_off_planner()
-    guild = FakeGuild(filesize_limit=4) if outcome == "unreadable" else FakeGuild()
-    staged = _Staged(
-        cog=instance,
-        message=FakeDiscordMessage(content="https://v.douyin.com/abc123", guild=guild),
-    )
+    staged = _Staged(cog=cog(bot=stub_bot()), message=guild_message(content=_DOUYIN_URL))
+    if outcome == "unreadable":
+        staged.message.guild = FakeGuild(filesize_limit=4)
     error = outcome if isinstance(outcome, Exception) else None
     staged.serve(
         factory=lambda output_folder: StubDouyinDownloader(
@@ -261,11 +256,26 @@ def _stage(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     return _STAGES[_cog_id(cog=cog)](cog=cog, outcome=outcome)
 
 
+# Per `SOURCE`, a link the cog refuses and then the post its staging reads. Where the platform's
+# pattern matches more than posts, the refused link is one the pattern matches and the post filter
+# turns down, which is the case a scan stopping at its first match gets wrong. A new cog needs an
+# entry, as it needs one in `_STAGES`.
+_REFUSED_THEN_POST: dict[str, tuple[str, str]] = {
+    "douyin": ("https://live.douyin.com/123456", _DOUYIN_URL),
+    "facebook": ("https://www.facebook.com/NASA", FACEBOOK_URL),
+    "instagram": ("https://www.instagram.com/c_cylynn/", INSTAGRAM_URL),
+    "threads": ("https://www.threads.com/@alice", _THREADS_URL),
+    "twitter": ("https://x.com/Dbacks", TWITTER_URL),
+}
+
+
 def test_every_expansion_cog_is_accounted_for() -> None:
     """The written-down list of cogs, so a new source cannot arrive unread.
 
     Everything else here is discovered but its staging. This is the tripwire: a new expansion cog
-    fails here, and the fix is to read this file, add its name, and give it an entry in `_STAGES`.
+    fails here, and the fix is to read this file, add its name, and give it an entry in `_STAGES`
+    and `_REFUSED_THEN_POST`. It is also what turns an empty discovery red: an empty parameter set
+    skips every test below and reports success.
     """
     assert {_cog_id(cog=cog) for cog in _COGS} == {
         "parse_douyin",
@@ -274,15 +284,6 @@ def test_every_expansion_cog_is_accounted_for() -> None:
         "parse_threads",
         "parse_twitter",
     }
-
-
-def test_the_discovery_finds_something() -> None:
-    """An empty parameter set skips every test below it and reports success.
-
-    That is how this file went quietly blank once already: the probe was a string in the source,
-    the string moved into the shared shell, and eight parametrized tests turned into skips.
-    """
-    assert _COGS
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
@@ -408,6 +409,32 @@ async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
         assert staged.reads == []
         assert staged.message.reactions == []
         assert staged.message.replies == []
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_link_the_cog_refuses_does_not_hide_a_post_after_it(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """A refused link is skipped rather than ending the scan, so a post after it is read (#854)."""
+    refused, post = _REFUSED_THEN_POST[cog.SOURCE]
+    staged = _stage(cog=cog, outcome="readable")
+    staged.message.content = f"{refused} 跟這篇 {post}"
+    read = staged.cog.read
+    urls: list[str] = []
+
+    async def recording_read(
+        message: Message, url: str, stack: contextlib.AsyncExitStack
+    ) -> object:
+        """Notes which link the shell chose, then reads it."""
+        urls.append(url)
+        return await read(message=message, url=url, stack=stack)
+
+    staged.cog.__dict__["read"] = recording_read
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert urls == [post]
+    assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
@@ -613,12 +640,7 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
     Douyin's filter reason exists in no other line, which is why the `info` branch keeps it while
     dropping the exception the ladder says that level usually does not carry.
     """
-    recorded: dict[str, object] = {}
-    monkeypatch.setattr(
-        target=expansion_module.logfire,
-        name="info",
-        value=lambda _message, **fields: recorded.update(fields),
-    )
+    infos = capture_logs(monkeypatch=monkeypatch, level="info")
 
     report_expansion_read_failure(
         error=LinkUnavailableError("Douyin will not serve 123: filtered"),
@@ -627,6 +649,7 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
         message_id=7,
     )
 
+    ((_message, recorded),) = infos
     assert "filtered" in str(recorded["reason"])
     assert "_exc_info" not in recorded
     assert recorded["message_id"] == 7
@@ -643,12 +666,7 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     """
     staged = _stage(cog=cog, outcome="readable")
     staged.message.edit_failure = make_forbidden(message="Missing Permissions")
-    warns: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        target=expansion_module.logfire,
-        name="warn",
-        value=lambda message, **fields: warns.append((message, fields)),
-    )
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await staged.cog.on_message(message=as_message(fake=staged.message))
 

@@ -15,7 +15,7 @@ from discordbot.services.platforms.instagram import (
     is_instagram_post_url,
 )
 
-from tests.helpers.link_sources import serve_page, sjs_script
+from tests.helpers.link_sources import sjs_page, serve_page
 
 _CODE = "Dc5eNjYkoZE"
 _COMMENT_ID = "17946527169275440"
@@ -116,8 +116,7 @@ def _page(
     })
     if comments:
         blocks.append({"data": {"comments": comments}})
-    scripts = "".join(sjs_script(payload=block) for block in blocks)
-    return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
+    return sjs_page(blocks=blocks)
 
 
 def _downloader(

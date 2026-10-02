@@ -19,7 +19,7 @@ from discordbot.services.platforms.facebook import (
     is_facebook_post_url,
 )
 
-from tests.helpers.link_sources import serve_page, sjs_script
+from tests.helpers.link_sources import sjs_page, serve_page
 
 _POST_ID = "1730774811333135"
 _GROUP_ID = "1176671326743489"
@@ -142,9 +142,7 @@ def _page(
         blocks.append({"comment_rendering_instance": {"comments": comments}})
     if groups:
         blocks.append({"data": {"groups": groups}})
-    scripts = "".join(sjs_script(payload=block) for block in blocks)
-    # A block that does not parse, which the walk must skip rather than fail on.
-    return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
+    return sjs_page(blocks=blocks)
 
 
 def _downloader(

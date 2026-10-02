@@ -3,7 +3,6 @@
 import pytest
 from nextcord import Embed, Message
 
-from discordbot.utils import expansion_placeholder as placeholder_module
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
@@ -21,6 +20,7 @@ from tests.helpers.casting import (
     make_invalid_form_body,
 )
 from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_logs
 
 _TEXT = "-# 正在讀取貼文⋯"
 _SOURCE = "threads"
@@ -124,19 +124,16 @@ async def test_a_refused_placeholder_is_logged_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The channel's overwrites are the server's to set, so the ids are the whole finding."""
-    warns: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        target=placeholder_module.logfire,
-        name="warn",
-        value=lambda _message, **fields: warns.append(fields),
-    )
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
     source = await _refusing(error=make_forbidden())
 
     await send_expansion_placeholder(
         message=as_message(fake=source), text=_TEXT, source=_SOURCE, url=_URL
     )
 
-    assert warns == [{"message_id": 1, "channel_id": 2, "error_type": "Forbidden"}]
+    assert [fields for _message, fields in warns] == [
+        {"message_id": 1, "channel_id": 2, "error_type": "Forbidden"}
+    ]
 
 
 async def test_a_link_deleted_before_the_placeholder_answers_none() -> None:

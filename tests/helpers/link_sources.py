@@ -5,12 +5,15 @@ and the block accessors live here once rather than in each platform's two test f
 """
 
 import json
-from types import SimpleNamespace
+import time
+from types import TracebackType, SimpleNamespace
 from typing import Any, Unpack, TypedDict
 from pathlib import Path
 from datetime import UTC, datetime
 import tempfile
-from collections.abc import Callable
+import threading
+import contextlib
+from collections.abc import Callable, Sequence
 
 import pytest
 from nextcord import Embed
@@ -18,17 +21,19 @@ from nextcord.ext import commands
 
 from discordbot.utils import scratch_dir
 from discordbot.typings.media import LoadedMedia
+from discordbot.utils.expansion_cog import ConversationExpansionCog
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.base import PlatformDownloader, PlatformConversation
 from discordbot.services.platforms.douyin import DouyinDownload, DouyinMetadata
+from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
 from discordbot.services.platforms.twitter import TwitterOutput, TwitterConversation
 from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramConversation
 from discordbot.services.platforms.page_json import FetchedPage
 
-from tests.helpers.casting import as_bot, make_media_hosting_config
-from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage, expansion_payload
+from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeDiscordMessage, expansion_payload
 
 TWITTER_URL = "https://x.com/Dbacks/status/1628549742539194368"
 FACEBOOK_URL = "https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/"
@@ -157,14 +162,159 @@ def expansion_embeds(message: FakeDiscordMessage) -> list[Embed]:
     return list(expansion_payload(message=message)["embeds"])
 
 
-def hosting_off_planner() -> MediaDeliveryPlanner:
-    """A delivery planner with hosting explicitly disabled.
+def guild_message(content: str, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
+    """A guild message carrying `content`, posted where uploads are capped at `filesize_limit`."""
+    return FakeDiscordMessage(content=content, guild=FakeGuild(filesize_limit=filesize_limit))
 
-    Never the no-arg default, whose config is `available` on a dev box where `.env` enables
-    hosting: an oversize file would then be moved into the live serve dir.
+
+async def expand(
+    cog_type: type[ConversationExpansionCog[Any, Any]],
+    outcome: PlatformConversation[Any] | Exception,
+    content: str | None = None,
+) -> tuple[FakeDiscordMessage, StubConversationDownloader]:
+    """Runs a Facebook, Instagram or Twitter expansion of one guild message over a stub reader.
+
+    The message carries the platform's sample post link unless `content` is given.
+
+    Returns:
+        The message, holding whatever the expansion did to it, and the stub that served the read.
+    """
+    cog, stub = stub_conversation_cog(cog_type=cog_type, outcome=outcome)
+    message = guild_message(content=content or SAMPLE_POST_URLS[cog_type.SOURCE])
+    await cog.on_message(message=as_message(fake=message))
+    return message, stub
+
+
+# Body of the comment every readable `ThreadsDownloaderStub` conversation carries, so a test can
+# assert the expansion never renders it.
+THREADS_STUB_COMMENT_TEXT = "a stranger's comment the expansion must ignore"
+
+
+class ParseResultStub:
+    """Stands in for the context manager `ThreadsDownloader.parse` returns."""
+
+    def __init__(
+        self,
+        results: list[ThreadsOutput] | BaseException,
+        exit_error: Exception | None = None,
+        enter_delay_seconds: float = 0.0,
+        output_folder: str | None = None,
+    ) -> None:
+        """Stores parsed results, the entry and exit errors, and how long the entry blocks."""
+        self.results = results
+        self.exit_error = exit_error
+        self.enter_delay_seconds = enter_delay_seconds
+        self.output_folder = output_folder
+        self.exited = False
+        self.wrote: Path | None = None
+        self.finished = threading.Event()
+
+    def __enter__(self) -> ThreadsConversation:
+        """Returns the parsed conversation or raises the configured parsing error.
+
+        A readable post always comes back carrying a comment, because that is what production
+        yields: the expansion is supposed to ignore them, and a stub with no comments in it
+        cannot tell "ignores them" apart from "never saw any".
+
+        `enter_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
+        can reach the caller's give-up path with the walk still running. What happens after that
+        delay is `download_media`'s shape: the media write is attempted against the folder the
+        caller handed over, and never against one this rebuilds.
+        """
+        time.sleep(self.enter_delay_seconds)
+        if self.output_folder is not None:
+            # Named before the write, so an abandoned walk still says where it aimed once the
+            # removal turned that write into a FileNotFoundError. Suppressed for the same
+            # reason production discards it: nothing is awaiting this thread any more.
+            self.wrote = Path(self.output_folder) / "clip.mp4"
+            with contextlib.suppress(OSError):
+                self.wrote.write_bytes(b"clip")
+        self.finished.set()
+        if isinstance(self.results, BaseException):
+            raise self.results
+        comment = ThreadsOutput(
+            text=THREADS_STUB_COMMENT_TEXT, image_urls=["https://x.test/c.png"]
+        )
+        return ThreadsConversation(
+            chain=self.results, reply_branches=[[comment]] if self.results else []
+        )
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Keeps fake parsed outputs available after context exit, or fails the cleanup."""
+        self.exited = True
+        if self.exit_error:
+            raise self.exit_error
+
+
+class ThreadsDownloaderStub:
+    """Stands in for ThreadsDownloader, answering every walk with the configured parse."""
+
+    def __init__(
+        self,
+        results: list[ThreadsOutput] | BaseException,
+        exit_error: Exception | None = None,
+        enter_delay_seconds: float = 0.0,
+    ) -> None:
+        """Stores parsed results, both failures, and how long each parse blocks on entry."""
+        self.results = results
+        self.exit_error = exit_error
+        self.enter_delay_seconds = enter_delay_seconds
+        self.parsed: list[ParseResultStub] = []
+        self.output_folders: list[str] = []
+
+    def factory(self, output_folder: str) -> "ThreadsDownloaderStub":
+        """Stands in for the ThreadsDownloader class, recording the scratch dir it was handed.
+
+        The expansion builds its downloader inside a scratch directory of its own, so the factory
+        is the seam a test takes over; this one stub answers every invocation so a test can
+        still read back what it was asked to do.
+        """
+        self.output_folders.append(output_folder)
+        return self
+
+    def parse(self, url: str) -> ParseResultStub:
+        """Returns a fake parse context manager, recorded so a test can inspect its exit."""
+        result = ParseResultStub(
+            results=self.results,
+            exit_error=self.exit_error,
+            enter_delay_seconds=self.enter_delay_seconds,
+            output_folder=self.output_folders[-1] if self.output_folders else None,
+        )
+        self.parsed.append(result)
+        return result
+
+
+def hosting_off_planner() -> MediaDeliveryPlanner:
+    """A delivery planner with hosting off, for code under test that is handed a planner.
+
+    A cog built inside a test needs none: the autouse `media_hosting_disabled` fixture already
+    turns hosting off for the planner it builds from the environment.
     """
     return MediaDeliveryPlanner(
         media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
+    )
+
+
+def hosting_service(
+    serve_dir: Path, max_bytes: int | None = None, retention_hours: float | None = None
+) -> MediaHostingService:
+    """A host writer publishing into `serve_dir`, which it serves as `https://media.test/`.
+
+    A cap left as None keeps the config's own default.
+    """
+    return MediaHostingService(
+        config=make_media_hosting_config(
+            enabled=True,
+            base_url="https://media.test",
+            serve_dir=str(serve_dir),
+            max_bytes=max_bytes,
+            retention_hours=retention_hours,
+        )
     )
 
 
@@ -174,13 +324,7 @@ def hosting_planner(serve_dir: Path) -> MediaDeliveryPlanner:
     The serve dir must already exist: the bot never creates one, so a missing one is a planner
     that cannot host.
     """
-    return MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
-            )
-        )
-    )
+    return MediaDeliveryPlanner(media_hosting=hosting_service(serve_dir=serve_dir))
 
 
 class StubDouyinDownloader:
@@ -296,6 +440,16 @@ def sjs_script(payload: object) -> str:
     return f'<script type="application/json" data-sjs>{json.dumps(obj=payload)}</script>'
 
 
+def sjs_page(blocks: Sequence[object]) -> str:
+    """A post page carrying `blocks` as script blocks, after one that does not parse.
+
+    The unparsable block is what a reader must skip rather than fail on, as it does among the
+    dozens a real page carries.
+    """
+    scripts = "".join(sjs_script(payload=block) for block in blocks)
+    return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
+
+
 def serve_page(
     monkeypatch: pytest.MonkeyPatch,
     downloader: type[PlatformDownloader],
@@ -321,27 +475,6 @@ def serve_page(
 
     monkeypatch.setattr(target=downloader, name="_fetch_page", value=fetch_page)
     return fetched
-
-
-def accept_image_uploads(monkeypatch: pytest.MonkeyPatch, uploaded: list[str]) -> None:
-    """Makes the shared image fetch and upload succeed, recording what was fetched."""
-
-    async def load_image_bytes(source: str) -> LoadedMedia:
-        """Pretends the CDN answered."""
-        uploaded.append(source)
-        return LoadedMedia(data=b"bytes", mime_type="image/jpeg")
-
-    async def upload_as_input_file(
-        client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float
-    ) -> dict[str, str]:
-        """Stands in for the Files API upload."""
-        del client, source, mime_type, timeout_seconds
-        return {"type": "input_file", "file_id": filename}
-
-    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
-    monkeypatch.setattr(
-        target=image_ingest, name="upload_as_input_file", value=upload_as_input_file
-    )
 
 
 def block_separator(blocks: list[Any]) -> str:
@@ -380,6 +513,34 @@ class FakeUploads:
             "file_id": f"https://files.test/{filename}",
             "filename": filename,
         }
+
+
+def accept_image_uploads(
+    monkeypatch: pytest.MonkeyPatch,
+    uploads: FakeUploads | None = None,
+    refused: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Makes the shared image fetch answer and installs `uploads` as the Files API upload.
+
+    A source `refused` accepts fails its fetch the way an expired CDN URL does.
+
+    Returns:
+        Every source fetched, refused ones included, in order.
+    """
+    fetched: list[str] = []
+
+    async def load_image_bytes(source: str) -> LoadedMedia:
+        """Pretends the CDN answered, unless this source is one it refuses."""
+        fetched.append(source)
+        if refused is not None and refused(source):
+            raise RuntimeError(f"cdn url expired: {source}")
+        return LoadedMedia(data=b"image-bytes", mime_type="image/jpeg")
+
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(
+        target=image_ingest, name="upload_as_input_file", value=uploads or FakeUploads()
+    )
+    return fetched
 
 
 def race_every_scratch_teardown(monkeypatch: pytest.MonkeyPatch) -> list[str]:

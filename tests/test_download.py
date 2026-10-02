@@ -29,7 +29,7 @@ from discordbot.services.platforms.douyin import (
 )
 
 from tests.helpers.casting import as_bot, as_interaction
-from tests.helpers.link_sources import hosting_planner, hosting_off_planner
+from tests.helpers.link_sources import hosting_planner
 from tests.helpers.discord_mocks import FakeInteraction
 
 # What `extract_info` answers for a finished download: the least `download` reads a result from.
@@ -454,7 +454,6 @@ def _install(
 ) -> tuple[VideoCogs, _CannedDownloader]:
     """Builds the cog with hosting off and both of its downloaders answering `outcome`."""
     cog = VideoCogs(bot=as_bot(fake=object()))
-    cog.media_delivery = hosting_off_planner()
     stub = _CannedDownloader(outcome=outcome)
     monkeypatch.setattr(target=video, name="DouyinDownloader", value=lambda output_folder: stub)
     monkeypatch.setattr(target=video, name="VideoDownloader", value=lambda output_folder: stub)

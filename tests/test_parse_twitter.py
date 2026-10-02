@@ -122,8 +122,7 @@ async def test_the_quoted_post_says_its_pictures_are_not_attached(
     serve_conversation(
         monkeypatch, downloader=TwitterDownloader, post=twitter_post(image_urls=[], quoted=quoted)
     )
-    uploaded: list[str] = []
-    accept_image_uploads(monkeypatch, uploaded=uploaded)
+    fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
     blocks = await build_twitter_context_messages(
         url=TWITTER_URL,
@@ -132,7 +131,7 @@ async def test_the_quoted_post_says_its_pictures_are_not_attached(
         allow_media_ingest=True,
     )
 
-    assert uploaded == []
+    assert fetched == []
     assert "1 image(s), none of them attached" in block_body(blocks=blocks)
     assert quoted.image_urls[0] in block_body(blocks=blocks)
 

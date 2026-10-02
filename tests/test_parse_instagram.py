@@ -75,7 +75,7 @@ async def test_both_separators_stop_short_of_promising_the_whole_comment_section
     media ingest and every failed image fetch lands on, and it carried no caveat at all.
     """
     serve_conversation(monkeypatch, downloader=InstagramDownloader, post=instagram_post())
-    accept_image_uploads(monkeypatch, uploaded=[])
+    accept_image_uploads(monkeypatch=monkeypatch)
 
     with_media = await build_instagram_context_messages(
         url=INSTAGRAM_URL,

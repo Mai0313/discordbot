@@ -15,26 +15,7 @@ from discordbot.utils.media_delivery import (
 )
 
 from tests.helpers.casting import make_media_hosting_config
-from tests.helpers.link_sources import hosting_planner, hosting_off_planner
-
-
-def _service(
-    serve_dir: Path,
-    enabled: bool = True,
-    base_url: str = "https://media.test",
-    max_bytes: int = 8 * 1024**3,
-    retention_hours: float = 168.0,
-) -> MediaHostingService:
-    """Builds a host writer whose config points at a temp serve dir (via the env aliases)."""
-    return MediaHostingService(
-        config=make_media_hosting_config(
-            enabled=enabled,
-            base_url=base_url,
-            serve_dir=str(serve_dir),
-            max_bytes=max_bytes,
-            retention_hours=retention_hours,
-        )
-    )
+from tests.helpers.link_sources import hosting_planner, hosting_service, hosting_off_planner
 
 
 def _hosted_files(serve_dir: Path) -> list[str]:
@@ -60,7 +41,7 @@ def _age(path: Path, seconds: float) -> None:
 
 def test_publish_bytes_writes_content_addressed_name(tmp_path: Path) -> None:
     """Bytes are written under a 32-hex content-addressed name; the temp is os.replace'd away."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     url = service.publish_bytes(data=b"fake-wav", suffix=".wav")
 
@@ -73,7 +54,7 @@ def test_publish_bytes_writes_content_addressed_name(tmp_path: Path) -> None:
 
 def test_publish_bytes_dedups_identical_content(tmp_path: Path) -> None:
     """Hosting identical bytes twice yields one file and the same URL, refreshing the mtime."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     url1 = _host(service, data=b"A" * 64)
     _age(tmp_path / url1, seconds=100)  # age the file so the refresh is observable
@@ -87,7 +68,7 @@ def test_publish_bytes_dedups_identical_content(tmp_path: Path) -> None:
 
 def test_publish_bytes_different_content_two_files(tmp_path: Path) -> None:
     """Different bytes hash to different names: two files, two URLs."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     name_a = _host(service, data=b"A" * 10)
     name_b = _host(service, data=b"B" * 10)
@@ -98,7 +79,7 @@ def test_publish_bytes_different_content_two_files(tmp_path: Path) -> None:
 
 def test_publish_bytes_same_content_different_suffix_two_files(tmp_path: Path) -> None:
     """The same bytes under different suffixes stay distinct (the suffix rides the name)."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     name_png = _host(service, data=b"A" * 10, suffix=".png")
     name_jpg = _host(service, data=b"A" * 10, suffix=".jpg")
@@ -109,7 +90,7 @@ def test_publish_bytes_same_content_different_suffix_two_files(tmp_path: Path) -
 
 def test_publish_bytes_rejects_non_allowlisted_suffix(tmp_path: Path) -> None:
     """A suffix the host would 404 (e.g. .aiff) is refused, nothing written."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     url = service.publish_bytes(data=b"x", suffix=".aiff")
 
@@ -119,7 +100,7 @@ def test_publish_bytes_rejects_non_allowlisted_suffix(tmp_path: Path) -> None:
 
 def test_publish_bytes_normalizes_uppercase_suffix(tmp_path: Path) -> None:
     """An uppercase suffix is lowercased to its allowlisted form."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     url = service.publish_bytes(data=b"x", suffix=".JPG")
 
@@ -131,7 +112,7 @@ def test_publish_bytes_failure_leaves_no_final_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the atomic os.replace fails, no content-named file ever appears (and the temp is cleaned)."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
 
     def _boom(*args: object, **kwargs: object) -> None:
         raise OSError("replace failed")
@@ -148,7 +129,7 @@ def test_publish_path_hosts_and_consumes_source(tmp_path: Path) -> None:
     serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"movie")
-    service = _service(serve_dir=serve_dir)
+    service = hosting_service(serve_dir=serve_dir)
 
     url = service.publish_path(file_path=source)
 
@@ -163,7 +144,7 @@ def test_publish_path_dedup_hit_leaves_source(tmp_path: Path) -> None:
     """On a dedup hit publish_path returns the URL but leaves the source for the caller to clean."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()
-    service = _service(serve_dir=serve_dir)
+    service = hosting_service(serve_dir=serve_dir)
     first = tmp_path / "a.mp4"
     first.write_bytes(b"movie")
     url1 = service.publish_path(file_path=first)  # miss -> hosted, source consumed
@@ -185,7 +166,7 @@ def test_publish_path_streams_without_reading_whole_file(
     serve_dir.mkdir()
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"x" * 4096)
-    service = _service(serve_dir=serve_dir)
+    service = hosting_service(serve_dir=serve_dir)
 
     def _no_read_bytes(self: Path) -> bytes:
         raise AssertionError("publish_path must stream the hash, not read the whole file")
@@ -201,7 +182,7 @@ def test_publish_path_rejects_non_allowlisted_and_keeps_file(tmp_path: Path) -> 
     serve_dir.mkdir()
     source = tmp_path / "archive.zip"
     source.write_bytes(b"data")
-    service = _service(serve_dir=serve_dir)
+    service = hosting_service(serve_dir=serve_dir)
 
     url = service.publish_path(file_path=source)
 
@@ -211,13 +192,19 @@ def test_publish_path_rejects_non_allowlisted_and_keeps_file(tmp_path: Path) -> 
 
 def test_disabled_returns_none(tmp_path: Path) -> None:
     """An explicit kill-switch off disables the fallback even when fully configured."""
-    service = _service(serve_dir=tmp_path, enabled=False)
+    service = MediaHostingService(
+        config=make_media_hosting_config(
+            enabled=False, base_url="https://media.test", serve_dir=str(tmp_path)
+        )
+    )
     assert service.publish_bytes(data=b"x", suffix=".png") is None
 
 
 def test_empty_base_url_returns_none(tmp_path: Path) -> None:
     """An empty base URL leaves the fallback inert (keeps tests / unconfigured deploys green)."""
-    service = _service(serve_dir=tmp_path, base_url="")
+    service = MediaHostingService(
+        config=make_media_hosting_config(enabled=True, base_url="", serve_dir=str(tmp_path))
+    )
     assert service.publish_bytes(data=b"x", suffix=".png") is None
 
 
@@ -233,7 +220,7 @@ def test_serve_dir_that_is_a_regular_file_returns_none(tmp_path: Path) -> None:
     """A serve dir that is a regular file (not a directory) degrades to None, never raises."""
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("i am a file")
-    service = _service(serve_dir=blocker)
+    service = hosting_service(serve_dir=blocker)
 
     assert service.publish_bytes(data=b"x", suffix=".png") is None
 
@@ -241,7 +228,7 @@ def test_serve_dir_that_is_a_regular_file_returns_none(tmp_path: Path) -> None:
 def test_missing_serve_dir_falls_back_without_creating_it(tmp_path: Path) -> None:
     """A configured-but-absent serve dir falls back to None and is never created by the bot."""
     serve_dir = tmp_path / "not_mounted"
-    service = _service(serve_dir=serve_dir)
+    service = hosting_service(serve_dir=serve_dir)
 
     assert service.publish_bytes(data=b"x", suffix=".png") is None
     assert not serve_dir.exists()  # the bot must not create the (unmounted) serve dir
@@ -252,7 +239,7 @@ def test_missing_serve_dir_falls_back_without_creating_it(tmp_path: Path) -> Non
 
 def test_size_cap_evicts_oldest_keeps_recent(tmp_path: Path) -> None:
     """Past the size cap, the oldest hosted files are evicted (eagerly, at publish time)."""
-    service = _service(serve_dir=tmp_path, max_bytes=120, retention_hours=0)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=120, retention_hours=0)
     n1 = _host(service, data=b"A" * 50)
     _age(tmp_path / n1, seconds=1000)  # past the grace window
     n2 = _host(service, data=b"B" * 50)
@@ -268,7 +255,7 @@ def test_size_cap_evicts_oldest_keeps_recent(tmp_path: Path) -> None:
 
 def test_size_cap_protects_files_within_grace(tmp_path: Path) -> None:
     """A just-hosted file (and every concurrent publish) is grace-protected from eviction."""
-    service = _service(serve_dir=tmp_path, max_bytes=80, retention_hours=0)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=80, retention_hours=0)
     n1 = _host(service, data=b"A" * 50)
     n2 = _host(service, data=b"B" * 50)  # total 100 > 80, but both within grace -> nothing evicted
 
@@ -282,7 +269,7 @@ def test_size_cap_stops_once_no_evictable_candidate_is_left(tmp_path: Path) -> N
     eviction grace, not its size: the loop runs out of candidates and returns with the dir
     still over budget instead of reaping a URL that was handed out a moment ago.
     """
-    service = _service(serve_dir=tmp_path, max_bytes=30, retention_hours=0)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=30, retention_hours=0)
     n1 = _host(service, data=b"A" * 20)
     _age(tmp_path / n1, seconds=1000)
     n2 = _host(service, data=b"B" * 100)  # alone over cap; total 120 -> evict n1, then stop
@@ -295,7 +282,7 @@ def test_size_cap_stops_once_no_evictable_candidate_is_left(tmp_path: Path) -> N
 
 def test_age_cap_reaps_old_keeps_recent(tmp_path: Path) -> None:
     """cleanup_expired deletes files older than retention_hours and keeps recent ones."""
-    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=1)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=0, retention_hours=1)
     old = _host(service, data=b"A" * 10)
     _age(tmp_path / old, seconds=7200)  # 2h, past the 1h retention
     recent = _host(service, data=b"B" * 10)
@@ -310,7 +297,7 @@ def test_age_cap_reaps_old_keeps_recent(tmp_path: Path) -> None:
 
 def test_age_cap_keeps_file_at_exact_cutoff(tmp_path: Path) -> None:
     """A file whose mtime equals the cutoff is kept; only strictly-older files are reaped."""
-    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=1)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=0, retention_hours=1)
     name = _host(service, data=b"A" * 10)
     now = 1_000_000.0
     os.utime(tmp_path / name, (now - 3600.0, now - 3600.0))  # mtime == now - retention
@@ -321,7 +308,7 @@ def test_age_cap_keeps_file_at_exact_cutoff(tmp_path: Path) -> None:
 
 def test_cleanup_never_touches_foreign_files(tmp_path: Path) -> None:
     """The reaper only ever deletes the bot's own 32-hex files, never a foreign file in the dir."""
-    service = _service(serve_dir=tmp_path, max_bytes=1, retention_hours=0.0001)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=1, retention_hours=0.0001)
     (tmp_path / "access.log").write_text("log")  # foreign, allowlisted suffix
     (tmp_path / "report.json").write_text("{}")  # foreign, allowlisted suffix
     (tmp_path / "movie.mp4").write_bytes(b"film")  # foreign, human stem
@@ -352,7 +339,7 @@ def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
     _age(foreign, seconds=99999)  # past both the retention cutoff and the eviction grace
     link = serve_dir / ("0" * 32 + ".mp4")
     link.symlink_to(foreign)
-    service = _service(serve_dir=serve_dir, max_bytes=1, retention_hours=0.0001)
+    service = hosting_service(serve_dir=serve_dir, max_bytes=1, retention_hours=0.0001)
 
     service.run_maintenance(now=time.time())
 
@@ -362,7 +349,7 @@ def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
 
 def test_enforce_cap_disabled_when_max_bytes_zero(tmp_path: Path) -> None:
     """max_bytes <= 0 disables size eviction independently of the cleanup gate."""
-    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
     name = _host(service, data=b"A" * 999)
     _age(tmp_path / name, seconds=99999)
 
@@ -372,7 +359,7 @@ def test_enforce_cap_disabled_when_max_bytes_zero(tmp_path: Path) -> None:
 
 def test_cleanup_expired_disabled_when_retention_zero(tmp_path: Path) -> None:
     """retention_hours <= 0 disables age reaping independently of the cleanup gate."""
-    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
+    service = hosting_service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
     name = _host(service, data=b"A" * 10)
     _age(tmp_path / name, seconds=99999)
 
@@ -382,7 +369,7 @@ def test_cleanup_expired_disabled_when_retention_zero(tmp_path: Path) -> None:
 
 def test_sweep_removes_stale_bot_temps_only(tmp_path: Path) -> None:
     """A crash-left bot temp past the window is reaped; a fresh one and any FOREIGN temp are kept."""
-    service = _service(serve_dir=tmp_path)
+    service = hosting_service(serve_dir=tmp_path)
     stale_bot = tmp_path / f"{_TEMP_PREFIX}staletoken"
     stale_bot.write_bytes(b"partial")
     _age(stale_bot, seconds=9999)
@@ -402,7 +389,7 @@ def test_sweep_removes_stale_bot_temps_only(tmp_path: Path) -> None:
 def test_cleanup_no_op_on_missing_serve_dir(tmp_path: Path) -> None:
     """All cleanup methods no-op (and never create the dir) when the serve dir is absent."""
     serve_dir = tmp_path / "absent"
-    service = _service(serve_dir=serve_dir)
+    service = hosting_service(serve_dir=serve_dir)
 
     assert service.enforce_cap(now=time.time()) == 0
     assert service.cleanup_expired(now=time.time()) == 0

@@ -22,15 +22,13 @@ from discordbot.cogs.parse_instagram.cog import InstagramCogs
 from discordbot.services.platforms.facebook import FacebookOutput
 from discordbot.services.platforms.instagram import InstagramOutput
 
-from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
+    expand,
     twitter_post,
     facebook_post,
     instagram_post,
     expansion_embeds,
-    stub_conversation_cog,
 )
-from tests.helpers.discord_mocks import FakeGuild, FakeDiscordMessage
 
 type _CogType = type[ConversationExpansionCog[Any, Any]]
 type _PostFactory = Callable[..., PlatformConversation[Any]]
@@ -62,13 +60,8 @@ commented_cards = pytest.mark.parametrize(
 
 
 async def _expand(cog_type: _CogType, outcome: PlatformConversation[Any]) -> list[Embed]:
-    """Expands a guild message carrying the post's own link, returning the embeds delivered."""
-    cog, _ = stub_conversation_cog(cog_type=cog_type, outcome=outcome)
-    assert outcome.target is not None
-    message = FakeDiscordMessage(content=outcome.target.url, guild=FakeGuild())
-
-    await cog.on_message(message=as_message(fake=message))
-
+    """Expands a guild message carrying the platform's post link, returning what it delivered."""
+    message, _ = await expand(cog_type=cog_type, outcome=outcome)
     return expansion_embeds(message=message)
 
 

@@ -10,28 +10,19 @@ from discordbot.cogs.parse_twitter.cog import TwitterCogs
 from discordbot.services.platforms.twitter import TwitterConversation
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 
-from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
     TWITTER_URL,
+    expand,
+    stub_bot,
     twitter_post,
     twitter_output,
     expansion_embeds,
-    stub_conversation_cog,
 )
-from tests.helpers.discord_mocks import FakeGuild, FakeDiscordMessage
-
-
-def _message(content: str = TWITTER_URL) -> FakeDiscordMessage:
-    """Builds a guild message carrying a Twitter link."""
-    return FakeDiscordMessage(content=content, guild=FakeGuild())
 
 
 async def test_a_pasted_link_is_expanded_into_a_card() -> None:
     """The floor: a link becomes the post, and the source message is marked done."""
-    cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post())
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, _ = await expand(cog_type=TwitterCogs, outcome=twitter_post())
     embeds = expansion_embeds(message=message)
 
     assert embeds[0].description is not None
@@ -46,10 +37,7 @@ async def test_the_footer_carries_the_counters_and_says_the_replies_are_gone() -
     So the number cannot stand alone: `💬 540` under a card with no replies in it reads as an
     expansion that declined to show what it had, rather than as a platform that served none.
     """
-    cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, _ = await expand(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
     footer = expansion_embeds(message=message)[0].footer.text
 
     assert footer is not None
@@ -63,7 +51,7 @@ async def test_a_video_post_shows_its_poster_and_a_link() -> None:
 
     Without the poster a video post would be a card with no picture at all.
     """
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=TwitterCogs,
         outcome=twitter_post(
             image_urls=[],
@@ -71,9 +59,6 @@ async def test_a_video_post_shows_its_poster_and_a_link() -> None:
             video_poster_urls=["https://pbs.twimg.com/amplify_video_thumb/p.jpg"],
         ),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
     embed = expansion_embeds(message=message)[0]
 
     assert embed.image.url == "https://pbs.twimg.com/amplify_video_thumb/p.jpg"
@@ -83,7 +68,7 @@ async def test_a_video_post_shows_its_poster_and_a_link() -> None:
 
 async def test_a_still_wins_the_preview_over_a_video_poster() -> None:
     """A post carrying both is showing the picture it chose, not the frame we fell back to."""
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=TwitterCogs,
         outcome=twitter_post(
             image_urls=["https://pbs.twimg.com/media/a.jpg"],
@@ -91,21 +76,15 @@ async def test_a_still_wins_the_preview_over_a_video_poster() -> None:
             video_poster_urls=["https://pbs.twimg.com/amplify_video_thumb/p.jpg"],
         ),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
 
     assert expansion_embeds(message=message)[0].image.url == "https://pbs.twimg.com/media/a.jpg"
 
 
 async def test_a_truncated_post_says_so_on_the_card() -> None:
     """Twitter marks the cut in no way at all, so a quiet card passes a fragment off as the post."""
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=TwitterCogs, outcome=twitter_post(image_urls=[], is_truncated=True)
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
     description = expansion_embeds(message=message)[0].description
 
     assert description is not None
@@ -114,10 +93,7 @@ async def test_a_truncated_post_says_so_on_the_card() -> None:
 
 async def test_an_ordinary_post_does_not_claim_to_be_cut() -> None:
     """The notice rides on a flag, so its absence has to be silent."""
-    cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, _ = await expand(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
     description = expansion_embeds(message=message)[0].description
 
     assert description is not None
@@ -127,13 +103,10 @@ async def test_an_ordinary_post_does_not_claim_to_be_cut() -> None:
 async def test_the_post_it_replies_to_gets_its_own_card_before_it() -> None:
     """Reading order, and a colour that says which of the two the link actually named."""
     parent = twitter_output(text="Feel good.", url="https://x.com/Dbacks/status/1", image_urls=[])
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=TwitterCogs,
         outcome=TwitterConversation(chain=[parent, twitter_output(image_urls=[])]),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
     embeds = expansion_embeds(message=message)
 
     assert len(embeds) == 2
@@ -146,10 +119,7 @@ async def test_the_post_it_replies_to_gets_its_own_card_before_it() -> None:
 async def test_a_quoted_post_gets_a_card_outside_the_gallery() -> None:
     """Its own URL is what keeps Discord from folding it in among the pictures."""
     quoted = twitter_output(text="quoted body", url="https://x.com/OpenAI/status/2", image_urls=[])
-    cog, _ = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post(quoted=quoted))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, _ = await expand(cog_type=TwitterCogs, outcome=twitter_post(quoted=quoted))
     embeds = expansion_embeds(message=message)
 
     assert embeds[-1].url == "https://x.com/OpenAI/status/2"
@@ -166,15 +136,12 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
     """
     parent = twitter_output(text="p" * 3000, url="https://x.com/Dbacks/status/1", image_urls=[])
     quoted = twitter_output(text="q" * 3000, url="https://x.com/OpenAI/status/2", image_urls=[])
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=TwitterCogs,
         outcome=TwitterConversation(
             chain=[parent, twitter_output(text="t" * 5000, image_urls=[], quoted=quoted)]
         ),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
     embeds = expansion_embeds(message=message)
     spent = sum(
         utf16_length(value=text)
@@ -182,7 +149,9 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
         for text in (embed.description, embed.footer.text, embed.author.name)
         if isinstance(text, str)
     )
-    alone = cog._build_embeds(conversation=twitter_post(text="t" * 5000, image_urls=[]))
+    alone = TwitterCogs(bot=stub_bot())._build_embeds(
+        conversation=twitter_post(text="t" * 5000, image_urls=[])
+    )
 
     assert spent <= 6000
     # The parent card goes first and the quote last, so the post sits between them.
@@ -194,13 +163,10 @@ async def test_a_long_post_and_its_two_context_cards_fit_one_message() -> None:
 async def test_a_long_parent_under_a_short_post_stays_inside_the_description_limit() -> None:
     """A lone context card is budgeted more of the message than one description may carry."""
     parent = twitter_output(text="p" * 5000, url="https://x.com/Dbacks/status/1", image_urls=[])
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=TwitterCogs,
         outcome=TwitterConversation(chain=[parent, twitter_output(text="hi", image_urls=[])]),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
     description = expansion_embeds(message=message)[0].description
 
     assert description is not None
@@ -210,10 +176,9 @@ async def test_a_long_parent_under_a_short_post_stays_inside_the_description_lim
 
 async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
     """A profile link never matches the pattern, so it earns no reaction and costs no request."""
-    cog, stub = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post())
-    message = _message(content="https://x.com/Dbacks")
-
-    await cog.on_message(message=as_message(fake=message))
+    message, stub = await expand(
+        cog_type=TwitterCogs, outcome=twitter_post(), content="https://x.com/Dbacks"
+    )
 
     assert stub.seen == []
     assert message.reactions == []
@@ -221,9 +186,8 @@ async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
 
 async def test_the_link_is_read_at_the_url_the_message_carried() -> None:
     """The tracking tail rides along rather than being stripped here: the parser owns that."""
-    cog, stub = stub_conversation_cog(cog_type=TwitterCogs, outcome=twitter_post())
-    message = _message(content=f"看這個 {TWITTER_URL}?s=46&t=abc")
-
-    await cog.on_message(message=as_message(fake=message))
+    _message, stub = await expand(
+        cog_type=TwitterCogs, outcome=twitter_post(), content=f"看這個 {TWITTER_URL}?s=46&t=abc"
+    )
 
     assert stub.seen == [f"{TWITTER_URL}?s=46&t=abc"]
