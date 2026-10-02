@@ -1136,32 +1136,30 @@ class EconomyCogs(commands.Cog):
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
-        already_vip = await get_vip(user_id=user.id)
-        if already_vip:
-            await send_private_followup(
-                interaction=interaction,
-                embed=build_vip_already_embed(
-                    actor_name=user.display_name, avatar_url=user_avatar_url
-                ),
-            )
-            return
-
         result = await buy_vip(user_id=user.id, name=user.name, avatar_url=user_avatar_url)
-        if result is None:
+        if result is not None:
+            embed = build_vip_success_embed(
+                actor_name=user.display_name, avatar_url=user_avatar_url, result=result
+            )
+        elif await get_vip(user_id=user.id):
+            embed = build_vip_already_embed(
+                actor_name=user.display_name, avatar_url=user_avatar_url
+            )
+        else:
             balance_now = await get_balance(user_id=user.id)
-            await send_private_followup(
-                interaction=interaction,
-                embed=build_vip_insufficient_embed(
+            if balance_now < VIP_PURCHASE_COST:
+                embed = build_vip_insufficient_embed(
                     actor_name=user.display_name,
                     avatar_url=user_avatar_url,
                     balance_now=balance_now,
-                ),
-            )
-            return
-
-        embed = build_vip_success_embed(
-            actor_name=user.display_name, avatar_url=user_avatar_url, result=result
-        )
+                )
+            else:
+                embed = build_error_embed(
+                    title="VIP purchase failed",
+                    description="The purchase could not be completed. Please try again.",
+                    author_name=user.display_name,
+                    author_icon_url=user_avatar_url,
+                )
         await send_private_followup(interaction=interaction, embed=embed)
 
 

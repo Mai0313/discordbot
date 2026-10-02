@@ -109,7 +109,7 @@ flowchart TD
 | _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                              |
 | `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                            |
 | `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                       |
-| `/vip`                                      | 购买永久 VIP 权益。                                                                           |
+| `/vip`                                      | Buys permanent VIP perks; overlapping purchases charge once and report existing VIP status.   |
 | `/leaderboard`                              | 显示全域余额排行榜。                                                                          |
 | `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                                  |
 | `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                                |

@@ -69,7 +69,7 @@ A link that is only incidental to the question is left alone.
 Everyday:
 
 - `/balance` — your cash, debts, net worth, and VIP status
-- `/vip` — buy VIP, which boosts Blackjack payouts
+- `/vip` — buy VIP, which boosts Blackjack payouts; overlapping purchases charge once and report existing VIP status rather than insufficient funds
 
 Transfers and boards:
 
