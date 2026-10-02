@@ -23,7 +23,6 @@ from discordbot.cogs.economy.views import (
     CreditLoanDecisionView,
     CentralBankLoanDecisionView,
     is_guild_admin,
-    central_bank_exclude_user_ids,
 )
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
@@ -964,7 +963,6 @@ class EconomyCogs(commands.Cog):
             interaction=interaction,
             embed=embed,
             view=CentralBankLoanDecisionView(
-                bot=self.bot,
                 proposal_id=proposal.proposal_id,
                 creator_id=user.id,
                 allow_self_approval=self.economy_config.allow_central_bank_self_approval,
@@ -1141,10 +1139,7 @@ class EconomyCogs(commands.Cog):
             await record_guild_participant(
                 guild_id=interaction.guild_id, user_id=interaction.user.id
             )
-        status = await get_central_bank_status(
-            guild_id=interaction.guild_id,
-            exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
-        )
+        status = await get_central_bank_status(guild_id=interaction.guild_id)
         embed = build_central_bank_status_embed(status=status)
         await send_expiring_followup(interaction=interaction, embed=embed)
 

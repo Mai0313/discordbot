@@ -896,11 +896,7 @@ async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() 
         borrower_id=1, borrower_name="alice", amount=100
     )
     assert proposal is not None
-    view = CentralBankLoanDecisionView(
-        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))),
-        proposal_id=proposal.proposal_id,
-        creator_id=1,
-    )
+    view = CentralBankLoanDecisionView(proposal_id=proposal.proposal_id, creator_id=1)
     reject_button = attached_button(view=view, custom_id="central_bank:reject")
     admin = FakeInteraction(
         user=FakeUser(user_id=99, name="banker"), guild_id=LENDING_GUILD, administrator=True

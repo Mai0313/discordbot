@@ -113,7 +113,7 @@ async def fake_top_n(limit: int | None, include_hidden: bool = False) -> list[Le
     ]
 
 
-async def fake_top_losers(limit: int, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
+async def fake_top_losers(limit: int) -> list[LossLeaderboardEntry]:
     """Returns one fake loss leaderboard row."""
     return [
         LossLeaderboardEntry(
@@ -223,9 +223,7 @@ async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
     del guild_id, user_id
 
 
-async def fake_get_central_bank_status(
-    guild_id: int, exclude_user_ids: tuple[int, ...] = ()
-) -> CentralBankStatus:
+async def fake_get_central_bank_status(guild_id: int) -> CentralBankStatus:
     """Returns fake central-bank capacity."""
     return CentralBankStatus(
         participant_count=3,
@@ -735,9 +733,7 @@ async def test_central_bank_decision_buttons_require_admin_and_allow_self_approv
 
     monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
-    view = CentralBankLoanDecisionView(
-        bot=_bot(), proposal_id=42, creator_id=1, allow_self_approval=True
-    )
+    view = CentralBankLoanDecisionView(proposal_id=42, creator_id=1, allow_self_approval=True)
     approve_button = attached_button(view=view, custom_id="central_bank:approve")
 
     denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"), administrator=False)
@@ -763,7 +759,7 @@ async def test_central_bank_decision_buttons_require_admin_and_allow_self_approv
     assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
     assert allowed.edits[0]["view"] is None
 
-    cancel_view = CentralBankLoanDecisionView(bot=_bot(), proposal_id=43, creator_id=1)
+    cancel_view = CentralBankLoanDecisionView(proposal_id=43, creator_id=1)
     cancel_button = attached_button(view=cancel_view, custom_id="central_bank:cancel")
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
@@ -872,9 +868,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
     monkeypatch.setattr(views, "reject_loan_proposal", resolve_and_note)
     monkeypatch.setattr(views, "cancel_loan_proposal", resolve_and_note)
 
-    central = CentralBankLoanDecisionView(
-        bot=_bot(), proposal_id=42, creator_id=1, allow_self_approval=True
-    )
+    central = CentralBankLoanDecisionView(proposal_id=42, creator_id=1, allow_self_approval=True)
     credit = CreditLoanDecisionView(proposal_id=43, lender_id=1, creator_id=1)
     buttons = [
         (central, "central_bank:approve"),
@@ -921,7 +915,7 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     await credit_view.on_timeout()
 
     central_message = FakeDiscordMessage()
-    central_view = CentralBankLoanDecisionView(bot=_bot(), proposal_id=43, creator_id=1)
+    central_view = CentralBankLoanDecisionView(proposal_id=43, creator_id=1)
     central_view.message = as_message(fake=central_message)
     await central_view.on_timeout()
 
@@ -1469,7 +1463,7 @@ async def test_economy_money_commands_reject_invalid_amount_text(
 async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Loss leaderboard embed describes gross daily loss, not net P&L."""
 
-    async def daily_losses(limit: int, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
+    async def daily_losses(limit: int) -> list[LossLeaderboardEntry]:
         """Returns fake daily gross loss rows."""
         return [
             LossLeaderboardEntry(user_id=1, name="alice", loss_amount=500, avatar_url=""),
@@ -1497,9 +1491,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
 async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Loss leaderboard empty state stays explicit about today's loss rows."""
 
-    async def no_daily_losses(
-        limit: int, include_hidden: bool = False
-    ) -> list[LossLeaderboardEntry]:
+    async def no_daily_losses(limit: int) -> list[LossLeaderboardEntry]:
         """Returns an empty daily loss board."""
         return []
 

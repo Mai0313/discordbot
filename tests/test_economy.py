@@ -1114,7 +1114,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
     assert [(row.user_id, row.loss_amount) for row in rows] == [(2, 500), (3, 250), (1, 100)]
 
 
-async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> None:
+async def test_top_losers_excludes_leaderboard_hidden_accounts() -> None:
     """Hidden accounts do not appear on the public daily loss leaderboard."""
     await seed_balance(user_id=1, name="alice", amount=500)
     await seed_balance(user_id=2, name="bob", amount=400)
@@ -1128,18 +1128,6 @@ async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> N
 
     rows = await top_losers(limit=10)
     assert rows == [LossLeaderboardEntry(user_id=2, name="bob", loss_amount=400, avatar_url="")]
-
-
-async def test_top_losers_can_include_leaderboard_hidden_accounts() -> None:
-    """Maintenance callers can include hidden accounts in daily loss queries."""
-    await seed_balance(user_id=1, name="alice", amount=500)
-    await apply_blackjack_settlement(
-        player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
-    )
-    await hide_from_leaderboard(user_id=1)
-
-    rows = await top_losers(limit=10, include_hidden=True)
-    assert rows == [LossLeaderboardEntry(user_id=1, name="alice", loss_amount=500, avatar_url="")]
 
 
 async def test_top_losers_ignores_counters_before_today() -> None:

@@ -92,7 +92,6 @@ from discordbot.typings.economy import (
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
-from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. The bound is
 # there to stop a degenerate hot-row livelock, not to ride out contention.
@@ -413,7 +412,7 @@ _JACKPOT_SEEDS: Final[Mapping[str, int]] = {"dragon_gate": 1_000}
 # Serializes loan approval so central-bank capacity is consumed once.
 _loan_accept_lock = LoopLocalLock()
 type _TopNCacheKey = tuple[int | None, bool]
-type _TopLosersCacheKey = tuple[int, bool, datetime]
+type _TopLosersCacheKey = tuple[int, datetime]
 _top_n_cache: dict[_TopNCacheKey, tuple[float, tuple[LeaderboardEntry, ...]]] = {}
 _top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEntry, ...]]] = {}
 
@@ -487,10 +486,10 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
             statement=insert(JackpotPool)
             .values(
                 game_id=seed_game_id,
-                pool_balance=_stored_int_to_text(value=seed_amount),
-                total_contributed="0",
-                total_claimed="0",
-                seeded_amount=_stored_int_to_text(value=seed_amount),
+                pool_balance=seed_amount,
+                total_contributed=0,
+                total_claimed=0,
+                seeded_amount=seed_amount,
                 generation=0,
                 updated_at=_database_now(),
             )
@@ -500,9 +499,9 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
         statement=insert(CasinoLedger)
         .values(
             ledger_id=CASINO_LEDGER_ID,
-            balance="0",
-            total_earned="0",
-            total_spent="0",
+            balance=0,
+            total_earned=0,
+            total_spent=0,
             updated_at=_database_now(),
         )
         .on_conflict_do_nothing(index_elements=["ledger_id"])
@@ -510,10 +509,7 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
     await conn.execute(
         statement=insert(CentralBankLedger)
         .values(
-            ledger_id=CENTRAL_BANK_LEDGER_ID,
-            balance="0",
-            total_earned="0",
-            updated_at=_database_now(),
+            ledger_id=CENTRAL_BANK_LEDGER_ID, balance=0, total_earned=0, updated_at=_database_now()
         )
         .on_conflict_do_nothing(index_elements=["ledger_id"])
     )
@@ -1819,9 +1815,7 @@ async def top_n(
         return list(rows)
 
 
-async def top_losers(
-    limit: int = LEADERBOARD_SIZE, include_hidden: bool = False
-) -> list[LossLeaderboardEntry]:
+async def top_losers(limit: int = LEADERBOARD_SIZE) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
     The leaderboard reads persisted `casino_account` daily counters. Writes lazily reset stale
@@ -1831,8 +1825,6 @@ async def top_losers(
 
     Args:
         limit: Maximum number of accounts to return.
-        include_hidden: Whether to include accounts marked as hidden from
-            public leaderboards.
 
     Returns:
         Loss leaderboard entries ordered by loss descending. `loss_amount`
@@ -1842,14 +1834,14 @@ async def top_losers(
         return []
     now = _database_now()
     today_midnight = _taipei_midnight(now=now)
-    cache_key: _TopLosersCacheKey = (limit, include_hidden, today_midnight)
+    cache_key: _TopLosersCacheKey = (limit, today_midnight)
     cached_rows = _cached_leaderboard_rows(cache=_top_losers_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
 
     async with open_session() as session:
-        stmt = (
-            select(
+        result = await session.execute(
+            statement=select(
                 CasinoAccount.user_id,
                 CasinoAccount.name,
                 UserAccount.avatar_url,
@@ -1857,13 +1849,14 @@ async def top_losers(
             )
             .select_from(CasinoAccount)
             .join(UserAccount, UserAccount.user_id == CasinoAccount.user_id)
-            .where(CasinoAccount.day_started_at == today_midnight, CasinoAccount.daily_loss != "0")
+            .where(
+                CasinoAccount.day_started_at == today_midnight,
+                CasinoAccount.daily_loss != "0",
+                UserAccount.hide_from_leaderboard.is_(False),
+            )
             .order_by(desc(func.length(CasinoAccount.daily_loss)), desc(CasinoAccount.daily_loss))
             .limit(limit=limit)
         )
-        if not include_hidden:
-            stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
-        result = await session.execute(statement=stmt)
         rows: list[LossLeaderboardEntry] = []
         for row in result.all():
             loss_amount = row[3]
@@ -2030,7 +2023,7 @@ async def _is_guild_participant_in_session(
     result = await session.execute(
         statement=select(GuildParticipant.user_id)
         .where(GuildParticipant.guild_id == guild_id, GuildParticipant.user_id == user_id)
-        .limit(1)
+        .limit(limit=1)
     )
     return result.scalar_one_or_none() is not None
 
@@ -2047,7 +2040,7 @@ async def _outstanding_central_bank_principal_in_session(session: AsyncSession) 
 
 
 async def _central_bank_status_in_session(
-    session: AsyncSession, guild_id: int, exclude_user_ids: tuple[int, ...] = ()
+    session: AsyncSession, guild_id: int
 ) -> CentralBankStatus:
     """Computes one guild's central-bank lending capacity.
 
@@ -2064,8 +2057,6 @@ async def _central_bank_status_in_session(
     """
     ledger_balance = await _central_bank_ledger_balance_in_session(session=session)
     participants = select(GuildParticipant.user_id).where(GuildParticipant.guild_id == guild_id)
-    if exclude_user_ids:
-        participants = participants.where(GuildParticipant.user_id.notin_(other=exclude_user_ids))
     count_result = await session.execute(
         statement=select(func.count()).select_from(participants.subquery())
     )
@@ -2149,14 +2140,10 @@ async def _credit_ceiling_in_session(session: AsyncSession, user_id: int, now: d
     return central_bank_credit_ceiling(balance=balance, total_debt=total_debt)
 
 
-async def get_central_bank_status(
-    guild_id: int, exclude_user_ids: tuple[int, ...] = ()
-) -> CentralBankStatus:
+async def get_central_bank_status(guild_id: int) -> CentralBankStatus:
     """Returns one guild's current central-bank lending capacity."""
     async with open_session() as session:
-        return await _central_bank_status_in_session(
-            session=session, guild_id=guild_id, exclude_user_ids=exclude_user_ids
-        )
+        return await _central_bank_status_in_session(session=session, guild_id=guild_id)
 
 
 async def get_credit_ceiling(user_id: int) -> int:
@@ -2214,11 +2201,10 @@ async def _insert_loan_proposal(  # noqa: PLR0913 -- a proposal records both par
             creator_id=borrower_id,
             amount=amount,
             monthly_rate_bps=clamp_loan_rate_bps(monthly_rate_bps=monthly_rate_bps),
-            escrow_amount=0,
             created_at=now,
             updated_at=now,
         )
-        session.add(proposal)
+        session.add(instance=proposal)
         await session.commit()
         return _loan_proposal_view(proposal=proposal)
 
@@ -2397,7 +2383,6 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
     actor_avatar_url: str = "",
     approver_is_guild_admin: bool = False,
     guild_id: int | None = None,
-    central_bank_exclude_user_ids: tuple[int, ...] = (),
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
     """Accepts a pending loan proposal and opens the loan contract.
@@ -2455,7 +2440,7 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
             # BEGIN IMMEDIATE transaction this runs in is what serialises them and
             # two approvals racing cannot each see the capacity the other spends.
             central_status = await _central_bank_status_in_session(
-                session=session, guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
+                session=session, guild_id=guild_id
             )
             borrower_ceiling = await _credit_ceiling_in_session(
                 session=session, user_id=proposal.borrower_id, now=now
@@ -2509,12 +2494,10 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
             last_interest_accrued_at=prepaid_end,
             updated_at=now,
         )
-        session.add(contract)
+        session.add(instance=contract)
         await _commit_balance_write(session=session)
         if proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST and guild_id is not None:
-            central_status = await get_central_bank_status(
-                guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
-            )
+            central_status = await get_central_bank_status(guild_id=guild_id)
         return LoanProposalAcceptResult(
             contract=_loan_contract_view(contract=contract),
             borrower_balance=credit_result.new_balance,
@@ -2792,9 +2775,7 @@ async def call_central_bank_loans(
     )
 
 
-async def list_loan_contracts(
-    user_id: int, include_closed: bool = False
-) -> list[LoanContractView]:
+async def list_loan_contracts(user_id: int) -> list[LoanContractView]:
     """Lists loan contracts where the user is borrower or personal lender.
 
     Accrues and persists interest-due on active contracts first (a write),
@@ -2803,13 +2784,14 @@ async def list_loan_contracts(
     """
     now = _database_now()
     async with open_session() as session:
-        stmt = select(LoanContract).where(
-            (LoanContract.borrower_id == user_id) | (LoanContract.lender_id == user_id)
+        result = await session.execute(
+            statement=select(LoanContract)
+            .where(
+                (LoanContract.borrower_id == user_id) | (LoanContract.lender_id == user_id),
+                LoanContract.status == LoanContractStatus.ACTIVE,
+            )
+            .order_by(LoanContract.opened_at, LoanContract.id)
         )
-        if not include_closed:
-            stmt = stmt.where(LoanContract.status == LoanContractStatus.ACTIVE)
-        stmt = stmt.order_by(LoanContract.opened_at, LoanContract.id)
-        result = await session.execute(statement=stmt)
         contracts = list(result.scalars().all())
         for contract in contracts:
             await _accrue_contract_interest_in_session(session=session, contract=contract, now=now)
