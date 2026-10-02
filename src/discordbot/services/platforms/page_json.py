@@ -60,7 +60,7 @@ class FetchedPage(BaseModel):
         ..., description="The URL the request ended on, after every redirect it followed"
     )
 
-    def landed_on(self, *, path_prefixes: tuple[str, ...]) -> bool:
+    def landed_on(self, path_prefixes: tuple[str, ...]) -> bool:
         """Whether the request ended on a path starting with one of `path_prefixes`.
 
         Args:
@@ -72,7 +72,7 @@ class FetchedPage(BaseModel):
         return urlparse(self.final_url).path.lower().startswith(path_prefixes)
 
 
-def fetch_page(*, url: str, headers: dict[str, str], timeout: float) -> FetchedPage:
+def fetch_page(url: str, headers: dict[str, str], timeout: float) -> FetchedPage:
     """Fetches one page, following redirects, and classifies a failed request.
 
     Args:
@@ -97,7 +97,7 @@ def fetch_page(*, url: str, headers: dict[str, str], timeout: float) -> FetchedP
         raise link_fetch_error(error=error, url=url) from error
 
 
-def json_payloads(*, html: str, platform: str) -> Iterator[Any]:
+def json_payloads(html: str, platform: str) -> Iterator[Any]:
     """Yields every embedded JSON block on the page, skipping the ones that do not parse.
 
     Skipping rather than failing is what keeps one truncated block, of the dozens a page
@@ -120,7 +120,7 @@ def json_payloads(*, html: str, platform: str) -> Iterator[Any]:
             continue
 
 
-def walk(*, node: JsonValue) -> Iterator[dict[str, Any]]:
+def walk(node: JsonValue) -> Iterator[dict[str, Any]]:
     """Yields every dict in a parsed JSON tree, outermost first."""
     if isinstance(node, dict):
         yield node
@@ -140,12 +140,12 @@ def deep_get(node: JsonValue, *keys: str) -> JsonValue:
     return node
 
 
-def str_of(*, value: JsonValue) -> str:
+def str_of(value: JsonValue) -> str:
     """A string field, or an empty one when the page served a null or another type."""
     return value if isinstance(value, str) else ""
 
 
-def count_of(*, value: JsonValue) -> int:
+def count_of(value: JsonValue) -> int:
     """Reads a count the page serves as a bare value, a `{"count": n}` wrapper, or "1,017".
 
     An int rather than the page's own formatted string, so every platform's counters are the
@@ -163,6 +163,6 @@ def count_of(*, value: JsonValue) -> int:
     return 0
 
 
-def time_of(*, value: JsonValue) -> datetime | None:
+def time_of(value: JsonValue) -> datetime | None:
     """A unix timestamp as an aware datetime, or None when the page omitted it."""
     return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None

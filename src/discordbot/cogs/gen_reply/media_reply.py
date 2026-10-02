@@ -85,7 +85,7 @@ class MediaReplyRoutes(BaseModel):
         """The message that asked for the media, read off the surface that carries it."""
         return self.surface.message
 
-    async def _deliver(self, *, data: bytes, filename: str) -> Message | None:
+    async def _deliver(self, data: bytes, filename: str) -> Message | None:
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
 
         Returns the delivered media message the persona reply should stream onto, or None when the
@@ -114,7 +114,7 @@ class MediaReplyRoutes(BaseModel):
 
     @contextlib.asynccontextmanager
     async def _delivery_window(
-        self, *, context_task: asyncio.Task[ReplyContext]
+        self, context_task: asyncio.Task[ReplyContext]
     ) -> AsyncIterator[asyncio.Timeout]:
         """Bounds a generation by what the surface has left, and drains the context on failure.
 
@@ -138,7 +138,7 @@ class MediaReplyRoutes(BaseModel):
             raise
 
     async def handle_image(
-        self, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        self, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Generates or edits an image, then replies about it in persona.
 
@@ -211,7 +211,7 @@ class MediaReplyRoutes(BaseModel):
         )
 
     async def handle_video(
-        self, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        self, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Generates a video via the native Gemini (omni) Interactions API, delivers it, then replies.
 
@@ -297,11 +297,7 @@ class MediaReplyRoutes(BaseModel):
         )
 
     async def _reply_about_video(
-        self,
-        *,
-        reply: Message | None,
-        video_bytes: bytes,
-        context_task: asyncio.Task[ReplyContext],
+        self, reply: Message | None, video_bytes: bytes, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Best-effort: watches the just-made video and streams a persona reply onto its message.
 

@@ -106,7 +106,7 @@ TWITTER_SEPARATORS = PostSeparators(
 )
 
 
-def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -> list[str]:
+def _render_post(post: TwitterOutput, label: str, attached_images: int = 0) -> list[str]:
     """Renders one post — the target, the one it replies to, or the one it quotes — as text.
 
     `attached_images` is how many of this post's images actually rode into the block, and only the
@@ -151,7 +151,7 @@ def _render_post(*, post: TwitterOutput, label: str, attached_images: int = 0) -
 
 
 def _render_conversation(
-    *, post: TwitterOutput, conversation: TwitterConversation, attached_images: int
+    post: TwitterOutput, conversation: TwitterConversation, attached_images: int
 ) -> str:
     """Renders the post, whatever it answers, and whatever it quotes, as compact text.
 
@@ -179,7 +179,6 @@ def _render_conversation(
 
 
 async def build_twitter_context_messages(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,

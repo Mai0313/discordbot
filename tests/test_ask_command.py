@@ -78,7 +78,7 @@ class _FakeAskInteraction:
     """The interaction surface of a user-installed `/ask`, with nothing the route never reads."""
 
     def __init__(
-        self, *, guild_id: int | None = GUILD_ID, context: InteractionContextType | None = None
+        self, guild_id: int | None = GUILD_ID, context: InteractionContextType | None = None
     ) -> None:
         """Initializes the invocation's identity, its channel and its response records."""
         self.id = ASK_SNOWFLAKE
@@ -144,7 +144,7 @@ def _interaction(**kwargs: Any) -> Any:  # noqa: ANN401 -- the fake stands in fo
     return _FakeAskInteraction(**kwargs)
 
 
-def _ask_message(*, interaction: Any) -> Message:  # noqa: ANN401 -- see `_interaction`
+def _ask_message(interaction: Any) -> Message:  # noqa: ANN401 -- see `_interaction`
     """The message the pipeline would answer for this invocation."""
     return build_ask_message(interaction=interaction, question="在幹嘛")
 
@@ -476,7 +476,6 @@ async def test_a_gateway_turn_records_nothing() -> None:
 
 
 def _ask_cog(
-    *,
     interaction: Any,  # noqa: ANN401 -- see `_interaction`
     monkeypatch: pytest.MonkeyPatch,
     run: Callable[[ReplyPipeline], Awaitable[None]],

@@ -12,7 +12,7 @@ from collections.abc import Awaitable
 import logfire
 
 
-def _report_discarded_failure(*, exc: Exception, label: str, message_id: int) -> None:
+def _report_discarded_failure(exc: Exception, label: str, message_id: int) -> None:
     """Records a speculative task that failed after the turn stopped needing its result."""
     logfire.warn(
         "Discarded speculative task failed",
@@ -24,7 +24,7 @@ def _report_discarded_failure(*, exc: Exception, label: str, message_id: int) ->
 
 
 async def discard_task[TaskResultT](
-    *, task: asyncio.Task[TaskResultT], label: str, message_id: int
+    task: asyncio.Task[TaskResultT], label: str, message_id: int
 ) -> None:
     """Cancels and drains a speculative task so its exception is retrieved.
 
@@ -44,7 +44,7 @@ async def discard_task[TaskResultT](
 
 
 async def await_deadline_bound_task[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
+    task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
 ) -> DeadlineT:
     """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
     try:
@@ -57,7 +57,7 @@ async def await_deadline_bound_task[DeadlineT](
 
 
 async def drain_deadline_bound_task[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
+    task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
 ) -> None:
     """Cancels before a task's deadline or preserves its in-progress deadline cleanup."""
     if not task.done() and asyncio.get_running_loop().time() < deadline:
@@ -79,7 +79,7 @@ async def drain_deadline_bound_task[DeadlineT](
 
 
 async def discard_link_tasks[DeadlineT](
-    *, link_tasks: dict[str, asyncio.Task[DeadlineT]], deadline: float, message_id: int
+    link_tasks: dict[str, asyncio.Task[DeadlineT]], deadline: float, message_id: int
 ) -> None:
     """Drains link builds without stealing cancellation from their shared deadline."""
     for name, task in link_tasks.items():
@@ -90,7 +90,7 @@ async def discard_link_tasks[DeadlineT](
 
 
 async def run_until_deadline[DeadlineT](
-    *, awaitable: Awaitable[DeadlineT], deadline: float
+    awaitable: Awaitable[DeadlineT], deadline: float
 ) -> DeadlineT:
     """Runs a cancellation-propagating builder until its fixed event-loop deadline.
 

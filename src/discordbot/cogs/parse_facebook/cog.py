@@ -33,7 +33,7 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
     downloader_factory = FacebookDownloader
 
     @staticmethod
-    def url_is_expandable(*, url: str) -> bool:
+    def url_is_expandable(url: str) -> bool:
         """Whether the matched URL names a post.
 
         The pattern matches the host, not the path, so a profile or group home page would
@@ -47,7 +47,7 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
         """
         return is_facebook_post_url(url=url)
 
-    def _footer_text(self, *, post: FacebookOutput, shown_images: int) -> str:
+    def _footer_text(self, post: FacebookOutput, shown_images: int) -> str:
         """The counter line: where the post lives, how it did, and what was left out.
 
         The group name leads because it is the part a reader cannot get from the post itself, and
@@ -64,7 +64,7 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
         parts.extend(self._omitted_media_notes(post=post, shown_images=shown_images))
         return " · ".join(parts)
 
-    def _comment_url(self, *, post_url: str, comment: FacebookOutput) -> str:
+    def _comment_url(self, post_url: str, comment: FacebookOutput) -> str:
         """The post's URL naming the comment, joined with `&` when it already carries a query.
 
         `permalink.php` links always do.

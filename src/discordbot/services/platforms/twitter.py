@@ -120,7 +120,7 @@ _ORIGINAL_SIZE_QUERY = "?name=orig"
 _MAX_MEDIA_ITEMS = 4
 
 
-def _time_of(*, value: str) -> datetime | None:
+def _time_of(value: str) -> datetime | None:
     """The ISO-8601 Zulu timestamp as an aware datetime, or None when it is absent or malformed.
 
     Parsed rather than trusted: the field is a string in the payload and every other reader here
@@ -156,7 +156,7 @@ class TwitterURL(BaseModel):
         return match.group("id") if match else ""
 
 
-def post_url(*, handle: str, status_id: str) -> str:
+def post_url(handle: str, status_id: str) -> str:
     """The canonical URL for a post, built from the author the payload named.
 
     Args:
@@ -388,7 +388,7 @@ class _TweetResult(_TwitterPayload):
     )
 
 
-def _body_text(*, tweet: _Tweet) -> str:
+def _body_text(tweet: _Tweet) -> str:
     """The post body: the trailing media link removed, and every other link expanded.
 
     Two index bases live in one payload and mixing them corrupts any post containing an emoji.
@@ -413,7 +413,7 @@ def _body_text(*, tweet: _Tweet) -> str:
     return text.strip()
 
 
-def _media_urls(*, tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
+def _media_urls(tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
     """Splits the attachments into images, playable videos and their poster frames.
 
     Walks `mediaDetails` rather than `photos` / `video`, which lose a mixed post's order. An
@@ -444,7 +444,7 @@ def _media_urls(*, tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
     return images, videos, posters
 
 
-def _build_output(*, tweet: _Tweet, include_quoted: bool = True) -> TwitterOutput:
+def _build_output(tweet: _Tweet, include_quoted: bool = True) -> TwitterOutput:
     """Turns one payload post into the shared output shape.
 
     `include_quoted` bounds the recursion at one level. The sample says a quoted post never carries
@@ -482,7 +482,7 @@ class TwitterDownloader(PlatformDownloader):
     back as a URL.
     """
 
-    def _fetch_tweet(self, *, status_id: str) -> dict[str, Any]:
+    def _fetch_tweet(self, status_id: str) -> dict[str, Any]:
         """Fetches one post's payload.
 
         Raises:
@@ -513,7 +513,7 @@ class TwitterDownloader(PlatformDownloader):
             raise RuntimeError(f"Twitter served an unexpected body for post {status_id}")
         return payload
 
-    def parse_metadata(self, *, url: str) -> TwitterConversation:
+    def parse_metadata(self, url: str) -> TwitterConversation:
         """Parses a Twitter post URL into the conversation, writing nothing to disk.
 
         The chain is `[parent, target]` when the post replies to a readable one, `[target]`

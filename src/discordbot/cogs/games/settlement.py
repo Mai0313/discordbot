@@ -64,7 +64,7 @@ def _insurance_settlement(
 
 
 async def settle_blackjack_player(
-    *, round_state: BlackjackRound, player: BlackjackPlayerHand
+    round_state: BlackjackRound, player: BlackjackPlayerHand
 ) -> BlackjackPlayerSettlement:
     """Settles every sub-hand plus insurance side bet for one participant.
 

@@ -26,7 +26,7 @@ _STATUS_ID = "1628549742539194368"
 _URL = f"https://x.com/Dbacks/status/{_STATUS_ID}"
 
 
-def _user(*, screen_name: str = "Dbacks") -> dict[str, Any]:
+def _user(screen_name: str = "Dbacks") -> dict[str, Any]:
     """The author block, present on every live post and on every embedded one."""
     return {
         "id_str": "31164229",
@@ -36,7 +36,7 @@ def _user(*, screen_name: str = "Dbacks") -> dict[str, Any]:
     }
 
 
-def _photo(*, name: str = "FpnFWuRaMAEGX5e") -> dict[str, Any]:
+def _photo(name: str = "FpnFWuRaMAEGX5e") -> dict[str, Any]:
     """One still, with the `sizes` block that reports the original while the URL serves medium."""
     return {
         "type": "photo",
@@ -46,7 +46,7 @@ def _photo(*, name: str = "FpnFWuRaMAEGX5e") -> dict[str, Any]:
     }
 
 
-def _video(*, poster: str = "poster") -> dict[str, Any]:
+def _video(poster: str = "poster") -> dict[str, Any]:
     """One clip, with the rendition list in the order the endpoint serves it.
 
     The HLS manifest comes first and carries no bitrate, which is what makes "the first variant"
@@ -67,7 +67,6 @@ def _video(*, poster: str = "poster") -> dict[str, Any]:
 
 
 def _tweet(
-    *,
     text: str = "Play good.",
     screen_name: str = "Dbacks",
     media: list[dict[str, Any]] | None = None,
@@ -99,7 +98,7 @@ def _tweet(
 
 
 def _tombstone(
-    *, text: str | None = "This Post was deleted by the Post author. Learn more"
+    text: str | None = "This Post was deleted by the Post author. Learn more",
 ) -> dict[str, Any]:
     """A refusal. `text` of None is the wordless variant 4 of 133 sampled refusals carried."""
     if text is None:
@@ -110,11 +109,11 @@ def _tombstone(
     }
 
 
-def _downloader(monkeypatch: pytest.MonkeyPatch, *, payload: dict[str, Any]) -> TwitterDownloader:
+def _downloader(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> TwitterDownloader:
     """A downloader whose one request answers with `payload`."""
     downloader = TwitterDownloader()
 
-    def fake_fetch(self: TwitterDownloader, *, status_id: str) -> dict[str, Any]:
+    def fake_fetch(self: TwitterDownloader, status_id: str) -> dict[str, Any]:
         del self, status_id
         return payload
 
@@ -123,7 +122,7 @@ def _downloader(monkeypatch: pytest.MonkeyPatch, *, payload: dict[str, Any]) -> 
 
 
 def _parse(
-    monkeypatch: pytest.MonkeyPatch, *, payload: dict[str, Any], url: str = _URL
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any], url: str = _URL
 ) -> TwitterConversation:
     """Parses one payload into a conversation."""
     return _downloader(monkeypatch, payload=payload).parse_metadata(url=url)
@@ -475,7 +474,7 @@ class _FakeResponse:
     """The slice of `requests.Response` `_fetch_tweet` touches."""
 
     def __init__(
-        self, *, payload: dict[str, Any] | Exception | None = None, status_code: int = 200
+        self, payload: dict[str, Any] | Exception | None = None, status_code: int = 200
     ) -> None:
         self._payload = payload
         self.status_code = status_code
@@ -492,9 +491,7 @@ class _FakeResponse:
         return self._payload or {}
 
 
-def _install_get(
-    monkeypatch: pytest.MonkeyPatch, *, response: _FakeResponse
-) -> list[dict[str, Any]]:
+def _install_get(monkeypatch: pytest.MonkeyPatch, response: _FakeResponse) -> list[dict[str, Any]]:
     """Replaces the one `requests.get` the module makes; returns the captured call kwargs.
 
     A captured call is the request kwargs bag, so `Any` is what lets an assertion reach into a

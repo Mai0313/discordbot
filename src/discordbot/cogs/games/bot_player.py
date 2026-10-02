@@ -36,21 +36,21 @@ BOT_MAX_BET_FRACTION: Final[float] = 0.10
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
 
 
-def _dealer_up_value(*, up_card: Card | None) -> int:
+def _dealer_up_value(up_card: Card | None) -> int:
     """Returns the Blackjack value of the dealer's up-card (A counts as 11)."""
     if up_card is None:
         return 0
     return card_blackjack_value(card=up_card)
 
 
-def _should_surrender(*, hand_total: int, dealer_value: int) -> bool:
+def _should_surrender(hand_total: int, dealer_value: int) -> bool:
     """Returns whether late surrender is the fallback table choice."""
     return (hand_total == 16 and dealer_value in {9, 10, 11}) or (
         hand_total == 15 and dealer_value == 10
     )
 
 
-def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
+def _should_double(cards: list[Card], hand_total: int, dealer_value: int) -> bool:
     """Returns whether double down is the fallback table choice."""
     hard_double_dealers: dict[int, frozenset[int]] = {
         9: frozenset({3, 4, 5, 6}),
@@ -74,7 +74,7 @@ def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> 
     return dealer_value in double_dealers
 
 
-def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
+def _should_stand(cards: list[Card], hand_total: int, dealer_value: int) -> bool:
     """Returns whether stand is the fallback table choice."""
     is_soft, _total = is_soft_total(cards=cards)
     if is_soft:
@@ -86,7 +86,7 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
     )
 
 
-def kelly_bet(*, balance: int, table_minimum: int, edge: float = BOT_TABLE_EDGE) -> int:
+def kelly_bet(balance: int, table_minimum: int, edge: float = BOT_TABLE_EDGE) -> int:
     """Returns the fractional-Kelly wager from the per-round edge.
 
     The growth-optimal stake is a fraction of the bankroll set by the edge. With
@@ -120,7 +120,7 @@ def kelly_bet(*, balance: int, table_minimum: int, edge: float = BOT_TABLE_EDGE)
     return max(floor, min(wager, ceiling))
 
 
-def count_adjusted_edge(*, true_count: float) -> float:
+def count_adjusted_edge(true_count: float) -> float:
     """Returns the per-round edge adjusted for the Hi-Lo true count.
 
     A persistent shoe lets the bot read a true count before betting; a positive
@@ -131,7 +131,7 @@ def count_adjusted_edge(*, true_count: float) -> float:
 
 
 def fallback_action(
-    *, hand_cards: list[Card], dealer_up: Card | None, allowed_actions: tuple[BotAction, ...]
+    hand_cards: list[Card], dealer_up: Card | None, allowed_actions: tuple[BotAction, ...]
 ) -> BotAction:
     """Classic up-card-only basic-strategy table, used when the EV engine is unavailable.
 
@@ -171,7 +171,6 @@ def fallback_action(
 
 
 def choose_bot_action(
-    *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],
@@ -209,7 +208,7 @@ def choose_bot_action(
     )
 
 
-def bot_takes_insurance(*, shoe: list[Card], dealer_cards: list[Card]) -> bool:
+def bot_takes_insurance(shoe: list[Card], dealer_cards: list[Card]) -> bool:
     """Returns whether the bot buys insurance: only when the face-down cards make it +EV.
 
     Priced from the ten-value density of every card still face down at the table: the remaining

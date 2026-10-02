@@ -101,7 +101,6 @@ class ReplyPipeline(BaseModel):
 
     async def _resolve_link_block(
         self,
-        *,
         source: str,
         link_task: LinkTask,
         deadline: float,
@@ -151,7 +150,7 @@ class ReplyPipeline(BaseModel):
         )
         return blocks
 
-    def _start_link_builds(self, *, selected: set[str], deadline: float) -> dict[str, LinkTask]:
+    def _start_link_builds(self, selected: set[str], deadline: float) -> dict[str, LinkTask]:
         """Starts a build per selected source that has a URL it is allowed to read.
 
         The router selects only source names; URL ownership stays local and the registry still
@@ -188,7 +187,7 @@ class ReplyPipeline(BaseModel):
         return link_tasks
 
     async def _collect_link_blocks(
-        self, *, link_tasks: dict[str, LinkTask], deadline: float
+        self, link_tasks: dict[str, LinkTask], deadline: float
     ) -> list[EasyInputMessageParam]:
         """Resolves every started build under the shared grace, in registry splice order."""
         link_blocks: list[EasyInputMessageParam] = []
@@ -207,7 +206,7 @@ class ReplyPipeline(BaseModel):
         return link_blocks
 
     async def _dispatch_media(
-        self, *, decision: str, context_task: asyncio.Task[ReplyContext]
+        self, decision: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Runs the IMAGE or VIDEO route, which consumes the speculative context.
 
@@ -225,7 +224,7 @@ class ReplyPipeline(BaseModel):
         await handler(user_prompt=self.user_prompt, context_task=context_task)
 
     async def _answer_qa(
-        self, *, route: "RouteClassification", context: ReplyContext, pipeline_started: float
+        self, route: "RouteClassification", context: ReplyContext, pipeline_started: float
     ) -> None:
         """Streams the QA answer, watching a linked YouTube video when the router asked for one."""
         message = self.message

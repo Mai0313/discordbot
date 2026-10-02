@@ -220,7 +220,7 @@ class VideoDownloader(PlatformDownloader):
                 raise RuntimeError(msg)
             return DownloadResult(filename=Path(ydl.prepare_filename(info)))
 
-    def parse_metadata(self, *, url: str) -> VideoMetadata:
+    def parse_metadata(self, url: str) -> VideoMetadata:
         """Reads a video's metadata via yt-dlp without downloading any media.
 
         `extract_info(download=False)` under `simulate` fetches the metadata silently: `quiet`
@@ -276,7 +276,7 @@ def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
 
 
 async def download_with_stop_signal(
-    *, downloader: VideoDownloader, url: str, quality: VideoQuality
+    downloader: VideoDownloader, url: str, quality: VideoQuality
 ) -> DownloadResult:
     """Runs the blocking download with a stop signal cancellation can actually deliver.
 

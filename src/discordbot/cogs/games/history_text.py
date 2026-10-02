@@ -127,7 +127,7 @@ def _render_block(rows: Sequence[_Row]) -> str:
 
 
 def build_blackjack_history_embed(
-    *, player_name: str, records: Sequence[BlackjackHistoryRecord]
+    player_name: str, records: Sequence[BlackjackHistoryRecord]
 ) -> Embed:
     """Builds the public embed for a player's recent Blackjack rounds.
 

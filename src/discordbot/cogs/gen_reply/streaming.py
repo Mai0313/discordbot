@@ -103,7 +103,7 @@ REASONING_PREVIEW_MAX_LINES = 4
 REASONING_PREVIEW_MAX_CHARS = 320
 
 
-def _count_url_citations(*, output: list[ResponseOutputItem]) -> int:
+def _count_url_citations(output: list[ResponseOutputItem]) -> int:
     """Counts the grounding citations a completed response carried.
 
     The Responses bridge reports a grounded answer ONLY as `url_citation` annotations hanging off
@@ -606,7 +606,7 @@ class ResponseStreamer(BaseModel):
             await self.reply.delete()
         self.reply = None
 
-    async def land_failure(self, *, embed: Embed) -> bool:
+    async def land_failure(self, embed: Embed) -> bool:
         """Puts the turn's error onto the reply this answer was streaming into.
 
         The half-written reply is what the user is already looking at, so the error belongs on
@@ -655,7 +655,7 @@ class ResponseStreamer(BaseModel):
             return False
         return True
 
-    async def _consume(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> None:
+    async def _consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text and usage onto the instance.
 
         Only accumulates state; the snapshot editor task renders it to Discord, so this
@@ -781,13 +781,13 @@ class ResponseStreamer(BaseModel):
         )
         return self._without_added_lines(text=self.stored_content)
 
-    def _without_memory_note(self, *, text: str) -> str:
+    def _without_memory_note(self, text: str) -> str:
         """Returns `text` with the memory note currently on the reply removed, if any."""
         if not self._memory_note:
             return text
         return text.replace(f"\n{self._memory_note}", "", 1)
 
-    def _without_added_lines(self, *, text: str) -> str:
+    def _without_added_lines(self, text: str) -> str:
         """Returns `text` without the memory note and the dropped-media hint line.
 
         Both are chrome rather than something the answer said, and both have to go before the
@@ -801,7 +801,7 @@ class ResponseStreamer(BaseModel):
             return stripped
         return stripped.replace(f"\n{self._hint_line}", "", 1)
 
-    def _wants_pending_memory_note(self, *, footer_chars: int) -> bool:
+    def _wants_pending_memory_note(self, footer_chars: int) -> bool:
         """Whether this reply should say it is still working on the memory the model marked.
 
         Both guards rule out a note nothing could ever take back. The turn must own this
@@ -821,7 +821,7 @@ class ResponseStreamer(BaseModel):
         spliced = len(self.stored_content) + 1 + len(MEMORY_PENDING_NOTE) + footer_chars
         return spliced <= DISCORD_MESSAGE_LIMIT
 
-    async def set_memory_note(self, *, line: str) -> None:
+    async def set_memory_note(self, line: str) -> None:
         """Puts the reply's memory note on it, replacing whatever note it already carries.
 
         Written for the memory report, which lands seconds to minutes after the answer did and
@@ -888,7 +888,7 @@ class ResponseStreamer(BaseModel):
         self.stored_content = content
         return True
 
-    def _resolve_mention_name(self, *, target_id: int) -> str | None:
+    def _resolve_mention_name(self, target_id: int) -> str | None:
         """Looks up a member/role/channel display name for the spoken-clip mention rewrite."""
         guild = self.message.guild
         if guild is None:
@@ -996,7 +996,7 @@ class ResponseStreamer(BaseModel):
             return []
 
     async def _build_image_candidates(
-        self, *, source_images_task: asyncio.Task[list[LoadedMedia]] | None
+        self, source_images_task: asyncio.Task[list[LoadedMedia]] | None
     ) -> list[MediaItem]:
         """Renders the <generate-image> requests to PNG candidates, in order; [] when none delivered.
 
@@ -1095,7 +1095,7 @@ class ResponseStreamer(BaseModel):
         return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
     async def _build_video_candidate(
-        self, *, source_images_task: asyncio.Task[list[LoadedMedia]] | None
+        self, source_images_task: asyncio.Task[list[LoadedMedia]] | None
     ) -> MediaItem | None:
         """Generates the <generate-video> clip to an MP4 candidate, or None when not delivered.
 
@@ -1205,7 +1205,7 @@ class ResponseStreamer(BaseModel):
         )
 
     async def _finalize_media_edit(
-        self, *, reply: Message, files: list[File], hosted_urls: list[str]
+        self, reply: Message, files: list[File], hosted_urls: list[str]
     ) -> bool:
         """Runs the single media edit: native files plus any hosted-URL line on the reply.
 
@@ -1277,7 +1277,7 @@ class ResponseStreamer(BaseModel):
                 return False
         return True
 
-    async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
+    async def stream(self, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
         if self.carries_turn_notices:
             current_answer_streamer.set(self)
@@ -1299,7 +1299,7 @@ type AnswerStreamFactory = Callable[[], Awaitable[AsyncIterator[ResponseStreamEv
 
 
 async def stream_answer_with_retry(
-    *, streamer: ResponseStreamer, open_stream: AnswerStreamFactory, message_id: int
+    streamer: ResponseStreamer, open_stream: AnswerStreamFactory, message_id: int
 ) -> str:
     """Streams one answer turn, re-opening the stream on a transient upstream failure.
 

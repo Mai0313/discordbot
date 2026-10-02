@@ -155,7 +155,7 @@ class ThreadsDownloaderStub:
         return result
 
 
-def _wire_threads(*, cog: ThreadsCogs, downloader: ThreadsDownloaderStub) -> ThreadsDownloaderStub:
+def _wire_threads(cog: ThreadsCogs, downloader: ThreadsDownloaderStub) -> ThreadsDownloaderStub:
     """Points the cog's per-invocation factory at one stub, recording the dir it was handed.
 
     The expansion builds its downloader inside a scratch directory of its own, so the factory
@@ -229,7 +229,7 @@ async def test_clean_threads_url_answers_the_caller_alone() -> None:
     cog = _cog()
     asked: list[str] = []
 
-    def resolve_clean_url(*, url: str) -> str:
+    def resolve_clean_url(url: str) -> str:
         """Records what it was handed and answers with the post's own URL."""
         asked.append(url)
         return "https://www.threads.com/@alice/post/ABC123"
@@ -288,7 +288,7 @@ async def test_clean_threads_url_tells_the_two_failures_apart() -> None:
     def stage(outcome: str | RuntimeError) -> FakeInteraction:
         """Points the cog at a downloader answering with `outcome`, on a fresh interaction."""
 
-        def resolve_clean_url(*, url: str) -> str:
+        def resolve_clean_url(url: str) -> str:
             """Returns the staged answer, or raises it when that is what was staged."""
             del url
             if isinstance(outcome, RuntimeError):
@@ -533,7 +533,7 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     # failing unlink left, so it is a degraded step rather than a leak nobody clears.
     warnings = capture_logs(monkeypatch, level="warn")
 
-    def exploding_plan(*, results: list[ThreadsOutput]) -> list[Embed]:
+    def exploding_plan(results: list[ThreadsOutput]) -> list[Embed]:
         del results
         raise RuntimeError("the embed plan blew up")
 

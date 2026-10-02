@@ -30,7 +30,6 @@ _PFBID = "pfbid02Lq7KxT9vUo3wQmZb5n8cYdHs1rFgJpAe4iLtN6uWkVyXzB7hRaE2DfGqC9sMjP3
 
 
 def _story(
-    *,
     post_id: str = _POST_ID,
     text: str = "post body",
     images: tuple[str, ...] = ("https://scontent.example/a.jpg", "https://scontent.example/b.jpg"),
@@ -76,13 +75,12 @@ def _story(
     }
 
 
-def _encoded_comment_id(*, post_id: str, comment_id: str) -> str:
+def _encoded_comment_id(post_id: str, comment_id: str) -> str:
     """A comment node's own id, the way the page serves it: unpadded base64."""
     return base64.b64encode(f"comment:{post_id}_{comment_id}".encode()).decode().rstrip("=")
 
 
 def _comment(
-    *,
     comment_id: str,
     text: str,
     author: str = "Someone",
@@ -108,7 +106,6 @@ def _comment(
 
 
 def _page(
-    *,
     stories: list[dict[str, Any]] | None = None,
     comments: list[dict[str, Any]] | None = None,
     groups: list[dict[str, Any]] | None = None,
@@ -151,7 +148,7 @@ def _page(
 
 
 def _downloader(
-    monkeypatch: pytest.MonkeyPatch, *, html: str, final_url: str = _PERMALINK
+    monkeypatch: pytest.MonkeyPatch, html: str, final_url: str = _PERMALINK
 ) -> FacebookDownloader:
     """A downloader whose only network call is replaced with canned HTML."""
     serve_page(monkeypatch, downloader=FacebookDownloader, html=html, final_url=final_url)

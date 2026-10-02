@@ -94,7 +94,7 @@ def setup(bot: commands.Bot) -> None:
 - Keep `Field(description=..., examples=...)` populated for configurable values. These descriptions document the environment contract.
 - Prefer precise typed APIs. `Any` is a last resort.
 - Keyword arguments are required for normal function calls, including single argument calls such as `create_engine(url=...)` and `re.compile(pattern=...)`.
-- Do not add a bare `*` to new function signatures only to force keyword-only calls unless an external API or correctness issue needs it.
+- No bare `*` in a function signature unless an external API needs it; `tests/test_no_bare_star.py` enforces this and lists each exception with its reason.
 - Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, exception constructors, variadic collectors, and `logfire.info("message")`.
 - Avoid intermediate one-level aliases when directly using the original object is clearer.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.

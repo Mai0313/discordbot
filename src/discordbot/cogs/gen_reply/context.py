@@ -137,7 +137,7 @@ class RecallPlan(BaseModel):
     )
 
 
-def trim_history_to_budget(*, messages: list[Message]) -> list[Message]:
+def trim_history_to_budget(messages: list[Message]) -> list[Message]:
     """Keeps the newest history messages that fit `HISTORY_CHAR_BUDGET`, cut on a boundary.
 
     `ReplyContextBuilder.fetch_history` returns oldest-first, so this walks from the end and
@@ -161,7 +161,7 @@ def trim_history_to_budget(*, messages: list[Message]) -> list[Message]:
 
 
 def history_media_over_budget(
-    *, builder: MessageInputBuilder, hist_messages: list[Message]
+    builder: MessageInputBuilder, hist_messages: list[Message]
 ) -> dict[int, int]:
     """History message ids to how many attachments each renders as markers, newest kept first.
 
@@ -211,7 +211,7 @@ def history_media_over_budget(
     return over
 
 
-def reference_header(*, ref: Message) -> EasyInputMessageParam:
+def reference_header(ref: Message) -> EasyInputMessageParam:
     """Builds the system separator that precedes the message being replied to.
 
     Exactly one of these is ever rendered, so it is always the primary context and says so
@@ -230,7 +230,7 @@ def reference_header(*, ref: Message) -> EasyInputMessageParam:
     )
 
 
-def current_header(*, message: Message, has_reference: bool) -> EasyInputMessageParam:
+def current_header(message: Message, has_reference: bool) -> EasyInputMessageParam:
     """Builds the system separator that precedes the current message.
 
     When the message is a reply, the header points back to the Reference Message block
@@ -272,7 +272,7 @@ class ReplyContextBuilder(BaseModel):
         """The message being answered, read off the surface that carries it."""
         return self.surface.message
 
-    async def fetch_history(self, *, limit: int) -> list[Message]:
+    async def fetch_history(self, limit: int) -> list[Message]:
         """Fetches up to `limit` history messages once, trimmed to the char budget.
 
         Returned raw for the answer's uploaded render. Where they come from is the surface's
@@ -282,7 +282,7 @@ class ReplyContextBuilder(BaseModel):
         """
         return trim_history_to_budget(messages=await self.surface.fetch_history(limit=limit))
 
-    async def render_history(self, *, hist_messages: list[Message]) -> list[EasyInputMessageParam]:
+    async def render_history(self, hist_messages: list[Message]) -> list[EasyInputMessageParam]:
         """Renders fetched history with its uploaded attachment parts, for the answer.
 
         History is the only render that opts into the dead-source skip:
@@ -323,7 +323,7 @@ class ReplyContextBuilder(BaseModel):
         return [header, *processed]
 
     async def render_reference_message(
-        self, *, text_only: bool = False
+        self, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
         """Renders the message being replied to, or nothing when this is not a reply.
 
@@ -339,9 +339,7 @@ class ReplyContextBuilder(BaseModel):
         )
         return [reference_header(ref=replied_to), processed]
 
-    async def render_current_message(
-        self, *, text_only: bool = False
-    ) -> list[EasyInputMessageParam]:
+    async def render_current_message(self, text_only: bool = False) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
         has_reference = replied_to_message(message=self.message) is not None
         messages: list[EasyInputMessageParam] = [
@@ -354,7 +352,7 @@ class ReplyContextBuilder(BaseModel):
         messages.append(current_msg)
         return messages
 
-    async def render_parts(self, *, text_only: bool = False) -> MessageParts:
+    async def render_parts(self, text_only: bool = False) -> MessageParts:
         """Renders the message being replied to and the current message together.
 
         With `text_only` they render as attachment markers (no upload) for the route call;
@@ -400,7 +398,7 @@ class ReplyContextBuilder(BaseModel):
         )
 
     def _resolve_recall_candidates(
-        self, *, server_memory: str, recall_context: RecallContext
+        self, server_memory: str, recall_context: RecallContext
     ) -> tuple[list[UserMemory], dict[int, RecallCandidate], int]:
         """Resolves deterministic memories and derives disjoint optional alias candidates."""
         bot_user = self.toolkit.bot.user
@@ -486,7 +484,7 @@ class ReplyContextBuilder(BaseModel):
             remaining_slots=remaining_slots,
         )
 
-    def _resolve_picks(self, *, recall: RecallPlan, picked_ids: list[str]) -> list[UserMemory]:
+    def _resolve_picks(self, recall: RecallPlan, picked_ids: list[str]) -> list[UserMemory]:
         """Reads the members the route picked, held to the offered candidates and the budget."""
         picked = recall_user_memories(
             user_id_list=picked_ids,
@@ -517,7 +515,6 @@ class ReplyContextBuilder(BaseModel):
 
     async def build(
         self,
-        *,
         history_limit: int,
         parts_task: asyncio.Task[MessageParts],
         recall: RecallPlan,

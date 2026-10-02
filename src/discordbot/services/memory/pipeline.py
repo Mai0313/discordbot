@@ -220,7 +220,6 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 
 
 def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
-    *,
     scope: str,
     subject: str,
     transcript: str,

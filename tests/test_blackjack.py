@@ -837,7 +837,7 @@ def test_an_insurance_bet_counts_against_a_double_or_split() -> None:
     220 at the table covers a second 100 bet only while the 50 insurance is not also owed.
     """
 
-    def decided(*, take: bool) -> BlackjackRound:
+    def decided(take: bool) -> BlackjackRound:
         round_state = BlackjackRound.from_participants(
             rng=Random(x=0),
             participants=[seat(bet=100, balance_at_start=220)],

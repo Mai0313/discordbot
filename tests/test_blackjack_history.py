@@ -27,7 +27,6 @@ _DEALER_TOTAL = 16
 
 
 def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
-    *,
     participant: GameParticipant,
     outcome: SettleOutcome,
     delta: int,
@@ -50,7 +49,7 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
     return BlackjackPlayerResult(participant=participant, settlement=settlement)
 
 
-def _record_view(*, delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecord:
+def _record_view(delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecord:
     """Builds a read-model record without touching the database."""
     return BlackjackHistoryRecord(
         round_id="r",

@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 
 @contextlib.contextmanager
-def scratch_directory(*, prefix: str) -> "Generator[str]":
+def scratch_directory(prefix: str) -> "Generator[str]":
     """Yields a private temp directory, removing it on the way out.
 
     Args:

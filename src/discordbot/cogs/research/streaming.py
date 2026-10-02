@@ -71,7 +71,7 @@ class ResearchProgressStreamer(BaseModel):
     _displayed: str = PrivateAttr(default="")
     _preview_error_logged: bool = PrivateAttr(default=False)
 
-    def _feed(self, *, event: "InteractionSSEEvent") -> None:
+    def _feed(self, event: "InteractionSSEEvent") -> None:
         """Accumulates one event's thought-summary text; ignores every other event/delta.
 
         Branch on `event.event_type` (then `delta.type`) directly so the discriminated unions
@@ -193,7 +193,7 @@ class ResearchProgressStreamer(BaseModel):
             )
         self._editor_task = None
 
-    async def stream(self, *, events: AsyncIterator["InteractionSSEEvent"]) -> None:
+    async def stream(self, events: AsyncIterator["InteractionSSEEvent"]) -> None:
         """Paints reasoning onto the status message until the event stream ends.
 
         Starts the editor up front so the elapsed timer ticks from t=0 even before the first

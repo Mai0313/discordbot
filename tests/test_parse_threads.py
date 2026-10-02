@@ -95,7 +95,7 @@ def _stub_parse(
 
 
 def _stub_media(
-    monkeypatch: pytest.MonkeyPatch, *, uploads: FakeUploads, image_fetch_fails: bool = False
+    monkeypatch: pytest.MonkeyPatch, uploads: FakeUploads, image_fetch_fails: bool = False
 ) -> None:
     """Stubs the image fetch and the Files API upload so no network or SDK is touched."""
 
@@ -730,7 +730,6 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
 
         async def __call__(
             self,
-            *,
             client: object,
             source: object,
             mime_type: str,

@@ -25,7 +25,6 @@ from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 
 async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wording, its fallback value and its bound all vary per source
-    *,
     step: Coroutine[Any, Any, ResultT],
     subject: str,
     fallback: str,
@@ -76,7 +75,7 @@ async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wor
 
 
 async def upload_image(
-    *, image_url: str, filename: str, gemini_client: genai.Client
+    image_url: str, filename: str, gemini_client: genai.Client
 ) -> ResponseInputFileParam | None:
     """Fetches, downscales and uploads one image, raising whatever the fetch or upload raised.
 
@@ -102,7 +101,7 @@ async def upload_image(
 
 
 async def _upload_each(
-    *, platform: str, post_url: str, image_urls: list[str], gemini_client: genai.Client
+    platform: str, post_url: str, image_urls: list[str], gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads the images concurrently, keeping whatever succeeded."""
     results = await asyncio.gather(
@@ -132,7 +131,7 @@ async def _upload_each(
 
 
 async def upload_post_images(
-    *, platform: str, post_url: str, image_urls: list[str], cap: int, gemini_client: genai.Client
+    platform: str, post_url: str, image_urls: list[str], cap: int, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Uploads up to `cap` of a post's images, degrading to none rather than raising.
 
@@ -163,7 +162,7 @@ async def upload_post_images(
     )
 
 
-def image_count_line(*, carried: int, attached: int, urls: Sequence[str] = ()) -> str:
+def image_count_line(carried: int, attached: int, urls: Sequence[str] = ()) -> str:
     """Says how many of a post's images the model was actually handed.
 
     The two numbers differ whenever the cap binds or an upload fails, which is routine, and the

@@ -17,7 +17,7 @@ from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources import LinkUrlFilter, LinkContextSource
 
 
-def replied_to_message(*, message: Message) -> Message | None:
+def replied_to_message(message: Message) -> Message | None:
     """The message this one replies to, or None when it is not a reply.
 
     One hop is everything Discord hands over. nextcord fills `MessageReference.resolved` in
@@ -34,7 +34,7 @@ def replied_to_message(*, message: Message) -> Message | None:
     return resolved if isinstance(resolved, Message) else None
 
 
-def message_link_texts(*, message: Message, strip_usage_footer: bool) -> list[str]:
+def message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]:
     """The text spans a message actually renders to the model, for URL detection.
 
     Mirrors `get_cleaned_content` / `snapshot_text`: content takes precedence and an embed is
@@ -65,7 +65,7 @@ def message_link_texts(*, message: Message, strip_usage_footer: bool) -> list[st
     return texts
 
 
-def authored_link_texts(*, message: Message) -> list[str]:
+def authored_link_texts(message: Message) -> list[str]:
     """The text spans a message's author actually wrote, for scanning a message replied to.
 
     Narrower than `message_link_texts` by exactly one thing: an embed card never counts,
@@ -98,7 +98,7 @@ def _first_url_match(
     return None
 
 
-def link_url_for_source(*, source: LinkContextSource, message: Message) -> str | None:
+def link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
     """The URL one link source should read: the current message's, else the replied-to one's.
 
     The current message always wins. A source that opts into `search_replied_to_message` then
@@ -129,7 +129,7 @@ def link_url_for_source(*, source: LinkContextSource, message: Message) -> str |
     return match.group(0) if match else None
 
 
-def _youtube_url_in_message(*, message: Message, strip_usage_footer: bool) -> str | None:
+def _youtube_url_in_message(message: Message, strip_usage_footer: bool) -> str | None:
     """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any."""
     match = _first_url_match(
         pattern=YOUTUBE_URL_RE,
@@ -139,7 +139,7 @@ def _youtube_url_in_message(*, message: Message, strip_usage_footer: bool) -> st
     return match.group(0) if match else None
 
 
-def find_youtube_url(*, message: Message) -> str | None:
+def find_youtube_url(message: Message) -> str | None:
     """Finds a YouTube URL in the current message or the message it replies to.
 
     A reply to a message that merely links a video would otherwise be missed, so the parent is
@@ -157,7 +157,7 @@ def find_youtube_url(*, message: Message) -> str | None:
     return None
 
 
-def source_channel_is_public(*, message: Message) -> bool:
+def source_channel_is_public(message: Message) -> bool:
     """Whether @everyone can view the message's channel, so its content is not private.
 
     `message.channel` is a heterogeneous messageable union, so visibility is read

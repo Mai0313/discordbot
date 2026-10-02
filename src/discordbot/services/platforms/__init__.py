@@ -7,7 +7,7 @@ two callers that ask it: an auto-expansion cog turning a pasted link into a card
 one layer down. `utils/` is the layer below this one, for things with no platform knowledge at
 all (the URL anchor, the scratch dir, the link-error vocabulary).
 
-`base.py` owns the contract. The entry point is `parse_metadata(*, url=...)`, which returns
+`base.py` owns the contract. The entry point is `parse_metadata(url=...)`, which returns
 either a `<Platform>Conversation` (a post with a discussion around it) or a `<Platform>Metadata`
 (a single piece of media). A platform that writes a file to `output_folder` adds a second
 method of its own, named for what it hands back; `base.py` says why that one is not declared.

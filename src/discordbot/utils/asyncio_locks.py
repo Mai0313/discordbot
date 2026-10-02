@@ -130,7 +130,7 @@ class KeyedLockManager[K](BaseModel):
 
 
 def spawn_tracked(
-    *, coro: Coroutine[Any, Any, None], tasks: set[asyncio.Task[None]], name: str
+    coro: Coroutine[Any, Any, None], tasks: set[asyncio.Task[None]], name: str
 ) -> None:
     """Runs `coro` as a fire-and-forget task, held in `tasks` until it finishes.
 
@@ -150,7 +150,7 @@ def spawn_tracked(
     task.add_done_callback(partial(_release_tracked, tasks=tasks))
 
 
-def _release_tracked(task: asyncio.Task[None], *, tasks: set[asyncio.Task[None]]) -> None:
+def _release_tracked(task: asyncio.Task[None], tasks: set[asyncio.Task[None]]) -> None:
     """Drops a finished task from its owner's set and logs a failure it let escape."""
     tasks.discard(task)
     if task.cancelled():

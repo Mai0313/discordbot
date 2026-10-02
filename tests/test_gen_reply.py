@@ -665,19 +665,19 @@ class FakeGeminiVideoClient:
             ),
         )
 
-    async def _files_download(self, *, file: object) -> bytes:
+    async def _files_download(self, file: object) -> bytes:
         """Returns fake MP4 bytes for the completed video."""
         del file
         return b"mp4"
 
-    async def _files_upload(self, *, file: object, config: dict[str, str]) -> SimpleNamespace:
+    async def _files_upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
         """Returns an ACTIVE uploaded file for the edit upload and the post-generation reply."""
         del file, config
         return SimpleNamespace(
             name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
         )
 
-    async def _files_get(self, *, name: str) -> SimpleNamespace:
+    async def _files_get(self, name: str) -> SimpleNamespace:
         """Returns the ACTIVE uploaded file when a caller polls it."""
         del name
         return SimpleNamespace(
@@ -859,7 +859,6 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
 
 
 def _install_streamer(
-    *,
     monkeypatch: pytest.MonkeyPatch,
     reply: str | Exception = "完整回覆",
     memory_notes: tuple[str, ...] = (),
@@ -892,7 +891,7 @@ def _install_streamer(
                 server_memory_notes=list(server_memory_notes),
             )
 
-        async def stream(self, *, responses: object) -> str:
+        async def stream(self, responses: object) -> str:
             """Returns the canned reply, or raises it."""
             del responses
             if isinstance(reply, Exception):
@@ -924,7 +923,7 @@ def quiet_turn(monkeypatch: pytest.MonkeyPatch, no_memory_review: None) -> None:
 
 
 def _context_builder(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
+    cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> ReplyContextBuilder:
     """The context builder `ReplyPipeline` would build for this message."""
     return ReplyContextBuilder(
@@ -933,7 +932,7 @@ def _context_builder(
 
 
 def _classifier(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
+    cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
     return RouteClassifier(
@@ -943,7 +942,7 @@ def _classifier(
     )
 
 
-def _streamer(*, message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
+def _streamer(message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN401 -- the streamer's own fields, passed through
     """A streamer answering `message` on the gateway surface `ReplyPipeline` would give it."""
     return ResponseStreamer(
         message=message,
@@ -952,9 +951,7 @@ def _streamer(*, message: object, **fields: Any) -> ResponseStreamer:  # noqa: A
     )
 
 
-async def _attachment_parts(
-    *, builder: MessageInputBuilder, message: object
-) -> list[RenderedPart]:
+async def _attachment_parts(builder: MessageInputBuilder, message: object) -> list[RenderedPart]:
     """Renders a message's attachments from its own gated sources, as the answer render does."""
     discord_message = as_message(fake=message)
     sources = builder._supported_sources(
@@ -965,7 +962,7 @@ async def _attachment_parts(
 
 
 def _answer(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
+    cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> AnswerTurn:
     """The answer turn `ReplyPipeline` would build for this message."""
     return AnswerTurn(
@@ -977,7 +974,6 @@ def _answer(
 
 
 def _media_routes(
-    *,
     cog: ReplyGeneratorCogs,
     message: Message,
     toolkit: ReplyToolkit | None = None,
@@ -993,7 +989,7 @@ def _media_routes(
     )
 
 
-def _expiring_surface(*, message: Message, seconds_left: float) -> TurnSurface:
+def _expiring_surface(message: Message, seconds_left: float) -> TurnSurface:
     """A `/ask` surface with `seconds_left` of useful time before its token runs out.
 
     Only `expires_at` is modelled, because the media routes read the interaction for nothing
@@ -1037,7 +1033,6 @@ def _config_stub(**flags: object) -> LLMConfig:
 
 
 def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test varies
-    *,
     scope: str,
     text: str,
     compartment: str = GLOBAL_COMPARTMENT,
@@ -1119,7 +1114,7 @@ def _resolved_picks() -> asyncio.Future[list[str]]:
 
 
 async def _run_pipeline(
-    *, cog: ReplyGeneratorCogs, message: FakeMessage, surface: TurnSurface | None = None
+    cog: ReplyGeneratorCogs, message: FakeMessage, surface: TurnSurface | None = None
 ) -> None:
     """Runs one whole turn through `ReplyPipeline`, route call included, and lets it raise.
 
@@ -1170,12 +1165,12 @@ def _build_stub(context: ReplyContext) -> Callable[..., Awaitable[ReplyContext]]
 
 
 def _failing_build(
-    *, after: Callable[[], Awaitable[object]]
+    after: Callable[[], Awaitable[object]],
 ) -> Callable[..., Awaitable[ReplyContext]]:
     """A `ReplyContextBuilder.build` that waits for the route's picks, then `after`, then fails."""
 
     async def build(
-        self: ReplyContextBuilder, *, recall_picks: asyncio.Future[list[str]], **kwargs: object
+        self: ReplyContextBuilder, recall_picks: asyncio.Future[list[str]], **kwargs: object
     ) -> ReplyContext:
         """Fails once the route has resolved and `after` has returned."""
         del self, kwargs
@@ -1186,7 +1181,7 @@ def _failing_build(
     return build
 
 
-def _delayed_build(*, seconds: float) -> Callable[..., Awaitable[ReplyContext]]:
+def _delayed_build(seconds: float) -> Callable[..., Awaitable[ReplyContext]]:
     """The real `ReplyContextBuilder.build`, started `seconds` after the route's picks land."""
     real_build = ReplyContextBuilder.build
 
@@ -1228,7 +1223,7 @@ class _CleanupBoundBuilder:
         return []
 
 
-def _assert_route_offered(*, cog: ReplyGeneratorCogs, candidates: set[int]) -> None:
+def _assert_route_offered(cog: ReplyGeneratorCogs, candidates: set[int]) -> None:
     """Asserts the turn made one route call, shaped for exactly these recall candidates.
 
     No candidates means the plain shape: the plain schema and prompt, with neither the candidate
@@ -1612,7 +1607,7 @@ class _FakeVoiceGenerator:
         self.outcome = outcome
         self.calls: list[dict[str, str]] = []
 
-    async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
+    async def generate(self, text: str, end_user_id: str) -> VoiceClip:
         """Records the spoken-text request and returns the preset VoiceClip."""
         self.calls.append({"text": text, "end_user_id": end_user_id})
         return VoiceClip(audio=self.audio, outcome=self.outcome)
@@ -1996,7 +1991,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     assert message.replies[0].allowed_mentions_seen[-1] is not None
 
 
-def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
+def _hosting_service(serve_dir: Path) -> MediaHostingService:
     """Builds a real media-hosting service writing into a temp serve dir for the media routes."""
     return MediaHostingService(
         config=make_media_hosting_config(
@@ -2261,7 +2256,7 @@ def test_speechify_discord_markup_rewrites_and_drops() -> None:
     """Mentions resolve to names; emoji / timestamps drop; slash commands keep their words."""
     names = {239270225441193986: "小明", 42: "管理員", 7: "general"}
 
-    def _resolve(*, target_id: int) -> str | None:
+    def _resolve(target_id: int) -> str | None:
         return names.get(target_id)
 
     assert speechify_discord_markup(text="嗆爆 <@239270225441193986>", resolve_name=_resolve) == (
@@ -2344,7 +2339,7 @@ class _FakeImageGenerator:
         self.image_bytes_lists: list[list[bytes] | None] = []
 
     async def generate(
-        self, *, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
+        self, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
     ) -> bytes | None:
         """Records the description request (and any edit source bytes) and returns the image."""
         self.calls.append({"user_prompt": user_prompt, "end_user_id": end_user_id})
@@ -2391,7 +2386,7 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    async def _load(*, message: object, replied_to: object) -> list[LoadedMedia]:
+    async def _load(message: object, replied_to: object) -> list[LoadedMedia]:
         """Stands in for the input builder loading the message's uploaded image."""
         del message, replied_to
         return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
@@ -2504,7 +2499,7 @@ class _FakeMusicGenerator:
         self.clip = MusicClip(audio=audio, mime_type=mime_type) if audio is not None else None
         self.calls: list[str] = []
 
-    async def generate(self, *, user_prompt: str) -> MusicClip | None:
+    async def generate(self, user_prompt: str) -> MusicClip | None:
         """Records the music description request and returns the preset clip."""
         self.calls.append(user_prompt)
         return self.clip
@@ -2608,7 +2603,7 @@ class _FakeVideoGenerator:
         self.reference_sources: list[list[tuple[bytes, str]] | None] = []
 
     async def generate(
-        self, *, user_prompt: str, reference_image_sources: list[tuple[bytes, str]] | None = None
+        self, user_prompt: str, reference_image_sources: list[tuple[bytes, str]] | None = None
     ) -> bytes | None:
         """Records the description request (and any reference source images) and returns the clip."""
         self.calls.append(user_prompt)
@@ -2653,7 +2648,7 @@ async def test_video_marker_uses_uploaded_image_as_reference() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    async def _load(*, message: object, replied_to: object) -> list[LoadedMedia]:
+    async def _load(message: object, replied_to: object) -> list[LoadedMedia]:
         """Stands in for the input builder loading the message's uploaded image."""
         del message, replied_to
         return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
@@ -4064,7 +4059,7 @@ class _ImageAttachment(nextcord.Attachment):
         self.content_type = content_type
         self._payload = payload
 
-    async def read(self, *, use_cached: bool = False) -> bytes:
+    async def read(self, use_cached: bool = False) -> bytes:
         """Returns the configured bytes instead of fetching from the CDN."""
         del use_cached
         return self._payload
@@ -4860,7 +4855,7 @@ async def test_channel_history_ends_at_the_message_just_before_past_one_page() -
     class FakeState:
         http = FakeHttp()
 
-        def create_message(self, *, channel: object, data: dict[str, str]) -> int:
+        def create_message(self, channel: object, data: dict[str, str]) -> int:
             """Stands a message in by its id."""
             del channel
             return int(data["id"])
@@ -5774,7 +5769,7 @@ async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
     """
     cog = _cog()
 
-    async def upload(*, file: object, config: dict[str, str]) -> object:
+    async def upload(file: object, config: dict[str, str]) -> object:
         """Refuses the upload or hands back the file under test."""
         del file, config
         if isinstance(uploaded, Exception):
@@ -5802,7 +5797,7 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
     """A URI-delivered clip whose first download fails (file still finalizing) is retried."""
     calls = {"n": 0}
 
-    async def flaky_download(*, file: object) -> bytes:
+    async def flaky_download(file: object) -> bytes:
         """Fails the first download (file not yet servable), then succeeds."""
         del file
         calls["n"] += 1
@@ -5831,7 +5826,7 @@ async def test_a_stalled_clip_download_fails_the_video_within_its_bound(
 ) -> None:
     """A download that never returns fails the render at the bound instead of hanging it."""
 
-    async def download(*, file: object) -> bytes:
+    async def download(file: object) -> bytes:
         """Returns the clip, once the stall lets it."""
         del file
         return b"mp4"
@@ -5853,7 +5848,7 @@ async def test_a_never_servable_clip_fails_with_the_download_error_at_the_bound(
 ) -> None:
     """A clip that keeps refusing to download fails with that refusal, not a bare timeout."""
 
-    async def download(*, file: object) -> bytes:
+    async def download(file: object) -> bytes:
         """Refuses the download the way a file that is not servable yet does, after a round trip."""
         del file
         await asyncio.sleep(0)
@@ -5874,7 +5869,7 @@ async def test_a_stalled_source_video_upload_fails_the_edit_within_its_bound(
 ) -> None:
     """An edit's source upload that never returns fails as one that never became ACTIVE."""
 
-    async def upload(*, file: object, config: dict[str, str]) -> SimpleNamespace:
+    async def upload(file: object, config: dict[str, str]) -> SimpleNamespace:
         """Returns the uploaded clip ACTIVE, once the stall lets it."""
         del file, config
         return SimpleNamespace(
@@ -6082,12 +6077,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     prepared_context = ReplyContext()
 
     async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        recall: object,
-        recall_picks: object,
+        self: object, history_limit: int, parts_task: object, recall: object, recall_picks: object
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
         del self, parts_task, recall, recall_picks
@@ -6102,7 +6092,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         return emoji
 
     async def fake_image_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        self: object, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Records image handler dispatch and drains the handed-over context task."""
         del self
@@ -6111,7 +6101,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         calls.append("handle_image")
 
     async def fake_video_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        self: object, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Records video handler dispatch and drains the handed-over context task."""
         del self
@@ -6124,7 +6114,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
 
     async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors AnswerTurn.stream_answer's signature
         self: object,
-        *,
         system_prompt: str,
         context: ReplyContext,
         effort: str = "high",
@@ -6298,7 +6287,7 @@ async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
     build_cancelled = asyncio.Event()
 
     async def waiting_prepare(
-        self: object, *, recall_picks: asyncio.Future[list[str]], **kwargs: object
+        self: object, recall_picks: asyncio.Future[list[str]], **kwargs: object
     ) -> ReplyContext:
         """Waits on the picks the way the real build does, and notes being cancelled."""
         del self, kwargs
@@ -6429,7 +6418,7 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     received: list[ReplyContext] = []
 
     async def fake_image_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        self: object, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Records the context the dispatch handed over."""
         del self, user_prompt
@@ -6459,7 +6448,7 @@ async def test_on_message_answers_a_keyless_video_route_as_qa(
     video_prompts: list[str] = []
 
     async def fake_video_handler(
-        self: object, *, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        self: object, user_prompt: str, context_task: asyncio.Task[ReplyContext]
     ) -> None:
         """Records the dispatch and drains the handed-over context task."""
         del self
@@ -6480,7 +6469,7 @@ async def test_on_message_answers_a_keyless_video_route_as_qa(
     assert len(streams) == 1
 
 
-def _link_config(*, gemini_api_key: str) -> LLMConfig:
+def _link_config(gemini_api_key: str) -> LLMConfig:
     """The config fields a QA reply carrying a linked post actually reads."""
     return _config_stub(
         douyin_video_enabled=True,
@@ -6561,7 +6550,7 @@ _LINK_POST_BODY = "MOCK POST BODY"
 class _FakeLinkBuilder:
     """Stands in for one source's builder, returning the block a readable post produces."""
 
-    def __init__(self, *, source: str, delay: float) -> None:
+    def __init__(self, source: str, delay: float) -> None:
         """Answers as `source`, `delay` seconds after each call."""
         self.source = source
         self.delay = delay
@@ -6583,7 +6572,7 @@ class _FakeLinkBuilder:
 
 
 def _patch_link_builder(
-    *, monkeypatch: pytest.MonkeyPatch, source: str, delay: float = 0
+    monkeypatch: pytest.MonkeyPatch, source: str, delay: float = 0
 ) -> _FakeLinkBuilder:
     """Puts a `_FakeLinkBuilder` where the registry looks `source`'s builder up."""
     builder = _FakeLinkBuilder(source=source, delay=delay)
@@ -6594,7 +6583,7 @@ def _patch_link_builder(
 
 
 def _link_cog(
-    *, sources: list[str], decision: str = "QA", gemini_api_key: str = "key"
+    sources: list[str], decision: str = "QA", gemini_api_key: str = "key"
 ) -> ReplyGeneratorCogs:
     """A cog under `_link_config` whose route call picks `decision` and selects `sources`.
 
@@ -6611,7 +6600,7 @@ def _link_cog(
     return cog
 
 
-def _link_message(*, text: str) -> FakeMessage:
+def _link_message(text: str) -> FakeMessage:
     """A message addressed to the bot, so the whole turn runs on it."""
     return FakeMessage(content=f"<@999> {text}", author=FakeAuthor(user_id=1))
 
@@ -6740,7 +6729,7 @@ async def test_on_message_does_not_start_link_context_on_image_route(
     builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
 
     async def drain_context(
-        self: MediaReplyRoutes, *, context_task: asyncio.Task[ReplyContext], **kwargs: object
+        self: MediaReplyRoutes, context_task: asyncio.Task[ReplyContext], **kwargs: object
     ) -> None:
         """Accepts the dispatched image request."""
         del self, kwargs
@@ -7625,7 +7614,7 @@ def test_memory_read_opens_only_the_permitted_compartments(
         assert fragment not in document
 
 
-def _recall_context_for(*, message: Message) -> RecallContext:
+def _recall_context_for(message: Message) -> RecallContext:
     """The read context one gateway message produces, through the surface that decides it."""
     surface = TurnSurface.for_message(message=message)
     return build_recall_context(
@@ -7977,12 +7966,12 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
     _seed_alias(subject_id=42, text="Boss(社群暱稱:李董)")
     contexts: list[ReplyContext] = []
 
-    async def capture_answer(self: object, *, context: ReplyContext, **kwargs: object) -> None:
+    async def capture_answer(self: object, context: ReplyContext, **kwargs: object) -> None:
         """Keeps the context the answer would have read, without an interaction to send on."""
         del self, kwargs
         contexts.append(context)
 
-    async def no_history(self: object, *, limit: int) -> list[Message]:
+    async def no_history(self: object, limit: int) -> list[Message]:
         """An `/ask` conversation with nothing before this turn, read without the ask store."""
         del self, limit
         return []

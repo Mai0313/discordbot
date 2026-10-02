@@ -64,7 +64,7 @@ _REMAINDER_RESERVE = 64
 
 
 def _allocate_embed_slots(
-    *, posts: list[ThreadsOutput], priority: list[int], reserved: list[int]
+    posts: list[ThreadsOutput], priority: list[int], reserved: list[int]
 ) -> list[int]:
     """Allocates Discord's ten embed slots in relevance order."""
     slots = [0] * len(posts)
@@ -87,7 +87,7 @@ def _allocate_embed_slots(
     return slots
 
 
-def _remainder_notes(*, omitted_posts: int, omitted_images: int) -> list[str]:
+def _remainder_notes(omitted_posts: int, omitted_images: int) -> list[str]:
     """States what the ten embed slots could not carry.
 
     An over-budget expansion shows the ten most relevant slots and says how much it left behind,
@@ -127,7 +127,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         self.media_delivery = build_media_delivery_planner()
 
     async def read(
-        self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
+        self, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> ThreadsConversation:
         """Walks the conversation under a wall-clock bound, downloading the target's media.
 
@@ -164,10 +164,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
     @staticmethod
     async def _close_walk(
-        *,
-        parse_cm: contextlib.AbstractContextManager[ThreadsConversation],
-        url: str,
-        message_id: int,
+        parse_cm: contextlib.AbstractContextManager[ThreadsConversation], url: str, message_id: int
     ) -> None:
         """Closes the walk's generator and unlinks its media.
 
@@ -187,7 +184,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
 
     async def build_delivery(
-        self, *, message: Message, url: str, parsed: ThreadsConversation
+        self, message: Message, url: str, parsed: ThreadsConversation
     ) -> ExpansionDelivery | None:
         """Builds the card and plans the target's media, refusing what cannot be shown.
 
@@ -328,12 +325,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         return embeds
 
     def _select_posts_within_text_limit(
-        self,
-        *,
-        posts: list[ThreadsOutput],
-        priority: list[int],
-        chain_depth: int,
-        quoted_index: int,
+        self, posts: list[ThreadsOutput], priority: list[int], chain_depth: int, quoted_index: int
     ) -> set[int]:
         """Selects complete posts by relevance until the message-wide text budget is full.
 

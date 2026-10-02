@@ -774,7 +774,7 @@ class DragonGateView(GameView):
             embeds.append(history_embed)
         return embeds
 
-    async def _refund_winnings_to_pool_locked(self, *, user_id: int, delta: int) -> None:
+    async def _refund_winnings_to_pool_locked(self, user_id: int, delta: int) -> None:
         """Pushes one player's positive table delta back into the jackpot ("逆贏不拿")."""
         participant = next(
             participant

@@ -79,10 +79,10 @@ async def test_bot_blackjack_participant_spreads_bet_by_true_count(
     """The bot's Kelly wager rises with a favorable channel true count."""
     cog = _cog()
 
-    async def fake_get_balance(*, user_id: int) -> int:
+    async def fake_get_balance(user_id: int) -> int:
         return 1_000_000
 
-    async def fake_avatar(*, user: object, guild: object = None) -> str:
+    async def fake_avatar(user: object, guild: object = None) -> str:
         return ""
 
     monkeypatch.setattr(games, "get_balance", fake_get_balance)

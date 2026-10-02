@@ -290,7 +290,7 @@ class MediaHostingService(BaseModel):
         )
         return None
 
-    def _dedup_hit(self, *, serve: Path, name: str) -> str | None:
+    def _dedup_hit(self, serve: Path, name: str) -> str | None:
         """If the content-addressed file already exists, refresh its mtime and return its URL.
 
         Holds the dir lock so the refresh (which keeps a re-hosted clip alive under both caps) never
@@ -304,7 +304,7 @@ class MediaHostingService(BaseModel):
                 os.utime(final)
             return self._public_url(name=name)
 
-    def _finalize(self, *, serve: Path, name: str, tmp: Path) -> str:
+    def _finalize(self, serve: Path, name: str, tmp: Path) -> str:
         """Atomically moves a written temp onto its content-addressed name and returns the URL.
 
         `os.replace` is atomic within the serve filesystem, so the final name only ever appears with
@@ -318,7 +318,7 @@ class MediaHostingService(BaseModel):
         return self._public_url(name=name)
 
     def _destination(
-        self, *, suffix: str, **source: Unpack[_HostedSource]
+        self, suffix: str, **source: Unpack[_HostedSource]
     ) -> tuple[Path, str] | None:
         """The serve dir and normalized suffix a publish writes to, or None when it cannot host.
 
@@ -455,7 +455,7 @@ class MediaHostingService(BaseModel):
         self.enforce_cap(now=time.time())
         return url
 
-    def _scan_hosted(self, *, serve: Path) -> list[_HostedFile]:
+    def _scan_hosted(self, serve: Path) -> list[_HostedFile]:
         """Every file the service itself wrote (the reaper guard).
 
         Only a 32-hex stem + allowlisted suffix, regular files (not symlinks/dirs), non-recursive,
@@ -475,7 +475,7 @@ class MediaHostingService(BaseModel):
                 hosted.append(_HostedFile(mtime=stat.st_mtime, size=stat.st_size, path=entry.path))
         return hosted
 
-    def enforce_cap(self, *, now: float) -> int:
+    def enforce_cap(self, now: float) -> int:
         """Evicts oldest hosted files until total bytes <= max_bytes; returns the bytes freed.
 
         Only the service's own files count and are evictable. A file hosted within the grace window
@@ -513,7 +513,7 @@ class MediaHostingService(BaseModel):
             logfire.info("Evicted hosted media over the size cap", freed_bytes=freed)
         return freed
 
-    def cleanup_expired(self, *, now: float) -> int:
+    def cleanup_expired(self, now: float) -> int:
         """Deletes hosted files older than retention_hours; returns the count deleted."""
         retention = self.config.retention_hours
         if retention <= 0:
@@ -538,7 +538,7 @@ class MediaHostingService(BaseModel):
             logfire.info("Reaped expired hosted media", deleted_count=deleted)
         return deleted
 
-    def sweep_stale_temps(self, *, now: float) -> None:
+    def sweep_stale_temps(self, now: float) -> None:
         """Unlinks crash-left bot temps older than the stale-temp window (best-effort).
 
         Gated on the bot's own temp-name shape (like the reaper's 32-hex guard), so a foreign
@@ -560,7 +560,7 @@ class MediaHostingService(BaseModel):
                 except OSError:
                     continue
 
-    def run_maintenance(self, *, now: float) -> tuple[int, int]:
+    def run_maintenance(self, now: float) -> tuple[int, int]:
         """One sweep for the cleanup loop: clear stale temps, reap expired, enforce the cap.
 
         Returns (deleted_count, freed_bytes). Age runs before size so the cap acts on what remains.
@@ -605,7 +605,7 @@ class MediaItem(BaseModel):
             return File(fp=BytesIO(self.source), filename=self.filename)
         return File(fp=str(self.source), filename=self.filename)
 
-    def host_with(self, *, service: MediaHostingService) -> str | None:
+    def host_with(self, service: MediaHostingService) -> str | None:
         """Hosts this item via the right primitive (publish_bytes vs publish_path); blocking.
 
         The suffix for in-memory bytes comes from the filename so the host allowlist (and thus
@@ -655,12 +655,12 @@ class MediaDeliveryPlanner(BaseModel):
         ),
     )
 
-    async def _host(self, *, item: MediaItem) -> str | None:
+    async def _host(self, item: MediaItem) -> str | None:
         """Runs one blocking host write off the event loop; None when unavailable/refused/failed."""
         return await asyncio.to_thread(item.host_with, service=self.media_hosting)
 
     async def plan(
-        self, *, items: list[MediaItem], upload_limit: int, envelope_margin: int = 0
+        self, items: list[MediaItem], upload_limit: int, envelope_margin: int = 0
     ) -> MediaPlan:
         """Splits items into native attachments, hosted URLs, and dropped items.
 

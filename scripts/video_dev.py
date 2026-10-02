@@ -30,7 +30,7 @@ def _load_media(path: str, fallback_mime: str) -> LoadedMedia:
 
 
 def gen_video(
-    user_prompt: str, *, image_paths: list[str] | None = None, source_video_path: str | None = None
+    user_prompt: str, image_paths: list[str] | None = None, source_video_path: str | None = None
 ) -> None:
     """Renders one clip through `VideoGenerator.render` and saves it to ./data/generated.mp4.
 

@@ -235,7 +235,6 @@ class MessageInputBuilder(BaseModel):
 
     def _sources_from_parts(
         self,
-        *,
         attachments: list[Attachment],
         stickers: list[StickerItem],
         embeds: list[Embed],

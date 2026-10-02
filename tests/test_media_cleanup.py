@@ -17,7 +17,7 @@ from tests.helpers.casting import as_bot, make_media_hosting_config
 
 
 def _service(
-    *, serve_dir: Path, max_bytes: int = 8 * 1024**3, retention_hours: float = 168.0
+    serve_dir: Path, max_bytes: int = 8 * 1024**3, retention_hours: float = 168.0
 ) -> MediaHostingService:
     """A hosting service over an explicit temp serve dir (never the live env-resolved dir)."""
     return MediaHostingService(

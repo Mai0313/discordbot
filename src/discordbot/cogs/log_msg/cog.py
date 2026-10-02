@@ -87,7 +87,7 @@ ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO UPDATE 
 """
 
 
-async def _create_messages_table(*, conn: AsyncConnection) -> None:
+async def _create_messages_table(conn: AsyncConnection) -> None:
     """Creates the messages table and its indexes, each only where it does not exist yet.
 
     A fresh file gets the columns and indexes the deployed `messages.db` has; an existing table

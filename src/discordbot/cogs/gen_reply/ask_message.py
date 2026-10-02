@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from nextcord.types.message import Message as MessagePayload
 
 
-def _base_payload(*, message_id: int, channel_id: int, content: str) -> dict[str, Any]:
+def _base_payload(message_id: int, channel_id: int, content: str) -> dict[str, Any]:
     """The minimum `Message.__init__` reads, with every optional key left out.
 
     `timestamp` is absent because nextcord never reads it: `Message.created_at` is
@@ -53,13 +53,13 @@ def _base_payload(*, message_id: int, channel_id: int, content: str) -> dict[str
 
 
 def _build(
-    *, state: "ConnectionState", channel: PartialMessageable, payload: dict[str, Any]
+    state: "ConnectionState", channel: PartialMessageable, payload: dict[str, Any]
 ) -> Message:
     """Constructs the message over the connection state the interaction arrived on."""
     return Message(state=state, channel=channel, data=cast("MessagePayload", payload))
 
 
-def interaction_channel(*, interaction: Interaction[commands.Bot]) -> PartialMessageable:
+def interaction_channel(interaction: Interaction[commands.Bot]) -> PartialMessageable:
     """The channel a `/ask` turn happens in, as the partial nextcord could resolve.
 
     Always partial on the routes this command exists for: a guild the bot is not in resolves no
@@ -75,9 +75,7 @@ def interaction_channel(*, interaction: Interaction[commands.Bot]) -> PartialMes
     return PartialMessageable(state=interaction._state, id=interaction.channel_id)  # noqa: SLF001 -- mirrors `Interaction.channel`, which builds its own the same way
 
 
-def resolved_attachment_payloads(
-    *, interaction: Interaction[commands.Bot]
-) -> list[dict[str, Any]]:
+def resolved_attachment_payloads(interaction: Interaction[commands.Bot]) -> list[dict[str, Any]]:
     """The raw payloads of the attachment options this invocation carried, if any.
 
     Read back out of `interaction.data` rather than off the `nextcord.Attachment` the option
@@ -90,7 +88,7 @@ def resolved_attachment_payloads(
     return list(attachments.values())
 
 
-def build_ask_message(*, interaction: Interaction[commands.Bot], question: str) -> Message:
+def build_ask_message(interaction: Interaction[commands.Bot], question: str) -> Message:
     """Builds the message the pipeline answers, from one `/ask` invocation.
 
     The id is the interaction's own snowflake, so `Message.created_at` is the real moment the
@@ -125,7 +123,7 @@ def build_ask_message(*, interaction: Interaction[commands.Bot], question: str) 
 
 
 def rebuild_conversation(
-    *, turns: list[AskTurn], interaction: Interaction[commands.Bot]
+    turns: list[AskTurn], interaction: Interaction[commands.Bot]
 ) -> list[Message]:
     """Rebuilds stored `/ask` turns as the history messages the renders expect, oldest first.
 

@@ -16,12 +16,12 @@ from discordbot.utils.discord_embeds import (
 )
 
 
-def _media_file(*, filename: str) -> File:
+def _media_file(filename: str) -> File:
     """Builds a caller's own upload, the kind the spacer has to ride beside."""
     return File(fp=BytesIO(initial_bytes=b"media"), filename=filename)
 
 
-def _permission_target(*, attach_files: bool) -> SimpleNamespace:
+def _permission_target(attach_files: bool) -> SimpleNamespace:
     """Builds a Discord target stub with channel permissions."""
     member = object()
     guild = SimpleNamespace(me=member)

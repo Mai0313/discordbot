@@ -73,7 +73,7 @@ class GameView(LoggedView):
 
 
 def table_edit_kwargs(
-    *, embeds: list[Embed], view: View | None, target: object | None = None
+    embeds: list[Embed], view: View | None, target: object | None = None
 ) -> dict[str, Any]:
     """Builds the shared edit payload for a game table render."""
     return {

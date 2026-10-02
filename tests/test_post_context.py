@@ -222,7 +222,7 @@ async def test_one_refused_image_does_not_cost_the_others(
     )
     accept_image_uploads(monkeypatch, uploaded=[])
 
-    async def load_image_bytes(*, source: str) -> LoadedMedia:
+    async def load_image_bytes(source: str) -> LoadedMedia:
         """Refuses the first image and serves the second."""
         if source == first:
             raise RuntimeError("cdn said no")

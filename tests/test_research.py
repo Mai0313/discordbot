@@ -175,7 +175,7 @@ def test_split_report_by_sections_drops_empty_sections() -> None:
 class _FakeStream:
     """Async iterator over scripted SSE events; can raise after a prefix to simulate a drop."""
 
-    def __init__(self, events: list[object], *, raise_after: int | None = None) -> None:
+    def __init__(self, events: list[object], raise_after: int | None = None) -> None:
         self._events = list(events)
         self._raise_after = raise_after
         self._yielded = 0
@@ -198,7 +198,7 @@ class _FakeInteractions:
     A non-stream `get(id=...)` returns the terminal interaction (the authoritative final read).
     """
 
-    def __init__(self, *, streams: list[_FakeStream], terminal: object) -> None:
+    def __init__(self, streams: list[_FakeStream], terminal: object) -> None:
         self._streams = list(streams)
         self._terminal = terminal
         self.create_kwargs: dict[str, object] = {}
@@ -215,7 +215,7 @@ class _FakeInteractions:
         return self._terminal
 
 
-def _fake_client(*, streams: list[_FakeStream], terminal: object) -> SimpleNamespace:
+def _fake_client(streams: list[_FakeStream], terminal: object) -> SimpleNamespace:
     return SimpleNamespace(
         aio=SimpleNamespace(interactions=_FakeInteractions(streams=streams, terminal=terminal))
     )
@@ -229,7 +229,7 @@ def _as_event(fake: object) -> "InteractionSSEEvent":
     return cast("InteractionSSEEvent", fake)
 
 
-def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> SimpleNamespace:
+def _created_event(interaction_id: str = "int_9", event_id: str = "e1") -> SimpleNamespace:
     return SimpleNamespace(
         event_type="interaction.created",
         event_id=event_id,
@@ -237,7 +237,7 @@ def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> Si
     )
 
 
-def _thought_event(text: str, *, event_id: str = "e2") -> SimpleNamespace:
+def _thought_event(text: str, event_id: str = "e2") -> SimpleNamespace:
     return SimpleNamespace(
         event_type="step.delta",
         event_id=event_id,
@@ -245,14 +245,14 @@ def _thought_event(text: str, *, event_id: str = "e2") -> SimpleNamespace:
     )
 
 
-def _completed_event(*, event_id: str = "e9") -> SimpleNamespace:
+def _completed_event(event_id: str = "e9") -> SimpleNamespace:
     return SimpleNamespace(
         event_type="interaction.completed", event_id=event_id, interaction=SimpleNamespace()
     )
 
 
 def _terminal_interaction(
-    *, status: str = "completed", input_tokens: int = 10, output_tokens: int = 5
+    status: str = "completed", input_tokens: int = 10, output_tokens: int = 5
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id="int_9",
@@ -570,7 +570,7 @@ class _FailingStatusMessage:
 
     id = 7
 
-    def __init__(self, *, error: Exception, attempts_seen: int = 1) -> None:
+    def __init__(self, error: Exception, attempts_seen: int = 1) -> None:
         """Initializes the failure and the attempt count that sets `seen`."""
         self.error = error
         self.attempts = 0
@@ -674,7 +674,7 @@ def test_failure_text_distinguishes_budget() -> None:
 # ----- persistence (reply.db) ---------------------------------------------------------------
 
 
-async def _only_resumable(*, thread_id: int) -> rdb.PersistentResearchSession | None:
+async def _only_resumable(thread_id: int) -> rdb.PersistentResearchSession | None:
     """The one resumable row for a thread; the store has no single-row reader left to use."""
     return next((row for row in await rdb.list_resumable() if row.thread_id == thread_id), None)
 
@@ -807,9 +807,7 @@ class _FakeThread:
         self.sends.append(kwargs)
 
 
-def _completed_result(
-    *, report_text: str, image_bytes: bytes | None = None
-) -> agent.ResearchResult:
+def _completed_result(report_text: str, image_bytes: bytes | None = None) -> agent.ResearchResult:
     return agent.ResearchResult(
         status="completed", report_text=report_text, image_bytes=image_bytes
     )
@@ -1000,7 +998,7 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
 # ----- restart resume sweep -----------------------------------------------------------------
 
 
-def _research_cog(*, enabled: bool) -> research_cog.ResearchCogs:
+def _research_cog(enabled: bool) -> research_cog.ResearchCogs:
     """A cog carrying only what the resume sweep touches: no bot, no client, no gateway.
 
     The key is always present so the switch alone decides `deep_research_available`, and neither
@@ -1017,7 +1015,6 @@ def _research_cog(*, enabled: bool) -> research_cog.ResearchCogs:
 
 
 async def _seed_researching(
-    *,
     thread_id: int,
     owner_id: int,
     stored_id: bool = True,
@@ -1085,7 +1082,7 @@ async def test_resume_sweep_still_resumes_when_the_switch_is_on(
     cog = _research_cog(enabled=True)
     resumed: list[int] = []
 
-    async def _fake_resume_one(*, session: rdb.PersistentResearchSession) -> None:
+    async def _fake_resume_one(session: rdb.PersistentResearchSession) -> None:
         resumed.append(session.thread_id)
 
     monkeypatch.setattr(cog, "_resume_one", _fake_resume_one)
@@ -1106,7 +1103,7 @@ async def test_resume_sweep_still_resumes_when_the_switch_is_on(
 class _ResearchInteraction(FakeInteraction):
     """A `/deep_research` invocation from a guild text channel whose posts the test decides."""
 
-    def __init__(self, *, channel: MagicMock) -> None:
+    def __init__(self, channel: MagicMock) -> None:
         """Initializes the shared fake plus the channel the command was run in."""
         super().__init__()
         self.channel = channel
@@ -1116,7 +1113,7 @@ class _Anchor(FakeDiscordMessage):
     """A message the research thread hangs off, refusing it with `error` or opening `thread`."""
 
     def __init__(
-        self, *, channel: MagicMock, error: Exception | None = None, thread: object = None
+        self, channel: MagicMock, error: Exception | None = None, thread: object = None
     ) -> None:
         """Initializes the identity `_start_for` reads on top of the shared message fake."""
         super().__init__()
@@ -1134,7 +1131,7 @@ class _Anchor(FakeDiscordMessage):
         return self.thread
 
 
-def _text_channel(*, permissions: Permissions | None = None) -> MagicMock:
+def _text_channel(permissions: Permissions | None = None) -> MagicMock:
     """A guild text channel resolving `permissions` (default: all) for the bot's own member."""
     channel = MagicMock(spec=TextChannel)
     channel.id = 20
@@ -1143,12 +1140,12 @@ def _text_channel(*, permissions: Permissions | None = None) -> MagicMock:
     return channel
 
 
-def _launching_cog(*, monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs:
+def _launching_cog(monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs:
     """A cog that gets as far as `create_thread` without a title model behind it."""
     cog = _research_cog(enabled=True)
     cog._owner_locks = KeyedLockManager()
 
-    async def _title(*, brief: str) -> str:
+    async def _title(brief: str) -> str:
         del brief
         return "research"
 
@@ -1156,9 +1153,7 @@ def _launching_cog(*, monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchC
     return cog
 
 
-def _recorded(
-    *, monkeypatch: pytest.MonkeyPatch, level: str
-) -> list[tuple[str, dict[str, object]]]:
+def _recorded(monkeypatch: pytest.MonkeyPatch, level: str) -> list[tuple[str, dict[str, object]]]:
     """Captures what the cog reports at one level, the way the rest of the suite reads logfire."""
     records: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(
@@ -1489,7 +1484,7 @@ async def test_a_refused_report_is_a_warn_even_on_its_last_message(
 class _RefusingStatus:
     """An opening status message whose edit Discord refuses after reading the upload body."""
 
-    async def edit(self, *, files: list[File] | None = None, **kwargs: object) -> None:
+    async def edit(self, files: list[File] | None = None, **kwargs: object) -> None:
         """Consumes every file the way a real multipart edit does, then refuses."""
         del kwargs
         for file in files or []:
@@ -1507,7 +1502,7 @@ class _ReadingThread:
         self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
         self.bodies: list[bytes] = []
 
-    async def send(self, *, files: list[File] | None = None, **kwargs: object) -> None:
+    async def send(self, files: list[File] | None = None, **kwargs: object) -> None:
         """Reads every attached file, as the upload would."""
         del kwargs
         self.bodies.extend(file.fp.read() for file in files or [])
@@ -1547,7 +1542,7 @@ class _RunStatus:
 
     id = 2
 
-    def __init__(self, *, thread: "_RunThread") -> None:
+    def __init__(self, thread: "_RunThread") -> None:
         """Binds the status to the thread whose write log and failure it shares."""
         self.thread = thread
 
@@ -1569,7 +1564,6 @@ class _RunThread:
 
     def __init__(
         self,
-        *,
         error: Exception | None = None,
         status_posts: bool = True,
         earlier: list[FakeDiscordMessage] | None = None,
@@ -1609,7 +1603,7 @@ class _ThreadBot:
 
     user = FakeUser(user_id=900, name="bot", bot=True)
 
-    def __init__(self, *, thread: _RunThread | None) -> None:
+    def __init__(self, thread: _RunThread | None) -> None:
         """Initializes the one thread the cache holds; None is a thread deleted meanwhile."""
         self.thread = thread
 
@@ -1630,7 +1624,7 @@ class _ThreadBot:
         raise make_not_found(message="Unknown Channel")
 
 
-def _settling_client(*, status: str) -> SimpleNamespace:
+def _settling_client(status: str) -> SimpleNamespace:
     """A Gemini client whose research streams to its end and settles with `status`."""
     return _fake_client(
         streams=[_FakeStream([_created_event(), _completed_event()])],
@@ -1638,7 +1632,7 @@ def _settling_client(*, status: str) -> SimpleNamespace:
     )
 
 
-def _failing_client(*, error: Exception) -> SimpleNamespace:
+def _failing_client(error: Exception) -> SimpleNamespace:
     """A Gemini client whose research create fails outright."""
 
     async def create(**_kwargs: object) -> None:
@@ -1648,7 +1642,7 @@ def _failing_client(*, error: Exception) -> SimpleNamespace:
 
 
 def _running_cog(
-    *, monkeypatch: pytest.MonkeyPatch, client: object, thread: _RunThread | None = None
+    monkeypatch: pytest.MonkeyPatch, client: object, thread: _RunThread | None = None
 ) -> research_cog.ResearchCogs:
     """A cog that runs research on `client` end to end and delivers with hosting off.
 
@@ -1669,7 +1663,7 @@ def _running_cog(
     return cog
 
 
-async def _launch_run(*, cog: research_cog.ResearchCogs, thread: _RunThread) -> None:
+async def _launch_run(cog: research_cog.ResearchCogs, thread: _RunThread) -> None:
     """Launches a research from a marker and waits out the run it spawned."""
     anchor = _Anchor(channel=_text_channel(), thread=thread)
     await cog.launch(message=as_message(fake=anchor), brief="b")
@@ -1677,7 +1671,6 @@ async def _launch_run(*, cog: research_cog.ResearchCogs, thread: _RunThread) -> 
 
 
 async def _resume_run(
-    *,
     cog: research_cog.ResearchCogs,
     stored_id: bool = True,
     agent: str = "antigravity-preview-09-2026",
@@ -1690,7 +1683,7 @@ async def _resume_run(
     await asyncio.gather(*cog._tasks)
 
 
-async def _assert_owner_released(*, cog: research_cog.ResearchCogs, phase: str) -> None:
+async def _assert_owner_released(cog: research_cog.ResearchCogs, phase: str) -> None:
     """The run's row ended in `phase` and nothing holds its owner's one slot any more."""
     async with rdb.open_session() as session:
         row = await session.get(entity=rdb.ResearchSessionRow, ident=_THREAD_ID)
@@ -1700,7 +1693,7 @@ async def _assert_owner_released(*, cog: research_cog.ResearchCogs, phase: str) 
     assert cog._active_threads == set()
 
 
-def _assert_pings_only_the_owner(*, write: dict[str, object]) -> None:
+def _assert_pings_only_the_owner(write: dict[str, object]) -> None:
     """The write mentions its owner, and its mention policy lets nobody else be pinged."""
     assert f"<@{_OWNER_ID}>" in str(write["content"])
     mentions = cast("AllowedMentions", write["allowed_mentions"])
@@ -1765,7 +1758,7 @@ async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner
 
 
 def _lock_reply_db(
-    *, monkeypatch: pytest.MonkeyPatch, call: str
+    monkeypatch: pytest.MonkeyPatch, call: str
 ) -> list[tuple[str, dict[str, object]]]:
     """Makes one research store call fail the way a locked `reply.db` does; returns the errors."""
 

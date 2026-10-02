@@ -22,7 +22,7 @@ _COMMENT_ID = "17946527169275440"
 _URL = f"https://www.instagram.com/p/{_CODE}/"
 
 
-def _image(*, name: str) -> dict[str, Any]:
+def _image(name: str) -> dict[str, Any]:
     """One carousel child, with its candidates widest-first like the real payload."""
     return {
         "code": f"child{name}",
@@ -37,7 +37,7 @@ def _image(*, name: str) -> dict[str, Any]:
 
 
 def _media(
-    *, code: str = _CODE, caption: str = "post body", children: int = 2, video_url: str = ""
+    code: str = _CODE, caption: str = "post body", children: int = 2, video_url: str = ""
 ) -> dict[str, Any]:
     """The post node, in the shape the logged-out page serialises."""
     node: dict[str, Any] = {
@@ -65,7 +65,7 @@ def _media(
     return node
 
 
-def _other_post(*, code: str, caption: str) -> dict[str, Any]:
+def _other_post(code: str, caption: str) -> dict[str, Any]:
     """A node from the "more posts by this author" rail: same keys, no media list."""
     return {
         "code": code,
@@ -77,7 +77,7 @@ def _other_post(*, code: str, caption: str) -> dict[str, Any]:
     }
 
 
-def _comment(*, pk: str, text: str, author: str = "someone", parent: str = "") -> dict[str, Any]:
+def _comment(pk: str, text: str, author: str = "someone", parent: str = "") -> dict[str, Any]:
     """One comment node, recognised by carrying both a like count and a body."""
     node: dict[str, Any] = {
         "pk": pk,
@@ -93,7 +93,6 @@ def _comment(*, pk: str, text: str, author: str = "someone", parent: str = "") -
 
 
 def _page(
-    *,
     media: dict[str, Any] | None = None,
     comments: list[dict[str, Any]] | None = None,
     others: list[dict[str, Any]] | None = None,
@@ -122,7 +121,7 @@ def _page(
 
 
 def _downloader(
-    monkeypatch: pytest.MonkeyPatch, *, html: str, final_url: str = _URL
+    monkeypatch: pytest.MonkeyPatch, html: str, final_url: str = _URL
 ) -> InstagramDownloader:
     """A downloader whose only network call is replaced with canned HTML."""
     serve_page(monkeypatch, downloader=InstagramDownloader, html=html, final_url=final_url)

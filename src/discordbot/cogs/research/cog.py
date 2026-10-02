@@ -79,14 +79,14 @@ RESEARCHING_STATUS = f"{RESEARCHING_PREFIX} ({RESEARCH_LABEL})"
 RESEARCH_FAILED_STATUS = f"-# Research failed ({RESEARCH_LABEL})"
 
 
-def _fallback_thread_name(*, brief: str) -> str:
+def _fallback_thread_name(brief: str) -> str:
     """Thread-title fallback (the brief's first line) when LLM title generation is unavailable."""
     first_line = next((line.strip() for line in brief.splitlines() if line.strip()), "")
     title = first_line or "深度研究"
     return title[:THREAD_NAME_MAX]
 
 
-def _launch_reply(*, outcome: StartOutcome, thread_id: int | None) -> str:
+def _launch_reply(outcome: StartOutcome, thread_id: int | None) -> str:
     """What either entry point tells the requester about a launch that ended with `outcome`.
 
     `thread_id` is the run's thread for `started` and the owner's running one for `exists`.
@@ -102,7 +102,7 @@ def _launch_reply(*, outcome: StartOutcome, thread_id: int | None) -> str:
     return "開研究串失敗了,等等再試一次"
 
 
-def _terminal_phase(*, status: str) -> db.ResearchPhase:
+def _terminal_phase(status: str) -> db.ResearchPhase:
     """Maps a terminal interaction status onto a stored phase."""
     if status == "completed":
         return "done"
@@ -153,7 +153,7 @@ class ResearchCogs(commands.Cog):
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    def is_research_thread(self, *, channel_id: int) -> bool:
+    def is_research_thread(self, channel_id: int) -> bool:
         """Whether a channel id is a research thread the cog is actively driving."""
         return channel_id in self._active_threads
 
@@ -161,7 +161,7 @@ class ResearchCogs(commands.Cog):
         """The research agent system instruction with today's date appended for recency."""
         return f"{RESEARCH_SYSTEM_INSTRUCTION}\n\nToday's date: {database_now():%Y-%m-%d}."
 
-    async def _generate_thread_name(self, *, brief: str) -> str:
+    async def _generate_thread_name(self, brief: str) -> str:
         """Generates a short thread title from the brief via `triage_model`, best-effort.
 
         Brevity is steered by the prompt (not a token cap); on timeout or failure the brief's
@@ -191,7 +191,7 @@ class ResearchCogs(commands.Cog):
     # ----- entry points -------------------------------------------------------------------
 
     async def launch(
-        self, *, message: "Message", brief: str, anchor: "Message | None" = None
+        self, message: "Message", brief: str, anchor: "Message | None" = None
     ) -> None:
         """QA-marker entry: opens a thread and starts the research.
 
@@ -334,7 +334,7 @@ class ResearchCogs(commands.Cog):
         )
 
     async def _start_for(  # noqa: PLR0911 -- one early outcome per way a launch stops short
-        self, *, owner_id: int, brief: str, anchor: "Message"
+        self, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims the owner's slot, opens the thread, and spawns the research.
 
@@ -441,9 +441,7 @@ class ResearchCogs(commands.Cog):
 
     # ----- research runs ------------------------------------------------------------------
 
-    async def _run_research(
-        self, *, thread: "Thread", owner_id: int, brief: str, agent: str
-    ) -> None:
+    async def _run_research(self, thread: "Thread", owner_id: int, brief: str, agent: str) -> None:
         """Streams the Antigravity research and delivers the report into the thread."""
         status = await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
         streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
@@ -477,7 +475,7 @@ class ResearchCogs(commands.Cog):
         )
 
     async def _fail_run(
-        self, *, thread: "Thread", owner_id: int, status: Message | None, failure: Exception | str
+        self, thread: "Thread", owner_id: int, status: Message | None, failure: Exception | str
     ) -> None:
         """Tells the owner a run ended without a report, finalizes its status, and releases it.
 
@@ -495,7 +493,7 @@ class ResearchCogs(commands.Cog):
         await self._finalize_status(status=status, thread=thread, content=RESEARCH_FAILED_STATUS)
         await self._release(thread_id=thread.id, phase=phase)
 
-    async def _release(self, *, thread_id: int, phase: db.ResearchPhase) -> None:
+    async def _release(self, thread_id: int, phase: db.ResearchPhase) -> None:
         """Ends a run: lets QA answer in its thread again and records its terminal phase.
 
         The recorded phase is what frees the owner's one-research slot. Every caller has already
@@ -518,7 +516,6 @@ class ResearchCogs(commands.Cog):
 
     async def _finish(
         self,
-        *,
         thread: "Thread",
         owner_id: int,
         result: ResearchResult,
@@ -566,7 +563,7 @@ class ResearchCogs(commands.Cog):
         await self._release(thread_id=thread.id, phase="done")
 
     async def _finalize_status(
-        self, *, status: Message | None, thread: "Thread", content: str
+        self, status: Message | None, thread: "Thread", content: str
     ) -> None:
         """Edits the opening status message to its terminal content.
 
@@ -599,7 +596,6 @@ class ResearchCogs(commands.Cog):
 
     async def _post_failure(
         self,
-        *,
         thread: "Thread",
         owner_id: int,
         exc: Exception | None = None,
@@ -671,7 +667,7 @@ class ResearchCogs(commands.Cog):
             )
         logfire.info("resumed in-flight research sessions", count=len(sessions))
 
-    async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
+    async def _resume_one(self, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles.
 
         The status line the run posted before the restart is taken over, so it ends with the
@@ -736,7 +732,7 @@ class ResearchCogs(commands.Cog):
             allowed_mentions=owner_allowed_mentions(owner_id=session.owner_id),
         )
 
-    async def _find_prior_status(self, *, thread: "Thread") -> Message | None:
+    async def _find_prior_status(self, thread: "Thread") -> Message | None:
         """Returns the bot's status line from before the restart, or None when none is found.
 
         Only the process that posted it held that message, so it is read back off the thread: the
@@ -765,7 +761,7 @@ class ResearchCogs(commands.Cog):
             )
         return None
 
-    async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
+    async def _fetch_thread(self, thread_id: int) -> "Thread | None":
         """Returns the thread by id from cache or a REST fetch, or None when gone."""
         cached = self.bot.get_channel(thread_id)
         if isinstance(cached, Thread):
@@ -796,7 +792,6 @@ class ResearchCogs(commands.Cog):
 
     async def _safe_send(  # noqa: PLR0913 -- one thread post plus the two log lines naming it
         self,
-        *,
         thread: "Thread",
         content: str,
         embed: Embed | None = None,
@@ -827,7 +822,7 @@ class ResearchCogs(commands.Cog):
             return None
 
 
-def _failure_text(*, status: str) -> str:
+def _failure_text(status: str) -> str:
     """Friendly Chinese message for a non-completed terminal status."""
     if status == "budget_exceeded":
         return "研究碰到成本上限了,先到這裡"

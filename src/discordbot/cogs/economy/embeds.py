@@ -104,7 +104,7 @@ def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
         embed.set_thumbnail(url=avatar_url)
 
 
-def _debt_summary_text(*, principal: int, interest: int) -> str:
+def _debt_summary_text(principal: int, interest: int) -> str:
     """Formats outstanding loan principal and interest."""
     if principal <= 0 and interest <= 0:
         return "無未還債務"
@@ -149,7 +149,6 @@ def _payment_summary_text(result: LoanPaymentResult) -> str:
 
 
 def build_error_embed(
-    *,
     title: str,
     description: str,
     author_name: str | None = None,
@@ -168,12 +167,12 @@ def build_error_embed(
     return embed
 
 
-def build_simple_embed(*, title: str, description: str, color: int) -> Embed:
+def build_simple_embed(title: str, description: str, color: int) -> Embed:
     """Builds a single-section embed."""
     return Embed(title=title, description=description, color=color)
 
 
-def build_invalid_amount_embed(*, title: str) -> Embed:
+def build_invalid_amount_embed(title: str) -> Embed:
     """Builds the validation embed for malformed point amount text."""
     return Embed(
         title=title,
@@ -183,7 +182,6 @@ def build_invalid_amount_embed(*, title: str) -> Embed:
 
 
 def build_admin_adjustment_embed(  # noqa: PLR0913 -- mirrors every visible adjustment field
-    *,
     title: str,
     member_mention: str,
     actor_name: str,
@@ -219,7 +217,7 @@ def build_admin_adjustment_embed(  # noqa: PLR0913 -- mirrors every visible adju
 
 
 def build_balance_embed(
-    *, display_name: str, avatar_url: str, portfolio: PortfolioView, is_vip: bool, age_days: int
+    display_name: str, avatar_url: str, portfolio: PortfolioView, is_vip: bool, age_days: int
 ) -> Embed:
     """Builds the private financial-overview embed for a member."""
     embed = Embed(
@@ -247,7 +245,7 @@ def build_balance_embed(
     return embed
 
 
-def build_leaderboard_embed(*, champion: LeaderboardEntry) -> Embed:
+def build_leaderboard_embed(champion: LeaderboardEntry) -> Embed:
     """Builds the public balance leaderboard embed referencing its board image."""
     embed = Embed(
         title=LEADERBOARD_TITLE,
@@ -260,7 +258,7 @@ def build_leaderboard_embed(*, champion: LeaderboardEntry) -> Embed:
     return embed
 
 
-def build_loss_leaderboard_embed(*, champion: LossLeaderboardEntry) -> Embed:
+def build_loss_leaderboard_embed(champion: LossLeaderboardEntry) -> Embed:
     """Builds the public daily loss leaderboard embed referencing its board image."""
     embed = Embed(
         title=LOSS_LEADERBOARD_TITLE,
@@ -275,7 +273,6 @@ def build_loss_leaderboard_embed(*, champion: LossLeaderboardEntry) -> Embed:
 
 
 def build_transfer_embed(  # noqa: PLR0913 -- mirrors both transfer sides and balances
-    *,
     amount: int,
     sender: TransferParticipant,
     sender_avatar_url: str,
@@ -309,7 +306,7 @@ def build_transfer_embed(  # noqa: PLR0913 -- mirrors both transfer sides and ba
 
 
 def build_transfer_insufficient_embed(
-    *, sender_name: str, sender_avatar_url: str, balance_now: int, amount: int
+    sender_name: str, sender_avatar_url: str, balance_now: int, amount: int
 ) -> Embed:
     """Builds the transfer failure embed for an insufficient sender balance."""
     return build_error_embed(
@@ -324,7 +321,7 @@ def build_transfer_insufficient_embed(
     )
 
 
-def build_casino_embed(*, snapshot: CasinoLedgerSnapshot) -> Embed:
+def build_casino_embed(snapshot: CasinoLedgerSnapshot) -> Embed:
     """Builds the casino system cumulative P&L embed."""
     balance = snapshot.balance
     if balance > 0:
@@ -351,7 +348,7 @@ def build_casino_embed(*, snapshot: CasinoLedgerSnapshot) -> Embed:
 
 
 def build_pocat_embed(
-    *, name: str, avatar_url: str, balance: int, total_earned: int, total_spent: int
+    name: str, avatar_url: str, balance: int, total_earned: int, total_spent: int
 ) -> Embed:
     """Builds the bot player's own wallet embed."""
     if balance > 0:
@@ -379,7 +376,7 @@ def build_pocat_embed(
 
 
 def build_credit_request_embed(
-    *, borrower: LoanParty, lender: LoanParty, amount: int, monthly_rate_bps: int
+    borrower: LoanParty, lender: LoanParty, amount: int, monthly_rate_bps: int
 ) -> Embed:
     """Builds the public personal credit request embed."""
     embed = Embed(
@@ -404,7 +401,7 @@ def build_credit_request_embed(
 
 
 def build_central_bank_request_embed(
-    *, borrower: LoanParty, amount: int, monthly_rate_bps: int
+    borrower: LoanParty, amount: int, monthly_rate_bps: int
 ) -> Embed:
     """Builds the public central-bank loan request embed."""
     embed = Embed(
@@ -428,7 +425,7 @@ def build_central_bank_request_embed(
 
 
 def build_credit_repay_embed(
-    *, actor_name: str, actor_avatar_url: str, lender_display_name: str, result: LoanPaymentResult
+    actor_name: str, actor_avatar_url: str, lender_display_name: str, result: LoanPaymentResult
 ) -> Embed:
     """Builds the personal credit repayment result embed."""
     embed = Embed(
@@ -449,7 +446,7 @@ def build_credit_repay_embed(
 
 
 def build_credit_call_embed(
-    *, actor_name: str, actor_avatar_url: str, borrower_mention: str, result: LoanPaymentResult
+    actor_name: str, actor_avatar_url: str, borrower_mention: str, result: LoanPaymentResult
 ) -> Embed:
     """Builds the personal credit forced-collection result embed."""
     embed = Embed(
@@ -465,7 +462,7 @@ def build_credit_call_embed(
     return embed
 
 
-def build_credit_status_embed(*, contracts: list[LoanContractView], viewer_id: int) -> Embed:
+def build_credit_status_embed(contracts: list[LoanContractView], viewer_id: int) -> Embed:
     """Builds the caller's active personal credit contracts embed.
 
     Overflow past the description budget is counted rather than dropped: a debt the
@@ -491,7 +488,7 @@ def build_credit_status_embed(*, contracts: list[LoanContractView], viewer_id: i
 
 
 def build_central_bank_repay_embed(
-    *, actor_name: str, actor_avatar_url: str, user_mention: str, result: LoanPaymentResult
+    actor_name: str, actor_avatar_url: str, user_mention: str, result: LoanPaymentResult
 ) -> Embed:
     """Builds the central-bank repayment result embed."""
     embed = Embed(
@@ -505,7 +502,6 @@ def build_central_bank_repay_embed(
 
 
 def build_central_bank_call_embed(
-    *,
     actor_name: str,
     actor_avatar_url: str,
     borrower_mention: str,
@@ -523,7 +519,7 @@ def build_central_bank_call_embed(
     return embed
 
 
-def build_central_bank_status_embed(*, status: CentralBankStatus) -> Embed:
+def build_central_bank_status_embed(status: CentralBankStatus) -> Embed:
     """Builds one server's central bank lending-capacity embed."""
     embed = Embed(
         title="🏛️ 中央銀行狀態",
@@ -559,9 +555,7 @@ def build_central_bank_status_embed(*, status: CentralBankStatus) -> Embed:
     return embed
 
 
-def build_central_bank_ceiling_embed(
-    *, borrower_mention: str, requested: int, ceiling: int
-) -> Embed:
+def build_central_bank_ceiling_embed(borrower_mention: str, requested: int, ceiling: int) -> Embed:
     """Builds the refusal shown when a request exceeds the borrower's own ceiling."""
     embed = Embed(
         title="🏛️ 超過個人信用上限",
@@ -577,7 +571,7 @@ def build_central_bank_ceiling_embed(
     return embed
 
 
-def build_vip_already_embed(*, actor_name: str, avatar_url: str) -> Embed:
+def build_vip_already_embed(actor_name: str, avatar_url: str) -> Embed:
     """Builds the embed shown when a member already owns VIP."""
     embed = Embed(
         title="已經是 VIP", description="### 你已經擁有永久 VIP 了, 不用再買一次", color=VIP_COLOR
@@ -587,7 +581,7 @@ def build_vip_already_embed(*, actor_name: str, avatar_url: str) -> Embed:
     return embed
 
 
-def build_vip_insufficient_embed(*, actor_name: str, avatar_url: str, balance_now: int) -> Embed:
+def build_vip_insufficient_embed(actor_name: str, avatar_url: str, balance_now: int) -> Embed:
     """Builds the VIP purchase failure embed for an insufficient balance."""
     embed = Embed(
         title="VIP 購買失敗",
@@ -603,9 +597,7 @@ def build_vip_insufficient_embed(*, actor_name: str, avatar_url: str, balance_no
     return embed
 
 
-def build_vip_success_embed(
-    *, actor_name: str, avatar_url: str, result: VipPurchaseResult
-) -> Embed:
+def build_vip_success_embed(actor_name: str, avatar_url: str, result: VipPurchaseResult) -> Embed:
     """Builds the VIP purchase success embed."""
     embed = Embed(
         title="👑 升級 VIP 成功",
@@ -625,7 +617,7 @@ def build_vip_success_embed(
 
 
 def build_credit_approved_embed(
-    *, result: LoanProposalAcceptResult, approver_mention: str, lender_avatar_url: str
+    result: LoanProposalAcceptResult, approver_mention: str, lender_avatar_url: str
 ) -> Embed:
     """Builds the personal credit approval embed."""
     embed = Embed(
@@ -651,7 +643,7 @@ def build_credit_approved_embed(
 
 
 def build_central_bank_approved_embed(
-    *, result: LoanProposalAcceptResult, approver_mention: str
+    result: LoanProposalAcceptResult, approver_mention: str
 ) -> Embed:
     """Builds the central-bank approval embed."""
     embed = Embed(

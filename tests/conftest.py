@@ -18,7 +18,7 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
-def _isolate_engine(*, monkeypatch: pytest.MonkeyPatch, target: str, db_path: Path) -> None:
+def _isolate_engine(monkeypatch: pytest.MonkeyPatch, target: str, db_path: Path) -> None:
     """Points one module's `_engine` at a throwaway SQLite file for the test.
 
     NullPool closes each connection on return, so there is no pool to dispose and every fixture

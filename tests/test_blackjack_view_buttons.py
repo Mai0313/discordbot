@@ -597,7 +597,7 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
         if dispatch_calls == 2:
             view.round_state.stand(user_id=1)
 
-    async def fake_sleep(*, delay: float) -> None:
+    async def fake_sleep(delay: float) -> None:
         sleep_calls.append(delay)
 
     monkeypatch.setattr(view, "_dispatch_bot_action_locked", fake_dispatch)
@@ -646,7 +646,7 @@ async def test_bot_action_plays_ev_action() -> None:
 async def test_apply_bot_action_routes_known_actions() -> None:
     """Every allowed action reaches its own `BlackjackRound` method and is reported applied."""
 
-    def _apply(*, action: BotAction, player_cards: list[Card]) -> BlackjackPlayerHand:
+    def _apply(action: BotAction, player_cards: list[Card]) -> BlackjackPlayerHand:
         """Runs one action against a fresh round and returns the seat it acted on."""
         round_state = _round_with_two_cards(
             # A copy: the hand holds the list itself, so a `hit` would grow the caller's.

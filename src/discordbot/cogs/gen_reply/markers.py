@@ -221,7 +221,7 @@ class InlineMarkers(BaseModel):
     )
 
 
-def extract_inline_markers(*, text: str) -> InlineMarkers:
+def extract_inline_markers(text: str) -> InlineMarkers:
     """Splits a finished reply into visible text plus its voice / image / music / video requests.
 
     Image blocks (tags AND content) are removed entirely so the generation prompt never shows in
@@ -272,7 +272,7 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
     )
 
 
-def scrub_markers_for_preview(*, text: str) -> str:
+def scrub_markers_for_preview(text: str) -> str:
     """Hides complete or still-streaming markers from a live preview snapshot.
 
     Complete image / music / video / research / memory blocks and their unclosed trailing opens

@@ -33,7 +33,7 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
     downloader_factory = InstagramDownloader
 
     @staticmethod
-    def url_is_expandable(*, url: str) -> bool:
+    def url_is_expandable(url: str) -> bool:
         """Whether the matched URL names a post.
 
         The pattern matches the host, not the path, so a profile or the home page would otherwise
@@ -47,7 +47,7 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         """
         return is_instagram_post_url(url=url)
 
-    def _author_label(self, *, post: InstagramOutput) -> str:
+    def _author_label(self, post: InstagramOutput) -> str:
         """The author line: the display name when the page carried one, always with the handle.
 
         Whichever half the page served is used on its own rather than dropping the line, since an
@@ -59,11 +59,11 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
             return f"@{post.author_name}"
         return post.author_full_name
 
-    def _comment_author_label(self, *, comment: InstagramOutput) -> str:
+    def _comment_author_label(self, comment: InstagramOutput) -> str:
         """The commenter's handle, the only name a comment carries here."""
         return f"@{comment.author_name}" if comment.author_name else ""
 
-    def _video_link(self, *, post: InstagramOutput) -> str:
+    def _video_link(self, post: InstagramOutput) -> str:
         """The POST rather than `video_urls[0]`, which is Instagram's own signed CDN URL.
 
         That URL expires within days and the embed does not, so the link in it has to outlive
@@ -71,7 +71,7 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         """
         return post.url
 
-    def _footer_text(self, *, post: InstagramOutput, shown_images: int) -> str:
+    def _footer_text(self, post: InstagramOutput, shown_images: int) -> str:
         """The counter line, plus what the image cap and the single video hint left behind.
 
         The videos are counted separately from the images because a mixed carousel is ordinary
@@ -88,7 +88,7 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         parts.extend(self._omitted_media_notes(post=post, shown_images=shown_images))
         return " · ".join(parts)
 
-    def _comment_url(self, *, post_url: str, comment: InstagramOutput) -> str:
+    def _comment_url(self, post_url: str, comment: InstagramOutput) -> str:
         """The comment's own `/c/<id>/` permalink.
 
         Instagram will not serve that URL's payload to this bot, but it is the right thing to

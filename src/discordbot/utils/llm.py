@@ -22,7 +22,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from discordbot.typings.models import ModelSettings
 
 
-def output_text_or_empty(*, responses: Response) -> str:
+def output_text_or_empty(responses: Response) -> str:
     """Aggregates the response's text, tolerating output_text parts whose `text` is None.
 
     The SDK's `Response.output_text` does a bare `"".join(...)` over every output_text part's
@@ -42,7 +42,6 @@ def output_text_or_empty(*, responses: Response) -> str:
 
 
 async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- shared best-effort call surface; all params are per-call inputs
-    *,
     client: AsyncOpenAI,
     model: ModelSettings,
     instructions: str,
@@ -114,7 +113,6 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
 
 
 async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surface; all params are per-call inputs
-    *,
     client: AsyncOpenAI,
     model: ModelSettings,
     instructions: str,

@@ -875,7 +875,7 @@ def test_a_target_without_author_data_still_carries_its_comments(
 
 
 def _serve_pages(
-    monkeypatch: pytest.MonkeyPatch, *, pages: list[str], share_lands_on: str = ""
+    monkeypatch: pytest.MonkeyPatch, pages: list[str], share_lands_on: str = ""
 ) -> list[str]:
     """Serves `pages` in order (the last one repeating) and records every fetched URL.
 

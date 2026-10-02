@@ -134,9 +134,7 @@ def _render_video_text(metadata: VideoMetadata, url: str) -> str:
     return "\n".join(lines)
 
 
-async def _fetch_and_upload(
-    *, url: str, gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
+async def _fetch_and_upload(url: str, gemini_client: genai.Client) -> list[ResponseInputFileParam]:
     """Downloads the clip into a scratch dir and uploads it; [] on a size overrun.
 
     yt-dlp offers no byte cap, so unlike Douyin the Files API ceiling is enforced on the
@@ -171,7 +169,6 @@ async def _fetch_and_upload(
 
 
 async def build_bilibili_context_messages(
-    *,
     url: str,
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,

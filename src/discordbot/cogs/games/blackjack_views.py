@@ -220,7 +220,7 @@ def _dealer_in_progress_color(round_state: BlackjackRound) -> int:
 
 
 def _player_seat_color(
-    *, settlement: BlackjackPlayerSettlement | None, is_active: bool, insurance_phase: bool
+    settlement: BlackjackPlayerSettlement | None, is_active: bool, insurance_phase: bool
 ) -> int:
     """Picks a player seat embed color from settlement or in-progress state."""
     if settlement is not None:
@@ -250,7 +250,6 @@ def _dealer_settlement_color(results: list[BlackjackPlayerResult]) -> int:
 
 
 def build_dealer_seat_embed(
-    *,
     round_state: BlackjackRound,
     hide_hole: bool,
     dealer_steps: list[BlackjackDealerStep] | None = None,
@@ -288,7 +287,7 @@ def build_dealer_seat_embed(
 
 
 def _player_seat_status_footer(
-    *, round_state: BlackjackRound, is_active: bool, insurance_phase: bool
+    round_state: BlackjackRound, is_active: bool, insurance_phase: bool
 ) -> str:
     """Returns the per-player seat footer."""
     if insurance_phase:
@@ -317,7 +316,6 @@ def _format_settlement_insurance_line(settlement: BlackjackPlayerSettlement) -> 
 
 
 def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player, and optional settlement
-    *,
     player: BlackjackPlayerHand,
     round_state: BlackjackRound,
     active_hand_index: int | None,
@@ -389,7 +387,7 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
 
 
 def build_in_progress_embeds(
-    *, round_state: BlackjackRound, force_show_hole: bool = False
+    round_state: BlackjackRound, force_show_hole: bool = False
 ) -> list[Embed]:
     """Builds dealer + per-player seat embeds for the in-progress table."""
     embeds: list[Embed] = [
@@ -422,7 +420,6 @@ def build_in_progress_embeds(
 
 
 def build_final_embeds(
-    *,
     round_state: BlackjackRound,
     results: list[BlackjackPlayerResult],
     dealer_steps: list[BlackjackDealerStep] | None = None,
@@ -629,7 +626,7 @@ class BlackjackView(GameView):
         await self.finalize(message=self.message, interaction=self.last_press)
 
     async def _run_player_action(
-        self, *, interaction: Interaction[commands.Bot], apply: Callable[..., object]
+        self, interaction: Interaction[commands.Bot], apply: Callable[..., object]
     ) -> None:
         """Runs one active-player action under the round lock, then refreshes the table.
 
@@ -712,7 +709,6 @@ class BlackjackView(GameView):
 
     async def _run_insurance_action(
         self,
-        *,
         interaction: Interaction[commands.Bot],
         decide: Callable[..., Coroutine[Any, Any, bool]],
     ) -> None:
@@ -747,7 +743,7 @@ class BlackjackView(GameView):
             )
 
     async def _take_insurance_locked(
-        self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
+        self, interaction: Interaction[commands.Bot], message: Message, user_id: int
     ) -> bool:
         """Buys half-bet insurance for one seat; False when the round refused it."""
         if self.round_state.find_player(user_id=user_id) is None:
@@ -763,7 +759,7 @@ class BlackjackView(GameView):
         return True
 
     async def _decline_insurance_locked(
-        self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
+        self, interaction: Interaction[commands.Bot], message: Message, user_id: int
     ) -> bool:
         """Declines insurance for one seat; False when the round refused it."""
         try:
@@ -855,7 +851,7 @@ class BlackjackView(GameView):
             if self._pending_bot_seat(bot_user_id=bot_user_id) is not None:
                 await asyncio.sleep(delay=BOT_TURN_EDIT_DELAY_SECONDS)
 
-    def _pending_bot_seat(self, *, bot_user_id: int) -> BlackjackPlayerHand | None:
+    def _pending_bot_seat(self, bot_user_id: int) -> BlackjackPlayerHand | None:
         """Returns the bot's seat while the bot owns the next immediate table decision."""
         if self._settled or self.round_state.finished:
             return None
@@ -873,7 +869,6 @@ class BlackjackView(GameView):
 
     async def _dispatch_bot_insurance_locked(
         self,
-        *,
         message: Message,
         bot_player: BlackjackPlayerHand,
         interaction: Interaction[commands.Bot],
@@ -921,11 +916,7 @@ class BlackjackView(GameView):
         await self._edit_in_progress_locked(message=message, interaction=interaction)
 
     async def _dispatch_bot_action_locked(
-        self,
-        *,
-        message: Message,
-        active: BlackjackPlayerHand,
-        interaction: Interaction[commands.Bot],
+        self, message: Message, active: BlackjackPlayerHand, interaction: Interaction[commands.Bot]
     ) -> None:
         """Computes the bot's deterministic action on its active hand, then applies it."""
         hand = self.round_state.active_hand()
@@ -961,7 +952,7 @@ class BlackjackView(GameView):
         await self._edit_in_progress_locked(message=message, interaction=interaction)
 
     def _apply_bot_action(
-        self, *, user_id: int, action: BotAction, allowed: tuple[BotAction, ...]
+        self, user_id: int, action: BotAction, allowed: tuple[BotAction, ...]
     ) -> bool:
         """Routes the bot's chosen action through the BlackjackRound API, returning success."""
         if action not in allowed:
@@ -1175,7 +1166,6 @@ class BlackjackView(GameView):
 
     async def _record_history_later(
         self,
-        *,
         message: Message,
         results: list[BlackjackPlayerResult],
         dealer_cards: list[Card],

@@ -835,7 +835,7 @@ class ThreadsDownloader(PlatformDownloader):
 
     @staticmethod
     def _thread_around(
-        *, fragments: list[Post], media_id: str
+        fragments: list[Post], media_id: str
     ) -> tuple[list[Post], list[list[Post]]]:
         """The ancestors above the target and the reply branches below it.
 
@@ -1049,7 +1049,7 @@ class ThreadsDownloader(PlatformDownloader):
             f"Threads answered {attempt + 1} times with no post JSON for {post_code}"
         )
 
-    def resolve_clean_url(self, *, url: str) -> str:
+    def resolve_clean_url(self, url: str) -> str:
         """Resolves a Threads URL to its canonical form without reading the post.
 
         The share form is what makes this worth a call of its own: both its own code and the
@@ -1161,7 +1161,7 @@ class ThreadsDownloader(PlatformDownloader):
             quoted_unavailable=quoted_post is not None and quoted is None,
         )
 
-    def _build_conversation(self, *, url: str, download: bool) -> ThreadsConversation:
+    def _build_conversation(self, url: str, download: bool) -> ThreadsConversation:
         """Fetches the page once and builds every post it yielded.
 
         The single walk both public entry points share; `download` is the only thing that ever
@@ -1203,7 +1203,7 @@ class ThreadsDownloader(PlatformDownloader):
         return ThreadsConversation(chain=chain, reply_branches=reply_branches)
 
     @contextlib.contextmanager
-    def parse(self, *, url: str) -> Generator[ThreadsConversation]:
+    def parse(self, url: str) -> Generator[ThreadsConversation]:
         """Parses a Threads post URL and yields the conversation, target media included.
 
         The target post (the chain's last element) has its videos downloaded into
@@ -1227,7 +1227,7 @@ class ThreadsDownloader(PlatformDownloader):
         finally:
             conversation.unlink()
 
-    def parse_metadata(self, *, url: str) -> ThreadsConversation:
+    def parse_metadata(self, url: str) -> ThreadsConversation:
         """Parses a Threads post URL into the conversation WITHOUT downloading media.
 
         Mirrors `parse` with `download=False`, so no video is written to disk and there is

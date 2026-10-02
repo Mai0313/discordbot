@@ -75,7 +75,7 @@ def douyin_failure_message(error: Exception) -> str:
     return _DOWNLOAD_FAILED
 
 
-def _file_header(*, file_size_mb: float, url: str) -> str:
+def _file_header(file_size_mb: float, url: str) -> str:
     """The size and source lines a delivered file leads with."""
     return f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
 
