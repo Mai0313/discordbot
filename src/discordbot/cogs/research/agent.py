@@ -14,12 +14,13 @@ Both call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + ter
 Robustness: the SDK can close a long-lived streaming request mid-run while the agent keeps
 working server-side, so `_StreamDriver` re-attaches via `interactions.get(stream=True,
 last_event_id=...)`. The final result is ALWAYS read through `_poll_until_terminal` (a terminal
-non-stream `interactions.get(id)` with retry-on-error): the streamed deltas are the live view
-only, `interaction.completed` carries no report body on purpose, and the poll both settles a run
-whose stream died and waits out any brief `in_progress` visibility lag, then `_to_result` maps it.
-There is no wall-clock timeout anywhere here, so what escapes is either the SDK error from a create
-or a poll that never recovered, or a `RuntimeError` when the stream ended before any interaction id
-existed; the cog maps both to a friendly message.
+non-stream `interactions.get(id)` with retry on a transient error): the streamed deltas are the
+live view only, `interaction.completed` carries no report body on purpose, and the poll both
+settles a run whose stream died and waits out any brief `in_progress` visibility lag, then
+`_to_result` maps it. There is no wall-clock timeout anywhere here, so what escapes is either the
+SDK error from a create, or from a poll the API refused or that never recovered, or a
+`RuntimeError` when the stream ended before any interaction id existed; the cog maps both to a
+friendly message.
 """
 
 import base64
@@ -37,6 +38,8 @@ from google.genai.interactions import (
     AllowlistEntryParam,
     AntigravityAgentConfigParam,
 )
+
+from discordbot.utils.llm_errors import is_retryable_llm_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
@@ -179,7 +182,9 @@ async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _Re
 
     No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
     transient get() error mid-research is retried so one 504 does not kill a long run; it gives
-    up only after `max_consecutive_errors` consecutive failures (re-raising the last error).
+    up only after `max_consecutive_errors` consecutive failures (re-raising the last error). Any
+    other error, such as the API refusing the request itself, is re-raised at once, since asking
+    again cannot change the answer.
     """
     max_consecutive_errors = 30
     consecutive_errors = 0
@@ -189,6 +194,8 @@ async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _Re
                 "_ResearchInteraction", await client.aio.interactions.get(id=interaction_id)
             )
         except Exception as exc:
+            if not is_retryable_llm_error(exc=exc):
+                raise
             consecutive_errors += 1
             logfire.warn(
                 "research poll error; retrying",
@@ -339,11 +346,11 @@ async def _drive(
     The streamed deltas are the live view only; the result is ALWAYS read through
     `_poll_until_terminal` (a terminal non-stream `get(id)`) because `interaction.completed` carries
     an empty payload on purpose. Routing the terminal read through the poll (not a single `get`)
-    gives it the poll's retry-on-error and waits out any brief `in_progress` visibility lag, so a
-    completed run is never misread as failed; it also transparently finishes a run whose stream
-    died mid-way (the interaction lives server-side via `store=True`). A streaming failure BEFORE
-    any id (the create itself failed) re-raises so the cog hits its normal failure path; once an id
-    exists, streaming errors are swallowed and the poll settles the run.
+    gives it the poll's retry on a transient error and waits out any brief `in_progress` visibility
+    lag, so a completed run is never misread as failed; it also transparently finishes a run whose
+    stream died mid-way (the interaction lives server-side via `store=True`). A streaming failure
+    BEFORE any id (the create itself failed) re-raises so the cog hits its normal failure path;
+    once an id exists, streaming errors are swallowed and the poll settles the run.
     """
     try:
         await streamer.stream(

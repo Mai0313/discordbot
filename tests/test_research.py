@@ -8,8 +8,11 @@ from pathlib import Path
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
+from google import genai
 import pytest
 from nextcord import File, Embed, Thread, Permissions, AllowedMentions, PartialMessageable
+from google.genai import types
 from sqlalchemy.exc import OperationalError
 
 from discordbot.typings.llm import LLMConfig
@@ -51,7 +54,7 @@ from tests.helpers.discord_mocks import (
 from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import Callable, AsyncIterator
 
     from google.genai.interactions import InteractionSSEEvent
 
@@ -413,6 +416,98 @@ async def test_resume_research_stream_drives_from_get_stream() -> None:
     # Resume re-attaches via get(stream=True) and never calls create.
     assert client.aio.interactions.create_kwargs == {}
     assert result.ok is True
+
+
+_POLLED_TERMINAL = {
+    "id": "int_9",
+    "status": "completed",
+    "steps": [{"type": "model_output", "content": [{"type": "text", "text": "# Report"}]}],
+}
+
+
+class _PolledInteraction:
+    """A real Gemini client whose first `failures` poll requests each meet `failure`.
+
+    Every later request answers the completed interaction. The SDK's own re-sends count as
+    requests, so `polls` is what actually went over the wire.
+    """
+
+    def __init__(
+        self, failure: "Callable[[httpx.Request], httpx.Response]", failures: int
+    ) -> None:
+        self.failure = failure
+        self.failures = failures
+        self.polls = 0
+        self.client = genai.Client(
+            api_key="test",
+            http_options=types.HttpOptions(
+                httpx_async_client=httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler=self._respond)
+                ),
+                # Keeps the SDK's own re-sends but makes them sleepless.
+                retry_options=types.HttpRetryOptions(initial_delay=0),
+            ),
+        )
+
+    def _respond(self, request: httpx.Request) -> httpx.Response:
+        self.polls += 1
+        if self.polls <= self.failures:
+            return self.failure(request)
+        return httpx.Response(status_code=200, json=_POLLED_TERMINAL)
+
+
+def _poll_answered(status: int) -> "Callable[[httpx.Request], httpx.Response]":
+    """A poll the API answers with `status`."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=status,
+            json={"error": {"code": status, "message": f"provider answered {status}"}},
+        )
+
+    return respond
+
+
+def _poll_connection_refused(request: httpx.Request) -> httpx.Response:
+    """A poll that fails before any response arrives."""
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+@pytest.mark.parametrize("status", [400, 403, 404])
+async def test_a_poll_the_api_refuses_ends_the_run_at_once(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    polled = _PolledInteraction(failure=_poll_answered(status=status), failures=100)
+
+    # Asking again cannot change a refusal, so the first one ends the poll.
+    with pytest.raises(Exception, match=f"provider answered {status}"):
+        await agent._poll_until_terminal(client=polled.client, interaction_id="int_9")
+    assert polled.polls == 1
+    assert warns == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(_poll_answered(status=503), id="http-503"),
+        pytest.param(_poll_answered(status=429), id="http-429"),
+        pytest.param(_poll_connection_refused, id="connection-refused"),
+    ],
+)
+async def test_a_transient_poll_error_is_still_retried(
+    monkeypatch: pytest.MonkeyPatch, failure: "Callable[[httpx.Request], httpx.Response]"
+) -> None:
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    # More failures than one request's own SDK re-sends absorb, so only the poll's retry gets past.
+    polled = _PolledInteraction(failure=failure, failures=10)
+
+    interaction = await agent._poll_until_terminal(client=polled.client, interaction_id="int_9")
+
+    assert interaction.status == "completed"
+    assert any(message == "research poll error; retrying" for message, _ in warns)
 
 
 def test_is_terminal_event_classifies_statuses() -> None:
