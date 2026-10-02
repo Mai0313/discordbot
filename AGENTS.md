@@ -20,7 +20,7 @@ Config comes from `.env` (see `.env.example`); only `DISCORD_BOT_TOKEN` is requi
 
 Debug from `./data/logs`, which holds logfire output only (`_TeeStream` is logfire's console stream, not a `sys.stdout` replacement): a `print()`, a stdlib logger with no logfire handler and whatever nextcord prints to `sys.stderr` never land there.
 
-Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new fake. The conftest's autouse fixtures pin the few `.env` settings that would otherwise decide a test (every other one still loads at import), drop the `GIT_*` variables and keep most of the live `data/` out of every test; memory, `messages.db` and the research and `/ask` tables in `reply.db` are not covered, so a test touching one requests `memory_isolated_dir` or the matching `*_isolated_db`. Unit tests inject fake LLM clients and memory writers and need no API credentials; the Tests workflow intentionally provides none.
+Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new fake. The conftest's autouse fixtures pin the few `.env` settings that would otherwise decide a test (every other one still loads at import), drop the `GIT_*` variables and keep the live `data/` out of every test except memory, so a test touching memory requests `memory_isolated_dir`. Unit tests inject fake LLM clients and memory writers and need no API credentials; the Tests workflow intentionally provides none.
 
 ## Runtime Shape
 
