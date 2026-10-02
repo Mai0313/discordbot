@@ -647,6 +647,31 @@ async def test_a_blackjack_natural_under_an_ace_settles_inside_the_insurance_pre
     assert message.edits[-1]["view"] is None
 
 
+async def test_an_ace_up_peek_without_a_natural_keeps_the_hole_face_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dealer peeks under an ace for a natural only; finding none, the hole stays secret.
+
+    The bot reads the hole as its private edge, so a peek showing it to the table would hand
+    every player the same card.
+    """
+    # Alice 5 5, the dealer's hole a 6 under an ace: insurance, then no natural.
+    message = await _start_in_a_shut_out_channel(
+        monkeypatch=monkeypatch, dealt=[card(rank="5")] * 2 + [card(rank="6"), card(rank="A")]
+    )
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+
+    await attached_button(view=table, custom_id="bj:insure_no").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+
+    dealer_seats = [cast("str", edit["embeds"][0].description) for edit in message.edits]
+    assert all("🂠" in dealer_seat for dealer_seat in dealer_seats), "the hole stays face down"
+    assert len(dealer_seats) == 2, "the table, then the table after the insurance call"
+    assert table.round_state.phase == "player_actions"
+
+
 async def test_the_bot_plays_its_seat_through_the_press_that_handed_it_the_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -670,7 +695,7 @@ async def test_the_bot_plays_its_seat_through_the_press_that_handed_it_the_turn(
     await attached_button(view=table, custom_id="bj:insure_no").callback(
         as_interaction(fake=_alice_press(message=message))
     )
-    assert len(message.edits) == 5, "the peek's two frames, then the table after it"
+    assert len(message.edits) == 3, "no natural under the ace, so only the table follows the call"
 
     await attached_button(view=table, custom_id="bj:stand").callback(
         as_interaction(fake=_alice_press(message=message))

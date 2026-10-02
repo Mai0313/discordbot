@@ -773,7 +773,6 @@ def test_take_insurance_requires_uncommitted_balance() -> None:
         participants=[seat(user_id=1, display_name="Alice", bet=100, balance_at_start=100)],
     )
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
 
     with pytest.raises(expected_exception=InsuranceBeyondBalanceError):
         round_state.take_insurance(user_id=1)
@@ -790,7 +789,6 @@ def test_take_insurance_rejects_zero_chip_half_bet() -> None:
         participants=[seat(user_id=1, display_name="Alice", bet=1, balance_at_start=10)],
     )
     round_state.phase = "insurance"
-    round_state.insurance_offered = True
     player = round_state.players[0]
 
     with pytest.raises(expected_exception=InsuranceBetTooSmallError):
@@ -813,7 +811,6 @@ def test_each_insurance_refusal_has_its_own_class() -> None:
             seat(user_id=2, display_name="Bob", bet=100, balance_at_start=120),
         ],
     )
-    round_state.insurance_offered = True
 
     round_state.phase = "player_actions"
     with pytest.raises(expected_exception=InsuranceClosedError):
@@ -885,7 +882,6 @@ def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
     round_state.deal_initial()
 
     assert round_state.phase == "insurance"
-    assert round_state.insurance_offered is True
     assert round_state.peeked_blackjack is False
 
 

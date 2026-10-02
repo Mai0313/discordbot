@@ -2114,20 +2114,38 @@ async def _central_bank_status_in_session(
     )
 
 
-async def _user_total_debt_in_session(session: AsyncSession, user_id: int) -> int:
-    """Returns everything one borrower owes across every active contract."""
+async def _user_total_debt_in_session(session: AsyncSession, user_id: int, now: datetime) -> int:
+    """Returns everything one borrower owes across every active contract as of `now`.
+
+    Counts the interest owed up to `now` that has not been written yet, without writing it.
+    """
     result = await session.execute(
-        statement=select(LoanContract.principal_remaining, LoanContract.interest_due).where(
+        statement=select(
+            LoanContract.principal_remaining,
+            LoanContract.interest_due,
+            LoanContract.monthly_rate_bps,
+            LoanContract.last_interest_accrued_at,
+        ).where(
             LoanContract.borrower_id == user_id, LoanContract.status == LoanContractStatus.ACTIVE
         )
     )
-    return sum(principal + interest for principal, interest in result.all())
+    return sum(
+        principal
+        + interest
+        + _loan_interest_delta(
+            principal_remaining=principal,
+            monthly_rate_bps=monthly_rate_bps,
+            last_accrued_at=last_accrued_at,
+            now=now,
+        )[0]
+        for principal, interest, monthly_rate_bps, last_accrued_at in result.all()
+    )
 
 
-async def _credit_ceiling_in_session(session: AsyncSession, user_id: int) -> int:
-    """Returns how much more central-bank credit one borrower may still draw."""
+async def _credit_ceiling_in_session(session: AsyncSession, user_id: int, now: datetime) -> int:
+    """Returns how much more central-bank credit one borrower may still draw as of `now`."""
     balance = await _balance_in_session(session=session, user_id=user_id)
-    total_debt = await _user_total_debt_in_session(session=session, user_id=user_id)
+    total_debt = await _user_total_debt_in_session(session=session, user_id=user_id, now=now)
     return central_bank_credit_ceiling(balance=balance, total_debt=total_debt)
 
 
@@ -2144,7 +2162,9 @@ async def get_central_bank_status(
 async def get_credit_ceiling(user_id: int) -> int:
     """Returns how much more central-bank credit `user_id` may still draw."""
     async with open_session() as session:
-        return await _credit_ceiling_in_session(session=session, user_id=user_id)
+        return await _credit_ceiling_in_session(
+            session=session, user_id=user_id, now=_database_now()
+        )
 
 
 async def record_guild_participant(guild_id: int, user_id: int) -> None:
@@ -2438,7 +2458,7 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
                 session=session, guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
             )
             borrower_ceiling = await _credit_ceiling_in_session(
-                session=session, user_id=proposal.borrower_id
+                session=session, user_id=proposal.borrower_id, now=now
             )
             if min(central_status.available_credit, borrower_ceiling) < proposal.amount:
                 return None

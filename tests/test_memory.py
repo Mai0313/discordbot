@@ -1122,6 +1122,7 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
     in every server with a contradiction filed beside it.
     """
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="b" * 16, text="使用者在新竹上班"))
     forget = render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42")
     buckets = partition_forget_requests(raw_text=forget, compartments=("global", "g/42", "g/99"))
     assert sorted(buckets) == ["g/42", "global"]
@@ -1141,6 +1142,7 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
                 text="使用者住在台中",
             ),
             make_delta(section="fact", summary="使用者要求忘記住處", text="使用者已經不住台中了"),
+            make_delta(action="update", fact_id="b" * 16, text="使用者在新竹上班，不住台中"),
         ),
         owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
         allow_mass_delete=False,
@@ -1148,8 +1150,10 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
     )
     assert outcome.deleted == 1
     assert outcome.created == 0
-    assert outcome.dropped == 1
-    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+    assert outcome.updated == 0
+    assert outcome.dropped == 2
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.text for fact in facts] == ["使用者在新竹上班"]
 
 
 def test_a_delete_survives_a_section_this_flavor_does_not_allow(memory_isolated_dir: Path) -> None:
@@ -1261,6 +1265,19 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
         True: len(forget_calls),
         False: len(observation_calls),
     })
+
+
+def test_the_forget_block_offers_nothing_but_a_delete() -> None:
+    """A forget-only call applies nothing but deletes, so the prompt asks for nothing else.
+
+    Any other action it invites for a partly wrong fact is dropped, which leaves the fact whole
+    while the reply already says it was forgotten.
+    """
+    block = " ".join(
+        PHASE2_PROMPT.split("FORGET REQUESTS:", maxsplit=1)[1].split("\n\n", maxsplit=1)[0].split()
+    )
+    assert set(re.findall(pattern=r"`(create|update|delete)`", string=block)) == {"delete"}
+    assert "delete that whole fact" in block
 
 
 def _entry(timestamp: str, *observations: MemoryObservation, source: str = "guild 42") -> str:

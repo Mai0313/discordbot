@@ -577,7 +577,6 @@ class BlackjackView(GameView):
         self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self._peek_animated = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._action_buttons: dict[BotAction, Button[BlackjackView]] = {
@@ -736,9 +735,6 @@ class BlackjackView(GameView):
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message, interaction=interaction)
                 return
-            await self._maybe_animate_insurance_close_locked(
-                message=interaction.message, interaction=interaction
-            )
             await self._edit_in_progress_locked(
                 message=interaction.message, interaction=interaction
             )
@@ -917,7 +913,6 @@ class BlackjackView(GameView):
         if self.round_state.finished:
             await self._finalize_locked(message=message, interaction=interaction)
             return
-        await self._maybe_animate_insurance_close_locked(message=message, interaction=interaction)
         await self._edit_in_progress_locked(message=message, interaction=interaction)
 
     async def _dispatch_bot_action_locked(
@@ -1040,8 +1035,7 @@ class BlackjackView(GameView):
             channel_id=self._channel_id,
         )
 
-        if self.round_state.peeked_blackjack and not self._peek_animated:
-            self._peek_animated = True
+        if self.round_state.peeked_blackjack:
             await self._animate_peek_locked(message=message, interaction=interaction)
 
         dealer_steps = self.round_state.play_dealer()
@@ -1151,12 +1145,7 @@ class BlackjackView(GameView):
     async def _animate_peek_locked(
         self, message: Message, interaction: Interaction[commands.Bot] | None
     ) -> None:
-        """Renders the dealer hole-card peek as a 2-stage reveal.
-
-        Buttons stay disabled throughout so the caller can safely chain finalize /
-        further edits after the animation returns.
-        """
-        self._disable_buttons()
+        """Renders the dealer hole-card peek as a 2-stage reveal."""
         body_hidden = build_in_progress_embeds(round_state=self.round_state)
         await self._safe_edit_locked(
             message=message,
@@ -1174,21 +1163,6 @@ class BlackjackView(GameView):
             step="peek reveal",
         )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
-
-    async def _maybe_animate_insurance_close_locked(
-        self, message: Message, interaction: Interaction[commands.Bot]
-    ) -> None:
-        """Plays the no-BJ peek reveal once when insurance phase ends without BJ."""
-        if self._peek_animated:
-            return
-        if not self.round_state.insurance_offered:
-            return
-        if self.round_state.peeked_blackjack:
-            return
-        if self.round_state.phase != "player_actions":
-            return
-        self._peek_animated = True
-        await self._animate_peek_locked(message=message, interaction=interaction)
 
     async def _record_history_later(
         self,

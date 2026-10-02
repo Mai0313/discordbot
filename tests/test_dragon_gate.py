@@ -25,9 +25,11 @@ from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
     DragonGateRound,
+    DragonGateDirection,
     DragonGateTurnResult,
     DragonGatePlayerResult,
     DragonGateParticipantUnknownError,
+    DragonGatePairChoiceUnavailableError,
     card_value,
     has_open_gate,
 )
@@ -283,6 +285,59 @@ def test_pair_pillar_hit_returns_triple_loss() -> None:
     assert round_state.player_delta(user_id=1) == -30_000
 
 
+@pytest.mark.parametrize(
+    argnames=("rank", "expected"), argvalues=[("A", "higher"), ("K", "lower")], ids=["ace", "king"]
+)
+def test_an_ace_or_king_pair_is_dealt_with_the_only_guess_that_can_win(
+    rank: str, expected: DragonGateDirection
+) -> None:
+    """Nothing ranks below an ace or above a king, so the one winnable guess comes preset."""
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=(rank, "♠", rank, "♥", "7", "♣")),
+        participants=[_participant(user_id=1, display_name="Alice")],
+    )
+
+    assert round_state.needs_pair_choice() is False
+    assert round_state.active_turn is not None
+    assert round_state.active_turn.direction == expected
+
+    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    assert (result.outcome, result.delta, result.direction) == ("pair_win", 10_000, expected)
+
+
+@pytest.mark.parametrize(
+    argnames=("rank", "losing", "expected"),
+    argvalues=[("A", "lower", "higher"), ("K", "higher", "lower")],
+    ids=["ace", "king"],
+)
+def test_an_ace_or_king_pair_refuses_the_guess_that_cannot_win(
+    rank: str, losing: DragonGateDirection, expected: DragonGateDirection
+) -> None:
+    """The guess that can only lose is never accepted on an ace or king pair."""
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=(rank, "♠", rank, "♥")),
+        participants=[_participant(user_id=1, display_name="Alice")],
+    )
+
+    with pytest.raises(expected_exception=DragonGatePairChoiceUnavailableError):
+        round_state.choose_pair_direction(user_id=1, direction=losing)
+    assert round_state.active_turn is not None
+    assert round_state.active_turn.direction == expected
+
+
+def test_a_gate_that_is_not_a_pair_offers_no_guess() -> None:
+    """Only a pair takes a high/low guess, even when a pillar is an ace."""
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("A", "♠", "5", "♥")),
+        participants=[_participant(user_id=1, display_name="Alice")],
+    )
+
+    assert round_state.active_turn is not None
+    assert round_state.active_turn.direction is None
+    with pytest.raises(expected_exception=DragonGatePairChoiceUnavailableError):
+        round_state.choose_pair_direction(user_id=1, direction="higher")
+
+
 def test_turns_rotate_through_active_seats() -> None:
     """The next active player is dealt a fresh gate after a bet resolves."""
     round_state = DragonGateRound.from_participants(
@@ -490,6 +545,32 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     assert component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
     assert component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
     assert _attached_select(view=pair_view, custom_id="dg:bet").disabled is False
+
+
+@pytest.mark.parametrize(
+    argnames=("rank", "label"), argvalues=[("A", "⬆️ 猜大"), ("K", "⬇️ 猜小")], ids=["ace", "king"]
+)
+async def test_an_ace_or_king_pair_table_goes_straight_to_the_bet(rank: str, label: str) -> None:
+    """With one winnable guess there is nothing to choose: no guess buttons, no choice prompt."""
+    owner = _participant(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=(rank, "♠", rank, "♥")), participants=[owner]
+    )
+    view = DragonGateView(
+        round_state=round_state,
+        owner=owner,
+        jackpot_snapshot=100_000,
+        final_balances={1: 1_000_000},
+    )
+    view.sync_controls()
+
+    assert component_ids(view=view) == {"dg:bet", "dg:leave"}
+    description = build_dragon_gate_in_progress_embed(
+        round_state=round_state, jackpot=100_000
+    ).description
+    assert isinstance(description, str)
+    assert label in description
+    assert "請先按" not in description
 
 
 async def test_dragon_gate_lobby_join_leave_and_owner_start(

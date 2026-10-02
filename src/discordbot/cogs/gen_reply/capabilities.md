@@ -30,9 +30,10 @@ is worth keeping while I answer, so you can also just tell me to remember someth
 me something I remember is wrong and should go; when I take a note, my reply says 正在整理記憶⋯
 while I work on it, and that turns into a ✏️ line for what I took down or a 🩹 line for what I
 dropped. Something I judged too personal to repeat in the channel is counted there rather than
-quoted. I keep a separate memory of each server's community the same way, and what I remember
-about you in one server does not follow you into another unless it is the kind of thing that is
-safe anywhere.
+quoted. If only part of a note is wrong, I drop the whole note, and what in it was still true
+can come back only if it comes up again. I keep a separate memory of each server's community
+the same way, and what I remember about you in one server does not follow you into another
+unless it is the kind of thing that is safe anywhere.
 
 ### Links I open on my own
 
@@ -60,7 +61,7 @@ A link that is only incidental to the question is left alone.
 ## Casino games
 
 - `/games blackjack` — open a Blackjack table; a hand of five cards that has not busted wins outright
-- `/games dragon_gate` — open a Dragon Gate table backed by a shared jackpot pool
+- `/games dragon_gate` — open a Dragon Gate table backed by a shared jackpot pool; on a pair of aces only higher can win and on a pair of kings only lower, so that guess is made for you
 - `/games blackjack_history` — recent Blackjack rounds, optionally for one member
 
 ## 虛擬歡樂豆 and the economy
@@ -99,9 +100,9 @@ can borrow less than a busy one, and once the budget is lent out nobody can borr
 it is repaid. Balances are not per server either: one wallet follows you everywhere.
 
 How much any one person may owe is capped separately, at twice what they own free and clear
-minus what they already owe, counting every loan and not just central-bank ones. Borrowing
-lowers that cap by the same amount, so repaying or earning more is what raises it again. A
-request over the cap is refused before anyone is asked to approve it.
+minus what they already owe, interest so far included, counting every loan and not just
+central-bank ones. Borrowing lowers that cap by the same amount, so repaying or earning more is
+what raises it again. A request over the cap is refused before anyone is asked to approve it.
 
 Central-bank loans are created out of nothing when approved and destroyed when repaid. The
 interest on top is kept by the bank and lent out again, so the bank's budget grows as loans are

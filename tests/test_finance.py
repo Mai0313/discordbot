@@ -614,6 +614,47 @@ async def test_a_borrower_cannot_owe_more_than_their_own_ceiling() -> None:
     )
 
 
+async def _borrower_with_unwritten_interest() -> None:
+    """Leaves alice at 1,100,000 owing 100,000 plus 5,000 interest, 2,000 of it unwritten."""
+    await seed_participant(user_id=1, name="alice", amount=1_000_000)
+    await seed_balance(user_id=2, name="bob", amount=100_000)
+    contract = await open_personal_loan(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100_000
+    )
+    await _backdate_contract(contract_id=contract.contract_id, days=50)
+
+
+async def test_the_ceiling_counts_interest_owed_but_not_yet_written() -> None:
+    """Reading a balance writes interest down; the ceiling must not move when it does."""
+    await _borrower_with_unwritten_interest()
+    assert await get_credit_ceiling(user_id=1) == 1_885_000
+
+    portfolio = await get_portfolio(user_id=1)
+    assert portfolio.debt_interest == 5_000
+    assert await get_credit_ceiling(user_id=1) == 1_885_000
+
+
+async def test_approval_charges_interest_owed_but_not_yet_written() -> None:
+    """Approval refuses one unit past the ceiling that counts every unit of interest owed."""
+    await _borrower_with_unwritten_interest()
+
+    over = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=1_885_001, monthly_rate_bps=0
+    )
+    assert over is not None
+    assert await approve_as_admin(proposal_id=over.proposal_id, actor_id=99, name="banker") is None
+    assert await get_balance(user_id=1) == 1_100_000
+
+    exact = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=1_885_000, monthly_rate_bps=0
+    )
+    assert exact is not None
+    assert (
+        await approve_as_admin(proposal_id=exact.proposal_id, actor_id=99, name="banker")
+        is not None
+    )
+
+
 async def test_handing_a_minted_balance_to_a_second_account_runs_the_pool_down() -> None:
     """The pool is what bounds a pair taking turns, and it has to reach zero to do it.
 
