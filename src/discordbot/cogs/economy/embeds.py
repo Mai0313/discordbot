@@ -54,8 +54,8 @@ LOSS_LEADERBOARD_TITLE = f"💸 今日輸局累計 {CURRENCY_NAME}"
 _CREDIT_STATUS_DESCRIPTION_BUDGET = DISCORD_EMBED_DESCRIPTION_LIMIT - 296
 
 
-class TransferParticipant(BaseModel):
-    """Display identity for one side of a transfer embed."""
+class EmbedParty(BaseModel):
+    """Display identity for one side of a transfer or loan request embed."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -65,26 +65,16 @@ class TransferParticipant(BaseModel):
     display_name: str = Field(
         ...,
         description=(
-            "Display name shown in the post-transfer balances, and in the author line for "
-            "the sender only."
+            "Display name: the author line for the sender or borrower, and each side's line "
+            "in the post-transfer balances."
         ),
     )
-
-
-class LoanParty(BaseModel):
-    """Display identity for one side of a loan request embed."""
-
-    model_config = ConfigDict(frozen=True)
-
-    mention: str = Field(
-        ..., description="Discord mention string (<@user_id>) shown in the embed."
-    )
-    display_name: str = Field(
-        default="", description="Display name shown as the embed author; set only on the borrower."
-    )
     avatar_url: str = Field(
-        default="",
-        description="Avatar URL: author icon for the borrower, thumbnail for the lender.",
+        ...,
+        description=(
+            "Avatar URL: the author icon for the sender or borrower, the thumbnail for the "
+            "receiver or lender."
+        ),
     )
 
 
@@ -245,6 +235,15 @@ def build_balance_embed(
     return embed
 
 
+def build_empty_leaderboard_embed() -> Embed:
+    """Builds the public balance leaderboard shown while nobody holds a balance."""
+    return Embed(
+        title=LEADERBOARD_TITLE,
+        description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
+        color=LEADERBOARD_COLOR,
+    )
+
+
 def build_leaderboard_embed(champion: LeaderboardEntry) -> Embed:
     """Builds the public balance leaderboard embed referencing its board image."""
     embed = Embed(
@@ -256,6 +255,15 @@ def build_leaderboard_embed(champion: LeaderboardEntry) -> Embed:
     _set_optional_thumbnail(embed=embed, avatar_url=champion.avatar_url)
     embed.set_image(url=f"attachment://{BALANCE_LEADERBOARD_BOARD_FILENAME}")
     return embed
+
+
+def build_empty_loss_leaderboard_embed() -> Embed:
+    """Builds the public daily loss leaderboard shown while nobody has lost today."""
+    return Embed(
+        title=LOSS_LEADERBOARD_TITLE,
+        description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
+        color=LOSS_LEADERBOARD_COLOR,
+    )
 
 
 def build_loss_leaderboard_embed(champion: LossLeaderboardEntry) -> Embed:
@@ -272,13 +280,8 @@ def build_loss_leaderboard_embed(champion: LossLeaderboardEntry) -> Embed:
     return embed
 
 
-def build_transfer_embed(  # noqa: PLR0913 -- mirrors both transfer sides and balances
-    amount: int,
-    sender: TransferParticipant,
-    sender_avatar_url: str,
-    receiver: TransferParticipant,
-    receiver_avatar_url: str,
-    result: TransferResult,
+def build_transfer_embed(
+    amount: int, sender: EmbedParty, receiver: EmbedParty, result: TransferResult
 ) -> Embed:
     """Builds the public transfer-completed embed."""
     description = (
@@ -290,8 +293,8 @@ def build_transfer_embed(  # noqa: PLR0913 -- mirrors both transfer sides and ba
             f"（已扣稅 {currency_text(amount=result.tax_amount, compact=True)}）"
         )
     embed = Embed(title="💸 轉帳完成", description=description, color=TRANSFER_COLOR)
-    embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
-    _set_optional_thumbnail(embed=embed, avatar_url=receiver_avatar_url)
+    embed.set_author(name=sender.display_name, icon_url=sender.avatar_url)
+    _set_optional_thumbnail(embed=embed, avatar_url=receiver.avatar_url)
     embed.add_field(
         name="轉帳後餘額",
         value=(
@@ -376,7 +379,7 @@ def build_pocat_embed(
 
 
 def build_credit_request_embed(
-    borrower: LoanParty, lender: LoanParty, amount: int, monthly_rate_bps: int
+    borrower: EmbedParty, lender: EmbedParty, amount: int, monthly_rate_bps: int
 ) -> Embed:
     """Builds the public personal credit request embed."""
     embed = Embed(
@@ -401,7 +404,7 @@ def build_credit_request_embed(
 
 
 def build_central_bank_request_embed(
-    borrower: LoanParty, amount: int, monthly_rate_bps: int
+    borrower: EmbedParty, amount: int, monthly_rate_bps: int
 ) -> Embed:
     """Builds the public central-bank loan request embed."""
     embed = Embed(
@@ -463,12 +466,14 @@ def build_credit_call_embed(
 
 
 def build_credit_status_embed(contracts: list[LoanContractView], viewer_id: int) -> Embed:
-    """Builds the caller's active personal credit contracts embed.
+    """Builds the caller's active personal credit contracts embed, or its empty state.
 
     Overflow past the description budget is counted rather than dropped: a debt the
     borrower cannot see is one they will not repay while the interest keeps accruing.
     Contracts arrive oldest first, so the ones held back are the newest.
     """
+    if not contracts:
+        return Embed(title="信貸狀態", description="### 目前沒有有效信貸", color=BORROW_COLOR)
     lines = [
         (
             f"{'欠 ' + contract.lender_name if contract.borrower_id == viewer_id else contract.borrower_name + ' 欠你'} "

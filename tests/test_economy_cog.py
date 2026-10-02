@@ -1066,9 +1066,16 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
     assert "權限不足" in admin_rejection_title
 
 
-def test_a_positive_amount_refuses_zero() -> None:
+async def test_a_positive_amount_refuses_zero() -> None:
     """Zero is a well-formed amount, but no command that takes a positive one accepts it."""
-    assert economy._parse_positive_amount(raw_amount="0") is None
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    amount = await economy._amount_or_refuse(
+        interaction=as_interaction(fake=interaction), raw_amount="0", title="轉帳失敗"
+    )
+
+    assert amount is None
+    assert interaction.response.sent[0]["ephemeral"] is True
 
 
 async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPatch) -> None:
