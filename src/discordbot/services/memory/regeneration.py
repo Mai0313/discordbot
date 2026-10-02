@@ -3,8 +3,8 @@
 The incremental fan-out in `consolidation.py` merges one raw batch into the facts already
 stored. This is the other direction: the existing facts are not shown to the model at all,
 every compartment is distilled from the detail tail plus any unconsumed raw entries, and
-whatever the rebuild did not re-emit is deleted. It is the one path allowed to lose most of
-a compartment at once, because replacing the whole set is what it is for.
+whatever the rebuild did not re-emit is deleted. Only it and a forget pass may lose most of a
+compartment at once, because replacing the whole set is what it is for.
 
 It runs either inside the bot under the scope lock, or offline in a second process — where
 it is NOT equivalent, since its closing `clear_raw` unlinks whatever `raw.md` gained while
@@ -348,10 +348,9 @@ async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
     Feeding a forget INTO the rebuild instead would hand a possibly-private sentence to a call
     whose whole job is creating facts.
 
-    Returns False when a replay call failed or was refused. The caller then puts the
-    replaced compartments back rather than keep them: a fact the replay did not reach can be
-    one the user asked to forget, and nothing but a later rebuild that completes would
-    remove it.
+    Returns False when a replay call failed. The caller then puts the replaced compartments
+    back rather than keep them: a fact the replay did not reach can be one the user asked to
+    forget, and nothing but a later rebuild that completes would remove it.
     """
     return await apply_forget_buckets(run=run, forgets=forgets)
 

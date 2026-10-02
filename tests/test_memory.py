@@ -1605,6 +1605,93 @@ async def test_a_refused_pass_after_a_forget_fails_the_rebuild_and_puts_back_wha
     assert count_raw_entries(scope=USER_SCOPE) == 3
 
 
+_SIX = tuple(
+    _observation(summary=f"事實{index}", normalized_key=f"fact.k{index}") for index in range(6)
+)
+
+
+def _forget_four_answer(observe: ConsolidatedMemory) -> MemoryAnswer:
+    """Answers a forget pass by deleting four of the facts `global/` holds, more than the
+    mass-deletion ceiling allows a six-fact compartment, and any observation pass with `observe`.
+    """
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
+        """Deletes four stored facts on the forget pass; nothing else changes the tone note."""
+        if text_format is ToneForget:
+            return ToneForget()
+        if "forget_request" in body:
+            stored = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+            return ConsolidatedMemory(
+                deltas=tuple(
+                    make_delta(action="delete", fact_id=fact.fact_id) for fact in stored[:4]
+                )
+            )
+        if "<tone_evidence>" in body:
+            return _no_change()
+        return observe
+
+    return answer
+
+
+async def test_a_forget_naming_several_facts_is_applied_and_the_batch_moves_on(
+    memory_isolated_dir: Path,
+) -> None:
+    """A forget pass can only delete, so the mass-deletion ceiling does not bound it.
+
+    Refused, the same forget was derived and refused again on every later run, holding back
+    everything staged after it while the reply had already said it was forgotten.
+    """
+    for index, observation in enumerate(_SIX):
+        write_fact(
+            scope=USER_SCOPE,
+            fact=_stored_fact(
+                fact_id=f"{index:016x}", summary=observation.summary_zh, durability="permanent"
+            ),
+        )
+    _stage_raw(
+        _forget_entry("2026-09-02T00:00:00+00:00"), _entry("2026-09-03T00:00:00+00:00", _PET)
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _forget_four_answer(
+        observe=_consolidated(text=_PET.summary_zh, summary=_PET.summary_zh, section="fact")
+    )
+    await _consolidate_forced(writer=writer)
+
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert sorted(fact.summary for fact in facts) == sorted([
+        _SIX[4].summary_zh,
+        _SIX[5].summary_zh,
+        _PET.summary_zh,
+    ])
+    assert read_raw_entries(scope=USER_SCOPE) == ""
+
+
+async def test_a_rebuild_replays_a_forget_naming_several_facts(memory_isolated_dir: Path) -> None:
+    """The rebuild's forget replay is a forget pass too, so the same forget completes it."""
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", *_SIX), _forget_entry("2026-09-02T00:00:00+00:00")
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _forget_four_answer(
+        observe=ConsolidatedMemory(
+            deltas=tuple(
+                make_delta(
+                    section="fact",
+                    summary=observation.summary_zh,
+                    text=observation.summary_zh,
+                    from_keys=(observation.normalized_key,),
+                )
+                for observation in _SIX
+            )
+        )
+    )
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    assert len(read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)) == 2
+
+
 async def test_a_forget_still_runs_when_the_pass_before_it_fails(
     memory_isolated_dir: Path,
 ) -> None:
