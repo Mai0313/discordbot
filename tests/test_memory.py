@@ -4573,6 +4573,58 @@ async def test_the_bot_stays_out_of_the_roster_when_its_reply_carried_an_attachm
     } == {"pattern.drawing": "global", "pattern.duo": "source_only"}
 
 
+async def test_a_quoted_mention_of_the_bot_does_not_lock_an_observation() -> None:
+    """In a server the user's own words usually open with the bot's mention.
+
+    That token, like the bot's author prefix, names nobody but the bot, so quoting it keeps
+    the model's `global`, while a mention of anyone else in the same quote still locks.
+    """
+    bot_user_id = 999
+    fake_client = FakeMemoryClient()
+    writer = MemoryWriterAI(
+        client=cast("AsyncOpenAI", fake_client), model=TEST_MEMORY_MODEL, bot_user_id=bot_user_id
+    )
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者常請破貓幫忙畫圖",
+                normalized_key="pattern.drawing",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                evidence_quote=f"<@{bot_user_id}> 幫我畫一隻貓",
+            ),
+            _observation(
+                summary="使用者偏好簡短回覆",
+                normalized_key="preference.brevity",
+                evidence_quote=f"<@!{bot_user_id}> 回短一點",
+            ),
+            _observation(
+                summary="使用者喜歡貓的圖",
+                normalized_key="preference.cat_art",
+                evidence_quote=f"破貓 (破貓) [id: {bot_user_id}]: 這是你要的圖",
+            ),
+            _observation(
+                summary="使用者常常揪團",
+                normalized_key="pattern.party",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                evidence_quote=f"<@{bot_user_id}> 幫我約 <@55> 打排位",
+            ),
+        ),
+    )
+    draft = await _evaluate(writer=writer)
+    assert draft is not None
+    assert {
+        observation.normalized_key: observation.sharing for observation in draft.observations
+    } == {
+        "pattern.drawing": "global",
+        "preference.brevity": "global",
+        "preference.cat_art": "global",
+        "pattern.party": "source_only",
+    }
+
+
 @pytest.mark.usefixtures("memory_isolated_dir")
 async def test_a_restated_fact_is_confirmed_again_when_consolidation_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,

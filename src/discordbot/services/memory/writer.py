@@ -85,8 +85,9 @@ _LATIN_NAME_RE = re.compile(r"^[\w.\- ]+$", flags=re.ASCII)
 # Another participant referenced inside an observation's text (an id token or a raw
 # Discord mention). Such an observation is about a relationship or someone else's
 # business, so the sharing gate locks it to its source conversation. The id is captured
-# so the gate can exempt the TARGET's own id (the transcript's author prefix makes it
-# the most likely token to be quoted into evidence, and it names nobody else).
+# so the gate can exempt the TARGET's own id and the bot's: neither names anybody else,
+# and both are the tokens most likely to be quoted into evidence (an author prefix, a
+# message addressed to the bot).
 _OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention_id>\d+)>")
 # The target-user id inside a phase-1 subject; None for the server flavor.
 _SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", flags=re.MULTILINE)
@@ -334,8 +335,8 @@ class MemoryWriterAI(BaseModel):
     bot_user_id: int | None = Field(
         default=None,
         description=(
-            "The bot's own user id, which the sharing gate's roster leaves out. None for a "
-            "writer that only consolidates."
+            "The bot's own user id, which the sharing gate never counts as another "
+            "participant, by name or by id. None for a writer that only consolidates."
         ),
     )
 
@@ -386,7 +387,9 @@ class MemoryWriterAI(BaseModel):
         )
         if draft is None:
             return None
-        return _validated_draft(draft=draft, target_user_id=target_user_id, roster=roster)
+        return _validated_draft(
+            draft=draft, target_user_id=target_user_id, bot_user_id=self.bot_user_id, roster=roster
+        )
 
     async def consolidate(
         self, flavor: MemoryFlavor, request: ConsolidationRequest
@@ -742,14 +745,20 @@ def redact_secrets(text: str) -> str:
 
 
 def _validated_draft(
-    draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...]
+    draft: RawMemoryDraft,
+    target_user_id: int | None,
+    bot_user_id: int | None,
+    roster: tuple[str, ...],
 ) -> RawMemoryDraft:
     """Applies deterministic high-precision gates to model observations."""
     observations: list[MemoryObservation] = []
     seen_keys: set[str] = set()
     for observation in draft.observations:
         sanitized = _sanitize_observation(
-            observation=observation, target_user_id=target_user_id, roster=roster
+            observation=observation,
+            target_user_id=target_user_id,
+            bot_user_id=bot_user_id,
+            roster=roster,
         )
         if sanitized.normalized_key in seen_keys:
             continue
@@ -760,17 +769,20 @@ def _validated_draft(
     return RawMemoryDraft(has_signal=bool(observations), observations=tuple(observations))
 
 
-def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
-    """Whether the text references any participant other than the target user."""
+def _mentions_other_person(text: str, target_user_id: int | None, bot_user_id: int | None) -> bool:
+    """Whether the text references anyone other than the target user and the bot."""
     for match in _OTHER_PERSON_TOKEN_RE.finditer(text):
         mentioned = int(match.group("user_id") or match.group("mention_id"))
-        if target_user_id is None or mentioned != target_user_id:
+        if mentioned not in (target_user_id, bot_user_id):
             return True
     return False
 
 
 def _sanitize_observation(
-    observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...]
+    observation: MemoryObservation,
+    target_user_id: int | None,
+    bot_user_id: int | None,
+    roster: tuple[str, ...],
 ) -> MemoryObservation:
     """Normalizes text, keys, TTL, and sharing fields before validation."""
     category = observation.category
@@ -795,9 +807,9 @@ def _sanitize_observation(
     )
     # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
     # are private by construction, and an observation about ANOTHER participant is
-    # about a relationship, not a portable fact (the target's own id — e.g. a quoted
-    # author prefix — names nobody else and stays exempt). Scans the pre-trim text so
-    # a token past the truncation point cannot dodge the gate. Code only ever tightens
+    # about a relationship, not a portable fact (the target's own id and the bot's name
+    # nobody else and stay exempt). Scans the pre-trim text so a token past the
+    # truncation point cannot dodge the gate. Code only ever tightens
     # sharing to source_only; it never loosens a source_only call back to global.
     #
     # The roster half exists because `global` is permanent cross-server reach with no
@@ -810,7 +822,9 @@ def _sanitize_observation(
     if (
         category == "recent_context"
         or observation.evidence_kind == "ongoing_situation"
-        or _mentions_other_person(text=scanned, target_user_id=target_user_id)
+        or _mentions_other_person(
+            text=scanned, target_user_id=target_user_id, bot_user_id=bot_user_id
+        )
         or _mentions_roster_name(text=scanned, roster=roster)
     ):
         sharing = "source_only"
