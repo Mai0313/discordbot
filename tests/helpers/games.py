@@ -1,10 +1,11 @@
-"""Builders the games tests share: cards, seats, lobbies, settlement, and a view's controls."""
+"""Builders the games tests share: cards, seats, hands, rounds, lobbies, settlement, controls."""
 
+from random import Random
 from typing import Any
 
 import pytest
 from nextcord import Interaction
-from nextcord.ui import View, Button
+from nextcord.ui import View, Button, StringSelect
 from nextcord.ext import commands
 
 from discordbot.typings.games import (
@@ -14,7 +15,7 @@ from discordbot.typings.games import (
     RefreshParticipantsResult,
 )
 from discordbot.cogs.games.lobby import PrepareParticipant
-from discordbot.cogs.games.blackjack import BlackjackRound
+from discordbot.cogs.games.blackjack import BlackjackRound, BlackjackHandState
 from discordbot.cogs.games.settlement import settle_blackjack_player
 
 
@@ -35,6 +36,54 @@ def seat(
         balance_at_start=balance_at_start,
         is_allin=False,
     )
+
+
+def blackjack_hand(
+    cards: list[Card],
+    bet: int = 100,
+    finished: bool = False,
+    is_split_hand: bool = False,
+    is_split_aces: bool = False,
+) -> BlackjackHandState:
+    """Builds one Blackjack hand holding `cards` at `bet`, with no action taken on it yet."""
+    return BlackjackHandState(
+        cards=cards,
+        bet=bet,
+        base_bet=bet,
+        finished=finished,
+        is_split_hand=is_split_hand,
+        is_split_aces=is_split_aces,
+    )
+
+
+def blackjack_round(
+    hands: list[list[Card]],
+    dealer: list[Card],
+    seats: list[GameParticipant] | None = None,
+    finished: bool = False,
+) -> BlackjackRound:
+    """Builds a round past its deal: seat i holds `hands[i]` and the dealer holds `dealer`.
+
+    Seats default to Alice (user 1) and Bob (user 2) at `seat()`'s stakes. A finished round is one
+    whose every hand is done and whose dealer has played, which is what a view finalizes or
+    settles. The rest of the shoe is the seeded one, so a draw is the same on every run.
+    """
+    participants = seats or [
+        seat(user_id=index + 1, display_name=name)
+        for index, name in enumerate(("Alice", "Bob")[: len(hands)])
+    ]
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),  # noqa: S311 -- seeded for a repeatable shoe
+        participants=participants,
+    )
+    for player, cards in zip(round_state.players, hands, strict=True):
+        player.hands[0].cards = cards
+        player.hands[0].finished = finished
+    round_state.dealer = dealer
+    if finished:
+        round_state.dealer_played = True
+        round_state.phase = "settled"
+    return round_state
 
 
 def joins_as(participant: GameParticipant) -> PrepareParticipant:
@@ -128,3 +177,11 @@ def attached_button(view: View, custom_id: str) -> Button[Any]:
         if isinstance(child, Button) and child.custom_id == custom_id:
             return child
     raise AssertionError(f"no attached button {custom_id!r}; attached: {component_ids(view=view)}")
+
+
+def attached_select(view: View, custom_id: str) -> StringSelect[Any]:
+    """Returns the attached select menu with this custom id, failing the test when it is absent."""
+    for child in view.children:
+        if isinstance(child, StringSelect) and child.custom_id == custom_id:
+            return child
+    raise AssertionError(f"no attached select {custom_id!r}; attached: {component_ids(view=view)}")
