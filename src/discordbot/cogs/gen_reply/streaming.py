@@ -1147,12 +1147,7 @@ class ResponseStreamer(BaseModel):
             # ⚠️ hint on their message would be noise about media they cannot see anyway.
             return
         if self.reply is None:
-            if (
-                self.markers.voice_requested
-                or self.markers.image_prompts
-                or self.markers.music_prompt
-                or self.markers.video_prompt
-            ):
+            if self.markers.media_requested:
                 logfire.warn(
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,

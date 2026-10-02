@@ -220,6 +220,13 @@ class InlineMarkers(BaseModel):
         description="Every <write-server-memory> note about the community, in order; empty when none.",
     )
 
+    @property
+    def media_requested(self) -> bool:
+        """Whether the reply asked for any spoken clip, image, song or video."""
+        return bool(
+            self.voice_requested or self.image_prompts or self.music_prompt or self.video_prompt
+        )
+
 
 def extract_inline_markers(text: str) -> InlineMarkers:
     """Splits a finished reply into visible text plus its voice / image / music / video requests.
