@@ -10,7 +10,8 @@ The comments are the real list rather than a preload. Logged out, Instagram ship
 comment section with the page — 11 of 11 measured on a public post — so unlike Facebook this
 source can hand the model the discussion and let it summarise the mood. Both separators still
 stop short of promising completeness on a viral post, where what arrives is the first page
-rather than all of it, and `MAX_INSTAGRAM_COMMENTS` bounds what rides regardless.
+rather than all of it, and `MAX_INSTAGRAM_COMMENTS` bounds what rides regardless, save the one
+comment a link names.
 
 And a video is readable as a link only. The page does carry a playable url, but this builder
 does not download it: the reply path uploads images through `load_image_bytes` and has no video
