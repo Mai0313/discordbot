@@ -58,7 +58,7 @@ from discordbot.typings.models import (
     RecallRouteClassification,
 )
 from discordbot.services.memory import database as memory_db
-from discordbot.services.memory import inflight, consolidation
+from discordbot.services.memory import consolidation
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.typings.timeouts import (
     ANSWER_STREAM_MAX_ATTEMPTS,
@@ -182,7 +182,7 @@ from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
-from tests.helpers.memory import make_fact
+from tests.helpers.memory import make_fact, drain_memory_turns, wait_for_persisted_writes
 from tests.helpers.casting import (
     as_bot,
     as_client,
@@ -216,6 +216,7 @@ from tests.helpers.llm_input import (
 )
 from tests.helpers.usage_log import usage_records
 from tests.helpers.link_sources import SAMPLE_POST_URLS, hosting_planner, hosting_off_planner
+from tests.helpers.discord_mocks import text_channel_granting
 from tests.helpers.logfire_capture import capture_logs
 
 # A reply always reads memory, with no caller-side switch to turn it off, so every test here
@@ -8303,17 +8304,6 @@ async def test_handle_message_reply_server_memory_gating(
             assert update["identity"] == "Test Guild [id: 1]"
 
 
-async def _drain_memory_turns(scopes: tuple[str, ...]) -> None:
-    """Awaits every memory turn queued for `scopes`, then the reply.db writes they detached."""
-    for scope in scopes:
-        while (task := inflight._inflight_tasks.get(key=scope)) is not None:
-            await asyncio.gather(task, return_exceptions=True)
-            # Lets the done-callback run, which clears the slot or starts the next queued turn.
-            await asyncio.sleep(0)
-    while inflight._db_tasks:
-        await asyncio.gather(*list(inflight._db_tasks))
-
-
 @pytest.mark.parametrize(
     ("memory_notes", "server_memory_notes", "prompt"),
     [
@@ -8337,7 +8327,8 @@ async def test_a_memory_note_is_reviewed_under_its_scopes_own_prompt(
     await _run_pipeline(
         cog=cog, message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     )
-    await _drain_memory_turns(scopes=(user_scope(user_id=1), server_scope(server_id=1)))
+    await drain_memory_turns(scopes=(user_scope(user_id=1), server_scope(server_id=1)))
+    await wait_for_persisted_writes()
 
     responses = _recorded(cog).responses
     reviews = [
@@ -8891,25 +8882,21 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory() -> None:
     assert context.memory_credits.total == 0
 
 
-def _text_channel_granting(**permissions: bool) -> MagicMock:
-    """A guild text channel whose overwrites resolve to exactly these permissions for the bot."""
-    channel = MagicMock(spec=nextcord.TextChannel)
-    channel.permissions_for.return_value = nextcord.Permissions(**permissions)
-    return channel
-
-
 def test_can_launch_research_requires_guild_text_channel() -> None:
-    guild = SimpleNamespace(me=object())
-    granted = _text_channel_granting(
-        view_channel=True,
-        send_messages=True,
-        create_public_threads=True,
-        send_messages_in_threads=True,
-        attach_files=True,
+    granted = text_channel_granting(
+        permissions=nextcord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            create_public_threads=True,
+            send_messages_in_threads=True,
+            attach_files=True,
+        )
     )
+    # The bot's own member, whose token every research write uses, never the author's: the
+    # channel answers the grant for its guild's `me` alone.
+    guild = granted.guild
     text = SimpleNamespace(guild=guild, channel=granted)
     assert can_launch_research(message=as_message(fake=text)) is True
-    # The bot's own member, whose token every research write uses, never the author's.
     granted.permissions_for.assert_called_once_with(guild.me)
     thread = SimpleNamespace(guild=guild, channel=MagicMock(spec=nextcord.Thread))
     assert can_launch_research(message=as_message(fake=thread)) is False
@@ -8919,10 +8906,12 @@ def test_can_launch_research_requires_guild_text_channel() -> None:
 
 def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
     """A thread the bot may open but not post in would bill a run nobody ever sees."""
-    channel = _text_channel_granting(
-        view_channel=True, send_messages=True, create_public_threads=True, attach_files=True
+    channel = text_channel_granting(
+        permissions=nextcord.Permissions(
+            view_channel=True, send_messages=True, create_public_threads=True, attach_files=True
+        )
     )
-    message = SimpleNamespace(guild=SimpleNamespace(me=object()), channel=channel)
+    message = SimpleNamespace(guild=channel.guild, channel=channel)
 
     assert can_launch_research(message=as_message(fake=message)) is False
 
@@ -9040,7 +9029,8 @@ async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
     await cog._resume_memory()
     while cog._tasks:
         await asyncio.gather(*list(cog._tasks))
-    await _drain_memory_turns(scopes=(scope,))
+    await drain_memory_turns(scopes=(scope,))
+    await wait_for_persisted_writes()
 
     assert set(_recorded(cog).responses.parse_instructions) == prompts
 
