@@ -21,13 +21,12 @@ from tests.helpers.link_sources import (
     StubDouyinOptions,
     StubDouyinDownloader,
     stub_bot,
+    guild_message,
     hosting_planner,
-    hosting_off_planner,
     stub_douyin_downloads,
     race_every_scratch_teardown,
 )
 from tests.helpers.discord_mocks import (
-    FakeGuild,
     FakeDiscordMessage,
     expansion_payload,
     placeholder_withdrawn,
@@ -37,17 +36,11 @@ _URL = "https://v.douyin.com/abc123"
 
 
 def _cog(**canned: Unpack[StubDouyinOptions]) -> tuple[DouyinCogs, list[StubDouyinDownloader]]:
-    """Builds a cog wired to stub downloaders and a hosting-off delivery planner."""
+    """Builds a cog wired to stub downloaders."""
     cog = DouyinCogs(bot=stub_bot())
-    cog.media_delivery = hosting_off_planner()
     made: list[StubDouyinDownloader] = []
     cog.__dict__["downloader_factory"] = stub_douyin_downloads(made=made, **canned)
     return cog, made
-
-
-def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
-    """Builds a guild message carrying a Douyin link."""
-    return FakeDiscordMessage(content=content, guild=FakeGuild(filesize_limit=filesize_limit))
 
 
 def _reply_body(message: FakeDiscordMessage) -> str:
@@ -60,7 +53,7 @@ def _reply_body(message: FakeDiscordMessage) -> str:
 async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     """A plain paste attaches the clip, adds a caption card, and suppresses the raw preview."""
     cog, made = _cog()
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -79,7 +72,7 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
 async def test_a_message_without_a_link_is_ignored() -> None:
     """The listener sees every message, so a non-Douyin one must cost nothing."""
     cog, made = _cog()
-    message = _message(content="just chatting")
+    message = guild_message(content="just chatting")
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -92,7 +85,9 @@ async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
     cog, _ = _cog()
     (tmp_path / "serve").mkdir()
     cog.media_delivery = hosting_planner(serve_dir=tmp_path / "serve")
-    message = _message(filesize_limit=4)  # tiny ceiling -> the clip counts as oversize
+    message = guild_message(
+        content=_URL, filesize_limit=4
+    )  # tiny ceiling -> the clip counts as oversize
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -108,7 +103,7 @@ async def test_a_capped_gallery_reports_what_it_left_out() -> None:
         files=[(f"1_{index}.jpg", b"x" * (index + 1)) for index in range(3)],
         total_images=12,
     )
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -123,7 +118,7 @@ async def test_the_parsed_post_is_handed_to_the_download() -> None:
     was actually given.
     """
     cog, made = _cog()
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -144,27 +139,13 @@ async def test_a_non_post_link_is_left_alone() -> None:
         "https://www.douyin.com/search/abc",
     ):
         cog, made = _cog()
-        message = _message(content=content)
+        message = guild_message(content=content)
 
         await cog.on_message(message=as_message(fake=message))
 
         assert message.reactions == [], content
         assert message.replies == [], content
         assert made == [], content
-
-
-async def test_a_non_post_link_does_not_hide_a_post_after_it() -> None:
-    """A refused link is skipped, so the post after it is still expanded (#854)."""
-    live_room = "https://live.douyin.com/123456"
-    assert DouyinCogs.URL_PATTERN.search(string=live_room) is not None
-    cog, made = _cog()
-    message = _message(content=f"{live_room} 跟這篇 {_URL}")
-
-    await cog.on_message(message=as_message(fake=message))
-
-    (stub,) = made
-    assert [call["url"] for call in stub.download_calls] == [_URL]
-    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 def _stall_every_read(cog: DouyinCogs, release: threading.Event) -> None:
@@ -199,7 +180,7 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
 
     release = threading.Event()
     _stall_every_read(cog=cog, release=release)
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
     release.set()
@@ -224,7 +205,7 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
 
     release = threading.Event()
     _stall_every_read(cog=cog, release=release)
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
     release.set()

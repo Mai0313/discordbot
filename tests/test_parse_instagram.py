@@ -4,7 +4,11 @@ import pytest
 
 from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramDownloader
-from discordbot.cogs.gen_reply.link_sources.instagram import build_instagram_context_messages
+from discordbot.cogs.gen_reply.link_sources.instagram import (
+    INSTAGRAM_CONTEXT_SEPARATOR,
+    INSTAGRAM_TEXT_ONLY_SEPARATOR,
+    build_instagram_context_messages,
+)
 
 from tests.helpers.casting import make_stub_gemini_client
 from tests.helpers.link_sources import (
@@ -75,7 +79,7 @@ async def test_both_separators_stop_short_of_promising_the_whole_comment_section
     media ingest and every failed image fetch lands on, and it carried no caveat at all.
     """
     serve_conversation(monkeypatch, downloader=InstagramDownloader, post=instagram_post())
-    accept_image_uploads(monkeypatch, uploaded=[])
+    accept_image_uploads(monkeypatch=monkeypatch)
 
     with_media = await build_instagram_context_messages(
         url=INSTAGRAM_URL,
@@ -91,5 +95,7 @@ async def test_both_separators_stop_short_of_promising_the_whole_comment_section
     )
 
     caveat = "the first page rather than every reply"
+    assert block_separator(blocks=with_media) == INSTAGRAM_CONTEXT_SEPARATOR
     assert caveat in block_separator(blocks=with_media)
+    assert block_separator(blocks=text_only) == INSTAGRAM_TEXT_ONLY_SEPARATOR
     assert caveat in block_separator(blocks=text_only)

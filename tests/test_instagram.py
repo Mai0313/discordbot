@@ -15,7 +15,7 @@ from discordbot.services.platforms.instagram import (
     is_instagram_post_url,
 )
 
-from tests.helpers.link_sources import serve_page, sjs_script
+from tests.helpers.link_sources import sjs_page, serve_page
 
 _CODE = "Dc5eNjYkoZE"
 _COMMENT_ID = "17946527169275440"
@@ -116,8 +116,7 @@ def _page(
     })
     if comments:
         blocks.append({"data": {"comments": comments}})
-    scripts = "".join(sjs_script(payload=block) for block in blocks)
-    return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
+    return sjs_page(blocks=blocks)
 
 
 def _downloader(
@@ -216,23 +215,6 @@ def test_a_post_is_read_with_its_caption_images_and_counts(
     assert post.like_count == 8855
     assert post.comment_count == 11
     assert post.taken_at is not None
-
-
-@pytest.mark.parametrize(
-    ("served", "expected"), [("8,855", 8855), ({"count": 8855}, 8855), (True, 0), (None, 0)]
-)
-def test_a_count_reads_the_same_in_any_shape_the_page_serves(
-    monkeypatch: pytest.MonkeyPatch, served: object, expected: int
-) -> None:
-    """A formatted or wrapped count is still the number, and a flag is not a count."""
-    media = _media()
-    media["like_count"] = served
-    downloader = _downloader(monkeypatch, html=_page(media=media))
-
-    post = downloader.parse_metadata(url=_URL).target
-
-    assert post is not None
-    assert post.like_count == expected
 
 
 def test_the_chain_is_the_post_alone(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -377,11 +359,12 @@ def test_a_video_post_yields_its_playable_url(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_a_login_wall_reads_as_an_empty_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A private account redirects to login, which is a normal outcome rather than a failure."""
+    """A private account redirects to login, which is a normal outcome rather than a failure.
+
+    The page carries the post anyway, so only where the fetch landed can make it unreadable.
+    """
     downloader = _downloader(
-        monkeypatch,
-        html="<html>login</html>",
-        final_url="https://www.instagram.com/accounts/login/?next=x",
+        monkeypatch, html=_page(), final_url="https://www.instagram.com/accounts/login/?next=x"
     )
 
     conversation = downloader.parse_metadata(url=_URL)

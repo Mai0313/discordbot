@@ -19,7 +19,7 @@ from discordbot.services.platforms.facebook import (
     is_facebook_post_url,
 )
 
-from tests.helpers.link_sources import serve_page, sjs_script
+from tests.helpers.link_sources import sjs_page, serve_page
 
 _POST_ID = "1730774811333135"
 _GROUP_ID = "1176671326743489"
@@ -49,10 +49,9 @@ def _story(
         "permalink_url": f"https://www.facebook.com/groups/{_GROUP_ID}/posts/{post_id}/",
         "attachments": [{"styles": {"attachment": {"all_subattachments": {"nodes": nodes}}}}],
         "feedback": {
-            # `i18n_reaction_count` sits beside this on the real page and is deliberately NOT
-            # read: it is locale-formatted ("1.7萬" under `Accept-Language: zh-TW`), where this
-            # one is the raw number. Measured 2026-09-07: 12 nodes carried the raw key and none
-            # carried the i18n one alone.
+            # The locale-formatted twin the real page serves beside the raw count, which the
+            # parser must not read.
+            "i18n_reaction_count": "1.7萬",
             "reaction_count": 1017,
             "share_count": {"count": 37, "is_empty": False},
             "total_comment_count": 40,
@@ -142,9 +141,7 @@ def _page(
         blocks.append({"comment_rendering_instance": {"comments": comments}})
     if groups:
         blocks.append({"data": {"groups": groups}})
-    scripts = "".join(sjs_script(payload=block) for block in blocks)
-    # A block that does not parse, which the walk must skip rather than fail on.
-    return f'<html><script type="application/json">{{"broken"</script>{scripts}</html>'
+    return sjs_page(blocks=blocks)
 
 
 def _downloader(
@@ -492,11 +489,12 @@ def test_a_pfbid_page_keeps_only_its_storys_comments(monkeypatch: pytest.MonkeyP
 
 
 def test_a_login_wall_reads_as_an_unreadable_post(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A private post redirects to login, which is a normal outcome rather than a failure."""
+    """A private post redirects to login, which is a normal outcome rather than a failure.
+
+    The page carries the post anyway, so only where the fetch landed can make it unreadable.
+    """
     downloader = _downloader(
-        monkeypatch,
-        html="<html>login</html>",
-        final_url="https://www.facebook.com/login.php?next=x",
+        monkeypatch, html=_page(), final_url="https://www.facebook.com/login.php?next=x"
     )
 
     post = _parse(downloader, _PERMALINK)

@@ -13,7 +13,6 @@ from collections.abc import Callable
 import pytest
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
-from discordbot.typings.media import LoadedMedia
 from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
@@ -29,7 +28,6 @@ from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
     LinkContextSource,
     LinkContextBuilder,
-    image_ingest,
 )
 from discordbot.services.platforms.facebook import FacebookOutput, FacebookDownloader
 from discordbot.services.platforms.instagram import InstagramOutput, InstagramDownloader
@@ -171,20 +169,23 @@ async def test_the_images_ride_as_uploaded_parts_inside_the_trailer(
     The trailer closes the block past the attachments: a fence closing before the images would
     leave an instruction-shaped screenshot outside it.
     """
-    uploaded: list[str] = []
     serve_conversation(
         monkeypatch,
         downloader=source.downloader,
         post=source.post(image_urls=["https://cdn.test/a.jpg"]),
     )
-    accept_image_uploads(monkeypatch, uploaded=uploaded)
+    fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
     blocks = await _build(source=source, gemini=True)
 
-    assert uploaded == ["https://cdn.test/a.jpg"]
+    assert fetched == ["https://cdn.test/a.jpg"]
     assert block_separator(blocks=blocks) == source.separators.attached
     parts = block_parts(blocks=blocks)
-    assert parts[-2] == {"type": "input_file", "file_id": f"{source.name}_image_0.jpg"}
+    assert parts[-2] == {
+        "type": "input_file",
+        "file_id": f"https://files.test/{source.name}_image_0.jpg",
+        "filename": f"{source.name}_image_0.jpg",
+    }
     assert parts[-1]["text"] == source.separators.trailer
 
 
@@ -193,13 +194,12 @@ async def test_media_ingest_off_keeps_the_text_and_skips_the_upload(
     monkeypatch: pytest.MonkeyPatch, source: _PostSource
 ) -> None:
     """The kill-switch gates the fetch and the upload, never the read."""
-    uploaded: list[str] = []
     serve_conversation(monkeypatch, downloader=source.downloader, post=source.post())
-    accept_image_uploads(monkeypatch, uploaded=uploaded)
+    fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
     blocks = await _build(source=source, gemini=True, allow_media_ingest=False)
 
-    assert uploaded == []
+    assert fetched == []
     assert block_separator(blocks=blocks) == source.separators.text_only
     assert "post body" in block_body(blocks=blocks)
 
@@ -220,21 +220,17 @@ async def test_one_refused_image_does_not_cost_the_others(
     serve_conversation(
         monkeypatch, downloader=source.downloader, post=source.post(image_urls=[first, second])
     )
-    accept_image_uploads(monkeypatch, uploaded=[])
-
-    async def load_image_bytes(source: str) -> LoadedMedia:
-        """Refuses the first image and serves the second."""
-        if source == first:
-            raise RuntimeError("cdn said no")
-        return LoadedMedia(data=b"bytes", mime_type="image/jpeg")
-
-    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
+    accept_image_uploads(monkeypatch=monkeypatch, refused=lambda image: image == first)
 
     blocks = await _build(source=source, gemini=True)
 
     assert block_separator(blocks=blocks) == source.separators.attached
     assert [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"] == [
-        {"type": "input_file", "file_id": f"{source.name}_image_1.jpg"}
+        {
+            "type": "input_file",
+            "file_id": f"https://files.test/{source.name}_image_1.jpg",
+            "filename": f"{source.name}_image_1.jpg",
+        }
     ]
     assert "2 image(s), 1 of them attached below" in block_body(blocks=blocks)
 
@@ -367,18 +363,17 @@ async def test_the_block_says_how_many_images_it_actually_carries(
     number of images the post HAS is routinely not the number the model was handed. Saying only
     the first is how a model ends up describing pictures it never received.
     """
-    uploaded: list[str] = []
     carried = source.image_cap + 3
     serve_conversation(
         monkeypatch,
         downloader=source.downloader,
         post=source.post(image_urls=[f"https://cdn.test/{index}.jpg" for index in range(carried)]),
     )
-    accept_image_uploads(monkeypatch, uploaded=uploaded)
+    fetched = accept_image_uploads(monkeypatch=monkeypatch)
 
     blocks = await _build(source=source, gemini=True)
 
-    assert len(uploaded) == source.image_cap
+    assert len(fetched) == source.image_cap
     assert f"{carried} image(s), {source.image_cap} of them attached below." in block_body(
         blocks=blocks
     )

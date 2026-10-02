@@ -7,14 +7,11 @@ a reader sees when the post cannot be read.
 
 from __future__ import annotations
 
-import time
-from types import TracebackType, SimpleNamespace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
-import threading
-import contextlib
 
 import nextcord
 from nextcord import Embed
@@ -22,7 +19,7 @@ from nextcord import Embed
 from discordbot.cogs.parse_threads import cog as parse_threads
 from discordbot.utils.discord_embeds import embed_text_length
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
-from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
+from discordbot.services.platforms.threads import ThreadsOutput
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
@@ -31,9 +28,14 @@ from discordbot.utils.expansion_placeholder import (
 )
 
 from tests.helpers.casting import as_message, as_interaction
-from tests.helpers.link_sources import stub_bot, hosting_planner, hosting_off_planner
+from tests.helpers.link_sources import (
+    THREADS_STUB_COMMENT_TEXT,
+    ThreadsDownloaderStub,
+    stub_bot,
+    guild_message,
+    hosting_planner,
+)
 from tests.helpers.discord_mocks import (
-    FakeGuild,
     FakeInteraction,
     FakeDiscordMessage,
     expansion_payload,
@@ -48,127 +50,13 @@ _URL = "https://www.threads.net/@alice/post/abc"
 
 
 def _cog() -> ThreadsCogs:
-    """Builds the cog on a stub bot, with media hosting off."""
-    cog = ThreadsCogs(bot=stub_bot())
-    cog.media_delivery = hosting_off_planner()
-    return cog
-
-
-def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
-    """Builds a guild message carrying a Threads link."""
-    return FakeDiscordMessage(content=content, guild=FakeGuild(filesize_limit=filesize_limit))
-
-
-# Body of the comment every readable ParseResultStub conversation carries, so a test can assert
-# the Discord expansion never renders it.
-_STUB_COMMENT_TEXT = "a stranger's comment the expansion must ignore"
-
-
-class ParseResultStub:
-    """Context manager stub for Threads parse results."""
-
-    def __init__(
-        self,
-        results: list[ThreadsOutput] | BaseException,
-        exit_error: Exception | None = None,
-        enter_delay_seconds: float = 0.0,
-        output_folder: str | None = None,
-    ) -> None:
-        """Stores parsed results, the entry and exit errors, and how long the entry blocks."""
-        self.results = results
-        self.exit_error = exit_error
-        self.enter_delay_seconds = enter_delay_seconds
-        self.output_folder = output_folder
-        self.exited = False
-        self.wrote: Path | None = None
-        self.finished = threading.Event()
-
-    def __enter__(self) -> ThreadsConversation:
-        """Returns the parsed conversation or raises the configured parsing error.
-
-        A readable post always comes back carrying a comment, because that is what production
-        yields: the expansion is supposed to ignore them, and a stub with no comments in it
-        cannot tell "ignores them" apart from "never saw any".
-
-        `enter_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
-        can reach the caller's give-up path with the walk still running. What happens after that
-        delay is `download_media`'s shape: the media write is attempted against the folder the
-        caller handed over, and never against one this rebuilds.
-        """
-        time.sleep(self.enter_delay_seconds)
-        if self.output_folder is not None:
-            # Named before the write, so an abandoned walk still says where it aimed once the
-            # removal turned that write into a FileNotFoundError. Suppressed for the same
-            # reason production discards it: nothing is awaiting this thread any more.
-            self.wrote = Path(self.output_folder) / "clip.mp4"
-            with contextlib.suppress(OSError):
-                self.wrote.write_bytes(b"clip")
-        self.finished.set()
-        if isinstance(self.results, BaseException):
-            raise self.results
-        return ThreadsConversation(
-            chain=self.results,
-            reply_branches=(
-                [[_thread_output(text=_STUB_COMMENT_TEXT, image_urls=["https://x.test/c.png"])]]
-                if self.results
-                else []
-            ),
-        )
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Keeps fake parsed outputs available after context exit, or fails the cleanup."""
-        self.exited = True
-        if self.exit_error:
-            raise self.exit_error
-
-
-class ThreadsDownloaderStub:
-    """Fake Threads downloader returning a configured parse context manager."""
-
-    def __init__(
-        self,
-        results: list[ThreadsOutput] | BaseException,
-        exit_error: Exception | None = None,
-        enter_delay_seconds: float = 0.0,
-    ) -> None:
-        """Stores parsed results, both failures, and how long each parse blocks on entry."""
-        self.results = results
-        self.exit_error = exit_error
-        self.enter_delay_seconds = enter_delay_seconds
-        self.parsed: list[ParseResultStub] = []
-        self.output_folders: list[str] = []
-
-    def parse(self, url: str) -> ParseResultStub:
-        """Returns a fake parse context manager, recorded so a test can inspect its exit."""
-        result = ParseResultStub(
-            results=self.results,
-            exit_error=self.exit_error,
-            enter_delay_seconds=self.enter_delay_seconds,
-            output_folder=self.output_folders[-1] if self.output_folders else None,
-        )
-        self.parsed.append(result)
-        return result
+    """Builds the cog on a stub bot."""
+    return ThreadsCogs(bot=stub_bot())
 
 
 def _wire_threads(cog: ThreadsCogs, downloader: ThreadsDownloaderStub) -> ThreadsDownloaderStub:
-    """Points the cog's per-invocation factory at one stub, recording the dir it was handed.
-
-    The expansion builds its downloader inside a scratch directory of its own, so the factory
-    is the seam a test takes over; the same stub answers every invocation so a test can
-    still read back what it was asked to do.
-    """
-
-    def factory(output_folder: str) -> ThreadsDownloaderStub:
-        """Records the scratch dir this invocation was given, then serves the shared stub."""
-        downloader.output_folders.append(output_folder)
-        return downloader
-
-    cog.__dict__["downloader_factory"] = factory
+    """Points the cog's per-invocation factory at one stub, which every invocation then reads."""
+    cog.__dict__["downloader_factory"] = downloader.factory
     return downloader
 
 
@@ -336,7 +224,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     await cog.on_message(message=as_message(fake=no_match))
     assert no_match.reactions == []
 
-    success_message = _message()
+    success_message = guild_message(content=_URL)
     _wire_threads(
         cog=cog,
         downloader=ThreadsDownloaderStub(
@@ -346,12 +234,14 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     await cog.on_message(message=as_message(fake=success_message))
     assert success_message.suppressed
     delivered = expansion_payload(message=success_message)
-    assert delivered["files"]
+    # By name: the embed spacer rides as a file too, so a bare non-empty check would pass a card
+    # that lost its clip.
+    assert "clip.mp4" in [file.filename for file in delivered["files"]]
     assert success_message.reactions[-1] == EXPANSION_DONE_EMOJI
     # The parse carries the comments too, but the expansion shows the chain only: the 10-embed
     # cap belongs to the linked post, and a comment would push its own images out.
     assert all(
-        _STUB_COMMENT_TEXT not in (embed.description or "") for embed in delivered["embeds"]
+        THREADS_STUB_COMMENT_TEXT not in (embed.description or "") for embed in delivered["embeds"]
     )
 
 
@@ -375,7 +265,7 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
         cog=cog, downloader=ThreadsDownloaderStub(results=[], enter_delay_seconds=0.3)
     )
 
-    message = _message()
+    message = guild_message(content=_URL)
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
@@ -476,7 +366,7 @@ async def test_threads_cog_delivers_a_trimmed_chain_in_one_message() -> None:
     """
     cog = _cog()
     _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -507,7 +397,7 @@ async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() 
         results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
     )
     _wire_threads(cog=cog, downloader=downloader)
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
 
@@ -527,7 +417,7 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
         results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
     )
     _wire_threads(cog=cog, downloader=downloader)
-    message = _message()
+    message = guild_message(content=_URL)
     errors = capture_logs(monkeypatch, level="error")
     # A warning rather than an error: the scratch directory around the cleanup removes what a
     # failing unlink left, so it is a degraded step rather than a leak nobody clears.
@@ -668,7 +558,7 @@ async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> N
     target.quoted = _thread_output(text="q" * 4096, author_name="bob")
     _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[target]))
 
-    message = _message()
+    message = guild_message(content=_URL)
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
@@ -685,7 +575,7 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
 
     # The 1 MiB envelope margin alone overshoots this ceiling, so no combined body ever fits
     # and even a 3-byte video is peeled out to a hosted URL.
-    message = _message(filesize_limit=4)
+    message = guild_message(content=_URL, filesize_limit=4)
     _wire_threads(
         cog=cog,
         downloader=ThreadsDownloaderStub(
@@ -714,7 +604,7 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
 
     # The ceiling clears the small clip plus the 1 MiB envelope margin but not the 2 MiB clip,
     # so only the big one is peeled to a hosted URL while the small one attaches natively.
-    message = _message(filesize_limit=1024 * 1024 + 200)
+    message = guild_message(content=_URL, filesize_limit=1024 * 1024 + 200)
     _wire_threads(
         cog=cog,
         downloader=ThreadsDownloaderStub(
@@ -724,11 +614,13 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
 
     await cog.on_message(message=as_message(fake=message))
 
-    content = expansion_payload(message=message).get("content") or ""
+    delivered = expansion_payload(message=message)
+    content = delivered.get("content") or ""
     hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
     assert len(hosted) == 1  # only the oversize clip was linked
     assert big.exists() is False  # the big clip was moved into the serve dir
     assert small.exists() is True  # the small clip stayed on disk to attach natively
+    assert "small.mp4" in [file.filename for file in delivered["files"]]
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
@@ -738,7 +630,7 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(data=b"123")
 
-    message = _message(filesize_limit=4)  # tiny ceiling -> video oversize
+    message = guild_message(content=_URL, filesize_limit=4)  # tiny ceiling -> video oversize
     _wire_threads(
         cog=cog,
         downloader=ThreadsDownloaderStub(
@@ -761,7 +653,7 @@ async def test_threads_cog_sends_no_author_icon_for_an_author_without_a_picture(
     target = _thread_output(text="target", author_name="target")
     target.author_icon_url = ""
     _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[parent, target]))
-    message = _message()
+    message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
 

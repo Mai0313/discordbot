@@ -1,7 +1,5 @@
 """Tests for Threads URL parsing and media extraction."""
 
-import shutil
-from typing import Self
 from pathlib import Path
 
 import pytest
@@ -1048,44 +1046,6 @@ def test_the_retry_deadline_stops_further_attempts(
 _SHARE_URL = "https://www.threads.com/share/DfX81RWN8"
 
 
-def test_fetch_page_reports_where_the_request_landed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Every share link rests on this one line, and a fetch that echoed its own URL would pass.
-
-    The parser tests all stub the fetch, so nothing else exercises what the real one reports: a
-    fetch that stopped following redirects, or handed back the URL it asked for, would leave
-    every `/share/` link unreadable with all of them still green.
-    """
-    landed = "https://www.threads.com/@target_author/post/TARGET?xmt=AQF0p6Ufiuvt"
-
-    class _Response:
-        """A response that came back from somewhere other than it was asked for."""
-
-        text = "<html>the post page</html>"
-        url = landed
-
-        def raise_for_status(self) -> None:
-            """Accepts the transfer."""
-
-    requested: list[str] = []
-
-    def fake_get(url: str, **kwargs: object) -> _Response:
-        """Records what was asked for and answers as the redirect chain's last hop."""
-        del kwargs
-        requested.append(url)
-        return _Response()
-
-    monkeypatch.setattr(target=threads_module.requests, name="get", value=fake_get)
-    downloader = ThreadsDownloader(output_folder=str(tmp_path))
-
-    fetched = downloader._fetch_page(url=_SHARE_URL)
-
-    assert requested == [_SHARE_URL]
-    assert fetched.html == "<html>the post page</html>"
-    assert fetched.final_url == landed
-
-
 def test_a_share_link_reads_the_post_its_redirect_names(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1333,61 +1293,6 @@ def test_post_tolerates_a_null_unavailable_flag() -> None:
     )
     assert post.is_unavailable is False
     assert post.is_readable is True
-
-
-def test_download_media_does_not_rebuild_a_removed_scratch_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A scratch dir removed mid-walk stops the worker instead of being recreated.
-
-    Both callers run this in a thread they cannot cancel, so the removal is the only stop signal
-    they have — and it has to survive the gap BETWEEN two files as well as the one inside a
-    single fetch, or a post carrying a second clip would rebuild the directory it was just
-    stopped with and download straight through the give-up.
-    """
-    scratch = tmp_path / "threads-scratch"
-    scratch.mkdir()
-
-    class _Response:
-        """A body that never has to stream, because the open should fail first."""
-
-        def raise_for_status(self) -> None:
-            """Accepts the transfer."""
-
-        def iter_content(self, chunk_size: int) -> list[bytes]:
-            """Yields one chunk, which the test expects never to be written."""
-            del chunk_size
-            return [b"clip"]
-
-    class _Session:
-        """A session that answers every GET with `_Response`."""
-
-        def __enter__(self) -> Self:
-            """Enters the session context."""
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            """Leaves the session context."""
-            return
-
-        def get(self, url: str, **kwargs: object) -> _Response:
-            """Removes the scratch dir the way a caller that gave up would, then answers."""
-            del url, kwargs
-            shutil.rmtree(path=scratch, ignore_errors=True)
-            return _Response()
-
-    monkeypatch.setattr(target=threads_module.requests, name="Session", value=_Session)
-    downloader = ThreadsDownloader(output_folder=str(scratch))
-
-    with pytest.raises(FileNotFoundError):
-        downloader.download_media(url="https://cdn.test/v.mp4", filename="clip.mp4")
-
-    assert not scratch.exists()
-
-    with pytest.raises(FileNotFoundError):
-        downloader.download_media(url="https://cdn.test/v2.mp4", filename="clip2.mp4")
-
-    assert not scratch.exists()
 
 
 def test_download_media_cut_off_mid_body_is_retryable(

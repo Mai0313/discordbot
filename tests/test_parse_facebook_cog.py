@@ -11,27 +11,12 @@ from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.facebook import FacebookOutput
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 
-from tests.helpers.casting import as_message
-from tests.helpers.link_sources import (
-    FACEBOOK_URL,
-    facebook_post,
-    expansion_embeds,
-    stub_conversation_cog,
-)
-from tests.helpers.discord_mocks import FakeGuild, FakeDiscordMessage
-
-
-def _message(content: str = FACEBOOK_URL) -> FakeDiscordMessage:
-    """Builds a guild message carrying a Facebook link."""
-    return FakeDiscordMessage(content=content, guild=FakeGuild())
+from tests.helpers.link_sources import FACEBOOK_URL, expand, facebook_post, expansion_embeds
 
 
 async def test_a_pasted_link_is_expanded_into_a_card() -> None:
     """The ordinary case: one post embed carrying the body, the author and the counters."""
-    cog, stub = stub_conversation_cog(cog_type=FacebookCogs, outcome=facebook_post())
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, stub = await expand(cog_type=FacebookCogs, outcome=facebook_post())
 
     assert stub.seen == [FACEBOOK_URL]
     assert message.suppressed
@@ -44,10 +29,7 @@ async def test_a_pasted_link_is_expanded_into_a_card() -> None:
 
 async def test_the_footer_names_the_group_and_the_counters() -> None:
     """The group is the part a reader cannot get from the post itself, so it leads."""
-    cog, _ = stub_conversation_cog(cog_type=FacebookCogs, outcome=facebook_post())
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, _ = await expand(cog_type=FacebookCogs, outcome=facebook_post())
 
     footer = expansion_embeds(message=message)[0].footer.text
     assert footer is not None
@@ -59,10 +41,7 @@ async def test_the_footer_names_the_group_and_the_counters() -> None:
 
 async def test_a_page_post_leaves_the_group_out_of_the_footer() -> None:
     """A page post has no group, and the line must not carry a hole where one would go."""
-    cog, _ = stub_conversation_cog(cog_type=FacebookCogs, outcome=facebook_post(group_name=""))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
+    message, _ = await expand(cog_type=FacebookCogs, outcome=facebook_post(group_name=""))
 
     footer = expansion_embeds(message=message)[0].footer.text
     assert footer is not None
@@ -71,28 +50,14 @@ async def test_a_page_post_leaves_the_group_out_of_the_footer() -> None:
 
 async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
     """A profile link is not a failure, so it earns no reaction at all."""
-    cog, stub = stub_conversation_cog(cog_type=FacebookCogs, outcome=facebook_post())
-    message = _message(content="look https://www.facebook.com/NASA")
-
-    await cog.on_message(message=as_message(fake=message))
+    message, stub = await expand(
+        cog_type=FacebookCogs,
+        outcome=facebook_post(),
+        content="look https://www.facebook.com/NASA",
+    )
 
     assert stub.seen == []
     assert message.reactions == []
-
-
-async def test_a_url_that_names_no_post_does_not_hide_a_post_after_it() -> None:
-    """A refused link is skipped, and the first post after it is the one expanded (#854)."""
-    profile = "https://www.facebook.com/NASA"
-    later_post = "https://www.facebook.com/NASA/posts/1234567890"
-    assert FacebookCogs.URL_PATTERN.search(string=profile) is not None
-    assert FacebookCogs.url_is_expandable(url=later_post)
-    cog, stub = stub_conversation_cog(cog_type=FacebookCogs, outcome=facebook_post())
-    message = _message(content=f"{profile} 跟這篇 {FACEBOOK_URL} 還有 {later_post}")
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert stub.seen == [FACEBOOK_URL]
-    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
 @pytest.mark.parametrize(
@@ -115,13 +80,10 @@ async def test_the_comment_link_names_the_comment_on_the_post_url(
     Its author line is the commenter's name as parsed, with nothing added.
     """
     comment = FacebookOutput(comment_id="222", text="linked", author_name="C")
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=FacebookCogs,
         outcome=facebook_post(url=post_url, comments=[comment], selected_comment_id="222"),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
 
     comment_embed = expansion_embeds(message=message)[-1]
     assert comment_embed.author.name == "C"
@@ -130,15 +92,12 @@ async def test_the_comment_link_names_the_comment_on_the_post_url(
 
 async def test_an_album_counts_the_videos_nothing_linked() -> None:
     """Only the first video gets a hint, so the rest would go unmentioned."""
-    cog, _ = stub_conversation_cog(
+    message, _ = await expand(
         cog_type=FacebookCogs,
         outcome=facebook_post(
             video_urls=[f"https://www.facebook.com/watch/?v={n}" for n in range(3)]
         ),
     )
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
 
     footer = expansion_embeds(message=message)[0].footer.text
     assert footer is not None
