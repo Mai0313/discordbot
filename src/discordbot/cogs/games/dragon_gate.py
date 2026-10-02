@@ -44,7 +44,7 @@ class DragonGatePairChoiceRequiredError(DragonGateError):
 
 
 class DragonGatePairChoiceUnavailableError(DragonGateError):
-    """Raised when high / low is selected for a non-pair gate."""
+    """Raised when a high / low guess the gate does not offer is selected."""
 
 
 class DragonGateBetRangeError(DragonGateError):
@@ -87,7 +87,11 @@ class DragonGateTurn(BaseModel):
     participant: GameParticipant = Field(..., description="Player taking this turn.")
     pillars: list[Card] = Field(..., description="The two gate pillar cards.")
     direction: DragonGateDirection | None = Field(
-        default=None, description="High/low choice for a same-point gate, None until chosen."
+        default=None,
+        description=(
+            "High/low choice for a same-point gate, None until chosen; set at deal when the"
+            " gate offers only one guess."
+        ),
     )
 
     @property
@@ -104,6 +108,21 @@ class DragonGateTurn(BaseModel):
     def upper_value(self) -> int:
         """Returns the higher pillar point value."""
         return max(card_value(card=self.pillars[0]), card_value(card=self.pillars[1]))
+
+    @property
+    def pair_directions(self) -> tuple[DragonGateDirection, ...]:
+        """Returns the high/low guesses this gate offers: none off a pair, else each that can win.
+
+        Nothing ranks below an ace or above a king, so an ace pair offers only higher and a king
+        pair only lower.
+        """
+        if not self.is_pair:
+            return ()
+        if self.pillars[0].rank == "A":
+            return ("higher",)
+        if self.pillars[0].rank == "K":
+            return ("lower",)
+        return ("higher", "lower")
 
 
 class DragonGateTurnResult(BaseModel):
@@ -224,8 +243,8 @@ class DragonGateRound(BaseModel):
     def choose_pair_direction(self, user_id: int, direction: DragonGateDirection) -> None:
         """Stores the active player's high/low choice for a same-point gate."""
         active_turn = self._require_active_turn(user_id=user_id)
-        if not active_turn.is_pair:
-            raise DragonGatePairChoiceUnavailableError("This turn is not a pair")
+        if direction not in active_turn.pair_directions:
+            raise DragonGatePairChoiceUnavailableError("This gate does not offer that direction")
         self.active_turn = active_turn.model_copy(update={"direction": direction})
 
     def needs_pair_choice(self) -> bool:
@@ -353,13 +372,19 @@ class DragonGateRound(BaseModel):
                 return
 
     def _deal_next_turn(self) -> None:
-        """Deals a new playable gate for the current participant."""
+        """Deals a new playable gate for the current participant.
+
+        A pair that offers only one guess is dealt with that guess already made.
+        """
         participant = self.participants[self.current_player_index]
         pillars = self._draw_open_gate_pillars()
         self.turn_number += 1
-        self.active_turn = DragonGateTurn(
+        turn = DragonGateTurn(
             turn_number=self.turn_number, participant=participant, pillars=pillars
         )
+        if len(turn.pair_directions) == 1:
+            turn = turn.model_copy(update={"direction": turn.pair_directions[0]})
+        self.active_turn = turn
 
     def _draw_open_gate_pillars(self) -> list[Card]:
         """Draws pillar cards until the pair or gap creates a legal gate."""
