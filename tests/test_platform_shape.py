@@ -345,10 +345,10 @@ def test_a_parse_half_takes_the_same_url(name: str) -> None:
     """`parse` is optional, but a platform that has one spells its url like `parse_metadata` does.
 
     Only Threads has it. Three platforms write files, but their second methods have nothing
-    a base could hold them to: Threads yields a conversation from a context manager, because what
-    it cleans up hangs off that conversation, while Douyin and yt-dlp spell theirs `download` and
-    return a model naming their files, taking their own options alongside the url. That is why the
-    base declares no second method at all — see its module docstring.
+    a base could hold them to: Threads returns a conversation with each file on the post that
+    owns it, while Douyin and yt-dlp spell theirs `download` and return a model naming their
+    files, taking their own options alongside the url. That is why the base declares no second
+    method at all — see its module docstring.
     """
     parse = getattr(_downloader_classes()[name], "parse", None)
     if parse is None:

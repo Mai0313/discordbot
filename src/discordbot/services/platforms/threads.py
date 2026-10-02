@@ -7,9 +7,7 @@ from typing import Any
 from pathlib import Path
 from datetime import UTC, datetime
 from functools import cached_property
-import contextlib
 from urllib.parse import urlparse
-from collections.abc import Generator
 
 import logfire
 from pydantic import (
@@ -707,11 +705,6 @@ class ThreadsOutput(PlatformOutput):
             f"🔗 {self.quote_count:,} | ↗️ {self.share_count:,}"
         )
 
-    def unlink(self) -> None:
-        """Deletes downloaded video files for this post."""
-        for path in self.video_paths:
-            path.unlink(missing_ok=True)
-
 
 class ThreadsConversation(PlatformConversation[ThreadsOutput]):
     """A parsed Threads post: its reply chain plus the comments underneath it.
@@ -726,15 +719,7 @@ class ThreadsConversation(PlatformConversation[ThreadsOutput]):
     gives every reply a post URL of its own, so a link to one makes it this chain's `target`
     rather than a comment singled out under another post — there is nothing for the base's
     lookup to be overridden for.
-
-    What is declared here is the cleanup: only Threads writes a file, so only Threads has
-    anything to delete.
     """
-
-    def unlink(self) -> None:
-        """Deletes every downloaded video file this conversation owns."""
-        for post in self.posts:
-            post.unlink()
 
 
 _SJS_PATTERN = re.compile(
@@ -1202,38 +1187,28 @@ class ThreadsDownloader(PlatformDownloader):
         ]
         return ThreadsConversation(chain=chain, reply_branches=reply_branches)
 
-    @contextlib.contextmanager
-    def parse(self, url: str) -> Generator[ThreadsConversation]:
-        """Parses a Threads post URL and yields the conversation, target media included.
+    def parse(self, url: str) -> ThreadsConversation:
+        """Parses a Threads post URL into the conversation, target media included.
 
         The target post (the chain's last element) has its videos downloaded into
-        `output_folder`; nothing else does. Downloaded video files are removed when the
-        context manager exits.
+        `output_folder`; nothing else does. That folder is the caller's to create and remove,
+        and removing it is what deletes the downloads (`download_media` has why).
 
         Args:
             url: The Threads post URL.
 
-        Yields:
+        Returns:
             The parsed conversation. Its `chain` is empty when no post is found.
         """
-        # Once, here, ahead of every fetch, rather than per file inside `stream_to_file`: see
-        # that function's docstring for why rebuilding it mid-walk would cost a caller who gave
-        # up its only way to stop this. A caller already handing over a scratch directory of its
-        # own gets a no-op; the standalone use gets a folder it did not have to make.
-        Path(self.output_folder).mkdir(parents=True, exist_ok=True)
-        conversation = self._build_conversation(url=url, download=True)
-        try:
-            yield conversation
-        finally:
-            conversation.unlink()
+        return self._build_conversation(url=url, download=True)
 
     def parse_metadata(self, url: str) -> ThreadsConversation:
         """Parses a Threads post URL into the conversation WITHOUT downloading media.
 
         Mirrors `parse` with `download=False`, so no video is written to disk and there is
-        nothing to clean up (not a context manager). The reply pipeline uses this: it fetches the
-        media it wants (the target's, plus that of the post it quotes) from the returned URLs
-        itself, straight to the answer model.
+        nothing to clean up. The reply pipeline uses this: it fetches the media it wants (the
+        target's, plus that of the post it quotes) from the returned URLs itself, straight to
+        the answer model.
 
         Args:
             url: The Threads post URL.

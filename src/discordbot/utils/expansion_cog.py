@@ -417,8 +417,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         log line its class earns, so every platform answers a refusal the same way.
 
         Anything that must outlive the read and be cleaned up after delivery goes on `stack` —
-        a scratch directory, a downloaded file, a walk's context manager. It unwinds once the
-        card is on screen.
+        the scratch directory a download writes into. It unwinds once the card is on screen.
 
         Args:
             message: The message carrying the link, so a log line here can be joined to the

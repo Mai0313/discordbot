@@ -193,7 +193,7 @@ def _stage_conversation(
 def _stage_threads(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     """Stages the Threads cog, whose unreadable post is a walk that found no chain.
 
-    A failure is raised as the walk is entered, where `ThreadsDownloader.parse` raises one.
+    A failure is raised by the walk, where `ThreadsDownloader.parse` raises one.
     """
     url = _THREADS_URL
     staged = _Staged(cog=cog(bot=stub_bot()), message=guild_message(content=url))
