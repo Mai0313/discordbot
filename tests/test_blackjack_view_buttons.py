@@ -10,9 +10,11 @@ the bot's decisions come from the EV engine, so both are asserted exactly.
 from random import Random
 from typing import Any, Literal, cast
 import asyncio
+import sqlite3
 
 import pytest
 from nextcord.ui import Button
+from sqlalchemy.exc import OperationalError
 
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import (
@@ -22,11 +24,16 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs.games.shoe import BlackjackShoeStore
+from discordbot.typings.economy import RoundSettlementResult
 from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackPlayerHand
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.interactions import table_edit_kwargs
 from discordbot.cogs.games.presentation import settlement_metadata
-from discordbot.services.economy.database import get_balance, get_casino_ledger
+from discordbot.services.economy.database import (
+    get_balance,
+    get_casino_ledger,
+    apply_blackjack_settlement,
+)
 from discordbot.cogs.games.blackjack_views import (
     BlackjackView,
     build_final_embeds,
@@ -651,7 +658,7 @@ async def test_apply_bot_action_rejects_action_not_in_allowed() -> None:
 
 
 async def test_finalize_persists_remaining_shoe_to_the_store(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: ScheduledDeletes
 ) -> None:
     """Settling a round writes the round's remaining shoe back into the channel store."""
     store = BlackjackShoeStore()
@@ -667,14 +674,13 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     ]
     view = BlackjackView(round_state=round_state, owner=seat(), shoe_store=store, channel_id=42)
 
-    async def _stop_after_save(**_kwargs: object) -> None:
-        raise RuntimeError("stop after shoe save")
+    async def _refuse_settlement(**_kwargs: object) -> None:
+        raise RuntimeError("settlement stubbed out")
 
-    # Settlement runs after the shoe save, so raising there proves the save already ran.
-    monkeypatch.setattr(blackjack_views, "settle_blackjack_player", _stop_after_save)
+    # The shoe save is what is under test, so no seat needs a ledger to settle against.
+    monkeypatch.setattr(blackjack_views, "settle_blackjack_player", _refuse_settlement)
 
-    with pytest.raises(RuntimeError, match="stop after shoe save"):
-        await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
+    await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
 
     # The store holds a decoupled copy of the round's remaining shoe.
     assert store.shoes.get(42) == round_state.shoe
@@ -773,6 +779,65 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     assert len(message.edits) == 2
     assert message.edits[1]["view"] is None
     assert scheduled_cleanups.messages == [message]
+
+
+async def test_a_seat_whose_settlement_fails_leaves_the_rest_of_the_table_to_settle(
+    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: ScheduledDeletes
+) -> None:
+    """A seat whose write fails is left unsettled, while the seats after it still settle.
+
+    The table still shows its result and is deleted on schedule. The failed seat shows no payout
+    and gets no history row, since nothing was booked for it.
+    """
+    seats = [
+        seat(user_id=user_id, display_name=name)
+        for user_id, name in ((1, "Alice"), (2, "Bob"), (3, "Carol"))
+    ]
+    for participant in seats:
+        await seed_balance(
+            user_id=participant.user_id, name=participant.account_name, amount=1_000
+        )
+    round_state = blackjack_round(
+        hands=[[card(rank="10"), card(rank="9", suit="♥")] for _ in seats],
+        dealer=[card(rank="10", suit="♣"), card(rank="7", suit="♦")],
+        seats=seats,
+        finished=True,
+    )
+
+    async def refuse_bob(**kwargs: Any) -> RoundSettlementResult:  # noqa: ANN401 -- forwarded as-is
+        if kwargs["player_id"] == 2:
+            raise OperationalError("settle", None, sqlite3.OperationalError("database is locked"))
+        return await apply_blackjack_settlement(**kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.games.settlement.apply_blackjack_settlement", refuse_bob)
+    recorded: list[BlackjackPlayerResult] = []
+
+    async def record_blackjack_history(
+        results: list[BlackjackPlayerResult], **_kwargs: object
+    ) -> None:
+        recorded.extend(results)
+
+    monkeypatch.setattr(blackjack_views, "record_blackjack_history", record_blackjack_history)
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    message = FakeDiscordMessage()
+    view = _make_view(round_state=round_state)
+
+    await view.finalize(message=as_message(fake=message), interaction=None)
+    await view.wait_for_background_tasks()
+
+    assert [await get_balance(user_id=user_id) for user_id in (1, 2, 3)] == [1_100, 1_000, 1_100]
+    _, alice, bob, carol = message.edits[-1]["embeds"]
+    assert [embed.footer.text for embed in (alice, bob, carol)] == [
+        "已結算",
+        "結算失敗, 這局不算",
+        "已結算",
+    ]
+    assert "餘額" not in cast("str", bob.description)
+    assert scheduled_cleanups.messages == [message]
+    assert {result.participant.user_id for result in recorded} == {1, 3}
+    assert [(fields["user_id"], fields["error_type"]) for _, fields in errors] == [
+        (2, "OperationalError")
+    ]
 
 
 @pytest.mark.parametrize(

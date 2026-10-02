@@ -440,22 +440,19 @@ def build_final_embeds(
     }
     for player in round_state.players:
         result = results_by_user.get(player.participant.user_id)
-        if result is None:
-            logfire.error(
-                "Blackjack player has no settlement result at final embed build",
-                user_id=player.participant.user_id,
-            )
         settlement = result.settlement if result is not None else None
-        embeds.append(
-            build_player_seat_embed(
-                player=player,
-                round_state=round_state,
-                active_hand_index=None,
-                insurance_status=None,
-                settlement=settlement,
-                dealer_total=dealer_total,
-            )
+        seat_embed = build_player_seat_embed(
+            player=player,
+            round_state=round_state,
+            active_hand_index=None,
+            insurance_status=None,
+            settlement=settlement,
+            dealer_total=dealer_total,
         )
+        if result is None:
+            # Only a seat whose settlement raised has no result; nothing was booked for it.
+            seat_embed.set_footer(text="結算失敗, 這局不算")
+        embeds.append(seat_embed)
     return embeds
 
 
@@ -796,7 +793,7 @@ class BlackjackView(GameView):
     async def finalize(
         self, message: Message, interaction: Interaction[commands.Bot] | None
     ) -> None:
-        """Settles every player exactly once."""
+        """Settles every player at most once."""
         async with self._round_lock:
             await self._finalize_locked(message=message, interaction=interaction)
 
@@ -1012,7 +1009,11 @@ class BlackjackView(GameView):
     async def _finalize_locked(
         self, message: Message, interaction: Interaction[commands.Bot] | None
     ) -> None:
-        """Applies settlements and publishes the final table embeds once."""
+        """Applies settlements and publishes the final table embeds once.
+
+        A seat whose settlement raises is left unsettled and gets no history row; the other seats
+        still settle and the table still publishes.
+        """
         if self._settled:
             return
         self._settled = True
@@ -1047,7 +1048,22 @@ class BlackjackView(GameView):
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
-            settlement = await settle_blackjack_player(round_state=self.round_state, player=player)
+            try:
+                settlement = await settle_blackjack_player(
+                    round_state=self.round_state, player=player
+                )
+            # Broad on purpose: whatever the seat's write raised on, it rolled back and booked
+            # nothing, so it must not keep the later seats from settling or the table from closing.
+            except Exception as exc:
+                logfire.error(
+                    "Blackjack seat settlement failed; seat left unsettled",
+                    user_id=player.participant.user_id,
+                    channel_id=self._channel_id,
+                    message_id=message.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+                continue
             results.append(
                 BlackjackPlayerResult(participant=player.participant, settlement=settlement)
             )
