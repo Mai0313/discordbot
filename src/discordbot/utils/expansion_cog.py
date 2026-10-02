@@ -235,6 +235,11 @@ def context_card_budget(card: Embed) -> int:
     return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
 
 
+def omitted_images_note(count: int) -> str:
+    """The footer note counting a post's images the card leaves out."""
+    return f"🖼️ 另有 {count} 張"
+
+
 def expansion_failure_emoji(error: Exception) -> str:
     """Picks the mark a failed read earns, the same way for every platform.
 
@@ -823,7 +828,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         notes: list[str] = []
         remaining_images = len(post.image_urls) - shown_images
         if remaining_images > 0:
-            notes.append(f"🖼️ 另有 {remaining_images} 張")
+            notes.append(omitted_images_note(count=remaining_images))
         remaining_videos = len(post.video_urls) - 1
         if remaining_videos > 0:
             notes.append(f"🎬 另有 {remaining_videos} 部影片")
