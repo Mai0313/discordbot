@@ -77,6 +77,12 @@ _CONTEXT_CARD_SLACK = 400
 _COMMENT_RESERVE = 2000
 _COMMENT_HEADER = "💬 **指定的留言**"
 
+# Where a poster kept a link out of sight: behind spoiler bars, which may cover the text around it
+# too, or in the angle brackets that turn Discord's preview off. Paired the way Discord pairs them,
+# left to right and shortest first, so `||a|| link ||b||` leaves the link in the open. Code spans
+# and escapes are not parsed, so a `||` inside one pairs with the next real bar.
+_HIDDEN_LINK_RE = re.compile(pattern=r"\|\|.+?\|\||<[^\s<>]+>", flags=re.DOTALL)
+
 
 class CardPost(Protocol):
     """What the shared card reads off one post or comment.
@@ -384,7 +390,7 @@ class ExpansionCog[ParsedT](commands.Cog):
     """The platform's display name, for log messages."""
 
     URL_PATTERN: ClassVar[re.Pattern[str]]
-    """The first match `url_is_expandable` accepts selects the link to expand."""
+    """The first match in the open that `url_is_expandable` accepts selects the link to expand."""
 
     PLACEHOLDER_TEXT: ClassVar[str]
     """The line shown under the link until the card replaces it."""
@@ -491,10 +497,12 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Expands the first link this cog's pattern matches and `url_is_expandable` accepts.
+        """Expands the first link in the open that this cog's pattern matches and accepts.
 
         A refused match is skipped rather than ending the scan, so a profile link ahead of a
-        post never hides the post.
+        post never hides the post. A link behind spoiler bars or in angle brackets is skipped
+        the same way: the poster asked Discord not to show it, and a card would show it to
+        everyone.
 
         Args:
             message: The message that was sent.
@@ -506,7 +514,11 @@ class ExpansionCog[ParsedT](commands.Cog):
             (
                 match.group(0)
                 for match in self.URL_PATTERN.finditer(string=message.content)
-                if self.url_is_expandable(url=match.group(0))
+                if not any(
+                    hidden.start() < match.start() < hidden.end()
+                    for hidden in _HIDDEN_LINK_RE.finditer(string=message.content)
+                )
+                and self.url_is_expandable(url=match.group(0))
             ),
             None,
         )

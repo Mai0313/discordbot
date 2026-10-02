@@ -47,6 +47,8 @@ unless it is the kind of thing that is safe anywhere.
 
 A link that is only incidental to the question is left alone.
 
+Paste a link behind spoiler bars (`||link||`) or in angle brackets (`<link>`) without mentioning me and I leave it unexpanded.
+
 ## Memory
 
 - `/memory show` — what I remember about you
