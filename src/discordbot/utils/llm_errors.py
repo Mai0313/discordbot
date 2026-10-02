@@ -11,6 +11,12 @@ import json
 from openai import APIError, APIConnectionError
 from google.genai.errors import APIError as GenAIAPIError
 
+# `interactions.create` raises its own hierarchy, unrelated to `google.genai.errors`, and the
+# SDK exports it from no public module; an upgrade that moves it fails this import loudly
+# instead of leaving every Interactions failure unretried.
+from google.genai._gaos.lib.compat_errors import APIError as InteractionsAPIError
+from google.genai._gaos.lib.compat_errors import APIConnectionError as InteractionsConnectionError
+
 # LiteLLM surfaces upstream provider errors as a chain like
 # `litellm.X: litellm.Y: VertexException - b'{"error": {"message": "..."}}'`,
 # where the provider's actual JSON body is embedded as a Python bytes literal.
@@ -118,16 +124,16 @@ def extract_friendly_error(exc: BaseException) -> str:
 def llm_status_code(exc: BaseException) -> int | None:
     """The HTTP status a failed LLM call carried, or None when it carries none.
 
-    Three shapes, read in order. An `openai` failure the SDK typed keeps the status on
-    `status_code`. A `google.genai` one keeps it on `code` as an int, which is why that
-    attribute is read before the body rather than after: `openai` also has a `code`, but its
-    own is the body's semantic string (`rate_limit_exceeded`), so the int test is what tells
-    the two apart. And the one this project actually has to classify has neither, because
-    LiteLLM reports a mid-stream provider failure as an SSE error frame holding
-    `ProxyException.to_dict()` and `openai`'s streaming layer turns that into a bare
-    `APIError` whose only trace of the status is `code` inside the decoded body it attaches.
-    That one is a decimal STRING, since `ProxyException` stringifies it to match the OpenAI
-    error schema.
+    Three shapes, read in order. An `openai` failure the SDK typed, like a `google-genai`
+    Interactions one, keeps the status on `status_code`. A `google.genai.errors` one keeps
+    it on `code` as an int, which is why that attribute is read before the body rather than
+    after: `openai` also has a `code`, but its own is the body's semantic string
+    (`rate_limit_exceeded`), so the int test is what tells the two apart. And the one this
+    project actually has to classify has neither, because LiteLLM reports a mid-stream
+    provider failure as an SSE error frame holding `ProxyException.to_dict()` and `openai`'s
+    streaming layer turns that into a bare `APIError` whose only trace of the status is
+    `code` inside the decoded body it attaches. That one is a decimal STRING, since
+    `ProxyException` stringifies it to match the OpenAI error schema.
 
     Args:
         exc: The exception a failed LLM call raised.
@@ -151,17 +157,19 @@ def llm_status_code(exc: BaseException) -> int | None:
 def is_retryable_llm_error(exc: BaseException) -> bool:
     """Whether re-sending the same request could plausibly succeed.
 
-    True for a transport failure (which `APIConnectionError` covers along with its
-    `APITimeoutError` subclass) and for a status the provider guides call transient. An
+    True for a transport failure (each SDK's `APIConnectionError`, its `APITimeoutError`
+    subclass included) and for a status the provider guides call transient. An
     unclassifiable failure is NOT retried: a status that cannot be read is as likely to be a
     refusal of the request itself as an outage, and re-sending a refusal only makes the user
     wait for it repeatedly.
 
-    Only an LLM SDK's own exception is even considered, and that gate is load-bearing rather
-    than tidiness: `llm_status_code` reads a plain int `code`, and a `nextcord.HTTPException`
-    carries one too -- the Discord JSON error code, where 50035 (Invalid Form Body, what an
-    oversized final write raises) would read as a 5xx and re-run the whole answer to fail the
-    same way. A Discord write failing is not a reason to ask the model again.
+    Only an LLM SDK's own exception is even considered: `openai`'s, and both of
+    `google-genai`'s, whose Interactions surface raises a hierarchy of its own. That gate is
+    load-bearing rather than tidiness: `llm_status_code` reads a plain int `code`, and a
+    `nextcord.HTTPException` carries one too -- the Discord JSON error code, where 50035
+    (Invalid Form Body, what an oversized final write raises) would read as a 5xx and re-run
+    the whole answer to fail the same way. A Discord write failing is not a reason to ask
+    the model again.
 
     Args:
         exc: The exception a failed LLM call raised.
@@ -169,9 +177,9 @@ def is_retryable_llm_error(exc: BaseException) -> bool:
     Returns:
         Whether the caller should try again.
     """
-    if not isinstance(exc, (APIError, GenAIAPIError)):
+    if not isinstance(exc, (APIError, GenAIAPIError, InteractionsAPIError)):
         return False
-    if isinstance(exc, APIConnectionError):
+    if isinstance(exc, (APIConnectionError, InteractionsConnectionError)):
         return True
     status = llm_status_code(exc=exc)
     if status is None:

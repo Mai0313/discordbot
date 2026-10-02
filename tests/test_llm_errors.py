@@ -142,7 +142,7 @@ def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() ->
     assert is_retryable_llm_error(exc=APIConnectionError(request=request)) is True
     assert is_retryable_llm_error(exc=APITimeoutError(request=request)) is True
 
-    # The YouTube answer backend is direct-to-Google, where the status is an int on `.code`.
+    # A `google.genai.errors` failure keeps the status as an int on `.code`.
     assert llm_status_code(exc=ClientError(429, {"error": {"message": "slow down"}}, None)) == 429
     assert (
         is_retryable_llm_error(exc=ClientError(429, {"error": {"message": "slow"}}, None)) is True
