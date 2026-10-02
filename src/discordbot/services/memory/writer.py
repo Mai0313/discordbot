@@ -5,7 +5,7 @@ so the per-user and the per-server memory share every gate, renderer and redacti
 """
 
 import re
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, cast
 
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
@@ -49,8 +49,6 @@ from discordbot.services.memory.server_prompts import (
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
-
-_OutputT = TypeVar("_OutputT", bound=BaseModel)
 
 # Both phases run on model output that originated in user conversations, so
 # secrets are scrubbed before upload and again on the model output. Patterns
@@ -448,9 +446,9 @@ class MemoryWriterAI(BaseModel):
             end_user_label="memory_tone_forget",
         )
 
-    async def _parse(
-        self, instructions: str, user_text: str, text_format: type[_OutputT], end_user_label: str
-    ) -> _OutputT | None:
+    async def _parse[OutputT: BaseModel](
+        self, instructions: str, user_text: str, text_format: type[OutputT], end_user_label: str
+    ) -> OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
         Delegates to the shared `parse_responses_or_none`, which owns the call surface and
