@@ -8,16 +8,14 @@ acknowledged before that write, and who gets to see the answer.
 from __future__ import annotations
 
 import ast
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from pathlib import Path
 from datetime import UTC, datetime
 from unittest.mock import ANY
 
 import pytest
-import logfire
 
-from discordbot.utils import interaction_responses as interactions
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.typings.economy import (
@@ -41,9 +39,16 @@ from discordbot.typings.economy import (
 )
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.cogs.economy.embeds import (
+    BORROW_COLOR,
+    LEADERBOARD_COLOR,
+    LEADERBOARD_TITLE,
+    LOSS_LEADERBOARD_COLOR,
+    LOSS_LEADERBOARD_TITLE,
+)
 from discordbot.utils.message_cleanup import list_pending_public_messages
 
-from tests.helpers.games import ScheduledDeletes, attached_button
+from tests.helpers.games import attached_button
 from tests.helpers.casting import (
     as_bot,
     as_message,
@@ -53,7 +58,9 @@ from tests.helpers.casting import (
     make_server_error,
 )
 from tests.helpers.economy import personal_loan_contract
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, FakeDiscordMessage
+from tests.helpers.logfire_capture import capture_levels
+from tests.helpers.message_cleanup import record_scheduled_deletes
 
 if TYPE_CHECKING:
     from typing import Unpack
@@ -105,7 +112,7 @@ async def fake_top_n(limit: int | None, include_hidden: bool = False) -> list[Le
     ]
 
 
-async def fake_top_losers(limit: int, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
+async def fake_top_losers(limit: int) -> list[LossLeaderboardEntry]:
     """Returns one fake loss leaderboard row."""
     return [
         LossLeaderboardEntry(
@@ -215,9 +222,7 @@ async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
     del guild_id, user_id
 
 
-async def fake_get_central_bank_status(
-    guild_id: int, exclude_user_ids: tuple[int, ...] = ()
-) -> CentralBankStatus:
+async def fake_get_central_bank_status(guild_id: int) -> CentralBankStatus:
     """Returns fake central-bank capacity."""
     return CentralBankStatus(
         participant_count=3,
@@ -231,33 +236,6 @@ async def fake_get_central_bank_status(
 async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseResult:
     """Returns a successful fake VIP purchase result."""
     return VipPurchaseResult(new_balance=500_000, cost=VIP_PURCHASE_COST)
-
-
-def ignore_scheduled_public_message(
-    message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
-) -> None:
-    """Ignores cleanup scheduling in command smoke tests."""
-    return
-
-
-def _record_scheduled(
-    monkeypatch: pytest.MonkeyPatch, module: ModuleType
-) -> list[FakeDiscordMessage]:
-    """Replaces `module`'s public-message cleanup with a recorder; returns what it scheduled."""
-    scheduled: list[FakeDiscordMessage] = []
-
-    def record_scheduled(
-        message: FakeDiscordMessage,
-        delay: float = 180,
-        user_name: str | None = None,
-        interaction: object | None = None,
-    ) -> None:
-        """Records the message handed over for cleanup."""
-        del delay, user_name, interaction
-        scheduled.append(message)
-
-    monkeypatch.setattr(module, "schedule_public_message_delete", record_scheduled)
-    return scheduled
 
 
 def _record_transfers(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, int | str]]:
@@ -459,7 +437,7 @@ async def test_a_settled_loan_is_posted_to_the_channel(monkeypatch: pytest.Monke
     The defer stays ephemeral for the failure's sake, and the first followup after it fills that
     placeholder with its flag, so a settlement sent as that followup reaches only the caller.
     """
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     for command, ledger_call, kwargs in _LOAN_SETTLEMENTS:
         monkeypatch.setattr(economy, ledger_call, fake_loan_payment)
@@ -480,7 +458,7 @@ async def test_a_settled_loan_is_posted_to_the_channel(monkeypatch: pytest.Monke
             f"{command} posted its settlement only to the caller"
         )
         assert interaction.original_deleted is True, f"{command} left the caller a second copy"
-    assert len(scheduled) == len(_LOAN_SETTLEMENTS)
+    assert len(scheduled.messages) == len(_LOAN_SETTLEMENTS)
 
 
 def test_every_money_command_acknowledges_before_it_mutates() -> None:
@@ -546,7 +524,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies economy slash commands call the database facade and send embeds."""
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
     monkeypatch.setattr(economy, "get_vip", fake_get_vip)
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
@@ -610,7 +588,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.central_bank_status.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
     assert len(interaction.followup.sent) == 21
-    assert len(scheduled) == 12
+    assert len(scheduled.messages) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert interaction.followup.sent[1]["files"][0].filename == "economy_leaderboard.png"
@@ -727,9 +705,7 @@ async def test_central_bank_decision_buttons_require_admin_and_allow_self_approv
 
     monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
-    view = CentralBankLoanDecisionView(
-        bot=_bot(), proposal_id=42, creator_id=1, allow_self_approval=True
-    )
+    view = CentralBankLoanDecisionView(proposal_id=42, creator_id=1, allow_self_approval=True)
     approve_button = attached_button(view=view, custom_id="central_bank:approve")
 
     denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"), administrator=False)
@@ -755,7 +731,7 @@ async def test_central_bank_decision_buttons_require_admin_and_allow_self_approv
     assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
     assert allowed.edits[0]["view"] is None
 
-    cancel_view = CentralBankLoanDecisionView(bot=_bot(), proposal_id=43, creator_id=1)
+    cancel_view = CentralBankLoanDecisionView(proposal_id=43, creator_id=1)
     cancel_button = attached_button(view=cancel_view, custom_id="central_bank:cancel")
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
@@ -864,9 +840,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
     monkeypatch.setattr(views, "reject_loan_proposal", resolve_and_note)
     monkeypatch.setattr(views, "cancel_loan_proposal", resolve_and_note)
 
-    central = CentralBankLoanDecisionView(
-        bot=_bot(), proposal_id=42, creator_id=1, allow_self_approval=True
-    )
+    central = CentralBankLoanDecisionView(proposal_id=42, creator_id=1, allow_self_approval=True)
     credit = CreditLoanDecisionView(proposal_id=43, lender_id=1, creator_id=1)
     buttons = [
         (central, "central_bank:approve"),
@@ -905,7 +879,7 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
         )
 
     monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=views)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
 
     credit_message = FakeDiscordMessage()
     credit_view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -913,14 +887,14 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     await credit_view.on_timeout()
 
     central_message = FakeDiscordMessage()
-    central_view = CentralBankLoanDecisionView(bot=_bot(), proposal_id=43, creator_id=1)
+    central_view = CentralBankLoanDecisionView(proposal_id=43, creator_id=1)
     central_view.message = as_message(fake=central_message)
     await central_view.on_timeout()
 
     # order-contract: each `on_timeout` is awaited to completion before the next view exists.
     assert rejected == [42, 43]
     # order-contract: same sequential awaits, so cleanup is scheduled in construction order.
-    assert scheduled == [credit_message, central_message]
+    assert scheduled.messages == [credit_message, central_message]
     assert credit_message.edits[0]["view"] is None
     assert central_message.edits[0]["view"] is None
     credit_timeout_title = credit_message.edits[0]["embed"].title
@@ -952,14 +926,8 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
         )
 
     monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=views)
-    reports: list[tuple[str, dict[str, object]]] = []
-    for name in ("info", "warn"):
-        monkeypatch.setattr(
-            target=logfire,
-            name=name,
-            value=lambda _message, name=name, **fields: reports.append((name, fields)),
-        )
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     message = FakeDiscordMessage()
     message.edit_failure = failure
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -967,8 +935,10 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
 
     await view.on_timeout()
 
-    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
-    assert scheduled == [message]
+    assert [(name, "_exc_info" in fields) for name, _message, fields in reports] == [
+        (level, traceback)
+    ]
+    assert scheduled.messages == [message]
 
 
 @pytest.mark.parametrize(
@@ -991,8 +961,7 @@ async def test_a_loan_panel_kept_open_by_a_refused_press_closes_through_it(
         )
 
     monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    scheduled = ScheduledDeletes()
-    monkeypatch.setattr(views, "schedule_public_message_delete", scheduled)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     followup = FakeDiscordMessage()
     followup.edit_failure = make_not_found(message="Unknown Webhook")
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -1020,8 +989,7 @@ async def test_a_decided_loan_panel_is_deleted_through_the_deciding_press(
     its end, so the delete cannot ride that one.
     """
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_loan_proposal)
-    scheduled = ScheduledDeletes()
-    monkeypatch.setattr(views, "schedule_public_message_delete", scheduled)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
     view.message = as_message(fake=FakeDiscordMessage())
     panel = FakeDiscordMessage()
@@ -1064,9 +1032,16 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
     assert "權限不足" in admin_rejection_title
 
 
-def test_a_positive_amount_refuses_zero() -> None:
+async def test_a_positive_amount_refuses_zero() -> None:
     """Zero is a well-formed amount, but no command that takes a positive one accepts it."""
-    assert economy._parse_positive_amount(raw_amount="0") is None
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    amount = await economy._amount_or_refuse(
+        interaction=as_interaction(fake=interaction), raw_amount="0", title="轉帳失敗"
+    )
+
+    assert amount is None
+    assert interaction.response.sent[0]["ephemeral"] is True
 
 
 async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1083,9 +1058,7 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
     monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     bot_member = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
@@ -1103,33 +1076,28 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     """Transfer writes should cache guild avatars instead of only global avatars."""
     sender = FakeUser(user_id=1, name="alice")
     receiver = FakeUser(user_id=2, name="bob")
-    cached_sender = FakeUser(user_id=1, name="alice")
-    cached_sender.__dict__["guild_avatar"] = SimpleNamespace(
-        url="https://example.test/alice-server.png"
+    guild = FakeGuild(
+        members=[
+            FakeUser(
+                user_id=1, name="alice", guild_avatar_url="https://example.test/alice-server.png"
+            ),
+            FakeUser(
+                user_id=2, name="bob", guild_avatar_url="https://example.test/bob-server.png"
+            ),
+        ],
+        cached=True,
     )
-    cached_receiver = FakeUser(user_id=2, name="bob")
-    cached_receiver.__dict__["guild_avatar"] = SimpleNamespace(
-        url="https://example.test/bob-server.png"
-    )
-    members = {cached_sender.id: cached_sender, cached_receiver.id: cached_receiver}
-
-    async def fail_fetch_member(user_id: int) -> FakeUser:
-        """Fails if the helper ignores the cached member path."""
-        raise AssertionError(f"unexpected fetch_member({user_id})")
-
-    guild = SimpleNamespace(get_member=members.get, fetch_member=fail_fetch_member)
     interaction = FakeInteraction(user=sender)
     interaction.guild = guild
     transfers = _record_transfers(monkeypatch=monkeypatch)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
 
     await EconomyCogs.give.callback(cog, interaction, member=receiver, amount="100")
 
     assert transfers[0]["sender_avatar_url"] == "https://example.test/alice-server.png"
     assert transfers[0]["receiver_avatar_url"] == "https://example.test/bob-server.png"
+    assert guild.fetch_count == 0
 
 
 async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1138,9 +1106,7 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     bot_receiver = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
     interaction = FakeInteraction(user=sender)
     transfers = _record_transfers(monkeypatch=monkeypatch)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=bot_receiver)))
 
     await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount="100")
@@ -1181,7 +1147,7 @@ async def test_a_refused_transfer_is_a_public_expiring_embed(
 
     monkeypatch.setattr(economy, "transfer", refuse_transfer)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
 
     await EconomyCogs.give.callback(
@@ -1195,7 +1161,7 @@ async def test_a_refused_transfer_is_a_public_expiring_embed(
     assert interaction.response.deferred_ephemeral is False
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert reason in (interaction.followup.sent[0]["embed"].description or "")
-    assert len(scheduled) == 1
+    assert len(scheduled.messages) == 1
 
 
 @pytest.mark.parametrize(
@@ -1230,9 +1196,7 @@ async def test_only_the_caller_is_recorded_as_taking_part_in_the_guild(
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     interaction = FakeInteraction(user=FakeUser(user_id=1), guild_id=321, administrator=True)
 
     await getattr(EconomyCogs, command).callback(
@@ -1319,9 +1283,7 @@ async def test_economy_money_commands_accept_large_string_amounts(  # noqa: PLR0
     monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
     monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
     monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
-    monkeypatch.setattr(
-        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
-    )
+    record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
     big_text = "9,007,199,254,740,993"
@@ -1461,7 +1423,7 @@ async def test_economy_money_commands_reject_invalid_amount_text(
 async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Loss leaderboard embed describes gross daily loss, not net P&L."""
 
-    async def daily_losses(limit: int, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
+    async def daily_losses(limit: int) -> list[LossLeaderboardEntry]:
         """Returns fake daily gross loss rows."""
         return [
             LossLeaderboardEntry(user_id=1, name="alice", loss_amount=500, avatar_url=""),
@@ -1469,7 +1431,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
         ]
 
     monkeypatch.setattr(economy, "top_losers", daily_losses)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1483,20 +1445,18 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
     assert interaction.followup.sent[0]["files"][0].filename == "economy_loss_leaderboard.png"
     assert embed.footer.text is not None
     assert "贏回來不抵扣" in embed.footer.text
-    assert len(scheduled) == 1
+    assert len(scheduled.messages) == 1
 
 
 async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Loss leaderboard empty state stays explicit about today's loss rows."""
 
-    async def no_daily_losses(
-        limit: int, include_hidden: bool = False
-    ) -> list[LossLeaderboardEntry]:
+    async def no_daily_losses(limit: int) -> list[LossLeaderboardEntry]:
         """Returns an empty daily loss board."""
         return []
 
     monkeypatch.setattr(economy, "top_losers", no_daily_losses)
-    scheduled = _record_scheduled(monkeypatch=monkeypatch, module=interactions)
+    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     cog = EconomyCogs(bot=_bot())
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1507,4 +1467,51 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
     assert "今日輸局累計" in embed.title
     assert embed.description is not None
     assert "今天還沒有人輸錢" in embed.description
-    assert len(scheduled) == 1
+    assert len(scheduled.messages) == 1
+
+
+async def test_an_empty_board_or_credit_list_answers_with_its_own_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing to rank or list, each command still answers with its titled, coloured panel."""
+
+    async def nothing(**_kwargs: object) -> list[object]:
+        """Answers an empty board or contract list."""
+        return []
+
+    for facade in ("top_n", "top_losers", "list_loan_contracts"):
+        monkeypatch.setattr(economy, facade, nothing)
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    cog = EconomyCogs(bot=_bot())
+    panels: list[tuple[str | None, str | None, int | None, bool]] = []
+    for command in (
+        EconomyCogs.leaderboard,
+        EconomyCogs.loss_leaderboard,
+        EconomyCogs.credit_status,
+    ):
+        interaction = FakeInteraction(user=FakeUser(user_id=1))
+        await command.callback(cog, interaction)
+        sent = interaction.followup.sent[0]
+        embed = sent["embed"]
+        panels.append((
+            embed.title,
+            embed.description,
+            embed.colour.value if embed.colour else None,
+            sent.get("ephemeral") is True,
+        ))
+
+    assert panels == [
+        (
+            LEADERBOARD_TITLE,
+            "### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
+            LEADERBOARD_COLOR,
+            False,
+        ),
+        (
+            LOSS_LEADERBOARD_TITLE,
+            "### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
+            LOSS_LEADERBOARD_COLOR,
+            False,
+        ),
+        ("信貸狀態", "### 目前沒有有效信貸", BORROW_COLOR, True),
+    ]

@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 
 import nextcord
 from nextcord import File, Locale, Member, Interaction, SlashOption
-from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
@@ -23,7 +22,6 @@ from discordbot.cogs.economy.views import (
     CreditLoanDecisionView,
     CentralBankLoanDecisionView,
     is_guild_admin,
-    central_bank_exclude_user_ids,
 )
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
@@ -32,17 +30,10 @@ from discordbot.cogs.economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.cogs.economy.embeds import (
-    BORROW_COLOR,
-    LEADERBOARD_COLOR,
-    LEADERBOARD_TITLE,
-    LOSS_LEADERBOARD_COLOR,
-    LOSS_LEADERBOARD_TITLE,
-    LoanParty,
-    TransferParticipant,
+    EmbedParty,
     build_error_embed,
     build_pocat_embed,
     build_casino_embed,
-    build_simple_embed,
     build_balance_embed,
     build_transfer_embed,
     build_credit_call_embed,
@@ -57,11 +48,13 @@ from discordbot.cogs.economy.embeds import (
     build_loss_leaderboard_embed,
     build_vip_insufficient_embed,
     build_central_bank_call_embed,
+    build_empty_leaderboard_embed,
     build_central_bank_repay_embed,
     build_central_bank_status_embed,
     build_central_bank_ceiling_embed,
     build_central_bank_request_embed,
     build_transfer_insufficient_embed,
+    build_empty_loss_leaderboard_embed,
 )
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.services.economy.database import (
@@ -97,35 +90,23 @@ from discordbot.utils.interaction_responses import (
 from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
 
-def _parse_positive_amount(raw_amount: str | None) -> int | None:
-    """Parses user-entered positive amount text with optional comma separators."""
+async def _amount_or_refuse(
+    interaction: Interaction[commands.Bot], raw_amount: str, title: str, collect: bool = False
+) -> int | None:
+    """Parses a money option, answering malformed text with an ephemeral notice titled `title`.
+
+    The amount must be positive, except a collection's, where blank or 0 means everything owed
+    and comes back as 0. Returns None once the notice is sent, so the caller must not reply again.
+    """
+    if collect and not raw_amount.strip():
+        return 0
     amount = parse_decimal_amount(raw=raw_amount)
-    if amount is None or amount <= 0:
-        return None
-    return amount
-
-
-class CollectAmount(BaseModel):
-    """A forced collection's parsed `amount` option."""
-
-    model_config = ConfigDict(frozen=True)
-
-    is_valid: bool = Field(
-        ..., description="False only when the text could not be parsed as a number."
+    if amount is not None and (collect or amount > 0):
+        return amount
+    await send_ephemeral_response(
+        interaction=interaction, embed=build_invalid_amount_embed(title=title)
     )
-    amount: int | None = Field(
-        ..., description="Ceiling on what is collected; None collects everything owed."
-    )
-
-
-def _parse_collect_amount(raw_amount: str | None) -> CollectAmount:
-    """Parses optional collection-amount text; blank or 0 collects all owed."""
-    if not (raw_amount or "").strip():
-        return CollectAmount(is_valid=True, amount=None)
-    amount = parse_decimal_amount(raw=raw_amount)
-    if amount is None:
-        return CollectAmount(is_valid=False, amount=None)
-    return CollectAmount(is_valid=True, amount=amount or None)
+    return None
 
 
 class EconomyCogs(commands.Cog):
@@ -186,11 +167,10 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Credits points to a member through a manual balance adjustment."""
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="退稅失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="退稅失敗")
-            )
             return
         await self._run_admin_adjustment(
             interaction=interaction, member=member, title="退稅完成", delta=parsed_amount
@@ -231,11 +211,10 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Debits points from a member through a manual balance adjustment."""
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="收稅失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="收稅失敗")
-            )
             return
         await self._run_admin_adjustment(
             interaction=interaction, member=member, title="收稅完成", delta=-parsed_amount
@@ -345,12 +324,9 @@ class EconomyCogs(commands.Cog):
         await interaction.response.defer()
         rows = await top_n(limit=LEADERBOARD_SIZE)
         if not rows:
-            embed = build_simple_embed(
-                title=LEADERBOARD_TITLE,
-                description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
-                color=LEADERBOARD_COLOR,
+            await send_expiring_followup(
+                interaction=interaction, embed=build_empty_leaderboard_embed()
             )
-            await send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         champion = rows[0]
@@ -379,12 +355,9 @@ class EconomyCogs(commands.Cog):
         await interaction.response.defer()
         rows = await top_losers(limit=LEADERBOARD_SIZE)
         if not rows:
-            embed = build_simple_embed(
-                title=LOSS_LEADERBOARD_TITLE,
-                description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
-                color=LOSS_LEADERBOARD_COLOR,
+            await send_expiring_followup(
+                interaction=interaction, embed=build_empty_loss_leaderboard_embed()
             )
-            await send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         champion = rows[0]
@@ -434,11 +407,10 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Transfers points from the caller to `member`."""
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="轉帳失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="轉帳失敗")
-            )
             return
         await interaction.response.defer()
         if interaction.user is None:
@@ -485,10 +457,16 @@ class EconomyCogs(commands.Cog):
 
         embed = build_transfer_embed(
             amount=parsed_amount,
-            sender=TransferParticipant(mention=sender.mention, display_name=sender.display_name),
-            sender_avatar_url=sender_avatar_url,
-            receiver=TransferParticipant(mention=member.mention, display_name=member.display_name),
-            receiver_avatar_url=receiver_avatar_url,
+            sender=EmbedParty(
+                mention=sender.mention,
+                display_name=sender.display_name,
+                avatar_url=sender_avatar_url,
+            ),
+            receiver=EmbedParty(
+                mention=member.mention,
+                display_name=member.display_name,
+                avatar_url=receiver_avatar_url,
+            ),
             result=transfer_result,
         )
         await send_expiring_followup(interaction=interaction, embed=embed)
@@ -616,11 +594,10 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Creates a personal loan request for the target lender."""
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="借款失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="借款失敗")
-            )
             return
         await interaction.response.defer()
         if interaction.user is None:
@@ -664,10 +641,14 @@ class EconomyCogs(commands.Cog):
             monthly_rate_bps=monthly_rate_bps,
         )
         embed = build_credit_request_embed(
-            borrower=LoanParty(
+            borrower=EmbedParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
             ),
-            lender=LoanParty(mention=member.mention, avatar_url=lender_avatar_url),
+            lender=EmbedParty(
+                mention=member.mention,
+                display_name=member.display_name,
+                avatar_url=lender_avatar_url,
+            ),
             amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
@@ -713,11 +694,10 @@ class EconomyCogs(commands.Cog):
         """Pays down active personal loans owed to `member`."""
         if interaction.user is None:
             return
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="還款失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="還款失敗")
-            )
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
@@ -793,11 +773,10 @@ class EconomyCogs(commands.Cog):
         """Forcibly collects a personal loan from a borrower."""
         if interaction.user is None:
             return
-        collect = _parse_collect_amount(raw_amount=amount)
-        if not collect.is_valid:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="催收失敗")
-            )
+        collect_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="催收失敗", collect=True
+        )
+        if collect_amount is None:
             return
         user = interaction.user
         guild = interaction.guild
@@ -811,7 +790,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
-            amount=collect.amount,
+            amount=collect_amount or None,
         )
         if result is None:
             await send_private_followup(
@@ -851,12 +830,6 @@ class EconomyCogs(commands.Cog):
             for contract in await list_loan_contracts(user_id=interaction.user.id)
             if contract.lender_type == LoanLenderType.USER
         ]
-        if not contracts:
-            embed = build_simple_embed(
-                title="信貸狀態", description="### 目前沒有有效信貸", color=BORROW_COLOR
-            )
-            await send_private_followup(interaction=interaction, embed=embed)
-            return
         embed = build_credit_status_embed(contracts=contracts, viewer_id=interaction.user.id)
         await send_private_followup(interaction=interaction, embed=embed)
 
@@ -913,11 +886,10 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Creates a central bank loan request."""
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="央行借款失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="央行借款失敗")
-            )
             return
         # Refused before the proposal exists rather than at the button: outside a guild
         # nobody holds `administrator`, so an approve and a reject would both be
@@ -954,7 +926,7 @@ class EconomyCogs(commands.Cog):
             monthly_rate_bps=monthly_rate_bps,
         )
         embed = build_central_bank_request_embed(
-            borrower=LoanParty(
+            borrower=EmbedParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
             ),
             amount=parsed_amount,
@@ -964,7 +936,6 @@ class EconomyCogs(commands.Cog):
             interaction=interaction,
             embed=embed,
             view=CentralBankLoanDecisionView(
-                bot=self.bot,
                 proposal_id=proposal.proposal_id,
                 creator_id=user.id,
                 allow_self_approval=self.economy_config.allow_central_bank_self_approval,
@@ -998,11 +969,10 @@ class EconomyCogs(commands.Cog):
         """Repays central-bank debt."""
         if interaction.user is None:
             return
-        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        parsed_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="央行還款失敗"
+        )
         if parsed_amount is None:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="央行還款失敗")
-            )
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
@@ -1070,11 +1040,10 @@ class EconomyCogs(commands.Cog):
         """Central-bank forced collection."""
         if interaction.user is None:
             return
-        collect = _parse_collect_amount(raw_amount=amount)
-        if not collect.is_valid:
-            await send_ephemeral_response(
-                interaction=interaction, embed=build_invalid_amount_embed(title="央行催收失敗")
-            )
+        collect_amount = await _amount_or_refuse(
+            interaction=interaction, raw_amount=amount, title="央行催收失敗", collect=True
+        )
+        if collect_amount is None:
             return
         if interaction.guild_id is None or not is_guild_admin(interaction=interaction):
             await interaction.response.defer(ephemeral=True)
@@ -1097,7 +1066,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
-            amount=collect.amount,
+            amount=collect_amount or None,
         )
         if result is None:
             await send_private_followup(
@@ -1141,10 +1110,7 @@ class EconomyCogs(commands.Cog):
             await record_guild_participant(
                 guild_id=interaction.guild_id, user_id=interaction.user.id
             )
-        status = await get_central_bank_status(
-            guild_id=interaction.guild_id,
-            exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
-        )
+        status = await get_central_bank_status(guild_id=interaction.guild_id)
         embed = build_central_bank_status_embed(status=status)
         await send_expiring_followup(interaction=interaction, embed=embed)
 

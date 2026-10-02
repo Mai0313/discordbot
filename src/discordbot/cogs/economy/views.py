@@ -34,11 +34,6 @@ from discordbot.services.economy.database import (
 from discordbot.utils.interaction_responses import edit_response_embed, send_private_followup
 
 
-def central_bank_exclude_user_ids(bot: commands.Bot) -> tuple[int, ...]:
-    """Returns bot-owned account IDs excluded from central-bank capacity."""
-    return (bot.user.id,) if bot.user is not None else ()
-
-
 def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
     """Returns whether the interacting user administers the server it happened in.
 
@@ -217,7 +212,6 @@ class LoanDecisionViewBase(LoggedView):
         self,
         interaction: Interaction[commands.Bot],
         guild_id: int | None = None,
-        central_bank_exclude_user_ids: tuple[int, ...] = (),
         allow_central_bank_self_approval: bool = False,
     ) -> None:
         """Approves the request for whoever may decide it, and answers anyone else privately.
@@ -240,7 +234,6 @@ class LoanDecisionViewBase(LoggedView):
                 actor_avatar_url=actor_avatar_url,
                 approver_is_guild_admin=self.APPROVER_IS_GUILD_ADMIN,
                 guild_id=guild_id,
-                central_bank_exclude_user_ids=central_bank_exclude_user_ids,
                 allow_central_bank_self_approval=allow_central_bank_self_approval,
             )
         except LoanProposalExpiredError:
@@ -313,15 +306,10 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
     APPROVER_IS_GUILD_ADMIN = True
 
     def __init__(
-        self,
-        bot: commands.Bot,
-        proposal_id: int,
-        creator_id: int,
-        allow_self_approval: bool = False,
+        self, proposal_id: int, creator_id: int, allow_self_approval: bool = False
     ) -> None:
         """Initializes a decision view for one proposal."""
         super().__init__(proposal_id=proposal_id, creator_id=creator_id)
-        self.bot = bot
         self.allow_self_approval = allow_self_approval
 
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
@@ -360,7 +348,6 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         await self._handle_approve(
             interaction=interaction,
             guild_id=interaction.guild_id,
-            central_bank_exclude_user_ids=central_bank_exclude_user_ids(bot=self.bot),
             allow_central_bank_self_approval=self.allow_self_approval,
         )
 
