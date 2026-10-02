@@ -237,10 +237,8 @@ async def _regen_one(
         # The batch's own bound (`_CONCURRENCY` has why). The rebuild still takes
         # `memory_semaphore` inside, so a run reaches whichever of the two is tighter.
         try:
-            # Inside the handler because it can raise too: `read_owner` parses the id out
-            # of the scope key, so one non-numeric directory under the store (a backup
-            # copy, which this tool's own advice invites) would otherwise raise past the
-            # gather and throw away every row that had already rebuilt.
+            # Inside the handler because it reads the store too: a raise there would
+            # otherwise escape the batch and throw away every row that had already rebuilt.
             identity = render_owner_identity(owner=read_owner(scope=scope))
             report = await regenerate_scope_memory(scope=scope, writer=writer, identity=identity)
             result, removed = report.result, report.unreadable_removed

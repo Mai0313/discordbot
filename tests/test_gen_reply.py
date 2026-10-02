@@ -9173,6 +9173,29 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
 
 
+async def test_resume_memory_sweeps_every_scope_past_a_backup_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A copy like `111.bak` under the store must not abort the sweep for the scopes after it."""
+    cog = _cog(bot_user_id=999)
+    scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
+    for key in [*scopes, "111.bak"]:
+        for entry in ("- a", "- b"):
+            append_raw_entry(scope=key, entry_text=entry)
+    swept: list[str] = []
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        swept.append(scope)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.consolidate_if_needed", fake_consolidate)
+
+    await cog._resume_memory()
+    while cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+
+    assert sorted(swept) == sorted(scopes)
+
+
 @pytest.mark.parametrize(
     ("scope", "subject", "prompts"),
     [
