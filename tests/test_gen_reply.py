@@ -1581,6 +1581,30 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     assert message.added_reactions == []
 
 
+@pytest.mark.parametrize(
+    argnames=("markers", "hinted"),
+    argvalues=[
+        (InlineMarkers(cleaned_text="", voice_requested=True), True),
+        (InlineMarkers(cleaned_text="", image_prompts=["a cat"]), True),
+        (InlineMarkers(cleaned_text="", music_prompt="a song"), True),
+        (InlineMarkers(cleaned_text="", video_prompt="a clip"), True),
+        (InlineMarkers(cleaned_text=""), False),
+    ],
+    ids=["voice", "image", "music", "video", "none"],
+)
+async def test_media_a_never_sent_reply_asked_for_leaves_a_hint(
+    markers: InlineMarkers, hinted: bool
+) -> None:
+    """With no reply to attach to, any requested media is dropped with a ⚠️; none, no hint."""
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    streamer.markers = markers
+
+    await streamer._attach_generated_media()
+
+    assert message.added_reactions == (["⚠️"] if hinted else [])
+
+
 # ---- voice (spoken reply) ----
 
 
