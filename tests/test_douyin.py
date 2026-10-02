@@ -621,6 +621,25 @@ def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bo
     assert is_douyin_post_url(url=url) is expected
 
 
+def test_a_download_never_recreates_a_removed_output_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`output_folder` is the caller's to create, so a removed one fails the open.
+
+    A cancelled caller cannot stop the worker thread, so it may remove the scratch dir
+    mid-download; re-creating it per file would silently strand every later image there.
+    """
+    _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(body=b"image-bytes")
+    )
+    scratch = tmp_path / "gone"
+    downloader = DouyinDownloader(output_folder=scratch.as_posix())
+
+    with pytest.raises(FileNotFoundError):
+        downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
+    assert not scratch.exists()
+
+
 def test_a_removed_output_folder_is_not_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

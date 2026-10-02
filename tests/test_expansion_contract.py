@@ -256,16 +256,16 @@ def _stage(cog: type[ExpansionCog[Any]], outcome: _Outcome) -> _Staged:
     return _STAGES[_cog_id(cog=cog)](cog=cog, outcome=outcome)
 
 
-# Per `SOURCE`, a link the cog refuses and then the post its staging reads. Where the platform's
-# pattern matches more than posts, the refused link is one the pattern matches and the post filter
-# turns down, which is the case a scan stopping at its first match gets wrong. A new cog needs an
-# entry, as it needs one in `_STAGES`.
-_REFUSED_THEN_POST: dict[str, tuple[str, str]] = {
-    "douyin": ("https://live.douyin.com/123456", _DOUYIN_URL),
-    "facebook": ("https://www.facebook.com/NASA", FACEBOOK_URL),
-    "instagram": ("https://www.instagram.com/c_cylynn/", INSTAGRAM_URL),
-    "threads": ("https://www.threads.com/@alice", _THREADS_URL),
-    "twitter": ("https://x.com/Dbacks", TWITTER_URL),
+# Per `SOURCE`: a link the cog refuses, the post its staging reads, and whether the cog's pattern
+# matches the refused link. Only a matched one reaches the post filter, which is the case a scan
+# stopping at its first match gets wrong; an unmatched one never exercises the skip. A new cog
+# needs an entry, as it needs one in `_STAGES`.
+_REFUSED_THEN_POST: dict[str, tuple[str, str, bool]] = {
+    "douyin": ("https://live.douyin.com/123456", _DOUYIN_URL, True),
+    "facebook": ("https://www.facebook.com/NASA", FACEBOOK_URL, True),
+    "instagram": ("https://www.instagram.com/c_cylynn/", INSTAGRAM_URL, True),
+    "threads": ("https://www.threads.com/@alice", _THREADS_URL, False),
+    "twitter": ("https://x.com/Dbacks", TWITTER_URL, False),
 }
 
 
@@ -416,7 +416,9 @@ async def test_a_link_the_cog_refuses_does_not_hide_a_post_after_it(
     cog: type[ExpansionCog[Any]],
 ) -> None:
     """A refused link is skipped rather than ending the scan, so a post after it is read (#854)."""
-    refused, post = _REFUSED_THEN_POST[cog.SOURCE]
+    refused, post, pattern_matches_refused = _REFUSED_THEN_POST[cog.SOURCE]
+    # A pattern narrowed past the refused link would leave this passing without testing the skip.
+    assert (cog.URL_PATTERN.search(string=refused) is not None) is pattern_matches_refused
     staged = _stage(cog=cog, outcome="readable")
     staged.message.content = f"{refused} 跟這篇 {post}"
     read = staged.cog.read
