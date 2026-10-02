@@ -194,7 +194,7 @@ async def read_post[ConversationT: PlatformConversation[Any]](
     return conversation
 
 
-async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 -- a source's reader and wording plus the four per-call inputs every builder takes
+async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 -- a source's reader and wording plus the per-call inputs every builder takes
     platform: str,
     url: str,
     reader: Callable[[], PostReader[ConversationT]],
@@ -205,6 +205,7 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Reads a post URL into answer-model input blocks, uploading up to `image_cap` of its images.
 
@@ -224,6 +225,8 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
         gemini_client: Direct-to-Google client used for the image upload, or None when no key
             is configured, which reads the post as text just like a non-Gemini answer model.
         allow_media_ingest: Kill-switch plus key check; when false only the text is read.
+        deadline: Event-loop time the pipeline cancels this build at, which the image upload
+            stops short of so the text still comes back.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.
@@ -249,6 +252,7 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
                 image_urls=target.image_urls,
                 cap=image_cap,
                 gemini_client=gemini_client,
+                deadline=deadline,
             )
 
     text = render(post=target, conversation=conversation, attached_images=len(media_parts))
@@ -343,6 +347,7 @@ class LinkContextBuilder(Protocol):
         answer_model_is_gemini: bool,
         gemini_client: genai.Client | None,
         allow_media_ingest: bool,
+        deadline: float,
     ) -> Coroutine[Any, Any, list[EasyInputMessageParam]]: ...
 
 

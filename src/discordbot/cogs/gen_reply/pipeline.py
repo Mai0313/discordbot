@@ -180,6 +180,7 @@ class ReplyPipeline(BaseModel):
                         answer_model_is_gemini=self.toolkit.runtime_models.slow_model.is_gemini,
                         gemini_client=self.toolkit.gemini_client_if_configured,
                         allow_media_ingest=link_source.media_ingest_allowed(config=self.config),
+                        deadline=deadline,
                     ),
                     deadline=deadline,
                 )

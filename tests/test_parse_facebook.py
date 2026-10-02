@@ -11,6 +11,7 @@ from tests.helpers.link_sources import (
     facebook_post,
     block_separator,
     serve_conversation,
+    link_build_deadline,
 )
 
 
@@ -19,7 +20,11 @@ async def test_the_post_names_its_author_and_its_group(monkeypatch: pytest.Monke
     serve_conversation(monkeypatch, downloader=FacebookDownloader, post=facebook_post())
 
     blocks = await build_facebook_context_messages(
-        url=FACEBOOK_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+        url=FACEBOOK_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     body = block_body(blocks=blocks)
@@ -35,7 +40,11 @@ async def test_the_block_says_the_comments_are_partial(monkeypatch: pytest.Monke
     )
 
     blocks = await build_facebook_context_messages(
-        url=FACEBOOK_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+        url=FACEBOOK_URL,
+        answer_model_is_gemini=False,
+        gemini_client=None,
+        allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     assert "not the whole discussion" in block_body(blocks=blocks)

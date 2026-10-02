@@ -183,6 +183,7 @@ async def build_twitter_context_messages(
     answer_model_is_gemini: bool,
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
+    deadline: float,
 ) -> list[EasyInputMessageParam]:
     """Reads a Twitter URL into answer-model input blocks; `build_post_context` has the rest."""
     return await build_post_context(
@@ -196,4 +197,5 @@ async def build_twitter_context_messages(
         answer_model_is_gemini=answer_model_is_gemini,
         gemini_client=gemini_client,
         allow_media_ingest=allow_media_ingest,
+        deadline=deadline,
     )

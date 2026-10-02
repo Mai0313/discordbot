@@ -39,6 +39,7 @@ from tests.helpers.link_sources import (
     block_body,
     block_parts,
     block_separator,
+    link_build_deadline,
     stub_douyin_downloads,
     race_every_scratch_teardown,
 )
@@ -87,6 +88,7 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[EasyInputMess
         answer_model_is_gemini=gemini,
         gemini_client=make_stub_gemini_client(),
         allow_media_ingest=ingest,
+        deadline=link_build_deadline(),
     )
 
 
@@ -270,7 +272,11 @@ async def test_a_missing_key_reads_the_caption_instead_of_raising(
     uploads, _ = _stub_douyin(monkeypatch)
 
     blocks = await build_douyin_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=None,
+        allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
@@ -359,6 +365,9 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
                     answer_model_is_gemini=True,
                     gemini_client=make_stub_gemini_client(),
                     allow_media_ingest=True,
+                    # Later than the deadline enforced below, so the builder's own media bound
+                    # cannot fire first: the backstop is what this test is about.
+                    deadline=link_build_deadline(),
                 ),
                 # Far above the microseconds the metadata probe and the scratch dir cost, so a
                 # loaded runner still expires with the worker inside the directory, and far
@@ -435,6 +444,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
                 answer_model_is_gemini=True,
                 gemini_client=make_stub_gemini_client(),
                 allow_media_ingest=False,
+                deadline=link_build_deadline(),
             ),
             timeout=5.0,
         )

@@ -64,6 +64,7 @@ from tests.helpers.link_sources import (
     instagram_post,
     block_separator,
     serve_conversation,
+    link_build_deadline,
     accept_image_uploads,
 )
 
@@ -151,6 +152,7 @@ async def _build(
         answer_model_is_gemini=gemini,
         gemini_client=make_stub_gemini_client() if gemini else None,
         allow_media_ingest=allow_media_ingest,
+        deadline=link_build_deadline(),
     )
 
 

@@ -1,5 +1,6 @@
 """Tests for the Threads-context builder that feeds linked posts to the answer model."""
 
+import time
 import asyncio
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from discordbot.typings.context_budgets import (
     MAX_THREADS_REPLIES,
     MAX_THREADS_MEDIA_PARTS,
 )
+from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.services.platforms.threads import (
     ThreadsOutput,
     ThreadsDownloader,
@@ -38,6 +40,7 @@ from tests.helpers.link_sources import (
     block_parts,
     block_separator,
     serve_conversation,
+    link_build_deadline,
     accept_image_uploads,
 )
 
@@ -136,7 +139,10 @@ async def _build(  # noqa: PLR0913 -- one knob per way a test varies the read
         image_fetch_fails=image_fetch_fails,
     )
     return await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=gemini, gemini_client=make_stub_gemini_client()
+        url=_URL,
+        answer_model_is_gemini=gemini,
+        gemini_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
 
@@ -692,7 +698,10 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
     await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
     # Order-independent on purpose: `_ingest_media` gathers the two posts concurrently so a slow
@@ -722,7 +731,6 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
         ],
     )
     _stub_media(monkeypatch, uploads=FakeUploads())
-    monkeypatch.setattr(target=threads_builder, name="LINK_MEDIA_TIMEOUT_SECONDS", value=0.01)
 
     async def never_returns(source: str) -> LoadedMedia:
         """Outlasts the bound, so the whole ingest degrades."""
@@ -733,7 +741,10 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
     monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=never_returns)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(media_seconds=0.01),
     )
 
     parts = block_parts(blocks=blocks)
@@ -741,6 +752,51 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
     text = parts[0]["text"]
     assert "Images of the linked post NOT attached (1)" in text
     assert "Images of the post it quotes NOT attached (1)" in text
+
+
+async def test_a_slow_read_still_returns_the_post_inside_the_build_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read that ate into the grace shortens the media step instead of losing the text.
+
+    Run the way the pipeline runs a build, so a media step bounded from its own start rather
+    than from the build's deadline would outlast that deadline and be cancelled into the timeout
+    notice, although the post had already been read.
+    """
+    conversation = ThreadsConversation(
+        chain=[_post(text="the slow post", images=["https://cdn.test/a.jpg"])]
+    )
+
+    def slow_read(self: ThreadsDownloader, url: str) -> ThreadsConversation:
+        """Takes longer than the margin the media step keeps before the deadline."""
+        del self, url
+        time.sleep(0.5)
+        return conversation
+
+    async def never_returns(source: str) -> LoadedMedia:
+        """Stalls the image fetch, so only a bound can end the media step."""
+        del source
+        await asyncio.sleep(delay=5)
+        raise AssertionError("the bound should have fired first")
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=slow_read)
+    _stub_media(monkeypatch, uploads=FakeUploads())
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=never_returns)
+    monkeypatch.setattr(target=image_ingest, name="LINK_MEDIA_DEGRADE_MARGIN_SECONDS", value=0.4)
+    deadline = asyncio.get_running_loop().time() + 1.0
+
+    blocks = await run_until_deadline(
+        awaitable=build_threads_context_messages(
+            url=_URL,
+            answer_model_is_gemini=True,
+            gemini_client=make_stub_gemini_client(),
+            deadline=deadline,
+        ),
+        deadline=deadline,
+    )
+
+    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
+    assert "the slow post" in block_body(blocks=blocks)
 
 
 async def test_a_quoted_posts_urls_ride_as_text_for_a_model_that_cannot_read_them(
@@ -869,7 +925,7 @@ async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.Monkey
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=None
+        url=_URL, answer_model_is_gemini=True, gemini_client=None, deadline=link_build_deadline()
     )
 
     assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
@@ -1017,7 +1073,10 @@ async def test_build_empty_post_returns_unavailable_notice(
     _stub_parse(monkeypatch, [])
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
     assert len(blocks) == 1
@@ -1032,7 +1091,10 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
     )
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        deadline=link_build_deadline(),
     )
 
     assert len(blocks) == 1

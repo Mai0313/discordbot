@@ -10,6 +10,7 @@ from openai.types.responses import EasyInputMessageParam
 
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.services.platforms.ytdlp import VideoMetadata, DownloadResult, VideoDownloader
+from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.cogs.gen_reply.link_sources import bilibili as bilibili_builder
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
     BILIBILI_CONTEXT_SEPARATOR,
@@ -21,7 +22,13 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
 )
 
 from tests.helpers.casting import make_stub_gemini_client
-from tests.helpers.link_sources import FakeUploads, block_body, block_parts, block_separator
+from tests.helpers.link_sources import (
+    FakeUploads,
+    block_body,
+    block_parts,
+    block_separator,
+    link_build_deadline,
+)
 
 _URL = "https://www.bilibili.com/video/BV1jpK86hEc8"
 
@@ -90,6 +97,7 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[EasyInputMess
         answer_model_is_gemini=gemini,
         gemini_client=make_stub_gemini_client(),
         allow_media_ingest=ingest,
+        deadline=link_build_deadline(),
     )
 
 
@@ -223,7 +231,11 @@ async def test_a_missing_key_reads_the_text_instead_of_raising(
     uploads, _ = _stub_bilibili(monkeypatch)
 
     blocks = await build_bilibili_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=None,
+        allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
@@ -275,6 +287,7 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
         answer_model_is_gemini=True,
         gemini_client=make_stub_gemini_client(),
         allow_media_ingest=True,
+        deadline=link_build_deadline(),
     )
 
     text = block_body(blocks=blocks)
@@ -333,7 +346,6 @@ async def test_the_media_step_timeout_degrades_to_the_text(
     This is the branch upholding the contract that the media step is bounded inside the
     builder, so a slow fetch degrades to text instead of being cancelled with nothing.
     """
-    monkeypatch.setattr(bilibili_builder, "LINK_MEDIA_TIMEOUT_SECONDS", 0.05)
     uploads, _ = _stub_bilibili(monkeypatch)
 
     def slow_download(
@@ -348,10 +360,60 @@ async def test_the_media_step_timeout_degrades_to_the_text(
 
     monkeypatch.setattr(target=VideoDownloader, name="download", value=slow_download)
 
-    blocks = await _build()
+    blocks = await build_bilibili_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=make_stub_gemini_client(),
+        allow_media_ingest=True,
+        deadline=link_build_deadline(media_seconds=0.05),
+    )
 
     assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
+
+
+async def test_a_read_that_spent_the_media_budget_starts_no_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read that ended inside the margin returns its text without ever starting the clip.
+
+    An abandoned download waits for its worker to notice the stop, and a worker still extracting
+    does not notice it at all. Started this late, that wait would run past the deadline the build
+    is cancelled at, turning the text already read into the timeout notice.
+    """
+    _stub_bilibili(monkeypatch)
+    started = threading.Event()
+    release = threading.Event()
+
+    def deaf_download(
+        self: VideoDownloader, url: str, quality: str = "best", stop_signal: object = None
+    ) -> DownloadResult:
+        """Ignores the stop signal until the test releases it."""
+        del self, url, quality, stop_signal
+        started.set()
+        release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
+        raise AssertionError("should never have started")
+
+    monkeypatch.setattr(target=VideoDownloader, name="download", value=deaf_download)
+    # Already inside the margin the media step keeps before the deadline.
+    deadline = asyncio.get_running_loop().time() + 0.5
+
+    try:
+        blocks = await run_until_deadline(
+            awaitable=build_bilibili_context_messages(
+                url=_URL,
+                answer_model_is_gemini=True,
+                gemini_client=make_stub_gemini_client(),
+                allow_media_ingest=True,
+                deadline=deadline,
+            ),
+            deadline=deadline,
+        )
+    finally:
+        release.set()
+
+    assert block_separator(blocks=blocks) == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert not started.is_set()
 
 
 async def test_a_raising_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -484,6 +546,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
                 answer_model_is_gemini=True,
                 gemini_client=make_stub_gemini_client(),
                 allow_media_ingest=True,
+                deadline=link_build_deadline(),
             ),
             timeout=5.0,
         )

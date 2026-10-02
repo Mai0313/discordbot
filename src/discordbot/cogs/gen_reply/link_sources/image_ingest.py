@@ -19,7 +19,10 @@ from google import genai
 import logfire
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    LINK_MEDIA_TIMEOUT_SECONDS,
+    LINK_MEDIA_DEGRADE_MARGIN_SECONDS,
+)
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
@@ -30,34 +33,50 @@ async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wor
     fallback: str,
     degraded: ResultT,
     url: str,
-    timeout_seconds: float,
+    deadline: float,
     timeout_fields: dict[str, Any] | None = None,
 ) -> ResultT:
     """Runs a source's media step under its own bound, degrading rather than raising.
 
     Bounded here rather than left to the caller's grace so a slow fetch still produces the honest
-    text-only block instead of being cancelled with nothing to inject.
+    text-only block instead of being cancelled with nothing to inject. The bound is fixed against
+    the build's deadline rather than counted from this step's start, because the read before it
+    has already spent an unknown part of the same grace.
 
     Args:
         step: The fetch-and-upload work, not yet awaited.
         subject: What the log lines call the step, e.g. "Douyin media".
         fallback: What the log lines say the answer falls back to, e.g. "the caption".
-        degraded: What comes back instead when the step times out or fails.
+        degraded: What comes back instead when the step has no time, times out or fails.
         url: The post the media belongs to, so a warning can be joined to it.
-        timeout_seconds: The bound.
+        deadline: Event-loop time the pipeline cancels the whole build at; the step gives up
+            `LINK_MEDIA_DEGRADE_MARGIN_SECONDS` before it, and never starts past that point.
         timeout_fields: Extra fields for the warning a timeout logs.
 
     Returns:
         The step's own result, or `degraded`.
     """
+    media_deadline = deadline - LINK_MEDIA_DEGRADE_MARGIN_SECONDS
+    budget_seconds = media_deadline - asyncio.get_running_loop().time()
+    if budget_seconds <= 0:
+        # Never started rather than started and cancelled at once: an abandoned download can
+        # wait on its worker's stop for most of the margin, which the read has already spent.
+        step.close()
+        logfire.warn(
+            f"{subject} ingestion had no time left after the read; answering from {fallback}",
+            url=url,
+            timeout_seconds=budget_seconds,
+            **(timeout_fields or {}),
+        )
+        return degraded
     try:
-        async with asyncio.timeout(delay=timeout_seconds):
+        async with asyncio.timeout_at(when=media_deadline):
             return await step
     except TimeoutError:
         logfire.warn(
             f"{subject} ingestion exceeded its bound; answering from {fallback}",
             url=url,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=budget_seconds,
             **(timeout_fields or {}),
             _exc_info=True,
         )
@@ -130,8 +149,13 @@ async def _upload_each(
     return parts
 
 
-async def upload_post_images(
-    platform: str, post_url: str, image_urls: list[str], cap: int, gemini_client: genai.Client
+async def upload_post_images(  # noqa: PLR0913 -- the post, its images and cap, the client and the build's deadline
+    platform: str,
+    post_url: str,
+    image_urls: list[str],
+    cap: int,
+    gemini_client: genai.Client,
+    deadline: float,
 ) -> list[ResponseInputFileParam]:
     """Uploads up to `cap` of a post's images, degrading to none rather than raising.
 
@@ -141,6 +165,7 @@ async def upload_post_images(
         image_urls: Every image the post carries, in page order.
         cap: How many of them one reply may pay a fetch and an upload for.
         gemini_client: Direct-to-Google client the upload goes through.
+        deadline: Event-loop time the pipeline cancels the whole build at.
 
     Returns:
         The parts that made it, which the caller must COUNT rather than assume: a block saying
@@ -158,7 +183,7 @@ async def upload_post_images(
         fallback="the text",
         degraded=[],
         url=post_url,
-        timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+        deadline=deadline,
     )
 
 
