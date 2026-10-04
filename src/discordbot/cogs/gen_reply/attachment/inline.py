@@ -12,6 +12,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import RenderedAttachment
+from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
@@ -38,7 +39,8 @@ class InlineRenderer(AttachmentRenderer):
     while `file_api_enabled` is off. Every render fetches the source and embeds it directly in
     the request, so there is no upload handle to track and `allow_dead_cache` is ignored; all it
     remembers is which files it has read and cannot carry. Images inline as `input_image` base64,
-    PDFs as base64 `input_file`, UTF-8 files as `input_text`, and anything else is dropped.
+    PDFs as base64 `input_file`, UTF-8 files as `input_text`, and anything else is dropped, as is
+    an attachment past `MAX_INLINE_ATTACHMENT_BYTES`.
     """
 
     dropped_modalities = frozenset({"video", "audio"})
@@ -49,15 +51,19 @@ class InlineRenderer(AttachmentRenderer):
     # read. Bounded like the render cache.
     _unreadable: OrderedDict[int | str, None] = PrivateAttr(default_factory=OrderedDict)
 
-    def carries(self, content_type: str, cache_key: int | str) -> bool:
-        """Refuses a font or an Android package unfetched, and a file already read as unreadable.
+    def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
+        """Refuses a font, an Android package or an oversized file unfetched, or an unreadable one.
 
         Those types name binary formats no UTF-8 decode can carry; any other type may hold text,
-        so only reading it decides.
+        so only reading it decides. The size bound covers an image too, by its posted size: the
+        downscale may shrink a still, but a GIF, an animated image or one already in bounds
+        inlines at exactly that size, and telling them apart takes the download this avoids.
         """
         if content_type.startswith("font/") or (
             content_type == "application/vnd.android.package-archive"
         ):
+            return False
+        if size is not None and size > MAX_INLINE_ATTACHMENT_BYTES:
             return False
         return cache_key not in self._unreadable
 

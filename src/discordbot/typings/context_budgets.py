@@ -77,6 +77,32 @@ HISTORY_PER_MESSAGE_OVERHEAD: Final[int] = 40
 MAX_HISTORY_MEDIA_PARTS: Final[int] = 10
 
 # --------------------------------------------------------------------------------------
+# Attachment bytes inlined into one reply
+#
+# Binds only where an attachment rides in the request itself (base64, or a text file's text)
+# rather than as an uploaded file's handle, which is what `InlineRenderer` does. Against Google's
+# ceiling, which #1077 records: 100 MB per request documented, 77 MB of base64 measured to pass
+# and 97 MB to fail with a 429 that reads like quota. Base64 adds a third to a file's size.
+# --------------------------------------------------------------------------------------
+
+# Largest attachment inlined at all, by the size Discord reports for it, so one past it is refused
+# before it is downloaded. Discord's non-Nitro upload limit, so only a boosted server or Nitro can
+# post a file past it. ~28 MB as base64: within what `MAX_HISTORY_INLINE_BYTES` holds, so a file
+# posted before the question still reaches it whole, and small enough that a reply to the post
+# carrying it, which renders it in history and again as the Reference Message, stays under the
+# 77 MB measured to pass.
+MAX_INLINE_ATTACHMENT_BYTES: Final[int] = 20 * 1024 * 1024
+
+# What the history window's attachments may put in the request, counted in the bytes they render
+# to, newest kept first. Past it older posts degrade to the `[attachment: ...]` markers the
+# media-part cap above uses. Without it, files that fit one at a time add up past the ceiling and
+# every later reply resends them until they leave the window. Room for most of the ten parts the
+# cap above admits when they are downscaled photos (~3-5 MB of base64 each), with one file at
+# `MAX_INLINE_ATTACHMENT_BYTES` of the turn's own beside it still under 77 MB. The current and
+# replied-to messages render whole on top, so more than that one file there can still pass it.
+MAX_HISTORY_INLINE_BYTES: Final[int] = 48_000_000
+
+# --------------------------------------------------------------------------------------
 # Memory read into a request
 # --------------------------------------------------------------------------------------
 

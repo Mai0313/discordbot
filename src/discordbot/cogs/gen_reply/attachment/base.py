@@ -82,14 +82,15 @@ class AttachmentRenderer(BaseModel):
     # touches it.
     _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
 
-    def carries(self, content_type: str, cache_key: int | str) -> bool:
+    def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
         """Whether this renderer can hand the answer this one source, as far as it knows unfetched.
 
         The per-source check beside `dropped_modalities`, which the gate applies apart. The gate
         refuses a source this denies, so the route marker, the history media budget and the render
-        cache leave it out just as the answer does.
+        cache leave it out just as the answer does. `size` is what Discord reports for an
+        attachment, None for a source that reports none.
         """
-        del content_type, cache_key
+        del content_type, cache_key, size
         return True
 
     async def render_image(
