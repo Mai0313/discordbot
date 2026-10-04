@@ -77,8 +77,9 @@ class ReplyToolkit(BaseModel):
         """The direct Gemini client, or None when no key is configured.
 
         For the paths that stay useful without a key: a linked post still contributes its
-        text, it just carries no uploaded media. Reading `gemini_client` there would raise
-        before the feature's own kill-switch was ever consulted.
+        text, it just carries no uploaded media, and attachments inline instead of uploading.
+        Reading `gemini_client` there would raise before the feature's own kill-switch was ever
+        consulted.
 
         Returns:
             The client, or None when this toolkit holds no key.
@@ -154,7 +155,7 @@ class ReplyToolkit(BaseModel):
 
         Returns:
             A builder bound to this bot, the runtime model catalog, and an attachment handler
-            uploading through this toolkit's direct Gemini client.
+            uploading through this toolkit's direct Gemini client, or inlining without a key.
         """
         return MessageInputBuilder(
             bot=self.bot,

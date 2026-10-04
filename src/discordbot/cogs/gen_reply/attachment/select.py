@@ -29,8 +29,9 @@ def build_attachment_handler(
     `gemini_client` hands back the deployment's own direct client, so the one credential a
     deployment answers on is the one it uploads with: an uploaded file is readable only by the
     project that uploaded it, so an uploader holding a different key from the deployment behind
-    the answer model fails the whole request. None is the no-key case, where each attachment is
-    dropped.
+    the answer model fails the whole request. None is the no-key case, where nothing can upload,
+    so a Gemini answer model inlines like any other rather than downloading each attachment only
+    to drop it.
 
     `file_api_enabled` overrides the provider branch entirely: a provider whose Files API is
     refusing to resolve references costs the WHOLE reply, since the answer carries the failing
@@ -40,7 +41,7 @@ def build_attachment_handler(
     """
     if not LLMConfig().file_api_enabled:
         return InlineRenderer()
-    if model.is_gemini:
+    if model.is_gemini and gemini_client() is not None:
         return GeminiFileUploader(gemini_client=gemini_client)
     # if "gpt" in model.name:
     #     return OpenAIFileUploader(model_name=model.name)
