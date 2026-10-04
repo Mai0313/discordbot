@@ -636,6 +636,10 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
     The window is aligned to the first raw-entry header inside the tail so a partial
     entry never leads the result; when no header lands inside the window (e.g. one
     giant entry) the raw tail is returned as a best effort.
+
+    Raises `UnicodeDecodeError` on any byte the window cut cannot explain, as every other
+    evidence read does, so a file that is not UTF-8 fails its scope instead of being read
+    back as garbled evidence.
     """
     try:
         with _detail_path(scope=scope).open(mode="rb") as handle:
@@ -647,9 +651,13 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
             data = handle.read()
     except FileNotFoundError:
         return ""
-    # A window starting mid-file can cut into a multi-byte character; ignoring
-    # the partial leading bytes keeps the decode safe.
-    text = data.decode(encoding="utf-8", errors="ignore")
+    # A window starting mid-file can open inside a multi-byte character, on at most
+    # three of its continuation bytes (0b10xxxxxx); only those are skipped.
+    skip = 0
+    if size > len(data):
+        while skip < min(3, len(data)) and data[skip] & 0xC0 == 0x80:
+            skip += 1
+    text = data[skip:].decode(encoding="utf-8")
     if size > len(data) or len(text) > max_chars:
         tail = text[max(0, len(text) - max_chars) :]
         match = RAW_ENTRY_HEADER_RE.search(tail)
