@@ -33,6 +33,7 @@ from nextcord.ext import commands
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.sqlite_config import SqliteBootstrap
@@ -85,7 +86,8 @@ class PendingExpansionRow(Base):
             so each cog sweeps its own rows and never resumes another's.
         url: The URL the listener matched, stored rather than re-derived so an edited or
             unreadable source message cannot change what the resumed expansion reads.
-        created_at: Write timestamp; the sweep runs oldest first.
+        created_at: Write timestamp; the sweep runs oldest first and only rows from before its
+            process started.
     """
 
     __tablename__ = "pending_expansion"
@@ -188,12 +190,16 @@ async def _forget_pending(message_id: int) -> None:
         )
 
 
-async def _load_pending(source: str) -> list[PendingExpansion]:
-    """Reads one cog's interrupted expansions, oldest first."""
+async def _load_pending(source: str, created_before: datetime) -> list[PendingExpansion]:
+    """Reads one cog's expansions recorded before `created_before`, oldest first."""
     async with _database.open_session(engine=_engine) as session:
         rows = await session.scalars(
             select(PendingExpansionRow)
-            .where(PendingExpansionRow.source == source)
+            .where(
+                PendingExpansionRow.source == source,
+                # SQLite keeps the Taipei wall clock without its offset.
+                PendingExpansionRow.created_at < _as_taipei(dt=created_before),
+            )
             .order_by(PendingExpansionRow.created_at, PendingExpansionRow.message_id)
         )
         return [
@@ -392,7 +398,7 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
 
 
 async def resume_expansion_placeholders(
-    bot: commands.Bot, source: str, expand: ExpansionRetry
+    bot: commands.Bot, source: str, expand: ExpansionRetry, created_before: datetime
 ) -> None:
     """Runs again every expansion of `source` that a restart interrupted.
 
@@ -405,9 +411,11 @@ async def resume_expansion_placeholders(
         bot: The bot, used to resolve the channel both messages live in.
         source: The cog's key, so it sweeps its own rows and never another cog's.
         expand: The cog's `_expand`.
+        created_before: When this process started. Listeners run before `on_ready` does, so a
+            row recorded since is an expansion this process is still running.
     """
     try:
-        records = await _load_pending(source=source)
+        records = await _load_pending(source=source, created_before=created_before)
     # Broad on purpose: an unreadable table must not stop the cog from serving new links.
     except Exception as error:
         logfire.warn(

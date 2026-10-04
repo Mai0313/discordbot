@@ -131,6 +131,9 @@ class ResearchCogs(commands.Cog):
         # inside a thread the cog is still writing its own status, reasoning and report into.
         self._active_threads: set[int] = set()
         self._resume_started = False
+        # Taken at load, before the gateway connects, as `DiscordBot._started_at` is: the restart
+        # sweep must not re-run a research this process launches ahead of `on_ready`.
+        self._started_at = database_now()
 
     @cached_property
     def interactions_client(self) -> genai.Client:
@@ -635,7 +638,7 @@ class ResearchCogs(commands.Cog):
         spawn_tracked(coro=self._resume_all(), tasks=self._tasks, name="research-resume")
 
     async def _resume_all(self) -> None:
-        """Resumes every session still `researching` when the process came back up.
+        """Resumes every session an earlier process left `researching`.
 
         `deep_research_available` gates this exactly as it gates `launch` and `/deep_research`,
         so a missing key is refused here rather than at `genai.Client` inside the resume's own
@@ -649,7 +652,7 @@ class ResearchCogs(commands.Cog):
         produced and billed for. Nothing is posted into the threads either, since this sweep runs
         on every start and a notice would repeat for as long as the switch stays off.
         """
-        sessions = await db.list_resumable()
+        sessions = await db.list_resumable(created_before=self._started_at)
         if not sessions:
             return
         if not self.config.deep_research_available:

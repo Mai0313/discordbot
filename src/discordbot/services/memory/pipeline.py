@@ -17,6 +17,7 @@ the compartment fan-out at exactly one call.
 """
 
 import asyncio
+from datetime import datetime
 
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -458,14 +459,17 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
     return bool(forget_notes)
 
 
-async def safe_list_resumable() -> list[memory_db.MemoryJob]:
+async def safe_list_resumable(updated_before: datetime) -> list[memory_db.MemoryJob]:
     """Returns the persisted `pending` and `failed` jobs for the restart sweep, best-effort.
 
     Wrapped so a reply.db read failure degrades to "nothing to resume" instead of
     breaking `on_ready`; the in-memory pipeline keeps working regardless.
+
+    Args:
+        updated_before: When this process started; see `database.py::list_resumable`.
     """
     try:
-        return await memory_db.list_resumable()
+        return await memory_db.list_resumable(updated_before=updated_before)
     except Exception as exc:
         logfire.warn("memory_job resume read failed", error_type=type(exc).__name__, _exc_info=exc)
         return []

@@ -31,6 +31,7 @@ from discordbot.typings.memory import (
     MemoryWriteSummary,
 )
 from discordbot.typings.models import ModelSettings
+from discordbot.utils.timezone import database_now
 from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.services.memory import tone, inflight, pipeline, regeneration, consolidation
 from discordbot.services.memory import database as memory_db
@@ -4181,7 +4182,7 @@ async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> Non
     await _stage_row(transcript="a", scope="111")
     await _stage_row(transcript="b", scope="222")
     await memory_db.mark_done(scope="222", token=1)
-    scopes = {job.scope for job in await memory_db.list_resumable()}
+    scopes = {job.scope for job in await memory_db.list_resumable(updated_before=database_now())}
     assert scopes == {"111"}
 
 
@@ -4228,7 +4229,9 @@ async def test_db_clear_job_scrubs_payload_and_is_not_resumable(memory_isolated_
     assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=8) is True
 
     assert (await assert_cleared_row(scope=USER_SCOPE)).token == 8
-    assert USER_SCOPE not in {job.scope for job in await memory_db.list_resumable()}
+    assert USER_SCOPE not in {
+        job.scope for job in await memory_db.list_resumable(updated_before=database_now())
+    }
 
 
 async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
@@ -5140,7 +5143,7 @@ async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) 
     assert not (memory_isolated_dir / str(USER_ID)).exists()
     # Nothing the restart sweep could resume, and reply.db retains no transcript.
     await assert_cleared_row(scope=USER_SCOPE)
-    assert await memory_db.list_resumable() == []
+    assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
 async def test_clear_scope_memory_reports_nothing_to_clear(memory_isolated_dir: Path) -> None:
@@ -5204,7 +5207,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir:
     # `safe_list_resumable` degrades a read failure to `[]`, so on its own it can
     # pass without having looked.
     assert count_raw_entries(scope=USER_SCOPE) == 0
-    assert await pipeline.safe_list_resumable() == []
+    assert await pipeline.safe_list_resumable(updated_before=database_now()) == []
     await assert_cleared_row(scope=USER_SCOPE)
 
 
@@ -5243,7 +5246,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
     release_clear.set()
     assert await clearing is False
     await during_clear
-    assert await memory_db.list_resumable() == []
+    assert await memory_db.list_resumable(updated_before=database_now()) == []
 
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
@@ -5285,7 +5288,7 @@ async def test_cancelled_clear_waiting_for_staging_lock_finishes_the_tombstone(
 
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
     await assert_cleared_row(scope=USER_SCOPE)
-    assert await memory_db.list_resumable() == []
+    assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
 def _hold_clear_job(monkeypatch: pytest.MonkeyPatch) -> tuple[asyncio.Event, asyncio.Event]:
@@ -5325,7 +5328,7 @@ async def test_cancelled_clear_waits_for_an_inflight_tombstone_write(
 
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
     await assert_cleared_row(scope=USER_SCOPE)
-    assert await memory_db.list_resumable() == []
+    assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
 async def test_cancelled_clear_still_records_that_it_erased(
@@ -5477,7 +5480,9 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
 
     # The delayed stale write cannot overwrite a durable clear tombstone.
     await assert_cleared_row(scope=USER_SCOPE)
-    assert USER_SCOPE not in {row.scope for row in await memory_db.list_resumable()}
+    assert USER_SCOPE not in {
+        row.scope for row in await memory_db.list_resumable(updated_before=database_now())
+    }
 
 
 async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
@@ -5527,7 +5532,7 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
     # A new process has no monotonic clear stamp, so only reply.db can protect it.
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
     await assert_cleared_row(scope=USER_SCOPE)
-    assert await memory_db.list_resumable() == []
+    assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
 def _fail_the_file_delete(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5714,7 +5719,7 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
 
 async def _restart(writer: MemoryWriterAI) -> None:
     """Resumes every persisted row the way the reply cog's restart sweep does, then drains."""
-    for job in await memory_db.list_resumable():
+    for job in await memory_db.list_resumable(updated_before=database_now()):
         assert job.transcript is not None
         pipeline.resume_memory_update(
             scope=job.scope,
@@ -5766,7 +5771,7 @@ async def test_a_review_refused_on_its_retry_is_not_retried_again(
 
     assert fake_client.responses.parse_instructions[calls:] == [PHASE1_EVALUATOR_PROMPT]
     assert _staged_forgets() == 1
-    assert await memory_db.list_resumable() == []
+    assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
 async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages(

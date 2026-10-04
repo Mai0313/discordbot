@@ -25,6 +25,7 @@ from nextcord.ext import commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_RED
 from discordbot.utils.mentions import is_addressed_to_bot
+from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
@@ -111,6 +112,9 @@ class ReplyGeneratorCogs(commands.Cog):
         # Tracked background tasks for the one-shot restart memory resume.
         self._tasks: set[asyncio.Task[None]] = set()
         self._resume_started = False
+        # Taken at load, before the gateway connects, as `DiscordBot._started_at` is: the restart
+        # sweep must not re-run a review this process stages ahead of `on_ready`.
+        self._started_at = database_now()
 
     @cached_property
     def openai_client(self) -> AsyncOpenAI:
@@ -179,7 +183,7 @@ class ReplyGeneratorCogs(commands.Cog):
         even when the resumed review early-returns (failed, no signal, or all
         duplicates) before it would reach the consolidation check.
         """
-        jobs = await safe_list_resumable()
+        jobs = await safe_list_resumable(updated_before=self._started_at)
         for job in jobs:
             if job.transcript is None:
                 continue
