@@ -8,7 +8,7 @@ items that could not be delivered, so every call site shares one attach-vs-host-
 decision and differs only in how it sends the result.
 
 This module also owns the two low-level concerns the decision needs: the destination's real
-upload ceiling (`upload_limit_for`) and the external static host that turns oversized media
+upload ceiling (`upload_limit_for`, fed by `AttachmentLimitInteraction`) and the external static host that turns oversized media
 into a public URL (`MediaHostingService`, env-backed via `MediaHostingConfig`). The host is
 best-effort: a publish returns None rather than raising when hosting is disabled, unconfigured,
 handed a non-allowlisted suffix, or fails to write. Every call site must stay byte-for-byte
@@ -21,7 +21,7 @@ import os
 import re
 import time
 import shutil
-from typing import TYPE_CHECKING, Unpack, TypedDict
+from typing import TYPE_CHECKING, Any, Unpack, TypedDict
 import asyncio
 import hashlib
 from pathlib import Path
@@ -30,7 +30,7 @@ import threading
 import contextlib
 
 import logfire
-from nextcord import File
+from nextcord import File, Client, Interaction
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings
 
@@ -38,6 +38,8 @@ from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 
 if TYPE_CHECKING:
     from nextcord import Guild
+    from nextcord.state import ConnectionState
+    from nextcord.types.interactions import Interaction as InteractionPayload
 
 # Discord's non-Nitro base upload limit, 20 MiB as of 2026-08-13; a guild-less context (DM) has no
 # boost-tier table to consult, so it falls back to this base.
@@ -124,22 +126,47 @@ _TEMP_NAME_RE = re.compile(re.escape(_TEMP_PREFIX) + r"[A-Za-z0-9_-]+")
 _SERVE_DIR_LOCK = threading.Lock()
 
 
-def upload_limit_for(guild: "Guild | None") -> int:
+class AttachmentLimitInteraction(Interaction[Client]):
+    """An interaction that keeps the `attachment_size_limit` nextcord drops while parsing.
+
+    Discord computes it per interaction as the larger of the invoking user's Nitro allowance and
+    the guild's boost tier, and it holds only for what is sent through this interaction.
+    `DiscordBot.get_interaction` builds every interaction as this class.
+    """
+
+    __slots__ = ("attachment_size_limit",)
+
+    def __init__(self, data: "InteractionPayload", state: "ConnectionState") -> None:
+        """Parses the payload as nextcord does, then keeps its attachment size limit."""
+        super().__init__(data=data, state=state)
+        self.attachment_size_limit: int | None = data.get("attachment_size_limit")
+
+
+def upload_limit_for(guild: "Guild | None", interaction: Interaction[Any] | None = None) -> int:
     """Returns the destination's real attachment upload ceiling in bytes.
 
-    A boosted guild's 50/100 MiB is honored via nextcord's `filesize_limit` (its boost-tier
-    table lookup keyed on `premium_tier`); a DM has no guild to query, so it falls back to
-    Discord's non-Nitro base of 20 MiB.
+    A reply through an interaction takes Discord's own `attachment_size_limit` for it, which is
+    the only place the invoking user's Nitro allowance shows up. Otherwise a boosted guild's
+    50/100 MiB is honored via nextcord's `filesize_limit` (its boost-tier table lookup keyed on
+    `premium_tier`); a DM has no guild to query, so it falls back to Discord's non-Nitro base of
+    20 MiB.
 
     The guild path deliberately trusts that static table even though it over-reports 25 MiB for
     tier 0/1 against Discord's real 20 MiB base, so it self-corrects when nextcord updates it.
 
     Args:
         guild: The destination guild, or None for a DM.
+        interaction: The interaction the media goes out through, or None when it is sent
+            through the channel.
 
     Returns:
         The maximum attachment size in bytes for that destination.
     """
+    if (
+        isinstance(interaction, AttachmentLimitInteraction)
+        and interaction.attachment_size_limit is not None
+    ):
+        return interaction.attachment_size_limit
     return guild.filesize_limit if guild is not None else DEFAULT_NON_NITRO_UPLOAD_LIMIT
 
 

@@ -548,6 +548,31 @@ async def test_video_deliver_and_download_branches(
     assert [message for message, _ in warnings] == ["Video download failed"]
 
 
+async def test_video_ceiling_comes_from_the_interaction_the_reply_goes_out_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The interaction is what carries the invoker's Nitro allowance, so it sizes the attach."""
+    seen: list[object] = []
+
+    def record_ceiling(guild: object, interaction: object = None) -> int:
+        """Answers a Nitro-sized ceiling and records which interaction asked."""
+        seen.append(interaction)
+        return 1024**3
+
+    monkeypatch.setattr(video, "upload_limit_for", record_ceiling)
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(data=b"0" * 300)
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=clip))
+    interaction = FakeInteraction(filesize_limit=200)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://source.test/video", quality="best"
+    )
+
+    assert seen == [interaction]
+    assert interaction.edits[-1]["file"].filename == "clip.mp4"
+
+
 class _RefusesAttachments(FakeInteraction):
     """Answers an edit that attaches a file with the 413 Discord sends past its real limit."""
 

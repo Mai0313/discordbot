@@ -25,9 +25,10 @@ from nextcord.errors import ApplicationInvokeError
 from discordbot import cli
 from discordbot.cli import DiscordBot
 from discordbot.utils.timezone import database_now
+from discordbot.utils.media_delivery import upload_limit_for
 from discordbot.services.economy.database import CreditResult
 
-from tests.helpers.casting import as_message, as_discord_bot, make_invalid_webhook_token
+from tests.helpers.casting import as_guild, as_message, as_discord_bot, make_invalid_webhook_token
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.message_cleanup import record_scheduled_deletes
@@ -78,6 +79,29 @@ async def test_on_connect_rebuilds_the_application_command_registry() -> None:
     await DiscordBot.on_connect(as_discord_bot(fake=stub))
 
     assert stub.rebuilds == 1
+
+
+def test_interactions_carry_discords_attachment_size_limit_to_the_upload_ceiling() -> None:
+    """A slash reply's ceiling is the one Discord sent, which counts the invoker's Nitro.
+
+    nextcord's own parse drops the field, so without the override the guild's boost tier wins.
+    """
+    state = SimpleNamespace(http=SimpleNamespace(_HTTPClient__session=None))
+    payload = {
+        "id": "1",
+        "type": 2,
+        "token": "token",
+        "version": 1,
+        "application_id": "2",
+        "attachment_size_limit": 1024**3,
+    }
+
+    interaction = DiscordBot.get_interaction(
+        as_discord_bot(fake=SimpleNamespace(_connection=state)), data=cast("Any", payload)
+    )
+
+    guild = as_guild(fake=FakeGuild(filesize_limit=100 * 1024 * 1024))
+    assert upload_limit_for(guild=guild, interaction=interaction) == 1024**3
 
 
 async def test_on_connect_starts_the_price_table_refresh_once() -> None:

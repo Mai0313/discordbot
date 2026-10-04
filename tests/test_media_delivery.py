@@ -3,6 +3,8 @@
 import os
 import re
 import time
+from types import SimpleNamespace
+from typing import Any, cast
 from pathlib import Path
 
 import pytest
@@ -12,10 +14,13 @@ from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
     MediaHostingService,
+    AttachmentLimitInteraction,
+    upload_limit_for,
 )
 
-from tests.helpers.casting import make_media_hosting_config
+from tests.helpers.casting import as_guild, make_media_hosting_config
 from tests.helpers.link_sources import hosting_planner, hosting_service, hosting_off_planner
+from tests.helpers.discord_mocks import FakeGuild
 
 
 def _hosted_files(serve_dir: Path) -> list[str]:
@@ -34,6 +39,22 @@ def _age(path: Path, seconds: float) -> None:
     """Backdates a file's mtime by `seconds` (so it is past the eviction grace / age cutoff)."""
     when = time.time() - seconds
     os.utime(path, (when, when))
+
+
+# --- upload ceiling --------------------------------------------------------------------------
+
+
+def test_upload_limit_falls_back_to_the_guild_tier_without_an_interaction_limit() -> None:
+    """An interaction without `attachment_size_limit` leaves the boost-tier ceiling in charge."""
+    interaction = AttachmentLimitInteraction(
+        data=cast(
+            "Any", {"id": "1", "type": 2, "token": "t", "version": 1, "application_id": "2"}
+        ),
+        state=cast("Any", SimpleNamespace(http=SimpleNamespace(_HTTPClient__session=None))),
+    )
+    guild = as_guild(fake=FakeGuild(filesize_limit=100 * 1024 * 1024))
+
+    assert upload_limit_for(guild=guild, interaction=interaction) == 100 * 1024 * 1024
 
 
 # --- host writer (publish_bytes / publish_path) ---------------------------------------------

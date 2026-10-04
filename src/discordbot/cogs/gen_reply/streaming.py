@@ -1269,7 +1269,9 @@ class ResponseStreamer(BaseModel):
             return
         plan = await self.media_delivery.plan(
             items=items,
-            upload_limit=upload_limit_for(guild=self.message.guild),
+            upload_limit=upload_limit_for(
+                guild=self.message.guild, interaction=self.surface.interaction
+            ),
             envelope_margin=MEDIA_ENVELOPE_MARGIN,
         )
         files = [item.to_file() for item in plan.native]

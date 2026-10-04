@@ -44,7 +44,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **Aligned-width embeds use `utils.discord_embeds.embed_spacer_payload(..., target=)`** so an edit reuses the uploaded spacer; re-uploading it on every edit trips Discord error 400009 on rapidly edited messages.
 - **Content past embed limits is paginated, rendered to a PNG via `attachment://...`, or clipped with a visible notice (`utils/discord_embeds.py::clip_to_utf16_limit`); never truncate silently.**
 - **Markdown headings render reliably only inside `embed.description`.**
-- **Never hardcode a Discord attachment-size ceiling; read it through `utils/media_delivery.py::upload_limit_for(guild=...)`**: Discord's base was 10 MiB for two years before 2026-08-13, and the docstring has why the guild path trusts nextcord's table.
+- **Never hardcode a Discord attachment-size ceiling; read it through `utils/media_delivery.py::upload_limit_for(guild=...)`, also passing `interaction=` when the media goes out through one**: only an interaction's own `attachment_size_limit` counts the invoker's Nitro, and nextcord drops it unless `cli.py::DiscordBot.get_interaction` keeps it. Discord's base was 10 MiB for two years before 2026-08-13, and the docstring has why the guild path trusts nextcord's table.
 - **Decide attach vs host vs drop only in `MediaDeliveryPlanner.plan`; keep the Discord send and the degradation policy at each site**, since the sends are structurally disjoint. Pass `envelope_margin=MEDIA_ENVELOPE_MARGIN` for a combined attach or one riding with embeds, and keep every new site host-free under `MEDIA_HOSTING_ENABLED=false` (module docstring).
 
 ## AI Pipeline
