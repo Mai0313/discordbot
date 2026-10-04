@@ -3,6 +3,8 @@
 import pytest
 from nextcord import Embed, Message
 
+from discordbot.utils.timezone import database_now
+from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
@@ -237,7 +239,10 @@ async def test_a_restart_runs_the_interrupted_expansion_again() -> None:
     expand = _RecordingExpand()
 
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=expand
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
     )
 
     assert len(expand.calls) == 1
@@ -249,6 +254,27 @@ async def test_a_restart_runs_the_interrupted_expansion_again() -> None:
     assert source.deleted is False
 
 
+async def test_a_restart_leaves_the_expansions_this_process_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listener runs before `on_ready` does, and the expansion it started is still running.
+
+    Driven through a cog so the cutoff is the cog's own start: a placeholder recorded after it
+    is what a link pasted between READY and `on_ready` leaves.
+    """
+    bot = _FakeBot(channel=None)
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    _source, _placeholder, channel = await _interrupted()
+    bot.channel = channel
+    expand = _RecordingExpand()
+    monkeypatch.setattr(cog, "_expand", expand)
+
+    await cog.on_ready()
+
+    assert expand.calls == []
+    assert len(await _load_pending(source=cog.SOURCE, created_before=database_now())) == 1
+
+
 async def test_a_resumed_expansion_that_fails_takes_its_placeholder_back() -> None:
     """The fallback the user asked for: what cannot be retried is at least not left behind."""
     _source, placeholder_message, channel = await _interrupted()
@@ -257,6 +283,7 @@ async def test_a_resumed_expansion_that_fails_takes_its_placeholder_back() -> No
         bot=as_bot(fake=_FakeBot(channel=channel)),
         source=_SOURCE,
         expand=_RecordingExpand(deliver=False),
+        created_before=database_now(),
     )
 
     assert placeholder_message.deleted is True
@@ -269,7 +296,10 @@ async def test_a_link_withdrawn_while_the_bot_was_down_is_never_expanded() -> No
     expand = _RecordingExpand()
 
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=expand
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
     )
 
     assert expand.calls == []
@@ -287,11 +317,14 @@ async def test_a_placeholder_removed_by_hand_ends_the_row() -> None:
     expand = _RecordingExpand()
 
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=expand
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
     )
 
     assert expand.calls == []
-    assert await _load_pending(source=_SOURCE) == []
+    assert await _load_pending(source=_SOURCE, created_before=database_now()) == []
 
 
 async def test_a_delivered_expansion_leaves_nothing_for_a_restart_to_find() -> None:
@@ -300,8 +333,12 @@ async def test_a_delivered_expansion_leaves_nothing_for_a_restart_to_find() -> N
     expand = _RecordingExpand()
     bot = as_bot(fake=_FakeBot(channel=channel))
 
-    await resume_expansion_placeholders(bot=bot, source=_SOURCE, expand=expand)
-    await resume_expansion_placeholders(bot=bot, source=_SOURCE, expand=expand)
+    await resume_expansion_placeholders(
+        bot=bot, source=_SOURCE, expand=expand, created_before=database_now()
+    )
+    await resume_expansion_placeholders(
+        bot=bot, source=_SOURCE, expand=expand, created_before=database_now()
+    )
 
     assert len(expand.calls) == 1
 
@@ -312,7 +349,10 @@ async def test_a_cog_never_resumes_another_platforms_expansion() -> None:
     expand = _RecordingExpand()
 
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source="douyin", expand=expand
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source="douyin",
+        expand=expand,
+        created_before=database_now(),
     )
 
     assert expand.calls == []
@@ -324,10 +364,16 @@ async def test_a_channel_the_bot_can_no_longer_reach_drops_the_row() -> None:
     expand = _RecordingExpand()
 
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=None)), source=_SOURCE, expand=expand
+        bot=as_bot(fake=_FakeBot(channel=None)),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
     )
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=expand
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source=_SOURCE,
+        expand=expand,
+        created_before=database_now(),
     )
 
     assert expand.calls == []
@@ -351,7 +397,10 @@ async def test_a_resumed_expansion_that_raises_still_marks_the_source() -> None:
         raise RuntimeError("the embed plan blew up")
 
     await resume_expansion_placeholders(
-        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=explode
+        bot=as_bot(fake=_FakeBot(channel=channel)),
+        source=_SOURCE,
+        expand=explode,
+        created_before=database_now(),
     )
 
     assert source.reactions[-1] == EXPANSION_FAILED_EMOJI

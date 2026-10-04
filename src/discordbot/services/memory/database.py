@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.memory import MemoryFlavor
+from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
@@ -358,10 +359,20 @@ async def clear_job(scope: str, flavor: MemoryFlavor, token: int) -> bool:
         return previous is not None and previous.status != "cleared"
 
 
-async def list_resumable() -> list[MemoryJob]:
-    """Returns pending and failed rows for the restart resume sweep."""
+async def list_resumable(updated_before: datetime) -> list[MemoryJob]:
+    """Returns the pending and failed rows last written before `updated_before`.
+
+    Args:
+        updated_before: When this process started. A turn can run before `on_ready` does, so
+            a row written since is a turn this process is still running. `created_at` cannot
+            tell: the upsert keeps a scope's first write time and moves only `updated_at`.
+    """
     async with open_session() as session:
         result = await session.execute(
-            statement=select(MemoryJobRow).where(MemoryJobRow.status.in_(("pending", "failed")))
+            statement=select(MemoryJobRow).where(
+                MemoryJobRow.status.in_(("pending", "failed")),
+                # SQLite keeps the Taipei wall clock without its offset.
+                MemoryJobRow.updated_at < _as_taipei(dt=updated_before),
+            )
         )
         return [_row_to_model(row=row) for row in result.scalars().all()]

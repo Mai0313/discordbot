@@ -9276,7 +9276,8 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     resumed: list[dict[str, object]] = []
     swept: list[str] = []
 
-    async def fake_list() -> list[memory_db.MemoryJob]:
+    async def fake_list(updated_before: datetime) -> list[memory_db.MemoryJob]:
+        del updated_before
         return jobs
 
     def fake_resume(**kwargs: object) -> None:
@@ -9359,7 +9360,6 @@ async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
     The recorder answers the review with no valid draft, and a failed review with no forget
     never consolidates, so the one consolidation call is the sweep's.
     """
-    cog = _cog(bot_user_id=999)
     monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
     append_raw_entry(scope=scope, entry_text="### stable_preference\n- summary_zh: 喜歡簡短回覆")
     await memory_db.upsert_pending(
@@ -9372,6 +9372,8 @@ async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
         identity="",
         token=memory_db.new_token(),
     )
+    # Built after the row, so the row is an earlier process's.
+    cog = _cog(bot_user_id=999)
 
     await cog._resume_memory()
     while cog._tasks:
@@ -9380,6 +9382,49 @@ async def test_resume_memory_reaches_the_model_under_each_scopes_own_prompts(
     await wait_for_persisted_writes()
 
     assert set(_recorded(cog).responses.parse_instructions) == prompts
+
+
+async def test_resume_memory_leaves_a_turn_this_process_staged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply runs before `on_ready` does, and the review it staged is still running.
+
+    The live scope's row was first written by an earlier process, so only `updated_at`, which
+    the upsert moves while keeping `created_at`, says its transcript is this process's own. The
+    scope an earlier process left is the control that the sweep ran at all.
+    """
+    live_scope = user_scope(user_id=1)
+    left_scope = user_scope(user_id=2)
+    for scope in (live_scope, left_scope):
+        await memory_db.upsert_pending(
+            scope=scope,
+            flavor="user",
+            subject="target_user_id: 1",
+            transcript="earlier",
+            identity="",
+            token=memory_db.new_token(),
+        )
+    cog = _cog(bot_user_id=999)
+    await memory_db.upsert_pending(
+        scope=live_scope,
+        flavor="user",
+        subject="target_user_id: 1",
+        transcript="live",
+        identity="",
+        token=memory_db.new_token(),
+    )
+    resumed: list[object] = []
+
+    def fake_resume(**kwargs: object) -> None:
+        resumed.append(kwargs["scope"])
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.resume_memory_update", fake_resume)
+
+    await cog._resume_memory()
+    while cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+
+    assert resumed == [left_scope]
 
 
 async def test_on_ready_resume_runs_once(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -24,6 +24,7 @@ from sqlalchemy import String, Integer, DateTime, insert, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
+from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
@@ -165,11 +166,20 @@ async def set_phase(thread_id: int, phase: ResearchPhase) -> None:
         await session.commit()
 
 
-async def list_resumable() -> list[PersistentResearchSession]:
-    """Returns sessions still `researching`, for the restart resume sweep."""
+async def list_resumable(created_before: datetime) -> list[PersistentResearchSession]:
+    """Returns sessions launched before `created_before` and still `researching`.
+
+    Args:
+        created_before: When this process started. A launch can run before `on_ready` does, so
+            a session created since is one this process is still running.
+    """
     async with open_session() as session:
         result = await session.execute(
-            statement=select(ResearchSessionRow).where(ResearchSessionRow.phase == "researching")
+            statement=select(ResearchSessionRow).where(
+                ResearchSessionRow.phase == "researching",
+                # SQLite keeps the Taipei wall clock without its offset.
+                ResearchSessionRow.created_at < _as_taipei(dt=created_before),
+            )
         )
         return [_row_to_model(row=row) for row in result.scalars().all()]
 

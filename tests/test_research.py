@@ -21,6 +21,7 @@ from discordbot.cogs.research import agent
 from discordbot.cogs.research import database as rdb
 from discordbot.cogs.research import streaming as research_streaming
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.utils.timezone import database_now
 from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
@@ -751,7 +752,14 @@ def test_failure_text_distinguishes_budget() -> None:
 
 async def _only_resumable(thread_id: int) -> rdb.PersistentResearchSession | None:
     """The one resumable row for a thread; the store has no single-row reader left to use."""
-    return next((row for row in await rdb.list_resumable() if row.thread_id == thread_id), None)
+    return next(
+        (
+            row
+            for row in await rdb.list_resumable(created_before=database_now())
+            if row.thread_id == thread_id
+        ),
+        None,
+    )
 
 
 async def test_session_round_trip() -> None:
@@ -826,7 +834,7 @@ async def test_list_resumable_only_returns_researching() -> None:
         )
         await rdb.set_interaction(thread_id=thread_id, interaction_id="int_x")
         await rdb.set_phase(thread_id=thread_id, phase=phase)
-    resumable = await rdb.list_resumable()
+    resumable = await rdb.list_resumable(created_before=database_now())
     assert {session.thread_id for session in resumable} == {20}
 
 
@@ -849,7 +857,7 @@ async def test_a_legacy_planning_row_no_longer_blocks_its_owner() -> None:
         )
         await session.commit()
     assert await rdb.active_thread_for_owner(owner_id=61) is None
-    assert await rdb.list_resumable() == []
+    assert await rdb.list_resumable(created_before=database_now()) == []
 
 
 # ----- delivery completion footer -----------------------------------------------------------
@@ -1074,8 +1082,8 @@ async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
         raise AssertionError("the resume must not reach the provider while the switch is off")
 
     monkeypatch.setattr(research_cog, "resume_research_stream", _boom)
-    cog = _research_cog(enabled=False)
     await _seed_researching(thread_id=30, owner_id=300)
+    cog = _research_cog(enabled=False)
 
     await cog._resume_all()
 
@@ -1084,7 +1092,9 @@ async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
     # still deliver it.
     assert not cog._tasks
     assert cog._active_threads == set()
-    assert [session.thread_id for session in await rdb.list_resumable()] == [30]
+    assert [
+        session.thread_id for session in await rdb.list_resumable(created_before=database_now())
+    ] == [30]
 
 
 async def test_resume_sweep_stays_off_without_a_gemini_key(
@@ -1096,19 +1106,22 @@ async def test_resume_sweep_stays_off_without_a_gemini_key(
     monkeypatch.setattr(research_cog, "resume_research_stream", _boom)
     # The gate is `deep_research_available`, so a switched-on deployment with no key is refused
     # here rather than at `genai.Client` inside the resume's own try.
+    await _seed_researching(thread_id=35, owner_id=350)
     cog = _research_cog(enabled=True)
     cog.config.gemini_api_key = "   "
-    await _seed_researching(thread_id=35, owner_id=350)
 
     await cog._resume_all()
 
     assert not cog._tasks
-    assert [session.thread_id for session in await rdb.list_resumable()] == [35]
+    assert [
+        session.thread_id for session in await rdb.list_resumable(created_before=database_now())
+    ] == [35]
 
 
 async def test_resume_sweep_still_resumes_when_the_switch_is_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    await _seed_researching(thread_id=40, owner_id=400)
     cog = _research_cog(enabled=True)
     resumed: list[int] = []
 
@@ -1116,7 +1129,6 @@ async def test_resume_sweep_still_resumes_when_the_switch_is_on(
         resumed.append(session.thread_id)
 
     monkeypatch.setattr(cog, "_resume_one", _fake_resume_one)
-    await _seed_researching(thread_id=40, owner_id=400)
 
     await cog._resume_all()
     await asyncio.gather(*cog._tasks)
@@ -1124,7 +1136,35 @@ async def test_resume_sweep_still_resumes_when_the_switch_is_on(
     assert resumed == [40]
     assert cog._active_threads == {40}
     # The sweep leaves the phase alone: the resumed run decides its own terminal phase.
-    assert [session.thread_id for session in await rdb.list_resumable()] == [40]
+    assert [
+        session.thread_id for session in await rdb.list_resumable(created_before=database_now())
+    ] == [40]
+
+
+async def test_resume_sweep_leaves_the_runs_this_process_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launch runs before `on_ready` does, and the research it started is still running.
+
+    Its row is `researching` exactly like one an earlier process left, so only the cog's own
+    start tells them apart; resuming it would run the report twice, or abandon a live run.
+    """
+    await _seed_researching(thread_id=50, owner_id=500)
+    cog = _research_cog(enabled=True)
+    await _seed_researching(thread_id=51, owner_id=510, stored_id=False)
+    resumed: list[int] = []
+
+    async def _fake_resume_one(session: rdb.PersistentResearchSession) -> None:
+        resumed.append(session.thread_id)
+
+    monkeypatch.setattr(cog, "_resume_one", _fake_resume_one)
+
+    await cog._resume_all()
+    await asyncio.gather(*cog._tasks)
+
+    assert resumed == [50]
+    assert cog._active_threads == {50}
+    assert await rdb.active_thread_for_owner(owner_id=510) == 51
 
 
 # ----- permission refusals ------------------------------------------------------------------
@@ -1677,6 +1717,8 @@ async def _resume_run(
     await _seed_researching(
         thread_id=_THREAD_ID, owner_id=_OWNER_ID, stored_id=stored_id, agent=agent
     )
+    # The restart comes after the run that left the row.
+    cog._started_at = database_now()
     await cog._resume_all()
     await asyncio.gather(*cog._tasks)
 

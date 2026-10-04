@@ -34,6 +34,7 @@ from nextcord.ext import commands
 
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
+from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
 from discordbot.utils.discord_embeds import (
@@ -403,6 +404,9 @@ class ExpansionCog[ParsedT](commands.Cog):
         """
         self.bot = bot
         self._resume_started = False
+        # Taken at load, before the gateway connects, as `DiscordBot._started_at` is: the restart
+        # sweep must not re-run an expansion this process starts ahead of `on_ready`.
+        self._started_at = database_now()
 
     @staticmethod
     def url_is_expandable(url: str) -> bool:
@@ -475,7 +479,9 @@ class ExpansionCog[ParsedT](commands.Cog):
         if self._resume_started:
             return
         self._resume_started = True
-        await resume_expansion_placeholders(bot=self.bot, source=self.SOURCE, expand=self._expand)
+        await resume_expansion_placeholders(
+            bot=self.bot, source=self.SOURCE, expand=self._expand, created_before=self._started_at
+        )
 
     async def _mark_failed(self, message: Message, current_emoji: str | None) -> None:
         """Paints the failure cross, naming the platform when nothing else on the message does.
