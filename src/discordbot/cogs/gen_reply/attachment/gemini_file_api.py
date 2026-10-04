@@ -96,8 +96,8 @@ class GeminiFileUploader(FileUploadRenderer):
         ...,
         description=(
             "Hands back the deployment's direct Gemini client, or None when no key is "
-            "configured. Read at each upload rather than once, so a keyless deployment builds "
-            "no client and every upload is dropped with the missing key named."
+            "configured. A keyless deployment inlines instead of building this uploader, so a "
+            "None here only drops the upload with the missing key named."
         ),
     )
     # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key

@@ -823,7 +823,8 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     The config is every field's declared default, so a checkout's `.env` cannot decide a test;
     a test about it sets it on the cog. Everything else, the media planner (which the suite
     keeps from hosting), the usage recorder and the attachment handler choice included, still
-    reads the environment.
+    reads the environment. The toolkit alone holds a key, whose client is a fake, so a Gemini
+    answer model gets the uploading handler a keyed deployment does.
     """
     cog = ReplyGeneratorCogs(
         bot=as_bot(
@@ -834,12 +835,8 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     )
     cog.config = LLMConfig.model_construct()
     cog.__dict__["openai_client"] = FakeClient()
-    toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="")
+    toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="test-key")
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
-    handler = toolkit.input_builder.attachment_handler
-    if isinstance(handler, GeminiFileUploader):
-        # The keyless toolkit would hand the uploader no client at all.
-        handler.gemini_client = lambda: toolkit.gemini_client
     # Seeded into the cached_property's slot, so every path reads this one rather than
     # building a real toolkit against the test deployment's empty credentials.
     cog.__dict__["toolkit"] = toolkit
@@ -4635,10 +4632,11 @@ def test_grok_attachment_handler_path_stays_disabled() -> None:
 
 
 def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
-    """The Gemini branch uploads to the Files API while the switch is on."""
+    """The Gemini branch uploads to the Files API while the switch is on and a key is set."""
+    client = as_client(fake=FakeGeminiClient())
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: None
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: client
         ),
         GeminiFileUploader,
     )
@@ -4647,11 +4645,12 @@ def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
 def test_the_file_api_kill_switch_inlines_gemini_attachments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With the switch off, even a Gemini answer model gets inlined attachments."""
+    """With the switch off, even a keyed Gemini answer model gets inlined attachments."""
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    client = as_client(fake=FakeGeminiClient())
     assert isinstance(
         build_attachment_handler(
-            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: None
+            model=ModelSettings(name="gemini-3.8-flash"), gemini_client=lambda: client
         ),
         InlineRenderer,
     )
@@ -4828,10 +4827,8 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     assert [text for text, _ in logged] == ["xAI Files API key missing; dropping attachment"]
 
 
-async def test_gemini_uploader_uploads_through_the_toolkit_client(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Attachments upload with the toolkit's own direct client; a keyless one names the key.
+def test_gemini_uploader_uploads_through_the_toolkit_client() -> None:
+    """Attachments upload with the toolkit's own direct client.
 
     A file is readable only by the key that uploaded it, so the uploader holds no client of its
     own: the one the answer's direct paths use is the one it uploads with.
@@ -4842,17 +4839,49 @@ async def test_gemini_uploader_uploads_through_the_toolkit_client(
     assert isinstance(keyed_handler, GeminiFileUploader)
     assert keyed_handler.gemini_client() is keyed.gemini_client
 
-    logged = capture_logs(monkeypatch=monkeypatch, level="error")
-    keyless = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
-    keyless_handler = keyless.input_builder.attachment_handler
-    assert isinstance(keyless_handler, GeminiFileUploader)
-    assert (
-        await keyless_handler._upload_or_pend(
-            filename="x.txt", data=b"x", content_type="text/plain"
-        )
-        is None
+
+async def test_a_keyless_deployment_inlines_attachments_instead_of_dropping_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a Gemini key, a Gemini answer model still reads attachments, each fetched once.
+
+    Nothing can upload without a key, so handing a Gemini answer model the uploader downloaded
+    every attachment only to drop it, and left the message uncached to do it all again on the
+    next reply. A clip the inline renderer cannot carry is neither marked nor downloaded.
+    """
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image", "audio", "video"},
     )
-    assert [text for text, _ in logged] == ["gemini Files API key missing; dropping attachment"]
+    logged = capture_logs(monkeypatch=monkeypatch, level="error")
+    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
+    assert toolkit.runtime_models.slow_model.is_gemini
+    builder = toolkit.input_builder
+    pic = FakeAttachment(
+        filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
+    )
+    notes = FakeAttachment(filename="notes.txt", content_type="text/plain", attachment_id=2)
+    clip = FakeAttachment(filename="clip.mp4", content_type="video/mp4", attachment_id=3)
+    message = FakeMessage(content="<@999> look", author=FakeAuthor(user_id=1))
+    message.attachments = [pic, notes, clip]
+
+    text_only = await builder.process_single_message(
+        message=as_message(fake=message), text_only=True
+    )
+    await builder.process_single_message(message=as_message(fake=message))
+    full = await builder.process_single_message(message=as_message(fake=message))
+
+    assert [part["text"] for part in step_dicts(steps=text_only["content"])[1:]] == [
+        "[attachment: image]",
+        "[attachment: file]",
+    ]
+    assert [part["type"] for part in step_dicts(steps=full["content"])[1:]] == [
+        "input_image",
+        "input_text",
+    ]
+    assert (pic.read_count, notes.read_count, clip.read_count) == (1, 1, 0)
+    assert logged == []
 
 
 def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:

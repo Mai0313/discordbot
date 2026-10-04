@@ -1,4 +1,4 @@
-"""Inline attachment renderer for answer models that cannot resolve Gemini Files URIs."""
+"""Inline attachment renderer for whenever attachments cannot go by Gemini Files URI."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -32,11 +32,11 @@ class InlineRenderer(AttachmentRenderer):
     """Inlines attachments as base64 / text parts.
 
     Selected for any non-Gemini answer model, none of which can resolve a Gemini Files URI,
-    and for every provider (Gemini included) while `file_api_enabled` is off. Stateless:
-    every render fetches the source and embeds it directly in the request, so there is no
-    upload handle to track; `allow_dead_cache` is ignored and `cache_key` only labels a
-    failure log. Images inline as `input_image` base64, PDFs as base64 `input_file`, UTF-8
-    files as `input_text`, and anything else is dropped.
+    for a Gemini one when no Gemini key is configured to upload with, and for every provider
+    while `file_api_enabled` is off. Stateless: every render fetches the source and embeds it
+    directly in the request, so there is no upload handle to track; `allow_dead_cache` is
+    ignored and `cache_key` only labels a failure log. Images inline as `input_image` base64,
+    PDFs as base64 `input_file`, UTF-8 files as `input_text`, and anything else is dropped.
     """
 
     dropped_modalities = frozenset({"video", "audio"})
@@ -114,7 +114,7 @@ class InlineRenderer(AttachmentRenderer):
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             logfire.warn(
-                "dropping non-text, non-PDF attachment for a non-Gemini model",
+                "dropping non-text, non-PDF attachment the inline renderer cannot carry",
                 filename=filename,
                 mime_type=mime_type,
             )
