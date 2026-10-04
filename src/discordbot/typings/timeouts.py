@@ -93,8 +93,8 @@ ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 15.0
 # Bound on a Discord attachment's transfer to the Gemini Files API, before the activation poll
 # above starts. Without it an upload into a stalled connection never returns and keeps its media
 # slot for the life of the process. Expiry drops the attachment, as a failed upload does, so it
-# also caps the largest file the bot can read: at 120s Discord's largest attachment (500 MiB
-# with Nitro, as of 2026-09) needs about 35 Mbit/s of upload, and one that cannot finish is
+# also caps the largest file the bot can read: at 120s Discord's largest attachment (1GB
+# with Nitro, as of 2026-10) needs about 70 Mbit/s of upload, and one that cannot finish is
 # uploaded and dropped again on every reply that references it.
 ATTACHMENT_UPLOAD_TIMEOUT_SECONDS: Final[float] = 120.0
 
