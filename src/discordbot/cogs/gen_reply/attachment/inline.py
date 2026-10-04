@@ -1,16 +1,18 @@
 """Inline attachment renderer for whenever attachments cannot go by Gemini Files URI."""
 
 from datetime import UTC, datetime, timedelta
+from collections import OrderedDict
 
 import logfire
 from nextcord import Attachment, StickerItem
+from pydantic import PrivateAttr
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import RenderedAttachment
-from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
@@ -33,13 +35,31 @@ class InlineRenderer(AttachmentRenderer):
 
     Selected for any non-Gemini answer model, none of which can resolve a Gemini Files URI,
     for a Gemini one when no Gemini key is configured to upload with, and for every provider
-    while `file_api_enabled` is off. Stateless: every render fetches the source and embeds it
-    directly in the request, so there is no upload handle to track; `allow_dead_cache` is
-    ignored and `cache_key` only labels a failure log. Images inline as `input_image` base64,
+    while `file_api_enabled` is off. Every render fetches the source and embeds it directly in
+    the request, so there is no upload handle to track and `allow_dead_cache` is ignored; all it
+    remembers is which files it has read and cannot carry. Images inline as `input_image` base64,
     PDFs as base64 `input_file`, UTF-8 files as `input_text`, and anything else is dropped.
     """
 
     dropped_modalities = frozenset({"video", "audio"})
+
+    # Files whose bytes turned out to be neither a PDF nor UTF-8, which only the bytes can tell (a
+    # Big5 `.txt` is `text/plain` like a UTF-8 one). `carries` refuses them from then on, so the
+    # route marker, the history media budget and the render cache leave them out after the first
+    # read. Bounded like the render cache.
+    _unreadable: OrderedDict[int | str, None] = PrivateAttr(default_factory=OrderedDict)
+
+    def carries(self, content_type: str, cache_key: int | str) -> bool:
+        """Refuses a font or an Android package unfetched, and a file already read as unreadable.
+
+        Those types name binary formats no UTF-8 decode can carry; any other type may hold text,
+        so only reading it decides.
+        """
+        if content_type.startswith("font/") or (
+            content_type == "application/vnd.android.package-archive"
+        ):
+            return False
+        return cache_key not in self._unreadable
 
     async def render_image(
         self,
@@ -91,17 +111,21 @@ class InlineRenderer(AttachmentRenderer):
         if loaded is None:
             return None
         return self._inline_file_part(
-            filename=attachment.filename, data=loaded.data, mime_type=mime_type
+            filename=attachment.filename,
+            data=loaded.data,
+            mime_type=mime_type,
+            cache_key=cache_key,
         )
 
     def _inline_file_part(
-        self, filename: str, data: bytes, mime_type: str
+        self, filename: str, data: bytes, mime_type: str, cache_key: int | str
     ) -> RenderedAttachment | None:
         """Inlines a non-image file, or drops it.
 
         PDFs inline as base64 `input_file` (the one document type OpenAI / Anthropic accept
         inline); UTF-8-decodable files inline as `input_text` with a filename header; anything
-        else (non-text binaries the Gemini Files path would have uploaded) is dropped.
+        else (non-text binaries the Gemini Files path would have uploaded) is dropped, and
+        remembered so `carries` refuses it from then on.
         """
         if mime_type == "application/pdf":
             pdf_part = ResponseInputFileParam(
@@ -117,7 +141,11 @@ class InlineRenderer(AttachmentRenderer):
                 "dropping non-text, non-PDF attachment the inline renderer cannot carry",
                 filename=filename,
                 mime_type=mime_type,
+                cache_key=loggable_cache_key(cache_key=cache_key),
             )
+            self._unreadable[cache_key] = None
+            if len(self._unreadable) > 128:
+                self._unreadable.popitem(last=False)
             return None
         text_part = ResponseInputTextParam(
             type="input_text", text=f"[attached file: {filename}]\n{text}"

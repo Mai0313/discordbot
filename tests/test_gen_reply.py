@@ -4675,7 +4675,7 @@ async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
 async def test_inline_renderer_drops_a_source_that_fails_to_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed fetch drops only that part, and the stateless renderer remembers nothing of it."""
+    """A failed fetch drops only that part, and the renderer remembers nothing of it."""
 
     async def fail(attachment: object) -> LoadedMedia:
         """Fails the download the way an expired CDN url does."""
@@ -4693,6 +4693,7 @@ async def test_inline_renderer_drops_a_source_that_fails_to_load(
 
     assert rendered is None
     assert not renderer._dead_sources
+    assert renderer.carries(content_type="text/plain", cache_key="notes.txt")
 
 
 def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
@@ -5441,6 +5442,64 @@ async def test_the_gate_passes_only_what_the_selected_renderer_carries(
     assert [part["text"] for part in step_dicts(steps=text_only["content"])[1:]] == markers
     assert builder.count_supported_sources(message=as_message(fake=message)) == len(markers)
     assert pic.read_count == 1
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "payload", "reads"),
+    [
+        ("app.apk", "application/vnd.android.package-archive", b"PK\x03\x04\xff", (1, 0)),
+        ("font.ttf", "font/ttf", b"\x00\x01\x00\x00\xff", (1, 0)),
+        ("notes.txt", "text/plain", "繁體中文".encode("big5"), (2, 1)),
+    ],
+    ids=["apk", "font", "big5-text"],
+)
+async def test_the_inline_gate_stops_passing_a_file_the_renderer_cannot_read(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    content_type: str,
+    payload: bytes,
+    reads: tuple[int, int],
+) -> None:
+    """A file the inline renderer drops is not marked or budgeted, nor keeps its message uncached.
+
+    A font or an Android package is refused on its type, before any download. A `text/plain` file
+    may hold UTF-8 or not, so it is read once; once its bytes rule it out it is refused like the
+    others, and the message caches on the next render rather than downloading the image beside it
+    on every reply.
+    """
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image", "audio", "video"},
+    )
+    builder = _cog().toolkit.input_builder
+    pic = FakeAttachment(
+        filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
+    )
+    other = FakeAttachment(
+        filename=filename, content_type=content_type, payload=payload, attachment_id=2
+    )
+    message = FakeMessage(content="<@999> look", author=FakeAuthor(user_id=1))
+    message.attachments = [pic, other]
+
+    for _ in range(3):
+        await builder.process_single_message(message=as_message(fake=message))
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
+    text_only = await builder.process_single_message(
+        message=as_message(fake=message), text_only=True
+    )
+
+    assert [part["text"] for part in step_dicts(steps=text_only["content"])[1:]] == [
+        "[attachment: image]"
+    ]
+    assert builder.count_supported_sources(message=as_message(fake=message)) == 1
+    assert (pic.read_count, other.read_count) == reads
+    # The record has to say the renderer refused it: the model takes the `image` it proxies as.
+    assert [
+        (fields["modality"], fields["carried"])
+        for text, fields in logged
+        if text == "gen_reply skipping unsupported attachment"
+    ] == [("image", False)]
 
 
 @pytest.mark.parametrize(
