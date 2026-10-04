@@ -304,20 +304,22 @@ async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> N
     assert row.unreadable_removed == 0
 
 
+@pytest.mark.parametrize("filename", ["raw.md", "detail.md"])
 @pytest.mark.parametrize(("dry_run", "other_result"), [(True, "dry-run"), (False, "failed")])
-async def test_an_undecodable_evidence_file_fails_only_its_own_scope(
+async def test_an_undecodable_evidence_file_fails_only_its_own_scope(  # noqa: PLR0913 -- three fixtures plus one knob per way the run varies
+    filename: str,
     dry_run: bool,
     other_result: str,
     memory_isolated_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A `raw.md` saved in the wrong encoding is one error row, and the batch still reports."""
+    """An evidence file saved in the wrong encoding is one error row, and the batch still reports."""
     for scope in (_USER, _OTHER_USER, _SERVER):
         _seed(scope=scope)
-    raw = memory_isolated_dir / _OTHER_USER / "raw.md"
+    evidence = memory_isolated_dir / _OTHER_USER / filename
     big5 = "### stable_preference\n- summary_zh: 喜歡簡短回覆".encode("big5")
-    raw.write_bytes(big5)
+    evidence.write_bytes(big5)
     monkeypatch.setattr(regen_script.console, "input", lambda *args, **kwargs: "y")
     # Answers nothing, so every scope that reaches the model reports `failed`.
     monkeypatch.setattr(regen_script, "AsyncOpenAI", lambda **kwargs: FakeMemoryClient())
@@ -332,7 +334,7 @@ async def test_an_undecodable_evidence_file_fails_only_its_own_scope(
     assert f"{_USER} {other_result}" in output
     assert f"{_SERVER} {other_result}" in output
     # Left exactly as the operator saved it, for them to repair.
-    assert raw.read_bytes() == big5
+    assert evidence.read_bytes() == big5
 
 
 @pytest.mark.parametrize(

@@ -3912,6 +3912,61 @@ def test_read_detail_tail_window_aligns_to_entry_header(memory_isolated_dir: Pat
     assert "第一筆細節" not in windowed
 
 
+_OLDEST_DETAIL_HEADER = b"## 2026-01-01T00:00:00+00:00\n"
+_NEWEST_DETAIL = "## 2026-02-01T00:00:00+00:00\n第二筆細節"
+_CUT_WINDOW_CHARS = len(_NEWEST_DETAIL) + 4
+_BIG5 = "喜歡簡短回覆".encode("big5")
+
+
+def _detail_cut_inside(older: bytes, opening: int) -> bytes:
+    """Returns a `detail.md` whose window at `_CUT_WINDOW_CHARS` opens `opening` bytes before `older` ends.
+
+    The window is the file's last `4 * max_chars` bytes, so ASCII padding after `older` sizes it.
+    """
+    newest = f"\n\n{_NEWEST_DETAIL}\n".encode()
+    return older + b"." * (4 * _CUT_WINDOW_CHARS - opening - len(newest)) + newest
+
+
+@pytest.mark.parametrize("opening", [1, 2, 3])
+def test_read_detail_tail_skips_the_character_its_window_cut(
+    opening: int, memory_isolated_dir: Path
+) -> None:
+    """A window opening on the trailing bytes of a character it split reads on past them."""
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    (user_dir / "detail.md").write_bytes(
+        _detail_cut_inside(older=_OLDEST_DETAIL_HEADER + "😀".encode(), opening=opening)
+    )
+    assert read_detail_tail(scope=USER_SCOPE, max_chars=_CUT_WINDOW_CHARS) == _NEWEST_DETAIL
+
+
+@pytest.mark.parametrize(
+    ("content", "max_chars"),
+    [
+        pytest.param(_OLDEST_DETAIL_HEADER + _BIG5 + b"\n", 10_000, id="re-saved-as-big5"),
+        pytest.param(
+            _detail_cut_inside(older=_OLDEST_DETAIL_HEADER + _BIG5, opening=len(_BIG5)),
+            _CUT_WINDOW_CHARS,
+            id="big5-in-a-cut-window",
+        ),
+        pytest.param(
+            _OLDEST_DETAIL_HEADER + "第一筆".encode()[:-1] + f"\n\n{_NEWEST_DETAIL}\n".encode(),
+            10_000,
+            id="torn-append",
+        ),
+    ],
+)
+def test_read_detail_tail_raises_on_bytes_no_window_cut_explains(
+    content: bytes, max_chars: int, memory_isolated_dir: Path
+) -> None:
+    """A `detail.md` that is not UTF-8 fails its read instead of coming back garbled."""
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    (user_dir / "detail.md").write_bytes(content)
+    with pytest.raises(UnicodeDecodeError):
+        read_detail_tail(scope=USER_SCOPE, max_chars=max_chars)
+
+
 def test_read_evidence_puts_the_detail_tail_ahead_of_raw(memory_isolated_dir: Path) -> None:
     """The corpus is read as one oldest-first batch, and a missing tier adds no separator."""
     assert read_evidence(scope=USER_SCOPE) == ""
@@ -4424,6 +4479,26 @@ async def test_consolidate_if_needed_skips_under_threshold(
     assert fake_client.responses.parse_models == []
     assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 1
+
+
+async def test_an_undecodable_detail_file_keeps_its_scope_out_of_consolidation(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `detail.md` saved in another encoding stops its scope before the model sees any of it."""
+    _consolidate_at(monkeypatch=monkeypatch, entries=2)
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
+    detail = memory_isolated_dir / str(USER_ID) / "detail.md"
+    big5 = _OLDEST_DETAIL_HEADER + _BIG5 + b"\n"
+    detail.write_bytes(big5)
+    writer, fake_client = _writer()
+    # A valid answer, so a consolidation that did run would change the store rather than fail.
+    fake_client.responses.output_parsed = _consolidated(text="不該整理")
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+    assert fake_client.responses.parse_models == []
+    assert count_raw_entries(scope=USER_SCOPE) == 2
+    # Left exactly as it was saved, for the operator to repair.
+    assert detail.read_bytes() == big5
 
 
 def test_iter_scopes_only_descends_into_the_bot_memory_directory(
