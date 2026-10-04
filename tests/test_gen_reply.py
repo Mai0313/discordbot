@@ -9339,6 +9339,30 @@ async def test_resume_memory_sweeps_every_scope_past_a_backup_copy(
     assert sorted(swept) == sorted(scopes)
 
 
+async def test_resume_memory_sweeps_every_scope_past_an_undecodable_raw_file(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `raw.md` saved in the wrong encoding leaves out its own scope, not the ones after it."""
+    cog = _cog(bot_user_id=999)
+    scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
+    for scope in scopes:
+        for entry in ("- a", "- b"):
+            append_raw_entry(scope=scope, entry_text=entry)
+    (memory_isolated_dir / "222" / "raw.md").write_bytes("- a\n\n- 喜歡簡短回覆".encode("big5"))
+    swept: list[str] = []
+
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
+        swept.append(scope)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.consolidate_if_needed", fake_consolidate)
+
+    await cog._resume_memory()
+    while cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+
+    assert sorted(swept) == [user_scope(user_id=111), server_scope(server_id=333)]
+
+
 @pytest.mark.parametrize(
     ("scope", "subject", "prompts"),
     [

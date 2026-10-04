@@ -81,8 +81,20 @@ def needs_consolidation(scope: str) -> bool:
     A cheap file read (no lock), used to avoid queuing a per-scope task on the
     global semaphore just to discover it is under threshold; `consolidate_if_needed`
     re-checks under the lock, which stays the authority.
+
+    A `raw.md` that cannot be read or decoded answers False rather than raising: the sweep
+    walks every scope through here, so the raise would stop it before the scopes after this
+    one, and this one cannot consolidate until the file is repaired anyway.
     """
-    return _should_consolidate(scope=scope)
+    try:
+        return _should_consolidate(scope=scope)
+    except (OSError, UnicodeDecodeError) as error:
+        logfire.warn(
+            "Memory raw.md could not be read; scope left out of the consolidation sweep",
+            scope=scope,
+            _exc_info=error,
+        )
+        return False
 
 
 async def consolidate_if_needed(scope: str, writer: MemoryWriterAI, identity: str) -> None:
