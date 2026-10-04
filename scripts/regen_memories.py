@@ -136,12 +136,31 @@ def _scopes_for_target(target: str) -> list[str]:
     return [target]
 
 
-def _preview(scope: str) -> dict[str, int]:
-    """Returns the per-compartment observation counts a rebuild of this scope would see."""
-    buckets = partition_raw_entries(
-        raw_text=read_evidence(scope=scope), flavor=flavor_of(scope=scope)
+def _preview_row(scope: str) -> _ScopeRow:
+    """Returns the dry-run row for one scope: the observation counts a rebuild of it would see.
+
+    A scope whose evidence cannot be read or decoded gets an error row with no counts instead
+    of raising: the dry run and the real run's failure handler both build on this, and a raise
+    from either would end the whole batch at that scope. The rebuild opens with the same read,
+    so the dry run names the scopes the real run fails.
+    """
+    try:
+        evidence = read_evidence(scope=scope)
+    except (OSError, UnicodeDecodeError) as error:
+        return _ScopeRow(
+            scope=scope,
+            result=f"error: {type(error).__name__}: {error}",
+            counts={},
+            unreadable_removed=0,
+        )
+    buckets = partition_raw_entries(raw_text=evidence, flavor=flavor_of(scope=scope))
+    return _ScopeRow(
+        scope=scope,
+        # The rebuild's own guard, so the preview names the scopes the run skips.
+        result="dry-run" if evidence else "no_evidence",
+        counts={compartment: text.count("### ") for compartment, text in buckets.items()},
+        unreadable_removed=0,
     )
-    return {compartment: text.count("### ") for compartment, text in buckets.items()}
 
 
 def _written(scope: str) -> dict[str, int]:
@@ -245,7 +264,8 @@ async def _regen_one(
             counts = _written(scope=scope)
         except Exception as error:
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
-            result, counts = f"error: {type(error).__name__}: {error}", _preview(scope=scope)
+            result = f"error: {type(error).__name__}: {error}"
+            counts = _preview_row(scope=scope).counts
     # A store-wide run is minutes of LLM work, so each scope reports as it lands rather
     # than leaving the closing report as the only output.
     console.print(f"{scope}: {result}")
@@ -317,18 +337,7 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
             "[yellow]This one covers the whole store; commit data/memories first.[/yellow]"
         )
     if dry_run:
-        _report(
-            rows=[
-                _ScopeRow(
-                    scope=scope,
-                    # The rebuild's own guard, so the preview names the scopes the run skips.
-                    result="dry-run" if read_evidence(scope=scope) else "no_evidence",
-                    counts=_preview(scope=scope),
-                    unreadable_removed=0,
-                )
-                for scope in scopes
-            ]
-        )
+        _report(rows=[_preview_row(scope=scope) for scope in scopes])
         return
     if not _confirmed():
         return
