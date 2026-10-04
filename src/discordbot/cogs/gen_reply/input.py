@@ -293,7 +293,7 @@ class MessageInputBuilder(BaseModel):
 
     def _split_on_modality(
         self, sources: list[AttachmentSource], model_name: str
-    ) -> tuple[list[AttachmentSource], list[tuple[AttachmentSource, str]]]:
+    ) -> tuple[list[AttachmentSource], list[tuple[AttachmentSource, str, bool]]]:
         """Splits sources into what the named model accepts and the renderer carries, and the rest.
 
         Takes the name rather than reading it, because `slow_model` rebuilds its settings on
@@ -301,20 +301,24 @@ class MessageInputBuilder(BaseModel):
         log beside it another — recording a drop against a model that did not make it.
 
         Returns:
-            The accepted sources, and each rejected one beside the modality it needed.
+            The accepted sources, and each rejected one beside the modality it needed and whether
+            the renderer carries that one source.
         """
         modalities = (
             get_supported_modalities(model_name=model_name)
             - self.attachment_handler.dropped_modalities
         )
         accepted: list[AttachmentSource] = []
-        rejected: list[tuple[AttachmentSource, str]] = []
+        rejected: list[tuple[AttachmentSource, str, bool]] = []
         for source in sources:
             required = self.required_modality(content_type=source.content_type)
-            if required in modalities:
+            carried = self.attachment_handler.carries(
+                content_type=source.content_type, cache_key=source.cache_key
+            )
+            if required in modalities and carried:
                 accepted.append(source)
             else:
-                rejected.append((source, required))
+                rejected.append((source, required, carried))
         return accepted, rejected
 
     def count_supported_sources(self, message: Message) -> int:
@@ -343,16 +347,18 @@ class MessageInputBuilder(BaseModel):
 
         Gating once on the shared source list keeps the text-only marker render and the
         Files-API upload render in agreement: the route never marks an attachment the
-        answer would silently drop, and vice versa.
+        answer would silently drop, and vice versa, except one only its bytes rule out, until a
+        render has read them (`InlineRenderer.carries`).
         """
         if not sources:
             return []
         model_name = self.runtime_models.slow_model.name
         accepted, rejected = self._split_on_modality(sources=sources, model_name=model_name)
-        for source, required in rejected:
+        for source, required, carried in rejected:
             logfire.info(
                 "gen_reply skipping unsupported attachment",
                 modality=required,
+                carried=carried,
                 model=model_name,
                 renderer=type(self.attachment_handler).__name__,
                 cache_key=loggable_cache_key(cache_key=source.cache_key),
@@ -482,8 +488,9 @@ class MessageInputBuilder(BaseModel):
         # Everything else (documents, source code, structured text, an unlisted application
         # type) proxies as `image` / `input_file`. MIME cannot reliably tell an unlisted binary
         # apart from unlisted text/code, and a positive allowlist silently drops legitimate code
-        # attachments, so the check above stays the only drop rule; the renderers make the
-        # final call (the inline path keeps only PDF + UTF-8, Gemini ingests the rest).
+        # attachments, so the check above stays the only drop rule every renderer shares; the
+        # renderers make the final call (the inline path keeps only PDF + UTF-8, refusing at the
+        # gate what it knows it cannot carry; Gemini ingests the rest).
         return "image"
 
     async def _render_attachment_parts(

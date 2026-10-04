@@ -64,8 +64,8 @@ class AttachmentRenderer(BaseModel):
     inside it. Both methods return the rendered part plus the cache expiry the per-message
     render cache reuses it until, or None when the source is dropped (unsupported / failed).
     `cache_key` and `allow_dead_cache` drive the dead-source cache below (and the Gemini
-    uploader's own re-poll cache); a stateless renderer inherits the cache attributes for
-    interface parity but never uses them.
+    uploader's own re-poll cache); `InlineRenderer` inherits the dead-source cache for interface
+    parity but never uses it.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -78,9 +78,19 @@ class AttachmentRenderer(BaseModel):
     # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. Held here rather
     # than on each uploader so the Files-API uploaders cannot drift (the dict itself is per
     # instance); a hit within DEAD_SOURCE_TTL skips the fetch fast, past it the entry is dropped
-    # and the source retried once. Bounded at 128 entries. A stateless renderer (InlineRenderer)
-    # inherits but never touches it.
+    # and the source retried once. Bounded at 128 entries. InlineRenderer inherits but never
+    # touches it.
     _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
+
+    def carries(self, content_type: str, cache_key: int | str) -> bool:
+        """Whether this renderer can hand the answer this one source, as far as it knows unfetched.
+
+        The per-source check beside `dropped_modalities`, which the gate applies apart. The gate
+        refuses a source this denies, so the route marker, the history media budget and the render
+        cache leave it out just as the answer does.
+        """
+        del content_type, cache_key
+        return True
 
     async def render_image(
         self,
