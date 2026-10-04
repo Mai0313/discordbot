@@ -2091,6 +2091,58 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
     assert ("Generated media attached" in [text for text, _ in logged]) is not refused
 
 
+class _AskInteraction:
+    """The `/ask` interaction as far as landing one media reply needs it."""
+
+    async def edit_original_message(self, **kwargs: Any) -> FakeReply:  # noqa: ANN401 -- Discord kwargs
+        """Lands the media as the original response."""
+        del kwargs
+        return FakeReply()
+
+
+async def test_ask_media_is_sized_by_the_interaction_it_goes_out_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the interaction carries the invoker's Nitro allowance, and both media paths use it.
+
+    The synthesized `/ask` message has no guild, so a ceiling read off it alone is the 20 MiB base.
+    """
+    seen: list[object] = []
+
+    def record_ceiling(guild: object, interaction: object = None) -> int:
+        """Answers a Nitro-sized ceiling and records which interaction asked."""
+        seen.append(interaction)
+        return 1024**3
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.media_reply.upload_limit_for", record_ceiling)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.streaming.upload_limit_for", record_ceiling)
+    interaction = _AskInteraction()
+    message = FakeMessage()
+    surface = TurnSurface(
+        message=as_message(fake=message),
+        interaction=cast("nextcord.Interaction[commands.Bot]", interaction),
+    )
+    streamer = ResponseStreamer(
+        message=message,
+        surface=surface,
+        media_delivery=hosting_off_planner(),
+        reply=as_message(fake=FakeReply()),
+    )
+
+    async def voice_clip() -> MediaItem:
+        """Stands in for a synthesized clip ready to attach."""
+        return MediaItem(source=b"RIFF", filename="reply.wav")
+
+    monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
+
+    await _media_routes(cog=_cog(), message=as_message(fake=message), surface=surface)._deliver(
+        data=b"PNG", filename="image.png"
+    )
+    await streamer._attach_generated_media()
+
+    assert Counter(seen) == Counter([interaction, interaction])
+
+
 async def test_media_past_the_attachment_cap_earns_the_dropped_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

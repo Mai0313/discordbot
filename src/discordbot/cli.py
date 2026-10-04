@@ -3,6 +3,7 @@
 import os
 import sys
 from time import monotonic
+from typing import TYPE_CHECKING, Any
 import asyncio
 import logging
 from pathlib import Path
@@ -22,6 +23,7 @@ from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
+from discordbot.utils.media_delivery import AttachmentLimitInteraction
 from discordbot.utils.message_cleanup import (
     delete_tracked_public_messages,
     schedule_public_message_delete,
@@ -31,6 +33,9 @@ from discordbot.services.economy.database import (
     record_guild_participant,
     reject_loan_proposals_created_before,
 )
+
+if TYPE_CHECKING:
+    from nextcord.types.interactions import Interaction as InteractionPayload
 
 
 class DiscordBot(commands.Bot):
@@ -105,6 +110,17 @@ class DiscordBot(commands.Bot):
             cog_files.append(f"discordbot.cogs.{entry.name}.cog")
         self.load_extensions(cog_files, stop_at_error=True)
         logfire.info("Cogs Loaded", cogs=cog_files)
+
+    def get_interaction(
+        self, data: "InteractionPayload", cls: type[Interaction[Any]] = AttachmentLimitInteraction
+    ) -> Interaction[Any]:
+        """Builds every gateway interaction as one that keeps Discord's attachment size limit.
+
+        `upload_limit_for` reads that limit off the interaction, so without this override a
+        slash command replying with media falls back to the guild's boost tier and never sees
+        the invoking user's Nitro allowance.
+        """
+        return cls(data=data, state=self._connection)
 
     async def on_connect(self) -> None:
         """Called when the bot has successfully connected to Discord.

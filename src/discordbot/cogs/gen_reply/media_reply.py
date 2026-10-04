@@ -81,7 +81,10 @@ class MediaReplyRoutes(BaseModel):
         """
         item = MediaItem(source=data, filename=filename)
         plan = await self.answer.media_delivery.plan(
-            items=[item], upload_limit=upload_limit_for(guild=self.message.guild)
+            items=[item],
+            upload_limit=upload_limit_for(
+                guild=self.message.guild, interaction=self.answer.surface.interaction
+            ),
         )
         if plan.native:
             return await self.answer.reply_or_send(

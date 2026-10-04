@@ -146,7 +146,7 @@ class VideoCogs(commands.Cog):
         # copy runs straight into Chinese with no space, where the generic rule would swallow it.
         url = extract_first_url(text=url, patterns=(DOUYIN_URL_RE,))
 
-        upload_limit = upload_limit_for(guild=interaction.guild)
+        upload_limit = upload_limit_for(guild=interaction.guild, interaction=interaction)
 
         # Douyin never reaches yt-dlp: `services/platforms/douyin.py` has why.
         if is_douyin_url(url=url):
