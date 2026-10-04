@@ -138,6 +138,7 @@ from discordbot.typings.context_budgets import (
     HISTORY_MESSAGE_LIMIT,
     MAX_HISTORY_MEDIA_PARTS,
     MAX_VIDEO_REFERENCE_IMAGES,
+    MAX_INLINE_ATTACHMENT_BYTES,
     MEMORY_CONTEXT_TARGET_USERS,
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
@@ -478,6 +479,7 @@ class FakeAttachment:
         self.content_type = content_type
         self._payload = payload
         self.url = url
+        self.size = len(payload)
         self.read_count = 0
 
     async def read(self) -> bytes:
@@ -4693,7 +4695,7 @@ async def test_inline_renderer_drops_a_source_that_fails_to_load(
 
     assert rendered is None
     assert not renderer._dead_sources
-    assert renderer.carries(content_type="text/plain", cache_key="notes.txt")
+    assert renderer.carries(content_type="text/plain", cache_key="notes.txt", size=None)
 
 
 def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
@@ -5276,6 +5278,51 @@ async def test_render_history_degrades_over_budget_attachments_to_markers(
     assert all(part["type"] != "input_text" for part in newest[1:])
 
 
+@pytest.mark.parametrize(
+    ("file_api_enabled", "budget", "kept"),
+    [("true", 5_000, 3), ("false", 5_000, 1), ("false", 2_000, 0)],
+    ids=["files-api", "inline", "inline-newest-alone-over"],
+)
+async def test_render_history_holds_inlined_attachment_bytes_to_the_budget(
+    monkeypatch: pytest.MonkeyPatch, file_api_enabled: str, budget: int, kept: int
+) -> None:
+    """History files that fit one at a time may not add up past the inline byte budget.
+
+    The newest keep their files, and the post that overflows renders as markers along with every
+    older one, the newest included when it alone is over: exempting it would leave one post large
+    enough to fail every reply. Under the Files API a part is a short handle, so nothing is held.
+    """
+    monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.context.MAX_HISTORY_INLINE_BYTES", budget)
+    cog = _cog()
+    posts = [FakeMessage(content=f"notes {i}", author=FakeAuthor(user_id=1)) for i in range(3)]
+    for index, post in enumerate(posts):
+        post.attachments = [
+            FakeAttachment(filename=f"{index}.txt", payload=b"x" * 3_000, attachment_id=index)
+        ]
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
+
+    rendered = await _context_builder(
+        cog=cog, message=as_message(fake=FakeMessage())
+    ).render_history(hist_messages=[as_message(fake=m) for m in posts])
+
+    # rendered[0] is the history header; the rest follow the posts, oldest first.
+    assert [
+        step_dicts(steps=message["content"])[1:]
+        == [{"type": "input_text", "text": "[attachment: file]"}]
+        for message in rendered[1:]
+    ] == [True] * (3 - kept) + [False] * kept
+    assert [
+        fields["payload_capped_messages"]
+        for text, fields in logged
+        if text == "gen_reply history render done"
+    ] == [3 - kept]
+
+
 async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
@@ -5500,6 +5547,73 @@ async def test_the_inline_gate_stops_passing_a_file_the_renderer_cannot_read(
         for text, fields in logged
         if text == "gen_reply skipping unsupported attachment"
     ] == [("image", False)]
+
+
+@pytest.mark.parametrize(
+    ("file_api_enabled", "markers", "big_reads", "skipped"),
+    [
+        ("true", ["[attachment: image]", "[attachment: file]", "[attachment: image]"], 1, []),
+        (
+            "false",
+            ["[attachment: image]"],
+            0,
+            [
+                ("application/pdf", MAX_INLINE_ATTACHMENT_BYTES + 1),
+                ("image/gif", MAX_INLINE_ATTACHMENT_BYTES + 1),
+            ],
+        ),
+    ],
+    ids=["files-api", "inline"],
+)
+async def test_the_inline_gate_refuses_an_attachment_too_large_to_inline(
+    monkeypatch: pytest.MonkeyPatch,
+    file_api_enabled: str,
+    markers: list[str],
+    big_reads: int,
+    skipped: list[tuple[str, int]],
+) -> None:
+    """An attachment Discord reports past the inline cap is refused before it is downloaded.
+
+    So it is not marked to the route, not budgeted, and its message caches on the first render
+    rather than downloading the image beside it on every reply. An image is held to its posted
+    size too. An upload sends a handle rather than the bytes, so the Files API path takes all three.
+    """
+    monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    builder = _cog().toolkit.input_builder
+    pic = FakeAttachment(
+        filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
+    )
+    pdf = FakeAttachment(
+        filename="big.pdf", content_type="application/pdf", payload=b"%PDF-1.7", attachment_id=2
+    )
+    gif = FakeAttachment(
+        filename="big.gif", content_type="image/gif", payload=b"GIF89a", attachment_id=3
+    )
+    # What Discord reports, without allocating it.
+    pdf.size = gif.size = MAX_INLINE_ATTACHMENT_BYTES + 1
+    message = FakeMessage(content="<@999> look", author=FakeAuthor(user_id=1))
+    message.attachments = [pic, pdf, gif]
+
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
+    text_only = await builder.process_single_message(
+        message=as_message(fake=message), text_only=True
+    )
+    for _ in range(2):
+        await builder.process_single_message(message=as_message(fake=message))
+
+    assert [part["text"] for part in step_dicts(steps=text_only["content"])[1:]] == markers
+    assert builder.count_supported_sources(message=as_message(fake=message)) == len(markers)
+    assert (pic.read_count, pdf.read_count, gif.read_count) == (1, big_reads, big_reads)
+    # Logged once per render, so the text-only one and the two full ones.
+    assert [
+        (fields["content_type"], fields["size_bytes"])
+        for text, fields in logged
+        if text == "gen_reply skipping unsupported attachment"
+    ] == skipped * 3
 
 
 @pytest.mark.parametrize(

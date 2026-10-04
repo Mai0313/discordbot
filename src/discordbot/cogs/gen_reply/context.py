@@ -48,6 +48,7 @@ from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     MAX_HISTORY_MEDIA_PARTS,
+    MAX_HISTORY_INLINE_BYTES,
     MEMORY_CONTEXT_TARGET_USERS,
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
@@ -250,6 +251,35 @@ def history_media_over_budget(
     return over
 
 
+def history_payload_overflow(rendered: list[EasyInputMessageParam]) -> int:
+    """How many of the oldest rendered history messages fall back to markers, newest kept first.
+
+    Counts the bytes each attachment-bearing message's parts put in the request, against
+    `MAX_HISTORY_INLINE_BYTES`. Read off the render because only it knows them: the downscale
+    re-encodes an image, and a sticker or an embed image reports no size at all. An uploaded file
+    renders to a short handle, so this binds only where the bytes themselves ride.
+
+    The count takes the message that overflows and every older one, so what keeps its files is the
+    unbroken run ending at the present that `history_media_over_budget` keeps. Unlike there, the
+    newest message is not exempt: a post too large on its own would fail every reply until it left
+    the window.
+    """
+    spent = 0
+    for index in range(len(rendered) - 1, -1, -1):
+        content = rendered[index]["content"]
+        if isinstance(content, str):
+            continue
+        spent += sum(
+            len(value.encode())
+            for part in content
+            for value in part.values()
+            if isinstance(value, str)
+        )
+        if spent > MAX_HISTORY_INLINE_BYTES:
+            return index + 1
+    return 0
+
+
 def reference_header(ref: Message) -> EasyInputMessageParam:
     """Builds the system separator that precedes the message being replied to.
 
@@ -330,7 +360,9 @@ class ReplyContextBuilder(BaseModel):
 
         The full render is additionally capped at `MAX_HISTORY_MEDIA_PARTS` uploaded files: a
         message past the cap takes the text-only render, which is exactly the marker form the
-        route already reads, so the degradation needs no second render path of its own.
+        route already reads, so the degradation needs no second render path of its own. A message
+        past `MAX_HISTORY_INLINE_BYTES` takes it too, only once rendered, since its bytes are not
+        known before (`history_payload_overflow`).
         """
         if not hist_messages:
             return []
@@ -344,11 +376,22 @@ class ReplyContextBuilder(BaseModel):
         ]
         started = time.monotonic()
         processed = await asyncio.gather(*tasks)
+        payload_capped = [
+            index
+            for index in range(history_payload_overflow(rendered=processed))
+            if hist_messages[index].id not in over_budget
+            and isinstance(processed[index]["content"], list)
+        ]
+        for index in payload_capped:
+            processed[index] = await input_builder.process_single_message(
+                message=hist_messages[index], text_only=True
+            )
         logfire.info(
             "gen_reply history render done",
             elapsed_seconds=time.monotonic() - started,
             message_count=len(hist_messages),
             media_capped=sum(over_budget.values()),
+            payload_capped_messages=len(payload_capped),
             message_id=self.message.id,
         )
         # Names the block and stops there. Wording that invites the model to answer FROM the

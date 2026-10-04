@@ -68,6 +68,13 @@ class AttachmentSource(BaseModel):
         ...,
         description="Stable identity (attachment/sticker id or chosen embed URL) for the cache.",
     )
+    size: int | None = Field(
+        default=None,
+        description=(
+            "Bytes Discord reports for an attachment; None for a sticker or an embed image, "
+            "which report none."
+        ),
+    )
 
 
 class MessageInputBuilder(BaseModel):
@@ -258,6 +265,7 @@ class MessageInputBuilder(BaseModel):
                     kind="image" if content_type.startswith("image/") else "file",
                     content_type=content_type,
                     cache_key=attachment.id,
+                    size=attachment.size,
                 )
             )
         for sticker in stickers:
@@ -313,7 +321,7 @@ class MessageInputBuilder(BaseModel):
         for source in sources:
             required = self.required_modality(content_type=source.content_type)
             carried = self.attachment_handler.carries(
-                content_type=source.content_type, cache_key=source.cache_key
+                content_type=source.content_type, cache_key=source.cache_key, size=source.size
             )
             if required in modalities and carried:
                 accepted.append(source)
@@ -363,6 +371,7 @@ class MessageInputBuilder(BaseModel):
                 renderer=type(self.attachment_handler).__name__,
                 cache_key=loggable_cache_key(cache_key=source.cache_key),
                 content_type=source.content_type,
+                size_bytes=source.size,
                 message_id=message_id,
             )
         return accepted
