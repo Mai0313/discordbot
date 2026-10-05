@@ -147,7 +147,7 @@ class RuntimeModelCatalog(BaseModel):
             the reply's `<generate-voice>` segments are synthesized, concatenated into one
             clip; the rest of the reply is never spoken. `effort` is unused for TTS.
         """
-        return ModelSettings(name="gemini-3.1-flash-tts-preview")
+        return ModelSettings(name="gemini-3.8-flash-tts")
 
     @property
     def antigravity_model(self) -> ModelSettings:
