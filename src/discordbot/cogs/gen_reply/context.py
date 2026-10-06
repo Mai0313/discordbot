@@ -52,7 +52,8 @@ from discordbot.typings.context_budgets import (
     MEMORY_CONTEXT_TARGET_USERS,
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
-from discordbot.cogs.gen_reply.references import replied_to_message, source_channel_is_public
+from discordbot.utils.channel_visibility import channel_is_public
+from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import system_block
 
@@ -502,7 +503,7 @@ class ReplyContextBuilder(BaseModel):
         # nickname-table members to the route call.
         if server_memory and self.message.guild is not None:
             widen_allowlist_with_aliases(allowed=deterministic_allowed, memory=server_memory)
-            if source_channel_is_public(message=self.message):
+            if channel_is_public(guild=self.message.guild, channel=self.message.channel):
                 # No credit label, because nothing in this channel names these members;
                 # `RecallCandidate` owns what the footer does about that and why no name is
                 # pulled from anywhere else.
