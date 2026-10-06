@@ -44,6 +44,7 @@ from discordbot.services.memory.constants import (
 )
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
+    SERVER_CATCHUP_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
@@ -187,6 +188,21 @@ class RawMemoryDraft(BaseModel):
     observations: tuple[MemoryObservation, ...] = Field(
         default=(),
         description="Validated structured memory observations; empty when has_signal is false",
+    )
+
+
+class ServerCatchupNotes(BaseModel):
+    """Memory notes about a server's community, proposed from a channel the bot was not part of."""
+
+    model_config = ConfigDict(frozen=True)
+
+    notes: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "At most five one-sentence notes about the community, the most durable first; empty "
+            "when nothing in the conversation is worth remembering."
+        ),
+        examples=[("This community plays Valorant together every Friday night.",)],
     )
 
 
@@ -388,6 +404,25 @@ class MemoryWriterAI(BaseModel):
             draft=draft, target_user_id=target_user_id, bot_user_id=self.bot_user_id, roster=roster
         )
 
+    async def propose_server_notes(self, subject: str, transcript: str) -> tuple[str, ...] | None:
+        """Proposes community notes from a channel transcript, or None when the call fails.
+
+        This is the one place a model reads a conversation it was not part of and decides what
+        to remember: `/memory server catchup` has no answer model to write markers, so this call
+        stands in for it, and its notes go through `evaluate` like any marker's. The cap mirrors
+        how many server-memory markers one reply may write.
+        """
+        max_notes = 5
+        proposal = await self._parse(
+            instructions=SERVER_CATCHUP_PROMPT,
+            user_text=f"{subject}\n\nConversation transcript:\n{transcript}",
+            text_format=ServerCatchupNotes,
+            end_user_label="memory_catchup",
+        )
+        if proposal is None:
+            return None
+        return tuple(note.strip() for note in proposal.notes if note.strip())[:max_notes]
+
     async def consolidate(
         self, flavor: MemoryFlavor, request: ConsolidationRequest
     ) -> ConsolidatedMemory | None:
@@ -564,9 +599,12 @@ def transcript_from_messages(message_list: list[EasyInputMessageParam], full_rep
         # The reply is secondary evidence; capping it keeps the tail of the
         # middle-truncation budget free for the current user message.
         reply = f"{reply[:MEMORY_REPLY_MAX_CHARS]}\n[... reply truncated ...]"
-    blocks.append(
-        f"[message {len(blocks) + 1} | assistant reply (this turn)]\n{_indent_block(text=reply)}"
-    )
+    if reply:
+        # A catchup reads a channel with no reply of its own, and an empty block would still
+        # tell the reviewer the bot answered.
+        blocks.append(
+            f"[message {len(blocks) + 1} | assistant reply (this turn)]\n{_indent_block(text=reply)}"
+        )
     transcript = redact_secrets(text="\n\n".join(blocks))
     return _truncate_middle(text=transcript, max_chars=MEMORY_TRANSCRIPT_MAX_CHARS)
 

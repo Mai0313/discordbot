@@ -41,6 +41,10 @@ MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 300.0
 # delays the automatic consolidation or the other way round.
 MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 
+# Minimum gap between `/memory server catchup` runs in one server. The owner chose to align it with
+# the regeneration cooldown above (#1080), so it follows that value rather than restating it.
+MEMORY_CATCHUP_COOLDOWN_SECONDS = MEMORY_REGENERATION_COOLDOWN_SECONDS
+
 # Process-wide cap on concurrent background memory updates. The constraint is proxy contention
 # rather than cost: unbounded background consolidation would compete with the latency-critical
 # reply path for throughput and rate limits. Lower it only if background memory work starts adding

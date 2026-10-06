@@ -111,6 +111,7 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git._queue", None)
     monkeypatch.setattr("discordbot.services.memory.consolidation._last_consolidation", {})
     monkeypatch.setattr("discordbot.services.memory.regeneration._last_regeneration", {})
+    monkeypatch.setattr("discordbot.services.memory.catchup._last_catchup", {})
     monkeypatch.setattr("discordbot.services.memory.consolidation._consecutive_rejections", {})
     monkeypatch.setattr("discordbot.services.memory.inflight._db_tasks", set())
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
