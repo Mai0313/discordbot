@@ -55,6 +55,7 @@ Paste a link behind spoiler bars (`||link||`) or in angle brackets (`<link>`) wi
 - `/memory regenerate` — rebuild my memory of you from scratch, in the background
 - `/memory clear` — erase everything I remember about you
 - `/memory server show` — what I remember about this server's community; only works inside a server I am a member of
+- `/memory server catchup` — I read what members said in this channel since my last catchup (up to 100 messages, bots skipped) and note what is worth remembering about the community, even though nobody was talking to me; anyone can run it, once every 10 minutes per server, only in a channel everyone in the server can see, and my result stays in the channel because the next catchup there starts reading after it
 
 ## Research
 
@@ -146,9 +147,10 @@ is yours alone: nobody else in those places sees me there, or can use me through
 
 Slash commands are the only part of me that travels that way. Mentioning me and the links I
 expand on my own both need me to be a member of the server itself, so somewhere I have
-not been added, `/ask` is how you talk to me instead. Two commands do not travel either:
+not been added, `/ask` is how you talk to me instead. Three commands do not travel either:
 `/deep_research` needs an ordinary text channel to open its thread in, and `/memory server show`
-needs a server whose community memory I keep, so both refuse anywhere I am not a member.
+and `/memory server catchup` need a server whose community memory I keep, so all three refuse
+anywhere I am not a member.
 
 `/ask` also runs on a clock. Discord closes a slash command fifteen minutes after you send it.
 When an image or a video is the whole of what you asked for and I am still making it when that

@@ -124,6 +124,7 @@ flowchart TD
 | `/pocat`                                    | 顯示 bot 玩家自己的錢包：餘額與累計流水。                                                     |
 | `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。        |
 | `/memory server show`                       | 私密查看 bot 對這個伺服器社群的記憶；只能在 bot 所在的伺服器使用。                            |
+| `/memory server catchup`                    | 把這個頻道上次整理後的聊天整理進伺服器社群記憶，結果公開貼出；每個伺服器 10 分鐘一次。        |
 | `/ping`                                     | 檢查 bot latency。                                                                            |
 
 ## 開發

@@ -124,6 +124,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | `/pocat`                                    | Shows the bot player's own wallet: balance plus total earned and spent.                                                                                    |
 | `/memory show\|regenerate\|clear`           | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first.           |
 | `/memory server show`                       | Privately shows what the bot remembers about this server's community; only inside a server the bot is in.                                                  |
+| `/memory server catchup`                    | Reads this channel's chat since the last catchup into the server's community memory, then posts the result publicly; once per server every 10 minutes.     |
 | `/ping`                                     | Checks bot latency.                                                                                                                                        |
 
 ## Development

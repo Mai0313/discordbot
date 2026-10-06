@@ -47,7 +47,7 @@ from discordbot.services.memory.writer import (
 )
 from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
 from discordbot.services.memory.pipeline import schedule_memory_update
-from discordbot.cogs.gen_reply.references import source_channel_is_public
+from discordbot.utils.channel_visibility import channel_is_public
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
@@ -545,7 +545,7 @@ class AnswerTurn(BaseModel):
         # read it, and a community memory it may write but never read back goes stale unseen.
         if message.guild is None:
             return
-        if not source_channel_is_public(message=message):
+        if not channel_is_public(guild=message.guild, channel=message.channel):
             return
         schedule_memory_update(
             scope=server_scope(server_id=message.guild.id),

@@ -155,27 +155,3 @@ def find_youtube_url(message: Message) -> str | None:
     if replied_to is not None:
         return _youtube_url_in_message(message=replied_to, strip_usage_footer=True)
     return None
-
-
-def source_channel_is_public(message: Message) -> bool:
-    """Whether @everyone can view the message's channel, so its content is not private.
-
-    `message.channel` is a heterogeneous messageable union, so visibility is read
-    defensively (mirrors `utils.discord_embeds`): a private thread is never public; a
-    thread otherwise inherits its parent channel's `@everyone` visibility; a regular
-    guild channel uses its own. A non-guild message, or any channel whose permissions
-    cannot be resolved, counts as non-public — so content from channels members cannot
-    see never enters the server-wide memory any member can read via `/memory server show`.
-    """
-    guild = message.guild
-    if guild is None:
-        return False
-    channel = message.channel
-    is_private = getattr(channel, "is_private", None)
-    if callable(is_private) and is_private():
-        return False
-    source = getattr(channel, "parent", None) or channel
-    permissions_for = getattr(source, "permissions_for", None)
-    if not callable(permissions_for):
-        return False
-    return bool(getattr(permissions_for(guild.default_role), "view_channel", False))
