@@ -210,9 +210,8 @@ class RuntimeModelCatalog(BaseModel):
         # does. This tier's own proxy path is the streaming answer turn, which LiteLLM gives no
         # fallback, so there the refusal is an error.
         #
-        # `gemini-3.1-pro-preview` accepts low / medium / high and NOT `minimal` (openrouter's
-        # list, read 2026-09-28). Back on it from `gemini-3.8-flash`, whose high-demand 503s kept
-        # failing the answer stream mid-reply.
+        # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (openrouter's list,
+        # read 2026-10-09).
         #
         # Whichever name this tier returns must have an entry in LiteLLM's price table: without
         # one a reply's footer shows no cost and the
@@ -221,7 +220,7 @@ class RuntimeModelCatalog(BaseModel):
         # `[attachment: file]` marker never reaches the route either, and the answer model is
         # not told the file existed. A clip posted with one line of text is then answered as if
         # the line were the whole message, which is a wrong answer rather than a degraded one.
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-3.8-flash", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:
