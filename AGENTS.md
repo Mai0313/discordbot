@@ -195,6 +195,7 @@ Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new
 - **Config classes are `pydantic_settings.BaseSettings` with an explicit `validation_alias=AliasChoices("ENV_NAME")`**; `.env` is loaded at import time.
 - **Pure shared result types, enums and constants go in `typings/`** when they depend on no cog or util.
 - **Structured data is a `pydantic.BaseModel`, service and helper classes included**: no `dataclass`, no loose `object` / `Any`. Every field carries `Field(description=...)` (plus `examples=` where useful), a required one as `Field(..., description=...)`.
+- **A model passed as `text_format=` is prompt text**: its class docstring and every `Field(description=...)`, nested models' included, reach the model as the JSON schema's descriptions, so editing one is a behavior change, not a docs fix. Re-derive the set by grepping `text_format=` before any docs sweep (`typings/models.py::RecallRouteClassification` has the measured case).
 - **A cap on how much content one model request carries lives in `typings/context_budgets.py`**: one whose binding leaves the model seeing LESS while the request still goes out (the module docstring lists what stays out). No name scan enforces this.
 - **Log severity follows the ladder in `.github/CONTRIBUTING.md#logging`**, which also owns exception attachment and broad `except`.
 - **Ruff formats and lints; `ty` is the only type checker** (mypy removed in #356, see `pyproject.toml`). A `# noqa` names its rule and a reason.
