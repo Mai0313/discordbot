@@ -1390,9 +1390,11 @@ async def stream_answer_with_retry(
     This is the one LLM call the bot re-issues itself mid-turn on an error. LiteLLM's router
     applies `num_retries` and its configured fallbacks to the non-streaming proxied paths, which
     is why the fast one-shots degrade instead of failing (the triage call has no fallback there
-    and degrades in `routing.py` instead), but a provider 5xx that arrives as an SSE error frame
-    mid-stream reaches the client untouched -- and that is the one turn whose failure a user
-    watches happen.
+    and degrades in `routing.py` instead). Through LiteLLM 1.103 a provider 5xx on a streaming
+    Responses request reached the client untouched -- and that is the one turn whose failure a
+    user watches happen. Since 1.104 the router falls back on it too, so this retry covers what
+    the fallback chain does not: a failure every hop shares, and the direct Interactions stream,
+    which has no proxy behind it.
 
     Re-issuing the request is safe because an answer turn is a pure read: nothing is written
     before the stream completes, and the retry stays on the same client and the same model, so
