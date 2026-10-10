@@ -390,6 +390,9 @@ def _remember_link_id(url: str, aweme_id: str) -> None:
 
 # The guest `ttwid` cookie the share page hands out. Process-wide, so the extra requests
 # `_get_share_page` makes are paid only until some read has picked up a cookie Douyin accepts.
+# Kept through a failed read, so a cookie Douyin stops honouring yet re-issues unchanged would stick
+# until a restart. That case is unmeasured; dropping the cookie on failure would instead double the
+# requests sent into every WAF wall.
 _share_ttwid = ""
 
 
@@ -432,7 +435,9 @@ class DouyinDownloader(PlatformDownloader):
     5. The share page renders the post only for a visitor already carrying its `ttwid` cookie
        (measured 2026-10-11). Without one, or with a forged one, it answers 200 with an empty
        page shell, carrying a fresh `ttwid` only some of the time (3 of 5 cookieless requests);
-       an accepted one comes back unchanged.
+       an accepted one comes back unchanged. The shell is silent because the page's own loader
+       swallows its failed `/web/api/v2/aweme/iteminfo/` call; that endpoint called directly
+       answers an empty body, since it needs a request signature.
     """
 
     output_folder: str = Field(..., description="Directory where downloaded files are written.")
