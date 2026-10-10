@@ -87,7 +87,7 @@ flowchart TD
 - **Bilibili 问答**：tag 机器人并附上 B 站视频链接，它会看过视频再回答。单独贴链接不会自动展开；`/download_video` 仍可下载文件。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
-- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (H17)，bot 本身只要钱包大于零就会以玩家身份入桌，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
+- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 由赌场系统发牌 (H17)，bot 本身只要钱包大于零就会以玩家身份入桌，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
 - **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么。
 
 ## 指令
@@ -106,7 +106,7 @@ flowchart TD
 | _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                              |
 | `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                            |
 | `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                       |
-| `/vip`                                      | Buys permanent VIP perks; overlapping purchases charge once and report existing VIP status.   |
+| `/vip`                                      | 购买永久 VIP 特权；重复购买只会扣款一次，并显示已有的 VIP 状态。                              |
 | `/leaderboard`                              | 显示全域余额排行榜。                                                                          |
 | `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                                  |
 | `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                                |
