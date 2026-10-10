@@ -5,8 +5,9 @@ Each `*_isolated_db` fixture points the owning module's module-level engine at a
 `memory_isolated_dir` is the one a test requests, and it covers more than a directory: the
 store dir, the `memory_job` engine, the process-local caches, counters and task registries the
 store and pipeline hold, and the git committer. The autouse fixtures are the other half of that
-isolation, keeping a real deployment's `.env` and `data/` out of every test whether or not it
-asked for them.
+isolation, keeping a real deployment's databases out of every test whether or not it asked for
+them and pinning the few `.env` settings that would decide one; the rest of `.env` still loads,
+and the memory store stays live for a test that does not request `memory_isolated_dir`.
 """
 
 import os

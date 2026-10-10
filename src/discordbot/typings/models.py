@@ -25,8 +25,9 @@ class ModelSettings(BaseModel):
     # some models `none`, Anthropic has `max`. Look the model up in openrouter's list
     # (https://openrouter.ai/api/v1/models) under its `<provider>/<name>` id, where `reasoning`
     # carries `supported_efforts`, `default_effort` and `mandatory` (whether thinking can be
-    # switched off at all). Sending an effort outside a model's own set is a hard failure rather
-    # than a downgrade, so do that lookup instead of trusting a list written down in this tree.
+    # switched off at all). Sending an effort outside a model's own set is never a downgrade: direct
+    # to Google it is a hard failure, and through the proxy a non-streaming call is answered by the
+    # fallback deployment instead, so do that lookup instead of trusting a list in this tree.
     #
     # Every tier this catalog ships today is Gemini, where `mandatory` is true and `none` /
     # `disable` are therefore never legal. LiteLLM does not reject them but rewrites them to
