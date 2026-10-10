@@ -24,7 +24,7 @@
 
 ## 功能展示
 
-tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功能說明，並用你發問的語言回答。
+tag bot 並問它會做什麼。這裡沒有 help 指令，它會用你發問的語言回答。
 
 ![請 bot 自我介紹](assets/showcase-ai-chat.png)
 
@@ -37,8 +37,6 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功
 ![請 bot 把生成的圖片變成影片](assets/showcase-video-generation.png)
 
 ## 一則回覆是怎麼跑的
-
-每一次 tag、DM 與 `/ask` 都走同一條流水線。關鍵路徑上只有一支 triage 呼叫，由它決定路線；附件上傳與回覆的上下文跟它同時準備，貼上的貼文則要等路線要了才去抓。
 
 ```mermaid
 flowchart TD
@@ -75,9 +73,7 @@ flowchart TD
     class UP,LF,YT,V1 direct
 ```
 
-藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google，因為 Gemini Files API、觀看 YouTube 影片，以及原生的影片與音樂生成都只有直連這條路。
-
-那兩個內容分支在用不到的時候完全不花成本。貼上的貼文只有在 router 判斷使用者真的在問它的內容時才會去抓，順手貼的連結一個位元組都不下載；而觀看 YouTube 影片是唯一會讓一輪回答改走直連的情況，因為 proxy 會把連結當一般網頁抓下來，模型永遠看不到影片本身。回覆文字落地之後的每一件事都是盡力而為：某段媒體算失敗只會讓回覆照樣留著，並多一個小提示。
+藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google。
 
 ## 功能
 
@@ -85,14 +81,14 @@ flowchart TD
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain，引用別人或自己先前的貼文時也會一起帶出被引用的那篇；改成 tag bot 並附上連結，或是回覆別人貼連結的訊息時 tag bot，它會改為連底下的留言一起讀過再回答。
 - **Facebook 解析**：貼上公開的 Facebook 貼文連結，bot 會把貼文、圖片與互動數字展開到頻道；連結若帶 `comment_id`，底下會再顯示那一則留言。改成 tag bot 並附上連結，或在帶連結的訊息下 tag 它回覆，它會讀貼文加上頁面預先載入的那幾則留言再回答。只讀得到公開貼文，影片貼文會以連結呈現而不是檔案。
 - **Instagram 解析**：貼上公開的 Instagram 貼文連結，bot 會把貼文文字、輪播圖片與互動數字展開到頻道；連結若指向某一則留言，底下會再顯示那一則。改成 tag bot 並附上連結，或在帶連結的訊息下 tag 它回覆，它會讀貼文加上底下的留言再回答。只讀得到公開帳號，Reel 會以連結呈現而不是看過影片。
-- **Twitter 解析**：貼上 x.com 連結，bot 會把貼文、圖片、它回覆的那一則和它引用的那一則一起展開到頻道；影片只放縮圖和連結，因為這條路徑什麼都不下載。改成 tag bot 並附上連結，它會讀過貼文再回答。有兩樣東西永遠拿不到：底下的留言（Twitter 只給一個數字，一則都不給），以及長貼文的全文（只拿得到開頭）。
+- **Twitter 解析**：貼上 x.com 連結，bot 會把貼文、圖片、它回覆的那一則和它引用的那一則一起展開到頻道；影片只放縮圖和連結。改成 tag bot 並附上連結，它會讀過貼文再回答。有兩樣東西永遠拿不到：底下的留言（Twitter 只給一個數字，一則都不給），以及長貼文的全文（只拿得到開頭）。
 - **抖音解析**：貼上抖音連結，bot 會直接把影片（或圖文貼文的圖片）傳到頻道；改成 tag bot 並附上連結，它會改為看過影片再回答。
 - **不展開連結**：把連結包在劇透標記（`||連結||`）或角括號（`<連結>`）裡，上面這些解析都不會展開它。
 - **Bilibili 問答**：tag bot 並附上 B 站影片連結，它會看過影片再回答。單獨貼連結不會自動展開；`/download_video` 仍可下載檔案。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片。抖音也支援，無浮水印且包含圖文貼文。檔案太大無法上傳時會改以連結提供。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息獲得虛擬歡樂豆，可轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
-- **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby。Blackjack 莊家改為賭場系統 (deterministic H17)，bot 本身只要錢包大於零就會以玩家身份入桌，並由獨立的確定性策略 (fractional-Kelly 下注與 EV 決策) 決策，`/casino` 與 `/pocat` 分別顯示賭場帳本與 bot 玩家錢包。
-- **本地化指令**：slash command metadata 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。沒有 help 指令：直接問 bot 會做什麼，它會讀一份英文的功能說明並用你發問的語言回答。
+- **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby。Blackjack 莊家改為賭場系統 (H17)，bot 本身只要錢包大於零就會以玩家身份入桌，`/casino` 與 `/pocat` 分別顯示賭場帳本與 bot 玩家錢包。
+- **本地化指令**：slash command metadata 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。沒有 help 指令：直接問 bot 會做什麼。
 
 ## 指令
 

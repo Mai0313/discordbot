@@ -24,7 +24,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads, Face
 
 ## Showcase
 
-Mention the bot and ask what it can do. There is no help command; it answers from its own capability reference, in the language you asked in.
+Mention the bot and ask what it can do. There is no help command; it answers in the language you asked in.
 
 ![Asking the bot to introduce itself](assets/showcase-ai-chat.png)
 
@@ -37,8 +37,6 @@ Ask it to animate that same picture and it returns a short video.
 ![Asking the bot to turn the generated image into a video](assets/showcase-video-generation.png)
 
 ## How a reply happens
-
-Every mention, DM, and `/ask` runs the same pipeline. Exactly one triage call sits on the critical path and picks the route; the uploads and the reply context build alongside it, and a linked post is fetched only once the route asks for it.
 
 ```mermaid
 flowchart TD
@@ -75,9 +73,7 @@ flowchart TD
     class UP,LF,YT,V1 direct
 ```
 
-Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly, which is what the Gemini Files API, watching a YouTube video, and native video and music generation each require.
-
-The two content branches cost nothing when they do not apply. A linked post is fetched only when the router judges the user is asking about it, so an incidental link downloads nothing at all; and watching a YouTube video is the one thing that moves an answer turn onto the direct path, because the proxy fetches the link as a web page and the model never sees the footage. Everything after the answer text lands is best-effort: a clip that fails to render leaves the reply standing and adds only a small hint.
+Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly.
 
 ## Features
 
@@ -85,14 +81,14 @@ The two content branches cost nothing when they do not apply. A linked post is f
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain, plus the post it quotes when it is a quote post. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post together with the comments under it and answers about it.
 - **Facebook parser**: paste a public Facebook post link and the bot expands the post, its pictures and its counters into the channel; when the link carries a `comment_id`, that one comment is shown under it as well. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post plus whichever comments the page loads up front and answers about it. Only public posts can be read, and a video post comes back as a link rather than a file.
 - **Instagram parser**: paste a public Instagram post link and the bot expands the caption, the carousel images and the counters into the channel; a link pointing at one comment shows that comment too. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post together with its comments and answers about it. Only public accounts can be read, and a Reel comes back as a link rather than watched footage.
-- **Twitter parser**: paste an x.com link and the bot expands the post, its pictures, the post it replies to and the post it quotes into the channel; a video shows its poster frame and a link, since nothing is downloaded. Mention the bot alongside the link instead and it reads the post and answers about it. The replies underneath are never available — Twitter serves a count and none of them — and a long post arrives cut off after its opening.
+- **Twitter parser**: paste an x.com link and the bot expands the post, its pictures, the post it replies to and the post it quotes into the channel; a video shows its poster frame and a link. Mention the bot alongside the link instead and it reads the post and answers about it. The replies underneath are never available — Twitter serves a count and none of them — and a long post arrives cut off after its opening.
 - **Douyin parser**: paste a Douyin link and the bot posts the video (or the photo post's images) straight into the channel. Mention the bot alongside the link instead and it watches the clip and answers about it.
 - **Skipping an expansion**: wrap a link in spoiler bars (`||link||`) or angle brackets (`<link>`) and none of the parsers above expand it.
 - **Bilibili Q&A**: mention the bot with a Bilibili video link and it watches the video and answers about it. A bare link is not auto-expanded; `/download_video` still downloads the file.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
-- **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each table while its wallet is above zero, as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
-- **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do and it answers from a single English capability reference, translated into whatever language you asked in.
+- **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (H17), the bot itself joins each table as a player while its wallet is above zero, and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
+- **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do.
 
 ## Commands
 
