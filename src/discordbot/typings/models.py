@@ -207,8 +207,8 @@ class RuntimeModelCatalog(BaseModel):
         # LiteLLM forwards the level for the model itself to refuse and then answers from the
         # fallback deployment, so the caller sees an HTTP 200 whose `model` field names a
         # different model; a status code proves nothing there, only the response's own `model`
-        # does. This tier's own proxy path is the streaming answer turn, which LiteLLM gives no
-        # fallback, so there the refusal is an error.
+        # does. This tier's own proxy path is the streaming answer turn, whose LiteLLM fallback
+        # skips a 400, so there the refusal is an error.
         #
         # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (openrouter's list,
         # read 2026-10-09).
