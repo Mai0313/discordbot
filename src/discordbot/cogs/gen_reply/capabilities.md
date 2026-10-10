@@ -63,7 +63,7 @@ Paste a link behind spoiler bars (`||link||`) or in angle brackets (`<link>`) wi
 
 ## Casino games
 
-- `/games blackjack` — open a Blackjack table; a hand of five cards that has not busted wins outright
+- `/games blackjack` — open a Blackjack table; a hand of five cards that has not busted wins outright, and a player sits at one started table at a time
 - `/games dragon_gate` — open a Dragon Gate table backed by a shared jackpot pool; on a pair of aces only higher can win and on a pair of kings only lower, so that guess is made for you
 - `/games blackjack_history` — recent Blackjack rounds, optionally for one member
 

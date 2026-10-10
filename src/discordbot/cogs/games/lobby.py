@@ -191,22 +191,54 @@ class BaseGameLobbyView(GameView):
             return
         await interaction.response.defer()
         self._keep_press(interaction=interaction)
+        # The seats this press claims, kept to the press so a second press that finds the table
+        # already starting gives back nothing of the first one's.
+        claimed: list[int] = []
+        try:
+            await self._start_pressed(interaction=interaction, claimed=claimed)
+        finally:
+            # A lobby holds seats only for the length of the press that claimed them: a table
+            # that starts takes them over, and a press that ends without one gives them back.
+            self._release_seats(user_ids=claimed)
+
+    async def _start_pressed(
+        self, interaction: Interaction[commands.Bot], claimed: list[int]
+    ) -> None:
+        """Re-checks the players and starts the table, or tells the owner why it cannot."""
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
                 return
-            refreshed = await self.refresh_participants(participants=self.participants)
-            self._participants = {
-                participant.user_id: participant for participant in refreshed.participants
-            }
-            if self.owner.user_id not in self._participants:
+            elsewhere = self._seat_participants(claimed=claimed)
+            if any(seat.user_id == self.owner.user_id for seat in elsewhere):
+                await self._send_notice(
+                    interaction=interaction, content="你正在另一桌, 打完才能開始"
+                )
+                await self._refresh_message(interaction=interaction, status="房主正在另一桌")
+                return
+            elsewhere_ids = {seat.user_id for seat in elsewhere}
+            refreshed = await self.refresh_participants(
+                participants=[
+                    participant
+                    for participant in self.participants
+                    if participant.user_id not in elsewhere_ids
+                ]
+            )
+            if all(
+                participant.user_id != self.owner.user_id for participant in refreshed.participants
+            ):
+                # The lobby keeps its list: a refused start drops nobody, so the owner can start
+                # again once they can cover the stake.
                 await self._send_notice(interaction=interaction, content="你的餘額不足, 不能開始")
                 await self._refresh_message(interaction=interaction, status="房主餘額不足")
                 return
+            self._participants = {
+                participant.user_id: participant for participant in refreshed.participants
+            }
             self._started = True
-        if refreshed.dropped_names:
-            names = ", ".join(refreshed.dropped_names)
-            await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
+        await self._announce_removed(
+            interaction=interaction, dropped_names=refreshed.dropped_names, elsewhere=elsewhere
+        )
         try:
             started = await self._start_game(interaction=interaction)
         except (Forbidden, NotFound) as error:
@@ -236,6 +268,22 @@ class BaseGameLobbyView(GameView):
         if started:
             self.stop()
 
+    async def _announce_removed(
+        self,
+        interaction: Interaction[commands.Bot],
+        dropped_names: list[str],
+        elsewhere: list[GameParticipant],
+    ) -> None:
+        """Tells the owner which players the re-check removed, and why."""
+        if dropped_names:
+            names = ", ".join(dropped_names)
+            await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
+        if elsewhere:
+            names = ", ".join(seat.display_name for seat in elsewhere)
+            await self._send_notice(
+                interaction=interaction, content=f"已在另一桌, 已移出: {names}"
+            )
+
     async def _refresh_message(self, interaction: Interaction[commands.Bot], status: str) -> None:
         """Edits the lobby message with the latest participant state."""
         message = interaction.message
@@ -262,6 +310,21 @@ class BaseGameLobbyView(GameView):
         except Exception:
             self._started = False
             raise
+
+    def _seat_participants(self, claimed: list[int]) -> list[GameParticipant]:
+        """Seats the players for the start about to run and returns those seated elsewhere.
+
+        Runs under the lobby lock before any balance is read, so a round elsewhere that still
+        seats a player has not let go of them yet, and one that has already wrote its
+        settlement. A game that seats players (`seats.py`) checks and claims here in one step,
+        adding each seat it claims to `claimed`; the default seats nobody and finds nobody
+        elsewhere.
+        """
+        del claimed
+        return []
+
+    def _release_seats(self, user_ids: list[int]) -> None:
+        """Gives back those of these seats this lobby still holds; the default holds none."""
 
     def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the lobby embed for a concrete game type."""

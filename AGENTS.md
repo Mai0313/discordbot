@@ -142,6 +142,7 @@ Locally the tests still read a real `.env`: `load_dotenv` walks up from the pack
 - `lobby.py`'s base views keep `raise NotImplementedError`; do not convert them to `abc.ABC`.
 - **No LLM anywhere in the games:** do not reintroduce the removed casino `SystemNarrator` banter, the bot-player `reason` text or any AI bot-player. The dealer is a label, not a Discord identity, and posts no narrator messages.
 - **Each Blackjack seat and each Dragon Gate bet settles in one atomic step once it resolves:** validate or clamp bets up front, then settle through the helpers.
+- **A human player sits at one started Blackjack round at a time** (`cogs/games/seats.py` has why): a game whose stake is settled only after play goes through it too.
 - **Action buttons are presence-based: an invalid control is removed, not disabled.**
 - **A settled table goes out through `games/interactions.py::publish_final_table`**, which schedules its deletion; never delete terminal public messages in a cog-local loop.
 - **The blackjack bot player (`bot_player.py`, no LLM) may drive the casino ledger negative**: the owner asked for a strong bot, so house losses are not a bug to fix in it.
