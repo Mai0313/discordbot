@@ -5,8 +5,8 @@ fetches `www.douyin.com/aweme/v1/web/aweme/detail/` unsigned, which Douyin answe
 empty body, so it fails outright unless the caller supplies cookies. It also only ever yields
 a video (never a photo post) and tops out at 720p on the samples tested.
 
-This module instead reads the server-rendered share page, which needs no cookie and no request
-signature, exposes the source-resolution video, and carries photo posts in the same payload.
+This module instead reads the server-rendered share page, which needs no login cookie and no
+request signature, exposes the source-resolution video, and carries photo posts in the same payload.
 The non-obvious constraints are documented on `DouyinDownloader`.
 """
 
@@ -157,7 +157,8 @@ class DouyinUnavailableError(DouyinError, LinkUnavailableError):
 
 
 class DouyinBlockedError(DouyinError, LinkRetryableError):
-    """Douyin refused the request: a bot wall, or a 429 on the share page or a short link.
+    """Douyin refused the request: a bot wall, its cookie gate, or a 429 on the share page or a
+    short link.
 
     Retryable: the post itself is fine.
     """
@@ -387,6 +388,11 @@ def _remember_link_id(url: str, aweme_id: str) -> None:
             _LINK_ID_CACHE.popitem(last=False)
 
 
+# The guest `ttwid` cookie the share page hands out. Process-wide, so the extra requests
+# `_get_share_page` makes are paid only until some read has picked up a cookie Douyin accepts.
+_share_ttwid = ""
+
+
 # Concurrent Douyin fetches across every caller. Deliberately small: the cost of queueing a
 # second link for a few seconds is nothing next to a WAF ban that outlasts it by minutes.
 # Request volume, not correctness, is the binding constraint on this whole module: Douyin's
@@ -410,7 +416,7 @@ douyin_url_locks: KeyedLockManager[str] = KeyedLockManager()
 class DouyinDownloader(PlatformDownloader):
     """Downloads Douyin videos and photo posts via the server-rendered share page.
 
-    Four constraints drive this implementation, each verified against the live site:
+    Five constraints drive this implementation, each verified against the live site:
 
     1. Only `iesdouyin.com/share/...` is readable. Every `www.douyin.com` page (including
        `/video/`, `/note/` and `modal_id` links) returns a `byted_acrawler` JS shell that needs
@@ -423,6 +429,10 @@ class DouyinDownloader(PlatformDownloader):
        links are resolved by reading `Location` only (never following the redirect into
        `share/video/`, which would spend quota on a path this class never reads) and why
        payloads are cached.
+    5. The share page renders the post only for a visitor already carrying its `ttwid` cookie
+       (measured 2026-10-11). Without one, or with a forged one, it answers 200 with an empty
+       page shell, carrying a fresh `ttwid` only some of the time (3 of 5 cookieless requests);
+       an accepted one comes back unchanged.
     """
 
     output_folder: str = Field(..., description="Directory where downloaded files are written.")
@@ -559,7 +569,7 @@ class DouyinDownloader(PlatformDownloader):
             The `videoInfoRes` object from the page's `_ROUTER_DATA`.
 
         Raises:
-            DouyinBlockedError: If a bot wall or a 429 answered instead of the post.
+            DouyinBlockedError: If a bot wall, a 429 or the cookie gate answered instead of the post.
             DouyinTransferError: If the read never finished or Douyin's server failed it.
             DouyinUnavailableError: If Douyin answered that there is no such page.
             DouyinError: If the page's structure changed.
@@ -576,13 +586,7 @@ class DouyinDownloader(PlatformDownloader):
         # `share/note/` rather than `share/video/`: it serves both post types, so one path is
         # enough, and it keeps every request off a second path that could be banned separately.
         url = f"https://www.iesdouyin.com/share/note/{aweme_id}"
-        try:
-            with requests.Session() as session:
-                response = session.get(url, headers=self._headers(), timeout=self.timeout)
-                response.raise_for_status()
-                html = response.text
-        except RequestException as e:
-            raise _douyin_fetch_error(error=e, url=url) from e
+        html = self._get_share_page(url=url)
 
         match = _ROUTER_DATA_RE.search(string=html)
         if not match:
@@ -611,6 +615,57 @@ class DouyinDownloader(PlatformDownloader):
             if len(_PAYLOAD_CACHE) > _PAYLOAD_CACHE_MAX_ENTRIES:
                 _PAYLOAD_CACHE.popitem(last=False)
         return info
+
+    def _get_share_page(self, url: str) -> str:
+        """Fetches a share page, carrying the guest cookie it needs to render the post.
+
+        The empty shell is asked for again, up to three requests in all: with the cookie it just
+        handed out, or still without one when it handed out none, which it does only some of the
+        time. A shell answered to a cookie that came back unchanged or not at all ends the read,
+        since asking again cannot help; so does a bot wall, which carries no `_ROUTER_DATA`.
+
+        Args:
+            url: The share page URL.
+
+        Returns:
+            The page's HTML.
+
+        Raises:
+            DouyinBlockedError: If Douyin refused the request with a 429, or served its shell
+                to a request that had no cookie to send.
+            DouyinTransferError: If the read never finished or Douyin's server failed it.
+            DouyinUnavailableError: If Douyin answered that there is no such page.
+            RuntimeError: If the fetch failed in a way HTTP does not classify, a 403 among them.
+        """
+        global _share_ttwid  # noqa: PLW0603 -- the process-wide guest cookie
+
+        for _ in range(3):
+            sent = _share_ttwid
+            try:
+                with requests.Session() as session:
+                    response = session.get(
+                        url,
+                        headers=self._headers(),
+                        cookies={"ttwid": sent} if sent else None,
+                        timeout=self.timeout,
+                    )
+                    response.raise_for_status()
+                    html = response.text
+                    issued = response.cookies.get(name="ttwid") or ""
+            except RequestException as e:
+                raise _douyin_fetch_error(error=e, url=url) from e
+
+            if issued:
+                _share_ttwid = issued
+            is_shell = "_ROUTER_DATA" in html and "videoInfoRes" not in html
+            if not is_shell or (sent and issued in ("", sent)):
+                break
+        # Only a shell answered to a cookie may mean the page moved; without one it is the gate.
+        if is_shell and not sent:
+            raise DouyinBlockedError(
+                f"Douyin served its cookie-gate shell for {url}; try again later"
+            )
+        return html
 
     @staticmethod
     def _find_video_info(router_data: dict[str, Any]) -> dict[str, Any] | None:
