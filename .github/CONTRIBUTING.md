@@ -90,13 +90,17 @@ def setup(bot: commands.Bot) -> None:
 - Slash commands take their English `name` and `description` as the defaults, plus `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja`.
 - A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/test_package_layering.py` enforces this.
 - Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
-- Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`.
+- Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`. A new one goes into `.env.example` in the same change: it is the only settings list a deployer sees.
 - Keep `Field(description=..., examples=...)` populated for configurable values. These descriptions document the environment contract.
 - Prefer precise typed APIs. `Any` is a last resort.
 - Keyword arguments are required for normal function calls, including single argument calls such as `create_engine(url=...)` and `re.compile(pattern=...)`.
 - No bare `*` in a function signature unless an external API needs it; `tests/test_no_bare_star.py` enforces this and lists each exception with its reason.
-- Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, exception constructors, variadic collectors, and `logfire.info("message")`.
+- Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, `text.split(",")`, exception constructors, variadic collectors, and `logfire.info("message")`.
+- Whichever of `service_tier`, `extra_headers` and `extra_body` a `responses.create` / `.parse` or `interactions.create` call passes goes as an explicit keyword, never through a `**dict` spread, which costs the result its types.
+- Build the `tasks` list for a `gather` over a variable number of awaitables with a `for` loop, not a comprehension.
 - Avoid intermediate one-level aliases when directly using the original object is clearer.
+- Prefer a constant with one caller inside that function, unless anything else references it, it is user-visible config, or it belongs in `typings/timeouts.py` or `typings/context_budgets.py`.
+- No compatibility wrappers, re-exports at an old import path, migration code, or read-path tolerance for an old data layout: repoint every caller, and clean changed data once, offline.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.
 
 ## Comments
@@ -135,6 +139,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 - Every log statement inside an `except` attaches the exception (`_exc_info=True`, or `_exc_info=exc` when the handler binds it), plus `error_type=type(exc).__name__` when the handler is broad. The one carve-out is a failure that is **expected rather than diagnosable**, where the exception's own type is the whole finding and the stack is identical on every occurrence: catch that type on its own, say what it means in the message, and attach nothing. A permission the bot never had and cannot earn is the example — `utils/message_cleanup.py`'s `Forbidden` branch, which is split from the `HTTPException` one precisely so a 5xx keeps its traceback. A broad handler never qualifies, because there the type is what you came to find out.
 - Every log carries the structured fields that identify its subject (`message_id`, `url`, `scope`, `thread_id`, `filename`), so a recurrence is greppable without reading the traceback.
+- No log carries the text of a user's message or prompt, only its size (`prompt_chars=len(user_prompt)`).
 - A broad `except Exception` or `contextlib.suppress(Exception)` is allowed only as a deliberate best-effort boundary. When it is, a comment says why it stays broad, and the handler still logs. `services/memory/inflight.py::safe_db_write` is the reference shape.
 - Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
 - A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
@@ -201,6 +206,14 @@ Maintainers handle releases through GitHub Actions.
 - The release workflow builds cross-platform binaries and publishes the Python package when credentials are available.
 
 Contributors usually do not need to run release commands locally.
+
+`docker-compose.yaml` runs the published `ghcr.io/mai0313/discordbot:latest` image rather than a local build. To deploy a merge, wait for the "Publish Docker image" run on its commit to finish (pulling earlier fetches the previous image), then:
+
+```bash
+docker compose pull bot && docker compose up -d bot
+```
+
+The image's `org.opencontainers.image.revision` label names the commit it was built from, so `docker inspect` on the running container shows what is deployed.
 
 ## License
 
