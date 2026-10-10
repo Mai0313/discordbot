@@ -18,6 +18,7 @@ from discordbot.typings.games import (
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.cogs.games.lobby import BaseGameLobbyView
+from discordbot.cogs.games.seats import seated_elsewhere
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
@@ -136,6 +137,22 @@ class GamesCogs(commands.Cog):
             )
         return result.participant
 
+    async def _prepare_blackjack_participant(
+        self, interaction: Interaction[commands.Bot], wager: int
+    ) -> GameParticipant | None:
+        """Prepares a Blackjack Join press, refusing a player another started round seats."""
+        if interaction.user is not None and seated_elsewhere(user_id=interaction.user.id):
+            await send_private_followup(
+                interaction=interaction, embed=self._seated_elsewhere_embed()
+            )
+            return None
+        return await self._prepare_participant(
+            interaction=interaction,
+            wager=wager,
+            mode="clamp",
+            insufficient_embed_builder=self._insufficient_balance_embed,
+        )
+
     async def _refresh_participants(
         self, participants: list[GameParticipant], mode: WagerMode
     ) -> RefreshParticipantsResult:
@@ -170,6 +187,15 @@ class GamesCogs(commands.Cog):
         """Builds the shared insufficient-balance embed for clamp-mode tables."""
         return self._balance_embed(
             balance=balance, requirement_line=f"沒有可下注的{CURRENCY_NAME}"
+        )
+
+    @staticmethod
+    def _seated_elsewhere_embed() -> Embed:
+        """Builds the refusal for a player another started Blackjack round already seats."""
+        return Embed(
+            title="你正在另一桌",
+            description="一次只能坐一桌 21 點, 這局打完再來",
+            color=ERROR_COLOR,
         )
 
     @staticmethod
@@ -251,6 +277,12 @@ class GamesCogs(commands.Cog):
             await send_ephemeral_response(interaction=interaction, embed=self._invalid_bet_embed())
             return
 
+        if seated_elsewhere(user_id=interaction.user.id):
+            await send_ephemeral_response(
+                interaction=interaction, embed=self._seated_elsewhere_embed()
+            )
+            return
+
         await interaction.response.defer()
 
         guild = interaction.guild
@@ -277,12 +309,7 @@ class GamesCogs(commands.Cog):
             owner=owner,
             requested_bet=table_bet,
             rng=self.rng,
-            prepare_participant=partial(
-                self._prepare_participant,
-                wager=table_bet,
-                mode="clamp",
-                insufficient_embed_builder=self._insufficient_balance_embed,
-            ),
+            prepare_participant=partial(self._prepare_blackjack_participant, wager=table_bet),
             refresh_participants=partial(self._refresh_participants, mode="clamp"),
             bot_user_id=bot_participant.user_id if bot_participant is not None else None,
             extra_initial_participants=extra_initial_participants,

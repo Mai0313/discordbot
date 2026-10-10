@@ -20,6 +20,12 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
+from discordbot.cogs.games.seats import (
+    claim_seat,
+    release_seats,
+    hand_over_seats,
+    seated_elsewhere,
+)
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
 from discordbot.utils.asyncio_locks import spawn_tracked
@@ -487,6 +493,41 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self._shoe_store = shoe_store
         self._channel_id = channel_id
 
+    def holds_seats(self) -> bool:
+        """A lobby's seats always count: it holds them only while its start press runs."""
+        return True
+
+    def _human_ids(self) -> list[int]:
+        """The participants' user ids, the bot player's excepted."""
+        return [
+            participant.user_id
+            for participant in self.participants
+            if participant.user_id != self.bot_user_id
+        ]
+
+    def _seat_participants(self, claimed: list[int]) -> list[GameParticipant]:
+        """Seats every human player no other started round seats, and returns those it does.
+
+        The bot is never seated. A start the owner cannot make gives the seats back when its
+        press ends.
+        """
+        elsewhere = [
+            participant
+            for participant in self.participants
+            if participant.user_id != self.bot_user_id
+            and seated_elsewhere(user_id=participant.user_id, holder=self)
+        ]
+        elsewhere_ids = {participant.user_id for participant in elsewhere}
+        for user_id in self._human_ids():
+            if user_id not in elsewhere_ids:
+                claim_seat(user_id=user_id, holder=self)
+                claimed.append(user_id)
+        return elsewhere
+
+    def _release_seats(self, user_ids: list[int]) -> None:
+        """Gives back those of these seats no table has taken over."""
+        release_seats(user_ids=user_ids, holder=self)
+
     def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
         return build_blackjack_lobby_embed(
@@ -539,6 +580,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             if self._shoe_store is not None and shoe is not None:
                 self._shoe_store.put_back_shoe(channel_id=self._channel_id, cards=shoe)
             raise
+        hand_over_seats(user_ids=self._human_ids(), from_holder=self, to_holder=view)
         if round_state.finished:
             # Not reopened on a raise: it can come after seats were paid, which a new deal would pay
             # again.
@@ -578,6 +620,8 @@ class BlackjackView(GameView):
         self.last_press: Interaction[commands.Bot] | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
+        # Set once every seat's settlement has been attempted: until then the players stay seated.
+        self._seats_released = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._action_buttons: dict[BotAction, Button[BlackjackView]] = {
@@ -592,6 +636,10 @@ class BlackjackView(GameView):
             cast('Button["BlackjackView"]', self.insure_no),
         )
         self.sync_buttons()
+
+    def holds_seats(self) -> bool:
+        """A table holds its players' seats until its settlements have been written."""
+        return not self._seats_released
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
@@ -1023,6 +1071,19 @@ class BlackjackView(GameView):
         if self._settled:
             return
         self._settled = True
+        try:
+            await self._settle_round_locked(message=message, interaction=interaction)
+        finally:
+            self._seats_released = True
+            release_seats(
+                user_ids=[player.participant.user_id for player in self.round_state.players],
+                holder=self,
+            )
+
+    async def _settle_round_locked(
+        self, message: Message, interaction: Interaction[commands.Bot] | None
+    ) -> None:
+        """Plays the dealer out, settles every seat and publishes the final table."""
         self._state_revision += 1
         if not self.round_state.finished:
             self.round_state.stand_all_remaining()
