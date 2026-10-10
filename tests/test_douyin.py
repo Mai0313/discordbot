@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator
 
 import pytest
 import requests
+from requests.cookies import cookiejar_from_dict
 
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.link_errors import LinkReadError, LinkRetryableError
@@ -103,21 +104,27 @@ def _ok_page(item: dict[str, Any], page_key: str = "note") -> str:
     return _router_html(page_key=page_key, video_info={"item_list": [item], "filter_list": []})
 
 
+# What Douyin serves a visitor without an accepted `ttwid`: the router data, but no post in it.
+_SHELL_PAGE = _router_html(page_key="note", video_info={}).replace("videoInfoRes", "itemId")
+
+
 class _FakeResponse:
     """Minimal stand-in for a requests Response."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- one knob per Response attribute a test varies
         self,
         text: str = "",
         status_code: int = 200,
         headers: dict[str, str] | None = None,
         body: bytes = b"",
         stall_mid_stream: bool = False,
+        cookies: dict[str, str] | None = None,
     ) -> None:
         """Stores the canned response payload."""
         self.text = text
         self.status_code = status_code
         self.headers = headers or {}
+        self.cookies = cookiejar_from_dict(cookie_dict=cookies)
         self._body = body
         self._stall_mid_stream = stall_mid_stream
 
@@ -168,12 +175,14 @@ def _install_session(
 
 @pytest.fixture(autouse=True)
 def _clear_payload_cache() -> Iterator[None]:
-    """Keeps the module-level share-payload and short-link caches from leaking between tests."""
+    """Keeps the module-level caches and guest cookie from leaking between tests."""
     douyin_module._PAYLOAD_CACHE.clear()
     douyin_module._LINK_ID_CACHE.clear()
+    douyin_module._share_ttwid = ""
     yield
     douyin_module._PAYLOAD_CACHE.clear()
     douyin_module._LINK_ID_CACHE.clear()
+    douyin_module._share_ttwid = ""
 
 
 @pytest.mark.parametrize(
@@ -355,7 +364,7 @@ def test_bot_wall_is_retryable_and_never_reported_as_missing(
 
     Reporting a WAF block as a missing post would tell the user their working link is dead.
     """
-    _install_session(
+    calls = _install_session(
         monkeypatch=monkeypatch,
         handler=lambda url, kwargs: _FakeResponse(text=f"<html><script src='{marker}'></script>"),
     )
@@ -363,6 +372,7 @@ def test_bot_wall_is_retryable_and_never_reported_as_missing(
 
     with pytest.raises(DouyinBlockedError):
         downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+    assert len(calls) == 1  # a wall is never asked again, unlike the cookieless shell
     # The retryable error must not be mistaken for the unavailable one by an except clause.
     assert not issubclass(DouyinBlockedError, DouyinUnavailableError)
 
@@ -410,6 +420,71 @@ def test_share_page_is_fetched_from_the_note_path(monkeypatch: pytest.MonkeyPatc
 
     assert calls[0]["url"] == f"https://www.iesdouyin.com/share/note/{_VIDEO_ID}"
     assert "iPhone" in calls[0]["headers"]["User-Agent"]
+
+
+def test_a_cookieless_shell_is_refetched_with_the_cookie_it_hands_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cookie a shell sets is what unlocks the post, and a shell sets one only sometimes."""
+    shells = iter([
+        _FakeResponse(text=_SHELL_PAGE),
+        _FakeResponse(text=_SHELL_PAGE, cookies={"ttwid": "guest"}),
+    ])
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if kwargs.get("cookies") == {"ttwid": "guest"}:
+            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM), cookies={"ttwid": "guest"})
+        return next(shells)
+
+    calls = _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    post = downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+    assert post.author_name == "真探唐仁杰"
+    assert [call["cookies"] for call in calls] == [None, None, {"ttwid": "guest"}]
+
+    # The cookie outlives the fetch, so the next post costs one request.
+    downloader.parse_metadata(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
+    assert len(calls) == 4
+    assert calls[3]["cookies"] == {"ttwid": "guest"}
+
+
+def test_a_shell_that_never_hands_out_a_cookie_is_retryable_after_three_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cookieless retry is bounded, and a visitor never let in says nothing about the post.
+
+    Douyin's WAF bans by request volume, hence the bound.
+    """
+    calls = _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(text=_SHELL_PAGE)
+    )
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    with pytest.raises(DouyinBlockedError):
+        downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize(argnames="reissued", argvalues=[{"ttwid": "guest"}, None])
+def test_a_shell_is_not_refetched_when_the_cookie_sent_is_not_replaced(
+    monkeypatch: pytest.MonkeyPatch, reissued: dict[str, str] | None
+) -> None:
+    """A cookie that came back unchanged or not at all leaves nothing to ask again with.
+
+    Nor is the shell then the gate: a cookie got past it, so the page may have moved.
+    """
+    douyin_module._share_ttwid = "guest"
+    calls = _install_session(
+        monkeypatch=monkeypatch,
+        handler=lambda url, kwargs: _FakeResponse(text=_SHELL_PAGE, cookies=reissued),
+    )
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    with pytest.raises(DouyinError) as excinfo:
+        downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+    assert not isinstance(excinfo.value, DouyinBlockedError)
+    assert len(calls) == 1
 
 
 def test_repeated_lookup_reuses_the_cached_payload(monkeypatch: pytest.MonkeyPatch) -> None:
