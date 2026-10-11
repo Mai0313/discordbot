@@ -156,9 +156,9 @@ and `/memory server catchup` need a server whose community memory I keep, so all
 anywhere I am not a member.
 
 `/ask` also runs on a clock. Discord closes a slash command fifteen minutes after you send it.
-When an image or a video is the whole of what you asked for and I am still making it when that
-runs out, I say so rather than going quiet. Nothing else I do watches that clock: a clip I add to
-an answer can still be rendering when it closes, and then it never arrives and nothing says why.
+I stop shortly before that so the failure can still be said: an image or a video you asked for, or
+an answer that stalled, becomes a note that the command ran out of time, and a voice clip,
+picture, song or video I was adding to an answer is left off with a ⏱️ under the reply.
 
 Only the person who added me can reach me in those places. In a group DM, someone who has not
 added me cannot ask me anything through you.

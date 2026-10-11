@@ -382,17 +382,22 @@ class _TextStreamer:
     """The part of `ResponseStreamer` the answer retry drives: it joins the text deltas."""
 
     carries_turn_notices = False
+    text = ""
 
     def reset_for_retry(self) -> None:
         """Nothing to drop: each attempt's text is joined afresh."""
 
-    async def stream(self, responses: "AsyncIterator[ResponseStreamEvent]") -> str:
+    async def consume(self, responses: "AsyncIterator[ResponseStreamEvent]") -> None:
         """Joins the answer's text, letting whatever the stream raises propagate."""
-        return "".join([
+        self.text = "".join([
             _ns(event=event).delta
             async for event in responses
             if event.type == "response.output_text.delta"
         ])
+
+    async def finalize_reply(self) -> str:
+        """Hands back the text the last attempt joined."""
+        return self.text
 
 
 class _YouTubeAnswerTurn:

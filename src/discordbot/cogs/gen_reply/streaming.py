@@ -36,7 +36,7 @@ from discordbot.cogs.gen_reply.markers import (
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs.gen_reply.surface import TurnSurface
+from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE, TurnSurface
 from discordbot.cogs.gen_reply.generation import (
     VOICE_REPLY_FILENAME,
     INLINE_IMAGE_FILENAME,
@@ -85,7 +85,7 @@ ANSWER_RETRY_JITTER_SECONDS = 1.0
 # the background review finishes. It exists because that review is seconds to minutes behind the
 # answer and can also end in nothing, which left four different turns — the model marked nothing,
 # the reviewer kept nothing, the review failed, the reply is still working — showing the reader
-# the same empty corner. It costs no extra Discord edit: `_finalize_reply` splices it into the
+# the same empty corner. It costs no extra Discord edit: `finalize_reply` splices it into the
 # content it was about to write anyway.
 MEMORY_PENDING_NOTE = f"-# {MEMORY_WRITE_EMOJI} 正在整理記憶⋯"
 
@@ -205,11 +205,11 @@ def _cut_cleanly(text: str, budget: int, earliest: int) -> tuple[str, str]:
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
 
-    `stream` is called once per attempt with the answer stream; reasoning summaries are
+    `consume` is called once per attempt with the answer stream; reasoning summaries are
     previewed as `-#` subtext while the model thinks, the real text replaces them as it
-    arrives, then a usage footer (and an optional memory-credit line) is written. Whose
-    memory the answer read is decided before streaming, so the credits are passed in via
-    `memory_lookups` rather than discovered here. Discord edits run on a time-based snapshot
+    arrives, then `finalize_reply` writes a usage footer (and an optional memory-credit
+    line). Whose memory the answer read is decided before streaming, so the credits are passed
+    in via `memory_lookups` rather than discovered here. Discord edits run on a time-based snapshot
     editor task so consuming the stream never waits on Discord.
     """
 
@@ -480,7 +480,7 @@ class ResponseStreamer(BaseModel):
         """Edits the reply with the latest snapshot on a fixed cadence until stopped.
 
         Stopping uses the event rather than task cancellation so an in-flight Discord
-        write always completes before `_finalize_reply` runs; a cancel landing inside
+        write always completes before `finalize_reply` runs; a cancel landing inside
         the first `message.reply` could otherwise orphan the created message and let
         the finalizer create a duplicate.
         """
@@ -637,7 +637,7 @@ class ResponseStreamer(BaseModel):
         - `content_ever_started` and `_reasoning_logged`, which are per-turn rather than
           per-attempt (see their own notes).
 
-        The editor is the one piece that needs work rather than none: `stream`'s finally
+        The editor is the one piece that needs work rather than none: `consume`'s finally
         stopped it by SETTING `_editor_stop`, and `_preview_editor` reads that before its
         first tick, so a task started by the retry's first delta would exit immediately and
         the whole retry would stream with no live preview. Clearing it is what keeps the
@@ -775,7 +775,7 @@ class ResponseStreamer(BaseModel):
             elif response.type == "response.output_text.delta":
                 self._on_content_delta(delta=response.delta)
 
-    async def _finalize_reply(self) -> str:
+    async def finalize_reply(self) -> str:
         """Writes the usage footer and final reply once the stream is consumed."""
         # Priced as the model the stream reports having answered from, which is not always the
         # one that was dispatched: a LiteLLM fallback shows up here and nowhere else.
@@ -1254,12 +1254,39 @@ class ResponseStreamer(BaseModel):
         # Build every path concurrently so a slow one never blocks the others: a TTS clip, a music
         # render, or a video render that hangs to its timeout must not delay ready inline images
         # (and vice versa).
-        voice_candidate, music_candidate, video_candidate, image_candidates = await asyncio.gather(
-            self._build_voice_candidate(),
-            self._build_music_candidate(),
-            self._build_video_candidate(source_images_task=source_images_task),
-            self._build_image_candidates(source_images_task=source_images_task),
+        voice_task = asyncio.ensure_future(self._build_voice_candidate())
+        music_task = asyncio.ensure_future(self._build_music_candidate())
+        video_task = asyncio.ensure_future(
+            self._build_video_candidate(source_images_task=source_images_task)
         )
+        image_task = asyncio.ensure_future(
+            self._build_image_candidates(source_images_task=source_images_task)
+        )
+        # On `/ask` the attach edit and the hint line both go through the interaction token, so a
+        # builder still running when the budget ends is dropped while the ⏱️ can still be written,
+        # and the builders that finished in time attach as usual. The cut is per builder: one slow
+        # inline image drops the images that finished beside it. Unlike `gather`, `wait` leaves
+        # its tasks running when the turn itself is cancelled, hence the finally.
+        builds = {voice_task, music_task, video_task, image_task}
+        try:
+            done, pending = await asyncio.wait(
+                builds, timeout=self.surface.delivery_budget_seconds()
+            )
+        finally:
+            for task in builds:
+                task.cancel()
+        if pending:
+            await asyncio.wait(pending)
+            logfire.warn(
+                "gen_reply inline media outlived the /ask window; dropping it",
+                message_id=self.message.id,
+                pending=len(pending),
+            )
+            await self.surface.hint(emoji=TIMEOUT_HINT_EMOJI)
+        voice_candidate = voice_task.result() if voice_task in done else None
+        music_candidate = music_task.result() if music_task in done else None
+        video_candidate = video_task.result() if video_task in done else None
+        image_candidates = image_task.result() if image_task in done else []
         items = [
             item
             for item in (voice_candidate, music_candidate, video_candidate, *image_candidates)
@@ -1361,8 +1388,8 @@ class ResponseStreamer(BaseModel):
                 return False
         return True
 
-    async def stream(self, responses: AsyncIterator[ResponseStreamEvent]) -> str:
-        """Streams the reply onto the message and writes the usage footer; returns the full text."""
+    async def consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> None:
+        """Streams one attempt's reply onto the message; `finalize_reply` writes it in full."""
         if self.carries_turn_notices:
             current_answer_streamer.set(self)
         try:
@@ -1373,7 +1400,6 @@ class ResponseStreamer(BaseModel):
             # reported as answer latency.
             self._answer_seconds = time.monotonic() - self.created_at
             await self._stop_editor()
-        return await self._finalize_reply()
 
 
 # Opens one answer stream. A factory rather than the stream itself, because the request has to
@@ -1410,6 +1436,13 @@ async def stream_answer_with_retry(
     delivered image or video, which is nobody's status surface, and that route is silent to the
     user by design -- the deliverable already landed and nobody is waiting on the words about it.
 
+    On `/ask` a turn that carries notices runs its attempts inside the surface's delivery budget:
+    an attempt still going when the interaction token dies would write into a 404, and so would
+    the error embed, so the turn gives up while the margin can still carry `WINDOW_EXPIRED_NOTICE`.
+    Finalizing stays outside the bound, since its inline media keep a bound of their own and the
+    ⏱️ it writes for them must not be cut off too. A media persona reply takes no bound: it has
+    no notice to save the margin for, and the margin is time it can still write in.
+
     Args:
         streamer: The streamer rendering this reply; retried in place so every attempt writes
             to the same Discord message.
@@ -1420,6 +1453,7 @@ async def stream_answer_with_retry(
         The finished reply text.
 
     Raises:
+        TimeoutError: The `/ask` window ran out first, carrying `WINDOW_EXPIRED_NOTICE`.
         Exception: Whatever the last attempt raised, unwrapped -- a caller's error path sees
             the provider failure rather than a tenacity wrapper.
     """
@@ -1438,8 +1472,8 @@ async def stream_answer_with_retry(
             _exc_info=failure,
         )
 
-    async def _attempt() -> str:
-        return await streamer.stream(responses=await open_stream())
+    async def _attempt() -> None:
+        await streamer.consume(responses=await open_stream())
 
     retrying = AsyncRetrying(
         retry=retry_if_exception(is_retryable_llm_error),
@@ -1449,11 +1483,18 @@ async def stream_answer_with_retry(
         before_sleep=_before_retry,
         reraise=True,
     )
+    window = asyncio.timeout(
+        delay=streamer.surface.delivery_budget_seconds() if streamer.carries_turn_notices else None
+    )
     try:
-        return await retrying(_attempt)
-    except Exception:
+        async with window:
+            await retrying(_attempt)
+    except Exception as exc:
         # The streamer stays published on the way out: the caller's error path is what lands
         # the failure on whatever this reply is still showing.
         if streamer.carries_turn_notices:
             await streamer.withdraw_retry_notice()
+        if window.expired():
+            raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
         raise
+    return await streamer.finalize_reply()
