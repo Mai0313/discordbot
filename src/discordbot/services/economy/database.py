@@ -92,6 +92,7 @@ from discordbot.typings.economy import (
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
+from discordbot.services.economy.holds import spending, spendable, held_amount
 
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. The bound is
 # there to stop a degenerate hot-row livelock, not to ride out contention.
@@ -1532,7 +1533,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
     now = _database_now()
     cost = VIP_PURCHASE_COST
 
-    async with open_session() as session:
+    async with spending(user_id=user_id), open_session() as session:
         for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
             read_result = await session.execute(
                 statement=select(UserWallet.balance, UserAccount.is_vip, UserAccount.name)
@@ -1546,7 +1547,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
             balance, is_vip, existing_name = row
             if is_vip:
                 return None
-            if balance < cost:
+            if spendable(user_id=user_id, balance=balance) < cost:
                 return None
 
             new_balance = balance - cost
@@ -1603,6 +1604,11 @@ async def get_balance(user_id: int) -> int:
     """
     async with open_session() as session:
         return await _balance_in_session(session=session, user_id=user_id)
+
+
+async def get_spendable_balance(user_id: int) -> int:
+    """Returns the user's balance less what a casino table holds of it (`holds.py`)."""
+    return spendable(user_id=user_id, balance=await get_balance(user_id=user_id))
 
 
 async def get_vip(user_id: int) -> bool:
@@ -1761,53 +1767,57 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         return None
 
     now = _database_now()
-    async with open_session() as session:
-        debit_values: dict[str, Any] = {
-            "balance": UserWallet.balance - amount,
-            "total_spent": UserWallet.total_spent + amount,
-            "updated_at": now,
-        }
-        if sender_name:
-            debit_values["name"] = sender_name
-
-        debit_stmt = (
-            update(UserWallet)
-            .where(UserWallet.user_id == sender_id, UserWallet.balance >= amount)
-            .values(**debit_values)
-            .returning(UserWallet.balance)
-        )
-        debit_result = await session.execute(statement=debit_stmt)
-        debit_row = debit_result.one_or_none()
-        if debit_row is None:
-            await session.rollback()
+    async with spending(user_id=sender_id):
+        sender_held = held_amount(user_id=sender_id)
+        if sender_held is None:
             return None
-        sender_balance = debit_row[0]
-        await _upsert_user_metadata_in_session(
-            session=session,
-            user_id=sender_id,
-            name=sender_name,
-            avatar_url=sender_avatar_url,
-            now=now,
-        )
+        async with open_session() as session:
+            debit_values: dict[str, Any] = {
+                "balance": UserWallet.balance - amount,
+                "total_spent": UserWallet.total_spent + amount,
+                "updated_at": now,
+            }
+            if sender_name:
+                debit_values["name"] = sender_name
 
-        tax = amount * TRANSFER_TAX_BPS // 10_000
-        net = amount - tax
-        credit_result = await _credit_with_repayment_in_session(
-            session=session,
-            user_id=receiver_id,
-            name=receiver_name,
-            avatar_url=receiver_avatar_url,
-            amount=net,
-            now=now,
-        )
+            debit_stmt = (
+                update(UserWallet)
+                .where(UserWallet.user_id == sender_id, UserWallet.balance >= amount + sender_held)
+                .values(**debit_values)
+                .returning(UserWallet.balance)
+            )
+            debit_result = await session.execute(statement=debit_stmt)
+            debit_row = debit_result.one_or_none()
+            if debit_row is None:
+                await session.rollback()
+                return None
+            sender_balance = debit_row[0]
+            await _upsert_user_metadata_in_session(
+                session=session,
+                user_id=sender_id,
+                name=sender_name,
+                avatar_url=sender_avatar_url,
+                now=now,
+            )
 
-        await _commit_balance_write(session=session)
-        return TransferResult(
-            sender_balance=sender_balance,
-            receiver_balance=credit_result.new_balance,
-            received_amount=net,
-            tax_amount=tax,
-        )
+            tax = amount * TRANSFER_TAX_BPS // 10_000
+            net = amount - tax
+            credit_result = await _credit_with_repayment_in_session(
+                session=session,
+                user_id=receiver_id,
+                name=receiver_name,
+                avatar_url=receiver_avatar_url,
+                amount=net,
+                now=now,
+            )
+
+            await _commit_balance_write(session=session)
+            return TransferResult(
+                sender_balance=sender_balance,
+                receiver_balance=credit_result.new_balance,
+                received_amount=net,
+                tax_amount=tax,
+            )
 
 
 async def top_n(
@@ -2433,7 +2443,7 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
         LoanProposalExpiredError: When this call found the request past its decision window
             and rejected it instead.
     """
-    async with _loan_accept_lock.get(), open_session() as session:
+    async with spending(user_id=actor_id), _loan_accept_lock.get(), open_session() as session:
         now = _database_now()
         # Acquire SQLite's write lock before reading capacity or proposal state.
         await session.execute(statement=text("BEGIN IMMEDIATE"))
@@ -2461,9 +2471,15 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
                 "total_spent": UserWallet.total_spent + proposal.amount,
                 "updated_at": now,
             }
+            lender_held = held_amount(user_id=actor_id)
+            if lender_held is None:
+                return None
             debit_result = await session.execute(
                 statement=update(UserWallet)
-                .where(UserWallet.user_id == actor_id, UserWallet.balance >= proposal.amount)
+                .where(
+                    UserWallet.user_id == actor_id,
+                    UserWallet.balance >= proposal.amount + lender_held,
+                )
                 .values(**debit_values)
                 .returning(UserWallet.balance)
             )
@@ -2704,7 +2720,7 @@ async def _collect_loan_payment(  # noqa: PLR0913 -- a payment names both sides,
         The committed payment, or None when nothing was paid.
     """
     now = _database_now()
-    async with open_session() as session:
+    async with spending(user_id=borrower_id), open_session() as session:
         if guild_id is not None and not await _is_guild_participant_in_session(
             session=session, guild_id=guild_id, user_id=borrower_id
         ):
@@ -2722,6 +2738,10 @@ async def _collect_loan_payment(  # noqa: PLR0913 -- a payment names both sides,
                 contract.principal_remaining + contract.interest_due for contract in contracts
             )
             amount = max(total_owed, 1)
+        if held_amount(user_id=borrower_id) != 0:
+            # A forced collection too: what a casino table holds stays there, and stays owed.
+            borrower_balance = await _balance_in_session(session=session, user_id=borrower_id)
+            amount = min(amount, spendable(user_id=borrower_id, balance=borrower_balance))
         result = await _apply_loan_payment_in_session(
             session=session,
             contracts=contracts,

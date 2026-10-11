@@ -13,21 +13,38 @@ from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.games.shoe import BlackjackShoeStore
+from discordbot.cogs.games.lobby import BaseGameLobbyView
 from discordbot.cogs.games.seats import (
     claim_seat,
     release_seats,
     hand_over_seats,
     seated_elsewhere,
 )
+from discordbot.cogs.games.dragon_gate import ANTE, DragonGateRound
+from discordbot.services.economy.holds import spending, held_amount
 from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
+from discordbot.cogs.games.dragon_gate_views import DragonGateView, DragonGateLobbyView
 
-from tests.helpers.games import card, seat, lobby_button, everyone_stays, blackjack_round
+from tests.helpers.games import (
+    card,
+    seat,
+    lobby_button,
+    everyone_stays,
+    attached_button,
+    blackjack_round,
+)
 from tests.helpers.casting import as_bot, as_message, as_interaction, make_forbidden
+from tests.helpers.economy import seed_balance
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 BOB = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
 BOT = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
+
+
+async def _never_joins(interaction: object) -> None:
+    """Lobby join hook for a table nobody joins."""
+    raise AssertionError(interaction)
 
 
 class _Holder(BaseModel):
@@ -61,7 +78,7 @@ def _lobby(
     )
 
 
-async def _press_start(lobby: BlackjackLobbyView) -> FakeInteraction:
+async def _press_start(lobby: BaseGameLobbyView) -> FakeInteraction:
     """Presses 開始 as Alice and returns her interaction."""
     message = FakeDiscordMessage()
     lobby.message = as_message(fake=message)
@@ -88,7 +105,7 @@ async def test_seats_move_and_free_only_for_their_own_holder() -> None:
     claim_seat(user_id=1, holder=lobby)
     claim_seat(user_id=2, holder=other)
 
-    hand_over_seats(user_ids=[1, 2], from_holder=lobby, to_holder=table)
+    hand_over_seats(stakes={1: 100, 2: 100}, from_holder=lobby, to_holder=table)
     release_seats(user_ids=[1, 2], holder=lobby)
 
     assert seated_elsewhere(user_id=1, holder=other)
@@ -251,8 +268,11 @@ async def test_a_join_from_a_player_another_round_seats_is_refused() -> None:
     cog = GamesCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
     press = FakeInteraction(user=FakeUser(user_id=2))
 
-    participant = await cog._prepare_blackjack_participant(
-        interaction=as_interaction(fake=press), wager=10
+    participant = await cog._prepare_participant(
+        interaction=as_interaction(fake=press),
+        wager=10,
+        mode="clamp",
+        insufficient_embed_builder=cog._insufficient_balance_embed,
     )
 
     assert participant is None
@@ -312,3 +332,142 @@ async def test_a_second_start_press_leaves_the_first_ones_seats_alone(
     assert second.followup.sent == [{"content": "這桌已經開始了", "ephemeral": True}]
     assert seated_elsewhere(user_id=1, holder=lobby)
     assert seated_elsewhere(user_id=2, holder=lobby)
+
+
+async def test_a_started_round_holds_the_most_each_seat_can_lose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alice bets 10 of the 100 she sat down with, so the table holds 25 of her wallet."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    lobby = _lobby()
+
+    await _press_start(lobby=lobby)
+
+    assert held_amount(user_id=1) == 25
+
+
+async def test_a_dragon_gate_start_drops_a_player_a_blackjack_round_seats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two games share the seats, so Bob cannot sit at both."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    await seed_balance(user_id=1, name="alice", amount=1_000_000)
+    claim_seat(user_id=2, holder=_Holder())
+    lobby = DragonGateLobbyView(
+        owner=seat(bet=ANTE, balance_at_start=1_000_000),
+        rng=Random(x=0),  # noqa: S311 -- any deal will do
+        prepare_participant=_never_joins,
+        refresh_participants=everyone_stays,
+        initial_jackpot=0,
+    )
+    lobby._participants[2] = seat(user_id=2, display_name="Bob", bet=ANTE)
+
+    press = await _press_start(lobby=lobby)
+
+    assert {"content": "已在另一桌, 已移出: Bob", "ephemeral": True} in press.followup.sent
+    assert [participant.user_id for participant in lobby.participants] == [1]
+    assert seated_elsewhere(user_id=1, holder=lobby)
+    assert held_amount(user_id=1) == 0
+
+
+async def test_a_dragon_gate_table_frees_its_seats_when_it_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its players can sit at Blackjack once the table has published its result."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    participants = [seat(bet=ANTE, balance_at_start=1_000_000)]
+    view = DragonGateView(
+        round_state=DragonGateRound.from_participants(
+            rng=Random(x=0),  # noqa: S311 -- any deal will do
+            participants=participants,
+        ),
+        owner=participants[0],
+        jackpot_snapshot=0,
+        final_balances={1: 1_000_000},
+    )
+    view.message = as_message(fake=FakeDiscordMessage())
+    claim_seat(user_id=1, holder=view)
+
+    await view.on_timeout()
+
+    assert not view.holds_seats()
+    assert not seated_elsewhere(user_id=1)
+
+
+async def test_opening_dragon_gate_while_seated_elsewhere_is_refused() -> None:
+    """/games dragon_gate answers privately before deferring and opens no lobby."""
+    claim_seat(user_id=1, holder=_Holder())
+    cog = GamesCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    await GamesCogs.dragon_gate.callback(cog, interaction)
+
+    assert interaction.response.sent[0]["ephemeral"] is True
+    assert interaction.response.sent[0]["embed"].title == "你正在另一桌"
+    assert interaction.response.deferred is False
+
+
+async def test_a_start_reads_balances_only_after_a_debit_in_flight_lands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transfer already running when the seat is claimed finishes before the stake is read."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    lobby = _lobby()
+    read_while_debiting: list[bool] = []
+    debiting = asyncio.Event()
+    debit_entered, release_debit = asyncio.Event(), asyncio.Event()
+
+    async def balances_read(participants: list[GameParticipant]) -> RefreshParticipantsResult:
+        read_while_debiting.append(debiting.is_set())
+        return RefreshParticipantsResult(participants=participants)
+
+    lobby.refresh_participants = balances_read
+
+    async def debit_in_flight() -> None:
+        async with spending(user_id=1):
+            debiting.set()
+            debit_entered.set()
+            await release_debit.wait()
+            debiting.clear()
+
+    debit = asyncio.create_task(debit_in_flight())
+    await debit_entered.wait()
+    starting = asyncio.create_task(_press_start(lobby=lobby))
+    await asyncio.sleep(0.05)
+    release_debit.set()
+    await debit
+    await starting
+
+    assert read_while_debiting == [False]
+
+
+async def test_leaving_a_dragon_gate_table_frees_the_seat_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The table never touches a withdrawn wallet again, so its player may sit elsewhere."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    await seed_balance(user_id=1, name="alice", amount=1_000_000)
+    await seed_balance(user_id=2, name="bob", amount=1_000_000)
+    participants = [
+        seat(bet=ANTE, balance_at_start=1_000_000),
+        seat(user_id=2, display_name="Bob", bet=ANTE, balance_at_start=1_000_000),
+    ]
+    view = DragonGateView(
+        round_state=DragonGateRound.from_participants(
+            rng=Random(x=0),  # noqa: S311 -- any deal will do
+            participants=participants,
+        ),
+        owner=participants[0],
+        jackpot_snapshot=0,
+        final_balances={1: 1_000_000, 2: 1_000_000},
+    )
+    message = FakeDiscordMessage()
+    view.message = as_message(fake=message)
+    claim_seat(user_id=1, holder=view)
+    claim_seat(user_id=2, holder=view)
+    leave = FakeInteraction(user=FakeUser(user_id=2), message=message, custom_id="dg:leave")
+
+    await attached_button(view=view, custom_id="dg:leave").callback(as_interaction(fake=leave))
+
+    assert not seated_elsewhere(user_id=2)
+    assert seated_elsewhere(user_id=1)

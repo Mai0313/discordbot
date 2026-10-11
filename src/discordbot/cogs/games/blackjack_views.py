@@ -20,12 +20,7 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
-from discordbot.cogs.games.seats import (
-    claim_seat,
-    release_seats,
-    hand_over_seats,
-    seated_elsewhere,
-)
+from discordbot.cogs.games.seats import release_seats, hand_over_seats
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
 from discordbot.utils.asyncio_locks import spawn_tracked
@@ -36,6 +31,7 @@ from discordbot.cogs.games.blackjack import (
     InsuranceBetTooSmallError,
     InsuranceBeyondBalanceError,
     hand_value,
+    max_round_loss,
     is_five_card_win,
     is_five_card_twenty_one,
 )
@@ -493,41 +489,6 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self._shoe_store = shoe_store
         self._channel_id = channel_id
 
-    def holds_seats(self) -> bool:
-        """A lobby's seats always count: it holds them only while its start press runs."""
-        return True
-
-    def _human_ids(self) -> list[int]:
-        """The participants' user ids, the bot player's excepted."""
-        return [
-            participant.user_id
-            for participant in self.participants
-            if participant.user_id != self.bot_user_id
-        ]
-
-    def _seat_participants(self, claimed: list[int]) -> list[GameParticipant]:
-        """Seats every human player no other started round seats, and returns those it does.
-
-        The bot is never seated. A start the owner cannot make gives the seats back when its
-        press ends.
-        """
-        elsewhere = [
-            participant
-            for participant in self.participants
-            if participant.user_id != self.bot_user_id
-            and seated_elsewhere(user_id=participant.user_id, holder=self)
-        ]
-        elsewhere_ids = {participant.user_id for participant in elsewhere}
-        for user_id in self._human_ids():
-            if user_id not in elsewhere_ids:
-                claim_seat(user_id=user_id, holder=self)
-                claimed.append(user_id)
-        return elsewhere
-
-    def _release_seats(self, user_ids: list[int]) -> None:
-        """Gives back those of these seats no table has taken over."""
-        release_seats(user_ids=user_ids, holder=self)
-
     def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
         return build_blackjack_lobby_embed(
@@ -580,7 +541,17 @@ class BlackjackLobbyView(BaseGameLobbyView):
             if self._shoe_store is not None and shoe is not None:
                 self._shoe_store.put_back_shoe(channel_id=self._channel_id, cards=shoe)
             raise
-        hand_over_seats(user_ids=self._human_ids(), from_holder=self, to_holder=view)
+        hand_over_seats(
+            stakes={
+                participant.user_id: max_round_loss(
+                    bet=participant.bet, balance_at_start=participant.balance_at_start
+                )
+                for participant in self.participants
+                if participant.user_id != self.bot_user_id
+            },
+            from_holder=self,
+            to_holder=view,
+        )
         if round_state.finished:
             # Not reopened on a raise: it can come after seats were paid, which a new deal would pay
             # again.

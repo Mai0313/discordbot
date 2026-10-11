@@ -299,6 +299,7 @@ _LEDGER_READS = frozenset({
     "get_admin",
     "get_balance",
     "get_casino_ledger",
+    "get_spendable_balance",
     "get_central_bank_status",
     "get_credit_ceiling",
     "get_vip",
@@ -525,7 +526,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
 ) -> None:
     """Verifies economy slash commands call the database facade and send embeds."""
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
-    monkeypatch.setattr(economy, "get_balance", fake_get_balance)
+    monkeypatch.setattr(economy, "get_spendable_balance", fake_get_balance)
     monkeypatch.setattr(economy, "get_vip", fake_get_vip)
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
     monkeypatch.setattr(economy, "top_n", fake_top_n)
@@ -1146,7 +1147,7 @@ async def test_a_refused_transfer_is_a_public_expiring_embed(
         return
 
     monkeypatch.setattr(economy, "transfer", refuse_transfer)
-    monkeypatch.setattr(economy, "get_balance", fake_get_balance)
+    monkeypatch.setattr(economy, "get_spendable_balance", fake_get_balance)
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
 

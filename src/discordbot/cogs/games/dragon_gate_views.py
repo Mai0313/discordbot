@@ -16,6 +16,7 @@ from discordbot.cogs.games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
+from discordbot.cogs.games.seats import release_seats, hand_over_seats
 from discordbot.utils.number_text import compact_amount
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.cogs.games.dragon_gate import (
@@ -384,6 +385,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             interaction=interaction,
             payload=table_edit_kwargs(embeds=embeds, view=view, target=message),
         )
+        # A Dragon Gate bet settles the moment it is made, so the table holds no stake; its seat
+        # only keeps the player off a Blackjack table, whose stake a bet here could reach.
+        hand_over_seats(
+            stakes=dict.fromkeys(self._human_ids(), 0), from_holder=self, to_holder=view
+        )
 
 
 class DragonGateView(GameView):
@@ -414,7 +420,13 @@ class DragonGateView(GameView):
         self._jackpot_generation = jackpot_generation
         self._final_balances: dict[int, int] = dict(final_balances)
         self._refunded_to_pool: dict[int, int] = {}
+        # Set once the table has published its result: until then its players stay seated.
+        self._seats_released = False
         self.sync_controls()
+
+    def holds_seats(self) -> bool:
+        """A table holds its players' seats until it has published its result."""
+        return not self._seats_released
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
         """Restricts each control to who may use it, which is not the same set for all of them.
@@ -725,6 +737,8 @@ class DragonGateView(GameView):
                 and self.round_state.is_active(user_id=interaction.user.id)
             ):
                 self.round_state.withdraw(user_id=interaction.user.id)
+                # The table never touches a withdrawn wallet again, so the seat goes now.
+                release_seats(user_ids=[interaction.user.id], holder=self)
                 if self.round_state.finished:
                     await self._finalize_locked(
                         message=message, reason="所有玩家已離桌或餘額歸零", interaction=interaction
@@ -771,6 +785,9 @@ class DragonGateView(GameView):
                     )
                     raise
             self.round_state.withdraw(user_id=interaction.user.id)
+            # Their winnings went back to the pool above and no later bet reaches this wallet,
+            # so the seat goes now rather than when the table ends.
+            release_seats(user_ids=[interaction.user.id], holder=self)
             if self.round_state.finished:
                 await self._finalize_locked(
                     message=message, reason="所有玩家已離桌", interaction=interaction
@@ -852,6 +869,21 @@ class DragonGateView(GameView):
         if self._settled:
             return
         self._settled = True
+        try:
+            await self._publish_result_locked(
+                message=message, reason=reason, interaction=interaction
+            )
+        finally:
+            self._seats_released = True
+            release_seats(
+                user_ids=[participant.user_id for participant in self.round_state.participants],
+                holder=self,
+            )
+
+    async def _publish_result_locked(
+        self, message: Message, reason: str, interaction: Interaction[commands.Bot] | None
+    ) -> None:
+        """Builds the final results and publishes them, scheduling the table's deletion."""
         results: list[DragonGatePlayerResult] = []
         for participant in self.round_state.participants:
             user_id = participant.user_id

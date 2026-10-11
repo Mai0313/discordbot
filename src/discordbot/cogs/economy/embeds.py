@@ -308,16 +308,23 @@ def build_transfer_embed(
     return embed
 
 
+ON_TABLE_NOTE = "-# 21 點桌上的錢要等這局結束才能動"
+
+
 def build_transfer_insufficient_embed(
-    sender_name: str, sender_avatar_url: str, balance_now: int, amount: int
+    sender_name: str, sender_avatar_url: str, balance_now: int, amount: int, on_table: bool = False
 ) -> Embed:
-    """Builds the transfer failure embed for an insufficient sender balance."""
+    """Builds the transfer failure embed for an insufficient sender balance.
+
+    `balance_now` is what the sender can spend; `on_table` says a Blackjack round holds the rest.
+    """
     return build_error_embed(
         title="轉帳失敗",
         description=(
             f"### 餘額不足\n"
             f"目前 {bold_currency(amount=balance_now, compact=True)}\n"
             f"想轉 {bold_currency(amount=amount, compact=True)}"
+            + (f"\n{ON_TABLE_NOTE}" if on_table else "")
         ),
         author_name=sender_name,
         author_icon_url=sender_avatar_url,
@@ -586,14 +593,20 @@ def build_vip_already_embed(actor_name: str, avatar_url: str) -> Embed:
     return embed
 
 
-def build_vip_insufficient_embed(actor_name: str, avatar_url: str, balance_now: int) -> Embed:
-    """Builds the VIP purchase failure embed for an insufficient balance."""
+def build_vip_insufficient_embed(
+    actor_name: str, avatar_url: str, balance_now: int, on_table: bool = False
+) -> Embed:
+    """Builds the VIP purchase failure embed for an insufficient balance.
+
+    `balance_now` is what the buyer can spend; `on_table` says a Blackjack round holds the rest.
+    """
     embed = Embed(
         title="VIP 購買失敗",
         description=(
             f"### 餘額不足\n"
             f"目前 {bold_currency(amount=balance_now, compact=True)}\n"
             f"需要 {bold_currency(amount=VIP_PURCHASE_COST, compact=True)}"
+            + (f"\n{ON_TABLE_NOTE}" if on_table else "")
         ),
         color=ERROR_COLOR,
     )

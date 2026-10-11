@@ -10,8 +10,10 @@ import nextcord
 from nextcord import Embed, Message, NotFound, Forbidden, ButtonStyle, Interaction
 
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
+from discordbot.cogs.games.seats import claim_seat, release_seats, seated_elsewhere
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import edit_public_message, schedule_public_message_delete
+from discordbot.services.economy.holds import wait_for_spending
 from discordbot.cogs.games.interactions import GameView
 from discordbot.services.economy.database import apply_jackpot_settlement_batch
 
@@ -53,6 +55,8 @@ class BaseGameLobbyView(GameView):
     interaction_failure_log = "Lobby interaction failed"
     notice_failure_log = "Failed to send lobby notice"
     max_players: ClassVar[int | None] = None
+    # The bot player's id where it sits at this table; it is never seated (`seats.py`).
+    bot_user_id: int | None = None
 
     def __init__(  # noqa: PLR0913 -- lobby owns all table dependencies
         self,
@@ -216,6 +220,9 @@ class BaseGameLobbyView(GameView):
                 )
                 await self._refresh_message(interaction=interaction, status="房主正在另一桌")
                 return
+            # A debit that began before the claim may not have committed yet; the balances read
+            # below must already show it.
+            await wait_for_spending(user_ids=claimed)
             elsewhere_ids = {seat.user_id for seat in elsewhere}
             refreshed = await self.refresh_participants(
                 participants=[
@@ -311,20 +318,42 @@ class BaseGameLobbyView(GameView):
             self._started = False
             raise
 
+    def holds_seats(self) -> bool:
+        """A lobby's seats always count: it holds them only while its start press runs."""
+        return True
+
+    def _human_ids(self) -> list[int]:
+        """The participants' user ids, the bot player's excepted."""
+        return [
+            participant.user_id
+            for participant in self.participants
+            if participant.user_id != self.bot_user_id
+        ]
+
     def _seat_participants(self, claimed: list[int]) -> list[GameParticipant]:
-        """Seats the players for the start about to run and returns those seated elsewhere.
+        """Seats every human player no other started round seats, and returns those it does.
 
         Runs under the lobby lock before any balance is read, so a round elsewhere that still
         seats a player has not let go of them yet, and one that has already wrote its
-        settlement. A game that seats players (`seats.py`) checks and claims here in one step,
-        adding each seat it claims to `claimed`; the default seats nobody and finds nobody
-        elsewhere.
+        settlement. Each seat claimed goes into `claimed`, which the press gives back when it
+        ends; a table that starts takes them over first.
         """
-        del claimed
-        return []
+        elsewhere = [
+            participant
+            for participant in self.participants
+            if participant.user_id != self.bot_user_id
+            and seated_elsewhere(user_id=participant.user_id, holder=self)
+        ]
+        elsewhere_ids = {participant.user_id for participant in elsewhere}
+        for user_id in self._human_ids():
+            if user_id not in elsewhere_ids:
+                claim_seat(user_id=user_id, holder=self)
+                claimed.append(user_id)
+        return elsewhere
 
     def _release_seats(self, user_ids: list[int]) -> None:
-        """Gives back those of these seats this lobby still holds; the default holds none."""
+        """Gives back those of these seats no table has taken over."""
+        release_seats(user_ids=user_ids, holder=self)
 
     def lobby_embed(self, status: str | None = None) -> Embed:
         """Builds the lobby embed for a concrete game type."""
