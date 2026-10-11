@@ -123,10 +123,16 @@ class GamesCogs(commands.Cog):
     ) -> GameParticipant | None:
         """Prepares a user who pressed a lobby Join button.
 
-        Sends the supplied insufficient-balance embed (game-specific copy) when
-        the user cannot cover the wager. Returns the participant otherwise.
+        Refuses a player another started round seats, and sends the supplied
+        insufficient-balance embed (game-specific copy) when the user cannot cover
+        the wager. Returns the participant otherwise.
         """
         if interaction.user is None:
+            return None
+        if seated_elsewhere(user_id=interaction.user.id):
+            await send_private_followup(
+                interaction=interaction, embed=self._seated_elsewhere_embed()
+            )
             return None
         result = await self._participant_from_user(
             user=interaction.user, wager=wager, mode=mode, guild=interaction.guild
@@ -136,22 +142,6 @@ class GamesCogs(commands.Cog):
                 interaction=interaction, embed=insufficient_embed_builder(result.balance)
             )
         return result.participant
-
-    async def _prepare_blackjack_participant(
-        self, interaction: Interaction[commands.Bot], wager: int
-    ) -> GameParticipant | None:
-        """Prepares a Blackjack Join press, refusing a player another started round seats."""
-        if interaction.user is not None and seated_elsewhere(user_id=interaction.user.id):
-            await send_private_followup(
-                interaction=interaction, embed=self._seated_elsewhere_embed()
-            )
-            return None
-        return await self._prepare_participant(
-            interaction=interaction,
-            wager=wager,
-            mode="clamp",
-            insufficient_embed_builder=self._insufficient_balance_embed,
-        )
 
     async def _refresh_participants(
         self, participants: list[GameParticipant], mode: WagerMode
@@ -191,10 +181,10 @@ class GamesCogs(commands.Cog):
 
     @staticmethod
     def _seated_elsewhere_embed() -> Embed:
-        """Builds the refusal for a player another started Blackjack round already seats."""
+        """Builds the refusal for a player another started round already seats."""
         return Embed(
             title="你正在另一桌",
-            description="一次只能坐一桌 21 點, 這局打完再來",
+            description="21 點和射龍門一次只能坐一桌, 這局打完再來",
             color=ERROR_COLOR,
         )
 
@@ -309,7 +299,12 @@ class GamesCogs(commands.Cog):
             owner=owner,
             requested_bet=table_bet,
             rng=self.rng,
-            prepare_participant=partial(self._prepare_blackjack_participant, wager=table_bet),
+            prepare_participant=partial(
+                self._prepare_participant,
+                wager=table_bet,
+                mode="clamp",
+                insufficient_embed_builder=self._insufficient_balance_embed,
+            ),
             refresh_participants=partial(self._refresh_participants, mode="clamp"),
             bot_user_id=bot_participant.user_id if bot_participant is not None else None,
             extra_initial_participants=extra_initial_participants,
@@ -329,9 +324,14 @@ class GamesCogs(commands.Cog):
     )
     async def dragon_gate(self, interaction: Interaction[commands.Bot]) -> None:
         """Opens a 射龍門 lobby. The owner starts the table from the lobby."""
-        await interaction.response.defer()
         if interaction.user is None:
             return
+        if seated_elsewhere(user_id=interaction.user.id):
+            await send_ephemeral_response(
+                interaction=interaction, embed=self._seated_elsewhere_embed()
+            )
+            return
+        await interaction.response.defer()
 
         participant_result = await self._participant_from_user(
             user=interaction.user, wager=ANTE, mode="exact", guild=interaction.guild

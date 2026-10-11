@@ -378,6 +378,15 @@ def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
     return len(hand.cards) == 2 and hand.actions_taken == 0
 
 
+def max_round_loss(bet: int, balance_at_start: int) -> int:
+    """The most one seat can lose in a round, which is what its table holds of the wallet.
+
+    A Double or a Split each doubles the stake and neither is open on a split hand, insurance adds
+    half the original bet, and all of it has to fit the balance the seat started with.
+    """
+    return min(balance_at_start, bet * 2 + bet // 2)
+
+
 def surrender_loss(bet: int) -> int:
     """Returns what a Late Surrender forfeits: half the bet, rounded up so a 1-point bet is not free."""
     return (bet + 1) // 2

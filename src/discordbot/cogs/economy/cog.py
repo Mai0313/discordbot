@@ -30,6 +30,7 @@ from discordbot.cogs.economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.cogs.economy.embeds import (
+    ON_TABLE_NOTE,
     EmbedParty,
     build_error_embed,
     build_pocat_embed,
@@ -57,6 +58,7 @@ from discordbot.cogs.economy.embeds import (
     build_empty_loss_leaderboard_embed,
 )
 from discordbot.utils.amount_parsing import parse_decimal_amount
+from discordbot.services.economy.holds import held_amount
 from discordbot.services.economy.database import (
     top_n,
     buy_vip,
@@ -65,7 +67,6 @@ from discordbot.services.economy.database import (
     get_admin,
     top_losers,
     get_account,
-    get_balance,
     get_portfolio,
     adjust_balance,
     get_casino_ledger,
@@ -73,6 +74,7 @@ from discordbot.services.economy.database import (
     call_personal_loans,
     list_loan_contracts,
     repay_personal_loans,
+    get_spendable_balance,
     call_central_bank_loans,
     get_central_bank_status,
     record_guild_participant,
@@ -116,6 +118,13 @@ class EconomyCogs(commands.Cog):
         """Initialises the cog with environment-backed economy settings."""
         self.bot = bot
         self.economy_config = EconomyConfig()
+
+    @staticmethod
+    async def _spending_held_by_table(user_id: int) -> bool:
+        """Whether a casino table holds all the money a refused repayment found missing."""
+        return (
+            held_amount(user_id=user_id) != 0 and await get_spendable_balance(user_id=user_id) == 0
+        )
 
     @nextcord.slash_command(
         name="admin",
@@ -443,7 +452,7 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
         )
         if transfer_result is None:
-            balance_now = await get_balance(user_id=sender.id)
+            balance_now = await get_spendable_balance(user_id=sender.id)
             await send_expiring_followup(
                 interaction=interaction,
                 embed=build_transfer_insufficient_embed(
@@ -451,6 +460,7 @@ class EconomyCogs(commands.Cog):
                     sender_avatar_url=sender_avatar_url,
                     balance_now=balance_now,
                     amount=parsed_amount,
+                    on_table=held_amount(user_id=sender.id) != 0,
                 ),
             )
             return
@@ -720,7 +730,11 @@ class EconomyCogs(commands.Cog):
                 interaction=interaction,
                 embed=build_error_embed(
                     title="還款失敗",
-                    description=f"### 沒有可還給 {member.display_name} 的有效個人借款",
+                    description=(
+                        f"### 沒有可還的餘額\n{ON_TABLE_NOTE}"
+                        if await self._spending_held_by_table(user_id=user.id)
+                        else f"### 沒有可還給 {member.display_name} 的有效個人借款"
+                    ),
                     author_name=user.display_name,
                     author_icon_url=user_avatar_url,
                     thumbnail_url=user_avatar_url,
@@ -991,7 +1005,12 @@ class EconomyCogs(commands.Cog):
             await send_private_followup(
                 interaction=interaction,
                 embed=build_error_embed(
-                    title="央行還款失敗", description="### 沒有有效央行借款，或目前無可扣餘額"
+                    title="央行還款失敗",
+                    description=(
+                        f"### 沒有可還的餘額\n{ON_TABLE_NOTE}"
+                        if await self._spending_held_by_table(user_id=user.id)
+                        else "### 沒有有效央行借款，或目前無可扣餘額"
+                    ),
                 ),
             )
             return
@@ -1146,12 +1165,13 @@ class EconomyCogs(commands.Cog):
                 actor_name=user.display_name, avatar_url=user_avatar_url
             )
         else:
-            balance_now = await get_balance(user_id=user.id)
+            balance_now = await get_spendable_balance(user_id=user.id)
             if balance_now < VIP_PURCHASE_COST:
                 embed = build_vip_insufficient_embed(
                     actor_name=user.display_name,
                     avatar_url=user_avatar_url,
                     balance_now=balance_now,
+                    on_table=held_amount(user_id=user.id) != 0,
                 )
             else:
                 embed = build_error_embed(
