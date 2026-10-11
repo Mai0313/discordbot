@@ -62,7 +62,11 @@ from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
 def build_runtime_instructions(system_prompt: str, message: Message, guild_id: int | None) -> str:
-    """Prepends per-request time and conversation-location context to the model instructions.
+    """Appends per-request conversation-location and time context to the model instructions.
+
+    Both go after the instructions, the time last, so every request opens on the same text and a
+    provider's prefix cache can reuse it: a per-second timestamp at the front changed the first
+    tokens of every request.
 
     The location line names the current guild (or DM) with developer authority so the
     model can reason about where it is speaking; the memory rules lean on it as the
@@ -87,7 +91,7 @@ def build_runtime_instructions(system_prompt: str, message: Message, guild_id: i
     request_location_context = REQUEST_LOCATION_CONTEXT_PROMPT.format(
         conversation_location=conversation_location
     ).strip()
-    return f"{request_time_context}\n\n{request_location_context}\n\n{system_prompt}"
+    return f"{system_prompt}\n\n{request_location_context}\n\n{request_time_context}"
 
 
 def count_media_parts(answer_input: ResponseInputParam) -> int:

@@ -1230,11 +1230,10 @@ def _assert_route_offered(cog: ReplyGeneratorCogs, candidates: set[int]) -> None
 
 
 def _assert_runtime_time_context(instructions: str, system_prompt: str) -> None:
-    """Verifies that per-request time context wraps the base instructions."""
-    assert instructions.startswith("Current request time:")
+    """Verifies that per-request time context follows the base instructions, last."""
+    assert instructions.startswith(system_prompt)
     assert "* Treat `message_created_at_asia_taipei` as now for this reply." in instructions
-    assert "* `message_created_at_asia_taipei`: 2026-06-10T11:04:05+08:00" in instructions
-    assert instructions.endswith(system_prompt)
+    assert instructions.endswith("* `message_created_at_asia_taipei`: 2026-06-10T11:04:05+08:00")
 
 
 def test_build_runtime_instructions_adds_request_time_context() -> None:
@@ -3040,7 +3039,7 @@ async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_
             VIDEO_INSTRUCTION,
             DEEP_RESEARCH_INSTRUCTION,
         )
-        assert instructions.endswith("\n".join((REPLY_PROMPT, *appended)))
+        assert instructions.startswith("\n".join((REPLY_PROMPT, *appended)))
         assert reference.endswith(CAPABILITIES_DOC)
     else:
         assert VOICE_OPEN not in instructions
