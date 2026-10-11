@@ -74,6 +74,9 @@ Everyday:
 - `/balance` — your cash, debts, net worth, and VIP status
 - `/vip` — buy VIP, which boosts Blackjack payouts; overlapping purchases charge once and report existing VIP status rather than insufficient funds
 
+There is no daily check-in any more. 虛擬歡樂豆 come from talking where I can read it, DMs
+included: each message you send earns 10, at most once every 60 seconds.
+
 Transfers and boards:
 
 - `/give` — send 虛擬歡樂豆 to someone; 5% is burned as transfer tax

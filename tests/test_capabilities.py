@@ -15,7 +15,11 @@ from discordbot.typings.llm import LLMConfig
 # sixth marker be noticed instead of quietly falling outside a fixed import list.
 from discordbot.cogs.gen_reply import markers
 from discordbot.utils.mentions import is_addressed_to_bot
-from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS
+from discordbot.typings.economy import (
+    BASE_MESSAGE_REWARD_AMOUNT,
+    LOAN_PROPOSAL_TIMEOUT_SECONDS,
+    MESSAGE_REWARD_COOLDOWN_SECONDS,
+)
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
@@ -705,6 +709,22 @@ def test_capabilities_doc_states_the_clamp_collect_tax_actually_applies() -> Non
     assert _COLLECT_TAX_CLAMP_WORDING in line.lower(), (
         f"/admin collect_tax is clamped and its line does not say so: {line}"
     )
+
+
+def test_capabilities_doc_states_the_message_reward_it_pays() -> None:
+    """The per-message reward is the only faucet, and this document is the answer model's only
+    account of it, so a member asking where the removed daily check-in went (#572) is quoted
+    whatever it says.
+
+    Both numbers are read off the constants and matched between digit boundaries, as the loan
+    guard above does, within the one paragraph that names the check-in: other lines carry their
+    own 10s and 60s.
+    """
+    paragraph = next(p for p in CAPABILITIES_DOC.split("\n\n") if "daily check-in" in p)
+    for number in (BASE_MESSAGE_REWARD_AMOUNT, int(MESSAGE_REWARD_COOLDOWN_SECONDS)):
+        assert re.search(pattern=rf"(?<!\d){number}(?!\d)", string=paragraph), (
+            f"the message reward changed: capabilities.md does not say {number}"
+        )
 
 
 def test_capabilities_doc_offers_no_plain_reply_as_a_way_to_reach_me() -> None:
