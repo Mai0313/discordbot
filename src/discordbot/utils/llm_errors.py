@@ -168,8 +168,8 @@ def is_retryable_llm_error(exc: BaseException) -> bool:
     `google-genai`'s, whose Interactions surface raises a hierarchy of its own. That gate is
     load-bearing rather than tidiness: `llm_status_code` reads a plain int `code`, and a
     `nextcord.HTTPException` carries one too -- the Discord JSON error code, where 50035
-    (Invalid Form Body, what an oversized final write raises) would read as a 5xx and re-run
-    the whole answer to fail the same way. A Discord write failing is not a reason to ask
+    (Invalid Form Body, what an oversized write raises) would read as a 5xx, so one reaching
+    the retry would re-run the whole answer to fail the same way. A Discord write failing is not a reason to ask
     the model again.
 
     Args:

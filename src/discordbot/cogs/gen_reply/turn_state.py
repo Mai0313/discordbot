@@ -23,7 +23,7 @@ dispatched_model: ContextVar[str | None] = ContextVar("gen_reply_dispatched_mode
 # The turn's UNFINISHED answer, so the pipeline's failure path can land its error on the reply
 # already on screen. It holds the streamer rather than the message because what the error path
 # needs is decided at failure time -- whether a reply exists at all (`withdraw_retry_notice` and a
-# mid-stream delete each drop it) and what it is showing. Published by `ResponseStreamer.stream`
+# mid-stream delete each drop it) and what it is showing. Published by `ResponseStreamer.consume`
 # for a `carries_turn_notices` streamer, and taken back the moment its answer is written in full.
 current_answer_streamer: "ContextVar[ResponseStreamer | None]" = ContextVar(
     "gen_reply_answer_streamer", default=None

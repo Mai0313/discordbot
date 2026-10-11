@@ -46,6 +46,16 @@ from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_con
 # is documented nowhere as bounded and is what the whole streaming preview rides on.
 INTERACTION_FOLLOWUP_LIMIT = 5
 
+# What a `/ask` turn says when it ran out of surface before it ran out of work. Spelled out rather
+# than left to asyncio's own `TimeoutError`, whose message is empty: `extract_friendly_error`
+# falls back to `str(exc)`, so a bare one reaches the user as an empty code block under "Something
+# went wrong" -- the same silence the bound exists to end, with a box drawn round it. It names no
+# duration because the one it would name is Discord's to change.
+WINDOW_EXPIRED_NOTICE = (
+    "This took longer than Discord keeps a slash command open, "
+    "so there was nowhere left to deliver it."
+)
+
 
 def _payload(
     content: str | None,

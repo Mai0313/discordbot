@@ -128,7 +128,7 @@ from discordbot.cogs.gen_reply.prompts import (
     route_prompt,
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
-from discordbot.cogs.gen_reply.surface import TurnSurface
+from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE, TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.services.memory.writer import RawMemoryDraft, render_turn_payload
 from discordbot.cogs.gen_reply.pipeline import UNROUTED_REPLY, ReplyPipeline
@@ -170,7 +170,7 @@ from discordbot.cogs.gen_reply.references import (
     authored_link_texts,
     link_url_for_source,
 )
-from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaReplyRoutes
+from discordbot.cogs.gen_reply.media_reply import MediaReplyRoutes
 from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
@@ -856,7 +856,7 @@ def _install_streamer(
 
     The double accepts whatever the answer path constructs it with, and the returned list gets
     those kwargs once per construction. It carries only what a turn with no research launch and
-    no retryable failure reads back (`carries_turn_notices` is the one a failing `stream` needs);
+    no retryable failure reads back (`carries_turn_notices` is the one a failing `consume` needs);
     a test driving research or a retry needs the attributes those paths read, since a missing one
     fails with an AttributeError the reply path's own handler would swallow.
     """
@@ -878,11 +878,14 @@ def _install_streamer(
                 server_memory_notes=list(server_memory_notes),
             )
 
-        async def stream(self, responses: object) -> str:
-            """Returns the canned reply, or raises it."""
+        async def consume(self, responses: object) -> None:
+            """Raises the canned failure, if that is what `reply` is."""
             del responses
             if isinstance(reply, Exception):
                 raise reply
+
+        async def finalize_reply(self) -> str | Exception:
+            """Returns the canned reply, which `consume` already raised if it was a failure."""
             return reply
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", StreamerDouble)
@@ -940,6 +943,14 @@ def _streamer(message: object, **fields: Any) -> ResponseStreamer:  # noqa: ANN4
         surface=TurnSurface.for_message(message=as_message(fake=message)),
         **fields,
     )
+
+
+async def _stream(
+    streamer: ResponseStreamer, responses: AsyncIterator[ResponseStreamEvent]
+) -> str:
+    """Streams `responses` onto `streamer` and finalizes it, as one attempt that succeeds does."""
+    await streamer.consume(responses=responses)
+    return await streamer.finalize_reply()
 
 
 async def _attachment_parts(builder: MessageInputBuilder, message: object) -> list[RenderedPart]:
@@ -1379,7 +1390,8 @@ async def test_streaming_counts_only_url_citation_annotations() -> None:
     """Grounding is counted off the completed output, past the reasoning and refusal shapes."""
     streamer = _streamer(message=FakeMessage())
 
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="grounded"),
@@ -1387,7 +1399,7 @@ async def test_streaming_counts_only_url_citation_annotations() -> None:
                     annotation_types=["url_citation", "file_citation", "url_citation"]
                 ),
             ]
-        )
+        ),
     )
 
     assert streamer._url_citations == 2
@@ -1400,7 +1412,8 @@ async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no
     """
     streamer = _streamer(message=FakeMessage(), backend="interactions")
 
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="watched"),
@@ -1413,7 +1426,7 @@ async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no
                     ),
                 ),
             ]
-        )
+        ),
     )
 
     assert streamer._url_citations is None
@@ -1439,7 +1452,7 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
     del price_table_unavailable
     message = FakeMessage()
 
-    result = await _streamer(message=message).stream(responses=_stream_events())
+    result = await _stream(streamer=_streamer(message=message), responses=_stream_events())
 
     assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34"
     assert message.replies[0].content == result
@@ -1450,7 +1463,8 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
 
-    result = await _streamer(message=message).stream(
+    result = await _stream(
+        streamer=_streamer(message=message),
         responses=_stream_events_from(
             events=[
                 SimpleNamespace(type="response.output_text.delta", delta=body),
@@ -1463,7 +1477,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
                     ),
                 ),
             ]
-        )
+        ),
     )
 
     usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2"
@@ -1491,7 +1505,7 @@ async def test_streaming_falls_back_to_channel_send_when_source_deleted(
     message = FakeMessage()
     message.reply_error = error
 
-    result = await _streamer(message=message).stream(responses=_stream_events())
+    result = await _stream(streamer=_streamer(message=message), responses=_stream_events())
 
     assert message.replies == []  # reply() raised, so nothing was recorded there
     assert message.channel.sent[0].content == result
@@ -1503,10 +1517,11 @@ async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> 
     message.reply_error = make_invalid_form_body()
     body = "x" * 4500
 
-    await _streamer(message=message).stream(
+    await _stream(
+        streamer=_streamer(message=message),
         responses=_stream_events_from(
             events=[_text_event(delta=body), _completed_event(input_tokens=1, output_tokens=2)]
-        )
+        ),
     )
 
     assert message.replies == []
@@ -1522,7 +1537,7 @@ async def test_streaming_reraises_non_deletion_http_errors() -> None:
     message.reply_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
-        await _streamer(message=message).stream(responses=_stream_events())
+        await _stream(streamer=_streamer(message=message), responses=_stream_events())
     assert message.channel.sent == []
 
 
@@ -1533,7 +1548,7 @@ async def test_streaming_tolerates_reply_deleted_before_final_edit() -> None:
     reply.edit_error = make_not_found()
     streamer = _streamer(message=message, reply=reply)
 
-    result = await streamer.stream(responses=_stream_events())
+    result = await _stream(streamer=streamer, responses=_stream_events())
 
     # The caller still gets the full text (memory / research follow-ups stay usable).
     assert result
@@ -1550,7 +1565,7 @@ async def test_streaming_reraises_non_deletion_edit_errors() -> None:
     reply.edit_error = make_forbidden()
 
     with pytest.raises(nextcord.HTTPException):
-        await _streamer(message=message, reply=reply).stream(responses=_stream_events())
+        await _stream(streamer=_streamer(message=message, reply=reply), responses=_stream_events())
 
 
 async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
@@ -1584,9 +1599,12 @@ async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     reply.edit_error = make_not_found()
     synthesizer = _FakeVoiceGenerator()
 
-    await _streamer(
-        message=message, reply=reply, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
+    await _stream(
+        streamer=_streamer(
+            message=message, reply=reply, voice_generator=cast("VoiceGenerator", synthesizer)
+        ),
+        responses=_stream_events_from(events=_voice_marker_events()),
+    )
 
     assert synthesizer.calls == []
     assert message.added_reactions == []
@@ -1656,10 +1674,11 @@ async def test_set_memory_note_splices_before_the_usage_footer() -> None:
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[_text_event(delta="好喔"), _completed_event(input_tokens=3, output_tokens=4)]
-        )
+        ),
     )
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
@@ -1678,13 +1697,14 @@ async def test_set_memory_note_declines_when_the_reply_is_already_full() -> None
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 5)),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
     before = message.replies[0].content
     await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
@@ -1700,13 +1720,14 @@ async def test_the_outcome_note_replaces_the_pending_one() -> None:
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
 
@@ -1725,13 +1746,14 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
     await streamer._finalize_media_edit(
         reply=as_message(fake=message.replies[0]),
@@ -1756,13 +1778,14 @@ async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    full_reply = await streamer.stream(
+    full_reply = await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
 
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
@@ -1790,10 +1813,11 @@ async def test_a_memory_note_never_reaches_a_later_turns_history(
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[_text_event(delta=delta), _completed_event(input_tokens=3, output_tokens=4)]
-        )
+        ),
     )
     await memory_report_for(streamer=streamer)(
         MemoryWriteSummary(remembered=("使用者偏好繁體中文",), forgotten=("我住在台中",))
@@ -1834,10 +1858,11 @@ async def test_the_pending_note_is_written_only_when_something_can_take_it_back(
     """
     message = FakeMessage()
     streamer = _streamer(message=message, carries_turn_notices=carries_turn_notices)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[_text_event(delta=delta), _completed_event(input_tokens=3, output_tokens=4)]
-        )
+        ),
     )
 
     assert (MEMORY_PENDING_NOTE in (message.replies[0].content or "")) is expected
@@ -1852,14 +1877,15 @@ async def test_an_outcome_too_long_to_splice_withdraws_the_pending_note() -> Non
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 90)),
                 _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
 
@@ -1879,14 +1905,15 @@ async def test_no_pending_note_on_a_reply_that_chunks() -> None:
     """
     message = FakeMessage()
     streamer = _streamer(message=message)
-    await streamer.stream(
+    await _stream(
+        streamer=streamer,
         responses=_stream_events_from(
             events=[
                 _text_event(delta="x" * DISCORD_MESSAGE_LIMIT),
                 _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
 
     # Each overflow chunk is a reply to the previous chunk, so the whole chain has to be walked:
@@ -1910,9 +1937,10 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
 
-    result = await _streamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events_from(events=_voice_marker_events()),
+    )
 
     _assert_no_voice_tags(result)
     # The wrapped content stays visible alongside the rest of the reply.
@@ -1931,8 +1959,9 @@ async def test_voice_marker_absent_no_synthesis() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
 
-    await _streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)).stream(
-        responses=_stream_events()
+    await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events(),
     )
 
     assert synthesizer.calls == []
@@ -1945,8 +1974,9 @@ async def test_voice_disabled_still_strips_marker() -> None:
     """With no synthesizer (voice off) the tags are still stripped and no file attaches."""
     message = FakeMessage()
 
-    result = await _streamer(message=message).stream(
-        responses=_stream_events_from(events=_voice_marker_events())
+    result = await _stream(
+        streamer=_streamer(message=message),
+        responses=_stream_events_from(events=_voice_marker_events()),
     )
 
     _assert_no_voice_tags(result)
@@ -1959,9 +1989,10 @@ async def test_voice_synthesis_failure_leaves_text_reply() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome="error")
 
-    result = await _streamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events_from(events=_voice_marker_events()),
+    )
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
@@ -1974,9 +2005,10 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome="timeout")
 
-    result = await _streamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events_from(events=_voice_marker_events()),
+    )
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
@@ -1988,8 +2020,9 @@ async def test_voice_with_nothing_to_say_leaves_no_hint() -> None:
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome="empty")
 
-    await _streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)).stream(
-        responses=_stream_events_from(events=_voice_marker_events())
+    await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events_from(events=_voice_marker_events()),
     )
 
     assert message.replies[0].file is None
@@ -2003,11 +2036,14 @@ async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     message.guild = FakeGuild(filesize_limit=4)
     synthesizer = _FakeVoiceGenerator()
 
-    result = await _streamer(
-        message=message,
-        voice_generator=cast("VoiceGenerator", synthesizer),
-        media_delivery=hosting_planner(serve_dir=tmp_path),
-    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
+    result = await _stream(
+        streamer=_streamer(
+            message=message,
+            voice_generator=cast("VoiceGenerator", synthesizer),
+            media_delivery=hosting_planner(serve_dir=tmp_path),
+        ),
+        responses=_stream_events_from(events=_voice_marker_events()),
+    )
 
     _assert_no_voice_tags(result)
     # The clip was hosted, not attached; its URL (a .wav) rides the reply content instead.
@@ -2091,6 +2127,11 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
 
 class _AskInteraction:
     """The `/ask` interaction as far as landing one media reply needs it."""
+
+    @property
+    def expires_at(self) -> datetime:
+        """A token with the whole window still ahead of it."""
+        return nextcord.utils.utcnow() + timedelta(minutes=15)
 
     async def edit_original_message(self, **kwargs: Any) -> FakeReply:  # noqa: ANN401 -- Discord kwargs
         """Lands the media as the original response."""
@@ -2176,6 +2217,73 @@ async def test_media_past_the_attachment_cap_earns_the_dropped_hint(
     assert reply.files is not None
     assert len(reply.files) == 10
     assert "⚠️" in message.added_reactions
+
+
+async def test_ask_media_still_rendering_when_the_window_ends_is_dropped_with_a_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clip still rendering when `/ask` runs out is given up while the ⏱️ can still be written.
+
+    Past the token both the attach edit and the hint line 404, so a render left running loses the
+    clip with nothing to say it was ever coming (#628). What finished in time still goes out.
+    """
+    message = FakeMessage()
+    reply = FakeReply()
+    surface = _expiring_surface(message=as_message(fake=message), seconds_left=0.05)
+    streamer = ResponseStreamer(
+        message=message,
+        surface=surface,
+        media_delivery=hosting_off_planner(),
+        reply=as_message(fake=reply),
+    )
+
+    async def voice_clip() -> MediaItem:
+        """Stands in for a synthesized clip ready to attach."""
+        return MediaItem(source=b"RIFF", filename="reply.wav")
+
+    async def never_finishes(source_images_task: object) -> MediaItem:
+        """Stands in for a video render that outlasts the window."""
+        del source_images_task
+        await asyncio.sleep(60)
+        return MediaItem(source=b"mp4", filename="video.mp4")
+
+    monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
+    monkeypatch.setattr(streamer, "_build_video_candidate", never_finishes)
+
+    await asyncio.wait_for(streamer._attach_generated_media(), timeout=5)
+
+    assert reply.files is not None
+    assert [file.filename for file in reply.files] == ["reply.wav"]
+    assert surface.take_hints() == ["⏱️"]
+
+
+async def test_a_cancelled_turn_takes_its_inline_media_renders_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A render must not outlive the turn that wanted it, as it could not under `gather`."""
+    message = FakeMessage()
+    streamer = _streamer(message=message, reply=as_message(fake=FakeReply()))
+    rendering = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def never_finishes(source_images_task: object) -> MediaItem:
+        """Stands in for a video render, noting when it is stopped."""
+        del source_images_task
+        rendering.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            stopped.set()
+        return MediaItem(source=b"mp4", filename="video.mp4")
+
+    monkeypatch.setattr(streamer, "_build_video_candidate", never_finishes)
+    turn = asyncio.ensure_future(streamer._attach_generated_media())
+    await rendering.wait()
+    turn.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    await asyncio.wait_for(stopped.wait(), timeout=5)
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -2403,9 +2511,10 @@ async def test_voice_text_strips_discord_markup() -> None:
     message.guild = FakeGuild(members={239270225441193986: SimpleNamespace(display_name="小明")})
     synthesizer = _FakeVoiceGenerator()
 
-    result = await _streamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(events=_voice_marker_mention_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events_from(events=_voice_marker_mention_events()),
+    )
 
     # The visible reply keeps the clickable mention; only the spoken text is normalised.
     assert "<@239270225441193986>" in result
@@ -2471,9 +2580,10 @@ async def test_image_marker_generates_and_attaches() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    result = await _streamer(
-        message=message, image_generator=cast("ImageGenerator", generator)
-    ).stream(responses=_stream_events_from(events=_image_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, image_generator=cast("ImageGenerator", generator)),
+        responses=_stream_events_from(events=_image_marker_events()),
+    )
 
     # The block (tags AND description) never shows in chat.
     assert "<generate-image>" not in result
@@ -2503,11 +2613,14 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
 
     builder = SimpleNamespace(get_turn_image_sources=_load)
 
-    await _streamer(
-        message=message,
-        image_generator=cast("ImageGenerator", generator),
-        input_builder=cast("MessageInputBuilder", builder),
-    ).stream(responses=_stream_events_from(events=_image_marker_events()))
+    await _stream(
+        streamer=_streamer(
+            message=message,
+            image_generator=cast("ImageGenerator", generator),
+            input_builder=cast("MessageInputBuilder", builder),
+        ),
+        responses=_stream_events_from(events=_image_marker_events()),
+    )
 
     # The uploaded bytes (mime stripped for the edit path) ride through to generate, so the inline
     # <generate-image> edits them.
@@ -2522,8 +2635,9 @@ async def test_image_disabled_still_strips_marker() -> None:
     """With no generator (inline image off) the block is still pulled and no file attaches."""
     message = FakeMessage()
 
-    result = await _streamer(message=message).stream(
-        responses=_stream_events_from(events=_image_marker_events())
+    result = await _stream(
+        streamer=_streamer(message=message),
+        responses=_stream_events_from(events=_image_marker_events()),
     )
 
     assert "<generate-image>" not in result
@@ -2536,9 +2650,10 @@ async def test_image_generation_failure_hints() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator(image=None)
 
-    result = await _streamer(
-        message=message, image_generator=cast("ImageGenerator", generator)
-    ).stream(responses=_stream_events_from(events=_image_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, image_generator=cast("ImageGenerator", generator)),
+        responses=_stream_events_from(events=_image_marker_events()),
+    )
 
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
@@ -2550,9 +2665,8 @@ async def test_multiple_image_markers_attach_distinct_files() -> None:
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    result = await _streamer(
-        message=message, image_generator=cast("ImageGenerator", generator)
-    ).stream(
+    result = await _stream(
+        streamer=_streamer(message=message, image_generator=cast("ImageGenerator", generator)),
         responses=_stream_events_from(
             events=[
                 _text_event(delta="兩張圖 "),
@@ -2561,7 +2675,7 @@ async def test_multiple_image_markers_attach_distinct_files() -> None:
                 ),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
 
     assert "<generate-image>" not in result
@@ -2580,13 +2694,14 @@ async def test_image_markers_capped_at_limit() -> None:
         f"<generate-image>image {index}</generate-image>" for index in range(MAX_INLINE_IMAGES + 3)
     )
 
-    await _streamer(message=message, image_generator=cast("ImageGenerator", generator)).stream(
+    await _stream(
+        streamer=_streamer(message=message, image_generator=cast("ImageGenerator", generator)),
         responses=_stream_events_from(
             events=[
                 _text_event(delta=f"好多圖 {blocks}"),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
 
     # Only the first MAX_INLINE_IMAGES render and attach; the extra blocks are dropped.
@@ -2629,9 +2744,10 @@ async def test_music_marker_generates_and_attaches() -> None:
     message = FakeMessage()
     generator = _FakeMusicGenerator()
 
-    result = await _streamer(
-        message=message, music_generator=cast("MusicGenerator", generator)
-    ).stream(responses=_stream_events_from(events=_music_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, music_generator=cast("MusicGenerator", generator)),
+        responses=_stream_events_from(events=_music_marker_events()),
+    )
 
     # The block (tags AND description) never shows in chat.
     assert "<generate-music>" not in result
@@ -2649,8 +2765,9 @@ async def test_music_disabled_still_strips_marker() -> None:
     """With no generator (music off) the block is still pulled and no file attaches."""
     message = FakeMessage()
 
-    result = await _streamer(message=message).stream(
-        responses=_stream_events_from(events=_music_marker_events())
+    result = await _stream(
+        streamer=_streamer(message=message),
+        responses=_stream_events_from(events=_music_marker_events()),
     )
 
     assert "<generate-music>" not in result
@@ -2663,9 +2780,10 @@ async def test_music_generation_failure_hints() -> None:
     message = FakeMessage()
     generator = _FakeMusicGenerator(audio=None)
 
-    result = await _streamer(
-        message=message, music_generator=cast("MusicGenerator", generator)
-    ).stream(responses=_stream_events_from(events=_music_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, music_generator=cast("MusicGenerator", generator)),
+        responses=_stream_events_from(events=_music_marker_events()),
+    )
 
     assert "anime" not in result
     assert message.replies[0].file is None
@@ -2735,9 +2853,10 @@ async def test_video_marker_generates_and_attaches() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    result = await _streamer(
-        message=message, video_generator=cast("VideoGenerator", generator)
-    ).stream(responses=_stream_events_from(events=_video_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, video_generator=cast("VideoGenerator", generator)),
+        responses=_stream_events_from(events=_video_marker_events()),
+    )
 
     # The block (tags AND description) never shows in chat.
     assert "<generate-video>" not in result
@@ -2765,11 +2884,14 @@ async def test_video_marker_uses_uploaded_image_as_reference() -> None:
 
     builder = SimpleNamespace(get_turn_image_sources=_load)
 
-    await _streamer(
-        message=message,
-        video_generator=cast("VideoGenerator", generator),
-        input_builder=cast("MessageInputBuilder", builder),
-    ).stream(responses=_stream_events_from(events=_video_marker_events()))
+    await _stream(
+        streamer=_streamer(
+            message=message,
+            video_generator=cast("VideoGenerator", generator),
+            input_builder=cast("MessageInputBuilder", builder),
+        ),
+        responses=_stream_events_from(events=_video_marker_events()),
+    )
 
     # The uploaded (bytes, mime) pair rides through to generate, so the inline <generate-video>
     # animates it and omni infers the task.
@@ -2783,8 +2905,9 @@ async def test_video_disabled_still_strips_marker() -> None:
     """With no generator (video off) the block is still pulled and no file attaches."""
     message = FakeMessage()
 
-    result = await _streamer(message=message).stream(
-        responses=_stream_events_from(events=_video_marker_events())
+    result = await _stream(
+        streamer=_streamer(message=message),
+        responses=_stream_events_from(events=_video_marker_events()),
     )
 
     assert "<generate-video>" not in result
@@ -2799,9 +2922,10 @@ async def test_video_generation_failure_hints() -> None:
     message = FakeMessage()
     generator = _FakeVideoGenerator(video=None)
 
-    result = await _streamer(
-        message=message, video_generator=cast("VideoGenerator", generator)
-    ).stream(responses=_stream_events_from(events=_video_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, video_generator=cast("VideoGenerator", generator)),
+        responses=_stream_events_from(events=_video_marker_events()),
+    )
 
     assert "wave" not in result
     assert message.replies[0].file is None
@@ -2816,13 +2940,14 @@ async def test_voice_music_video_image_attach_in_one_edit() -> None:
     video_generator = _FakeVideoGenerator()
     image_generator = _FakeImageGenerator()
 
-    result = await _streamer(
-        message=message,
-        voice_generator=cast("VoiceGenerator", voice_generator),
-        music_generator=cast("MusicGenerator", music_generator),
-        video_generator=cast("VideoGenerator", video_generator),
-        image_generator=cast("ImageGenerator", image_generator),
-    ).stream(
+    result = await _stream(
+        streamer=_streamer(
+            message=message,
+            voice_generator=cast("VoiceGenerator", voice_generator),
+            music_generator=cast("MusicGenerator", music_generator),
+            video_generator=cast("VideoGenerator", video_generator),
+            image_generator=cast("ImageGenerator", image_generator),
+        ),
         responses=_stream_events_from(
             events=[
                 _text_event(delta="來囉 <generate-voice>聽好</generate-voice> "),
@@ -2831,7 +2956,7 @@ async def test_voice_music_video_image_attach_in_one_edit() -> None:
                 ),
                 _completed_event(input_tokens=3, output_tokens=4),
             ]
-        )
+        ),
     )
 
     assert "聽好" in result
@@ -2971,9 +3096,10 @@ async def test_voice_oversized_clip_not_attached() -> None:
     message.guild = FakeGuild(filesize_limit=8)
     synthesizer = _FakeVoiceGenerator(audio=b"x" * 16)
 
-    result = await _streamer(
-        message=message, voice_generator=cast("VoiceGenerator", synthesizer)
-    ).stream(responses=_stream_events_from(events=_voice_marker_events()))
+    result = await _stream(
+        streamer=_streamer(message=message, voice_generator=cast("VoiceGenerator", synthesizer)),
+        responses=_stream_events_from(events=_voice_marker_events()),
+    )
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
@@ -3769,13 +3895,126 @@ def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(streaming_module, "ANSWER_RETRY_JITTER_SECONDS", 0.0)
 
 
+async def test_an_answer_stream_outliving_the_ask_window_says_so_while_it_can() -> None:
+    """A stalled `/ask` answer gives up inside the margin, so the error embed still lands (#628).
+
+    Past the token the answer and the notice both 404, so retrying on would only trade the
+    reported failure for a thinking state that never resolves.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(
+        message=message,
+        surface=_expiring_surface(message=as_message(fake=message), seconds_left=0.05),
+        media_delivery=hosting_off_planner(),
+    )
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        """Never answers, as a request stalled before its first delta does."""
+        await asyncio.sleep(60)
+        return _stream_events()
+
+    with pytest.raises(TimeoutError) as raised:
+        await asyncio.wait_for(
+            stream_answer_with_retry(
+                streamer=streamer, open_stream=open_stream, message_id=message.id
+            ),
+            timeout=5,
+        )
+
+    assert str(raised.value) == WINDOW_EXPIRED_NOTICE
+
+
+async def test_an_answer_streams_own_timeout_is_not_blamed_on_the_ask_window() -> None:
+    """A transport timeout inside a healthy window keeps its own failure."""
+    message = FakeMessage()
+    streamer = ResponseStreamer(
+        message=message,
+        surface=_expiring_surface(message=as_message(fake=message), seconds_left=300),
+        media_delivery=hosting_off_planner(),
+    )
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        """Fails the way a bound of the request's own does."""
+        raise TimeoutError
+
+    with pytest.raises(TimeoutError) as raised:
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert str(raised.value) != WINDOW_EXPIRED_NOTICE
+
+
+async def test_a_media_persona_reply_may_write_into_the_ask_margin() -> None:
+    """The persona reply has no notice to save the margin for, so the window does not cut it."""
+    message = FakeMessage()
+    streamer = ResponseStreamer(
+        message=message,
+        surface=_expiring_surface(message=as_message(fake=message), seconds_left=0.0),
+        media_delivery=hosting_off_planner(),
+        reply=as_message(fake=FakeReply()),
+        carries_turn_notices=False,
+    )
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        """Answers after a pause the window would not have allowed."""
+        await asyncio.sleep(0.05)
+        return _stream_events()
+
+    reply = await stream_answer_with_retry(
+        streamer=streamer, open_stream=open_stream, message_id=message.id
+    )
+
+    assert reply
+
+
+async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finalizing runs outside the answer's window, so its media's own bound gets to answer.
+
+    Inside it, the window would cancel the clip and the ⏱️ edit with it and report the whole
+    finished answer as a command that ran out of time.
+    """
+    message = FakeMessage()
+    reply = FakeReply()
+    streamer = ResponseStreamer(
+        message=message,
+        surface=_expiring_surface(message=as_message(fake=message), seconds_left=0.2),
+        media_delivery=hosting_off_planner(),
+        reply=as_message(fake=reply),
+    )
+
+    async def never_finishes() -> MediaItem:
+        """Stands in for a voice clip that outlasts the window."""
+        await asyncio.sleep(60)
+        return MediaItem(source=b"RIFF", filename="reply.wav")
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        """Answers at once."""
+        return _stream_events()
+
+    monkeypatch.setattr(streamer, "_build_voice_candidate", never_finishes)
+
+    answer = await asyncio.wait_for(
+        stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        ),
+        timeout=5,
+    )
+
+    assert answer.startswith("hello from stream")
+    assert reply.content is not None
+    assert "⏱️" in reply.content
+
+
 async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previewing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A 503 mid-answer re-opens the stream onto the same message without doubling the text.
 
     Both halves matter. The dead attempt's partial text must not survive into the finished
-    reply, and the preview editor must live through the reset -- `stream`'s finally stops it by
+    reply, and the preview editor must live through the reset -- `consume`'s finally stops it by
     SETTING an event that `_preview_editor` reads before its first tick, so without clearing it
     the retry streams blind and the stale preview sits frozen until the final write.
     """
@@ -3976,7 +4215,7 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
     """Pins the wiring, not the helper: the QA answer path must go through the retry.
 
     Both the helper's own tests and this one would stay green if `AnswerTurn.stream_answer` were
-    quietly put back on a bare `streamer.stream(...)`, except for the second `create` this
+    quietly put back on a bare `streamer.consume(...)`, except for the second `create` this
     asserts on.
     """
     _no_retry_backoff(monkeypatch=monkeypatch)
@@ -8965,7 +9204,7 @@ async def test_streamer_strips_leading_newlines_from_first_reasoning_delta() -> 
     ]
     streamer = _streamer(message=FakeMessage())
 
-    await streamer.stream(responses=_stream_events_from(events=events))
+    await _stream(streamer=streamer, responses=_stream_events_from(events=events))
 
     assert streamer.reasoning_content == "thought"
 
@@ -8983,7 +9222,9 @@ async def test_streamer_edits_are_time_throttled() -> None:
         yield _completed_event(input_tokens=1, output_tokens=1)
 
     streamer = _streamer(message=message, preview_interval_seconds=0.02)
-    result = await streamer.stream(responses=cast("AsyncIterator[ResponseStreamEvent]", _events()))
+    result = await _stream(
+        streamer=streamer, responses=cast("AsyncIterator[ResponseStreamEvent]", _events())
+    )
 
     assert len(message.replies) == 1
     reply = message.replies[0]
@@ -8997,8 +9238,8 @@ async def test_streamer_footer_shows_route_effort() -> None:
     """The usage footer labels the model with the route-decided effort."""
     message = FakeMessage()
 
-    result = await _streamer(message=message, model_effort="low").stream(
-        responses=_stream_events()
+    result = await _stream(
+        streamer=_streamer(message=message, model_effort="low"), responses=_stream_events()
     )
 
     assert f"\n\n-# {TEST_LLM_MODEL} (low) · ⬆ 12 ⬇ 34" in result
@@ -9018,17 +9259,18 @@ async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
     monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
     message = FakeMessage()
 
-    result = await _streamer(
-        message=message,
-        model_effort="high",
-        memory_lookups=MemoryCredits(named=("Tester (tester)",)),
-    ).stream(
+    result = await _stream(
+        streamer=_streamer(
+            message=message,
+            model_effort="high",
+            memory_lookups=MemoryCredits(named=("Tester (tester)",)),
+        ),
         responses=_stream_events_from(
             events=[
                 _text_event(delta="hello"),
                 _completed_event(input_tokens=1234, output_tokens=567),
             ]
-        )
+        ),
     )
 
     # 1,234 in at $1e-6 plus 567 out at $2e-6.
@@ -9052,7 +9294,7 @@ async def test_streamer_footer_shows_a_cost_only_for_a_model_the_table_lists(
     monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
     recorded = capture_logs(monkeypatch=monkeypatch, level="info")
 
-    result = await _streamer(message=FakeMessage()).stream(responses=_stream_events())
+    result = await _stream(streamer=_streamer(message=FakeMessage()), responses=_stream_events())
 
     assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34{footer_cost}"
     finalized = [fields for message, fields in recorded if message == "gen_reply reply finalized"]

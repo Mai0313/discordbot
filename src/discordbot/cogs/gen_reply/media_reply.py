@@ -34,6 +34,7 @@ from discordbot.cogs.gen_reply.prompts import (
     IMAGE_REPLY_PROMPT,
     VIDEO_REPLY_PROMPT,
 )
+from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.generation import INLINE_IMAGE_FILENAME, INLINE_VIDEO_FILENAME
@@ -43,16 +44,6 @@ from discordbot.cogs.gen_reply.speculation import discard_task
 
 if TYPE_CHECKING:
     from discordbot.typings.media import LoadedMedia
-
-# What the route says when it ran out of surface before it ran out of work. Spelled out rather
-# than left to asyncio's own `TimeoutError`, whose message is empty: `extract_friendly_error`
-# falls back to `str(exc)`, so a bare one reaches the user as an empty code block under "Something
-# went wrong" -- the same silence this bound exists to end, with a box drawn round it. It names no
-# duration because the one it would name is Discord's to change.
-WINDOW_EXPIRED_NOTICE = (
-    "This took longer than Discord keeps a slash command open, "
-    "so there was nowhere left to deliver it."
-)
 
 
 class MediaReplyRoutes(BaseModel):

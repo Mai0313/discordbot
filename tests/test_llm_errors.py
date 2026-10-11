@@ -133,7 +133,7 @@ def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() ->
     assert is_retryable_llm_error(exc=RuntimeError("boom")) is False
 
     # A Discord write failure escaping the streamer must never re-run the answer. It carries a
-    # plain int `code` of its own -- 50035 is what an oversized final write raises -- which the
+    # plain int `code` of its own -- 50035 is what an oversized write raises -- which the
     # status read would otherwise take for a 5xx.
     assert llm_status_code(exc=make_invalid_form_body()) == 50035
     assert is_retryable_llm_error(exc=make_invalid_form_body()) is False

@@ -749,14 +749,15 @@ def test_capabilities_doc_offers_no_plain_reply_as_a_way_to_reach_me() -> None:
 
 
 def test_capabilities_doc_promises_the_ask_clock_only_where_it_is_kept() -> None:
-    """Only an image or a video asked for on its own is kept inside `/ask`'s window.
+    """Not everything a `/ask` turn does is kept inside its window.
 
-    A clip added to an answer and an answer stream that hangs can still outlive the token
-    (#628). This document is the answer model's only account of `/ask`, so a line saying
-    everything else finishes inside the window is the bot promising a bound it does not keep.
+    The media routes, the answer stream and an answer's inline media are (#628), but the reply
+    about a delivered image or video and the memory note's late edit are not. This document is
+    the answer model's only account of `/ask`, so a line saying everything finishes inside the
+    window is the bot promising a bound it does not keep.
     """
     assert "everything else i do finishes" not in CAPABILITIES_DOC.lower(), (
-        "capabilities.md promises an /ask bound that only the IMAGE and VIDEO routes keep"
+        "capabilities.md promises an /ask bound that not every path keeps"
     )
 
 
