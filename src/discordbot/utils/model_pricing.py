@@ -2,8 +2,8 @@
 
 Fetches the LiteLLM upstream price table
 (https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
-on first use, mirrors what it parsed to `MODEL_INFO_CACHE_PATH`, and holds it for the
-rest of the process. Fetching live is the point: the rates track a maintained upstream
+on first use, mirrors what it parsed to `MODEL_INFO_CACHE_PATH`, and holds it for a day
+before fetching it again. Fetching live is the point: the rates track a maintained upstream
 instead of a hardcoded table that rots.
 
 A lookup never raises. The table only feeds a cosmetic cost estimate and the attachment
@@ -12,13 +12,14 @@ table, where every model is unknown: no rates, so a usage footer with no cost, a
 modality defaults in `get_supported_modalities`, which keep a Gemini model's audio and
 video and drop only those on any other model instead of the whole message's attachments.
 
-A degrade is not permanent either: the process remembers whether upstream is what served
-the table it holds, and `refresh_model_info` re-checks upstream while the answer is no.
-It is driven off the event loop every `MODEL_INFO_REFRESH_MINUTES`, so recovery costs a
-lookup nothing and needs no restart.
+A degrade is not permanent either: the process remembers when upstream served the table
+it holds, and `refresh_model_info` re-checks upstream while it never has, and again once
+that table is a day old. It is driven off the event loop every `MODEL_INFO_REFRESH_MINUTES`,
+so neither recovery nor the daily refetch costs a lookup anything or needs a restart.
 """
 
 import json
+from time import monotonic
 from typing import Any
 from pathlib import Path
 import secrets
@@ -37,6 +38,8 @@ MODEL_INFO_CACHE_PATH = Path("./data/model_prices_and_context_window.json")
 # Half an hour is far inside the weeks a process can outlive an outage by, and it keeps the
 # fetch warning a total outage emits per attempt readable.
 MODEL_INFO_REFRESH_MINUTES = 30.0
+# A day is how long a model upstream has just listed goes without its rates and modalities.
+MODEL_INFO_MAX_AGE_HOURS = 24.0
 
 
 class ModelPriceEntry(BaseModel):
@@ -57,13 +60,17 @@ class ModelPriceEntry(BaseModel):
 
 
 class _LoadedTable(BaseModel):
-    """The price table this process holds, and whether upstream is what served it."""
+    """The price table this process holds, and when upstream served it."""
 
     prices: dict[str, ModelPriceEntry] = Field(
         ..., description="Model name to price entry; empty when no table could be loaded."
     )
-    from_upstream: bool = Field(
-        ..., description="True once upstream served this table, which is when recovery is done."
+    served_at: float | None = Field(
+        ...,
+        description=(
+            "`monotonic()` reading when upstream served this table; None when it did not, "
+            "which is when recovery is still owed."
+        ),
     )
 
 
@@ -184,7 +191,7 @@ def _load_table() -> _LoadedTable:
     """Returns the best table there is: upstream, else the mirror, else an empty one."""
     prices, upstream = _load_upstream()
     if prices:
-        return _LoadedTable(prices=prices, from_upstream=True)
+        return _LoadedTable(prices=prices, served_at=monotonic())
 
     mirrored = _read_mirror()
     mirror = "absent"
@@ -197,7 +204,7 @@ def _load_table() -> _LoadedTable:
                 path=str(MODEL_INFO_CACHE_PATH),
                 entries=len(prices),
             )
-            return _LoadedTable(prices=prices, from_upstream=False)
+            return _LoadedTable(prices=prices, served_at=None)
 
     # The one line saying this happened, and the only one an operator can act on: a reply
     # still goes out, so nothing else about the process looks wrong from the outside.
@@ -208,16 +215,17 @@ def _load_table() -> _LoadedTable:
         url=MODEL_INFO_URL,
         path=str(MODEL_INFO_CACHE_PATH),
     )
-    return _LoadedTable(prices={}, from_upstream=False)
+    return _LoadedTable(prices={}, served_at=None)
 
 
 def load_model_info() -> dict[str, ModelPriceEntry]:
-    """Returns the validated LiteLLM model info table, loaded once per process.
+    """Returns the validated LiteLLM model info table, held between refreshes.
 
     The first call takes the whole chain and holds whatever it got; every later one reads
     that back, so an outage costs one timeout for the life of the process rather than one
-    per call. A held table upstream did not serve is replaced by `refresh_model_info` once
-    upstream is reachable again, which is why a degrade no longer waits for a restart.
+    per call. `refresh_model_info` replaces a held table upstream did not serve once
+    upstream is reachable again, and one it did serve once a day, so neither a degrade nor
+    a newly listed model waits for a restart.
 
     Returns:
         Model name to price entry, empty when no table could be loaded at all.
@@ -239,16 +247,18 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
 
 
 def refresh_model_info() -> None:
-    """Loads the price table, or re-checks upstream while what is held did not come from it.
+    """Loads the price table, or re-checks upstream while what is held is missing or stale.
 
     A caller outside this module runs this off the event loop, so no RETRY is ever paid on
     a lookup's path. The first load still falls to whichever caller reaches it first, which
-    is why `_write_mirror` needs a unique temp name. Once upstream has served this process
-    there is nothing left to recover and every later call returns on the second branch.
+    is why `_write_mirror` needs a unique temp name. A table upstream did not serve is
+    re-checked on every call, and one it did serve once it is `MODEL_INFO_MAX_AGE_HOURS`
+    old, so a model upstream lists after this process started gains its rates and
+    modalities without a restart.
 
-    A retry that fails keeps what is held: the mirrored table a degraded process is
-    serving is worth more than the empty one re-running the whole chain would install
-    over it once the mirror file goes away.
+    A retry that fails keeps what is held: the table a process is serving is worth more
+    than the empty one re-running the whole chain would install over it once the mirror
+    file goes away.
     """
     global _LOADED_TABLE  # noqa: PLW0603 -- the process-wide price table
 
@@ -257,15 +267,21 @@ def refresh_model_info() -> None:
     if held is None:
         load_model_info()
         return
-    if held.from_upstream:
+    if (
+        held.served_at is not None
+        and monotonic() - held.served_at < MODEL_INFO_MAX_AGE_HOURS * 3600
+    ):
         return
 
     prices, _ = _load_upstream()
     if not prices:
         return
     with _LOADED_TABLE_LOCK:
-        _LOADED_TABLE = _LoadedTable(prices=prices, from_upstream=True)
-    logfire.info("recovered the upstream model price table", entries=len(prices))
+        _LOADED_TABLE = _LoadedTable(prices=prices, served_at=monotonic())
+    if held.served_at is None:
+        logfire.info("recovered the upstream model price table", entries=len(prices))
+    else:
+        logfire.info("refreshed the upstream model price table", entries=len(prices))
 
 
 def get_token_rates(model_name: str) -> tuple[float, float] | None:

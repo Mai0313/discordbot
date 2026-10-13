@@ -12,6 +12,7 @@ import requests
 
 from discordbot.utils.model_pricing import (
     MODEL_INFO_URL,
+    MODEL_INFO_MAX_AGE_HOURS,
     _write_mirror,
     get_token_rates,
     load_model_info,
@@ -302,15 +303,48 @@ def test_a_failed_retry_keeps_the_table_already_being_served(
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
 
 
-def test_upstream_is_never_refetched_once_it_has_served(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recovery is what the loop is for, so a healthy process pays it nothing per pass."""
+def _clock(monkeypatch: pytest.MonkeyPatch, now: float) -> None:
+    """Pins the `monotonic()` reading the price table is aged by."""
+    monkeypatch.setattr("discordbot.utils.model_pricing.monotonic", lambda: now)
+
+
+def test_a_served_table_is_refetched_only_once_it_is_a_day_old(
+    monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
+) -> None:
+    """A healthy process pays nothing per pass, and a model listed later still arrives."""
+    _clock(monkeypatch=monkeypatch, now=1000.0)
     calls = _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
 
+    _clock(monkeypatch=monkeypatch, now=1000.0 + MODEL_INFO_MAX_AGE_HOURS * 3600 - 1)
     for _ in range(3):
         refresh_model_info()
+    assert calls == [MODEL_INFO_URL]
+
+    calls = _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_FRESH_TABLE))
+    _clock(monkeypatch=monkeypatch, now=1000.0 + MODEL_INFO_MAX_AGE_HOURS * 3600)
+    refresh_model_info()
+    refresh_model_info()
 
     assert calls == [MODEL_INFO_URL]
+    assert get_token_rates(model_name=_MODEL) == (3.0, 4.0)
+    assert json.loads(s=model_price_mirror_isolated.read_text(encoding="utf-8")) == _FRESH_TABLE
+
+
+def test_a_failed_daily_refetch_keeps_the_served_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upstream being down the day a refetch is due costs the process nothing it had."""
+    _clock(monkeypatch=monkeypatch, now=1000.0)
+    _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+
+    calls = _refuse(monkeypatch=monkeypatch)
+    _clock(monkeypatch=monkeypatch, now=1000.0 + MODEL_INFO_MAX_AGE_HOURS * 3600)
+    refresh_model_info()
+    refresh_model_info()
+
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+    # Still due, so every pass retries until upstream answers again.
+    assert calls == [MODEL_INFO_URL, MODEL_INFO_URL]
 
 
 def test_a_refresh_before_any_load_is_the_warm_up(monkeypatch: pytest.MonkeyPatch) -> None:
