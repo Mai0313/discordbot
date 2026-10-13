@@ -179,7 +179,8 @@ def test_model_settings_and_catalog_helpers() -> None:
     """Verifies model properties and provider-specific tool dispatch."""
     catalog = RuntimeModelCatalog()
     assert isinstance(catalog.fast_model, ModelSettings)
-    assert "image" in catalog.image_model.name
+    # LiteLLM sends an image model whose name lacks `gemini` to Imagen's `:predict` endpoint.
+    assert catalog.image_model.is_gemini
     assert "omni" in catalog.video_model.name
     # Code execution is omitted on purpose: it 400s the request on file attachments.
     assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]

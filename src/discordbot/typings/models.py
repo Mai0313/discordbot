@@ -115,7 +115,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
-        return ModelSettings(name="gemini-3.1-flash-image")
+        return ModelSettings(name="gemini-nano-banana-2.1")
 
     @property
     def video_model(self) -> ModelSettings:
