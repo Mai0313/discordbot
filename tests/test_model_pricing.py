@@ -168,13 +168,36 @@ def test_a_model_listed_at_zero_is_free_and_an_unlisted_one_is_unpriced(
 def test_no_table_anywhere_degrades_to_the_documented_defaults(
     monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
 ) -> None:
-    """The empty table keeps text and images flowing and only costs the estimate."""
+    """The empty table keeps every modality the model family accepts and only costs the estimate."""
     _refuse(monkeypatch=monkeypatch)
 
     assert load_model_info() == {}
     assert get_token_rates(model_name=_MODEL) is None
-    assert get_supported_modalities(model_name=_MODEL) == {"text", "image"}
+    assert get_supported_modalities(model_name=_MODEL) == {"text", "image", "audio", "video"}
+    assert get_supported_modalities(model_name="gpt-test") == {"text", "image"}
     assert not model_price_mirror_isolated.exists()
+
+
+def test_a_gemini_model_the_table_does_not_describe_keeps_audio_and_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Gemini answer model new enough to be missing upstream still gets its clips.
+
+    Whether the entry is absent or only its modality field is, the table says nothing about
+    the model, and the text-and-image baseline would drop every audio and video attachment
+    before the route or the answer model saw it. A listed set still wins.
+    """
+    unlisted_field = {"input_cost_per_token": 1.0, "output_cost_per_token": 2.0}
+    _serve(
+        monkeypatch=monkeypatch,
+        payload=json.dumps(obj={**_TABLE, "gemini-no-field": unlisted_field}),
+    )
+
+    full = {"text", "image", "audio", "video"}
+    assert get_supported_modalities(model_name="gemini-unlisted") == full
+    assert get_supported_modalities(model_name="gemini-no-field") == full
+    assert get_supported_modalities(model_name="gpt-unlisted") == {"text", "image"}
+    assert get_supported_modalities(model_name=_MODEL) == {"text", "image", "video"}
 
 
 def test_a_total_outage_is_logged_as_an_error(monkeypatch: pytest.MonkeyPatch) -> None:

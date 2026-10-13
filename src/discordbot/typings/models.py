@@ -194,34 +194,19 @@ class RuntimeModelCatalog(BaseModel):
         attachment renderer and every link source's media ingest all branch on it — so
         repointing this tier changes what reaches the model, not just how well it reasons.
         """
-        # Pinned to an explicit snapshot and never a `*-latest` alias. This is the one tier whose
-        # effort is replaced at runtime by the route's grade, and the YouTube
-        # answer turn hands that effort straight to the Interactions API as a `thinking_level`
-        # (`gen_reply/interactions.py`), where a level the model does not list is a hard failure
-        # that loses the whole reply (#459). An alias is the worse end of that: it moves under the
-        # deployment, so the set it accepts can change without this file changing. Look the
-        # snapshot up (see `ModelSettings.effort`) before repointing this tier, and check its
-        # set covers every value `RouteClassification.effort` can emit — including across a
-        # provider change, where the effort vocabulary itself differs and a value can stop existing.
+        # Pinned to a snapshot, never a `*-latest` alias: this tier's effort is the route's grade,
+        # which the YouTube answer turn hands to `interactions.create` as a `thinking_level`, and
+        # a level the model does not list loses the whole reply there (#459) and errors the
+        # streaming answer through the proxy. Before repointing, check the new snapshot's set
+        # (see `ModelSettings.effort`) covers every value `RouteClassification.effort` emits.
+        # `gemini-4-argon` accepts low / medium / high, not `minimal` (Google's thinking page,
+        # read 2026-10-14; openrouter does not list it).
         #
-        # Through the proxy that rejection depends on the call shape. On a non-streaming call
-        # LiteLLM forwards the level for the model itself to refuse and then answers from the
-        # fallback deployment, so the caller sees an HTTP 200 whose `model` field names a
-        # different model; a status code proves nothing there, only the response's own `model`
-        # does. This tier's own proxy path is the streaming answer turn, whose LiteLLM fallback
-        # skips a 400, so there the refusal is an error.
-        #
-        # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (openrouter's list,
-        # read 2026-10-09).
-        #
-        # Whichever name this tier returns must have an entry in LiteLLM's price table: without
-        # one a reply's footer shows no cost and the
-        # attachment modality gate falls back to its `{"text", "image"}` baseline. That gate feeds
-        # BOTH renders, so an audio or video attachment does not merely go unuploaded: its
-        # `[attachment: file]` marker never reaches the route either, and the answer model is
-        # not told the file existed. A clip posted with one line of text is then answered as if
-        # the line were the whole message, which is a wrong answer rather than a degraded one.
-        return ModelSettings(name="gemini-3.8-flash", effort="high")
+        # Without an entry in LiteLLM's price table a reply's footer shows no cost, and a
+        # non-Gemini name falls back to the `{"text", "image"}` modality gate: an audio or video
+        # attachment then never reaches the route or the answer model, so a clip posted with one
+        # line of text is answered as if the line were the whole message.
+        return ModelSettings(name="gemini-4-argon", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:
@@ -236,7 +221,7 @@ class RuntimeModelCatalog(BaseModel):
             that staging into the fact files plus the tone note. A weaker model on either loses
             memory or leaks it, rather than just failing to record it.
         """
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-4-argon", effort="high")
 
 
 class RouteClassification(BaseModel):

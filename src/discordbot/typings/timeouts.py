@@ -277,7 +277,8 @@ IMAGE_FETCH_TIMEOUT_SECONDS: Final[int] = 10
 
 # Short because the price table is never on a critical path: the fetch falls back to the on-disk
 # mirror and `price_table_task` re-fetches later. It bites only on a cold start with no mirror,
-# where it costs every footer its cost AND a modality baseline that drops audio and video.
+# where it costs every footer its cost AND, on a non-Gemini answer model, a modality baseline
+# that drops audio and video.
 PRICE_TABLE_FETCH_TIMEOUT_SECONDS: Final[int] = 5
 
 # Timeout in seconds for a Douyin metadata request.
