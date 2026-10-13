@@ -8,9 +8,9 @@ instead of a hardcoded table that rots.
 
 A lookup never raises. The table only feeds a cosmetic cost estimate and the attachment
 modality gate, so an unreachable upstream degrades to the mirror and then to an empty
-table, where every model is unknown: no rates, so a usage footer with no cost, and
-the `{"text", "image"}` modality baseline, which keeps text, images and documents flowing
-and drops only audio and video instead of the whole message's attachments.
+table, where every model is unknown: no rates, so a usage footer with no cost, and the
+modality defaults in `get_supported_modalities`, which keep a Gemini model's audio and
+video and drop only those on any other model instead of the whole message's attachments.
 
 A degrade is not permanent either: the process remembers whether upstream is what served
 the table it holds, and `refresh_model_info` re-checks upstream while the answer is no.
@@ -50,9 +50,9 @@ class ModelPriceEntry(BaseModel):
     output_cost_per_token: float = Field(
         default=0.0, description="Per-token output price in USD; 0.0 when the entry lists none."
     )
-    supported_modalities: list[str] = Field(
-        default_factory=lambda: ["text", "image"],
-        description="Input modalities the model accepts; defaults to text and image.",
+    supported_modalities: list[str] | None = Field(
+        default=None,
+        description="Input modalities the model accepts; None when the entry lists none.",
     )
 
 
@@ -291,9 +291,11 @@ def get_supported_modalities(model_name: str) -> set[str]:
     """Returns the input modalities accepted by `model_name`.
 
     Reads `supported_modalities` from the cached LiteLLM price table. The
-    field is unevenly populated upstream, so missing entries default to
-    `{"text", "image"}`, the safe baseline that virtually every modern
-    multimodal LLM accepts.
+    field is unevenly populated upstream and a new model can be missing from
+    the table for days, so where the table does not say, a Gemini model
+    defaults to text, image, audio and video, which every Gemini answer
+    model accepts, and any other to `{"text", "image"}`, the safe baseline
+    that virtually every modern multimodal LLM accepts.
 
     Args:
         model_name: Model identifier to look up in the cached price table.
@@ -301,6 +303,9 @@ def get_supported_modalities(model_name: str) -> set[str]:
     Returns:
         Set of modality strings (e.g. `{"text", "image", "audio", "video"}`).
     """
-    model_info = load_model_info()
-    info = model_info.get(model_name, ModelPriceEntry())
-    return set(info.supported_modalities)
+    info = load_model_info().get(model_name)
+    if info is not None and info.supported_modalities is not None:
+        return set(info.supported_modalities)
+    if "gemini" in model_name:
+        return {"text", "image", "audio", "video"}
+    return {"text", "image"}
