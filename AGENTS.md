@@ -122,7 +122,7 @@ Locally the tests still read a real `.env`: `load_dotenv` walks up from the pack
 - **A function call and a grounded answer never share a turn** (2026-07, N=20 per condition on `slow_model`, #409): the call ends the turn with empty text (145/145; whether a search ran on it is unmeasurable), and the next turn with the tool result grounds (19/20); streaming behaved the same, which #409 does not record.
 - **Three measured traps before adding a function tool to a turn that searches**: no runtime call sends `extra_body`, so a tool without the flag silently ends grounding on every QA reply; merely offering it drew a call on pure-search questions 20/20, which restraint wording did not fix (10/14) and a sentence exempting live-external-fact questions did (0/14); and naming a tool in `instructions` without attaching it makes the model hallucinate the call (3/12), ending the turn.
 - **Never put a mock-testing key in `extra_body`, whatever its value**: since LiteLLM 1.96 `proxy/route_llm_request.py::raise_if_mock_testing_params_disallowed` 400s on the name alone unless `general_settings.dangerously_allow_mock_testing_request_params` is true. The deployed proxy sets that opt-in (`~/repo/litellm/litellm.yaml`), so a mock key is not refused there: a falsy value does nothing and a truthy one injects a real synthetic failure into production traffic.
-- **Pricing comes from `utils/model_pricing.py`'s cached LiteLLM table; never hardcode rates.** Its recovery (`cli.py::price_table_task`) deliberately never refetches a table upstream already served: rate drift is a separate question (#473).
+- **Pricing comes from `utils/model_pricing.py`'s cached LiteLLM table; never hardcode rates.**
 
 ## Economy
 

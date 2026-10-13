@@ -267,12 +267,12 @@ class DiscordBot(commands.Bot):
 
     @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
     async def price_table_task(self) -> None:
-        """Loads the LiteLLM price table, and keeps re-checking upstream while it is degraded.
+        """Loads the LiteLLM price table, re-checking upstream while degraded and daily after.
 
         `tasks.Loop` runs its body immediately, so the first pass is the warm-up that keeps
-        the first AI reply from stalling on a synchronous network call; every later one is
-        a branch once upstream has served. Off the event loop for the same reason the
-        warm-up always was.
+        the first AI reply from stalling on a synchronous network call; once upstream has
+        served, every later one is a branch until that table is a day old. Off the event loop
+        for the same reason the warm-up always was.
         """
         try:
             await asyncio.to_thread(refresh_model_info)
