@@ -184,7 +184,7 @@ class RuntimeModelCatalog(BaseModel):
         thinking `triage_model` does without. Nothing it produces is the deliverable, which is
         what keeps this tier below `slow_model`.
         """
-        return ModelSettings(name="gemini-3.6-flash", effort="medium")
+        return ModelSettings(name="gemini-3.8-flash", effort="medium")
 
     @property
     def slow_model(self) -> ModelSettings:
