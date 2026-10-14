@@ -39,6 +39,7 @@ from google.genai.interactions import (
     AntigravityAgentConfigParam,
 )
 
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.llm_errors import is_retryable_llm_error
 
 if TYPE_CHECKING:
@@ -57,15 +58,15 @@ RESEARCH_TOOLS = [
     GoogleSearch(search_types=["web_search"], type="google_search"),
 ]
 
-# The agent family's own config block, carried with nothing but its discriminator: the two knobs
-# it exists to hold are `model` (which model does the agent's reasoning, default `gemini-3.8-flash`)
-# and `max_total_tokens` (a best-effort budget that ends the run `incomplete`), and this deployment
-# wants the defaults for both. It is the `...Param` TypedDict rather than the `AntigravityAgentConfig`
-# model because that union is what `interactions.create` declares. Do not read the config back off the
-# interaction to check it took: a create carrying this one answers 200 and still reports
-# `agent_config=None` on a later get (measured 2026-09-21), as does one carrying a config for a
-# different agent family entirely.
-RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(type="antigravity")
+# The agent family's own config block: `model` picks which model does the agent's reasoning, and
+# `max_total_tokens` (a best-effort budget that ends the run `incomplete`) stays at its default. It
+# is the `...Param` TypedDict rather than the `AntigravityAgentConfig` model because that union is
+# what `interactions.create` declares. Do not read the config back off the interaction to check it
+# took: a create carrying the bare discriminator answered 200 and still reported `agent_config=None`
+# on a later get (measured 2026-09-21), as did one carrying a config for a different agent family.
+RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(
+    type="antigravity", model=RuntimeModelCatalog().antigravity_reasoning_model.name
+)
 
 # The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0

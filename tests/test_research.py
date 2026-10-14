@@ -285,11 +285,14 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
     assert kwargs["stream"] is True
     assert kwargs["background"] is True
     assert kwargs["tools"] is agent.RESEARCH_TOOLS
-    # The config block names the agent's own family and carries no knob of its own; a `deep-research`
-    # one here would be the removed tiers' `collaborative_planning` coming back, and nothing upstream
-    # rejects a mismatched family, so the discriminator is pinned here instead.
+    # The config block names the agent's own family and the catalog's reasoning model; a
+    # `deep-research` one here would be the removed tiers' `collaborative_planning` coming back, and
+    # nothing upstream rejects a mismatched family, so the discriminator is pinned here instead.
     assert kwargs["agent_config"] is agent.RESEARCH_AGENT_CONFIG
     assert kwargs["agent_config"]["type"] == "antigravity"
+    assert (
+        kwargs["agent_config"]["model"] == RuntimeModelCatalog().antigravity_reasoning_model.name
+    )
     assert streamer.reasoning == "searching"
     assert result.ok is True
     assert result.report_text.startswith("# Report")
