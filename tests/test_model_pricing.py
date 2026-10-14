@@ -166,6 +166,37 @@ def test_a_model_listed_at_zero_is_free_and_an_unlisted_one_is_unpriced(
     assert get_token_rates(model_name="unlisted-model") is None
 
 
+def test_a_gemini_model_is_read_off_its_developer_api_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `gemini/` entry is what the bot is billed at, and the only one a new model may have.
+
+    No other provider prefix stands in for a bare name: a reseller's entry carries its own
+    rates, or none at all.
+    """
+    developer_api = {
+        "input_cost_per_token": 5.0,
+        "output_cost_per_token": 6.0,
+        "supported_modalities": ["text", "audio"],
+    }
+    _serve(
+        monkeypatch=monkeypatch,
+        payload=json.dumps(
+            obj={
+                **_TABLE,
+                f"gemini/{_MODEL}": developer_api,
+                "gemini/gemini-new": developer_api,
+                "reseller/gpt-new": {"input_cost_per_token": 7.0, "output_cost_per_token": 8.0},
+            }
+        ),
+    )
+
+    assert get_token_rates(model_name=_MODEL) == (5.0, 6.0)
+    assert get_token_rates(model_name="gemini-new") == (5.0, 6.0)
+    assert get_supported_modalities(model_name="gemini-new") == {"text", "audio"}
+    assert get_token_rates(model_name="gpt-new") is None
+
+
 def test_no_table_anywhere_degrades_to_the_documented_defaults(
     monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
 ) -> None:

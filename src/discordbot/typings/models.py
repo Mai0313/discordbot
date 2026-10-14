@@ -164,6 +164,17 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="antigravity-preview-09-2026")
 
     @property
+    def antigravity_reasoning_model(self) -> ModelSettings:
+        """The model the deep-research agent reasons with.
+
+        Returns:
+            The model string sent as the agent's `agent_config.model`. It must be one the
+            Antigravity agent accepts (Google's Antigravity agent docs, "Model selection"), and
+            `effort` / `tools` are unused: the agent config carries neither.
+        """
+        return ModelSettings(name="gemini-3.8-flash")
+
+    @property
     def triage_model(self) -> ModelSettings:
         """The model settings for filling a shape the caller has already fixed.
 
