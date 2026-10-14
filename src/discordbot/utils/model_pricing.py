@@ -284,6 +284,18 @@ def refresh_model_info() -> None:
         logfire.info("refreshed the upstream model price table", entries=len(prices))
 
 
+def _price_entry(model_name: str) -> ModelPriceEntry | None:
+    """Returns the table entry for `model_name`, its Gemini Developer API one first.
+
+    Every Gemini call the bot makes is billed by the Gemini Developer API, and upstream can
+    list a new Gemini model under `gemini/` alone; the bare name is Vertex's entry. No other
+    provider prefix is tried: resellers list the same bare name at different rates, and one
+    listing no rates would read as free.
+    """
+    model_info = load_model_info()
+    return model_info.get(f"gemini/{model_name}") or model_info.get(model_name)
+
+
 def get_token_rates(model_name: str) -> tuple[float, float] | None:
     """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`.
 
@@ -296,8 +308,7 @@ def get_token_rates(model_name: str) -> tuple[float, float] | None:
     Returns:
         Input and output token rates for the model, or None when the table has no entry for it.
     """
-    model_info = load_model_info()
-    info = model_info.get(model_name)
+    info = _price_entry(model_name=model_name)
     if info is None:
         return None
     return info.input_cost_per_token, info.output_cost_per_token
@@ -319,7 +330,7 @@ def get_supported_modalities(model_name: str) -> set[str]:
     Returns:
         Set of modality strings (e.g. `{"text", "image", "audio", "video"}`).
     """
-    info = load_model_info().get(model_name)
+    info = _price_entry(model_name=model_name)
     if info is not None and info.supported_modalities is not None:
         return set(info.supported_modalities)
     if "gemini" in model_name:
