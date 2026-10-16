@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import inspect
 from functools import partial
+from importlib import import_module
 
 import pytest
 from nextcord.errors import ApplicationInvokeError
@@ -28,7 +29,13 @@ from discordbot.utils.timezone import database_now
 from discordbot.utils.media_delivery import upload_limit_for
 from discordbot.services.economy.database import CreditResult
 
-from tests.helpers.casting import as_guild, as_message, as_discord_bot, make_invalid_webhook_token
+from tests.helpers.casting import (
+    as_bot,
+    as_guild,
+    as_message,
+    as_discord_bot,
+    make_invalid_webhook_token,
+)
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.message_cleanup import record_scheduled_deletes
@@ -249,6 +256,44 @@ def test_cli_load_cogs_sync_refuses_a_directory_that_is_not_a_cog(
 
     with pytest.raises(RuntimeError, match="half_moved is under cogs/ but is not a cog"):
         _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
+
+
+def test_setup_functions_register_cogs() -> None:
+    """EVERY cog module the loader picks up has a sync `setup` that adds its own cog.
+
+    The modules come from `_load_cogs_sync` itself rather than a hand-written list, so a new
+    cog cannot be left out and the real `cogs/` tree has to pass the loader's own checks:
+    `setup` is the one function in a cog module the loader calls by name, and an
+    `async def setup` never reaches `add_cog` here, while at boot it aborts `DiscordBot()`
+    with `ExtensionFailed`.
+    """
+    added: list[tuple[commands.Cog, bool | None]] = []
+    loaded: list[str] = []
+
+    def record_cog(cog: commands.Cog, override: bool | None = None) -> None:
+        """Records the cog instance and override flag passed to add_cog."""
+        added.append((cog, override))
+
+    def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
+        """Records the cog modules the loader would hand to nextcord."""
+        del stop_at_error
+        loaded.extend(modules)
+
+    bot = SimpleNamespace(add_cog=record_cog)
+    cli.DiscordBot._load_cogs_sync(
+        as_discord_bot(fake=SimpleNamespace(load_extensions=record_load_extensions))
+    )
+
+    assert loaded  # a scan that found nothing would pass every assertion below
+    for name in loaded:
+        module = import_module(name=name)
+        module.setup(bot=as_bot(fake=bot))
+        cog, override = added[-1]
+        # `override=True` is what lets a reload replace the cog instead of colliding, and
+        # the module check is what stops a re-export standing in for a missing cog.
+        assert override is True, name
+        assert type(cog).__module__ == module.__name__, name
+    assert len(added) == len(loaded)
 
 
 @pytest.fixture

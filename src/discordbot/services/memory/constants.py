@@ -100,7 +100,7 @@ TONE_FILE_MAX_BYTES = 4_096
 # nothing functionally and keeps disk bounded; the gap between the two amortizes the O(file)
 # rewrite to roughly once per megabyte of new evidence. The cap MUST stay above that window —
 # `MEMORY_DETAIL_CONTEXT_MAX_CHARS` at 4 bytes a character — or a trim cuts into content
-# something still reads, which `tests/test_context_budgets.py` holds it to.
+# something still reads, which `tests/guards/test_context_budgets.py` holds it to.
 DETAIL_FILE_MAX_BYTES = 4_194_304
 DETAIL_FILE_TRIM_TARGET_BYTES = 3_145_728
 

@@ -2,7 +2,7 @@
 
 Shared because two layers put the SAME marker on the same message and cannot import each other:
 the expansion shell marks a link it expanded into the channel, while the reply pipeline marks one
-it read into an answer instead, and `tests/test_package_layering.py` forbids a cog reaching
+it read into an answer instead, and `tests/guards/test_package_layering.py` forbids a cog reaching
 across to another for it. A platform with no expansion cog is marked by the reply path alone.
 
 Scope is the platform markers alone; the status marks an auto-expansion answers with live beside
