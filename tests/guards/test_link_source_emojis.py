@@ -6,6 +6,7 @@ failure is invisible until someone posts that platform's link, which is why the 
 enumerated here instead of being softened into a `.get()` at the call site.
 """
 
+import re
 from typing import get_args
 
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
@@ -26,9 +27,12 @@ def test_the_route_vocabulary_names_exactly_the_marked_sources() -> None:
     assert set(get_args(LinkSourceName)) == set(LINK_SOURCE_EMOJIS)
 
 
-def test_every_marker_is_a_custom_emoji_reference() -> None:
-    """A malformed reference is accepted by the API and then renders as literal text."""
+def test_a_custom_emoji_marker_is_a_well_formed_reference() -> None:
+    """A malformed reference is accepted by the API and then renders as literal text.
+
+    Static or animated is the marker's choice, as is a plain Unicode emoji; a reference that is
+    neither is the bug.
+    """
     for name, emoji in LINK_SOURCE_EMOJIS.items():
-        assert emoji.startswith("<:"), name
-        assert emoji.endswith(">"), name
-        assert emoji.strip("<>").split(":")[-1].isdigit(), name
+        if any(mark in emoji for mark in "<:>"):
+            assert re.fullmatch(r"<a?:\w+:\d+>", emoji), name

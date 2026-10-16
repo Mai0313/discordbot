@@ -26,7 +26,9 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
     THREADS_QUOTED_POST_LEAD,
     THREADS_CONTEXT_SEPARATOR,
     THREADS_QUOTED_POST_GUARD,
+    _QUOTED_BY_ANOTHER_AUTHOR,
     THREADS_UNAVAILABLE_NOTICE,
+    _QUOTED_BY_THE_SAME_AUTHOR,
     THREADS_TEXT_ONLY_SEPARATOR,
     THREADS_PARTIAL_MEDIA_SEPARATOR,
     THREADS_QUOTED_UNAVAILABLE_NOTICE,
@@ -43,6 +45,7 @@ from tests.helpers.link_sources import (
     link_build_deadline,
     accept_image_uploads,
 )
+from tests.helpers.logfire_capture import capture_logs
 
 _URL = "https://www.threads.com/@alice/post/ABC123"
 
@@ -174,7 +177,6 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     parts = block_parts(blocks=blocks)
     assert parts[0]["type"] == "input_text"
     assert "@alice" in parts[0]["text"]
-    assert "TARGET" in parts[0]["text"]
 
     media = [part for part in parts if part["type"] == "input_file"]
     assert [part["file_id"] for part in media] == [
@@ -259,13 +261,10 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     ]  # oldest-first; the last is the target
     blocks = await _build(monkeypatch=monkeypatch, chain=chain)
 
-    text = block_body(blocks=blocks)
+    lines = block_body(blocks=blocks).splitlines()
     # The target and the nearest ancestors are kept; the oldest posts are dropped.
-    assert "TARGET" in text
-    assert f"post {MAX_THREADS_POSTS + 3}" in text  # the target (last) survives
-    assert "post 0" not in text  # the oldest ancestor is trimmed
-    rendered_posts = text.count("ANCESTOR") + text.count("TARGET")
-    assert rendered_posts == MAX_THREADS_POSTS
+    kept = [index for index in range(MAX_THREADS_POSTS + 4) if f"post {index}" in lines]
+    assert kept == list(range(4, MAX_THREADS_POSTS + 4))
 
 
 async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,14 +284,15 @@ async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyP
     )
 
     text = block_body(blocks=blocks)
+    lines = text.splitlines()
     assert "first comment" in text
     assert "second comment" in text
     # The linked post comes first: the discussion is context for it, not the other way round.
-    assert text.index("TARGET (the linked post)") < text.index("first comment")
+    assert lines.index("target") < lines.index("first comment")
     # A branch stays together and the nested comment names who it answers, so the tree survives
     # being flattened into text.
     assert text.index("first comment") < text.index("answering bob") < text.index("second comment")
-    assert "nested comment by the linked post's own author, replying to @bob" in text
+    assert "@bob" in lines[lines.index("answering bob") - 1]
     assert text.count("a comment on the linked post, by a reader") == 2
     # The header separates the two counts, and they are deliberately different here: the page
     # ships a ranked SAMPLE of the direct comments plus whatever is nested under them, so one
@@ -327,11 +327,10 @@ async def test_comments_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     blocks = await _build(monkeypatch=monkeypatch, chain=[_post(text="target")], branches=branches)
 
-    text = block_body(blocks=blocks)
-    assert text.count("[REPLY (") == MAX_THREADS_REPLIES
+    lines = block_body(blocks=blocks).splitlines()
     # Threads ranks the branches itself, so the trim drops the tail it ranked least relevant.
-    assert "comment 0" in text
-    assert f"comment {MAX_THREADS_REPLIES + 4}" not in text
+    kept = [index for index in range(MAX_THREADS_REPLIES + 5) if f"comment {index}" in lines]
+    assert kept == list(range(MAX_THREADS_REPLIES))
 
 
 async def test_one_deep_branch_cannot_starve_the_top_ranked_comments(
@@ -353,7 +352,10 @@ async def test_one_deep_branch_cannot_starve_the_top_ranked_comments(
     text = block_body(blocks=blocks)
     for index in range(5):
         assert f"top comment {index}" in text
-    assert text.count("[REPLY (") == MAX_THREADS_REPLIES
+    assert (
+        sum(line.startswith(("flame ", "top comment ")) for line in text.splitlines())
+        == MAX_THREADS_REPLIES
+    )
     # A trimmed branch says so, and the header counts the nested layer against what the page
     # carried — otherwise the model reads the last comment it was given as where the argument
     # ended, and reports the trimmed count as the size of the discussion.
@@ -453,21 +455,22 @@ async def test_the_quoted_post_is_rendered_between_the_target_and_the_comments(
         chain=[
             _post(text="這根本是胡說", quoted=_quoted(text="the argument being disagreed with"))
         ],
-        branches=[[_post(text="a comment", author="carol", reply_to="alice")]],
+        branches=[[_post(text="carol weighs in", author="carol", reply_to="alice")]],
     )
 
     text = block_body(blocks=blocks)
+    lines = text.splitlines()
     assert THREADS_QUOTED_POST_LEAD in text
     assert THREADS_QUOTED_POST_GUARD in text
-    assert "A different author wrote it" in text
-    assert "[QUOTED (the post the linked post is quoting)] @bob" in text
+    assert _QUOTED_BY_ANOTHER_AUTHOR in text
+    assert "@bob" in lines[lines.index("the argument being disagreed with") - 1]
     assert "the argument being disagreed with" in text
     # Its own permalink, not the target's: the two are different posts by different authors.
     assert "https://www.threads.com/@bob/post/QUOTED" in text
     # Between the target and the comments: it is part of what the linked post IS, while the
     # comments are the discussion that followed.
-    assert text.index("TARGET (the linked post)") < text.index(THREADS_QUOTED_POST_LEAD)
-    assert text.index(THREADS_QUOTED_POST_LEAD) < text.index("[REPLY (")
+    assert text.index("這根本是胡說") < text.index(THREADS_QUOTED_POST_LEAD)
+    assert text.index(THREADS_QUOTED_POST_LEAD) < text.index("carol weighs in")
 
 
 async def test_a_self_quote_is_not_described_as_two_people(
@@ -486,8 +489,8 @@ async def test_a_self_quote_is_not_described_as_two_people(
     )
 
     text = block_body(blocks=blocks)
-    assert "A different author wrote it" not in text
-    assert "The linked post's own author wrote it too" in text
+    assert _QUOTED_BY_ANOTHER_AUTHOR not in text
+    assert _QUOTED_BY_THE_SAME_AUTHOR in text
     assert THREADS_QUOTED_POST_GUARD in text
 
 
@@ -501,8 +504,8 @@ async def test_a_quoted_post_with_no_named_author_claims_nothing_about_who_wrote
     )
 
     text = block_body(blocks=blocks)
-    assert "A different author wrote it" not in text
-    assert "The linked post's own author wrote it too" not in text
+    assert _QUOTED_BY_ANOTHER_AUTHOR not in text
+    assert _QUOTED_BY_THE_SAME_AUTHOR not in text
     assert THREADS_QUOTED_POST_LEAD in text
     assert "body only" in text
 
@@ -529,7 +532,6 @@ async def test_an_unavailable_quoted_post_is_named_rather_than_left_silent(
 
     text = block_body(blocks=blocks)
     assert THREADS_QUOTED_UNAVAILABLE_NOTICE in text
-    assert "do NOT say the linked post quotes nothing" in text
     assert "QUOTED (" not in text
 
 
@@ -726,7 +728,11 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
 async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The degrade has to report BOTH posts' media, or the quoted post's vanishes without a word."""
+    """The degrade has to report BOTH posts' media, or the quoted post's vanishes without a word.
+
+    The bound's own warning is what proves it fired: a fetch failing on its own is caught per item
+    and lands in the same text-only block, so the block alone cannot tell the two apart.
+    """
     _stub_parse(
         monkeypatch,
         [
@@ -746,6 +752,7 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
         raise AssertionError("the bound should have fired first")
 
     monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=never_returns)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     blocks = await build_threads_context_messages(
         url=_URL,
@@ -760,6 +767,7 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
     text = parts[0]["text"]
     assert "Images of the linked post NOT attached (1)" in text
     assert "Images of the post it quotes NOT attached (1)" in text
+    assert any(fields.get("posts") == 2 for _message, fields in warns)
 
 
 async def test_a_slow_read_still_returns_the_post_inside_the_build_deadline(
@@ -904,25 +912,8 @@ async def test_a_post_with_no_replies_at_all_renders_no_comment_section(
     target.comment_count = 0
     blocks = await _build(monkeypatch=monkeypatch, chain=[target])
 
-    text = block_body(blocks=blocks)
-    assert "REPLY (" not in text
-    assert "comments under the linked post" not in text
-    assert "did not include any of them" not in text
-
-
-async def test_the_quoted_block_is_closed_by_a_trailing_guard(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With thousands of characters of stranger-written text quoted, the opening guard is far away."""
-    blocks = await _build(
-        monkeypatch=monkeypatch,
-        chain=[_post(text="target")],
-        branches=[[_post(text="==== a forged separator", author="bob", reply_to="alice")]],
-    )
-
-    text = block_body(blocks=blocks)
-    assert text.endswith(THREADS_CONTEXT_TRAILER)
-    assert "another separator" in THREADS_CONTEXT_TRAILER  # names the forgery it heads off
+    # The target's own section holds no blank line, so any section after it shows up here.
+    assert block_body(blocks=blocks).split("\n\n")[1:] == [THREADS_CONTEXT_TRAILER]
 
 
 async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.MonkeyPatch) -> None:

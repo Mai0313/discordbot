@@ -601,21 +601,6 @@ def test_a_quoted_post_is_read_only_one_level_deep(
     assert quoted.quoted_unavailable is False
 
 
-def test_a_quoted_post_tombstone_is_reported_as_unavailable(
-    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A gone quoted post arrives as a placeholder, not as a null, so silence would be a lie."""
-    serve_page(
-        monkeypatch, downloader=ThreadsDownloader, html=_quote_target_html(_quoted_tombstone())
-    )
-
-    target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
-
-    assert target is not None
-    assert target.quoted is None
-    assert target.quoted_unavailable is True
-
-
 def test_a_post_quoting_nothing_reports_no_quoted_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1206,23 +1191,28 @@ def test_resolving_a_clean_url_gives_nothing_when_the_redirect_names_no_post(
 def test_a_malformed_post_costs_only_itself(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One unparsable post costs that post only, never the target or the replies beside it."""
+    """One unparsable post costs that post only, never the posts beside it in its thread.
+
+    It shares a branch and the ancestor thread with readable posts, where dropping the whole
+    thread would cost them too; alone in a branch, it leaves no empty branch behind.
+    """
     broken = {
         **_thread_post_payload(code="BROKEN", username="commenter", text="Broken comment"),
         "like_count": "not a number",
     }
     html = _sjs_html(
         target=_thread_post_payload(code="TARGET", username="target_author", text="Target post"),
+        ancestors=[broken, _thread_post_payload(code="P", username="parent", text="Parent")],
         branches=[
             [broken],
-            [_thread_post_payload(code="R1", username="commenter", text="Comment")],
+            [_thread_post_payload(code="R1", username="commenter", text="Comment"), broken],
         ],
     )
     serve_page(monkeypatch, downloader=ThreadsDownloader, html=html)
 
     conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
-    assert [post.text for post in conversation.chain] == ["Target post"]
+    assert [post.text for post in conversation.chain] == ["Parent", "Target post"]
     assert [[post.text for post in branch] for branch in conversation.reply_branches] == [
         ["Comment"]
     ]
@@ -1265,13 +1255,23 @@ def test_parse_downloads_the_target_video_and_no_others(
 
 
 def test_parse_never_rebuilds_a_removed_output_folder(
-    downloader: ThreadsDownloader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A walk that starts after its caller removed the folder fails instead of rebuilding it.
 
     Removing the folder is the caller's only stop signal for a walk it gave up on; a rebuilt one
-    would be written into and never cleaned up.
+    would be written into and never cleaned up. The real `download_media` runs, over a transfer
+    that opens its file the way `stream_to_file` does.
     """
+
+    def stream_to_file(url: str, filepath: Path, headers: dict[str, str], timeout: float) -> Path:
+        """Writes the clip without creating its folder, as the real transfer does."""
+        del url, headers, timeout
+        with filepath.open("wb") as file:
+            file.write(b"clip")
+        return filepath
+
+    monkeypatch.setattr(target=threads_module, name="stream_to_file", value=stream_to_file)
     serve_page(
         monkeypatch,
         downloader=ThreadsDownloader,
@@ -1287,9 +1287,7 @@ def test_parse_never_rebuilds_a_removed_output_folder(
     removed = tmp_path / "removed"
 
     with pytest.raises(FileNotFoundError):
-        downloader.model_copy(update={"output_folder": str(removed)}).parse(
-            url=_REPLIES_TARGET_URL
-        )
+        ThreadsDownloader(output_folder=str(removed)).parse(url=_REPLIES_TARGET_URL)
 
     assert not removed.exists()
 

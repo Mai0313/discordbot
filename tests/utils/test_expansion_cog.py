@@ -13,7 +13,13 @@ from collections.abc import Callable
 import pytest
 from nextcord import Embed
 
-from discordbot.utils.expansion_cog import POST_CARD_MAX_IMAGES, ConversationExpansionCog
+from discordbot.utils.expansion_cog import (
+    VIDEO_HINT,
+    TRUNCATION_NOTICE,
+    POST_CARD_MAX_IMAGES,
+    ConversationExpansionCog,
+    omitted_images_note,
+)
 from discordbot.utils.discord_embeds import utf16_length, embed_text_length
 from discordbot.cogs.parse_twitter.cog import TwitterCogs
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
@@ -105,7 +111,7 @@ async def test_images_past_the_cap_are_counted_in_the_footer(
     assert len(embeds) == POST_CARD_MAX_IMAGES
     footer = embeds[0].footer.text
     assert footer is not None
-    assert "🖼️ 另有 3 張" in footer
+    assert omitted_images_note(count=3) in footer
 
 
 @commented_cards
@@ -139,7 +145,8 @@ async def test_no_comment_card_without_one_named(
 
     embeds = await _expand(cog_type=cog_type, outcome=post(comments=[unnamed]))
 
-    assert all("指定的留言" not in (embed.description or "") for embed in embeds)
+    # A comment card carries the comment's own URL; the post and its gallery share the post's.
+    assert all(embed.url == embeds[0].url for embed in embeds)
 
 
 @default_cards
@@ -153,7 +160,7 @@ async def test_a_video_post_shows_a_link_instead_of_an_empty_card(
 
     description = embeds[0].description
     assert description is not None
-    assert "點此觀看影片" in description
+    assert VIDEO_HINT.partition("{url}")[0] in description
 
 
 @default_cards
@@ -164,7 +171,7 @@ async def test_a_long_post_is_cut_with_a_notice(cog_type: _CogType, post: _PostF
     description = embeds[0].description
     assert description is not None
     assert len(description) <= 4096
-    assert description.endswith("（全文請看原貼文）")
+    assert description.endswith(TRUNCATION_NOTICE)
 
 
 @default_cards
@@ -179,9 +186,9 @@ async def test_a_long_post_with_a_video_stays_inside_the_description_limit(
     description = embeds[0].description
     assert description is not None
     assert len(description) <= 4096
-    assert "點此觀看影片" in description
+    assert VIDEO_HINT.partition("{url}")[0] in description
     # Without this the same test passes on a clip that truncated silently.
-    assert "（全文請看原貼文）" in description
+    assert TRUNCATION_NOTICE in description
 
 
 @commented_cards
@@ -210,7 +217,7 @@ async def test_a_long_comment_under_a_short_post_stays_inside_the_description_li
     description = embeds[-1].description
     assert description is not None
     assert utf16_length(value=description) <= 4096
-    assert description.endswith("（全文請看原貼文）")
+    assert description.endswith(TRUNCATION_NOTICE)
 
 
 @commented_cards
