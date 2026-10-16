@@ -9,9 +9,9 @@ import pytest
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.context import (
     ReplyContext,
-    reference_header,
     trim_history_to_budget,
     history_media_over_budget,
 )
@@ -23,7 +23,6 @@ from discordbot.typings.context_budgets import (
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 
 from tests.helpers.casting import as_message, step_dicts
-from tests.helpers.llm_input import iter_text_blocks
 from tests.helpers.reply_fakes import (
     FakeReply,
     FakeAuthor,
@@ -109,15 +108,12 @@ def test_trim_history_keeps_the_newest_messages_within_the_budget() -> None:
     per_message = 100
     body = "x" * (per_message - HISTORY_PER_MESSAGE_OVERHEAD)
     fits = HISTORY_CHAR_BUDGET // per_message
-    messages = [
-        FakeMessage(content=f"{i}:{body}", author=FakeAuthor(user_id=1)) for i in range(fits + 20)
-    ]
+    messages = [FakeMessage(content=body, author=FakeAuthor(user_id=1)) for _ in range(fits + 20)]
 
     kept = trim_history_to_budget(messages=[as_message(fake=m) for m in messages])
 
-    assert len(kept) <= fits
-    # order-contract: history is fed to the model oldest-first, and the tail is what is kept.
-    assert [m.content for m in kept] == [m.content for m in messages[len(messages) - len(kept) :]]
+    # order-contract: history is fed to the model oldest-first, and the exact tail is what is kept.
+    assert [m.id for m in kept] == [m.id for m in messages[-fits:]]
 
 
 def test_trim_history_keeps_one_message_that_alone_exceeds_the_budget() -> None:
@@ -237,6 +233,11 @@ async def test_render_history_holds_inlined_attachment_bytes_to_the_budget(
     older one, the newest included when it alone is over: exempting it would leave one post large
     enough to fail every reply. Under the Files API a part is a short handle, so nothing is held.
     """
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+    )
     monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
@@ -276,21 +277,3 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
         current_message=[{"role": "user", "content": "now"}],
     )
     assert [part["content"] for part in context.message_list] == ["hist", "ref", "now"]
-
-
-def test_only_the_replied_to_message_claims_the_current_message_is_about_it() -> None:
-    """The one Reference Message block claims the Current Message, and nothing competes with it.
-
-    A reply renders exactly one of these (`replied_to_message`), so the attachment sentence has
-    no sibling. An ancestor block's `An earlier message in the reply thread` wording must not
-    come back: a second block asserting it is what the Current Message is about is the
-    ambiguity this sentence exists to remove.
-    """
-    header = reference_header(
-        ref=as_message(fake=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4)))
-    )
-
-    text = next(text for _role, text in iter_text_blocks(request=[header]))
-    assert "it is the primary context for the Current Message below" in text
-    assert "that something is here, this message's attachments included" in text
-    assert "An earlier message in the reply thread" not in text

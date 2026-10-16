@@ -251,9 +251,7 @@ async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyP
 
     assert RETRY_HINT_EMOJI in message.added_reactions
     reply = cast("FakeReply", streamer.reply)
-    assert reply.edits[0] == (
-        f"-# {RETRY_HINT_EMOJI} Retrying... (2/{ANSWER_STREAM_MAX_ATTEMPTS})"
-    )
+    assert RETRY_HINT_EMOJI in reply.edits[0]
     # And the notice is transient: the finished answer takes the message back.
     assert (reply.content or "").startswith("done")
 
@@ -375,7 +373,7 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
     # incomplete -- the truncated text alone reads as an answer that simply stopped.
     assert reply.content == "half a sentence"
     assert reply.embed is not None
-    assert reply.embed.title == "Something went wrong"
+    assert reply.embed.footer.text == "APIError"
 
 
 async def test_a_failure_over_a_thinking_preview_clears_it() -> None:

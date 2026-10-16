@@ -191,7 +191,7 @@ def test_recall_user_memories_enforces_allowlist() -> None:
     assert set(by_id) == {"1", "2"}
     assert "甲的記憶" in by_id["1"].memory
     assert by_id["1"].prompt_label == "A (a)"
-    assert by_id["2"].memory == "(no stored memory for this user)"
+    assert by_id["2"].memory == NO_STORED_MEMORY
 
 
 def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row() -> None:
@@ -348,7 +348,7 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory() -> None:
 
 
 def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
-    """A participant keeps their label and gains aliases."""
+    """A participant keeps their label and gains aliases, while absent members stay out."""
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
@@ -360,23 +360,6 @@ def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
     assert "李董" in allowed[123].prompt_label
     # The footer credit stays the short Discord label; the row never reaches it.
     assert allowed[123].credit_label == "Mai (mai9999)"
-
-
-def test_widen_allowlist_with_aliases_skips_absent_members() -> None:
-    """Participants are enriched but absent members stay out.
-
-    Naming a public nickname must not open an absent member's personal memory, even though
-    the nickname table itself is public content.
-    """
-    memory = (
-        "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
-    )
-    allowed = {123: RecallCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
-    widen_allowlist_with_aliases(allowed=allowed, memory=memory)
-
-    # The present participant is still enriched with community aliases.
-    assert allowed[123].prompt_label.startswith("Mai (mai9999)")
-    assert "李董" in allowed[123].prompt_label
     # The absent member is not added, so their personal memory stays unreachable here.
     assert 456 not in allowed
 

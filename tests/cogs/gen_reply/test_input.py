@@ -11,8 +11,9 @@ from nextcord import Embed, Message
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.media import LoadedMedia, RenderedPart, RenderedAttachment
+from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
-from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 
@@ -36,6 +37,15 @@ from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+def _pin_gemini_slow_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the answer tier to Gemini so Files API selection tests stay independent of catalog choices."""
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+    )
 
 
 async def _attachment_parts(builder: MessageInputBuilder, message: object) -> list[RenderedPart]:
@@ -122,7 +132,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     forward_only = FakeMessage(author=FakeAuthor(user_id=1))
     forward_only.snapshots = [FakeSnapshot(content="hello from elsewhere")]
     rendered = await builder.get_cleaned_content(message=as_message(fake=forward_only))
-    assert "[forwarded message]" in rendered
+    assert FORWARDED_MESSAGE_MARKER in rendered
     assert "hello from elsewhere" in rendered
 
     # The forwarder's own comment is kept alongside the forwarded body (append, not replace).
@@ -143,7 +153,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     ]
     assert (
         await builder.get_cleaned_content(message=as_message(fake=media_only))
-        == "[forwarded message]"
+        == FORWARDED_MESSAGE_MARKER
     )
 
     # Forwarding the bot's own reply (snapshot has no author) still strips the usage footer.
@@ -164,7 +174,7 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     ]
     assert (
         await builder.get_cleaned_content(message=as_message(fake=footer_only_forward))
-        == "[forwarded message]"
+        == FORWARDED_MESSAGE_MARKER
     )
 
     # A captioned forward renders the caption only; an embed-only URL is not shown (nor scanned).
@@ -228,6 +238,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies prompt cleanup, embed extraction, and attachment conversion."""
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
     cog = _cog()
     embed = Embed(title="Title", description="Body")
     embed.set_author(name="Author")
@@ -319,6 +330,7 @@ async def test_a_keyless_deployment_inlines_attachments_instead_of_dropping_them
     every attachment only to drop it, and left the message uncached to do it all again on the
     next reply. A clip the inline renderer cannot carry is neither marked nor downloaded.
     """
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image", "audio", "video"},
@@ -326,7 +338,6 @@ async def test_a_keyless_deployment_inlines_attachments_instead_of_dropping_them
     logged = capture_logs(monkeypatch=monkeypatch, level="error")
     bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
     toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
-    assert toolkit.runtime_models.slow_model.is_gemini
     builder = toolkit.input_builder
     pic = FakeAttachment(
         filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
@@ -567,6 +578,7 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The marker render and the upload render keep the same supported-attachment slots."""
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
@@ -601,6 +613,7 @@ async def test_the_gate_passes_only_what_the_selected_renderer_carries(
     follow the renderer. A dropped part keeps its whole message out of the cache, which would
     download the image beside it again on every reply.
     """
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
     monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
@@ -712,6 +725,7 @@ async def test_the_inline_gate_refuses_an_attachment_too_large_to_inline(
     rather than downloading the image beside it on every reply. An image is held to its posted
     size too. An upload sends a handle rather than the bytes, so the Files API path takes all three.
     """
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
     monkeypatch.setenv(name="FILE_API_ENABLED", value=file_api_enabled)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities",
@@ -763,6 +777,7 @@ async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_count
     The gate and the renderers read the same normalised MIME, so a parameter or a case change
     can neither pass a blank type the renderer then drops nor carry a denylisted one through.
     """
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
@@ -788,16 +803,9 @@ async def test_an_attachment_with_no_resolvable_mime_is_neither_marked_nor_count
     assert text_markers == full_files == budgeted == 1
 
 
-@pytest.mark.parametrize(
-    ("text_only", "logged"),
-    [
-        (True, "gen_reply failed to render message for routing"),
-        (False, "gen_reply failed to process message"),
-    ],
-    ids=["route", "answer"],
-)
+@pytest.mark.parametrize("text_only", [True, False], ids=["route", "answer"])
 async def test_a_render_degrades_when_the_modality_gate_raises(
-    monkeypatch: pytest.MonkeyPatch, text_only: bool, logged: str
+    monkeypatch: pytest.MonkeyPatch, text_only: bool
 ) -> None:
     """A raising modality gate degrades either render to empty text, not a pipeline abort."""
     cog = _cog()
@@ -819,7 +827,9 @@ async def test_a_render_degrades_when_the_modality_gate_raises(
     )
 
     assert rendered == EasyInputMessageParam(role="user", content="")
-    assert [text for text, _ in warned] == [logged]
+    assert [(fields["error_type"], fields["message_id"]) for _, fields in warned] == [
+        ("RuntimeError", message.id)
+    ]
 
 
 async def test_process_single_message_neutralizes_spoofed_identity(
@@ -868,7 +878,7 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     assert attachment.read_count == 2
 
 
-async def test_attachment_cache_reuploads_expired_handle() -> None:
+async def test_attachment_cache_reuploads_expired_handle(monkeypatch: pytest.MonkeyPatch) -> None:
     """A cached file_id past its real expiry is re-rendered, not served stale."""
     cog = _cog()
     builder = cog.toolkit.input_builder
@@ -883,9 +893,11 @@ async def test_attachment_cache_reuploads_expired_handle() -> None:
     await _attachment_parts(builder=builder, message=message)
     assert attachment.read_count == 1
 
-    # Force the entry past its stored expiry: the next render re-downloads and re-uploads.
-    (cache_key, (_expiry, cached_parts)) = next(iter(builder._attachment_cache.items()))
-    builder._attachment_cache[cache_key] = (datetime(2000, 1, 1, tzinfo=UTC), cached_parts)
+    # Advance the clock into the expiry margin: the next render re-downloads and re-uploads.
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.datetime",
+        SimpleNamespace(now=lambda tz=None: datetime(2099, 1, 1, tzinfo=UTC)),
+    )
     await _attachment_parts(builder=builder, message=message)
     assert attachment.read_count == 2
 

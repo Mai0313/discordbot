@@ -13,6 +13,7 @@ import nextcord
 from discordbot.typings.media import LoadedMedia
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
+from discordbot.cogs.gen_reply.attachment.openai_file_api import OPENAI_FILE_EXPIRY_SECONDS
 
 from tests.helpers.reply_fakes import (
     TEST_LLM_MODEL,
@@ -197,17 +198,18 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
     assert file_part["filename"] == "notes.txt"
     assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
+    expiry = {"anchor": "created_at", "seconds": OPENAI_FILE_EXPIRY_SECONDS}
     assert files.create_calls[0][0] == "pic.png"
-    assert files.create_calls[0][2] == "image/jpeg"
+    assert files.create_calls[0][2].startswith("image/")
     assert files.create_calls[0][3] == "vision"
-    assert files.create_calls[0][4] == {"anchor": "created_at", "seconds": 2_592_000}
+    assert files.create_calls[0][4] == expiry
     assert files.create_calls[0][5] == {"model": TEST_LLM_MODEL}
-    assert files.create_calls[1] == (
-        "image.jpg",
+    assert files.create_calls[1][0].endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
+    assert files.create_calls[1][1:] == (
         b"jpeg",
         "image/jpeg",
         "vision",
-        {"anchor": "created_at", "seconds": 2_592_000},
+        expiry,
         {"model": TEST_LLM_MODEL},
     )
     assert files.create_calls[2] == (
@@ -215,6 +217,6 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         b"hello world",
         "text/plain",
         "user_data",
-        {"anchor": "created_at", "seconds": 2_592_000},
+        expiry,
         {"model": TEST_LLM_MODEL},
     )

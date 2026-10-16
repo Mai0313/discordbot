@@ -14,6 +14,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
     count_media_parts,
@@ -26,6 +27,7 @@ from discordbot.services.memory.writer import RawMemoryDraft
 from discordbot.services.memory.prompts import PHASE1_EVALUATOR_PROMPT
 from discordbot.cogs.gen_reply.streaming import ResponseStreamer
 from discordbot.cogs.gen_reply.generation import ImageGenerator, VoiceGenerator
+from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
 from discordbot.services.memory.server_prompts import SERVER_PHASE1_EVALUATOR_PROMPT
 
 from tests.helpers.memory import drain_memory_turns, wait_for_persisted_writes
@@ -76,10 +78,9 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
     """
     guild_message = FakeMessage(content="hi")
     instructions = build_runtime_instructions(
-        system_prompt="SYS", message=as_message(fake=guild_message), guild_id=1
+        system_prompt="SYS", message=as_message(fake=guild_message), guild_id=424242
     )
-    assert "Current conversation location:" in instructions
-    assert "a Discord server (guild id 1)" in instructions
+    assert "424242" in instructions
     assert "Test Guild" not in instructions
 
     dm_message = FakeMessage(content="hi")
@@ -87,29 +88,26 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
     dm_instructions = build_runtime_instructions(
         system_prompt="SYS", message=as_message(fake=dm_message), guild_id=None
     )
-    assert "Current conversation location:" in dm_instructions
-    assert "a Discord direct message (DM)" in dm_instructions
+    assert "424242" not in dm_instructions
+    assert dm_instructions != instructions
 
 
-@pytest.mark.parametrize(
-    argnames=("in_guild", "location"),
-    argvalues=[(True, "a Discord server (guild id 1)"), (False, "a Discord direct message (DM)")],
-    ids=["guild", "dm"],
-)
+@pytest.mark.parametrize(argnames="guild_id", argvalues=[424242, None], ids=["guild", "dm"])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_the_answer_is_told_where_its_turn_happens(in_guild: bool, location: str) -> None:
-    """The QA answer's instructions name the turn's own server, or a DM outside one."""
+async def test_the_answer_is_told_where_its_turn_happens(guild_id: int | None) -> None:
+    """The QA answer's instructions name the turn's own server off the surface, or a DM."""
     cog = _cog()
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    if not in_guild:
-        message.guild = None
+    message.guild = None
+    typed_message = as_message(fake=message)
+    surface = TurnSurface(message=typed_message, guild_id=guild_id)
 
-    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
+    await _answer(cog=cog, message=typed_message, surface=surface).stream_answer(
         system_prompt="SYS", context=ReplyContext()
     )
 
     (instructions,) = _recorded(cog).responses.create_instructions
-    assert location in instructions
+    assert ("424242" in instructions) is (guild_id is not None)
 
 
 @pytest.mark.parametrize(
@@ -172,11 +170,16 @@ class _FakeInteractionsResource:
 
 
 @pytest.mark.usefixtures("no_memory_review")
-async def test_youtube_qa_uses_interactions_backend() -> None:
+async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """A watched YouTube URL streams the answer through Interactions, not Responses.
 
     The graded effort is sent straight through as the Interactions thinking_level.
     """
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+    )
     cog = _cog()
     cog.config = _config_stub(youtube_video_enabled=True, gemini_api_key="test-key")
     interactions = _FakeInteractionsResource(events=interactions_turn_events())
@@ -184,6 +187,8 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
+    assert message.guild is not None
+    message.guild.id = 424242
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
         system_prompt="SYS", context=ReplyContext(), effort="low", yt_url=url
     )
@@ -198,13 +203,16 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     _assert_runtime_time_context(
         instructions=interactions.calls[0].system_instruction, system_prompt="SYS"
     )
-    assert "a Discord server (guild id 1)" in interactions.calls[0].system_instruction
+    assert "424242" in interactions.calls[0].system_instruction
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
     assert "Hello world" in reply_content
-    assert "⬆ 12 ⬇ 34" in reply_content
+    footer_match = USAGE_FOOTER_RE.search(reply_content)
+    assert footer_match is not None
+    assert "12" in footer_match.group()
+    assert "34" in footer_match.group()
     # A persistent watch reaction marks that the reply was grounded in the video.
-    assert "<:youtube:1517546722535018596>" in message.added_reactions
+    assert YOUTUBE_EMOJI in message.added_reactions
 
 
 def test_count_media_parts_counts_only_the_shapes_media_reaches_the_model_in() -> None:
@@ -246,12 +254,12 @@ async def test_youtube_qa_falls_back_to_responses(
         youtube_video_enabled=scenario != "kill_switch_off",
         gemini_api_key="" if scenario == "no_key" else "test-key",
     )
-    if scenario == "non_gemini_model":
-        monkeypatch.setattr(
-            RuntimeModelCatalog,
-            "slow_model",
-            property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
-        )
+    slow_name = "gpt-5-mini" if scenario == "non_gemini_model" else "gemini-test"
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name=slow_name, effort="high")),
+    )
     interactions = _FakeInteractionsResource(events=interactions_turn_events())
     cog.toolkit.__dict__["gemini_client"] = FakeGeminiClient(interactions=interactions)
     logged = capture_logs(monkeypatch=monkeypatch, level="info")

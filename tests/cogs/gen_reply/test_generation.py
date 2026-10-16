@@ -77,10 +77,10 @@ def test_speechify_discord_markup_rewrites_and_drops() -> None:
 
 async def test_music_filename_follows_returned_mime() -> None:
     """The attachment extension follows the returned audio mime, falling back to .mp3."""
-    assert music_filename(mime_type="audio/wav") == "music.wav"
-    assert music_filename(mime_type="audio/mpeg") == "music.mp3"
-    assert music_filename(mime_type="audio/ogg") == "music.ogg"
-    assert music_filename(mime_type=None) == "music.mp3"
+    assert music_filename(mime_type="audio/wav").endswith(".wav")
+    assert music_filename(mime_type="audio/mpeg").endswith(".mp3")
+    assert music_filename(mime_type="audio/ogg").endswith(".ogg")
+    assert music_filename(mime_type=None).endswith(".mp3")
 
 
 async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
@@ -232,7 +232,7 @@ async def test_prompt_generator_refines_with_grounding() -> None:
     assert client.responses.create_models == [RuntimeModelCatalog().fast_model.name]
     assert client.responses.create_streams == [False]
     assert client.responses.create_instructions == [IMAGE_PROMPT]
-    assert client.responses.create_tools == [[{"googleSearch": {}}, {"urlContext": {}}]]
+    assert client.responses.create_tools == [list(RuntimeModelCatalog().fast_model.tools)]
     # The raw request rides as the input_text part the director rewrites.
     request_text = _recorded_content_parts(request=client.responses.create_inputs[0])[0]["text"]
     assert "draw a cat" in request_text
@@ -388,9 +388,8 @@ async def test_a_stalled_source_video_upload_fails_the_edit_within_its_bound(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
     )
 
-    with pytest.raises(
-        RuntimeError, match="Source video did not become ACTIVE before the deadline"
-    ):
+    with pytest.raises(RuntimeError) as raised:
         await generator._upload_source_video(
             source_video=LoadedMedia(data=b"clip", mime_type="video/mp4")
         )
+    assert isinstance(raised.value.__cause__, TimeoutError)

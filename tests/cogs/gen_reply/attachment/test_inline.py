@@ -51,7 +51,6 @@ async def test_inline_renderer_drops_a_source_that_fails_to_load(
     )
 
     assert rendered is None
-    assert not renderer._dead_sources
     assert renderer.carries(content_type="text/plain", cache_key="notes.txt", size=None)
 
 

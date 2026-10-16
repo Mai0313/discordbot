@@ -12,6 +12,7 @@ from discordbot.cogs.gen_reply.references import message_link_texts, authored_li
 
 from tests.helpers.casting import as_message
 from tests.helpers.reply_fakes import (
+    TEST_LLM_MODEL,
     FakeAuthor,
     FakeMessage,
     _stream,
@@ -43,7 +44,7 @@ async def test_set_memory_note_splices_before_the_usage_footer() -> None:
 
     content = message.replies[0].content or ""
     assert "記下了 使用者偏好繁體中文" in content
-    assert content.index("記下了") < content.index("⬆")
+    assert content.index("記下了") < content.index(f"-# {TEST_LLM_MODEL}")
     assert USAGE_FOOTER_RE.sub("", content) == "好喔"
 
 
@@ -124,7 +125,7 @@ async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
 
     content = message.replies[0].content or ""
     assert MEMORY_PENDING_NOTE not in content
-    assert "媒體過大，改用連結" in content
+    assert "https://media.example/x.mp4" in content
     assert content.count("-# ✏️") == 1
 
 
@@ -148,7 +149,7 @@ async def test_the_pending_note_never_reaches_the_answer_text() -> None:
     )
 
     assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
-    assert "正在整理記憶" not in full_reply
+    assert MEMORY_PENDING_NOTE not in full_reply
     assert USAGE_FOOTER_RE.sub("", full_reply) == "好喔"
 
 
@@ -182,7 +183,7 @@ async def test_a_memory_note_never_reaches_a_later_turns_history(
         MemoryWriteSummary(remembered=("使用者偏好繁體中文",), forgotten=("我住在台中",))
     )
     on_screen = message.replies[0].content or ""
-    assert "不再記得 我住在台中" in on_screen, "the note never landed, so this proves nothing"
+    assert "我住在台中" in on_screen, "the note never landed, so this proves nothing"
 
     # Discord trims a message's leading and trailing whitespace before storing it.
     bot_reply = as_message(
@@ -193,7 +194,7 @@ async def test_a_memory_note_never_reaches_a_later_turns_history(
         *message_link_texts(message=bot_reply, strip_usage_footer=True),
         *authored_link_texts(message=bot_reply),
     ]
-    assert all("記下了" not in span and "台中" not in span for span in spans)
+    assert all("使用者偏好繁體中文" not in span and "台中" not in span for span in spans)
 
 
 @pytest.mark.parametrize(

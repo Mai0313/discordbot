@@ -98,9 +98,7 @@ async def test_route_classify_carries_decision_and_defaults_qa(
     assert fallback.link_context_sources == []
     assert fallback.effort == "high"
     # Nothing raised, so this record is the only trace that the route was never read.
-    assert [text for text, _ in warned] == [
-        "RouteClassification returned no parsed output; defaulting to QA"
-    ]
+    assert [fields["message_id"] for _, fields in warned] == [message.id]
 
 
 async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:

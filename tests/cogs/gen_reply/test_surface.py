@@ -147,7 +147,6 @@ async def test_a_dropped_clip_is_written_where_it_cannot_be_reacted() -> None:
     assert surface.take_hints() == []
 
 
-@pytest.mark.usefixtures("ask_isolated_db")
 async def test_the_surface_records_a_turn_and_replays_it_next_time() -> None:
     """One turn's answer is the next turn's history, since Discord keeps none of it for us."""
     interaction = _interaction()
@@ -162,7 +161,6 @@ async def test_the_surface_records_a_turn_and_replays_it_next_time() -> None:
     assert [message.author.id for message in history] == [ASKER_ID, BOT_USER_ID]
 
 
-@pytest.mark.usefixtures("ask_isolated_db")
 async def test_a_gateway_turn_records_nothing() -> None:
     """Discord's own channel history is the record there, so the store must stay empty."""
     interaction = _interaction()
@@ -175,31 +173,13 @@ async def test_a_gateway_turn_records_nothing() -> None:
 
 async def test_a_gateway_surface_still_reacts_instead_of_collecting() -> None:
     """Nothing about the `on_message` path changes: the hint is the reaction it always was."""
-    added: list[str] = []
-
-    class _Reactable:
-        """A message that records the reactions added to it."""
-
-        guild = None
-        channel = object()
-
-        async def add_reaction(self, emoji: str) -> None:
-            """Records one reaction."""
-            added.append(emoji)
-
-    surface = TurnSurface.for_message(message=_Reactable())  # ty: ignore[invalid-argument-type] -- only `.add_reaction` is reachable here
+    message = FakeMessage()
+    surface = TurnSurface.for_message(message=as_message(fake=message))
 
     await surface.hint(emoji="⚠️")
 
-    assert added == ["⚠️"]
+    assert message.added_reactions == ["⚠️"]
     assert surface.take_hints() == []
-
-
-def _deferred_surface(**kwargs: Any) -> TurnSurface:  # noqa: ANN401 -- forwards to the untyped fake
-    """The surface `/ask` builds, after the defer that opens the fifteen-minute window."""
-    interaction = _interaction(**kwargs)
-    interaction.deferred = True
-    return TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
 
 def test_a_gateway_turn_has_nothing_running_out() -> None:
@@ -209,14 +189,18 @@ def test_a_gateway_turn_has_nothing_running_out() -> None:
     assert TurnSurface.for_message(message=message).delivery_budget_seconds() is None
 
 
-def test_the_delivery_budget_holds_back_what_answering_will_cost() -> None:
+def test_the_delivery_budget_holds_back_what_answering_will_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A `/ask` turn may spend its token up to the margin the answer itself still needs."""
-    budget = _deferred_surface().delivery_budget_seconds()
+    fixed = utcnow()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.surface.utcnow", lambda: fixed)
+    interaction = _interaction()
+    interaction.deferred = True
+    interaction.created_at = fixed
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
-    assert budget is not None
-    # Fifteen minutes of token, less the margin, less however long the test took to get here.
-    usable = 15 * 60 - INTERACTION_DELIVERY_MARGIN_SECONDS
-    assert usable - 5.0 < budget <= usable
+    assert surface.delivery_budget_seconds() == 15 * 60 - INTERACTION_DELIVERY_MARGIN_SECONDS
 
 
 def test_a_window_already_gone_leaves_nothing_to_spend() -> None:

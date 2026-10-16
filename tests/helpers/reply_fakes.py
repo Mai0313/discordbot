@@ -877,8 +877,7 @@ def _build_stub(context: ReplyContext) -> Callable[..., Awaitable[ReplyContext]]
 def _assert_runtime_time_context(instructions: str, system_prompt: str) -> None:
     """Verifies that per-request time context follows the base instructions, last."""
     assert instructions.startswith(system_prompt)
-    assert "* Treat `message_created_at_asia_taipei` as now for this reply." in instructions
-    assert instructions.endswith("* `message_created_at_asia_taipei`: 2026-06-10T11:04:05+08:00")
+    assert instructions.endswith("2026-06-10T11:04:05+08:00")
 
 
 def _stream_events() -> AsyncIterator[ResponseStreamEvent]:

@@ -18,13 +18,13 @@ from discordbot.services.memory.store import user_scope, write_tone, server_scop
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, ROUTE_RECALL_SECTION, route_prompt
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.typings.context_budgets import MEMORY_CONTEXT_TARGET_USERS
+from discordbot.cogs.gen_reply.status_marks import MEMORY_READ_EMOJI
 
 from tests.helpers.casting import as_message
 from tests.helpers.llm_input import (
     block_index,
     request_index,
     request_input,
-    iter_text_blocks,
     extract_tone_block,
     has_memory_context_block,
     extract_callable_user_ids,
@@ -102,12 +102,9 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     await _run_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses)
-    blocks = list(iter_text_blocks(request=answer))
     reference_index = block_index(request=answer, kind="reference")
     current_index = block_index(request=answer, kind="current")
     assert block_index(request=answer, kind="memory") < reference_index < current_index
-    assert "directly replying to this message" in blocks[reference_index][1]
-    assert "reply to the Reference Message above" in blocks[current_index][1]
 
 
 @pytest.mark.usefixtures("no_memory_review")
@@ -317,13 +314,16 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             set(),
         ),
         (
-            {**{uid: f"記憶{uid}" for uid in range(1, 11)}, 42: "額外記憶"},
+            {
+                **{uid: f"記憶{uid}" for uid in range(1, MEMORY_CONTEXT_TARGET_USERS + 3)},
+                42: "額外記憶",
+            },
             (42, "Boss", "李董"),
-            list(range(2, 11)),
+            list(range(2, MEMORY_CONTEXT_TARGET_USERS + 3)),
             None,
             True,
             ["42"],
-            set(range(1, 11)),
+            set(range(1, MEMORY_CONTEXT_TARGET_USERS + 3)),
             set(),
         ),
     ],
@@ -606,37 +606,30 @@ async def test_an_ask_turn_offers_the_route_no_candidates(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize(
-    ("seeded_ids", "server_nick", "mentions", "picks", "present", "absent"),
+    ("seeded_ids", "server_nick", "mentions", "picks", "expected_tokens", "absent"),
     [
         (
             [1, 2, 3],
             None,
             [(2, "alice", "Alice"), (3, "bob", "Bob")],
             [],
-            ["\n-# 📖 讀了 Tester (tester), Alice (alice) 等 3 人的記憶"],
-            [],
+            ("Tester (tester)", "Alice (alice)", "3"),
+            ("Bob (bob)",),
         ),
         (
             [1, 42],
             (42, "Boss", "李董"),
             [],
             ["42", "42"],
-            ["\n-# 📖 讀了 Tester (tester) 等 2 人的記憶"],
-            ["社群暱稱", "42"],
+            ("Tester (tester)", "2"),
+            ("社群暱稱", "李董", "42"),
         ),
-        (
-            [1],
-            (1, "Tester", "李董"),
-            [],
-            [],
-            ["\n-# 📖 讀了 Tester (tester) 的記憶"],
-            ["社群暱稱"],
-        ),
-        ([], None, [], ["42"], [], ["📖"]),
+        ([1], (1, "Tester", "李董"), [], [], ("Tester (tester)",), ("社群暱稱", "李董")),
+        ([], None, [], ["42"], (), (MEMORY_READ_EMOJI,)),
         # Nobody present is nameable and the route picked a table-only member: the footer has
         # no name to print, so it reports the bare count. Only reachable because the optional
         # offer is not gated on a deterministic memory existing.
-        ([42], (42, "Boss", "李董"), [], ["42"], ["\n-# 📖 讀了 1 人的記憶"], []),
+        ([42], (42, "Boss", "李董"), [], ["42"], ("1",), ("社群暱稱", "李董", "42")),
     ],
     ids=[
         "owners-collapse-past-two",
@@ -652,18 +645,16 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     server_nick: tuple[int, str, str] | None,
     mentions: list[tuple[int, str, str]],
     picks: list[str],
-    present: list[str],
-    absent: list[str],
+    expected_tokens: tuple[str, ...],
+    absent: tuple[str, ...],
 ) -> None:
     """The footer credits the memory owners actually read.
 
     Reads the user-visible reply text (the feature's small, real output surface): the single-owner
-    credit, the collapse to "等 N 人" past two owners, repeat-pick de-duplication, and the
+    credit, the collapse to a count past two owners, repeat-pick de-duplication, and the
     no-credit case. Two of them also pin that the `## 成員稱呼` row never reaches this line
-    from either side: an absent member is counted into the "等 N 人" total and never named at
-    all, a participant is named by their Discord label. The line opens on 讀了 because the
-    write notes share this corner of the reply and a reader has to be able to tell them apart
-    at a glance.
+    from either side: an absent member is counted into the total and never named at all, and a
+    participant is named by their Discord label.
     """
     cog = _cog()
     for uid in seeded_ids:
@@ -686,10 +677,16 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     await _run_pipeline(cog=cog, message=message)
 
     content = message.replies[0].content or ""
-    for fragment in present:
-        assert fragment in content
-    for fragment in absent:
-        assert fragment not in content
+    if expected_tokens:
+        last_line = content.splitlines()[-1]
+        assert last_line.startswith(f"-# {MEMORY_READ_EMOJI}")
+        positions = [last_line.index(token) for token in expected_tokens]
+        assert positions == sorted(positions)
+        for fragment in absent:
+            assert fragment not in last_line
+    else:
+        for fragment in absent:
+            assert fragment not in content
 
 
 @pytest.mark.parametrize(

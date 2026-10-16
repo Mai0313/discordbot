@@ -1,6 +1,7 @@
 """Tests for the shared status-reaction helper."""
 
 from types import SimpleNamespace
+import asyncio
 
 import pytest
 
@@ -39,8 +40,11 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
     ) -> str:
-        """Records each scheduled reaction swap."""
+        """Records each scheduled reaction swap, yielding on the first so ordering is tested."""
         del message, bot_user
+        if emoji == "🔀":
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
         events.append((emoji, previous))
         return emoji
 

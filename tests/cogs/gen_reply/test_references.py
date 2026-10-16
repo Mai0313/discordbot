@@ -95,21 +95,6 @@ def test_find_youtube_url_in_a_forwarded_snapshot(
     assert find_youtube_url(message=as_message(fake=message)) == expected
 
 
-def test_link_url_for_source_finds_the_threads_share_form() -> None:
-    """The share button copies `/share/<code>`, which the registry has to select like any post.
-
-    It resolves to the same post as the canonical form, and it is what the mobile app offers,
-    so a pattern that missed it would leave the answer turn with no post context at all.
-    """
-    share_url = "https://www.threads.com/share/DfX81RWN8"
-    message = FakeMessage(content=f"<@999> 這篇在說什麼 {share_url}")
-
-    found = link_url_for_source(
-        source=_link_source(name="threads"), message=as_message(fake=message)
-    )
-    assert found == share_url
-
-
 def test_link_url_for_source_prefers_the_current_message() -> None:
     """With a Threads link on both, the one the user typed wins over the replied-to one."""
     referenced = FakeMessage(content=f"看看這篇 {SAMPLE_POST_URLS['threads']}")

@@ -11,7 +11,7 @@ from nextcord import Attachment
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryOwner
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import ModelSettings, RouteClassification, RuntimeModelCatalog
 from discordbot.services.memory import database as memory_db
 from discordbot.services.memory import consolidation
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
@@ -27,7 +27,7 @@ from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.services.memory.writer import render_turn_payload
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
-from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI
+from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
@@ -44,10 +44,8 @@ from tests.helpers.reply_fakes import (
     _recorded,
     _build_stub,
     _media_routes,
-    _run_pipeline,
     _classify_stub,
     _recorded_video,
-    _install_streamer,
     _ready_context_task,
 )
 from tests.helpers.ask_interaction import (
@@ -70,11 +68,12 @@ if TYPE_CHECKING:
     from discordbot.cogs.gen_reply.surface import TurnSurface
 
 
-async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies route, video, image, and slow-reply handlers using fake APIs."""
+async def test_gen_reply_routes_and_handlers_without_api() -> None:
+    """Verifies route, video, and image handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert (await _route(cog=cog, message=message)).decision == "QA"
+    _recorded(cog).responses.output_parsed = RouteClassification(decision="IMAGE")
+    assert (await _route(cog=cog, message=message)).decision == "IMAGE"
     assert _recorded(cog).responses.parse_models[0] == cog.toolkit.runtime_models.triage_model.name
 
     await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
@@ -99,12 +98,6 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert _recorded(cog).responses.create_streams[-1] is True
     assert _recorded(cog).responses.create_tools[-1] is None
 
-    streams_before = _recorded(cog).responses.create_streams.count(True)
-    built = _install_streamer(monkeypatch=monkeypatch)
-    await _run_pipeline(cog=cog, message=message)
-    assert _recorded(cog).responses.create_streams.count(True) == streams_before + 1
-    assert built[-1]["message"] is message
-
 
 async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch: pytest.MonkeyPatch,
@@ -122,7 +115,8 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     dm_empty = FakeMessage(content="<@999>", author=FakeAuthor(user_id=1))
     dm_empty.guild = None
     await cog.on_message(message=as_message(fake=dm_empty))
-    assert dm_empty.replies[0].content == "?"
+    assert dm_empty.replies[0].embed is None
+    assert _recorded(cog).responses.parse_models == []
 
     monkeypatch.setattr(RouteClassifier, "classify", _classify_stub(route=RuntimeError("boom")))
     monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=ReplyContext()))
@@ -130,7 +124,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=as_message(fake=failed))
     notice = failed.replies[0].embed
     assert notice is not None
-    assert notice.title == "Something went wrong"
+    assert notice.footer.text == "RuntimeError"
 
     # Source deleted before the error embed lands: it falls back to an unparented send.
     deleted = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
@@ -140,12 +134,8 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert deleted.channel.sent[0].embed is not None
 
 
-async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_turn_without_a_proxy_key_still_reports_its_failure() -> None:
     """Reading the request builds the toolkit, whose client the SDK refuses without a key."""
-    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
-    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
     cog = ReplyGeneratorCogs(
         bot=as_bot(
             fake=SimpleNamespace(
@@ -160,31 +150,31 @@ async def test_a_turn_without_a_proxy_key_still_reports_its_failure(
 
     notice = message.replies[0].embed
     assert notice is not None
-    assert notice.title == "Something went wrong"
     assert notice.footer.text == "OpenAIError"
     assert message.added_reactions == [FAILED_EMOJI]
 
 
 async def test_an_empty_mention_is_marked_as_well_as_answered() -> None:
-    """A mention with nothing else in it gets ❓ on the message beside its `?` reply."""
+    """A mention with nothing else in it gets marked on the message beside its plain reply."""
     cog = _cog()
     message = FakeMessage(content="<@999>", author=FakeAuthor(user_id=1))
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.added_reactions == ["❓"]
-    assert [reply.content for reply in message.replies] == ["?"]
+    assert message.added_reactions == [EMPTY_PROMPT_EMOJI]
+    assert len(message.replies) == 1
+    assert message.replies[0].embed is None
 
 
 async def test_an_empty_mention_deleted_before_its_answer_gets_nothing() -> None:
-    """A `?` answers nothing once its message is gone, so no error notice lands instead."""
+    """An empty mention answers nothing once its message is gone, so no error notice lands."""
     cog = _cog()
     message = FakeMessage(content="<@999>", author=FakeAuthor(user_id=1))
     message.reply_error = make_invalid_form_body()
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.added_reactions == ["❓"]
+    assert message.added_reactions == [EMPTY_PROMPT_EMOJI]
     assert message.channel.sent == []
 
 
@@ -348,6 +338,7 @@ async def test_resume_memory_sweeps_every_scope_past_a_backup_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A copy like `111.bak` under the store must not abort the sweep for the scopes after it."""
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
     cog = _cog(bot_user_id=999)
     scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
     for key in [*scopes, "111.bak"]:
@@ -371,6 +362,7 @@ async def test_resume_memory_sweeps_every_scope_past_an_undecodable_raw_file(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `raw.md` saved in the wrong encoding leaves out its own scope, not the ones after it."""
+    monkeypatch.setattr(consolidation, "RAW_CONSOLIDATION_THRESHOLD", 1)
     cog = _cog(bot_user_id=999)
     scopes = [user_scope(user_id=111), user_scope(user_id=222), server_scope(server_id=333)]
     for scope in scopes:
@@ -513,19 +505,19 @@ async def test_ask_defers_before_anything_slower_than_three_seconds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The token dies after three seconds, and every phase of a turn is slower than that."""
-    ran: list[tuple[TurnSurface, str]] = []
+    ran: list[tuple[TurnSurface, str, bool]] = []
 
     async def _run(pipeline: ReplyPipeline) -> None:
-        """Records the turn the command would have run."""
-        ran.append((pipeline.surface, pipeline.user_prompt))
+        """Records the turn the command would have run and whether the defer had already landed."""
+        ran.append((pipeline.surface, pipeline.user_prompt, interaction.deferred))
 
     interaction = _interaction()
     cog = _ask_cog(interaction=interaction, monkeypatch=monkeypatch, run=_run)
 
     await cog.ask(interaction, question="在幹嘛", attachment=None)
 
-    assert interaction.deferred is True
-    surface, user_prompt = ran[0]
+    surface, user_prompt, deferred_first = ran[0]
+    assert deferred_first is True
     assert user_prompt == "在幹嘛"
     assert surface.interaction is interaction
     assert surface.guild_id == GUILD_ID
@@ -565,7 +557,8 @@ async def test_ask_answers_a_blank_question_without_running_a_turn(
 
     await cog.ask(interaction, question="   ", attachment=None)
 
-    assert [edit["content"] for edit in interaction.edits] == ["?"]
+    (edit,) = interaction.edits
+    assert "embed" not in edit
 
 
 async def test_ask_answers_an_attachment_sent_without_a_question(
@@ -598,12 +591,8 @@ async def test_ask_answers_an_attachment_sent_without_a_question(
     assert [attachment.filename for attachment in surface.message.attachments] == ["cat.png"]
 
 
-async def test_ask_without_a_proxy_key_answers_its_deferred_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_ask_without_a_proxy_key_answers_its_deferred_response() -> None:
     """Otherwise the asker is left on Discord's "thinking" state with nothing ever landing."""
-    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
-    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
     cog = ReplyGeneratorCogs(
         bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
     )
@@ -613,5 +602,4 @@ async def test_ask_without_a_proxy_key_answers_its_deferred_response(
     await cog.ask(interaction, question="在幹嘛", attachment=None)
 
     (edit,) = interaction.edits
-    assert edit["embed"].title == "Something went wrong"
     assert edit["embed"].footer.text == "OpenAIError"

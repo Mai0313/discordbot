@@ -169,7 +169,16 @@ async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_
     """
     cog = _cog()
     cog.config = (
-        LLMConfig.model_construct(gemini_api_key="test-key") if switched_on else _config_stub()
+        _config_stub(
+            inline_voice_enabled=True,
+            inline_image_enabled=True,
+            inline_music_enabled=True,
+            inline_video_enabled=True,
+            deep_research_enabled=True,
+            gemini_api_key="test-key",
+        )
+        if switched_on
+        else _config_stub()
     )
     message = FakeMessage(content="<@999> can you make me a song?", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
@@ -216,4 +225,4 @@ async def test_handle_message_reply_leads_with_the_capability_reference() -> Non
     carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
     assert carried == [0]
     assert blocks[0][0] == "assistant"
-    assert "/memory clear" in blocks[0][1]
+    assert blocks[0][1] == str(render_capabilities_block(config=cog.config)["content"])

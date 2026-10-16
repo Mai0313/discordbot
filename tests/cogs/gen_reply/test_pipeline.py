@@ -25,8 +25,13 @@ from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.pipeline import UNROUTED_REPLY
 from discordbot.typings.context_budgets import HISTORY_MESSAGE_LIMIT
 from discordbot.cogs.gen_reply.media_reply import MediaReplyRoutes
-from discordbot.cogs.gen_reply.speculation import run_until_deadline, await_deadline_bound_task
+from discordbot.cogs.gen_reply.speculation import (
+    discard_link_tasks,
+    run_until_deadline,
+    await_deadline_bound_task,
+)
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
+from discordbot.cogs.gen_reply.status_marks import DONE_EMOJI
 
 from tests.helpers.casting import as_message
 from tests.helpers.llm_input import (
@@ -176,7 +181,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     ) -> None:
         """Records image handler dispatch and drains the handed-over context task."""
         del self
-        await context_task
+        contexts.append(await context_task)
         prompts.append(user_prompt)
         calls.append("handle_image")
 
@@ -185,7 +190,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     ) -> None:
         """Records video handler dispatch and drains the handed-over context task."""
         del self
-        await context_task
+        contexts.append(await context_task)
         prompts.append(user_prompt)
         calls.append("handle_video")
 
@@ -217,16 +222,16 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
     assert expected_call in calls
     # Route, effort and recall are one triage call on every route, IMAGE and VIDEO included.
     assert len(_recorded(cog).responses.parse_models) == 1
-    assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
+    assert calls[-1] == f"reaction:{DONE_EMOJI}"
     # Every route consumes the one speculative context, IMAGE/VIDEO once their media is on
-    # screen, so each issues exactly one prep request and what is asserted is which request was
-    # made, not the order two of them arrived in.
+    # screen, so each issues exactly one prep request and receives that very context instance.
     assert Counter(prep_requests) == Counter([HISTORY_MESSAGE_LIMIT])
+    assert len(contexts) == 1
+    assert contexts[0] is prepared_context
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
     else:
-        assert contexts == [prepared_context]
         # The route's grade flows end-to-end into the QA answer model.
         assert effort_flags == ["low"]
 
@@ -308,33 +313,6 @@ async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
     await asyncio.wait_for(fut=cog.on_message(message=as_message(fake=message)), timeout=5)
 
     assert build_cancelled.is_set()
-
-
-@pytest.mark.usefixtures("quiet_turn")
-async def test_on_message_consumes_speculative_context_on_image_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The IMAGE route hands its speculative context to the image handler, not discards it."""
-    cog = _cog()
-    prepared = ReplyContext()
-    received: list[ReplyContext] = []
-
-    async def fake_image_handler(
-        self: object, user_prompt: str, context_task: asyncio.Task[ReplyContext]
-    ) -> None:
-        """Records the context the dispatch handed over."""
-        del self, user_prompt
-        received.append(await context_task)
-
-    monkeypatch.setattr(
-        RouteClassifier, "classify", _classify_stub(route=RouteClassification(decision="IMAGE"))
-    )
-    monkeypatch.setattr(ReplyContextBuilder, "build", _build_stub(context=prepared))
-    monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-
-    message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-    assert received == [prepared]
 
 
 @pytest.mark.usefixtures("quiet_turn")
@@ -767,24 +745,51 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     assert not has_timeout_notice(request=answer, source="douyin")
 
 
+def _build_after(after: Callable[[], Awaitable[object]]) -> Callable[..., Awaitable[ReplyContext]]:
+    """A `ReplyContextBuilder.build` that finishes once the route's picks and `after` resolve."""
+
+    async def build(
+        self: ReplyContextBuilder, recall_picks: asyncio.Future[list[str]], **kwargs: object
+    ) -> ReplyContext:
+        """Waits on the picks and `after`, then returns an empty context."""
+        del self, kwargs
+        await recall_picks
+        await after()
+        return ReplyContext()
+
+    return build
+
+
 @pytest.mark.usefixtures("quiet_turn")
 async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resolver lets a deadline-cancelled builder finish cleanup before injecting its notice."""
     cog = _link_cog(sources=["douyin"])
-    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.01)
     builder = _CleanupBoundBuilder()
-    monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.1))
+    resolving = asyncio.Event()
+
+    async def signalling_await(**kwargs: Any) -> list[EasyInputMessageParam]:  # noqa: ANN401 -- forwarded untouched to the real resolver
+        """Marks the turn as waiting on the deadline-cancelled build."""
+        resolving.set()
+        return await await_deadline_bound_task(**kwargs)
+
+    monkeypatch.setattr(
+        ReplyContextBuilder, "build", _build_after(after=builder.cleanup_started.wait)
+    )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.pipeline.await_deadline_bound_task", signalling_await
     )
 
     message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
-        await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
-        await asyncio.sleep(0.12)
+        await asyncio.wait_for(fut=resolving.wait(), timeout=1)
+        await asyncio.sleep(0)
         assert builder.cancellations == 1
         assert not message_task.done()
     finally:
@@ -801,20 +806,32 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
 ) -> None:
     """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
     cog = _link_cog(sources=["douyin"])
-    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.01)
     builder = _CleanupBoundBuilder()
-    monkeypatch.setattr(ReplyContextBuilder, "build", _delayed_build(seconds=0.1))
+    resolving = asyncio.Event()
+
+    async def signalling_await(**kwargs: Any) -> list[EasyInputMessageParam]:  # noqa: ANN401 -- forwarded untouched to the real resolver
+        """Marks the turn as waiting on the deadline-cancelled build."""
+        resolving.set()
+        return await await_deadline_bound_task(**kwargs)
+
+    monkeypatch.setattr(
+        ReplyContextBuilder, "build", _build_after(after=builder.cleanup_started.wait)
+    )
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_douyin_context_messages", builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.pipeline.await_deadline_bound_task", signalling_await
     )
 
     message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['douyin']}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
-    await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
-    await asyncio.sleep(0.12)
+    await asyncio.wait_for(fut=resolving.wait(), timeout=1)
+    await asyncio.sleep(0)
     message_task.cancel()
     try:
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0)
         assert builder.cancellations == 1
         assert not message_task.done()
     finally:
@@ -900,9 +917,7 @@ async def test_on_message_cancelled_link_wait_logs_builder_failure_under_its_tur
     with pytest.raises(asyncio.CancelledError):
         await message_task
     assert [
-        fields["message_id"]
-        for text, fields in warned
-        if text == "Discarded speculative task failed"
+        fields["message_id"] for _, fields in warned if fields.get("task_label") == "douyin"
     ] == [message.id]
 
 
@@ -963,10 +978,20 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
 ) -> None:
     """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
     cog = _link_cog(sources=["bilibili"])
-    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.pipeline.LINK_CONTEXT_GRACE_SECONDS", 0.01)
     builder = _CleanupBoundBuilder()
+    draining = asyncio.Event()
+
+    async def signalling_discard(**kwargs: Any) -> None:  # noqa: ANN401 -- forwarded untouched to the real drain
+        """Marks the finally block as draining the link tasks."""
+        draining.set()
+        await discard_link_tasks(**kwargs)
+
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.link_sources.registry.build_bilibili_context_messages", builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.pipeline.discard_link_tasks", signalling_discard
     )
     # Fails while the selected builder still owns its deadline cancellation cleanup.
     monkeypatch.setattr(
@@ -976,8 +1001,8 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     message = _link_message(text=f"這在講什麼 {SAMPLE_POST_URLS['bilibili']}")
     message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
     try:
-        await asyncio.wait_for(fut=builder.cleanup_started.wait(), timeout=1)
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(fut=draining.wait(), timeout=1)
+        await asyncio.sleep(0)
         assert builder.cancellations == 1
         assert not message_task.done()
     finally:

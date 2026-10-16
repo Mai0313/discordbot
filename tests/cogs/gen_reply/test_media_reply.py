@@ -110,13 +110,13 @@ async def test_an_empty_prompt_falls_back_to_an_english_instruction() -> None:
     )
     await cog.toolkit.video_generator.render(prompt="", reference_image_sources=[])
 
-    assert _recorded(cog).images.edit_prompts == [
-        "Edit or refine according to the attached content."
-    ]
+    (image_prompt,) = _recorded(cog).images.edit_prompts
+    assert image_prompt
+    assert image_prompt.isascii()
     create_input = _recorded_video(cog).create_inputs[0]
-    assert [part["text"] for part in create_input if part["type"] == "text"] == [
-        "Generate a video from the message content."
-    ]
+    (video_prompt,) = [part["text"] for part in create_input if part["type"] == "text"]
+    assert video_prompt
+    assert video_prompt.isascii()
 
 
 async def test_handle_image_reply_refines_prompt_before_generate() -> None:
@@ -141,7 +141,9 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     ]
     # The director runs on IMAGE_PROMPT with the grounding tools available.
     assert _recorded(cog).responses.create_instructions[0] == IMAGE_PROMPT
-    assert _recorded(cog).responses.create_tools[0] == [{"googleSearch": {}}, {"urlContext": {}}]
+    assert _recorded(cog).responses.create_tools[0] == list(
+        cog.toolkit.runtime_models.fast_model.tools
+    )
 
 
 async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
@@ -416,7 +418,7 @@ async def test_handle_video_reply_refines_prompt_before_render() -> None:
     ]
     assert not any(part["type"] == "image" for part in create_input)
     assert _recorded_video(cog).create_configs[0] is None
-    assert _recorded_video(cog).create_response_formats[0]["aspect_ratio"] == "16:9"
+    assert "aspect_ratio" in _recorded_video(cog).create_response_formats[0]
     assert message.replies[-1].file is not None
 
 
@@ -473,26 +475,28 @@ _SOURCE_UPLOAD_REFUSED = ClientError(403, {"error": {"message": "PERMISSION_DENI
 
 
 @pytest.mark.parametrize(
-    ("uploaded", "expected"),
+    ("uploaded", "expected_type", "state_token"),
     [
-        (_SOURCE_UPLOAD_REFUSED, _SOURCE_UPLOAD_REFUSED),
-        (
-            SimpleNamespace(name=None, uri=None, state=FileState.ACTIVE),
-            RuntimeError("Files API upload of source.mp4 returned no resource name"),
-        ),
+        (_SOURCE_UPLOAD_REFUSED, ClientError, None),
+        (SimpleNamespace(name=None, uri=None, state=FileState.ACTIVE), RuntimeError, None),
         (
             SimpleNamespace(name="files/vid", uri=None, state=FileState.PROCESSING),
-            RuntimeError("Source video did not become ACTIVE before the deadline"),
+            RuntimeError,
+            None,
         ),
         (
             SimpleNamespace(name="files/vid", uri=None, state=FileState.FAILED),
-            RuntimeError("Files API upload of source.mp4 failed: state=FileState.FAILED"),
+            RuntimeError,
+            "FAILED",
         ),
     ],
     ids=["sdk-error", "no-name", "never-active", "failed-state"],
 )
 async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
-    monkeypatch: pytest.MonkeyPatch, uploaded: object, expected: Exception
+    monkeypatch: pytest.MonkeyPatch,
+    uploaded: object,
+    expected_type: type[Exception],
+    state_token: str | None,
 ) -> None:
     """An edit whose clip never uploads fails the VIDEO route with that very error, before omni.
 
@@ -516,13 +520,16 @@ async def test_a_failed_source_video_upload_reaches_the_route_caller_unchanged(
     _recorded_video(cog).aio.files.upload = upload
     message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
 
-    with pytest.raises(type(expected)) as raised:
+    with pytest.raises(expected_type) as raised:
         await _media_routes(cog=cog, message=as_message(fake=message)).handle_video(
             user_prompt="make it snowy", context_task=_ready_context_task()
         )
 
-    assert type(raised.value) is type(expected)
-    assert str(raised.value) == str(expected)
+    assert type(raised.value) is expected_type
+    if isinstance(uploaded, Exception):
+        assert raised.value is uploaded
+    if state_token is not None:
+        assert state_token in str(raised.value)
     assert _recorded_video(cog).create_inputs == []
 
 

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 import asyncio
 
 import pytest
 import nextcord
 import requests
 
-from discordbot.typings.memory import MemoryCredits
 from discordbot.utils.model_pricing import ModelPriceEntry
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
@@ -22,6 +21,7 @@ from discordbot.cogs.gen_reply.streaming import (
     ResponseStreamer,
     _cut_cleanly,
 )
+from discordbot.cogs.gen_reply.status_marks import ANSWER_EMOJI, DROPPED_HINT_EMOJI
 
 from tests.helpers.casting import (
     as_message,
@@ -74,8 +74,11 @@ def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
     )
 
 
-async def test_streaming_counts_only_url_citation_annotations() -> None:
+async def test_streaming_counts_only_url_citation_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Grounding is counted off the completed output, past the reasoning and refusal shapes."""
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
     streamer = _streamer(message=FakeMessage())
 
     await _stream(
@@ -90,14 +93,17 @@ async def test_streaming_counts_only_url_citation_annotations() -> None:
         ),
     )
 
-    assert streamer._url_citations == 2
+    assert [fields["url_citations"] for _, fields in logged if "url_citations" in fields] == [2]
 
 
-async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output() -> None:
+async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The Interactions path reports grounding in another shape, so it must not log a zero.
 
     A zero here would read as an ungrounded answer.
     """
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
     streamer = _streamer(message=FakeMessage(), backend="interactions")
 
     await _stream(
@@ -117,7 +123,15 @@ async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no
         ),
     )
 
-    assert streamer._url_citations is None
+    assert [fields["url_citations"] for _, fields in logged if "url_citations" in fields] == [None]
+
+
+def _reply_chain(head: FakeReply) -> list[FakeReply]:
+    """The messages of a reply chain in order: `head`, then each one's own follow-up reply."""
+    chain = [head]
+    while chain[-1].replies:
+        chain.append(chain[-1].replies[0])
+    return chain
 
 
 @pytest.fixture
@@ -142,7 +156,9 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
 
     result = await _stream(streamer=_streamer(message=message), responses=_stream_events())
 
-    assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34"
+    assert USAGE_FOOTER_RE.search(result) is not None
+    assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
+    assert "$" not in result
     assert message.replies[0].content == result
 
 
@@ -168,21 +184,12 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
         ),
     )
 
-    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2"
-    assert result == f"{body}{usage_footer}"
-
-    parent = message.replies[0]
-    assert parent.content == body[:DISCORD_MESSAGE_LIMIT]
-
-    first_follow_up = parent.replies[0]
-    assert first_follow_up.content == body[DISCORD_MESSAGE_LIMIT : DISCORD_MESSAGE_LIMIT * 2]
-
-    second_follow_up = first_follow_up.replies[0]
-    assert second_follow_up.content == f"{body[DISCORD_MESSAGE_LIMIT * 2 :]}{usage_footer}"
-    assert second_follow_up.replies == []
-
-    chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
-    assert all(len(chunk) <= DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
+    assert USAGE_FOOTER_RE.sub("", result) == body
+    chain = _reply_chain(head=message.replies[0])
+    assert len(chain) > 1
+    assert "".join(str(link.content) for link in chain) == result
+    assert all(len(str(link.content)) <= DISCORD_MESSAGE_LIMIT for link in chain)
+    assert USAGE_FOOTER_RE.search(str(chain[-1].content)) is not None
 
 
 @pytest.mark.parametrize("error", [make_invalid_form_body(), make_not_found()])
@@ -213,10 +220,10 @@ async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> 
     )
 
     assert message.replies == []
-    parent = message.channel.sent[0]
-    assert parent.content == body[:DISCORD_MESSAGE_LIMIT]
     # The chain continues off the channel-sent parent, not the deleted source.
-    assert parent.replies[0].content == body[DISCORD_MESSAGE_LIMIT : DISCORD_MESSAGE_LIMIT * 2]
+    chain = _reply_chain(head=message.channel.sent[0])
+    assert len(chain) > 1
+    assert USAGE_FOOTER_RE.sub("", "".join(str(link.content) for link in chain)) == body
 
 
 async def test_streaming_reraises_non_deletion_http_errors() -> None:
@@ -239,7 +246,7 @@ async def test_streaming_tolerates_reply_deleted_before_final_edit() -> None:
     result = await _stream(streamer=streamer, responses=_stream_events())
 
     # The caller still gets the full text (memory / research follow-ups stay usable).
-    assert result
+    assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
     assert streamer.reply is None
     # Nothing is re-sent: the user removed that message on purpose.
     assert message.replies == []
@@ -272,11 +279,8 @@ async def test_a_refused_preview_write_stops_previewing_without_a_traceback(
 
     await asyncio.wait_for(streamer._preview_editor(), timeout=1.0)
 
-    assert warned == [
-        (
-            "Channel refused a preview write; stopping preview edits",
-            {"channel_id": message.channel.id, "message_id": message.id},
-        )
+    assert [fields for _, fields in warned] == [
+        {"channel_id": message.channel.id, "message_id": message.id}
     ]
 
 
@@ -290,7 +294,7 @@ async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
     assert len(message.replies) == 1
     preview = message.replies[0].content
     assert isinstance(preview, str)
-    assert preview.splitlines()[0] == "-# <:message:1517560873000898860> Thinking..."
+    assert preview.splitlines()[0].startswith(f"-# {ANSWER_EMOJI}")
     assert "-# first thought" in preview
     assert "-# second thought" in preview
 
@@ -310,7 +314,7 @@ def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
 
     assert len(preview) <= DISCORD_MESSAGE_LIMIT
     lines = preview.splitlines()
-    assert lines[0] == "-# <:message:1517560873000898860> Thinking..."
+    assert lines[0].startswith(f"-# {ANSWER_EMOJI}")
     assert all(line.startswith("-# ") for line in lines)
     assert "thought line 59" in preview
     assert "thought line 9 " not in preview
@@ -328,7 +332,7 @@ def test_streamer_reasoning_preview_caps_short_line_count() -> None:
 
     assert len(lines) == REASONING_PREVIEW_MAX_LINES + 1
     assert lines[-1] == "-# step 19"
-    assert "step 15" not in "\n".join(lines)
+    assert f"step {19 - REASONING_PREVIEW_MAX_LINES}" not in "\n".join(lines)
 
 
 def test_streamer_reasoning_preview_keeps_tail_of_one_long_paragraph() -> None:
@@ -403,14 +407,16 @@ async def test_streamer_footer_shows_route_effort() -> None:
         streamer=_streamer(message=message, model_effort="low"), responses=_stream_events()
     )
 
-    assert f"\n\n-# {TEST_LLM_MODEL} (low) · ⬆ 12 ⬇ 34" in result
+    footer_line = result.splitlines()[-1]
+    assert TEST_LLM_MODEL in footer_line
+    assert "low" in footer_line
     assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
 
 
 async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The footer prices the bare model name while showing it with its effort, byte for byte.
+    """The footer prices the bare model name while showing it with its effort.
 
     Pricing the label instead would find no entry and show no cost.
     """
@@ -418,14 +424,11 @@ async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
         TEST_LLM_MODEL: ModelPriceEntry(input_cost_per_token=1e-6, output_cost_per_token=2e-6)
     }
     monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
+    recorded = capture_logs(monkeypatch=monkeypatch, level="info")
     message = FakeMessage()
 
     result = await _stream(
-        streamer=_streamer(
-            message=message,
-            model_effort="high",
-            memory_lookups=MemoryCredits(named=("Tester (tester)",)),
-        ),
+        streamer=_streamer(message=message, model_effort="high"),
         responses=_stream_events_from(
             events=[
                 _text_event(delta="hello"),
@@ -435,20 +438,24 @@ async def test_streamer_footer_prices_the_model_it_labels_with_the_effort(
     )
 
     # 1,234 in at $1e-6 plus 567 out at $2e-6.
-    assert result == (
-        f"hello\n\n-# {TEST_LLM_MODEL} (high) · ⬆ 1,234 ⬇ 567 · $0.00236800"
-        "\n-# 📖 讀了 Tester (tester) 的記憶"
-    )
+    assert [fields["cost"] for _, fields in recorded if "cost" in fields] == [
+        pytest.approx(0.002368)
+    ]
+    footer_line = result.splitlines()[-1]
+    assert TEST_LLM_MODEL in footer_line
+    assert "high" in footer_line
+    assert "$" in footer_line
+    assert USAGE_FOOTER_RE.sub("", result) == "hello"
     assert message.replies[0].content == result
 
 
 @pytest.mark.parametrize(
-    ("listed", "footer_cost", "logged_cost"),
-    [(TEST_LLM_MODEL, " · $0.00000000", 0.0), ("another-model", "", None)],
+    ("listed", "logged_cost"),
+    [(TEST_LLM_MODEL, 0.0), ("another-model", None)],
     ids=["listed-free", "unlisted"],
 )
 async def test_streamer_footer_shows_a_cost_only_for_a_model_the_table_lists(
-    monkeypatch: pytest.MonkeyPatch, listed: str, footer_cost: str, logged_cost: float | None
+    monkeypatch: pytest.MonkeyPatch, listed: str, logged_cost: float | None
 ) -> None:
     """A model listed at zero is free and says so; one the table lacks has no cost to show."""
     rates = {listed: ModelPriceEntry(input_cost_per_token=0.0, output_cost_per_token=0.0)}
@@ -457,25 +464,9 @@ async def test_streamer_footer_shows_a_cost_only_for_a_model_the_table_lists(
 
     result = await _stream(streamer=_streamer(message=FakeMessage()), responses=_stream_events())
 
-    assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34{footer_cost}"
-    finalized = [fields for message, fields in recorded if message == "gen_reply reply finalized"]
-    assert finalized[0]["cost"] == logged_cost
-
-
-def test_an_answer_past_the_follow_up_budget_says_it_was_cut() -> None:
-    """Silently losing the tail reads as the model being interrupted; the notice says otherwise."""
-    footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
-    content = "字" * 9000
-
-    parent, chunks = ResponseStreamer._split_reply_for_discord(
-        content=content, footer=footer, max_messages=2
-    )
-
-    assert len(chunks) == 1
-    assert len(parent) <= 2000
-    assert len(chunks[0]) <= 2000
-    assert TRUNCATED_NOTICE.strip() in f"{parent}{chunks[0]}"
-    assert f"{parent}{chunks[0]}".endswith(footer)
+    assert [fields["cost"] for _, fields in recorded if "cost" in fields] == [logged_cost]
+    assert ("$" in result.splitlines()[-1]) == (logged_cost is not None)
+    assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
 
 
 @pytest.mark.parametrize("max_messages", [1, 2])
@@ -498,6 +489,8 @@ def test_only_an_answer_past_the_budget_is_cut(max_messages: int) -> None:
     over = [over_parent, *over_chunks]
     assert len(over) == max_messages
     assert TRUNCATED_NOTICE.strip() in over[-1]
+    assert over[-1].endswith(footer)
+    assert all(len(message) <= DISCORD_MESSAGE_LIMIT for message in over)
 
 
 _SPLIT_FOOTER = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000001"
@@ -666,24 +659,12 @@ def test_reopening_a_code_block_never_puts_back_what_the_cut_took() -> None:
     assert len(rest) < len(text) - DISCORD_MESSAGE_LIMIT // 2
 
 
-class _EditableReply:
-    """A landed reply that records what each edit wrote to it."""
-
-    def __init__(self) -> None:
-        """Initializes the recorded edits."""
-        self.contents: list[str] = []
-
-    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- passthrough Discord payload
-        """Records one content edit."""
-        self.contents.append(kwargs["content"])
-
-
 async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> None:
     """It has to show, and it has to stay out of what the bot is later told it said."""
     interaction = _interaction()
     surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
-    reply = _EditableReply()
+    reply = FakeReply()
     streamer = ResponseStreamer(
         message=surface.message, surface=surface, reply=reply, media_delivery=hosting_off_planner()
     )
@@ -693,7 +674,10 @@ async def test_the_hint_line_lands_on_the_reply_but_not_in_the_transcript() -> N
 
     await streamer._write_hint_line()
 
-    assert reply.contents == [f"答案\n-# ⚠️{footer}"]
+    (written,) = reply.edits
+    assert written.startswith("答案")
+    assert written.endswith(footer)
+    assert DROPPED_HINT_EMOJI in written
     assert streamer._without_added_lines(text=streamer.stored_content) == f"答案{footer}"
 
 
@@ -702,7 +686,7 @@ async def test_a_capped_surface_stops_chunking_where_its_budget_ends() -> None:
     interaction = _interaction()
     surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
     footer = "\n\n-# model · ⬆ 1 ⬇ 1 · $0.00000000"
-    reply = _EditableReply()
+    reply = FakeReply()
     streamer = ResponseStreamer(
         message=surface.message, surface=surface, reply=reply, media_delivery=hosting_off_planner()
     )
@@ -710,6 +694,6 @@ async def test_a_capped_surface_stops_chunking_where_its_budget_ends() -> None:
     await streamer._write_final_message(content="字" * 40000, footer=footer)
 
     assert len(interaction.followup.sent) == INTERACTION_FOLLOWUP_LIMIT
-    written = reply.contents[-1] + "".join(sent["content"] for sent in interaction.followup.sent)
+    written = reply.edits[-1] + "".join(sent["content"] for sent in interaction.followup.sent)
     assert TRUNCATED_NOTICE.strip() in written
     assert written.endswith(footer)

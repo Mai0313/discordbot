@@ -18,16 +18,22 @@ if TYPE_CHECKING:
 
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
     """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
+    client = as_client(fake=FakeGeminiClient())
     assert isinstance(
-        build_attachment_handler(model=ModelSettings(name="gpt-5.1"), gemini_client=lambda: None),
+        build_attachment_handler(
+            model=ModelSettings(name="gpt-5.1"), gemini_client=lambda: client
+        ),
         InlineRenderer,
     )
 
 
 def test_grok_attachment_handler_path_stays_disabled() -> None:
     """Grok models still use inline attachments until the xAI uploader branch is enabled."""
+    client = as_client(fake=FakeGeminiClient())
     assert isinstance(
-        build_attachment_handler(model=ModelSettings(name="grok-4.5"), gemini_client=lambda: None),
+        build_attachment_handler(
+            model=ModelSettings(name="grok-4.5"), gemini_client=lambda: client
+        ),
         InlineRenderer,
     )
 

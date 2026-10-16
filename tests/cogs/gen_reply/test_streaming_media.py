@@ -13,7 +13,7 @@ import nextcord
 
 from discordbot.typings.media import LoadedMedia
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.utils.media_delivery import MediaItem
+from discordbot.utils.media_delivery import DISCORD_ATTACHMENT_LIMIT, MediaItem
 from discordbot.cogs.gen_reply.markers import MAX_INLINE_IMAGES, InlineMarkers
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.streaming import (
@@ -22,6 +22,9 @@ from discordbot.cogs.gen_reply.streaming import (
     stream_answer_with_retry,
 )
 from discordbot.cogs.gen_reply.generation import (
+    VOICE_REPLY_FILENAME,
+    INLINE_IMAGE_FILENAME,
+    INLINE_VIDEO_FILENAME,
     MusicClip,
     VoiceClip,
     VoiceOutcome,
@@ -29,6 +32,15 @@ from discordbot.cogs.gen_reply.generation import (
     MusicGenerator,
     VideoGenerator,
     VoiceGenerator,
+    music_filename,
+)
+from discordbot.cogs.gen_reply.status_marks import (
+    IMAGE_EMOJI,
+    MUSIC_EMOJI,
+    VIDEO_EMOJI,
+    VOICE_EMOJI,
+    DROPPED_HINT_EMOJI,
+    TIMEOUT_HINT_EMOJI,
 )
 
 from tests.helpers.casting import as_message, make_not_found
@@ -98,7 +110,7 @@ async def test_media_a_never_sent_reply_asked_for_leaves_a_hint(
 
     await streamer._attach_generated_media()
 
-    assert message.added_reactions == (["⚠️"] if hinted else [])
+    assert message.added_reactions == ([DROPPED_HINT_EMOJI] if hinted else [])
 
 
 # ---- voice (spoken reply) ----
@@ -154,9 +166,9 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag() -> None:
     # Only the wrapped segment (not the whole reply) is spoken.
     assert synthesizer.calls == [{"text": "嗆爆你", "end_user_id": message.author.name}]
     assert message.replies[0].file is not None
-    assert message.replies[0].file.filename == "reply.wav"
+    assert message.replies[0].file.filename == VOICE_REPLY_FILENAME
     # The source message is marked with the voice app emoji while the clip is produced.
-    assert message.added_reactions == ["<:voice:1517558121092878376>"]
+    assert message.added_reactions == [VOICE_EMOJI]
 
 
 async def test_voice_marker_absent_no_synthesis() -> None:
@@ -187,6 +199,7 @@ async def test_voice_disabled_still_strips_marker() -> None:
     _assert_no_voice_tags(result)
     assert "嗆爆你" in result
     assert message.replies[0].file is None
+    assert message.added_reactions == []
 
 
 async def test_voice_synthesis_failure_leaves_text_reply() -> None:
@@ -202,7 +215,7 @@ async def test_voice_synthesis_failure_leaves_text_reply() -> None:
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
     # The voice marker is added before synth; a non-timeout failure then hints with the warning.
-    assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
+    assert message.added_reactions == [VOICE_EMOJI, DROPPED_HINT_EMOJI]
 
 
 async def test_voice_synthesis_timeout_hints_with_clock() -> None:
@@ -217,7 +230,7 @@ async def test_voice_synthesis_timeout_hints_with_clock() -> None:
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
-    assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
+    assert message.added_reactions == [VOICE_EMOJI, TIMEOUT_HINT_EMOJI]
 
 
 async def test_voice_with_nothing_to_say_leaves_no_hint() -> None:
@@ -231,7 +244,7 @@ async def test_voice_with_nothing_to_say_leaves_no_hint() -> None:
     )
 
     assert message.replies[0].file is None
-    assert message.added_reactions == ["<:voice:1517558121092878376>"]
+    assert message.added_reactions == [VOICE_EMOJI]
 
 
 async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
@@ -300,7 +313,7 @@ async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> Non
     )
 
     assert reply.replies == []
-    assert "⚠️" in message.added_reactions
+    assert DROPPED_HINT_EMOJI in message.added_reactions
 
 
 @pytest.mark.parametrize("refused", [False, True], ids=["attached", "refused"])
@@ -326,8 +339,8 @@ async def test_only_a_landed_media_attach_is_logged_as_attached(
 
     await streamer._attach_generated_media()
 
-    assert ("⚠️" in message.added_reactions) is refused
-    assert ("Generated media attached" in [text for text, _ in logged]) is not refused
+    assert (DROPPED_HINT_EMOJI in message.added_reactions) is refused
+    assert any("file_count" in fields for _, fields in logged) is not refused
 
 
 class _AskInteraction:
@@ -420,8 +433,8 @@ async def test_media_past_the_attachment_cap_earns_the_dropped_hint(
     await streamer._attach_generated_media()
 
     assert reply.files is not None
-    assert len(reply.files) == 10
-    assert "⚠️" in message.added_reactions
+    assert len(reply.files) == DISCORD_ATTACHMENT_LIMIT
+    assert DROPPED_HINT_EMOJI in message.added_reactions
 
 
 async def test_ask_media_still_rendering_when_the_window_ends_is_dropped_with_a_hint(
@@ -459,7 +472,7 @@ async def test_ask_media_still_rendering_when_the_window_ends_is_dropped_with_a_
 
     assert reply.files is not None
     assert [file.filename for file in reply.files] == ["reply.wav"]
-    assert surface.take_hints() == ["⏱️"]
+    assert surface.take_hints() == [TIMEOUT_HINT_EMOJI]
 
 
 async def test_a_cancelled_turn_takes_its_inline_media_renders_with_it(
@@ -564,9 +577,9 @@ async def test_image_marker_generates_and_attaches() -> None:
         {"user_prompt": "a cute black cat", "end_user_id": message.author.name}
     ]
     assert message.replies[0].file is not None
-    assert message.replies[0].file.filename == "generated.png"
+    assert message.replies[0].file.filename == INLINE_IMAGE_FILENAME
     # The source message is marked with the image app emoji while the image is rendered.
-    assert message.added_reactions == ["<:image:1517559727880667226>"]
+    assert message.added_reactions == [IMAGE_EMOJI]
     # No input_builder wired -> no source bytes -> a plain generation (not an edit).
     assert generator.image_bytes_lists == [None]
 
@@ -613,6 +626,7 @@ async def test_image_disabled_still_strips_marker() -> None:
     assert "<generate-image>" not in result
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
+    assert message.added_reactions == []
 
 
 async def test_image_generation_failure_hints() -> None:
@@ -627,7 +641,7 @@ async def test_image_generation_failure_hints() -> None:
 
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
-    assert message.added_reactions == ["<:image:1517559727880667226>", "⚠️"]
+    assert message.added_reactions == [IMAGE_EMOJI, DROPPED_HINT_EMOJI]
 
 
 async def test_multiple_image_markers_attach_distinct_files() -> None:
@@ -653,7 +667,8 @@ async def test_multiple_image_markers_attach_distinct_files() -> None:
     assert [call["user_prompt"] for call in generator.calls] == ["a red cat", "a blue dog"]
     files = message.replies[0].files
     assert files is not None
-    assert [item.filename for item in files] == ["generated_1.png", "generated_2.png"]
+    names = [item.filename for item in files]
+    assert len(names) == len(set(names)) == 2
 
 
 async def test_image_markers_capped_at_limit() -> None:
@@ -726,9 +741,9 @@ async def test_music_marker_generates_and_attaches() -> None:
     # The description is handed to the generator and the clip attached afterward.
     assert generator.calls == ["upbeat anime J-pop, female vocals"]
     assert message.replies[0].file is not None
-    assert message.replies[0].file.filename == "music.mp3"
+    assert message.replies[0].file.filename == music_filename(mime_type="audio/mp3")
     # The source message is marked with the music emoji while the clip renders.
-    assert message.added_reactions == ["🎵"]
+    assert message.added_reactions == [MUSIC_EMOJI]
 
 
 async def test_music_disabled_still_strips_marker() -> None:
@@ -743,6 +758,7 @@ async def test_music_disabled_still_strips_marker() -> None:
     assert "<generate-music>" not in result
     assert "anime" not in result
     assert message.replies[0].file is None
+    assert message.added_reactions == []
 
 
 async def test_music_generation_failure_hints() -> None:
@@ -757,12 +773,10 @@ async def test_music_generation_failure_hints() -> None:
 
     assert "anime" not in result
     assert message.replies[0].file is None
-    assert message.added_reactions == ["🎵", "⚠️"]
+    assert message.added_reactions == [MUSIC_EMOJI, DROPPED_HINT_EMOJI]
 
 
 # ---- inline video (<generate-video>) ----
-
-_VIDEO_EMOJI = "<:video:1517560671913377842>"
 
 
 class _FakeVideoGenerator:
@@ -809,9 +823,9 @@ async def test_video_marker_generates_and_attaches() -> None:
     # The description is handed to the generator and the clip attached afterward.
     assert generator.calls == ["a wave crashing on rocks at sunset"]
     assert message.replies[0].file is not None
-    assert message.replies[0].file.filename == "generated.mp4"
+    assert message.replies[0].file.filename == INLINE_VIDEO_FILENAME
     # The source message is marked with the video emoji while the clip renders.
-    assert message.added_reactions == [_VIDEO_EMOJI]
+    assert message.added_reactions == [VIDEO_EMOJI]
     # No input_builder wired -> no source images -> plain text-to-video (not a reference render).
     assert generator.reference_sources == [None]
 
@@ -873,7 +887,7 @@ async def test_video_generation_failure_hints() -> None:
 
     assert "wave" not in result
     assert message.replies[0].file is None
-    assert message.added_reactions == [_VIDEO_EMOJI, "⚠️"]
+    assert message.added_reactions == [VIDEO_EMOJI, DROPPED_HINT_EMOJI]
 
 
 async def test_voice_music_video_image_attach_in_one_edit() -> None:
@@ -913,10 +927,10 @@ async def test_voice_music_video_image_attach_in_one_edit() -> None:
     files = message.replies[0].files
     assert files is not None
     assert {item.filename for item in files} == {
-        "reply.wav",
-        "music.mp3",
-        "generated.mp4",
-        "generated.png",
+        VOICE_REPLY_FILENAME,
+        music_filename(mime_type="audio/mp3"),
+        INLINE_VIDEO_FILENAME,
+        INLINE_IMAGE_FILENAME,
     }
 
 
@@ -934,7 +948,7 @@ async def test_voice_oversized_clip_not_attached() -> None:
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
     # An oversized clip is dropped for a non-timeout reason, so it hints with the warning emoji.
-    assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
+    assert message.added_reactions == [VOICE_EMOJI, DROPPED_HINT_EMOJI]
 
 
 async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answer(
@@ -974,4 +988,4 @@ async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answe
 
     assert answer.startswith("hello from stream")
     assert reply.content is not None
-    assert "⏱️" in reply.content
+    assert TIMEOUT_HINT_EMOJI in reply.content

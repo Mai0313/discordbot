@@ -8,10 +8,13 @@ from datetime import UTC, datetime, timedelta
 
 from xai_sdk.proto import files_pb2
 
-from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
+from discordbot.cogs.gen_reply.attachment.grok_file_api import (
+    GROK_FILE_EXPIRY_SECONDS,
+    GrokFileUploader,
+)
 
 from tests.helpers.reply_fakes import _att, _png_bytes
-from tests.helpers.logfire_capture import capture_logs
+from tests.helpers.logfire_capture import capture_levels
 
 if TYPE_CHECKING:
     import pytest
@@ -94,7 +97,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     # The whole upload call: a filename, the bytes and a bare TTL in seconds. No `purpose` (xAI
     # never interprets it) and no `{anchor, seconds}` object, both of which were the OpenAI
     # client's shapes rather than xAI's.
-    assert files.upload_calls == [("notes.txt", b"hello world", 2_592_000)]
+    assert files.upload_calls == [("notes.txt", b"hello world", GROK_FILE_EXPIRY_SECONDS)]
 
 
 async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,7 +161,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
 ) -> None:
     """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
     monkeypatch.setenv(name="XAI_API_KEY", value="")
-    logged = capture_logs(monkeypatch=monkeypatch, level="error")
+    records = capture_levels(monkeypatch=monkeypatch, levels=("warn", "error"))
     renderer = GrokFileUploader()
     assert (
         await renderer._upload_file(
@@ -166,7 +169,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
         )
         is None
     )
-    assert [text for text, _ in logged] == ["xAI Files API key missing; dropping attachment"]
+    assert [(level, fields["filename"]) for level, _, fields in records] == [("error", "x.txt")]
 
 
 async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
