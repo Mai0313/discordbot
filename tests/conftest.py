@@ -1,22 +1,99 @@
 """Shared pytest fixtures.
 
+Before any test module imports `discordbot`, this module turns `.env` loading off and clears
+every variable `.env.example` names from the process, so no setting reaches a test from the
+developer's `.env` or shell: a test that needs one sets it with `monkeypatch.setenv`. It also
+refuses every connection past loopback for the whole run (`_refuse_remote`).
+
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
 `tmp_path` SQLite file for one test, all through `_isolate_engine`, and every one is autouse.
 `memory_isolated_dir` is the one a test requests, and it covers more than a directory: the
 store dir, the `memory_job` engine, the process-local caches, counters and task registries the
 store and pipeline hold, and the git committer. The autouse fixtures are the other half of that
-isolation, keeping a real deployment's databases out of every test whether or not it asked for
-them and pinning the few `.env` settings that would decide one; the rest of `.env` still loads,
-and the memory store stays live for a test that does not request `memory_isolated_dir`.
+isolation, keeping a real deployment's databases and files out of every test whether or not it
+asked for them; the memory store stays live for a test that does not request
+`memory_isolated_dir`.
 """
 
 import os
+import sys
+from time import monotonic
+from typing import Any
 from pathlib import Path
+import ipaddress
 from itertools import count
+from collections.abc import Iterator
 
 import pytest
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from tests.helpers.source_tree import env_example_names
+
+# `discordbot` loads `.env` when it is imported. Settings match a name in any case, and the
+# SDKs read variables of their own (google-genai falls back to `GOOGLE_API_KEY` for the empty key
+# a keyless deployment passes), so every name under their prefixes goes too, as does a proxy,
+# which would carry a request out through a loopback port `_refuse_remote` lets through.
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+cleared = env_example_names() | {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"}
+for name in list(os.environ):
+    if name.upper() in cleared or name.upper().startswith((
+        "OPENAI_",
+        "GOOGLE_",
+        "GEMINI_",
+        "ANTHROPIC_",
+        "XAI_",
+    )):
+        del os.environ[name]
+
+from discordbot.utils.model_pricing import _LoadedTable  # noqa: E402 -- `.env` must be off first
+
+
+class NetworkAccessError(Exception):
+    """A test reached past loopback.
+
+    Not an `OSError`, which the code under test retries or degrades on: this must surface.
+    """
+
+
+_remote_attempts: list[str] = []
+
+
+def _refuse_remote(event: str, args: tuple[Any, ...]) -> None:
+    """Audit hook raising on, and recording, any DNS lookup or connect past loopback.
+
+    It sees only what goes through Python's `socket` module: a client that resolves and
+    connects in C, such as grpc (`xai-sdk`), goes past it. Running the suite in a network
+    namespace (`bwrap --unshare-net --dev-bind / / uv run pytest`) covers those too.
+    """
+    if event == "socket.getaddrinfo":
+        host = args[0]
+    elif event == "socket.connect" and isinstance(args[1], tuple):
+        host = args[1][0]
+    else:
+        return
+    if isinstance(host, bytes):
+        host = host.decode()
+    if host in {None, "", "localhost"}:
+        return
+    try:
+        if ipaddress.ip_address(address=host.partition("%")[0]).is_loopback:
+            return
+    except ValueError:
+        pass
+    _remote_attempts.append(host)
+    raise NetworkAccessError(f"a test reached past loopback: {host}")
+
+
+sys.addaudithook(_refuse_remote)
+
+
+@pytest.fixture(autouse=True)
+def network_unreachable() -> Iterator[None]:
+    """Fails a test that reached past loopback, even when the code under test swallowed it."""
+    _remote_attempts.clear()
+    yield
+    assert not _remote_attempts, f"reached past loopback: {_remote_attempts}"
 
 
 def _isolate_engine(monkeypatch: pytest.MonkeyPatch, target: str, db_path: Path) -> None:
@@ -138,16 +215,12 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Points every usage recorder built during a test at a throwaway directory.
 
-    Autouse because `UsageRecorder`'s default config reads the environment, so any cog a
-    test constructs would otherwise append to the live `data/usage` file — the one store
-    in this repo that nothing ever prunes. The kill-switch is pinned on for the same
-    reason the directory is: `.env` is loaded at import, so a deployment that set
-    `USAGE_LOG_ENABLED=false` would otherwise turn the recording assertions red on that
-    checkout alone.
+    Autouse because `UsageRecorder`'s default config writes under the working directory, so
+    any cog a test constructs would otherwise append to the live `data/usage` file — the one
+    store in this repo that nothing ever prunes.
     """
     usage_dir = tmp_path / "usage"
     monkeypatch.setenv(name="USAGE_LOG_DIR", value=str(usage_dir))
-    monkeypatch.setenv(name="USAGE_LOG_ENABLED", value="true")
     return usage_dir
 
 
@@ -199,69 +272,38 @@ def games_history_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.fixture(autouse=True)
-def file_api_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pins the Files API kill-switch on for every test.
-
-    Autouse for the reason `usage_log_isolated_dir` pins its own switch: `LLMConfig` reads the
-    environment and `.env` is loaded at import, so a deployment that set `FILE_API_ENABLED=false`
-    to ride out a provider outage would otherwise turn every upload and Gemini-renderer
-    assertion red on that checkout alone. A test about the switched-off path sets it back to
-    false itself, which wins because `monkeypatch` applies in fixture-then-test order.
-    """
-    monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
-
-
-@pytest.fixture(autouse=True)
-def media_hosting_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Turns media hosting off for every planner a cog builds from the environment.
-
-    Autouse because such a planner reads `.env`, and on a deployment's checkout that names the
-    live serve directory: an oversize item a test delivered through it would be published there
-    without the test noticing. A test about hosting builds its own config through
-    `make_media_hosting_config`, which reads nothing from the environment.
-    """
-    monkeypatch.setenv(name="MEDIA_HOSTING_ENABLED", value="false")
-
-
-@pytest.fixture(autouse=True)
 def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Points the LiteLLM price-table mirror at a throwaway file.
+    """Holds an empty LiteLLM price table and points its mirror at a throwaway file.
 
-    Autouse because any test reaching `load_model_info` mirrors the fetched table, and the
-    live `data/` is no place for a 1.6MB file a test wrote (the same reason
-    `usage_log_isolated_dir` exists). The table the loader holds is deliberately NOT reset
-    here, since resetting per test would make every test that reaches it pay the fetch again;
-    `tests/test_model_pricing.py` swaps its own in through `monkeypatch`, which puts the
-    worker's back afterwards. Which table a worker ends up holding is therefore not
-    deterministic — pinning that for the whole suite is #450.
+    Autouse because the first lookup would otherwise fetch the table from GitHub, and what a
+    worker then held depended on whether it was online. Held as upstream just served it, the
+    empty table never starts a fetch, and every model reads as unknown in every run. A test
+    about rates or modalities installs the entries it needs; `tests/test_model_pricing.py`
+    puts `None` back to drive the loading chain itself, whose mirror lands here rather than in
+    the live `data/`.
     """
+    monkeypatch.setattr(
+        "discordbot.utils.model_pricing._LOADED_TABLE",
+        _LoadedTable(prices={}, served_at=monotonic()),
+    )
     mirror_path = tmp_path / "model_prices_and_context_window.json"
     monkeypatch.setattr("discordbot.utils.model_pricing.MODEL_INFO_CACHE_PATH", mirror_path)
     return mirror_path
 
 
 @pytest.fixture(autouse=True)
-def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leaves every test a keyless deployment whatever the checkout has configured.
-
-    Autouse because an unconfigured deployment is what the reply tests are built for — they
-    set the key explicitly when they are about a Gemini-only path — and leaving the real one
-    in place made a test's outcome depend on whether the developer's `.env` happened to be
-    visible, which in a git worktree is the parent checkout's file. `model_validate` does not
-    save you either: it skips the settings sources only for the keys it is handed, so any
-    field a test does not name still comes from the process environment.
-    """
-    monkeypatch.delenv(name="GEMINI_API_KEY", raising=False)
-
-
-@pytest.fixture(autouse=True)
-def git_environment_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keeps every git a test runs inside the repository the test names.
+def git_environment_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeps every git a test runs inside the repository the test names, with no user config.
 
     Autouse because git exports `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and friends to a hook
     or a `git rebase --exec` command run from a linked worktree, and a `git -C <tmp_path>` under
     those still acts on the enclosing repository, writing a test identity and `core.bare` into
-    the checkout's own `.git/config`.
+    the checkout's own `.git/config`. The developer's global and system config (a signing key,
+    a hooks path) stays out too, and git never looks for a repository above the test's own
+    directory, which a `--basetemp` inside a checkout would otherwise hand it.
     """
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name=name, raising=False)
+    monkeypatch.setenv(name="GIT_CONFIG_GLOBAL", value=os.devnull)
+    monkeypatch.setenv(name="GIT_CONFIG_NOSYSTEM", value="1")
+    monkeypatch.setenv(name="GIT_CEILING_DIRECTORIES", value=str(tmp_path.parent))
