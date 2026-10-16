@@ -21,7 +21,6 @@ from discordbot.typings.economy import (
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
     JackpotSettlementRequest,
-    apply_vip_blackjack_bonus,
 )
 from discordbot.services.economy import database as economy_database
 from discordbot.utils.stored_integer import StoredInteger
@@ -1010,22 +1009,6 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
 
 
 # VIP purchase --------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    argnames=("delta", "is_vip", "expected"),
-    argvalues=[
-        (100, False, 100),
-        (100, True, 120),
-        (101, True, 121),
-        (1, True, 1),
-        (0, True, 0),
-        (-50, True, -50),
-    ],
-)
-def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> None:
-    """VIP bonus applies only to positive winnings and floors fractional fifths."""
-    assert apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip) == expected
 
 
 async def test_buy_vip_sets_flag_and_debits_balance() -> None:

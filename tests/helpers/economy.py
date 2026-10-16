@@ -1,6 +1,6 @@
 """Seeding, read and value helpers for tests that start from, or check, a known economy state."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import select, update
@@ -9,11 +9,15 @@ from discordbot.utils.timezone import as_taipei, database_now
 from discordbot.typings.economy import (
     LoanLenderType,
     LoanContractView,
+    LoanProposalKind,
+    LoanProposalView,
     LoanContractStatus,
+    LoanProposalStatus,
     LoanProposalAcceptResult,
 )
 from discordbot.services.economy.database import (
     UserAccount,
+    LoanProposal,
     CasinoAccount,
     open_session,
     adjust_balance,
@@ -99,6 +103,20 @@ async def open_personal_loan(
     return accepted.contract
 
 
+async def backdate_proposal(proposal_id: int, seconds: int) -> None:
+    """Moves a loan proposal's creation timestamp into the past."""
+    async with open_session() as session:
+        await session.execute(
+            statement=update(LoanProposal)
+            .where(LoanProposal.id == proposal_id)
+            .values(
+                created_at=database_now() - timedelta(seconds=seconds),
+                updated_at=database_now() - timedelta(seconds=seconds),
+            )
+        )
+        await session.commit()
+
+
 def personal_loan_contract(
     contract_id: int = 1, borrower_id: int = 1, lender_name: str = "bob", interest_due: int = 0
 ) -> LoanContractView:
@@ -117,6 +135,25 @@ def personal_loan_contract(
         opened_at=opened_at,
         last_interest_accrued_at=opened_at,
         status=LoanContractStatus.ACTIVE,
+    )
+
+
+def fake_loan_proposal(kind: LoanProposalKind) -> LoanProposalView:
+    """Builds a fake loan proposal view."""
+    return LoanProposalView(
+        proposal_id=1,
+        kind=kind,
+        status=LoanProposalStatus.PENDING,
+        lender_type=LoanLenderType.CENTRAL_BANK
+        if kind == LoanProposalKind.CENTRAL_BANK_REQUEST
+        else LoanLenderType.USER,
+        borrower_id=1,
+        borrower_name="alice",
+        lender_id=None if kind == LoanProposalKind.CENTRAL_BANK_REQUEST else 2,
+        lender_name="bob",
+        amount=100,
+        monthly_rate_bps=300,
+        created_at=datetime.now(tz=UTC),
     )
 
 

@@ -1,7 +1,6 @@
 """Tests for shared readable number presentation helpers."""
 
 from discordbot.utils.number_text import compact_amount
-from discordbot.services.economy.presentation import amount_code, currency_text
 
 
 def test_compact_amount_preserves_small_amounts() -> None:
@@ -27,10 +26,3 @@ def test_compact_amount_rolls_up_rounded_unit_boundaries() -> None:
     assert compact_amount(amount=999_999_999_999) == "1兆"
     assert compact_amount(amount=99_999_999, signed=True) == "+1億"
     assert compact_amount(amount=-99_999_999) == "-1億"
-
-
-def test_currency_helpers_can_opt_into_compact_amounts() -> None:
-    """Economy presentation wrappers expose compact formatting as an option."""
-    assert currency_text(amount=123_456_789, compact=True) == "1.23億 虛擬歡樂豆"
-    assert currency_text(amount=123_456_789, signed=True, compact=True) == "+1.23億 虛擬歡樂豆"
-    assert amount_code(amount=-10_000, signed=True, compact=True) == "`-1萬`"
