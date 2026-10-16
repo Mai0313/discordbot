@@ -261,8 +261,8 @@ class ThreadsDownloaderStub:
 def hosting_off_planner() -> MediaDeliveryPlanner:
     """A delivery planner with hosting off, for code under test that is handed a planner.
 
-    A cog built inside a test needs none: the autouse `media_hosting_disabled` fixture already
-    turns hosting off for the planner it builds from the environment.
+    A cog built inside a test needs none: the suite clears the environment, so the planner it
+    builds from it has no base URL or serve dir and hosting is unavailable.
     """
     return MediaDeliveryPlanner(
         media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))

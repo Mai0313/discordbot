@@ -1,10 +1,17 @@
 """Where this repository's own files are, and how to read them, for tests that read the source."""
 
+import re
 import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = REPO_ROOT / "src" / "discordbot"
+
+
+def env_example_names() -> set[str]:
+    """Every variable `.env.example` sets or shows commented out (`# NAME=...`)."""
+    text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    return set(re.findall(pattern=r"^(?:# )?([A-Z][A-Z0-9_]*)=", string=text, flags=re.MULTILINE))
 
 
 def python_modules(root: Path) -> list[Path]:
