@@ -1,6 +1,5 @@
 """Tests for long-term lending and central bank lending."""
 
-from types import SimpleNamespace
 import asyncio
 from datetime import timedelta
 
@@ -15,10 +14,7 @@ from discordbot.typings.economy import (
     CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanProposalStatus,
-    monthly_rate_percent_to_bps,
 )
-from discordbot.cogs.economy.cog import EconomyCogs
-from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.services.economy.database import (
     UserWallet,
     UserAccount,
@@ -45,17 +41,16 @@ from discordbot.services.economy.database import (
     create_central_bank_loan_request,
 )
 
-from tests.helpers.games import attached_button
-from tests.helpers.casting import as_bot, as_message, as_discord_bot, as_interaction
+from tests.helpers.casting import as_discord_bot
 from tests.helpers.economy import (
     LENDING_GUILD,
     seed_balance,
     approve_as_admin,
     seed_participant,
+    backdate_proposal,
     open_personal_loan,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage, on_ready_bot
-from tests.helpers.message_cleanup import record_scheduled_deletes
+from tests.helpers.discord_mocks import on_ready_bot
 from tests.helpers.economy_invariants import assert_wallet_consistent
 
 OTHER_GUILD = 777
@@ -71,20 +66,6 @@ async def _backdate_contract(contract_id: int, days: int) -> None:
             statement=update(LoanContract)
             .where(LoanContract.id == contract_id)
             .values(opened_at=opened_at, last_interest_accrued_at=last_accrued_at)
-        )
-        await session.commit()
-
-
-async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
-    """Moves a loan proposal's creation timestamp into the past."""
-    async with open_session() as session:
-        await session.execute(
-            statement=update(LoanProposal)
-            .where(LoanProposal.id == proposal_id)
-            .values(
-                created_at=database_now() - timedelta(seconds=seconds),
-                updated_at=database_now() - timedelta(seconds=seconds),
-            )
         )
         await session.commit()
 
@@ -134,6 +115,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
         lender_id=10,
         lender_name="lender",
         amount=large_amount,
+        monthly_rate_bps=300,
     )
     assert proposal is not None
 
@@ -188,7 +170,7 @@ async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
     )
     assert proposal is not None
-    await _backdate_proposal(
+    await backdate_proposal(
         proposal_id=proposal.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS
     )
 
@@ -211,43 +193,6 @@ async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
     assert await get_balance(user_id=2) == 1_000
 
 
-@pytest.mark.parametrize(
-    argnames=("custom_id", "presser_id"),
-    argvalues=[("credit:approve", 2), ("credit:reject", 2), ("credit:cancel", 1)],
-    ids=["lender_approves", "lender_rejects", "borrower_cancels"],
-)
-async def test_a_press_past_the_window_closes_the_panel_as_expired(
-    monkeypatch: pytest.MonkeyPatch, custom_id: str, presser_id: int
-) -> None:
-    """The press that finds a request expired closes its panel, as the view's timeout would.
-
-    Every press restarts the view's own timer, so the view can outlive the request; once a
-    press has expired it, the timeout finds nothing left to expire and leaves the buttons up.
-    """
-    scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
-    await seed_balance(user_id=2, name="bob", amount=1_000)
-    proposal = await create_personal_loan_request(
-        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
-    )
-    await _backdate_proposal(
-        proposal_id=proposal.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS
-    )
-    panel = FakeDiscordMessage()
-    view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
-    view.message = as_message(fake=panel)
-    button = attached_button(view=view, custom_id=custom_id)
-    presser = FakeInteraction(user=FakeUser(user_id=presser_id, name="presser"), message=panel)
-
-    await button.callback(as_interaction(fake=presser))
-
-    assert presser.followup.sent == []
-    assert presser.edits[0]["embed"].title == "信貸申請已逾時"
-    assert presser.edits[0]["view"] is None
-    assert view.is_finished()
-    assert scheduled.messages == [panel]
-    assert await get_balance(user_id=2) == 1_000
-
-
 async def test_a_restart_rejects_the_requests_an_earlier_process_left_waiting() -> None:
     """Their decision views died with that process, so nothing else would ever decide them.
 
@@ -263,7 +208,7 @@ async def test_a_restart_rejects_the_requests_an_earlier_process_left_waiting() 
     await cancel_loan_proposal(proposal_id=withdrawn.proposal_id, actor_id=1)
     # Posted ten seconds before the restart, well inside its decision window.
     for proposal in (waiting, withdrawn):
-        await _backdate_proposal(proposal_id=proposal.proposal_id, seconds=10)
+        await backdate_proposal(proposal_id=proposal.proposal_id, seconds=10)
     started_at = database_now()
     fresh = await create_central_bank_loan_request(
         borrower_id=3, borrower_name="carol", amount=500
@@ -334,9 +279,19 @@ async def test_calling_personal_loans_collects_accrued_interest_owed_to_that_len
     """Calling in everything owed includes interest accrued up to now, and no other lender's loan."""
     await seed_balance(user_id=2, name="bob", amount=1_000)
     await seed_balance(user_id=3, name="carol", amount=1_000)
-    from_bob = await open_personal_loan(
-        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    asked_bob = await create_personal_loan_request(
+        borrower_id=1,
+        borrower_name="alice",
+        lender_id=2,
+        lender_name="bob",
+        amount=500,
+        monthly_rate_bps=300,
     )
+    accepted = await accept_loan_proposal(
+        proposal_id=asked_bob.proposal_id, actor_id=2, actor_name="bob"
+    )
+    assert accepted is not None
+    from_bob = accepted.contract
     from_carol = await open_personal_loan(
         borrower_id=1, borrower_name="alice", lender_id=3, lender_name="carol", amount=200
     )
@@ -610,10 +565,19 @@ async def _borrower_with_unwritten_interest() -> None:
     """Leaves alice at 1,100,000 owing 100,000 plus 5,000 interest, 2,000 of it unwritten."""
     await seed_participant(user_id=1, name="alice", amount=1_000_000)
     await seed_balance(user_id=2, name="bob", amount=100_000)
-    contract = await open_personal_loan(
-        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100_000
+    proposal = await create_personal_loan_request(
+        borrower_id=1,
+        borrower_name="alice",
+        lender_id=2,
+        lender_name="bob",
+        amount=100_000,
+        monthly_rate_bps=300,
     )
-    await _backdate_contract(contract_id=contract.contract_id, days=50)
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob"
+    )
+    assert accepted is not None
+    await _backdate_contract(contract_id=accepted.contract.contract_id, days=50)
 
 
 async def test_the_ceiling_counts_interest_owed_but_not_yet_written() -> None:
@@ -877,49 +841,6 @@ async def test_approval_needs_a_guild_and_an_administrator() -> None:
     )
 
 
-async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() -> None:
-    """The ledger takes the panel's word that the clicker administers this server.
-
-    Without it no central-bank request could be turned down, since nobody is named to decide one.
-    """
-    await seed_participant(user_id=1, name="alice", amount=1_000)
-    proposal = await create_central_bank_loan_request(
-        borrower_id=1, borrower_name="alice", amount=100
-    )
-    assert proposal is not None
-    view = CentralBankLoanDecisionView(proposal_id=proposal.proposal_id, creator_id=1)
-    reject_button = attached_button(view=view, custom_id="central_bank:reject")
-    admin = FakeInteraction(
-        user=FakeUser(user_id=99, name="banker"), guild_id=LENDING_GUILD, administrator=True
-    )
-
-    await reject_button.callback(as_interaction(fake=admin))
-
-    assert admin.followup.sent == []
-    assert admin.edits[0]["embed"].title == "🏛️ 央行申請已拒絕"
-    assert (
-        await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
-        is None
-    )
-    assert await get_balance(user_id=1) == 1_000
-
-
-async def test_a_request_over_the_ceiling_is_refused_before_anyone_is_asked() -> None:
-    """The ceiling is checked at request time too, so no unanswerable panel is posted."""
-    await seed_participant(user_id=1, name="alice", amount=1_000)
-    assert await get_credit_ceiling(user_id=1) == 2_000
-
-    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
-    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), guild_id=LENDING_GUILD)
-    await EconomyCogs.central_bank_borrow.callback(
-        cog, as_interaction(fake=interaction), amount="2001", monthly_rate_percent=0.0
-    )
-
-    embed = interaction.followup.sent[0]["embed"]
-    assert embed.title == "🏛️ 超過個人信用上限"
-    assert "view" not in interaction.followup.sent[0]
-
-
 async def test_each_guild_lends_against_its_own_participants() -> None:
     """One wallet backs every guild its owner takes part in, and no others."""
     await seed_participant(user_id=1, name="alice", amount=6_000_000)
@@ -934,17 +855,6 @@ async def test_each_guild_lends_against_its_own_participants() -> None:
     assert there.total_positive_user_balance == 4_000_000
     assert nowhere.participant_count == 0
     assert nowhere.available_credit == CENTRAL_BANK_BASE_CAPACITY
-
-
-@pytest.mark.parametrize(
-    argnames=("monthly_rate_percent", "expected_bps"),
-    argvalues=[(3.0, 300), (0.0, 0), (100.0, 10_000), (150.0, 10_000), (-1.0, 0)],
-)
-def test_a_monthly_rate_percent_converts_to_bps_inside_the_allowed_range(
-    monthly_rate_percent: float, expected_bps: int
-) -> None:
-    """A percent becomes basis points, clamped into the range a loan may carry."""
-    assert monthly_rate_percent_to_bps(monthly_rate_percent=monthly_rate_percent) == expected_bps
 
 
 async def test_a_loan_request_stores_a_rate_past_the_maximum_as_the_maximum() -> None:

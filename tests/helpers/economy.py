@@ -1,6 +1,6 @@
 """Seeding, read and value helpers for tests that start from, or check, a known economy state."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import select, update
@@ -14,6 +14,7 @@ from discordbot.typings.economy import (
 )
 from discordbot.services.economy.database import (
     UserAccount,
+    LoanProposal,
     CasinoAccount,
     open_session,
     adjust_balance,
@@ -97,6 +98,20 @@ async def open_personal_loan(
     )
     assert accepted is not None
     return accepted.contract
+
+
+async def backdate_proposal(proposal_id: int, seconds: int) -> None:
+    """Moves a loan proposal's creation timestamp into the past."""
+    async with open_session() as session:
+        await session.execute(
+            statement=update(LoanProposal)
+            .where(LoanProposal.id == proposal_id)
+            .values(
+                created_at=database_now() - timedelta(seconds=seconds),
+                updated_at=database_now() - timedelta(seconds=seconds),
+            )
+        )
+        await session.commit()
 
 
 def personal_loan_contract(
