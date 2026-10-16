@@ -98,12 +98,17 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
     assert results[-1] == "https://files.test/clip.mp4"
 
 
-async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> None:
+async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Waiting for a slot spends none of an upload's own bound.
 
     The bound is on the transfer. A queue behind long but healthy uploads says nothing about this
     one's connection, so timing it from the call would give up on an upload that works.
     """
+    loop = asyncio.get_running_loop()
+    now = [loop.time()]
+    monkeypatch.setattr(loop, "time", lambda: now[0])
     release = asyncio.Event()
 
     class _Slow(FakeGeminiFiles):
@@ -119,8 +124,10 @@ async def test_a_queued_upload_is_timed_from_its_slot_not_from_its_call() -> Non
     queued = asyncio.create_task(
         _uploaded_uri(files=FakeGeminiFiles(), filename="queued.mp4", timeout_seconds=0.05)
     )
+    await asyncio.sleep(0)
     # Longer than the queued upload's own bound, all of it spent waiting for a slot.
-    await asyncio.sleep(0.2)
+    now[0] += 1.0
+    await asyncio.sleep(0)
     release.set()
     results = await asyncio.wait_for(asyncio.gather(*holders, queued), timeout=5.0)
 
