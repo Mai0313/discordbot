@@ -1,11 +1,38 @@
 """Tests for the capability reference block a reply carries."""
 
+from typing import TYPE_CHECKING, cast
 from difflib import SequenceMatcher
 
 import pytest
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs.gen_reply.context import ReplyContext
+from discordbot.cogs.gen_reply.markers import VOICE_OPEN
+from discordbot.cogs.gen_reply.prompts import (
+    REPLY_PROMPT,
+    MUSIC_INSTRUCTION,
+    VIDEO_INSTRUCTION,
+    INLINE_IMAGE_INSTRUCTION,
+    DEEP_RESEARCH_INSTRUCTION,
+)
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
+
+from tests.helpers.casting import as_message
+from tests.helpers.llm_input import request_input, iter_text_blocks
+from tests.helpers.reply_fakes import (
+    FakeAuthor,
+    FakeMessage,
+    _cog,
+    _answer,
+    _recorded,
+    _text_event,
+    _config_stub,
+    _run_pipeline,
+    _completed_event,
+)
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_param import EasyInputMessageParam
 
 # Every switch at its default, which is on, plus a key: what the capability document describes.
 _ALL_ON = LLMConfig.model_construct(gemini_api_key="test-key")
@@ -128,3 +155,65 @@ def test_capabilities_block_lists_the_media_still_on_as_one_sentence(
     assert isinstance(content, str)
     expected = listed.format(voice=speak, images=images, music=song, video=video)
     assert _media_sentence(content=content) == expected
+
+
+@pytest.mark.parametrize("switched_on", [True, False], ids=["all-on", "all-off"])
+@pytest.mark.usefixtures("no_memory_review")
+async def test_the_answer_is_told_only_what_the_deployment_switched_on(switched_on: bool) -> None:
+    """The QA turn's reference and instructions follow the switches.
+
+    All on with a key is the default deployment, whose prompt has to keep its bytes for the
+    prefix cache: the reference is the document verbatim and the instructions are the reply
+    prompt with every marker instruction appended. Keyless with every marker off, the voice
+    bullet is cut and the reference is the gated render.
+    """
+    cog = _cog()
+    cog.config = (
+        LLMConfig.model_construct(gemini_api_key="test-key") if switched_on else _config_stub()
+    )
+    message = FakeMessage(content="<@999> can you make me a song?", author=FakeAuthor(user_id=1))
+    await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
+        system_prompt=REPLY_PROMPT, context=ReplyContext(), allow_research=True
+    )
+
+    (instructions,) = _recorded(cog).responses.create_instructions
+    (answer_input,) = _recorded(cog).responses.create_inputs
+    reference = cast("EasyInputMessageParam", answer_input[0])["content"]
+    assert isinstance(reference, str)
+    if switched_on:
+        appended = (
+            INLINE_IMAGE_INSTRUCTION,
+            MUSIC_INSTRUCTION,
+            VIDEO_INSTRUCTION,
+            DEEP_RESEARCH_INSTRUCTION,
+        )
+        assert instructions.startswith("\n".join((REPLY_PROMPT, *appended)))
+        assert reference.endswith(CAPABILITIES_DOC)
+    else:
+        assert VOICE_OPEN not in instructions
+        assert reference == render_capabilities_block(config=cog.config)["content"]
+        assert "write and record a short song" not in reference
+
+
+@pytest.mark.usefixtures("no_memory_review")
+async def test_handle_message_reply_leads_with_the_capability_reference() -> None:
+    """The feature reference leads the answer input.
+
+    It is the one block that is byte-identical on every reply, so it rides in front of history
+    where it costs the least against a prefix cache.
+    """
+    cog = _cog()
+
+    message = FakeMessage(content="<@999> 你會做什麼", author=FakeAuthor(user_id=1))
+    _recorded(cog).responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await _run_pipeline(cog=cog, message=message)
+
+    header = str(render_capabilities_block(config=cog.config)["content"]).split("\n", 1)[0]
+    blocks = list(iter_text_blocks(request=request_input(responses=_recorded(cog).responses)))
+    carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
+    assert carried == [0]
+    assert blocks[0][0] == "assistant"
+    assert "/memory clear" in blocks[0][1]
