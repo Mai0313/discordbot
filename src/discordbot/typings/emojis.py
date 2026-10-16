@@ -28,8 +28,8 @@ DOUYIN_EMOJI: Final[str] = "<:douyin:1546180677710385304>"
 BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
 
 # Keyed by `LinkContextSource.name`, so the reply path can mark whichever sources it read.
-# `tests/test_link_source_emojis.py` pins every registered source to an entry here, which is
-# what lets the lookup be a plain subscript: a source added without one fails the test rather
+# `tests/guards/test_link_source_emojis.py` pins every registered source to an entry here, which
+# is what lets the lookup be a plain subscript: a source added without one fails the test rather
 # than raising mid-reply.
 LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "threads": THREADS_EMOJI,

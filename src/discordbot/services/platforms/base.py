@@ -18,8 +18,8 @@ from it.
 
 `raise NotImplementedError` rather than `abc.ABC`: this repo's answer to an unimplemented member
 is a raise, and an ABC would catch only the forgotten override while saying nothing about the
-signature — which is the half that actually drifted. `tests/test_platform_shape.py` is what holds
-the signature.
+signature — which is the half that actually drifted. `tests/guards/test_platform_shape.py` is what
+holds the signature.
 
 **A second method is deliberately NOT declared here, and the reason is the return type.** Many
 platforms write nothing to disk at all, handing image URLs to Discord to fetch itself. The ones
