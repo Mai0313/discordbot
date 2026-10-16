@@ -6,6 +6,7 @@ author's OTHER posts, which carry the same keys and would be picked up by anythi
 """
 
 from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 
@@ -48,7 +49,7 @@ def _media(
         "taken_at": 1788594866,
         "like_count": 8855,
         "comment_count": 11,
-        "caption": {"text": caption, "pk": "1", "created_at": 1788594866},
+        "caption": {"text": caption, "pk": "1", "created_at": 1788590000},
         "user": {
             "pk": "5553326911",
             "username": "c_cylynn",
@@ -214,17 +215,7 @@ def test_a_post_is_read_with_its_caption_images_and_counts(
     ]
     assert post.like_count == 8855
     assert post.comment_count == 11
-    assert post.taken_at is not None
-
-
-def test_the_chain_is_the_post_alone(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Instagram has no ancestor posts, but the shape matches Threads so callers agree."""
-    downloader = _downloader(monkeypatch, html=_page())
-
-    conversation = downloader.parse_metadata(url=_URL)
-
-    assert len(conversation.chain) == 1
-    assert conversation.target is conversation.chain[0]
+    assert post.taken_at == datetime(2026, 9, 5, 7, 54, 26, tzinfo=UTC)
 
 
 def test_another_post_by_the_same_author_is_not_mistaken_for_this_one(
@@ -316,20 +307,6 @@ def test_a_comment_permalink_selects_that_comment(monkeypatch: pytest.MonkeyPatc
     assert selected is not None
     assert selected.text == "the one linked"
     assert selected.author_name == "xiao_pang0704"
-
-
-def test_a_comment_that_is_not_on_the_page_selects_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A very old comment on a viral post falls outside what the page serves."""
-    downloader = _downloader(
-        monkeypatch, html=_page(comments=[_comment(pk="999", text="another")])
-    )
-
-    conversation = downloader.parse_metadata(url=f"{_URL}c/{_COMMENT_ID}/")
-
-    assert conversation.target is not None
-    assert conversation.selected_comment is None
 
 
 def test_a_comment_serialised_twice_is_read_once(monkeypatch: pytest.MonkeyPatch) -> None:

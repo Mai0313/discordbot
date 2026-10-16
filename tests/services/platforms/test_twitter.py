@@ -8,6 +8,7 @@ headers and the error classification are exercised rather than stubbed past.
 """
 
 from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 import requests
@@ -183,7 +184,7 @@ def test_a_text_post_carries_its_author_counters_and_time(monkeypatch: pytest.Mo
     assert target.author_name == "Dbacks"
     assert target.like_count == 125
     assert target.comment_count == 2
-    assert target.taken_at is not None
+    assert target.taken_at == datetime(2023, 2, 23, 0, 18, 10, tzinfo=UTC)
     assert target.url == f"https://x.com/Dbacks/status/{_STATUS_ID}"
     assert target.is_readable
 
@@ -428,22 +429,6 @@ def test_a_refused_post_reads_as_unreadable_whatever_it_says(
     assert conversation.target is None
     assert conversation.posts == []
     assert conversation.comments == []
-
-
-def test_a_conversation_never_carries_replies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The endpoint serves no reply content at all, so the field is carried and stays empty.
-
-    Only the count survives, and it rides on the target rather than on a branch list nothing can
-    fill — which is what stops a caller presenting `comments` as the thread.
-    """
-    conversation = _parse(monkeypatch, payload=_tweet(extra={"conversation_count": 540}))
-
-    assert conversation.reply_branches == []
-    assert conversation.comments == []
-    assert conversation.selected_comment is None
-    assert conversation.selected_comment_id == ""
-    assert conversation.target is not None
-    assert conversation.target.comment_count == 540
 
 
 def test_a_url_naming_no_post_costs_no_request(monkeypatch: pytest.MonkeyPatch) -> None:

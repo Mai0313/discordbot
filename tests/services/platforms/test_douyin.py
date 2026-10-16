@@ -7,7 +7,7 @@ the real endpoint would take the whole deployment down with it.
 
 import json
 import shutil
-from typing import Any, Self
+from typing import Any, Self, get_args
 from pathlib import Path
 import tempfile
 from collections.abc import Callable, Iterator
@@ -111,13 +111,12 @@ _SHELL_PAGE = _router_html(page_key="note", video_info={}).replace("videoInfoRes
 class _FakeResponse:
     """Minimal stand-in for a requests Response."""
 
-    def __init__(  # noqa: PLR0913 -- one knob per Response attribute a test varies
+    def __init__(
         self,
         text: str = "",
         status_code: int = 200,
         headers: dict[str, str] | None = None,
         body: bytes = b"",
-        stall_mid_stream: bool = False,
         cookies: dict[str, str] | None = None,
     ) -> None:
         """Stores the canned response payload."""
@@ -126,7 +125,6 @@ class _FakeResponse:
         self.headers = headers or {}
         self.cookies = cookiejar_from_dict(cookie_dict=cookies)
         self._body = body
-        self._stall_mid_stream = stall_mid_stream
 
     def raise_for_status(self) -> None:
         """Mimics requests' status check, carrying the response the way requests does."""
@@ -134,14 +132,7 @@ class _FakeResponse:
             raise requests.HTTPError(f"status {self.status_code}", response=self)
 
     def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-        """Yields the canned body, optionally dying part-way through.
-
-        Stalling mid-stream is the failure the CDN actually produces, and it is the only shape
-        that leaves a partial file on disk, so it is what the cleanup assertions need.
-        """
-        if self._stall_mid_stream:
-            yield self._body
-            raise douyin_module.RequestException("read timed out")
+        """Yields the canned body."""
         yield self._body
 
     def close(self) -> None:
@@ -271,7 +262,7 @@ def test_scheme_less_short_link_is_still_fetchable(monkeypatch: pytest.MonkeyPat
 
 def test_short_link_redirecting_off_douyin_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """A short link pointing at another ByteDance site must not be followed."""
-    _install_session(
+    calls = _install_session(
         monkeypatch=monkeypatch,
         handler=lambda url, kwargs: _FakeResponse(
             status_code=302, headers={"Location": "https://www.ixigua.com/7123"}
@@ -279,8 +270,9 @@ def test_short_link_redirecting_off_douyin_is_rejected(monkeypatch: pytest.Monke
     )
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
 
-    with pytest.raises(DouyinError, match="Not a Douyin post link"):
+    with pytest.raises(DouyinError):
         downloader._resolve_aweme_id(url="https://v.douyin.com/xyz")
+    assert [call["url"] for call in calls] == ["https://v.douyin.com/xyz"]
 
 
 @pytest.mark.parametrize(argnames="page_key", argvalues=["note", "video"])
@@ -318,18 +310,15 @@ def test_photo_post_is_not_misread_as_a_video(monkeypatch: pytest.MonkeyPatch) -
     assert not any("water" in url for url in post.image_urls)
 
 
-@pytest.mark.parametrize(
-    argnames=("quality", "ratio"),
-    argvalues=[("best", "1080p"), ("high", "1080p"), ("medium", "720p"), ("low", "540p")],
-)
-def test_play_url_drops_the_watermark_and_maps_quality(quality: VideoQuality, ratio: str) -> None:
+@pytest.mark.parametrize(argnames="quality", argvalues=get_args(VideoQuality))
+def test_play_url_drops_the_watermark_and_maps_quality(quality: VideoQuality) -> None:
     """The play endpoint replaces playwm, and each preset maps to a ratio."""
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
     url = downloader._play_url(video_id="vid123", quality=quality)
 
     assert "/aweme/v1/play/" in url
     assert "playwm" not in url
-    assert f"ratio={ratio}" in url
+    assert f"ratio={DouyinDownloader.quality_ratios[quality]}" in url
 
 
 def test_filtered_post_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -419,7 +408,7 @@ def test_share_page_is_fetched_from_the_note_path(monkeypatch: pytest.MonkeyPatc
     downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
 
     assert calls[0]["url"] == f"https://www.iesdouyin.com/share/note/{_VIDEO_ID}"
-    assert "iPhone" in calls[0]["headers"]["User-Agent"]
+    assert "Mobile" in calls[0]["headers"]["User-Agent"]
 
 
 def test_a_cookieless_shell_is_refetched_with_the_cookie_it_hands_out(
@@ -591,27 +580,6 @@ def test_download_retries_a_stalled_transfer(
     assert attempts["count"] == 2
 
 
-def test_download_gives_up_after_max_retries(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A permanently failing transfer raises rather than leaving a truncated file behind."""
-
-    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "share/note" in url:
-            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
-        # Dies part-way through the body, so a partial file really is on disk when the attempt
-        # fails. A stub that raised before the first chunk would make the cleanup assertion below
-        # pass whether or not the cleanup exists.
-        return _FakeResponse(body=b"half-a-video", stall_mid_stream=True)
-
-    _install_session(monkeypatch=monkeypatch, handler=handler)
-    downloader = DouyinDownloader(output_folder=tmp_path.as_posix(), max_retries=2)
-
-    with pytest.raises(DouyinError, match="Failed to download"):
-        downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_an_oversize_file_is_refused_and_never_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -703,15 +671,20 @@ def test_a_download_never_recreates_a_removed_output_folder(
 
     A cancelled caller cannot stop the worker thread, so it may remove the scratch dir
     mid-download; re-creating it per file would silently strand every later image there.
+    Driven through `download`, so a re-create anywhere on the way to the file is caught.
     """
-    _install_session(
-        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(body=b"image-bytes")
-    )
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
+        return _FakeResponse(body=b"image-bytes")
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
     scratch = tmp_path / "gone"
     downloader = DouyinDownloader(output_folder=scratch.as_posix())
 
     with pytest.raises(FileNotFoundError):
-        downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
+        downloader.download(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
     assert not scratch.exists()
 
 

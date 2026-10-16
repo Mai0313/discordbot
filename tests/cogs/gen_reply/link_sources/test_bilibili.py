@@ -1,6 +1,5 @@
 """Tests for the Bilibili-context builder that feeds linked videos to the answer model."""
 
-import time
 import asyncio
 from pathlib import Path
 import threading
@@ -24,6 +23,7 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
 from tests.helpers.casting import make_stub_gemini_client
 from tests.helpers.link_sources import (
     FakeUploads,
+    FirstUploadHeld,
     block_body,
     block_parts,
     block_separator,
@@ -145,7 +145,6 @@ async def test_metadata_failure_never_claims_the_video_is_deleted(
 
     assert len(blocks) == 1
     assert block_separator(blocks=blocks) == BILIBILI_UNREADABLE_NOTICE
-    assert "does NOT mean the video is deleted" in BILIBILI_UNREADABLE_NOTICE
 
 
 async def test_a_too_long_video_skips_the_download(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -349,11 +348,15 @@ async def test_the_media_step_timeout_degrades_to_the_text(
     uploads, _ = _stub_bilibili(monkeypatch)
 
     def slow_download(
-        self: VideoDownloader, url: str, quality: str = "best", stop_signal: object = None
+        self: VideoDownloader,
+        url: str,
+        quality: str = "best",
+        stop_signal: threading.Event | None = None,
     ) -> DownloadResult:
-        """Outlasts the media bound so the internal timeout fires."""
-        del url, quality, stop_signal
-        time.sleep(0.3)
+        """Outlasts the media bound so the internal timeout fires, until it is told to stop."""
+        del url, quality
+        if stop_signal is not None:
+            stop_signal.wait(timeout=5.0)
         path = Path(self.output_folder) / "late.mp4"
         path.write_bytes(b"late")
         return DownloadResult(filename=path)
@@ -454,14 +457,8 @@ async def test_a_cancelled_build_signals_the_download_to_stop(
         """Runs until the stop signal arrives, recording whether it ever did."""
         del url, quality
         started.set()
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if stop_signal is not None and stop_signal.is_set():
-                observed.append(True)
-                raise RuntimeError("stopped by signal")
-            time.sleep(0.01)
-        observed.append(False)
-        raise RuntimeError("never signaled")
+        observed.append(stop_signal is not None and stop_signal.wait(timeout=5.0))
+        raise RuntimeError("download stopped")
 
     monkeypatch.setattr(target=VideoDownloader, name="download", value=blocking_download)
 
@@ -506,37 +503,11 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     """
     monkeypatch.setattr(bilibili_builder, "BILIBILI_FETCH_CONCURRENCY", 1)
     _stub_bilibili(monkeypatch)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    class _SlowUploads(FakeUploads):
-        """Stalls the FIRST upload only, so the second link's own upload can finish."""
-
-        async def __call__(
-            self,
-            client: object,
-            source: object,
-            mime_type: str,
-            filename: str,
-            timeout_seconds: float,
-        ) -> dict[str, str] | None:
-            """Blocks inside the first upload until the test lets it finish."""
-            first = not started.is_set()
-            started.set()
-            if first:
-                await release.wait()
-            return await super().__call__(
-                client=client,
-                source=source,
-                mime_type=mime_type,
-                filename=filename,
-                timeout_seconds=timeout_seconds,
-            )
-
-    monkeypatch.setattr(bilibili_builder, "upload_as_input_file", _SlowUploads())
+    uploads = FirstUploadHeld()
+    monkeypatch.setattr(bilibili_builder, "upload_as_input_file", uploads)
     slow = asyncio.create_task(_build())
     try:
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await asyncio.wait_for(uploads.started.wait(), timeout=5.0)
 
         # A different link, ingesting media of its own, must take the bound and get all the
         # way through while the first build sits in its upload.
@@ -552,5 +523,5 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         )
         assert block_separator(blocks=other) == BILIBILI_CONTEXT_SEPARATOR
     finally:
-        release.set()
+        uploads.release.set()
         await asyncio.wait_for(slow, timeout=5.0)

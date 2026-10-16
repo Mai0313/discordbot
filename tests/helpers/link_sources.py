@@ -484,6 +484,35 @@ class FakeUploads:
         }
 
 
+class FirstUploadHeld(FakeUploads):
+    """Holds the first upload until `release` is set; every later upload goes straight through.
+
+    For a test that keeps one build sitting in its upload while another link runs.
+    """
+
+    def __init__(self) -> None:
+        """Starts with nothing uploaded and the first upload not yet released."""
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(
+        self, client: object, source: object, mime_type: str, filename: str, timeout_seconds: float
+    ) -> dict[str, str] | None:
+        """Blocks inside the first upload until the test releases it."""
+        first = not self.started.is_set()
+        self.started.set()
+        if first:
+            await self.release.wait()
+        return await super().__call__(
+            client=client,
+            source=source,
+            mime_type=mime_type,
+            filename=filename,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def accept_image_uploads(
     monkeypatch: pytest.MonkeyPatch,
     uploads: FakeUploads | None = None,

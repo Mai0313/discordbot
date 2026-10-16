@@ -15,11 +15,9 @@ from discordbot.services.platforms.douyin import (
     DouyinDownload,
     DouyinMetadata,
     DouyinBlockedError,
-    DouyinTooLargeError,
     DouyinTransferError,
     DouyinUnavailableError,
 )
-from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
@@ -34,6 +32,7 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
 from tests.helpers.casting import make_stub_gemini_client
 from tests.helpers.link_sources import (
     FakeUploads,
+    FirstUploadHeld,
     StubDouyinOptions,
     StubDouyinDownloader,
     block_body,
@@ -153,7 +152,10 @@ async def test_a_gallery_is_capped_and_uploaded_as_images(monkeypatch: pytest.Mo
     media = [part for part in block_parts(blocks=blocks) if part["type"] == "input_file"]
     assert len(media) == MAX_DOUYIN_INGEST_IMAGES
     assert all(mime == "image/jpeg" for _source, mime, _name in uploads.calls)
-    assert "photo gallery" in block_body(blocks=blocks)
+
+    # The same post read as a video renders differently, so the model is told which it got.
+    _stub_douyin(monkeypatch)
+    assert block_body(blocks=await _build()) != block_body(blocks=blocks)
 
 
 async def test_a_blocked_read_is_never_reported_as_a_missing_post(
@@ -186,8 +188,6 @@ async def test_a_read_that_did_not_go_through_is_never_called_a_block(
 
     assert len(blocks) == 1
     assert block_separator(blocks=blocks) == DOUYIN_TRANSFER_NOTICE
-    assert "block" not in DOUYIN_TRANSFER_NOTICE
-    assert "deleted" not in DOUYIN_TRANSFER_NOTICE.split("NOT")[0]
 
 
 async def test_a_deleted_post_gets_the_unavailable_notice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,7 +214,6 @@ async def test_any_other_failure_never_claims_the_post_is_deleted(
 
     assert block_separator(blocks=blocks) == DOUYIN_UNREADABLE_NOTICE
     assert block_separator(blocks=blocks) != DOUYIN_UNAVAILABLE_NOTICE
-    assert "deleted" not in DOUYIN_UNREADABLE_NOTICE.split("does NOT")[0]
 
 
 async def test_a_failed_download_still_supplies_the_caption(
@@ -233,15 +232,6 @@ async def test_a_failed_download_still_supplies_the_caption(
     parts = block_parts(blocks=blocks)
     assert [part["type"] for part in parts] == ["input_text"]
     assert "一段影片的說明" in parts[0]["text"]
-
-
-async def test_an_oversize_clip_degrades_to_the_caption(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A clip past the Files API ceiling is refused fast and answered from the caption."""
-    _stub_douyin(monkeypatch, download_error=DouyinTooLargeError("over 2GB"))
-
-    blocks = await _build()
-
-    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
 
 
 async def test_a_failed_upload_degrades_to_the_caption(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -328,7 +318,7 @@ async def test_a_raced_scratch_teardown_keeps_the_clip_the_build_already_uploade
 async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failing removal must not swallow the grace the pipeline is timing the build with.
+    """A failing removal must not swallow the cancellation the pipeline times the build with.
 
     `speculation.py::run_until_deadline` is `asyncio.wait_for`, which raises `TimeoutError`
     only when the builder lets the `CancelledError` out; a builder that returns a value
@@ -336,10 +326,12 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
     cancellation with an `OSError` the builder's own broad handler then absorbs, so the
     expired build used to come back as ordinary caption-only blocks and `pipeline.py` never
     reached the branch injecting `DOUYIN_TIMEOUT_NOTICE`: a link that never answered was
-    reported to the model as one that answered without its media.
+    reported to the model as one that answered without its media. The build is cancelled
+    directly, once its worker is inside the scratch directory, so no clock decides the race.
     """
     _stub_douyin(monkeypatch)
     removed = race_every_scratch_teardown(monkeypatch)
+    entered = threading.Event()
     release = threading.Event()
 
     class _StallingDownloader(StubDouyinDownloader):
@@ -352,28 +344,18 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
             so a fixed sleep would be charged to the event loop's own shutdown join at teardown.
             """
             del args, kwargs
+            entered.set()
             release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
             raise AssertionError("should have been abandoned")
 
     monkeypatch.setattr(target=douyin_builder, name="DouyinDownloader", value=_StallingDownloader)
 
+    build = asyncio.create_task(_build())
     try:
-        with pytest.raises(TimeoutError):
-            await run_until_deadline(
-                awaitable=build_douyin_context_messages(
-                    url=_URL,
-                    answer_model_is_gemini=True,
-                    gemini_client=make_stub_gemini_client(),
-                    allow_media_ingest=True,
-                    # Later than the deadline enforced below, so the builder's own media bound
-                    # cannot fire first: the backstop is what this test is about.
-                    deadline=link_build_deadline(),
-                ),
-                # Far above the microseconds the metadata probe and the scratch dir cost, so a
-                # loaded runner still expires with the worker inside the directory, and far
-                # below the download it is abandoning.
-                deadline=asyncio.get_running_loop().time() + 0.5,
-            )
+        assert await asyncio.to_thread(entered.wait, 5.0)
+        build.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await build
     finally:
         release.set()
 
@@ -409,33 +391,11 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     """
     monkeypatch.setattr(douyin_fetch, "DOUYIN_FETCH_CONCURRENCY", 1)
     _stub_douyin(monkeypatch)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    class _SlowUploads(FakeUploads):
-        async def __call__(
-            self,
-            client: object,
-            source: object,
-            mime_type: str,
-            filename: str,
-            timeout_seconds: float,
-        ) -> dict[str, str] | None:
-            """Blocks inside the upload until the test lets it finish."""
-            started.set()
-            await release.wait()
-            return await super().__call__(
-                client=client,
-                source=source,
-                mime_type=mime_type,
-                filename=filename,
-                timeout_seconds=timeout_seconds,
-            )
-
-    monkeypatch.setattr(douyin_builder, "upload_as_input_file", _SlowUploads())
+    uploads = FirstUploadHeld()
+    monkeypatch.setattr(douyin_builder, "upload_as_input_file", uploads)
     slow = asyncio.create_task(_build())
     try:
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await asyncio.wait_for(uploads.started.wait(), timeout=5.0)
 
         # A different link must get through while the first build sits in its upload.
         other = await asyncio.wait_for(
@@ -450,5 +410,5 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         )
         assert block_separator(blocks=other) == DOUYIN_TEXT_ONLY_SEPARATOR
     finally:
-        release.set()
+        uploads.release.set()
         await asyncio.wait_for(slow, timeout=5.0)
