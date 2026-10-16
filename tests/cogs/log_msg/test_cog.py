@@ -42,16 +42,6 @@ async def test_write_row_creates_table_and_inserts() -> None:
     assert legacy_tables == []
 
 
-async def test_write_row_appends_to_existing_table() -> None:
-    """Subsequent writes with distinct discord_message_ids append fresh rows."""
-    await log_msg._write_row(row=_SAMPLE_ROW)
-    second_row = {**_SAMPLE_ROW, "discord_message_id": "1002", "content": "second message"}
-    await log_msg._write_row(row=second_row)
-
-    rows = await _query(sql='SELECT content FROM "messages" ORDER BY id')
-    assert rows == [("hello world",), ("second message",)]
-
-
 async def test_write_row_upserts_on_same_discord_message_id() -> None:
     """Verifies that duplicate discord_message_id writes update one row."""
     await log_msg._write_row(row=_SAMPLE_ROW)

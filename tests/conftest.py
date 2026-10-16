@@ -278,7 +278,7 @@ def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     Autouse because the first lookup would otherwise fetch the table from GitHub, and what a
     worker then held depended on whether it was online. Held as upstream just served it, the
     empty table never starts a fetch, and every model reads as unknown in every run. A test
-    about rates or modalities installs the entries it needs; `tests/test_model_pricing.py`
+    about rates or modalities installs the entries it needs; `tests/utils/test_model_pricing.py`
     puts `None` back to drive the loading chain itself, whose mirror lands here rather than in
     the live `data/`.
     """

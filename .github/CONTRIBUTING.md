@@ -42,7 +42,7 @@ make gen-docs
 
 - `src/discordbot/cli.py`: bot entry point, intent setup, cog loading, global message reward, and application-command sync.
 - `src/discordbot/cogs/`: nextcord cogs, one directory each. `cogs/<name>/cog.py` is the module the loader imports; everything beside it in that directory is that cog's own code.
-- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store, the per-platform link readers in `services/platforms/`). Discord-free, and never imports from `cogs/`, both enforced by `tests/test_package_layering.py`.
+- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store, the per-platform link readers in `services/platforms/`). Discord-free, and never imports from `cogs/`, both enforced by `tests/guards/test_package_layering.py`.
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
 - `src/discordbot/utils/`: generic helpers — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
 - `tests/`: pytest suite.
@@ -65,7 +65,7 @@ docs: simplify user README
 
 - Add or update tests for behavior changes.
 - Update user-facing docs when commands, configuration, or visible behavior changes.
-- For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` and the command table of all three READMEs in the same change, and keep `tests/test_capabilities.py` passing. That English document is injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line there.
+- For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` and the command table of all three READMEs in the same change, and keep `tests/guards/test_capabilities.py` passing. That English document is injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line there.
 - Run local checks before opening the PR:
 
 ```bash
@@ -88,13 +88,13 @@ def setup(bot: commands.Bot) -> None:
 `async def setup` is not safe here: cogs load inside `DiscordBot()` before any event loop runs, so nextcord's attempt to schedule it raises and boot aborts with `ExtensionFailed`.
 
 - Slash commands take their English `name` and `description` as the defaults, plus `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja`.
-- A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/test_package_layering.py` enforces this.
+- A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/guards/test_package_layering.py` enforces this.
 - Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
 - Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`. A new one goes into `.env.example` in the same change: it is the only settings list a deployer sees.
 - Keep `Field(description=..., examples=...)` populated for configurable values. These descriptions document the environment contract.
 - Prefer precise typed APIs. `Any` is a last resort.
 - Keyword arguments are required for normal function calls, including single argument calls such as `create_engine(url=...)` and `re.compile(pattern=...)`.
-- No bare `*` in a function signature unless an external API needs it; `tests/test_no_bare_star.py` enforces this and lists each exception with its reason.
+- No bare `*` in a function signature unless an external API needs it; `tests/guards/test_no_bare_star.py` enforces this and lists each exception with its reason.
 - Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, `text.split(",")`, exception constructors, variadic collectors, and `logfire.info("message")`.
 - Whichever of `service_tier`, `extra_headers` and `extra_body` a `responses.create` / `.parse` or `interactions.create` call passes goes as an explicit keyword, never through a `**dict` spread, which costs the result its types.
 - Build the `tasks` list for a `gather` over a variable number of awaitables with a `for` loop, not a comprehension.
@@ -122,7 +122,7 @@ Four things therefore never appear in a comment or docstring:
 
 **None of this deletes the only copy of a reason.** Where the shortest true form of a reason is a piece of history, a measured figure or a name from another file, keep it and compress it. A warning, a "do not", and a "re-measure before changing this" are reasons rather than narration: the comment saying a column cannot be dropped on a deployed database is the only thing stopping someone dropping it.
 
-**A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
+**A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/guards/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
 `AGENTS.md` (which `CLAUDE.md` links to) holds the rules the code at the edit site does not show. When a fact is written in the code, `AGENTS.md` carries the pointer to it rather than a second copy.
 
@@ -174,7 +174,7 @@ The pytest configuration lives in `pyproject.toml`.
 uv run pytest
 ```
 
-Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`. What decides whether they run is the diff, never the branch name: the suite is skipped when every changed file is Markdown, and `src/discordbot/cogs/gen_reply/capabilities.md` and the three READMEs do not count as Markdown there because `tests/test_capabilities.py` reads them.
+Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`. What decides whether they run is the diff, never the branch name: the suite is skipped when every changed file is Markdown, and `src/discordbot/cogs/gen_reply/capabilities.md` and the three READMEs do not count as Markdown there because `tests/guards/test_capabilities.py` reads them.
 
 Async tests that record nested test-double calls in a list must compare a stable invariant such as a mapping, set, `Counter`, or sorted value. An exact sequence assertion needs an adjacent `# order-contract: <reason>` explaining the production guarantee. When completion order is the behavior under test, control it with an event or barrier instead of relying on scheduler timing.
 

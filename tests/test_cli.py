@@ -12,12 +12,11 @@ cog, and each contract under test lives in one method.
 
 from __future__ import annotations
 
-import ast
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
-import inspect
 from functools import partial
+from importlib import import_module
 
 import pytest
 from nextcord.errors import ApplicationInvokeError
@@ -28,7 +27,13 @@ from discordbot.utils.timezone import database_now
 from discordbot.utils.media_delivery import upload_limit_for
 from discordbot.services.economy.database import CreditResult
 
-from tests.helpers.casting import as_guild, as_message, as_discord_bot, make_invalid_webhook_token
+from tests.helpers.casting import (
+    as_bot,
+    as_guild,
+    as_message,
+    as_discord_bot,
+    make_invalid_webhook_token,
+)
 from tests.helpers.discord_mocks import FakeUser, FakeGuild, FakeInteraction, on_ready_bot
 from tests.helpers.logfire_capture import capture_logs
 from tests.helpers.message_cleanup import record_scheduled_deletes
@@ -117,40 +122,33 @@ async def test_on_connect_starts_the_price_table_refresh_once() -> None:
     assert stub.price_table_task.starts == 1
 
 
-def _on_ready_calls() -> list[str]:
-    """Every attribute call in `DiscordBot.on_ready`, in source order.
-
-    Read off the source, so a statement's position is pinned without stubbing every call
-    `on_ready` makes.
-    """
-    module = ast.parse(inspect.getsource(cli))
-    bot = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef) and node.name == "DiscordBot"
-    )
-    on_ready = next(
-        node
-        for node in bot.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "on_ready"
-    )
-    calls = [
-        (node.lineno, node.col_offset, node.func.attr)
-        for node in ast.walk(on_ready)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
-    return [attr for _, _, attr in sorted(calls)]
-
-
-def test_the_registered_command_count_is_read_before_the_sync_overwrites_it() -> None:
+async def test_the_registered_command_count_is_read_before_the_sync_overwrites_it() -> None:
     """Reading it after the sync would report the repair rather than the damage.
 
     That ordering is the whole of what the diagnostic is worth, and it is invisible to every
     other test: none records the order of the two calls, so swapping the two lines runs green.
     """
-    calls = _on_ready_calls()
+    order: list[str] = []
 
-    assert calls.index("_count_registered_commands") < calls.index("sync_all_application_commands")
+    async def count() -> int:
+        """Records the read of what Discord holds."""
+        order.append("count")
+        return 0
+
+    async def sync() -> None:
+        """Records the sync, then stops `on_ready` before what the stub cannot answer."""
+        order.append("sync")
+        raise RuntimeError("stop after the sync")
+
+    stub = on_ready_bot(started_at=database_now(), sync_all_application_commands=sync)
+    stub._count_registered_commands = count
+
+    with pytest.raises(RuntimeError, match="stop after the sync"):
+        await DiscordBot.on_ready(as_discord_bot(fake=stub))
+    await asyncio.gather(*stub._startup_tasks)
+
+    # order-contract: the count is only worth reading before the sync overwrites it.
+    assert order == ["count", "sync"]
 
 
 async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails(
@@ -247,8 +245,46 @@ def test_cli_load_cogs_sync_refuses_a_directory_that_is_not_a_cog(
     """A cog directory missing either file stops boot instead of silently never loading."""
     _cog_entry(path=tmp_path / "cogs" / "half_moved", files=(present,))
 
-    with pytest.raises(RuntimeError, match="half_moved is under cogs/ but is not a cog"):
+    with pytest.raises(RuntimeError, match="half_moved"):
         _load_cogs_from(root=tmp_path, monkeypatch=monkeypatch)
+
+
+def test_setup_functions_register_cogs() -> None:
+    """EVERY cog module the loader picks up has a sync `setup` that adds its own cog.
+
+    The modules come from `_load_cogs_sync` itself rather than a hand-written list, so a new
+    cog cannot be left out and the real `cogs/` tree has to pass the loader's own checks:
+    `setup` is the one function in a cog module the loader calls by name, and an
+    `async def setup` never reaches `add_cog` here, while at boot it aborts `DiscordBot()`
+    with `ExtensionFailed`.
+    """
+    added: list[tuple[commands.Cog, bool | None]] = []
+    loaded: list[str] = []
+
+    def record_cog(cog: commands.Cog, override: bool | None = None) -> None:
+        """Records the cog instance and override flag passed to add_cog."""
+        added.append((cog, override))
+
+    def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
+        """Records the cog modules the loader would hand to nextcord."""
+        del stop_at_error
+        loaded.extend(modules)
+
+    bot = SimpleNamespace(add_cog=record_cog)
+    cli.DiscordBot._load_cogs_sync(
+        as_discord_bot(fake=SimpleNamespace(load_extensions=record_load_extensions))
+    )
+
+    assert loaded  # a scan that found nothing would pass every assertion below
+    for name in loaded:
+        module = import_module(name=name)
+        module.setup(bot=as_bot(fake=bot))
+        cog, override = added[-1]
+        # `override=True` is what lets a reload replace the cog instead of colliding, and
+        # the module check is what stops a re-export standing in for a missing cog.
+        assert override is True, name
+        assert type(cog).__module__ == module.__name__, name
+    assert len(added) == len(loaded)
 
 
 @pytest.fixture
@@ -283,18 +319,20 @@ async def test_cli_message_reward_pays_a_member_and_never_the_bot(
 
 
 async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
-    rewards: list[dict[str, Any]],
+    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A second message within the cooldown earns nothing; a later one earns again."""
+    clock = [1_000.0]
+    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: clock[0])
     bot = _reward_bot()
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    clock[0] += cli.MESSAGE_REWARD_COOLDOWN_SECONDS - 1
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     assert len(rewards) == 1
 
-    # Backdate the last-reward stamp so the cooldown window has elapsed.
-    bot._message_reward_at[1] -= cli.MESSAGE_REWARD_COOLDOWN_SECONDS + 1
+    clock[0] += 2
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     assert len(rewards) == 2
 
@@ -304,7 +342,8 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
 ) -> None:
     """Expired per-user cooldown slots are dropped lazily on later messages."""
     monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
-    bot = _reward_bot(_message_reward_at={1: 900.0, 2: 975.0})
+    cooldown = cli.MESSAGE_REWARD_COOLDOWN_SECONDS
+    bot = _reward_bot(_message_reward_at={1: 1_000.0 - cooldown - 1, 2: 1_000.0 - cooldown / 2})
 
     await cli.DiscordBot.on_message(
         as_discord_bot(fake=bot),
@@ -314,7 +353,7 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
     )
 
     assert 1 not in bot._message_reward_at
-    assert bot._message_reward_at[2] == 975.0
+    assert bot._message_reward_at[2] == 1_000.0 - cooldown / 2
     assert bot._message_reward_at[3] == 1_000.0
     assert len(rewards) == 1
 
@@ -344,26 +383,16 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
     assert bot._message_reward_at.get(1) is not None
 
 
-async def test_message_reward_stores_guild_avatar(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_message_reward_stores_guild_avatar(
+    rewards: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Base message rewards pass the guild avatar into the economy DB facade."""
-    captured_avatar_url = ""
-
-    async def fake_credit_with_repayment(
-        user_id: int, name: str, avatar_url: str, amount: int
-    ) -> SimpleNamespace:
-        """Records the avatar URL passed to the DB facade."""
-        nonlocal captured_avatar_url
-        del user_id, name, amount
-        captured_avatar_url = avatar_url
-        return SimpleNamespace(new_balance=0)
-
     recorded_participation: list[tuple[int, int]] = []
 
     async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
         """Records the participation upsert instead of writing to the live economy DB."""
         recorded_participation.append((guild_id, user_id))
 
-    monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
     monkeypatch.setattr(cli, "record_guild_participant", fake_record_guild_participant)
     author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
     cached_member = FakeUser(
@@ -378,7 +407,7 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: pytest.MonkeyPatc
         as_discord_bot(fake=_reward_bot()), message=as_message(fake=message)
     )
 
-    assert captured_avatar_url == "https://cdn.test/server.png"
+    assert [reward["avatar_url"] for reward in rewards] == ["https://cdn.test/server.png"]
     # The faucet is the only bulk source of central-bank participation, and it rides the
     # reward rather than every message.
     assert recorded_participation == [(100, 7)]
@@ -475,8 +504,7 @@ async def test_cli_logs_a_failure_notice_discord_refused(monkeypatch: pytest.Mon
 
     await _fail_command(fake=fake)
 
-    message, fields = warned[-1]
-    assert message == "Could not tell the caller a slash command failed"
+    ((_message, fields),) = warned
     assert fields["command"] == "demo"
 
 

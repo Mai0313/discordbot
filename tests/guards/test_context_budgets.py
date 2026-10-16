@@ -1,8 +1,8 @@
 """Pins the relationships between context budgets that no single module can state alone.
 
-Deliberately not the shape `tests/test_timeouts.py` takes. That scan works because a deadline
-is mechanically recognisable -- `timeout=`, `delay=`, a `_timeout` suffix -- so it needs only
-two allowlist entries and the rule stays readable. An input budget is spelled `MAX_*`,
+Deliberately not the shape `tests/guards/test_timeouts.py` takes. That scan works because a
+deadline is mechanically recognisable -- `timeout=`, `delay=`, a `_timeout` suffix -- so it needs
+only two allowlist entries and the rule stays readable. An input budget is spelled `MAX_*`,
 `*_LIMIT` or `*_CHARS`, and so are the write-side clamps, the output caps and the UI caps that
 `typings/context_budgets.py` deliberately excludes. A name scan would need a longer allowlist
 than the rule it enforces, which is a hand-maintained list pretending to be a rule.
@@ -49,16 +49,22 @@ def test_the_injection_warning_fires_before_the_injection_cap_binds() -> None:
 def test_the_budgets_module_imports_nothing_from_the_package() -> None:
     """It is a leaf of plain constants, like `typings/timeouts.py`.
 
-    `tests/test_package_layering.py` already forbids `typings` importing any higher layer.
+    `tests/guards/test_package_layering.py` already forbids `typings` importing any higher layer.
     This is the stricter property the module actually has: no `discordbot` import at all, so it
     can never become a place where a budget is computed from something that has a runtime.
     """
     module = PACKAGE / "typings" / "context_budgets.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
+    # A relative import keeps its leading dots, so it reads as the package import it is.
     modules = [
-        node.module if isinstance(node, ast.ImportFrom) else alias.name
+        "." * node.level + (node.module or "") if isinstance(node, ast.ImportFrom) else alias.name
         for node in ast.walk(tree)
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in getattr(node, "names", [])
     ]
-    assert modules == ["typing"]
+    package_imports = [
+        module
+        for module in modules
+        if module.startswith(".") or module.split(".")[0] == "discordbot"
+    ]
+    assert package_imports == []

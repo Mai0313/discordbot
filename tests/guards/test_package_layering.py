@@ -83,8 +83,11 @@ def test_a_cog_never_imports_a_peer_cog() -> None:
     The rule covers helper modules too, not just `cog.py`: cog modules that stay apart while
     their helpers import each other freely leave a feature with no one place it lives.
     """
+    modules = python_modules(root=_COGS)
+    assert any(_cog_of(module) for module in modules), "scan found no cog modules"
+
     offenders: list[str] = []
-    for module in python_modules(root=_COGS):
+    for module in modules:
         owner = _cog_of(module)
         if not owner:
             continue
@@ -110,8 +113,11 @@ def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[s
     An edge the other way is what turns a shared engine back into one cog's private helper
     that a second cog happens to reach into.
     """
+    modules = python_modules(root=PACKAGE / layer)
+    assert modules, f"scan found no {layer} modules"
+
     offenders: list[str] = []
-    for module in python_modules(root=PACKAGE / layer):
+    for module in modules:
         for imported in _imported_modules(module):
             if imported.startswith(forbidden):
                 offenders.append(f"{module.relative_to(PACKAGE).as_posix()} -> {imported}")

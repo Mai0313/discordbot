@@ -22,6 +22,6 @@ platforms reach the network through, not a platform, so its `VideoDownloader` is
 it does rather than for a site.
 
 This layer is Discord-free. Nothing here imports nextcord, directly or through another module,
-and `tests/test_package_layering.py` holds it to that — which is why planning a Douyin send lives
-in `utils/douyin_delivery.py` while reading a Douyin post lives here.
+and `tests/guards/test_package_layering.py` holds it to that — which is why planning a Douyin
+send lives in `utils/douyin_delivery.py` while reading a Douyin post lives here.
 """

@@ -312,8 +312,8 @@ def defuse_markers(text: str) -> str:
 
     Used by every source that hands the model posts around the linked one as well: its comments,
     or the post it replies to or quotes. Douyin and Bilibili do not use it: a caption or a video
-    title is one line by its own author, and `tests/test_prompt_guards.py` owns the prompt rule
-    that covers every undefused path.
+    title is one line by its own author, and `tests/guards/test_prompt_guards.py` owns the prompt
+    rule that covers every undefused path.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
 

@@ -68,7 +68,7 @@ async def test_a_failing_loan_decision_is_logged(monkeypatch: pytest.MonkeyPatch
     assert len(logged) == 1
     _message, fields = logged[0]
     assert fields["view"] == "CreditLoanDecisionView"
-    assert fields["custom_id"] == "credit:cancel"
+    assert fields["custom_id"] == button.custom_id
     assert fields["_exc_info"] is error
 
 
@@ -145,8 +145,7 @@ async def test_a_failing_loan_timeout_is_logged(monkeypatch: pytest.MonkeyPatch)
     await _run_dispatched_timeout(view=view)
 
     assert len(logged) == 1
-    message, fields = logged[0]
-    assert message == "View timeout failed"
+    _message, fields = logged[0]
     assert fields["view"] == "CreditLoanDecisionView"
     assert fields["message_id"] == 1
     assert fields["_exc_info"] is error

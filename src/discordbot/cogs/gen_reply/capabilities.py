@@ -10,7 +10,7 @@ rewords each passage promising a feature this deployment has switched off, the r
 inline marker's instruction already follows, so each passage named here has to stay word for
 word what the document says.
 
-`tests/test_capabilities.py` keeps it exhaustive in both directions: the same AST scan that
+`tests/guards/test_capabilities.py` keeps it exhaustive in both directions: the same AST scan that
 used to guard the help content asserts every runnable slash command still appears here, and
 every command named here still resolves to a runnable one. The second guard reads a mention
 off a code span of its own, so write a command that way or it is rejected as unreadable.

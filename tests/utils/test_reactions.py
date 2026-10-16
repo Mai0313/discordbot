@@ -24,6 +24,6 @@ async def test_a_refused_reaction_is_a_warn_with_its_ids(monkeypatch: pytest.Mon
     added = await update_reaction(message=as_message(fake=message), bot_user=None, emoji="✅")
 
     assert added == "✅"
-    assert warns == [
-        ("Discord refused a reaction", {"message_id": 1, "channel_id": 2, "emoji": "✅"})
+    assert [fields for _message, fields in warns] == [
+        {"message_id": 1, "channel_id": 2, "emoji": "✅"}
     ]

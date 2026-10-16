@@ -1,8 +1,8 @@
 """Tests for the manual balance adjustment script."""
 
 import pytest
-from scripts import modify_balance as modify_balance_script
 
+from scripts import modify_balance as modify_balance_script
 from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
 from discordbot.services.economy.database import get_account, adjust_balance
 
