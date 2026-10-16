@@ -218,3 +218,38 @@ def test_scrub_markers_for_preview_hides_streaming_fragments() -> None:
         == "看這之後"
     )
     assert scrub_markers_for_preview(text="正常文字") == "正常文字"
+
+
+def test_deep_research_block_is_pulled_and_brief_captured() -> None:
+    markers = extract_inline_markers(
+        text="好喔幫你查 <deep-research>研究 TPU 的競爭格局</deep-research> 等等貼到 thread"
+    )
+    assert markers.research_brief == "研究 TPU 的競爭格局"
+    assert "TPU" not in markers.cleaned_text
+    assert "thread" in markers.cleaned_text
+
+
+def test_unclosed_trailing_deep_research_is_still_pulled() -> None:
+    markers = extract_inline_markers(text="開查囉 <deep-research>研究量子計算最新進展")
+    assert markers.research_brief == "研究量子計算最新進展"
+    assert "量子" not in markers.cleaned_text
+
+
+def test_deep_research_coexists_with_voice() -> None:
+    markers = extract_inline_markers(
+        text="<generate-voice>馬上幫你查</generate-voice> <deep-research>研究 X</deep-research>"
+    )
+    assert markers.voice_requested
+    assert "馬上幫你查" in markers.cleaned_text
+    assert markers.research_brief == "研究 X"
+    assert "X" not in markers.cleaned_text
+
+
+def test_scrub_hides_deep_research_mid_stream() -> None:
+    assert "TPU" not in scrub_markers_for_preview(text="好喔 <deep-research>研究 TPU")
+
+
+def test_no_marker_leaves_text_and_brief_untouched() -> None:
+    markers = extract_inline_markers(text="這只是一般回覆,沒有任何 marker")
+    assert markers.research_brief is None
+    assert markers.cleaned_text == "這只是一般回覆,沒有任何 marker"
