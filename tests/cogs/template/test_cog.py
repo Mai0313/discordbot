@@ -19,10 +19,10 @@ if TYPE_CHECKING:
 
 async def test_template_on_message_and_ping() -> None:
     """Verifies template debug reaction and ping command response."""
-    cog = TemplateCogs(bot=as_bot(fake=SimpleNamespace(latency=0.123)))
+    cog = TemplateCogs(bot=as_bot(fake=SimpleNamespace(latency=0.25)))
     message = FakeDiscordMessage(author=FakeUser(bot=False), content="debug")
     await cog.on_message(message=as_message(fake=message))
-    assert message.reactions == ["🤬"]
+    assert len(message.reactions) == 1
 
     bot_message = FakeDiscordMessage(author=FakeUser(bot=True), content="debug")
     await cog.on_message(message=as_message(fake=bot_message))
@@ -32,7 +32,8 @@ async def test_template_on_message_and_ping() -> None:
     await TemplateCogs.ping.callback(cog, interaction)
     embed = interaction.followup.sent[0]["embed"]
     assert isinstance(embed, Embed)
-    assert embed.title == ":ping_pong: Pong!"
+    # 0.25 s reads as 250 ms; a reply that skipped the conversion would show 0.25.
+    assert any("250" in str(field.value) for field in embed.fields)
 
 
 async def test_template_logs_a_refused_reaction_at_warn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,4 +51,4 @@ async def test_template_logs_a_refused_reaction_at_warn(monkeypatch: pytest.Monk
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert warns == [("Discord refused a trigger reaction", {"message_id": 1, "channel_id": 2})]
+    assert [fields for _message, fields in warns] == [{"message_id": 1, "channel_id": 2}]

@@ -10,6 +10,8 @@ from nextcord.ui import View, Modal
 # Namespace import: the package object itself is the input, for its `__path__`.
 import discordbot
 
+from tests.helpers.source_tree import PACKAGE, python_modules
+
 
 def _import_every_module() -> None:
     """Imports the whole package so every `View` subclass is registered."""
@@ -17,20 +19,27 @@ def _import_every_module() -> None:
         import_module(name=module.name)
 
 
-def test_the_module_walk_reaches_a_nested_subpackage() -> None:
+def test_the_module_walk_reaches_every_module_on_disk() -> None:
     """`walk_packages` skips a directory with no `__init__.py`, and does so silently.
 
     Views live inside cog directories, and a cog may nest a subpackage a level down
     (`gen_reply/link_sources/`). A subpackage missing its `__init__.py` still imports fine
     by name and the cog still loads, so nothing else would notice that every `View` inside
-    it dropped out of the shadowing check below.
+    it dropped out of the sweeps below. Held to the source tree, so any such directory counts.
     """
     _import_every_module()
     walked = {
         module.name
         for module in walk_packages(path=discordbot.__path__, prefix=f"{discordbot.__name__}.")
     }
-    assert "discordbot.cogs.gen_reply.link_sources.threads" in walked
+    on_disk: set[str] = set()
+    for path in python_modules(root=PACKAGE):
+        parts = path.relative_to(PACKAGE.parent).with_suffix("").parts
+        on_disk.add(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
+    on_disk.discard(discordbot.__name__)
+
+    assert on_disk, "the scan found no modules on disk"
+    assert sorted(on_disk - walked) == []
 
 
 def _subclasses[T](base: type[T]) -> set[type[T]]:

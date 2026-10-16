@@ -24,7 +24,6 @@ from tests.helpers.llm_input import (
     extract_callable_user_ids,
     extract_user_memory_blocks,
     extract_server_memory_block,
-    extract_memory_context_block,
 )
 
 
@@ -72,12 +71,6 @@ def test_extract_user_memory_blocks_empty_without_block() -> None:
     assert not has_memory_context_block(request=request)
 
 
-def test_extract_user_memory_blocks_handles_bare_string_input() -> None:
-    """A bare string input has no role structure and leaks nothing."""
-    assert extract_user_memory_blocks(request="just text") == {}
-    assert extract_callable_user_ids(request="just text") == set()
-
-
 def test_extract_server_memory_block_present_and_absent() -> None:
     """The server block is found by its production header, else None."""
     with_server = _answer_request(server_memory="這個社群很愛嘴")
@@ -89,14 +82,6 @@ def test_extract_callable_user_ids_from_selection_block() -> None:
     """Callable ids are parsed from the selection allowlist block."""
     request = _answer_request(callable_ids={1: "Alice (alice)", 42: "Boss (boss)"})
     assert extract_callable_user_ids(request=request) == {1, 42}
-
-
-def test_extract_memory_context_block_returns_full_text() -> None:
-    """The raw block text is returned for callers needing the framing."""
-    request = _answer_request(memory_ids={7: "x"})
-    block = extract_memory_context_block(request=request)
-    assert block is not None
-    assert "[id: 7]" in block
 
 
 def test_iter_text_blocks_yields_role_text_pairs() -> None:

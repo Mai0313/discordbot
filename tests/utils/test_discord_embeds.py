@@ -229,11 +229,13 @@ def test_text_within_the_limit_is_returned_untouched() -> None:
 
 
 def test_a_clip_lands_inside_the_limit_when_every_character_costs_two() -> None:
-    """Slicing by `len` would leave twice the units the caller asked for."""
+    """Slicing by `len` would leave twice the units the caller asked for.
+
+    The cut still keeps every character that fits beside the notice: 96 units is 48 cats.
+    """
     clipped = clip_to_utf16_limit(text="🐈" * 500, limit=100, notice="…cut")
 
-    assert utf16_length(value=clipped) <= 100
-    assert clipped.endswith("…cut")
+    assert clipped == "🐈" * 48 + "…cut"
 
 
 def test_a_limit_too_small_for_the_notice_yields_the_notice_alone() -> None:

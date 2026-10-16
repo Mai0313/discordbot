@@ -55,10 +55,16 @@ def test_the_budgets_module_imports_nothing_from_the_package() -> None:
     """
     module = PACKAGE / "typings" / "context_budgets.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
+    # A relative import keeps its leading dots, so it reads as the package import it is.
     modules = [
-        node.module if isinstance(node, ast.ImportFrom) else alias.name
+        "." * node.level + (node.module or "") if isinstance(node, ast.ImportFrom) else alias.name
         for node in ast.walk(tree)
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in getattr(node, "names", [])
     ]
-    assert modules == ["typing"]
+    package_imports = [
+        module
+        for module in modules
+        if module.startswith(".") or module.split(".")[0] == "discordbot"
+    ]
+    assert package_imports == []

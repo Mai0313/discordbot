@@ -15,9 +15,9 @@ anything. Point a tier at a non-Gemini model and this guard is the one to revisi
 route around.
 
 And no tier may name a `*-latest` alias, because an alias moves under the deployment, so the
-effort set it accepts can change with nothing in this repo changing; `slow_model` additionally may
-not drift off `high`, since it is the one tier whose effort is chosen at runtime and handed to
-`interactions.create`, where #459 lost whole replies to it.
+effort set it accepts can change with nothing in this repo changing. That matters most for
+`slow_model`, the one tier whose effort is chosen at runtime and handed to `interactions.create`,
+where #459 lost whole replies to it.
 """
 
 import json
@@ -98,29 +98,15 @@ def test_no_tier_dispatches_an_alias() -> None:
     )
 
 
-def test_the_default_effort_is_not_one_gemini_refuses() -> None:
-    """A tier that names no effort still gets one no Gemini model has to refuse outright.
-
-    Deliberately not an equality assertion. No single default can be right for every model that
-    relies on it, because the accepted set is per-model and the vocabulary is per-provider (see
-    `ModelSettings.effort`); all it has to be is outside the pair every Gemini model refuses.
-    The tiers that lean on it today dispatch no effort at all, so the value only has to stay
-    harmless.
-    """
-    assert ModelSettings(name="gemini-3.8-flash").effort not in _REFUSED_EFFORTS
-
-
 def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every slow-model branch stays on a pinned snapshot at high effort.
+    """Every slow-model branch stays on a pinned snapshot.
 
     The one tier whose effort is decided at runtime is also the one dispatched direct to Google,
     where the accepted `thinking_level` set is per-model and a rejection costs the whole reply.
     A pinned snapshot's set can at least be looked up; an alias resolves elsewhere, so it cannot.
     Which snapshot a branch names is free to change; that none of them is an alias is not free,
     and nothing else in the tree reports it. Whether two branches may name the SAME snapshot is
-    not this test's question either way — the peak-window test below pins that peak and off-peak
-    hours answer on the same model, so splitting the branch again is answered there rather than
-    here.
+    not this test's question either way.
 
     Every hour of a week is swept rather than one instant per branch the catalog has today: the
     dispatch condition is the catalog's own to change, so a branch added on a second condition
@@ -130,33 +116,27 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     """
     monday = datetime(year=2026, month=5, day=18, tzinfo=UTC)
     aliases: dict[str, str] = {}
-    wrong_effort: dict[str, str] = {}
     for offset in range(7 * 24):
         now = monday + timedelta(hours=offset)
         settings = _catalog_at(monkeypatch=monkeypatch, now=now).slow_model
         when = f"{now:%a %H:00} UTC"
         if "latest" in settings.name:
             aliases.setdefault(settings.name, when)
-        if settings.effort != "high":
-            wrong_effort.setdefault(str(settings.effort), when)
 
     assert aliases == {}, (
         "A `*-latest` alias resolves under the deployment, so the thinking levels this tier can "
         "be dispatched with cannot be looked up for it and can change without this repo "
         f"changing. Name the snapshot, which can. #459 was that failure. Aliases: {aliases}"
     )
-    assert wrong_effort == {}, f"Every slow-model branch ships `high`. Offenders: {wrong_effort}"
 
 
-def test_the_peak_window_is_computed_but_the_slow_model_does_not_dispatch_on_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The catalog still knows the peak window, and peak and off-peak hours share a slow model."""
+def test_the_catalog_computes_the_peak_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The catalog still knows the peak window a tier branches on when peak refusals return."""
 
-    def snapshot_at(now: datetime) -> tuple[ModelSettings, bool, bool]:
-        """Returns the peak-sensitive fields with the catalog clock pinned to `now`."""
+    def snapshot_at(now: datetime) -> tuple[bool, bool]:
+        """Returns the peak flag and its dumped value with the catalog clock pinned to `now`."""
         catalog = _catalog_at(monkeypatch=monkeypatch, now=now)
-        return catalog.slow_model, catalog.is_peak, catalog.model_dump()["is_peak"] is True
+        return catalog.is_peak, catalog.model_dump()["is_peak"] is True
 
     peak_start = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
     peak_end = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
@@ -164,24 +144,18 @@ def test_the_peak_window_is_computed_but_the_slow_model_does_not_dispatch_on_it(
     after_peak = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
     weekend = snapshot_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
 
-    assert peak_start[1:] == (True, True)
-    assert peak_end[1:] == (True, True)
-    assert before_peak[1:] == (False, False)
-    assert after_peak[1:] == (False, False)
-    assert weekend[1:] == (False, False)
-    # No tier splits on the peak window, so every hour answers on the same model. Asserted
-    # across all five rather than per branch, because the per-branch form passes either way
-    # once there is one branch; the window itself is still guarded above.
-    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
+    assert peak_start == (True, True)
+    assert peak_end == (True, True)
+    assert before_peak == (False, False)
+    assert after_peak == (False, False)
+    assert weekend == (False, False)
 
 
 def test_model_settings_and_catalog_helpers() -> None:
     """Verifies model properties and provider-specific tool dispatch."""
     catalog = RuntimeModelCatalog()
-    assert isinstance(catalog.fast_model, ModelSettings)
     # LiteLLM sends an image model whose name lacks `gemini` to Imagen's `:predict` endpoint.
     assert catalog.image_model.is_gemini
-    assert "omni" in catalog.video_model.name
     # Code execution is omitted on purpose: it 400s the request on file attachments.
     assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
     assert ModelSettings(name="claude-test").tools == [

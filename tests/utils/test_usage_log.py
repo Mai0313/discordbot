@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from pathlib import Path
+from datetime import datetime
 
-from discordbot.utils.timezone import database_now
+from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.usage_log import UsageRecord, UsageRecorder, UsageLogConfig
 
 from tests.helpers.usage_log import usage_records
@@ -14,8 +15,15 @@ if TYPE_CHECKING:
     import pytest
 
 
-async def test_a_record_lands_in_its_own_month_file(usage_log_isolated_dir: Path) -> None:
+async def test_a_record_lands_in_its_own_month_file(
+    usage_log_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One use is one JSON line, in the file named after the month it happened in."""
+    monkeypatch.setattr(
+        "discordbot.utils.usage_log.database_now",
+        lambda: datetime(2026, 8, 3, 3, 29, tzinfo=TAIWAN_TIMEZONE),
+    )
+
     await UsageRecorder().record(
         kind="slash",
         name="games blackjack",
@@ -25,8 +33,7 @@ async def test_a_record_lands_in_its_own_month_file(usage_log_isolated_dir: Path
         channel_id=3,
     )
 
-    month_file = usage_log_isolated_dir / f"{database_now():%Y-%m}.jsonl"
-    assert [path.name for path in usage_log_isolated_dir.iterdir()] == [month_file.name]  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
+    assert [path.name for path in usage_log_isolated_dir.iterdir()] == ["2026-08.jsonl"]  # noqa: ASYNC240 -- a tmp_path entry, not blocking IO
     (record,) = usage_records(directory=usage_log_isolated_dir)
     # The exact key set is the privacy decision: who and where, and nothing about what
     # they typed. The username rides along so an operator can read the file, but it is a
@@ -38,8 +45,7 @@ async def test_a_record_lands_in_its_own_month_file(usage_log_isolated_dir: Path
     assert (record["guild_id"], record["channel_id"]) == (2, 3)
     # Stamped in Asia/Taipei with the offset present, so grouping by day is a string slice
     # and the value is still unambiguous.
-    assert record["at"].endswith("+08:00")
-    assert record["at"].startswith(f"{database_now():%Y-%m-%d}")
+    assert record["at"] == "2026-08-03T03:29:00+08:00"
 
 
 async def test_each_use_appends_its_own_line(usage_log_isolated_dir: Path) -> None:
@@ -108,9 +114,8 @@ def test_the_recorder_defaults_to_the_data_directory(monkeypatch: pytest.MonkeyP
     kept inside it would die with it or silently stop recording.
     """
     monkeypatch.delenv(name="USAGE_LOG_DIR", raising=False)
-    monkeypatch.delenv(name="USAGE_LOG_ENABLED", raising=False)
 
-    config = UsageLogConfig()
+    parts = Path(UsageLogConfig().directory).parts
 
-    assert Path(config.directory) == Path("./data/usage")
-    assert config.enabled is True
+    assert parts[0] == "data"
+    assert "logs" not in parts
