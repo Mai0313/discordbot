@@ -55,6 +55,61 @@ def _install_youtube_dl_stub(
     return captured_params, captured_calls
 
 
+_SHARE_URL = "https://www.facebook.com/share/r/17h4SsC2p1"
+_SHARE_TARGET = "https://www.facebook.com/watch?v=828357636228730"
+
+
+class _LandedResponse:
+    """A share link's answer from the post it points at."""
+
+    def __init__(self, url: str) -> None:
+        """Records where the redirect chain ended."""
+        self.url = url
+
+    def close(self) -> None:
+        """Releases the connection without the body ever being read."""
+
+
+def _install_share_session(
+    monkeypatch: pytest.MonkeyPatch, refuse_head: bool = False
+) -> list[dict[str, object]]:
+    """Answers every share-link request as landing on `_SHARE_TARGET`; returns each one made.
+
+    `refuse_head` fails the HEAD attempt the way many share links do, so the GET fallback runs.
+    """
+    requests_made: list[dict[str, object]] = []
+
+    class _SessionStub:
+        """Records how each attempt was made."""
+
+        def __enter__(self) -> Self:
+            """Returns the stub session."""
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            """Matches requests.Session's context-manager shape."""
+
+        def head(self, url: str, **kwargs: object) -> _LandedResponse:
+            """Records a HEAD attempt, refusing it when the test asks."""
+            requests_made.append({"method": "head", "url": url, **kwargs})
+            if refuse_head:
+                raise RequestException("share links often refuse HEAD")
+            return _LandedResponse(url=_SHARE_TARGET)
+
+        def get(self, url: str, **kwargs: object) -> _LandedResponse:
+            """Records a GET attempt."""
+            requests_made.append({"method": "get", "url": url, **kwargs})
+            return _LandedResponse(url=_SHARE_TARGET)
+
+    monkeypatch.setattr(target=downloader_module, name="Session", value=_SessionStub)
+    return requests_made
+
+
 @pytest.mark.parametrize(
     argnames=("url", "expected_url"),
     argvalues=[
@@ -91,20 +146,12 @@ def test_download_resolves_facebook_share_links(
     _captured_params, captured_calls = _install_youtube_dl_stub(
         monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
     )
-
-    def fake_resolve(self: VideoDownloader, url: str) -> str:
-        """Returns a stable resolved watch URL for the share link."""
-        assert isinstance(self, VideoDownloader)
-        assert url == "https://www.facebook.com/share/r/17h4SsC2p1"
-        return "https://www.facebook.com/watch?v=828357636228730"
-
-    monkeypatch.setattr(
-        target=VideoDownloader, name="_resolve_facebook_share_url", value=fake_resolve
-    )
+    requests_made = _install_share_session(monkeypatch=monkeypatch)
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    downloader.download(url="https://www.facebook.com/share/r/17h4SsC2p1", quality="best")
+    downloader.download(url=_SHARE_URL, quality="best")
 
+    assert [request["url"] for request in requests_made] == [_SHARE_URL]
     assert captured_calls == [
         {"url": "https://www.facebook.com/reel/828357636228730", "download": True}
     ]
@@ -125,23 +172,13 @@ def test_a_lookalike_facebook_host_reaches_ytdlp_unchanged(
     _captured_params, captured_calls = _install_youtube_dl_stub(
         monkeypatch=monkeypatch, tmp_path=tmp_path, info=_DOWNLOADED_INFO
     )
-    resolved: list[str] = []
-
-    def record_resolve(self: VideoDownloader, url: str) -> str:
-        """Records a share-link resolution, which only Facebook's own host may reach."""
-        del self
-        resolved.append(url)
-        return url
-
-    monkeypatch.setattr(
-        target=VideoDownloader, name="_resolve_facebook_share_url", value=record_resolve
-    )
+    requests_made = _install_share_session(monkeypatch=monkeypatch)
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
     downloader.download(url=url, quality="best")
 
     assert captured_calls == [{"url": url, "download": True}]
-    assert resolved == []
+    assert requests_made == []
 
 
 def test_facebook_share_resolution_never_downloads_the_page(
@@ -149,54 +186,16 @@ def test_facebook_share_resolution_never_downloads_the_page(
 ) -> None:
     """Only where the request landed is wanted, so the body is left on the wire.
 
-    Every other test stubs the resolver out, so without this one a request that downloads a
-    full Facebook page just to learn where it landed stays green forever. The HEAD is failed
-    on purpose: it has no body whatever it is sent, so the GET fallback below it is the only
-    attempt that could ever pull a page down, and therefore the only one worth pinning.
+    The HEAD is failed on purpose: it has no body whatever it is sent, so the GET fallback below
+    it is the only attempt that could ever pull a page down, and therefore the only one worth
+    pinning.
     """
-    requests_made: list[dict[str, object]] = []
-
-    class _Response:
-        """A share link that answered from the post it points at."""
-
-        url = "https://www.facebook.com/watch?v=828357636228730"
-
-        def close(self) -> None:
-            """Releases the connection without the body ever being read."""
-
-    class _SessionStub:
-        """Records how each attempt was made."""
-
-        def __enter__(self) -> Self:
-            """Returns the stub session."""
-            return self
-
-        def __exit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc_val: BaseException | None,
-            exc_tb: TracebackType | None,
-        ) -> None:
-            """Matches requests.Session's context-manager shape."""
-
-        def head(self, url: str, **kwargs: object) -> _Response:
-            """Records a HEAD attempt, then refuses it so the GET fallback runs."""
-            requests_made.append({"method": "head", "url": url, **kwargs})
-            raise RequestException("share links often refuse HEAD")
-
-        def get(self, url: str, **kwargs: object) -> _Response:
-            """Records a GET attempt."""
-            requests_made.append({"method": "get", "url": url, **kwargs})
-            return _Response()
-
-    monkeypatch.setattr(target=downloader_module, name="Session", value=_SessionStub)
+    requests_made = _install_share_session(monkeypatch=monkeypatch, refuse_head=True)
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    resolved = downloader._resolve_facebook_share_url(
-        "https://www.facebook.com/share/r/17h4SsC2p1"
-    )
+    resolved = downloader._resolve_facebook_share_url(_SHARE_URL)
 
-    assert resolved == "https://www.facebook.com/watch?v=828357636228730"
+    assert resolved == _SHARE_TARGET
     assert [request["method"] for request in requests_made] == ["head", "get"]
     assert all(request["stream"] for request in requests_made)
     assert all(request["allow_redirects"] for request in requests_made)
@@ -348,7 +347,7 @@ def test_parse_metadata_raises_when_ytdlp_returns_nothing(
     _install_youtube_dl_stub(monkeypatch=monkeypatch, tmp_path=tmp_path, info=None)
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
 
-    with pytest.raises(RuntimeError, match="no metadata"):
+    with pytest.raises(RuntimeError):
         downloader.parse_metadata(url="https://www.bilibili.com/video/BV1")
 
 

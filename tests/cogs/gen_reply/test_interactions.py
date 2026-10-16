@@ -190,8 +190,9 @@ def _ns(event: object) -> SimpleNamespace:
 
 async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     """Interactions events become Responses-shaped events the streamer consumes."""
+    events = interactions_turn_events()
     stream = adapt_interactions_stream(
-        stream=as_interaction_event_stream(fake=event_stream(events=interactions_turn_events()))
+        stream=as_interaction_event_stream(fake=event_stream(events=events))
     )
     out = [event async for event in stream]
 
@@ -203,7 +204,7 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
         "response.output_text.delta",
         "response.completed",
     ]
-    assert _ns(event=out[0]).response.model == "gemini-3.1-pro-preview"
+    assert _ns(event=out[0]).response.model == events[0].interaction.model
     assert _ns(event=out[1]).delta == "hmm"
     assert _ns(event=out[2]).delta == "Hello"
     # Usage is emitted once, on completion, with the Responses field names.

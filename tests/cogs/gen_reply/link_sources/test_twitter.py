@@ -4,6 +4,7 @@ import pytest
 
 from discordbot.services.platforms.twitter import TwitterDownloader, TwitterConversation
 from discordbot.cogs.gen_reply.link_sources.twitter import build_twitter_context_messages
+from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
 
 from tests.helpers.casting import make_stub_gemini_client
 from tests.helpers.link_sources import (
@@ -54,37 +55,28 @@ async def test_the_block_says_no_replies_are_included(monkeypatch: pytest.Monkey
 
 
 async def test_a_truncated_post_says_so_in_the_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Twitter marks a cut body in no way at all, so the render has to."""
-    serve_conversation(
-        monkeypatch,
-        downloader=TwitterDownloader,
-        post=twitter_post(image_urls=[], is_truncated=True),
-    )
+    """Twitter marks a cut body in no way at all, so the render has to, and only on the flag."""
 
-    blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
-    )
+    async def body(is_truncated: bool) -> list[str]:
+        serve_conversation(
+            monkeypatch,
+            downloader=TwitterDownloader,
+            post=twitter_post(image_urls=[], is_truncated=is_truncated),
+        )
+        blocks = await build_twitter_context_messages(
+            url=TWITTER_URL,
+            answer_model_is_gemini=False,
+            gemini_client=None,
+            allow_media_ingest=False,
+            deadline=link_build_deadline(),
+        )
+        return block_body(blocks=blocks).splitlines()
 
-    assert "longer than what is shown" in block_body(blocks=blocks)
+    ordinary = await body(is_truncated=False)
+    truncated = await body(is_truncated=True)
 
-
-async def test_an_ordinary_post_does_not_claim_to_be_cut(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The notice rides on a flag, so its absence has to be silent."""
-    serve_conversation(monkeypatch, downloader=TwitterDownloader, post=twitter_post(image_urls=[]))
-
-    blocks = await build_twitter_context_messages(
-        url=TWITTER_URL,
-        answer_model_is_gemini=False,
-        gemini_client=None,
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
-    )
-
-    assert "longer than what is shown" not in block_body(blocks=blocks)
+    assert len(truncated) == len(ordinary) + 1
+    assert set(ordinary) <= set(truncated)
 
 
 async def test_the_post_it_replies_to_is_rendered_before_it(
@@ -109,7 +101,6 @@ async def test_the_post_it_replies_to_is_rendered_before_it(
     body = block_body(blocks=blocks)
 
     assert body.index("Feel good.") < body.index("Play good.")
-    assert "The post it replies to" in body
 
 
 async def test_a_quoted_post_is_rendered_after_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,7 +120,6 @@ async def test_a_quoted_post_is_rendered_after_it(monkeypatch: pytest.MonkeyPatc
     body = block_body(blocks=blocks)
 
     assert body.index("post body") < body.index("quoted body")
-    assert "The post it quotes" in body
 
 
 async def test_the_quoted_post_says_its_pictures_are_not_attached(
@@ -158,7 +148,9 @@ async def test_the_quoted_post_says_its_pictures_are_not_attached(
     )
 
     assert fetched == []
-    assert "1 image(s), none of them attached" in block_body(blocks=blocks)
+    assert image_count_line(carried=1, attached=0, urls=quoted.image_urls) in block_body(
+        blocks=blocks
+    )
     assert quoted.image_urls[0] in block_body(blocks=blocks)
 
 

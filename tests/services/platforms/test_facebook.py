@@ -8,6 +8,7 @@ page is mostly made of.
 
 import base64
 from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 
@@ -295,7 +296,7 @@ def test_a_post_is_read_with_its_text_images_and_counts(monkeypatch: pytest.Monk
     assert post.like_count == 1017
     assert post.share_count == 37
     assert post.comment_count == 40
-    assert post.taken_at is not None
+    assert post.taken_at == datetime(2026, 9, 5, 8, 47, 4, tzinfo=UTC)
 
 
 def test_the_permalink_is_preferred_over_the_pasted_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,7 +327,7 @@ def test_a_comment_id_url_selects_that_comment(monkeypatch: pytest.MonkeyPatch) 
     assert selected is not None
     assert selected.text == "the one linked"
     assert selected.author_name == "Commenter"
-    assert selected.taken_at is not None
+    assert selected.taken_at == datetime(2026, 9, 5, 9, 20, tzinfo=UTC)
 
 
 def test_a_comment_the_page_did_not_preload_selects_nothing(

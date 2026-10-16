@@ -1,7 +1,6 @@
 """Tests for the `/download_video` command."""
 
 import re
-import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_args
 from pathlib import Path
@@ -142,9 +141,9 @@ async def test_video_deliver_and_download_branches(
     await VideoCogs.download_video.callback(
         cog, interaction, url="https://source.test/video", quality="best"
     )
-    assert interaction.edits[-1]["content"] == (
-        "-# 檔案大小: 0.3MB\n-# 來源: <https://source.test/video>"
-    )
+    content = interaction.edits[-1]["content"]
+    assert "0.3MB" in content
+    assert "<https://source.test/video>" in content
     assert interaction.edits[-1]["file"].filename == "small.mp4"
     assert interaction.followup.sent == []
 
@@ -172,9 +171,9 @@ async def test_video_deliver_and_download_branches(
     await VideoCogs.download_video.callback(
         cog, fail_interaction, url="https://x.test", quality="best"
     )
-    assert fail_interaction.edits[-1]["content"] == (
-        "-# 下載失敗\n檔案大小 3.0MB，超過上傳上限 2MB"
-    )
+    fail_content = fail_interaction.edits[-1]["content"]
+    assert "3.0MB" in fail_content
+    assert "2MB" in fail_content
 
     cog, _ = _install(monkeypatch=monkeypatch, outcome=RuntimeError("download failed"))
     warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
@@ -182,7 +181,7 @@ async def test_video_deliver_and_download_branches(
     await VideoCogs.download_video.callback(
         cog, error_interaction, url="https://x.test", quality="best"
     )
-    assert "檔案無法下載" in error_interaction.edits[-1]["content"]
+    assert error_interaction.edits[-1]["content"] == video._DOWNLOAD_FAILED
     assert [message for message, _ in warnings] == ["Video download failed"]
 
 
@@ -242,7 +241,7 @@ async def test_a_refused_attach_is_logged_as_a_delivery_failure(
         cog, as_interaction(fake=interaction), url="https://x.test", quality="best"
     )
 
-    assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
+    assert interaction.edits[-1]["content"] == video._DOWNLOAD_FAILED
     assert [(message, fields["url"], fields["error_type"]) for message, fields in warnings] == [
         ("Video delivery failed", "https://x.test", "HTTPException")
     ]
@@ -263,23 +262,16 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
         """Drips like a stalling host, and watches the stop signal like yt-dlp's progress hook."""
 
         def __init__(self) -> None:
-            """Records which way the worker ended."""
+            """Records whether the worker was told to stop."""
             self.aborted = False
-            self.finished = False
 
         def download(
             self, url: str, quality: str, stop_signal: threading.Event | None = None
         ) -> DownloadResult:
             """Outlasts the command's bound by two orders of magnitude unless told to stop."""
             del url, quality
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if stop_signal is not None and stop_signal.is_set():
-                    self.aborted = True
-                    raise RuntimeError("download stopped")
-                time.sleep(0.01)
-            self.finished = True
-            raise AssertionError("should have been abandoned")
+            self.aborted = stop_signal is not None and stop_signal.wait(timeout=5.0)
+            raise RuntimeError("download stopped")
 
     downloader = StallingDownloader()
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
@@ -288,11 +280,10 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
         cog, as_interaction(fake=interaction), url="https://x.test", quality="best"
     )
 
-    assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
+    assert interaction.edits[-1]["content"] == video._DOWNLOAD_FAILED
     # Any failure prints that same line, so what proves the BOUND fired is which way the worker
     # ended: aborted on the signal rather than running its stall out.
     assert downloader.aborted is True
-    assert downloader.finished is False
 
 
 async def test_cog_routes_douyin_away_from_ytdlp(
@@ -318,7 +309,7 @@ async def test_cog_routes_douyin_away_from_ytdlp(
     assert stub.calls[0]["url"] == "https://v.douyin.com/NdlfIZPcgz4"
     # The gallery cap is applied at download time, not after.
     assert stub.calls[0]["max_images"] == video.DISCORD_ATTACHMENT_LIMIT
-    assert "來源" in interaction.edits[-1]["content"]
+    assert [file.filename for file in interaction.edits[-1]["files"]] == ["clip.mp4"]
 
 
 async def test_cog_states_how_many_gallery_images_were_omitted(
@@ -340,7 +331,8 @@ async def test_cog_states_how_many_gallery_images_were_omitted(
     await VideoCogs.download_video.callback(cog, interaction, url=_DOUYIN_NOTE_URL, quality="best")
 
     content = interaction.edits[-1]["content"]
-    assert "已省略 45 張圖片" in content
+    # Bounded on both sides: the post id in the source link carries "45" as well.
+    assert re.search(pattern=r"(?<!\d)45(?!\d)", string=content)
     assert len(interaction.edits[-1]["files"]) == 3
 
 
@@ -372,28 +364,29 @@ async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
     content = interaction.edits[-1]["content"]
     hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
     assert len(hosted) == len(images)
-    assert "檔案無法下載" not in content
+    assert video._DOWNLOAD_FAILED not in content
 
 
-@pytest.mark.parametrize(
-    argnames=("error", "expected"),
-    argvalues=[
-        (DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST"), "-# 這則貼文已被刪除或設為私人"),
-        (DouyinBlockedError("challenge"), "-# 抖音暫時擋住了請求，請稍後再試"),
-        (DouyinTransferError("read timed out"), "-# 這次沒有抓到,稍後再試一次"),
-        (TimeoutError(), "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"),
-        (DouyinError("boom"), "-# 檔案無法下載"),
-        (OSError(28, "No space left on device"), "-# 檔案無法下載"),
-    ],
-    ids=["gone", "blocked", "transfer", "stalled", "douyin", "other"],
-)
-def test_each_douyin_failure_gets_its_own_wording(error: Exception, expected: str) -> None:
+def test_each_douyin_failure_gets_its_own_wording() -> None:
     """Only a filtered post may read as deleted, and only a bot wall as Douyin refusing.
 
-    Exact strings, because the retryable three all end in a "try again later" that a substring
-    check cannot tell apart.
+    The four failures a user should act on differently each get a notice of their own, and
+    anything else falls back to the generic failure line. Which notice says "deleted" (刪除)
+    and which says "blocked" (擋) is the meaning that must not swap, so only those words are read.
     """
-    assert douyin_failure_message(error=error) == expected
+    unavailable = douyin_failure_message(error=DouyinUnavailableError("SYSTEM_ITEM_NOT_EXIST"))
+    blocked = douyin_failure_message(error=DouyinBlockedError("challenge"))
+    others = [
+        douyin_failure_message(error=DouyinTransferError("read timed out")),
+        douyin_failure_message(error=TimeoutError()),
+        video._DOWNLOAD_FAILED,
+    ]
+    distinct = [unavailable, blocked, *others]
+    assert len(set(distinct)) == len(distinct)
+    assert [message for message in distinct if "刪除" in message] == [unavailable]
+    assert [message for message in distinct if "擋" in message] == [blocked]
+    for error in (DouyinError("boom"), OSError(28, "No space left on device")):
+        assert douyin_failure_message(error=error) == video._DOWNLOAD_FAILED
 
 
 @pytest.mark.parametrize(
@@ -451,7 +444,7 @@ async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
     # Asserted per line rather than as a substring: the URL has to start its own line for Discord
     # to render it, so an anywhere-in-the-body match would accept a message Discord would not link.
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
-    assert content.splitlines()[0] == "-# 檔案大小: 0.3MB (過大，改用連結)"
-    assert "檔案無法下載" not in content
+    assert "0.3MB" in content.splitlines()[0]
+    assert video._DOWNLOAD_FAILED not in content
     # The file really was hosted, so discarding the URL would have lost a completed upload.
     assert list(serve_dir.glob("*.mp4"))

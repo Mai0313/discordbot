@@ -4,13 +4,14 @@ import os
 import re
 import time
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import IO, Any, Self, cast
 from pathlib import Path
 
 import pytest
 
 from discordbot.utils.media_delivery import (
     _TEMP_PREFIX,
+    _HASH_CHUNK_BYTES,
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
     MediaHostingService,
@@ -182,19 +183,41 @@ def test_publish_path_dedup_hit_leaves_source(tmp_path: Path) -> None:
 def test_publish_path_streams_without_reading_whole_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """publish_path hashes by streaming; it never read_bytes() the (possibly multi-GB) source."""
+    """publish_path hashes by streaming; it never reads the (possibly multi-GB) source whole."""
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()
     source = tmp_path / "clip.mp4"
-    source.write_bytes(b"x" * 4096)
+    source_size = 2 * _HASH_CHUNK_BYTES + 1
+    source.write_bytes(b"x" * source_size)
     service = hosting_service(serve_dir=serve_dir)
+    reads: list[int] = []
+    real_open = Path.open
 
-    def _no_read_bytes(self: Path) -> bytes:
-        raise AssertionError("publish_path must stream the hash, not read the whole file")
+    class _RecordingReader:
+        """Records the size every read of the source asks for."""
 
-    monkeypatch.setattr(Path, "read_bytes", _no_read_bytes)
+        def __init__(self, handle: IO[bytes]) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self.handle.close()
+
+        def read(self, size: int = -1) -> bytes:
+            reads.append(size)
+            return self.handle.read(size)
+
+    def recording_open(self: Path, mode: str = "r") -> object:
+        handle = real_open(self, mode)
+        return _RecordingReader(handle=handle) if self == source else handle
+
+    monkeypatch.setattr(Path, "open", recording_open)
 
     assert service.publish_path(file_path=source) is not None
+    assert reads
+    assert all(0 < size < source_size for size in reads)
 
 
 def test_publish_path_rejects_non_allowlisted_and_keeps_file(tmp_path: Path) -> None:
@@ -434,7 +457,8 @@ def test_media_item_to_file_carries_filename(tmp_path: Path) -> None:
     on_disk = tmp_path / "clip.mp4"
     on_disk.write_bytes(b"abc")
     assert MediaItem(source=b"abcd", filename="a.png").to_file().filename == "a.png"
-    assert MediaItem(source=on_disk, filename="clip.mp4").to_file().filename == "clip.mp4"
+    # Named apart from the path's own basename, which nextcord would fall back to.
+    assert MediaItem(source=on_disk, filename="renamed.mp4").to_file().filename == "renamed.mp4"
 
 
 # --- planner --------------------------------------------------------------------------------
