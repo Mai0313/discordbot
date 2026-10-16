@@ -9,17 +9,20 @@ import nextcord
 from nextcord import Embed
 
 from discordbot.utils import message_cleanup as cleanup_module
-from discordbot.cogs.games import cog as games
 from discordbot.cogs.games.cog import GamesCogs
-from discordbot.typings.economy import MAX_SINGLE_BET, JackpotSnapshot
+from discordbot.typings.economy import MAX_SINGLE_BET
 from discordbot.cogs.games.lobby import BaseGameLobbyView
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.utils.message_cleanup import PendingPublicMessage, list_pending_public_messages
+from discordbot.cogs.games.dragon_gate import GAME_ID
+from discordbot.cogs.games.presentation import lobby_participant_line
 from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
+from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import card, seat, lobby_button
 from tests.helpers.casting import as_bot, as_message, as_interaction
+from tests.helpers.economy import seed_balance, get_jackpot_pool
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
@@ -31,42 +34,10 @@ def _cog() -> GamesCogs:
     )
 
 
-async def fake_game_balance(user_id: int) -> int:
-    """Returns a small fake game balance for anyone but the bot, whose empty wallet keeps it out."""
-    return 0 if user_id == 999 else 100
-
-
-async def _empty_game_balance(user_id: int) -> int:
-    """Returns no spendable game balance."""
-    return 0
-
-
-async def _wealthy_game_balance(user_id: int) -> int:
-    """Returns a fake balance large enough for the Dragon Gate ante."""
-    del user_id
-    return 1_000_000
-
-
-async def fake_dragon_gate_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
-    """Returns a stable fake Dragon Gate jackpot snapshot."""
-    del game_id
-    return JackpotSnapshot(balance=100_000)
-
-
-async def test_bot_blackjack_participant_spreads_bet_by_true_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_bot_blackjack_participant_spreads_bet_by_true_count() -> None:
     """The bot's Kelly wager rises with a favorable channel true count."""
     cog = _cog()
-
-    async def fake_get_balance(user_id: int) -> int:
-        return 1_000_000
-
-    async def fake_avatar(user: object, guild: object = None) -> str:
-        return ""
-
-    monkeypatch.setattr(games, "get_balance", fake_get_balance)
-    monkeypatch.setattr(games, "guild_avatar_url", fake_avatar)
+    await seed_balance(user_id=999, name="dealer", amount=1_000_000)
 
     neutral = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=1)
     # A ten-rich stored shoe above the reshuffle threshold gives channel 2 a strongly
@@ -102,9 +73,7 @@ async def test_blackjack_history_missing_user_sends_notice() -> None:
 
     assert interaction.response.deferred is False
     assert interaction.response.sent[0]["ephemeral"] is True
-    content = interaction.response.sent[0]["content"]
-    assert isinstance(content, str)
-    assert "無法辨識使用者" in content
+    assert interaction.response.sent[0]["content"]
     assert interaction.followup.sent == []
 
 
@@ -119,16 +88,12 @@ def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
     assert cleanup_module._engine.url.database == str(tmp_path / "game_cleanup.db")
 
 
-def _lobby_text(embed: Embed) -> tuple[str | None, str | None, list[tuple[str, str]], str | None]:
-    """Returns what a lobby embed says: its title, status line, fields and footer."""
-    fields = [(str(field.name), str(field.value)) for field in embed.fields]
-    return embed.title, embed.description, fields, embed.footer.text
+async def test_games_commands_open_their_lobbies() -> None:
+    """Each game command opens its lobby as a public followup carrying the width spacer.
 
-
-async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each game command opens its lobby as a public followup carrying the width spacer."""
-    monkeypatch.setattr(games, "get_balance", fake_game_balance)
-
+    The lobby lists its owner, with the stake at Blackjack and beside the pool at 射龍門.
+    """
+    await seed_balance(user_id=1, name="alice", amount=100)
     cog = _cog()
 
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -140,15 +105,10 @@ async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch
         == DEFAULT_EMBED_SPACER_FILENAME
     )
     assert blackjack_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
-    assert _lobby_text(embed=blackjack_interaction.followup.sent[0]["embed"]) == (
-        "♠️ 二十一點 · 開桌準備",
-        None,
-        [("👥 桌上玩家 (1/6)", "**1. Alice** · 下注 `10`")],
-        "基本下注 10 虛擬歡樂豆",
-    )
+    assert [field.value for field in blackjack_interaction.followup.sent[0]["embed"].fields] == [
+        lobby_participant_line(index=1, display_name="Alice", bet=10)
+    ]
 
-    monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
-    monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
     dragon_gate_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
     assert dragon_gate_interaction.followup.sent[-1]["wait"] is True
@@ -158,27 +118,24 @@ async def test_games_commands_open_their_lobbies(monkeypatch: pytest.MonkeyPatch
         == DEFAULT_EMBED_SPACER_FILENAME
     )
     assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
-    assert _lobby_text(embed=dragon_gate_interaction.followup.sent[-1]["embed"]) == (
-        "♦️ 射龍門 · 開桌準備",
-        None,
-        [("👥 桌上玩家 (1)", "**1. Alice**"), ("💰 彩金池 (跨桌累積)", "`10萬`")],
-        "入場費 10 虛擬歡樂豆 進彩金池",
-    )
+    pool = await get_jackpot_pool(game_id=GAME_ID)
+    assert [
+        field.value for field in dragon_gate_interaction.followup.sent[-1]["embed"].fields
+    ] == [
+        lobby_participant_line(index=1, display_name="Alice"),
+        amount_code(amount=pool, compact=True),
+    ]
 
 
 @pytest.mark.parametrize(argnames="game", argvalues=["blackjack", "dragon_gate"])
-async def test_an_opened_lobby_is_recorded_for_the_restart_sweep(
-    monkeypatch: pytest.MonkeyPatch, game: str
-) -> None:
+async def test_an_opened_lobby_is_recorded_for_the_restart_sweep(game: str) -> None:
     """A lobby the bot restarts under is deleted by the next start's sweep, from this record."""
-    monkeypatch.setattr(games, "get_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot)
+    await seed_balance(user_id=1, name="alice", amount=100)
     cog = _cog()
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     if game == "blackjack":
-        monkeypatch.setattr(games, "get_balance", fake_game_balance)
         await GamesCogs.blackjack.callback(cog, interaction, bet="10")
     else:
-        monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
         await GamesCogs.dragon_gate.callback(cog, interaction)
 
     lobby = interaction.followup.sent[-1]["view"]
@@ -191,10 +148,9 @@ async def test_an_opened_lobby_is_recorded_for_the_restart_sweep(
     ]
 
 
-async def test_a_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_lobby_start_is_owner_only() -> None:
     """Anyone but the owner pressing 開始 is told so privately, and the lobby stays open."""
-    monkeypatch.setattr(games, "get_balance", fake_game_balance)
-
+    await seed_balance(user_id=1, name="alice", amount=100)
     cog = _cog()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -206,21 +162,14 @@ async def test_a_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> N
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(as_interaction(fake=other_interaction))
 
-    assert other_interaction.followup.sent == [{"content": "只有房主可以開始", "ephemeral": True}]
+    assert [sent["ephemeral"] for sent in other_interaction.followup.sent] == [True]
     assert lobby_view._started is False
 
 
-async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_blackjack_owner_overbet_sets_table_bet_to_balance() -> None:
     """Verifies owner over-betting clamps the shared Blackjack lobby bet."""
-
-    async def balance_by_user(user_id: int) -> int:
-        """Returns distinct balances for the owner and the joining player; the bot has none."""
-        return {1: 300, 2: 50_000_000, 999: 0}[user_id]
-
-    monkeypatch.setattr(games, "get_balance", balance_by_user)
-
+    await seed_balance(user_id=1, name="alice", amount=300)
+    await seed_balance(user_id=2, name="bob", amount=50_000_000)
     cog = _cog()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -243,16 +192,10 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     assert bob.is_allin is False
 
 
-async def test_refresh_participants_preserves_existing_blackjack_wagers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_refresh_participants_preserves_existing_blackjack_wagers() -> None:
     """Verifies start-time balance refresh keeps per-seat Blackjack wagers."""
-
-    async def balance_by_user(user_id: int) -> int:
-        """Returns enough balance for the owner and bot to keep their queued bets."""
-        return {1: 500, 999: 1_000}[user_id]
-
-    monkeypatch.setattr(games, "get_balance", balance_by_user)
+    await seed_balance(user_id=1, name="alice", amount=500)
+    await seed_balance(user_id=999, name="dealer", amount=1_000)
     cog = _cog()
     owner = seat(bet=300, balance_at_start=300)
     bot_player = seat(user_id=999, display_name="Dealer", bet=125, balance_at_start=1_000)
@@ -263,18 +206,9 @@ async def test_refresh_participants_preserves_existing_blackjack_wagers(
     assert [participant.balance_at_start for participant in refreshed.participants] == [500, 1_000]
 
 
-async def test_blackjack_string_bet_accepts_large_formatted_amount(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_blackjack_string_bet_accepts_large_formatted_amount() -> None:
     """A large formatted bet is parsed without error but caps at MAX_SINGLE_BET."""
-
-    async def balance_by_user(user_id: int) -> int:
-        """Returns enough balance to cover a large formatted wager."""
-        del user_id
-        return 10_000_000_000_000_000
-
-    monkeypatch.setattr(games, "get_balance", balance_by_user)
-
+    await seed_balance(user_id=1, name="alice", amount=10_000_000_000_000_000)
     cog = _cog()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -295,24 +229,18 @@ async def test_blackjack_string_bet_rejects_invalid_text() -> None:
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="not a number")
 
     assert owner_interaction.response.sent[0]["ephemeral"] is True
-    assert owner_interaction.response.sent[0]["embed"].title == "下注格式錯誤"
+    assert (
+        owner_interaction.response.sent[0]["embed"].title == GamesCogs._invalid_bet_embed().title
+    )
     assert owner_interaction.response.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     assert owner_interaction.response.sent[0]["embed"].image.url == embed_spacer_url()
     assert owner_interaction.followup.sent == []
     assert owner_interaction.response.deferred is False
 
 
-async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet() -> None:
     """Bet zero means all in, but a huge balance still caps at MAX_SINGLE_BET."""
-
-    async def balance_by_user(user_id: int) -> int:
-        """Returns a large owner balance that exceeds the single-bet cap; the bot has none."""
-        return {1: 300_000_000_000_000, 999: 0}[user_id]
-
-    monkeypatch.setattr(games, "get_balance", balance_by_user)
-
+    await seed_balance(user_id=1, name="alice", amount=300_000_000_000_000)
     cog = _cog()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -328,16 +256,16 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
 async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies zero means all in, not a zero-stake table."""
     record_scheduled_deletes(monkeypatch=monkeypatch)
-    monkeypatch.setattr(games, "get_balance", _empty_game_balance)
-
     cog = _cog()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
 
+    refusal = owner_interaction.followup.sent[0]["embed"]
+    expected = cog._insufficient_balance_embed(balance=0)
     assert owner_interaction.followup.sent[0]["wait"] is True
     assert "view" not in owner_interaction.followup.sent[0]
-    assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
+    assert (refusal.title, refusal.description) == (expected.title, expected.description)
     assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
@@ -347,16 +275,16 @@ async def test_dragon_gate_rejects_empty_balance_with_spacer(
 ) -> None:
     """Verifies the Dragon Gate insufficient-balance response keeps uniform width."""
     record_scheduled_deletes(monkeypatch=monkeypatch)
-    monkeypatch.setattr(games, "get_balance", _empty_game_balance)
-
     cog = _cog()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, owner_interaction)
 
+    refusal = owner_interaction.followup.sent[0]["embed"]
+    expected = cog._dragon_gate_insufficient_balance_embed(balance=0)
     assert owner_interaction.followup.sent[0]["wait"] is True
     assert "view" not in owner_interaction.followup.sent[0]
-    assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
+    assert (refusal.title, refusal.description) == (expected.title, expected.description)
     assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 

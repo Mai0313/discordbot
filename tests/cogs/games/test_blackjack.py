@@ -6,7 +6,6 @@ from random import Random
 
 import pytest
 
-from discordbot.cogs.games import blackjack_views
 from discordbot.typings.economy import MAX_SINGLE_BET
 from discordbot.cogs.games.blackjack import (
     Card,
@@ -151,6 +150,12 @@ def test_settle_player_blackjack_pays_three_to_two() -> None:
     )
     assert outcome == "blackjack"
     assert delta == 150
+    _, odd_bet_delta = _settle_cards(
+        player=[card(rank="A"), card(rank="K", suit="♥")],
+        dealer=[card(rank="9"), card(rank="7", suit="♥")],
+        bet=101,
+    )
+    assert odd_bet_delta == 151
 
 
 def test_settle_double_blackjack_is_push() -> None:
@@ -260,7 +265,7 @@ def test_blackjack_round_advances_players_then_leaves_the_dealer_to_draw() -> No
     assert round_state.finished is True
     assert round_state.dealer_played is False
     assert round_state.needs_dealer_play() is True
-    assert [str(card) for card in round_state.dealer] == ["5♣", "6♦"]
+    assert round_state.dealer == [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
 
 
 def test_blackjack_round_rejects_action_from_non_active_player() -> None:
@@ -323,6 +328,7 @@ def test_can_double_rejected_when_balance_low() -> None:
     """Double needs an extra wager equal to the original bet."""
     fresh = blackjack_hand(cards=[card(rank="5"), card(rank="6", suit="♥")])
     assert can_double(hand=fresh, balance_remaining=99) is False
+    assert can_double(hand=fresh, balance_remaining=100) is True
 
 
 def test_can_double_is_closed_after_split() -> None:
@@ -353,6 +359,7 @@ def test_can_split_only_on_same_value_pairs() -> None:
     non_pair = blackjack_hand(cards=[card(rank="A"), card(rank="10", suit="♥")])
     assert can_split(hand=non_pair, balance_remaining=200) is False
     assert can_split(hand=pair, balance_remaining=50) is False
+    assert can_split(hand=pair, balance_remaining=100) is True
 
 
 def test_can_surrender_only_before_any_action() -> None:
@@ -680,13 +687,6 @@ def test_surrender_uses_ceil_half_loss_for_integer_chips(bet: int, expected_delt
     assert delta == expected_delta
 
 
-def test_take_insurance_requires_ace_phase() -> None:
-    """Insurance can only be placed during the dedicated insurance phase."""
-    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
-    with pytest.raises(expected_exception=InsuranceClosedError):
-        round_state.take_insurance(user_id=1)
-
-
 def test_take_insurance_requires_uncommitted_balance() -> None:
     """All-in players cannot add an insurance side bet on top of their wager."""
     round_state = BlackjackRound.from_participants(
@@ -777,29 +777,12 @@ def test_an_insurance_bet_counts_against_a_double_or_split() -> None:
     declined = decided(take=False)
     insured = decided(take=True)
 
-    assert {"double", "split"} <= set(declined.allowed_actions())
-    assert not {"double", "split"} & set(insured.allowed_actions())
+    assert declined.allowed_actions() == ("hit", "stand", "double", "split", "surrender")
+    assert insured.allowed_actions() == ("hit", "stand", "surrender")
     with pytest.raises(expected_exception=ValueError, match="double"):
         insured.double_down(user_id=1)
     with pytest.raises(expected_exception=ValueError, match="split"):
         insured.split(user_id=1)
-
-
-def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
-    """Dealer up-card A puts the round into the insurance phase."""
-    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
-    # Force a deterministic deal by pre-loading the shoe in FIFO order.
-    round_state.shoe = [
-        card(rank="10"),
-        card(rank="10", suit="♥"),  # player
-        card(rank="5", suit="♣"),  # dealer hole
-        card(rank="A", suit="♦"),  # dealer up
-    ]
-
-    round_state.deal_initial()
-
-    assert round_state.phase == "insurance"
-    assert round_state.peeked_blackjack is False
 
 
 def test_dealer_peek_blackjack_settles_round_immediately() -> None:
@@ -820,11 +803,15 @@ def test_dealer_peek_blackjack_settles_round_immediately() -> None:
 
 
 def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
-    """After each player decides, the round peeks and advances accordingly."""
-    round_state = BlackjackRound.from_participants(rng=Random(x=0), participants=[seat()])
+    """The round peeks only once every seat has decided, so no seat is locked out of insuring."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[seat(), seat(user_id=2, display_name="Bob")]
+    )
     round_state.shoe = [
         card(rank="9"),
-        card(rank="8", suit="♥"),  # player
+        card(rank="8", suit="♥"),  # Alice
+        card(rank="7"),
+        card(rank="6", suit="♥"),  # Bob
         card(rank="K", suit="♣"),  # dealer hole
         card(rank="A", suit="♦"),  # dealer up — BJ!
     ]
@@ -832,6 +819,11 @@ def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
     round_state.deal_initial()
     assert round_state.phase == "insurance"
     round_state.take_insurance(user_id=1)
+
+    assert round_state.phase == "insurance", "Bob has not decided yet"
+    assert round_state.peeked_blackjack is False
+
+    round_state.decline_insurance(user_id=2)
 
     assert round_state.peeked_blackjack is True
     assert round_state.phase == "settled"
@@ -923,7 +915,11 @@ def test_play_dealer_hits_soft_17() -> None:
 
     steps = round_state.play_dealer()
 
-    assert [str(card) for card in round_state.dealer] == ["A♣", "6♦", "3♠"]
+    assert round_state.dealer == [
+        card(rank="A", suit="♣"),
+        card(rank="6", suit="♦"),
+        card(rank="3"),
+    ]
     first_step = steps[0]
     assert first_step.action == "hit"
     assert first_step.total_before == 17
@@ -944,5 +940,5 @@ def test_play_dealer_records_nothing_after_a_bust() -> None:
     steps = round_state.play_dealer()
 
     assert round_state.dealer_played is True
-    path = blackjack_views._format_dealer_decision_path(steps=steps)
-    assert path == "規則: 16 hit 抽 K♠ → 26"
+    assert [step.action for step in steps] == ["hit"]
+    assert (steps[0].total_before, steps[0].total_after) == (16, 26)

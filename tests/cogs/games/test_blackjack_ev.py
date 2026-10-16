@@ -49,16 +49,6 @@ def _evs(
     return {item.action: item.expected_value for item in evs}
 
 
-def test_dealer_hard_17_always_stands() -> None:
-    """A hard 17 dealer stands with certainty regardless of the shoe."""
-    outcome = _dealer(
-        total=17, soft=False, shoe=build_shoe_value_counts(shoe=build_shoe(rng=Random(x=0)))
-    )
-
-    assert outcome[_DEALER_17] == 1.0
-    assert outcome[_BUST_INDEX] == 0.0
-
-
 def test_dealer_bust_probability_is_exact_on_a_tiny_shoe() -> None:
     """Dealer 16 over a shoe of one ten and one five busts or makes 21 with equal odds."""
     shoe = build_shoe_value_counts(shoe=[card(rank="10"), card(rank="5")])

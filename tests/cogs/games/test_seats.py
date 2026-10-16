@@ -8,7 +8,6 @@ import asyncio
 import pytest
 from pydantic import Field, BaseModel
 
-from discordbot.cogs.games import cog as games
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 from discordbot.cogs.games.cog import GamesCogs
@@ -20,6 +19,7 @@ from discordbot.cogs.games.seats import (
     hand_over_seats,
     seated_elsewhere,
 )
+from discordbot.cogs.games.blackjack import max_round_loss
 from discordbot.cogs.games.dragon_gate import ANTE, DragonGateRound
 from discordbot.services.economy.holds import spending, held_amount
 from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
@@ -29,6 +29,7 @@ from tests.helpers.games import (
     card,
     seat,
     lobby_button,
+    nobody_joins,
     everyone_stays,
     attached_button,
     blackjack_round,
@@ -40,11 +41,6 @@ from tests.helpers.message_cleanup import record_scheduled_deletes
 
 BOB = seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100)
 BOT = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
-
-
-async def _never_joins(interaction: object) -> None:
-    """Lobby join hook for a table nobody joins."""
-    raise AssertionError(interaction)
 
 
 class _Holder(BaseModel):
@@ -61,10 +57,6 @@ def _lobby(
     extra: list[GameParticipant] | None = None, bot_user_id: int | None = None
 ) -> BlackjackLobbyView:
     """Builds Alice's lobby, plus `extra`, whose round deals nothing but fives."""
-
-    async def nobody_joins(interaction: object) -> None:
-        raise AssertionError(interaction)
-
     return BlackjackLobbyView(
         owner=seat(bet=10, balance_at_start=100),
         requested_bet=10,
@@ -126,7 +118,9 @@ async def test_a_start_drops_a_player_another_round_seats_and_seats_the_rest(
 
     press = await _press_start(lobby=lobby)
 
-    assert press.followup.sent == [{"content": "已在另一桌, 已移出: Bob", "ephemeral": True}]
+    assert [
+        (sent["ephemeral"], "Bob" in str(sent["content"])) for sent in press.followup.sent
+    ] == [(True, True)]
     assert [participant.user_id for participant in lobby.participants] == [1]
     assert seated_elsewhere(user_id=1, holder=lobby)
     assert seated_elsewhere(user_id=2, holder=lobby)
@@ -145,7 +139,7 @@ async def test_an_owner_another_round_seats_cannot_start_until_it_settles(
 
     press = await _press_start(lobby=lobby)
 
-    assert press.followup.sent == [{"content": "你正在另一桌, 打完才能開始", "ephemeral": True}]
+    assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
     assert lobby._started is False
     assert [participant.user_id for participant in lobby.participants] == [1, 2]
     assert not seated_elsewhere(user_id=2)
@@ -171,7 +165,7 @@ async def test_an_owner_who_cannot_cover_the_stake_keeps_the_lobby_as_it_was(
 
     press = await _press_start(lobby=lobby)
 
-    assert press.followup.sent == [{"content": "你的餘額不足, 不能開始", "ephemeral": True}]
+    assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
     assert [participant.user_id for participant in lobby.participants] == [1, 2]
     assert not seated_elsewhere(user_id=1)
     assert not seated_elsewhere(user_id=2)
@@ -276,7 +270,9 @@ async def test_a_join_from_a_player_another_round_seats_is_refused() -> None:
     )
 
     assert participant is None
-    assert [sent["embed"].title for sent in press.followup.sent] == ["你正在另一桌"]
+    assert [(sent["ephemeral"], sent["embed"].title) for sent in press.followup.sent] == [
+        (True, GamesCogs._seated_elsewhere_embed().title)
+    ]
 
 
 async def test_opening_a_table_while_seated_elsewhere_is_refused(
@@ -285,11 +281,7 @@ async def test_opening_a_table_while_seated_elsewhere_is_refused(
     """/games blackjack answers privately before deferring and opens no lobby."""
     record_scheduled_deletes(monkeypatch=monkeypatch)
 
-    async def balance(user_id: int) -> int:
-        del user_id
-        return 100
-
-    monkeypatch.setattr(games, "get_balance", balance)
+    await seed_balance(user_id=1, name="alice", amount=100)
     claim_seat(user_id=1, holder=_Holder())
     cog = GamesCogs(bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -297,7 +289,7 @@ async def test_opening_a_table_while_seated_elsewhere_is_refused(
     await GamesCogs.blackjack.callback(cog, interaction, bet="10")
 
     assert interaction.response.sent[0]["ephemeral"] is True
-    assert interaction.response.sent[0]["embed"].title == "你正在另一桌"
+    assert interaction.response.sent[0]["embed"].title == GamesCogs._seated_elsewhere_embed().title
     assert interaction.response.deferred is False
     assert interaction.followup.sent == []
 
@@ -329,7 +321,7 @@ async def test_a_second_start_press_leaves_the_first_ones_seats_alone(
     release_table_edit.set()
     await dealing
 
-    assert second.followup.sent == [{"content": "這桌已經開始了", "ephemeral": True}]
+    assert [sent["ephemeral"] for sent in second.followup.sent] == [True]
     assert seated_elsewhere(user_id=1, holder=lobby)
     assert seated_elsewhere(user_id=2, holder=lobby)
 
@@ -343,7 +335,7 @@ async def test_a_started_round_holds_the_most_each_seat_can_lose(
 
     await _press_start(lobby=lobby)
 
-    assert held_amount(user_id=1) == 25
+    assert held_amount(user_id=1) == max_round_loss(bet=10, balance_at_start=100)
 
 
 async def test_a_dragon_gate_start_drops_a_player_a_blackjack_round_seats(
@@ -356,7 +348,7 @@ async def test_a_dragon_gate_start_drops_a_player_a_blackjack_round_seats(
     lobby = DragonGateLobbyView(
         owner=seat(bet=ANTE, balance_at_start=1_000_000),
         rng=Random(x=0),  # noqa: S311 -- any deal will do
-        prepare_participant=_never_joins,
+        prepare_participant=nobody_joins,
         refresh_participants=everyone_stays,
         initial_jackpot=0,
     )
@@ -364,7 +356,7 @@ async def test_a_dragon_gate_start_drops_a_player_a_blackjack_round_seats(
 
     press = await _press_start(lobby=lobby)
 
-    assert {"content": "已在另一桌, 已移出: Bob", "ephemeral": True} in press.followup.sent
+    assert any(sent["ephemeral"] and "Bob" in str(sent["content"]) for sent in press.followup.sent)
     assert [participant.user_id for participant in lobby.participants] == [1]
     assert seated_elsewhere(user_id=1, holder=lobby)
     assert held_amount(user_id=1) == 0
@@ -403,7 +395,7 @@ async def test_opening_dragon_gate_while_seated_elsewhere_is_refused() -> None:
     await GamesCogs.dragon_gate.callback(cog, interaction)
 
     assert interaction.response.sent[0]["ephemeral"] is True
-    assert interaction.response.sent[0]["embed"].title == "你正在另一桌"
+    assert interaction.response.sent[0]["embed"].title == GamesCogs._seated_elsewhere_embed().title
     assert interaction.response.deferred is False
 
 
@@ -433,7 +425,10 @@ async def test_a_start_reads_balances_only_after_a_debit_in_flight_lands(
     debit = asyncio.create_task(debit_in_flight())
     await debit_entered.wait()
     starting = asyncio.create_task(_press_start(lobby=lobby))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0)
+    # One step takes the press through its claim to the wait behind the debit.
+    assert seated_elsewhere(user_id=1)
+    assert read_while_debiting == []
     release_debit.set()
     await debit
     await starting

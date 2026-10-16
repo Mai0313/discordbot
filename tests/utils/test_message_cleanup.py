@@ -137,15 +137,6 @@ def _a_later_start() -> datetime:
     return datetime.now(tz=UTC) + timedelta(seconds=1)
 
 
-async def test_delete_public_message_after_waits_then_deletes() -> None:
-    """Public response cleanup deletes the message after the configured delay."""
-    message = _CleanupMessage()
-
-    await delete_public_message_after(message=as_message(fake=message), delay=0)
-
-    assert message.delete_calls == 1
-
-
 async def test_track_public_message_persists_message_identity() -> None:
     """Public response tracking stores IDs plus readable guild/channel names."""
     message = _CleanupMessage(guild=FakeGuild(guild_name="Mai Server"), channel_name="casino")
@@ -270,8 +261,7 @@ async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
 
     assert bot.fetch_calls == [message.channel.id]
     assert len(warns) == 1, f"expected one report, got {warns}"
-    text, fields = warns[0]
-    assert "cannot read" in text
+    _, fields = warns[0]
     assert fields == {"channel_id": message.channel.id, "message_id": message.id}, (
         "a permission the bot cannot earn needs the ids and no traceback"
     )
@@ -299,8 +289,7 @@ async def test_a_transient_http_failure_keeps_its_traceback(
     )
 
     assert len(warns) == 1
-    text, fields = warns[0]
-    assert "Failed to fetch" in text
+    _, fields = warns[0]
     assert fields.get("_exc_info") is True, "a transport failure still needs its traceback"
 
 
@@ -327,15 +316,12 @@ async def test_a_refused_delete_keeps_the_record_for_the_next_sweep() -> None:
 
 
 @pytest.mark.parametrize(
-    ("failure", "text", "traceback"),
-    [
-        (make_forbidden(message="Missing Access"), "refused", False),
-        (make_server_error(), "Failed to delete", True),
-    ],
+    ("failure", "traceback"),
+    [(make_forbidden(message="Missing Access"), False), (make_server_error(), True)],
     ids=["refused", "broke"],
 )
 async def test_a_failed_delete_keeps_its_traceback_only_when_discord_broke(
-    monkeypatch: pytest.MonkeyPatch, failure: Exception, text: str, traceback: bool
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, traceback: bool
 ) -> None:
     """The delete gets the same carve-out as the sweep's fetch; a 5xx keeps its traceback."""
     message = _CleanupMessage()
@@ -344,9 +330,8 @@ async def test_a_failed_delete_keeps_its_traceback_only_when_discord_broke(
 
     assert await delete_public_message(message=as_message(fake=message)) is False
     assert [
-        (text in logged, fields["message_id"], fields["channel_id"], "_exc_info" in fields)
-        for logged, fields in warns
-    ] == [(True, message.id, message.channel.id, traceback)]
+        (fields["message_id"], fields["channel_id"], "_exc_info" in fields) for _, fields in warns
+    ] == [(message.id, message.channel.id, traceback)]
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import (
+    BlackjackDealerStep,
     BlackjackPlayerResult,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
@@ -17,12 +18,18 @@ from discordbot.typings.games import (
 from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.typings.economy import RoundSettlementResult
 from discordbot.cogs.games.blackjack import Card, BlackjackRound
+from discordbot.cogs.games.presentation import PUSH_COLOR, player_result_title, settlement_metadata
 from discordbot.services.economy.database import (
     get_balance,
     get_casino_ledger,
     apply_blackjack_settlement,
 )
-from discordbot.cogs.games.blackjack_views import BlackjackView, build_final_embeds
+from discordbot.cogs.games.blackjack_views import (
+    BlackjackView,
+    build_final_embeds,
+    _format_dealer_decision_path,
+    _format_settlement_insurance_line,
+)
 
 from tests.helpers.games import (
     card,
@@ -212,12 +219,11 @@ async def test_a_seat_whose_settlement_fails_leaves_the_rest_of_the_table_to_set
 
     assert [await get_balance(user_id=user_id) for user_id in (1, 2, 3)] == [1_100, 1_000, 1_100]
     _, alice, bob, carol = message.edits[-1]["embeds"]
-    assert [embed.footer.text for embed in (alice, bob, carol)] == [
-        "已結算",
-        "結算失敗, 這局不算",
-        "已結算",
-    ]
-    assert "餘額" not in cast("str", bob.description)
+    assert alice.footer.text == carol.footer.text != bob.footer.text
+    # Bob's seat would read exactly this had his write landed: same bet, same hand, same wallet.
+    paid = settlement_metadata(delta=100, new_balance=1_100, is_allin=False)
+    assert paid in cast("str", alice.description)
+    assert paid not in cast("str", bob.description)
     assert scheduled_cleanups.messages == [message]
     assert {result.participant.user_id for result in recorded} == {1, 3}
     assert [(fields["user_id"], fields["error_type"]) for _, fields in errors] == [
@@ -273,7 +279,11 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: Schedule
 
     await view.finalize(message=as_message(fake=message), interaction=None)
 
-    assert [str(card) for card in view.round_state.dealer] == ["10♣", "3♦", "5♣"]
+    assert view.round_state.dealer == [
+        card(rank="10", suit="♣"),
+        card(rank="3", suit="♦"),
+        card(rank="5", suit="♣"),
+    ]
     assert view.round_state.dealer_played is True
     assert await get_balance(user_id=1) == 50
     ledger = await get_casino_ledger()
@@ -281,7 +291,15 @@ async def test_blackjack_view_dealer_plays_h17_rule(scheduled_cleanups: Schedule
     assert "embeds" not in message.edits[0]
     final_embeds = message.edits[1]["embeds"]
     description = cast("str", final_embeds[0].description)
-    assert "-# 動作: 規則: 13 hit 抽 5♣ → 18；規則: 18 stand" in description.splitlines()
+    dealer_path = _format_dealer_decision_path(
+        steps=[
+            BlackjackDealerStep(
+                total_before=13, action="hit", drawn_card=card(rank="5", suit="♣"), total_after=18
+            ),
+            BlackjackDealerStep(total_before=18, action="stand"),
+        ]
+    )
+    assert dealer_path in description
     await view.wait_for_background_tasks()
     assert scheduled_cleanups.messages == [message]
 
@@ -313,7 +331,11 @@ async def test_a_five_card_twenty_one_still_waits_for_the_dealer_to_play(
     await view.finalize(message=as_message(fake=FakeDiscordMessage()), interaction=None)
     await view.wait_for_background_tasks()
 
-    assert [str(card) for card in round_state.dealer] == ["10♣", "6♦", "5♣"]
+    assert round_state.dealer == [
+        card(rank="10", suit="♣"),
+        card(rank="6", suit="♦"),
+        card(rank="5", suit="♣"),
+    ]
     assert await get_balance(user_id=1) == 1_100
 
 
@@ -456,13 +478,28 @@ async def test_a_timeout_waits_for_the_action_in_flight(
     await asyncio.gather(contended, return_exceptions=True)
     await view.wait_for_background_tasks()
 
-    assert [str(card) for card in round_state.players[0].hands[0].cards] == ["10♠", "2♥", "5♣"]
+    assert round_state.players[0].hands[0].cards == [
+        card(rank="10"),
+        card(rank="2", suit="♥"),
+        card(rank="5", suit="♣"),
+    ]
     assert await get_balance(user_id=1) == 50
     assert message.edits[-1]["view"] is None
     assert scheduled_cleanups.messages == [message]
 
 
 # Final table embeds --------------------------------------------------------
+
+
+def _seat_metadata(settlement: BlackjackPlayerSettlement) -> str:
+    """Returns the metadata line a settled seat shows for `settlement`."""
+    return settlement_metadata(
+        delta=settlement.delta,
+        new_balance=settlement.new_balance,
+        is_allin=False,
+        vip_bonus=settlement.vip_bonus,
+        five_card_bonus=settlement.five_card_bonus,
+    )
 
 
 def _five_card_round(last_card: str, dealer_cards: list[Card]) -> BlackjackRound:
@@ -502,8 +539,12 @@ async def test_blackjack_final_embed_shows_five_card_bonus_metadata() -> None:
     )
 
     description = cast("str", embeds[1].description)
-    assert "## ✨ 過五關 · 21" in description
-    assert "過五關 bonus `+1萬`" in description
+    assert settlement.five_card_bonus > 0
+    assert (
+        player_result_title(outcome="five_card_twenty_one", player_total=21, dealer_total=19)
+        in description
+    )
+    assert _seat_metadata(settlement=settlement) in description
 
 
 async def test_blackjack_final_embed_shows_five_card_win_without_bonus_metadata() -> None:
@@ -529,12 +570,19 @@ async def test_blackjack_final_embed_shows_five_card_win_without_bonus_metadata(
     )
 
     description = cast("str", embeds[1].description)
-    assert "## 🎉 過五關 · 20" in description
-    assert "過五關 bonus" not in description
+    assert settlement.five_card_bonus == 0
+    assert (
+        player_result_title(outcome="five_card_win", player_total=20, dealer_total=21)
+        in description
+    )
+    assert _seat_metadata(settlement=settlement) in description
 
 
-async def test_blackjack_final_embed_uses_aggregate_insurance_push_title() -> None:
-    """Insurance break-even should present as aggregate push in the final title."""
+async def test_a_lost_hand_beside_winning_insurance_nets_a_push() -> None:
+    """The hand loses to the dealer's natural and the insurance pays, so the seat breaks even.
+
+    The seat shows the hand's own loss and the insurance win, and presents the whole as a push.
+    """
     await seed_balance(user_id=1, name="alice", amount=300)
     round_state = blackjack_round(
         hands=[[card(rank="9"), card(rank="8", suit="♥")]],
@@ -553,6 +601,12 @@ async def test_blackjack_final_embed_uses_aggregate_insurance_push_title() -> No
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
 
-    description = cast("str", embeds[1].description)
-    assert "## 😢 你輸了 · 17 < 21" in description
-    assert "保險 `50` → 中獎 `+100`" in description
+    seat_embed = embeds[1]
+    description = cast("str", seat_embed.description)
+    insurance_line = _format_settlement_insurance_line(settlement=settlement)
+    assert seat_embed.colour is not None
+    assert seat_embed.colour.value == PUSH_COLOR
+    assert settlement_metadata(delta=0, new_balance=300, is_allin=False) in description
+    assert player_result_title(outcome="lose", player_total=17, dealer_total=21) in description
+    assert insurance_line is not None
+    assert insurance_line in description

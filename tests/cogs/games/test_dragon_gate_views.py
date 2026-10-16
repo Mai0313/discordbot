@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from discordbot.typings.games import GameParticipant
+from discordbot.utils.number_text import compact_amount
 from discordbot.utils.discord_embeds import embed_text_length
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
+    MIN_BET,
+    DragonGateError,
     DragonGateRound,
+    DragonGateDirection,
+    DragonGateTurnError,
     DragonGateTurnResult,
     DragonGatePlayerResult,
+    DragonGateBetRangeError,
+    DragonGateTableFinishedError,
+    DragonGatePairChoiceRequiredError,
+    DragonGatePairChoiceUnavailableError,
 )
 from discordbot.cogs.games.dragon_gate_views import (
     DRAGON_GATE_VISIBLE_PLAYER_LINES,
@@ -19,19 +30,19 @@ from discordbot.cogs.games.dragon_gate_views import (
     DragonGateView,
     DragonGateBetModal,
     DragonGateLobbyView,
+    _direction_label,
     build_dragon_gate_final_embed,
     build_dragon_gate_lobby_embed,
     build_dragon_gate_history_embed,
     build_dragon_gate_in_progress_embed,
 )
-from discordbot.services.economy.presentation import amount_code
+from discordbot.services.economy.presentation import amount_code, currency_text
 
 from tests.helpers.games import (
     card,
     joins_as,
     lobby_button,
     component_ids,
-    component_rows,
     everyone_stays,
     attached_button,
     attached_select,
@@ -66,8 +77,9 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     )
     progress = build_dragon_gate_in_progress_embed(round_state=round_state, jackpot=110_000)
     assert isinstance(progress.description, str)
-    assert "11萬" in progress.description
-    assert "輪到 Alice" in progress.description
+    assert compact_amount(amount=110_000) in progress.description
+    # Before any result, only the turn line names a player.
+    assert "Alice" in progress.description
 
     result = round_state.resolve_bet(user_id=1, amount=10_000, jackpot=110_000)
     assert result.outcome == "gate_win"
@@ -105,7 +117,6 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     )
     normal_view.sync_controls()
     assert component_ids(view=normal_view) == {"dg:bet", "dg:leave"}
-    assert component_rows(view=normal_view) == {"dg:leave": 0, "dg:bet": 2}
     assert attached_select(view=normal_view, custom_id="dg:bet").disabled is False
 
     pair_round = DragonGateRound.from_participants(
@@ -119,20 +130,22 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     )
     pair_view.sync_controls()
     assert component_ids(view=pair_view) == {"dg:higher", "dg:lower", "dg:leave"}
-    assert component_rows(view=pair_view) == {"dg:higher": 1, "dg:lower": 1, "dg:leave": 0}
 
     pair_round.choose_pair_direction(user_id=1, direction="higher")
     pair_view.sync_controls()
     assert component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
-    assert component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
     assert attached_select(view=pair_view, custom_id="dg:bet").disabled is False
 
 
 @pytest.mark.parametrize(
-    argnames=("rank", "label"), argvalues=[("A", "⬆️ 猜大"), ("K", "⬇️ 猜小")], ids=["ace", "king"]
+    argnames=("rank", "direction"),
+    argvalues=[("A", "higher"), ("K", "lower")],
+    ids=["ace", "king"],
 )
-async def test_an_ace_or_king_pair_table_goes_straight_to_the_bet(rank: str, label: str) -> None:
-    """With one winnable guess there is nothing to choose: no guess buttons, no choice prompt."""
+async def test_an_ace_or_king_pair_table_goes_straight_to_the_bet(
+    rank: str, direction: DragonGateDirection
+) -> None:
+    """With one winnable guess there is nothing to choose: no guess buttons, the guess shown."""
     owner = dragon_gate_seat(user_id=1, display_name="Alice")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=(rank, "♠", rank, "♥")), participants=[owner]
@@ -150,8 +163,7 @@ async def test_an_ace_or_king_pair_table_goes_straight_to_the_bet(rank: str, lab
         round_state=round_state, jackpot=100_000
     ).description
     assert isinstance(description, str)
-    assert label in description
-    assert "請先按" not in description
+    assert _direction_label(direction=direction) in description
 
 
 async def test_a_lobby_in_a_channel_the_bot_was_shut_out_of_still_opens_and_plays_its_table(
@@ -246,7 +258,9 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
         user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:bet"
     )
     assert await view.interaction_check(interaction=as_interaction(fake=non_active)) is False
-    assert non_active.followup.sent == [{"content": "現在輪到 Alice", "ephemeral": True}]
+    assert [
+        (sent["ephemeral"], "Alice" in str(sent["content"])) for sent in non_active.followup.sent
+    ] == [(True, True)], "Bob is told privately whose turn it is"
 
     leave_ok = FakeInteraction(
         user=FakeUser(user_id=2), message=FakeDiscordMessage(), custom_id="dg:leave"
@@ -257,7 +271,8 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
     await view.submit_custom_bet(
         interaction=as_interaction(fake=invalid), raw_amount="not a number"
     )
-    assert invalid.followup.sent == [{"content": "下注金額要是整數", "ephemeral": True}]
+    assert [sent["ephemeral"] for sent in invalid.followup.sent] == [True]
+    assert round_state.last_result is None
 
 
 async def _refusing_table(gate: tuple[str, str], bob: bool, finished: bool) -> DragonGateView:
@@ -285,16 +300,16 @@ async def _refusing_table(gate: tuple[str, str], bob: bool, finished: bool) -> D
 
 
 @pytest.mark.parametrize(
-    argnames=("gate", "bob", "finished", "expected"),
+    argnames=("gate", "bob", "finished", "broken_rule"),
     argvalues=[
-        (("7", "7"), False, True, "這桌已經不能操作了"),
-        (("7", "7"), True, False, "現在輪到 Alice"),
-        (("3", "9"), False, False, "這手不需要猜大小"),
+        (("7", "7"), False, True, DragonGateTableFinishedError),
+        (("7", "7"), True, False, DragonGateTurnError),
+        (("3", "9"), False, False, DragonGatePairChoiceUnavailableError),
     ],
     ids=["table-over", "not-their-turn", "not-a-pair"],
 )
 async def test_a_refused_pair_guess_says_why(
-    gate: tuple[str, str], bob: bool, finished: bool, expected: str
+    gate: tuple[str, str], bob: bool, finished: bool, broken_rule: type[DragonGateError]
 ) -> None:
     """A guess the round will not take answers with the notice for the rule it broke.
 
@@ -307,21 +322,27 @@ async def test_a_refused_pair_guess_says_why(
 
     await view._choose_direction(interaction=as_interaction(fake=press), direction="higher")
 
-    assert press.followup.sent == [{"content": expected, "ephemeral": True}]
+    notice = view._rule_error_notice(error=broken_rule("refused"))
+    assert press.followup.sent == [{"content": notice, "ephemeral": True}]
 
 
 @pytest.mark.parametrize(
-    argnames=("gate", "bob", "finished", "raw_amount", "expected"),
+    argnames=("gate", "bob", "finished", "raw_amount", "broken_rule", "quoted"),
     argvalues=[
-        (("7", "7"), False, False, "20", "同點門柱要先猜大或猜小"),
-        (("3", "9"), False, True, "20", "這桌已經不能操作了"),
-        (("3", "9"), True, False, "20", "現在輪到 Alice"),
-        (("3", "9"), False, False, "5", "下注金額需介於 20 虛擬歡樂豆 到 10萬 虛擬歡樂豆"),
+        (("7", "7"), False, False, "20", DragonGatePairChoiceRequiredError, ()),
+        (("3", "9"), False, True, "20", DragonGateTableFinishedError, ()),
+        (("3", "9"), True, False, "20", DragonGateTurnError, ()),
+        (("3", "9"), False, False, "5", DragonGateBetRangeError, (MIN_BET, 100_000)),
     ],
     ids=["guess-first", "table-over", "not-their-turn", "out-of-range"],
 )
-async def test_a_refused_bet_says_why(
-    gate: tuple[str, str], bob: bool, finished: bool, raw_amount: str, expected: str
+async def test_a_refused_bet_says_why(  # noqa: PLR0913 -- one parameter per column of the table
+    gate: tuple[str, str],
+    bob: bool,
+    finished: bool,
+    raw_amount: str,
+    broken_rule: type[DragonGateError],
+    quoted: tuple[int, ...],
 ) -> None:
     """A bet the round will not take answers with the notice for the rule it broke.
 
@@ -332,7 +353,10 @@ async def test_a_refused_bet_says_why(
 
     await view.submit_custom_bet(interaction=as_interaction(fake=press), raw_amount=raw_amount)
 
-    assert press.followup.sent == [{"content": expected, "ephemeral": True}]
+    notice = view._rule_error_notice(error=broken_rule("refused"))
+    assert press.followup.sent == [{"content": notice, "ephemeral": True}]
+    for amount in quoted:
+        assert currency_text(amount=amount, compact=True) in notice, "the range a bet must fall in"
 
 
 async def test_a_press_on_a_round_with_no_turn_left_is_refused() -> None:
@@ -343,7 +367,7 @@ async def test_a_press_on_a_round_with_no_turn_left_is_refused() -> None:
     )
 
     assert await view.interaction_check(interaction=as_interaction(fake=press)) is False
-    assert press.followup.sent == [{"content": "這桌已經不能操作了", "ephemeral": True}]
+    assert press.followup.sent == [{"content": view._current_turn_notice(), "ephemeral": True}]
 
 
 @pytest.mark.parametrize(argnames="control", argvalues=["custom", "min", "higher", "leave"])
@@ -381,8 +405,11 @@ async def test_an_action_that_reaches_a_settled_table_is_told_it_is_over(
         await view._choose_direction(interaction=interaction, direction="higher")
     else:
         await view._handle_leave(interaction=interaction)
+    check = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    assert await view.interaction_check(interaction=as_interaction(fake=check)) is False
 
-    assert press.followup.sent == [{"content": "這桌已經結束, 等下一桌吧", "ephemeral": True}]
+    assert press.followup.sent == check.followup.sent, "the same notice the settled table gives"
+    assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
     assert settlements == []
 
 
@@ -553,8 +580,6 @@ def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
     )
     # Dropped turns are counted rather than vanishing, and the newest are the ones kept.
     hidden = len(history) - DRAGON_GATE_VISIBLE_HISTORY_LINES
-    assert f"(前 {hidden} 手省略)" in embed.description
-    shown = [
-        turn.turn_number for turn in history if f"第 {turn.turn_number} 手" in embed.description
-    ]
+    assert re.search(pattern=rf"(?<!\d){hidden}(?!\d)", string=embed.description)
+    shown = [turn.turn_number for turn in history if str(turn.turn_number) in embed.description]
     assert shown == [turn.turn_number for turn in history[hidden:]]

@@ -9,6 +9,7 @@ from discordbot.typings.games import (
     BlackjackHistoryPayload,
 )
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
+from discordbot.utils.number_text import grouped_amount
 from discordbot.cogs.games.history_text import _summarize, build_blackjack_history_embed
 
 from tests.helpers.games import card
@@ -75,10 +76,13 @@ def _wide_record_view() -> BlackjackHistoryRecord:
 
 
 def test_summary_counts_by_delta_sign() -> None:
-    """Summary counts wins, losses, and pushes by net round delta."""
+    """Summary counts wins, losses, and pushes by net round delta, not by the hand's outcome.
+
+    A won hand beside a lost insurance bet can net a loss, so the second round disagrees.
+    """
     records = (
         _record_view(delta=500, outcome="win"),
-        _record_view(delta=-300, outcome="lose"),
+        _record_view(delta=-300, outcome="win"),
         _record_view(delta=0, outcome="push"),
     )
     summary = _summarize(records=records)
@@ -94,30 +98,30 @@ def test_history_embed_renders_code_block_table() -> None:
         for delta, outcome in ((1_500, "blackjack"), (-2_000, "player_bust"), (0, "push"))
     )
     embed = build_blackjack_history_embed(player_name="長名字測試玩家", records=records)
-    description = embed.description or ""
-    assert "```" in description
-    assert "近 3 場 · 1 勝 1 敗 1 和 · 淨損益 -500" in description
-    assert "A♠K♥(21)" in description
-    assert "BJ" in description
-    assert "BUST" in description
-    assert "PUSH" in description
-    assert "+1,500" in description
-    assert "-2,000" in description
+    summary, table, _ = (embed.description or "").split("```")
+    rows = table.strip("\n").splitlines()
+    assert grouped_amount(amount=-500, signed=True) in summary, "the net over every round"
+    assert len(rows) == 3
+    for row, record in zip(rows, records, strict=True):
+        assert "".join(str(card) for card in record.payload.hands[0].cards) in row
+        assert grouped_amount(amount=record.delta, signed=True) in row
+    assert len({row.split()[-1] for row in rows}) == 3, "each outcome tagged differently"
 
 
 def test_history_embed_empty() -> None:
     """An empty history yields a plain notice embed with no code block."""
     embed = build_blackjack_history_embed(player_name="someone", records=())
-    assert "```" not in (embed.description or "")
-    assert "還沒有任何" in (embed.description or "")
+    assert embed.description
+    assert "```" not in embed.description
 
 
-def test_history_embed_fits_description_limit() -> None:
-    """A full 50-round history stays within Discord's description limit."""
+def test_history_embed_shows_an_ordinary_full_history_whole() -> None:
+    """Fifty ordinary rounds, the most the command fetches, all fit, so none is dropped."""
     records = tuple(_record_view(delta=1_000, outcome="win") for _ in range(50))
     embed = build_blackjack_history_embed(player_name="alice", records=records)
-    assert len(embed.description or "") <= 4096
-    assert "```" in (embed.description or "")
+    _, table, after = (embed.description or "").split("```")
+    assert len(table.strip("\n").splitlines()) == 50
+    assert not after.strip(), "no omission note"
 
 
 def test_history_embed_truncates_oversized_history() -> None:
@@ -125,5 +129,8 @@ def test_history_embed_truncates_oversized_history() -> None:
     records = tuple(_wide_record_view() for _ in range(50))
     embed = build_blackjack_history_embed(player_name="alice", records=records)
     description = embed.description or ""
+    _, table, after = description.split("```")
+    shown = len(table.strip("\n").splitlines())
     assert len(description) <= 4096
-    assert "未顯示" in description
+    assert shown < 50
+    assert str(50 - shown) in after, "the note counts the rounds it left out"

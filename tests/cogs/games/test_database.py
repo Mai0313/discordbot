@@ -117,7 +117,7 @@ async def test_record_and_fetch_roundtrip() -> None:
     assert record.outcome == "win"
     assert record.delta == -500
     assert record.bet == 1_000
-    assert [str(card) for card in record.payload.dealer_cards] == ["9♦", "7♣"]
+    assert record.payload.dealer_cards == _DEALER_CARDS
     assert record.payload.dealer_total == 16
     assert len(record.payload.hands) == 2
     assert record.payload.hands[0].total == hand_value(cards=split_hands[0].cards)

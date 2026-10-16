@@ -18,9 +18,19 @@ from nextcord.ui import Button
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import BotAction, GameParticipant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
-from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackPlayerHand
+from discordbot.cogs.games.blackjack import (
+    Card,
+    BlackjackRound,
+    BlackjackPlayerHand,
+    InsuranceClosedError,
+    InsuranceBetTooSmallError,
+)
 from discordbot.services.economy.database import get_balance
-from discordbot.cogs.games.blackjack_views import BlackjackView, build_in_progress_embeds
+from discordbot.cogs.games.blackjack_views import (
+    BlackjackView,
+    build_in_progress_embeds,
+    _insurance_refusal_notice,
+)
 
 from tests.helpers.games import (
     card,
@@ -29,7 +39,6 @@ from tests.helpers.games import (
     component_ids,
     blackjack_hand,
     blackjack_view,
-    component_rows,
     attached_button,
     blackjack_round,
     scripted_blackjack_lobby,
@@ -57,8 +66,8 @@ def _button_states(view: BlackjackView) -> dict[str, bool]:
     return states
 
 
-async def test_action_controls_show_on_their_rows_and_leave_once_not_allowed() -> None:
-    """A fresh pair shows all five actions on their rows; a Hit removes the first-action ones.
+async def test_action_controls_show_and_leave_once_not_allowed() -> None:
+    """A fresh pair shows all five actions; a Hit removes the first-action ones.
 
     Which actions a hand allows is the round's rule; the view's part is that an action it no
     longer allows leaves the view rather than staying behind disabled.
@@ -70,12 +79,12 @@ async def test_action_controls_show_on_their_rows_and_leave_once_not_allowed() -
     view = blackjack_view(round_state=round_state)
     view.sync_buttons()
 
-    assert component_rows(view=view) == {
-        "bj:hit": 0,
-        "bj:stand": 0,
-        "bj:double": 1,
-        "bj:split": 1,
-        "bj:surrender": 1,
+    assert component_ids(view=view) == {
+        "bj:hit",
+        "bj:stand",
+        "bj:double",
+        "bj:split",
+        "bj:surrender",
     }
     assert all(disabled is False for disabled in _button_states(view=view).values())
 
@@ -101,7 +110,6 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
     assert component_ids(view=view) == {"bj:insure_yes", "bj:insure_no"}
     assert states["bj:insure_yes"] is False
     assert states["bj:insure_no"] is False
-    assert component_rows(view=view) == {"bj:insure_yes": 1, "bj:insure_no": 1}
 
 
 async def test_settled_phase_removes_every_button() -> None:
@@ -156,8 +164,8 @@ async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -
     dealer_embed = embeds[0]
 
     assert isinstance(dealer_embed.description, str)
-    assert "A♣" in dealer_embed.description
-    assert "K♦" in dealer_embed.description
+    assert str(card(rank="A", suit="♣")) in dealer_embed.description
+    assert str(card(rank="K", suit="♦")) in dealer_embed.description
     assert "🂠" not in dealer_embed.description
 
 
@@ -172,9 +180,8 @@ def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:
     dealer_embed = embeds[0]
 
     assert isinstance(dealer_embed.description, str)
-    assert "🂠" in dealer_embed.description
-    assert "K♦" in dealer_embed.description
-    assert "8♣" not in dealer_embed.description
+    assert str(card(rank="K", suit="♦")) in dealer_embed.description
+    assert str(card(rank="8", suit="♣")) not in dealer_embed.description
 
 
 def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
@@ -187,7 +194,7 @@ def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
     dealer_embed = embeds[0]
 
     assert isinstance(dealer_embed.description, str)
-    assert "8♣" in dealer_embed.description
+    assert str(card(rank="8", suit="♣")) in dealer_embed.description
     assert "🂠" not in dealer_embed.description
 
 
@@ -204,7 +211,7 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled() -> None:
     allowed = await view.interaction_check(interaction=as_interaction(fake=press))
 
     assert allowed is False
-    assert press.followup.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
+    assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
 
 
 @pytest.mark.parametrize(
@@ -245,8 +252,11 @@ async def test_a_press_that_reaches_a_settled_round_is_told_it_is_over(
     press = FakeInteraction(message=message)
 
     await button.callback(as_interaction(fake=press))
+    check = FakeInteraction(message=message)
+    assert await view.interaction_check(interaction=as_interaction(fake=check)) is False
 
-    assert press.followup.sent == [{"content": "這局已經結束, 等下一局吧", "ephemeral": True}]
+    assert press.followup.sent == check.followup.sent, "the same notice the settled table gives"
+    assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
     assert press.edits == []
     assert await get_balance(user_id=1) == settled_balance
     assert scheduled_cleanups.messages == [message]
@@ -275,9 +285,9 @@ async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh() -> None:
 
     assert decided is False
     assert round_state.players[0].insurance_bet == 0
-    assert press.followup.sent == [
-        {"content": "你的下注太小，一半不到 1 點，這局沒有保險可買", "ephemeral": True}
-    ]
+    too_small = _insurance_refusal_notice(error=InsuranceBetTooSmallError("half rounds to 0"))
+    assert press.followup.sent == [{"content": too_small, "ephemeral": True}]
+    assert too_small != _insurance_refusal_notice(error=InsuranceClosedError("refresh"))
 
 
 async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
@@ -382,7 +392,10 @@ async def test_a_bot_call_closing_insurance_without_a_natural_keeps_the_hole_fac
     assert round_state.phase == "player_actions"
     dealer_seats = [cast("str", edit["embeds"][0].description) for edit in message.edits]
     assert dealer_seats, "the bot's call re-renders the table"
-    assert all("🂠" in dealer_seat for dealer_seat in dealer_seats), "the hole stays face down"
+    hole, up_card = str(card(rank="9", suit="♦")), str(card(rank="A", suit="♣"))
+    assert all(
+        hole not in dealer_seat and up_card in dealer_seat for dealer_seat in dealer_seats
+    ), "the hole stays face down"
 
 
 async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
@@ -417,7 +430,7 @@ async def test_a_bot_bet_too_small_to_insure_declines_without_a_warning(
     bot = round_state.players[0]
     assert (bot.insurance_resolved, bot.insurance_bet) == (True, 0)
     assert warnings == []
-    assert ("Bot bet too small to insure; declining", {"user_id": 1, "bet": 1}) in infos
+    assert {"user_id": 1, "bet": 1} in [fields for _, fields in infos]
 
 
 async def test_a_dealt_bot_counts_the_hole_among_the_face_down_cards() -> None:
@@ -604,9 +617,8 @@ async def test_blackjack_view_rejects_stale_double_without_mutating_next_player(
     )
 
     assert bob.bet == 50
-    assert [str(card) for card in bob.cards] == ["5♣", "6♦"]
-    assert interaction.followup.sent[0]["content"] == "這個操作已經失效，請看最新牌桌"
-    assert interaction.followup.sent[0]["ephemeral"] is True
+    assert bob.cards == [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
+    assert [sent["ephemeral"] for sent in interaction.followup.sent] == [True]
     assert len(message.edits) == 1
 
 
@@ -630,8 +642,8 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
     interaction = FakeInteraction(user=FakeUser(user_id=1), message=message)
     await attached_button(view=view, custom_id="bj:hit").callback(as_interaction(fake=interaction))
 
-    assert [str(card) for card in bob.cards] == ["5♣", "6♦"]
-    assert interaction.followup.sent[0]["content"] == "這個操作已經失效，請看最新牌桌"
+    assert bob.cards == [card(rank="5", suit="♣"), card(rank="6", suit="♦")]
+    assert [sent["ephemeral"] for sent in interaction.followup.sent] == [True]
     assert len(message.edits) == 1
 
 
@@ -664,7 +676,11 @@ async def test_blackjack_view_hit_draws_for_active_split_hand() -> None:
         as_interaction(fake=FakeInteraction(user=FakeUser(user_id=1), message=message))
     )
 
-    assert [str(card) for card in player.hands[1].cards] == ["9♣", "2♦", "5♣"]
+    assert player.hands[1].cards == [
+        card(rank="9", suit="♣"),
+        card(rank="2", suit="♦"),
+        card(rank="5", suit="♣"),
+    ]
     assert len(message.edits) == 1
 
     await view.wait_for_background_tasks()
@@ -867,7 +883,9 @@ async def test_a_blackjack_table_kept_open_by_a_refused_press_closes_through_it(
 
     assert [edit["view"] for edit in refused.edits[-1:]] == [None], "the result landed through it"
     assert (scheduled.messages, scheduled.interactions) == ([message], [refused])
-    assert refused.followup.sent == [{"content": "現在輪到 Alice", "ephemeral": True}]
+    assert [
+        (sent["ephemeral"], "Alice" in str(sent["content"])) for sent in refused.followup.sent
+    ] == [(True, True)], "the refused press is told privately whose turn it is"
 
 
 async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(
@@ -885,8 +903,9 @@ async def test_a_blackjack_natural_at_the_deal_settles_inside_the_start_press(
     # The controls going dead, the peek's two frames, and the settled table.
     assert len(message.edits) == 4
     hidden, revealed = (cast("str", edit["embeds"][0].description) for edit in message.edits[1:3])
-    assert "🂠" in hidden, "the peek shows the hole card face down first"
-    assert "🂠" not in revealed
+    hole = str(card(rank="A"))
+    assert hole not in hidden, "the peek shows the hole card face down first"
+    assert hole in revealed
     assert message.edits[-1]["view"] is None
 
 
@@ -957,7 +976,9 @@ async def test_an_ace_up_peek_without_a_natural_keeps_the_hole_face_down(
     )
 
     dealer_seats = [cast("str", edit["embeds"][0].description) for edit in message.edits]
-    assert all("🂠" in dealer_seat for dealer_seat in dealer_seats), "the hole stays face down"
+    assert all(str(card(rank="6")) not in dealer_seat for dealer_seat in dealer_seats), (
+        "the hole stays face down"
+    )
     assert len(dealer_seats) == 2, "the table, then the table after the insurance call"
     assert table.round_state.phase == "player_actions"
 

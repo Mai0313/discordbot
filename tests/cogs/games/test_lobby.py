@@ -148,8 +148,12 @@ async def test_a_lobby_someone_joined_times_out_through_the_join_in_a_shut_out_c
 
     await lobby.on_timeout()
 
-    embed = join.edits[-1]["embed"]
-    assert (embed.description == "Lobby 已逾時") is not expired
+    # The join's own refresh, then the timeout's edit while the token lives.
+    assert len(join.edits) == (1 if expired else 2)
+    if not expired:
+        joined, closed = (edit["embed"].description for edit in join.edits)
+        assert closed, "the timeout's edit says the lobby closed"
+        assert closed != joined
     assert scheduled.interactions == [join]
 
 
@@ -180,10 +184,11 @@ async def test_a_lobby_kept_open_by_refused_presses_closes_through_the_newest_on
     await lobby_button(view=lobby, label="加入").callback(as_interaction(fake=press))
     await lobby.on_timeout()
 
-    assert [edit["embed"].description for edit in press.edits] == ["Lobby 已逾時"]
+    assert len(press.edits) == 1, "the refused press edited nothing; the timeout's edit did"
+    assert press.edits[0]["embed"].description, "the timeout's edit says the lobby closed"
     assert (scheduled.messages, scheduled.interactions) == ([message], [press])
-    assert press.followup.sent == (
-        [{"content": "你已經在這桌了", "ephemeral": True}] if presser == "owner" else []
+    assert [sent["ephemeral"] for sent in press.followup.sent] == (
+        [True] if presser == "owner" else []
     ), "a refusal is a followup, so the press's own token stays on the lobby"
 
 
@@ -218,7 +223,8 @@ async def test_a_lobby_press_that_fails_after_its_acknowledgement_still_closes_t
         await lobby_button(view=lobby, label=label).callback(as_interaction(fake=press))
     await lobby.on_timeout()
 
-    assert [edit["embed"].description for edit in press.edits] == ["Lobby 已逾時"]
+    assert len(press.edits) == 1, "the failed press edited nothing; the timeout's edit did"
+    assert press.edits[0]["embed"].description, "the timeout's edit says the lobby closed"
     assert (scheduled.messages, scheduled.interactions) == ([message], [press])
 
 
@@ -304,35 +310,22 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
 async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If ante settlement rejects a non-owner, the lobby stays startable."""
-    owner = dragon_gate_seat(user_id=1, display_name="Alice")
+    """If the ledger rejects a non-owner's ante, nobody is charged and the lobby stays startable.
+
+    Bob's wallet is empty, so the full debit the antes require refuses him.
+    """
+    owner = await funded_dragon_gate_seat(user_id=1, display_name="Alice")
     bob = dragon_gate_seat(user_id=2, display_name="Bob")
     message = FakeDiscordMessage()
-
-    async def rejected_ante_batch(
-        game_id: str, settlements: Sequence[JackpotSettlementRequest]
-    ) -> JackpotSettlementBatchResult:
-        """Rejects Bob's ante without mutating the table."""
-        assert game_id == GAME_ID
-        assert all(settlement.require_full_debit for settlement in settlements)
-        return JackpotSettlementBatchResult(
-            player_balances={},
-            applied_player_deltas={},
-            jackpot_balance=100_000,
-            rejected_player_ids=(2,),
-        )
-
-    monkeypatch.setattr(
-        "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", rejected_ante_batch
-    )
     record_scheduled_deletes(monkeypatch=monkeypatch)
+    pool_before = await get_jackpot_pool(game_id=GAME_ID)
 
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
         prepare_participant=joins_as(participant=bob),
         refresh_participants=everyone_stays,
-        initial_jackpot=100_000,
+        initial_jackpot=pool_before,
     )
     view.message = as_message(fake=message)
 
@@ -350,7 +343,9 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     assert isinstance(message.edits[-1]["view"], DragonGateLobbyView)
     embed = message.edits[-1]["embed"]
     assert isinstance(embed, Embed)
-    assert embed.description == "餘額不足已移出: Bob"
+    assert "Bob" in str(embed.description), "the lobby says who it dropped"
+    await assert_wallet_consistent(user_id=1, expected_balance=owner.balance_at_start)
+    assert await get_jackpot_pool(game_id=GAME_ID) == pool_before
 
 
 @pytest.mark.parametrize(

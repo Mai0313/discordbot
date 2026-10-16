@@ -7,6 +7,7 @@ import pytest
 from discordbot.cogs.games.dragon_gate import (
     DragonGateRound,
     DragonGateDirection,
+    DragonGatePairChoiceRequiredError,
     DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
     card_value,
@@ -28,6 +29,7 @@ def test_card_value_uses_ace_low_and_faces_above_ten() -> None:
 def test_adjacent_non_pair_pillars_are_redealt_without_counting_turn() -> None:
     """Adjacent non-pair pillars have no gate and are skipped before betting."""
     assert has_open_gate(pillars=[card(rank="4"), card(rank="3", suit="♥")]) is False
+    assert has_open_gate(pillars=[card(rank="3"), card(rank="5", suit="♥")]) is True
     assert has_open_gate(pillars=[card(rank="7"), card(rank="7", suit="♥")]) is True
 
     round_state = DragonGateRound.from_participants(
@@ -93,7 +95,7 @@ def test_pair_gate_requires_high_or_low_choice() -> None:
         participants=[dragon_gate_seat(user_id=1, display_name="Alice")],
     )
 
-    with pytest.raises(expected_exception=ValueError, match="direction"):
+    with pytest.raises(expected_exception=DragonGatePairChoiceRequiredError):
         round_state.resolve_bet(user_id=1, amount=10_000, jackpot=100_000)
 
     round_state.choose_pair_direction(user_id=1, direction="higher")

@@ -12,6 +12,7 @@ from discordbot.cogs.games.blackjack import (
     SHOE_DECK_COUNT,
     BlackjackRound,
     can_split,
+    build_shoe,
     dealer_must_hit,
     is_five_card_win,
 )
@@ -25,7 +26,7 @@ def test_first_take_builds_a_fresh_shoe() -> None:
     store = BlackjackShoeStore()
     shoe, _generation = store.take_shoe(channel_id=1, rng=Random(x=0))
 
-    assert len(shoe) == 208
+    assert shoe == build_shoe(rng=Random(x=0))
 
 
 def test_take_returns_the_stored_shoe_down_to_the_threshold() -> None:
@@ -48,7 +49,7 @@ def test_take_reshuffles_below_the_threshold() -> None:
 
     shoe, _generation = store.take_shoe(channel_id=3, rng=Random(x=0))
 
-    assert len(shoe) == 208
+    assert shoe == build_shoe(rng=Random(x=0))
 
 
 def test_true_count_is_neutral_without_a_countable_shoe() -> None:

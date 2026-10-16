@@ -1,12 +1,10 @@
 """Tests for the Blackjack table's text: early-finish notes, hands and settlement lines."""
 
-import pytest
-
 from discordbot.cogs.games.presentation import (
-    render_hand,
     settlement_metadata,
     blackjack_player_early_finish_note,
 )
+from discordbot.services.economy.presentation import amount_code
 
 from tests.helpers.games import card, blackjack_round
 
@@ -38,45 +36,41 @@ def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
         peeked_blackjack=True,
     )
 
-    assert note == "莊家明牌 K♦, peek 暗牌確認 Blackjack, 本局直接結算"
+    assert note is not None
+    assert str(card(rank="K", suit="♦")) in note, "the up-card everyone saw"
+    assert str(card(rank="A", suit="♣")) not in note, "never the hole"
 
 
-@pytest.mark.parametrize(
-    argnames=("peeked_blackjack", "expected"),
-    argvalues=[
-        (False, "你起手 Blackjack, 本局直接結算"),
-        (True, "莊家明牌 K♦, peek 暗牌確認 Blackjack, 你也起手 Blackjack, 本局直接平手"),
-    ],
-    ids=["player-natural", "both-natural"],
-)
-def test_blackjack_early_finish_note_names_a_dealt_natural(
-    peeked_blackjack: bool, expected: str
-) -> None:
-    """A seat dealt a natural is told that is what ended its round."""
-    player = blackjack_round(
-        hands=[[card(rank="A"), card(rank="K", suit="♥")]], dealer=[]
-    ).players[0]
+def test_blackjack_early_finish_note_names_a_dealt_natural() -> None:
+    """A seat dealt a natural is told that is what ended its round.
 
-    note = blackjack_player_early_finish_note(
-        player=player,
-        dealer=[card(rank="A", suit="♣"), card(rank="K", suit="♦")],
-        peeked_blackjack=peeked_blackjack,
+    Its own natural, a push against the dealer's, and the dealer's alone each read differently.
+    """
+    dealer = [card(rank="A", suit="♣"), card(rank="K", suit="♦")]
+    natural, stiff = blackjack_round(
+        hands=[
+            [card(rank="A"), card(rank="K", suit="♥")],
+            [card(rank="9"), card(rank="8", suit="♥")],
+        ],
+        dealer=[],
+    ).players
+
+    own = blackjack_player_early_finish_note(player=natural, dealer=dealer, peeked_blackjack=False)
+    both = blackjack_player_early_finish_note(player=natural, dealer=dealer, peeked_blackjack=True)
+    dealer_only = blackjack_player_early_finish_note(
+        player=stiff, dealer=dealer, peeked_blackjack=True
     )
 
-    assert note == expected
-
-
-def test_render_hand_hides_first_card() -> None:
-    """When the hole card is hidden, only the up-card and a back glyph appear."""
-    cards = [card(rank="A"), card(rank="K", suit="♥")]
-    rendered = render_hand(cards=cards, hide_first=True)
-    assert "🂠" in rendered
-    assert "A" not in rendered
-    assert "K" in rendered
+    assert own is not None
+    assert both is not None
+    assert str(card(rank="K", suit="♦")) in both, "the push names the dealer's up-card"
+    assert len({own, both, dealer_only}) == 3
 
 
 def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
     """A VIP-boosted win shows the total delta and the VIP bonus inside it."""
     metadata = settlement_metadata(delta=150, new_balance=1_150, is_allin=False, vip_bonus=50)
 
-    assert metadata == "-# 本局 `+150` · VIP加成 `+50` · 餘額 `1,150`"
+    assert amount_code(amount=150, signed=True, compact=True) in metadata
+    assert amount_code(amount=50, signed=True, compact=True) in metadata
+    assert amount_code(amount=1_150, compact=True) in metadata

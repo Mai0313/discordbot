@@ -2,6 +2,7 @@
 
 import pytest
 
+from discordbot.utils.timezone import database_now
 from discordbot.typings.economy import VIP_PURCHASE_COST
 from discordbot.cogs.games.blackjack import Card, BlackjackHandState
 from discordbot.services.economy.database import buy_vip, get_casino_ledger
@@ -13,6 +14,18 @@ from tests.helpers.economy_invariants import (
     assert_daily_casino_stats,
     assert_casino_ledger_consistent,
 )
+
+
+@pytest.fixture
+def frozen_database_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Holds the ledger's clock and the daily-counter reader's on one instant.
+
+    A settlement booked just before Taipei midnight would otherwise be read back on the next
+    day, which has no counters yet.
+    """
+    instant = database_now()
+    monkeypatch.setattr("discordbot.services.economy.database._database_now", lambda: instant)
+    monkeypatch.setattr("tests.helpers.economy.database_now", lambda: instant)
 
 
 async def test_settle_blackjack_player_updates_player_and_casino() -> None:
@@ -175,6 +188,7 @@ async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
         "vip-21-push-vs-dealer-21",
     ],
 )
+@pytest.mark.usefixtures("frozen_database_clock")
 async def test_settle_blackjack_player_five_card(
     last_card: str,
     dealer: list[tuple[str, str]],
