@@ -33,7 +33,6 @@ from collections.abc import Callable
 import pytest
 from nextcord import Message, Forbidden
 
-from discordbot.utils import expansion_cog as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.utils.expansion_cog import (
@@ -79,7 +78,7 @@ from tests.helpers.discord_mocks import (
     FakeDiscordMessage,
     placeholder_withdrawn,
 )
-from tests.helpers.logfire_capture import capture_logs
+from tests.helpers.logfire_capture import capture_logs, capture_levels
 
 _COGS_DIR = PACKAGE / "cogs"
 
@@ -376,21 +375,28 @@ def test_an_expansion_cog_decides_no_shared_outcome_of_its_own(
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
-async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
+async def test_a_slot_claim_that_breaks_reads_nothing_and_still_names_the_platform(
     cog: type[ExpansionCog[Any]],
 ) -> None:
     """A cross on its own cannot say which link died, and a message can carry two.
 
-    `current_emoji` is None exactly when claiming the reply slot failed, which is both the refused
-    channel and the Discord 5xx that raises straight past it. Behavioural rather than a source
-    scan, because what matters is that the marker lands whichever call site got there.
+    A Discord 5xx on the placeholder raises past the refusal handling into the listener's outer
+    handler before anything is on the message. A refused channel reaches the same mark through
+    `test_a_refused_slot_reads_nothing_and_still_names_the_platform`.
     """
-    instance = cog(bot=stub_bot())
-    message = FakeDiscordMessage()
+    staged = _stage(cog=cog, outcome="readable")
 
-    await instance._mark_failed(message=as_message(fake=message), current_emoji=None)
+    async def break_down(**kwargs: object) -> object:
+        """Answers the way Discord does when it fails on its side."""
+        del kwargs
+        raise make_server_error()
 
-    assert message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
+    staged.message.reply = break_down  # ty: ignore[invalid-assignment]
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.reads == []
+    assert staged.message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
@@ -409,6 +415,24 @@ async def test_a_link_the_reply_pipeline_will_answer_is_left_alone(
         assert staged.reads == []
         assert staged.message.reactions == []
         assert staged.message.replies == []
+
+
+@pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
+async def test_a_lone_link_the_cog_refuses_earns_nothing(cog: type[ExpansionCog[Any]]) -> None:
+    """A profile or live-room link is not a post, and not a failure either.
+
+    Some patterns match the host rather than the path, so without the post filter the cog would
+    answer a pasted profile with a failure mark.
+    """
+    refused, _post, _pattern_matches = _REFUSED_THEN_POST[cog.SOURCE]
+    staged = _stage(cog=cog, outcome="readable")
+    staged.message.content = refused
+
+    await staged.cog.on_message(message=as_message(fake=staged.message))
+
+    assert staged.reads == []
+    assert staged.message.reactions == []
+    assert staged.message.replies == []
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
@@ -670,19 +694,13 @@ def test_a_read_failure_is_logged_at_the_severity_its_outcome_earns(
     A deleted post logged at `warn` with a traceback is what makes a real regression unfindable,
     and it is `.github/CONTRIBUTING.md#logging`'s own example of `info`.
     """
-    levels: list[str] = []
-    for level in ("info", "warn", "error"):
-        monkeypatch.setattr(
-            target=expansion_module.logfire,
-            name=level,
-            value=lambda _message, level=level, **fields: levels.append(level),
-        )
+    records = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn", "error"))
 
     report_expansion_read_failure(
         error=error, platform="Threads", url="https://example.test/p/1", message_id=7
     )
 
-    assert levels == [expected]
+    assert [level for level, _message, _fields in records] == [expected]
 
 
 def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
@@ -724,12 +742,9 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     await staged.cog.on_message(message=as_message(fake=staged.message))
 
     assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
-    assert warns == [
-        (
-            "Could not suppress the source message embed",
-            {"message_id": 1, "guild_id": 100, "error_type": "Forbidden"},
-        )
-    ]
+    ((_message, fields),) = warns
+    assert (fields["message_id"], fields["guild_id"]) == (1, 100)
+    assert "_exc_info" not in fields
 
 
 def _fail_the_delivery(staged: _Staged) -> None:
@@ -795,12 +810,10 @@ async def test_a_refused_preview_restore_names_its_ids_and_the_cross_still_lands
 
     assert staged.message.reactions[-1] == EXPANSION_FAILED_EMOJI
     assert placeholder_withdrawn(message=staged.message)
-    assert warns == [
-        (
-            "Could not restore the source message embed",
-            {"message_id": 1, "guild_id": 100, "error_type": "Forbidden"},
-        )
-    ]
+    # The hide went through here, so the one refusal on record is the restore's.
+    ((_message, fields),) = warns
+    assert (fields["message_id"], fields["guild_id"]) == (1, 100)
+    assert "_exc_info" not in fields
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
@@ -816,9 +829,8 @@ async def test_a_guild_that_refused_the_hide_is_not_asked_to_undo_it(
     await staged.cog.on_message(message=as_message(fake=staged.message))
 
     assert staged.message.reactions[-1] == EXPANSION_FAILED_EMOJI
-    assert [message for message, _fields in warns] == [
-        "Could not suppress the source message embed"
-    ]
+    # The refused hide is the one warning; asking for the restore would draw the same refusal.
+    assert len(warns) == 1
 
 
 @pytest.mark.parametrize(
@@ -847,18 +859,14 @@ def test_a_refused_delivery_names_its_code_instead_of_a_traceback(
     Not every `Forbidden` here is a missing permission (#719), so the code is what survives of
     the traceback; a 5xx keeps its traceback.
     """
-    reports: list[tuple[str, dict[str, object]]] = []
-    for name in ("info", "warn", "error"):
-        monkeypatch.setattr(
-            target=expansion_module.logfire,
-            name=name,
-            value=lambda _message, name=name, **fields: reports.append((name, fields)),
-        )
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn", "error"))
 
     report_expansion_delivery_failure(
         error=error, platform="Threads", url="https://example.test/p/1", message_id=7, channel_id=8
     )
 
-    assert [(name, "_exc_info" in fields) for name, fields in reports] == [(level, traceback)]
+    assert [(name, "_exc_info" in fields) for name, _message, fields in reports] == [
+        (level, traceback)
+    ]
     if not traceback:
-        assert reports[0][1]["code"] == 400001
+        assert reports[0][2]["code"] == 400001

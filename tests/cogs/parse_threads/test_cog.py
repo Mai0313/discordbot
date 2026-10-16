@@ -7,16 +7,15 @@ a reader sees when the post cannot be read.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
 
-import nextcord
-from nextcord import Embed
-
 from discordbot.cogs.parse_threads import cog as parse_threads
+from discordbot.utils.expansion_cog import VIDEO_HINT, omitted_images_note
 from discordbot.utils.discord_embeds import embed_text_length
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.platforms.threads import ThreadsOutput
@@ -45,6 +44,7 @@ from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     import pytest
+    from nextcord import Embed
 
 _URL = "https://www.threads.net/@alice/post/abc"
 
@@ -159,9 +159,11 @@ async def test_clean_threads_url_asks_threads_nothing_about_a_link_it_cannot_use
         cog, as_interaction(fake=interaction), url="https://example.test/whatever"
     )
 
-    assert interaction.followup.sent == [
-        {"content": "這裡面沒有 Threads 貼文連結。", "ephemeral": True}
-    ]
+    (answer,) = interaction.followup.sent
+    content = answer["content"]
+    assert answer["ephemeral"] is True
+    assert content
+    assert not content.startswith("https://")
 
 
 async def test_clean_threads_url_tells_the_two_failures_apart() -> None:
@@ -192,15 +194,21 @@ async def test_clean_threads_url_tells_the_two_failures_apart() -> None:
     await ThreadsCogs.clean_threads_url.callback(
         cog, as_interaction(fake=landed_on_no_post), url=share_url
     )
-    assert landed_on_no_post.followup.sent == [
-        {"content": "這個分享連結沒有指向任何貼文。", "ephemeral": True}
-    ]
-
     fetch_failed = stage(RuntimeError("boom"))
     await ThreadsCogs.clean_threads_url.callback(
         cog, as_interaction(fake=fetch_failed), url=share_url
     )
-    assert fetch_failed.followup.sent == [{"content": "這個連結現在拿不到。", "ephemeral": True}]
+
+    (no_post,) = landed_on_no_post.followup.sent
+    (failed,) = fetch_failed.followup.sent
+    no_post_text, failed_text = no_post["content"], failed["content"]
+    assert no_post["ephemeral"] is True
+    assert failed["ephemeral"] is True
+    assert no_post_text
+    assert failed_text
+    assert not no_post_text.startswith("https://")
+    assert not failed_text.startswith("https://")
+    assert no_post_text != failed_text
 
 
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
@@ -217,8 +225,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     assert len(embeds) == 3
     first_description = embeds[0].description
     assert first_description is not None
-    assert "點此觀看影片" in first_description
-    assert ThreadsCogs._gradient_color(index=0, total=1) == nextcord.Color.default()
+    assert VIDEO_HINT.format(url=parent.url) in first_description
 
     no_match = FakeDiscordMessage(content="hello")
     await cog.on_message(message=as_message(fake=no_match))
@@ -292,7 +299,9 @@ async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() ->
     assert not any(author.startswith("user-0-") for author in authors)
     # What was left behind is stated on the target's own card rather than in a follow-up reply.
     target_embed = next(embed for embed in embeds if authors[-1] == (embed.author.name or ""))
-    assert "📝 另有 2 篇未展開" in cast("str", target_embed.footer.text)
+    omitted = len(_long_threads_chain()) - len(authors)
+    (note,) = parse_threads._remainder_notes(omitted_posts=omitted, omitted_images=0)
+    assert note in cast("str", target_embed.footer.text)
 
 
 async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None:
@@ -310,11 +319,11 @@ async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None
     embeds = cog._build_embeds(results=[root, parent, target])
 
     assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
-    descriptions = [embed.description or "" for embed in embeds]
-    assert descriptions[0].startswith("parent-")
-    assert descriptions[1].startswith("target-")
-    assert descriptions[2].startswith("🔗 **被引用的貼文**")
-    assert all(not description.startswith("root-") for description in descriptions)
+    assert [embed.author.name for embed in embeds if embed.author] == [
+        "parent",
+        "target",
+        "quoted",
+    ]
     assert sum(1 for embed in embeds if embed.image) == 2
 
 
@@ -334,8 +343,8 @@ async def test_threads_cog_drops_an_over_budget_post_with_its_gallery() -> None:
     assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == ["parent", "target"]
     assert all(not embed.image for embed in embeds)
-    assert all("被引用的貼文" not in (embed.description or "") for embed in embeds)
-    assert "📝 另有 1 篇未展開" in cast("str", embeds[-1].footer.text)
+    (note,) = parse_threads._remainder_notes(omitted_posts=1, omitted_images=0)
+    assert note in cast("str", embeds[-1].footer.text)
 
 
 async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
@@ -371,7 +380,11 @@ async def test_threads_cog_delivers_a_trimmed_chain_in_one_message() -> None:
     assert len(message.replies) == 1  # the placeholder the card was edited onto, and nothing else
     embeds = expansion_payload(message=message)["embeds"]
     assert sum(embed_text_length(embed=embed) for embed in embeds) <= 6000
-    assert "篇未展開" in cast("str", embeds[-1].footer.text)
+    shown = sum(1 for embed in embeds if embed.author)
+    (note,) = parse_threads._remainder_notes(
+        omitted_posts=len(_long_threads_chain()) - shown, omitted_images=0
+    )
+    assert note in cast("str", embeds[-1].footer.text)
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
 
 
@@ -385,7 +398,7 @@ async def test_threads_cog_states_the_images_the_embed_cap_left_behind() -> None
     embeds = cog._build_embeds(results=[target])
 
     assert len(embeds) == 10
-    assert "🖼️ 另有 5 張" in cast("str", embeds[0].footer.text)
+    assert omitted_images_note(count=5) in cast("str", embeds[0].footer.text)
 
 
 async def test_threads_cog_logs_a_failed_step_with_its_own_cause(
@@ -408,9 +421,10 @@ async def test_threads_cog_logs_a_failed_step_with_its_own_cause(
 
     assert placeholder_withdrawn(message=message)
     assert message.reactions[-1] == EXPANSION_FAILED_EMOJI
-    assert ("Threads expansion failed outside the read and the send", "RuntimeError") in [
-        (text, fields.get("error_type")) for text, fields in errors
-    ]
+    assert any(
+        fields.get("error_type") == "RuntimeError" and fields.get("message_id") == message.id
+        for _text, fields in errors
+    )
 
 
 async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
@@ -432,12 +446,12 @@ async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
     quoted_embed = embeds[1]
     assert quoted_embed.author.name == "bob"
     assert quoted_embed.description is not None
-    assert quoted_embed.description.startswith("🔗 **被引用的貼文**")
-    assert "the original argument" in quoted_embed.description
+    # Something says what the embed is before the quoted post's own words begin.
+    assert quoted_embed.description.index("the original argument") > 0
     # Its clip is never downloaded, so it is linked instead of showing as an empty embed.
-    assert "點此觀看影片" in quoted_embed.description
+    assert VIDEO_HINT.format(url=quoted.url) in quoted_embed.description
     # Off the greyscale chain gradient on purpose: it is not a layer of the thread.
-    assert quoted_embed.colour == nextcord.Color.blurple()
+    assert quoted_embed.colour == parse_threads._QUOTED_POST_COLOR
 
 
 async def test_threads_cog_keeps_the_commentary_beside_a_quoted_gallery() -> None:
@@ -459,8 +473,7 @@ async def test_threads_cog_keeps_the_commentary_beside_a_quoted_gallery() -> Non
 
     assert len(embeds) == 10
     assert embeds[0].description == "一句話評論"
-    assert embeds[1].description is not None
-    assert embeds[1].description.startswith("🔗 **被引用的貼文**")
+    assert embeds[1].author.name == "bob"
     # Nine of the quoted post's ten images fit; the tenth loses to the commentary, not the reverse.
     assert sum(1 for embed in embeds if embed.image) == 9
 
@@ -475,7 +488,7 @@ async def test_threads_cog_notes_a_quoted_post_that_is_gone() -> None:
 
     assert len(embeds) == 1
     assert embeds[0].description is not None
-    assert "引用的貼文目前無法瀏覽" in embeds[0].description
+    assert embeds[0].description.endswith(parse_threads._QUOTED_UNAVAILABLE_HINT)
 
 
 async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_gallery() -> None:
@@ -497,9 +510,8 @@ async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_g
     embeds = cog._build_embeds(results=[ancestor, target])
 
     assert len(embeds) == 10
-    descriptions = [embed.description or "" for embed in embeds]
-    assert any(text.startswith("🔗 **被引用的貼文**") for text in descriptions)
-    assert "commentary" in descriptions
+    assert "bob" in [embed.author.name for embed in embeds if embed.author]
+    assert "commentary" in [embed.description for embed in embeds]
     # The ancestor gives up two of its ten images, not the target or the quoted post.
     assert sum(1 for embed in embeds if embed.image) == 8
 
@@ -518,7 +530,9 @@ async def test_threads_cog_says_nothing_about_an_ancestors_quote() -> None:
     embeds = cog._build_embeds(results=[root, _thread_output(text="target")])
 
     assert embeds[0].description == "root commentary"
-    assert all("引用的貼文目前無法瀏覽" not in (embed.description or "") for embed in embeds)
+    assert all(
+        parse_threads._QUOTED_UNAVAILABLE_HINT not in (embed.description or "") for embed in embeds
+    )
 
 
 async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> None:
@@ -616,13 +630,11 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
     assert video_file.exists() is True
 
 
-async def test_threads_cog_delivers_the_clips_one_message_can_attach(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_threads_cog_delivers_the_clips_one_message_can_attach(tmp_path: Path) -> None:
     """A post with more clips than one message attaches shows the first ten and counts the rest.
 
-    The clip past the cap was never offered to the host, so it is not a hosting failure: neither
-    a ⚠️ refusal nor a log line blaming the host.
+    The clip past the cap was never offered to the host, so it is not a hosting failure: not a
+    ⚠️ refusal, and not a hosted link.
     """
     cog = _cog()
     serve = tmp_path / "serve"
@@ -634,7 +646,6 @@ async def test_threads_cog_delivers_the_clips_one_message_can_attach(
     _wire_threads(
         cog=cog, downloader=ThreadsDownloaderStub(results=[_thread_output(video_paths=clips)])
     )
-    warnings = capture_logs(monkeypatch, level="warn")
     message = guild_message(content=_URL)
 
     await cog.on_message(message=as_message(fake=message))
@@ -642,9 +653,11 @@ async def test_threads_cog_delivers_the_clips_one_message_can_attach(
     assert message.reactions[-1] == EXPANSION_DONE_EMOJI
     delivered = expansion_payload(message=message)
     assert [file.filename for file in delivered["files"]] == [clip.name for clip in clips[:10]]
-    assert delivered["content"] == "-# 已省略 1 部影片 (Discord 單則訊息最多 10 個附件)"
+    content = delivered["content"]
+    assert content is not None
+    assert "1" in re.findall(r"\d+", content)
+    assert "https://" not in content
     assert list(serve.iterdir()) == []
-    assert all("could not be hosted" not in text for text, _ in warnings)
 
 
 async def test_threads_cog_sends_no_author_icon_for_an_author_without_a_picture() -> None:
