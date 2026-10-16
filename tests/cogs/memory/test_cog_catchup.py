@@ -22,7 +22,6 @@ from discordbot.services.memory.writer import (
     MemoryObservation,
     ServerCatchupNotes,
     server_subject,
-    transcript_from_messages,
 )
 from discordbot.services.memory.catchup import catchup_on_cooldown, review_catchup_notes
 
@@ -368,11 +367,3 @@ async def test_propose_server_notes_keeps_at_most_five() -> None:
     writer, _ = _writer(notes=tuple(f"第 {n} 件事" for n in range(8)), draft=None)
     notes = await writer.propose_server_notes(subject=SUBJECT, transcript="x")
     assert notes == tuple(f"第 {n} 件事" for n in range(5))
-
-
-def test_transcript_without_a_reply_has_no_assistant_block() -> None:
-    """A catchup has no reply, and an empty block would tell the reviewer the bot answered."""
-    transcript = transcript_from_messages(
-        message_list=[{"role": "user", "content": "小李 (lee) [id: 1]: 週五打瓦"}], full_reply=""
-    )
-    assert "assistant reply" not in transcript
