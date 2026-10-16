@@ -17,8 +17,8 @@ from discordbot.cogs.games.blackjack_ev import compute_true_count
 
 # Reshuffle a round before it starts once fewer than this many cards remain. It must cover
 # the most cards one round can deal, or the shoe empties mid-round into `draw_card`'s
-# infinite fallback and the count is corrupted; `tests/test_shoe.py` derives that round from
-# the rules and holds this to it. It cannot simply be raised for headroom either: what is
+# infinite fallback and the count is corrupted; `tests/cogs/games/test_shoe.py` derives that
+# round from the rules and holds this to it. It cannot simply be raised for headroom either: what is
 # left under it is the penetration the count reads, and 96 of the 4-deck shoe's 208 cards
 # leaves ~54%, deep enough to count.
 RESHUFFLE_THRESHOLD_CARDS: Final[int] = 96

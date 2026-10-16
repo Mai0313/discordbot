@@ -14,9 +14,11 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
     RefreshParticipantsResult,
 )
+from discordbot.cogs.games.shoe import BlackjackShoeStore
 from discordbot.cogs.games.lobby import PrepareParticipant
 from discordbot.cogs.games.blackjack import BlackjackRound, BlackjackHandState
 from discordbot.cogs.games.settlement import settle_blackjack_player
+from discordbot.cogs.games.blackjack_views import BlackjackView, BlackjackLobbyView
 
 
 def card(rank: str, suit: str = "♠") -> Card:
@@ -86,6 +88,11 @@ def blackjack_round(
     return round_state
 
 
+def blackjack_view(round_state: BlackjackRound) -> BlackjackView:
+    """Builds a BlackjackView for button inspection."""
+    return BlackjackView(round_state=round_state, owner=seat())
+
+
 def joins_as(participant: GameParticipant) -> PrepareParticipant:
     """Builds a lobby join hook that seats `participant` whoever presses 加入."""
 
@@ -99,6 +106,29 @@ def joins_as(participant: GameParticipant) -> PrepareParticipant:
 async def everyone_stays(participants: list[GameParticipant]) -> RefreshParticipantsResult:
     """Lobby start hook that leaves every participant seated."""
     return RefreshParticipantsResult(participants=participants)
+
+
+async def nobody_joins(interaction: Interaction[Any]) -> GameParticipant | None:
+    """Lobby join hook for a table nobody joins."""
+    raise AssertionError(interaction)
+
+
+def scripted_blackjack_lobby(
+    dealt: list[Card], bot: GameParticipant | None = None
+) -> BlackjackLobbyView:
+    """Builds Alice's Blackjack lobby whose round deals `dealt` first, then fives."""
+    shoe = dealt + [card(rank="5") for _ in range(100)]
+    return BlackjackLobbyView(
+        owner=seat(bet=10, balance_at_start=100),
+        requested_bet=10,
+        rng=Random(x=0),  # noqa: S311 -- the scripted shoe decides the deal
+        prepare_participant=nobody_joins,
+        refresh_participants=everyone_stays,
+        bot_user_id=None if bot is None else bot.user_id,
+        extra_initial_participants=None if bot is None else [bot],
+        shoe_store=BlackjackShoeStore(shoes={7: shoe}),
+        channel_id=7,
+    )
 
 
 def lobby_button(view: View, label: str) -> Button[Any]:

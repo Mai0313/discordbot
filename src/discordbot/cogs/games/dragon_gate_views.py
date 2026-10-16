@@ -68,9 +68,9 @@ DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
 # `embed.description`, so uncapped a long round passes what Discord will render and the table
 # silently stops updating while the round carries on. The limit that binds first is NOT the 4096
 # a description gets: `_finalize_locked` sends this embed beside the final one and Discord counts
-# 6000 across a message's embeds. `tests/test_dragon_gate.py` renders both against both, at a
-# worst case built rather than estimated — every seat withdrawn, every name at Discord's
-# 32-character maximum, the widest gate and the widest amounts.
+# 6000 across a message's embeds. `tests/cogs/games/test_dragon_gate_views.py` renders both
+# against both, at a worst case built rather than estimated — every seat withdrawn, every name at
+# Discord's 32-character maximum, the widest gate and the widest amounts.
 DRAGON_GATE_VISIBLE_HISTORY_LINES: Final[int] = 30
 
 
