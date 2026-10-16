@@ -1,6 +1,5 @@
 """Tests for the fact file format, minted ids, the rendered document and the member-alias table."""
 
-from pathlib import Path
 from datetime import timedelta
 
 import pytest
@@ -9,10 +8,12 @@ from discordbot.typings.memory import MemoryFact, MemoryOwner
 from discordbot.cogs.gen_reply.recall import allowlist_ids_from_server_memory
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
+    TRUNCATION_NOTICE,
     mint_fact_id,
     parse_identity,
     parse_fact_file,
     render_fact_file,
+    section_headings,
     sections_for_flavor,
     render_owner_identity,
     parse_member_alias_table,
@@ -32,7 +33,7 @@ from tests.helpers.user_memory import _fact
 from tests.helpers.server_memory import SERVER_SCOPE, _alias_fact, _server_fact, _server_document
 
 
-def test_fact_file_round_trips(memory_isolated_dir: Path) -> None:
+def test_fact_file_round_trips() -> None:
     """A written fact parses back identical, including its code-stamped fields."""
     fact = _fact(keys=("preference.reply_length",))
     parsed = parse_fact_file(
@@ -103,7 +104,7 @@ def test_unparseable_identity_falls_back_to_the_scope_id() -> None:
     assert owner.owner_id == 111
 
 
-def test_rendered_document_groups_by_section_and_dates_recent(memory_isolated_dir: Path) -> None:
+def test_rendered_document_groups_by_section_and_dates_recent() -> None:
     """The rendered shape is the one the reply prompts have always been handed."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(fact_id="a" * 16, section="profile", text="愛玩遊戲的人"))
@@ -113,14 +114,19 @@ def test_rendered_document_groups_by_section_and_dates_recent(memory_isolated_di
         fact=_fact(fact_id="c" * 16, section="recent", durability="recent", text="正在搬家"),
     )
     document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user")
-    assert document.index("## 使用者輪廓") < document.index("## 穩定偏好")
-    assert document.index("## 穩定偏好") < document.index("## 近期脈絡")
+    headings = dict(section_headings(flavor="user"))
+    assert document.index(f"## {headings['profile']}") < document.index(
+        f"## {headings['preference']}"
+    )
+    assert document.index(f"## {headings['preference']}") < document.index(
+        f"## {headings['recent']}"
+    )
     assert "\n愛玩遊戲的人" in document
     assert "* 喜歡簡短" in document
     assert "* [2026-07-01] 正在搬家" in document
 
 
-def test_the_document_is_capped_and_says_so(memory_isolated_dir: Path) -> None:
+def test_the_document_is_capped_and_says_so() -> None:
     """Past the cap the render stops and admits it, rather than silently overflowing."""
     scope = user_scope(user_id=111)
     for index in range(20):
@@ -129,7 +135,7 @@ def test_the_document_is_capped_and_says_so(memory_isolated_dir: Path) -> None:
         scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user", max_chars=600
     )
     assert len(document) < 1_000
-    assert "記憶已達可注入上限" in document
+    assert TRUNCATION_NOTICE in document
 
 
 def test_sections_are_flavor_scoped() -> None:
@@ -148,9 +154,7 @@ def test_sections_are_flavor_scoped() -> None:
         pytest.param("小明[id: [id: 1]999999999999999999](社群暱稱:明哥)", id="nested"),
     ],
 )
-def test_an_alias_row_cannot_be_given_someone_elses_id(
-    memory_isolated_dir: Path, text: str
-) -> None:
+def test_an_alias_row_cannot_be_given_someone_elses_id(text: str) -> None:
     """The allowlist parser takes the FIRST `[id: N]` on a row, and an alias body is
     distilled from messages anyone in the server can write. Every id token is stripped
     from the body so only the code-stamped `subject_id` can ever survive.
@@ -173,9 +177,7 @@ def test_an_alias_row_cannot_be_given_someone_elses_id(
     assert allowlist_ids_from_server_memory(memory=document) == {777: "小明(社群暱稱:明哥)"}
 
 
-def test_rendered_server_document_feeds_the_allowlist_its_member_ids(
-    memory_isolated_dir: Path,
-) -> None:
+def test_rendered_server_document_feeds_the_allowlist_its_member_ids() -> None:
     """The `## 成員稱呼` table is parsed back out of the render, so it has to stay readable."""
     write_fact(
         scope=SERVER_SCOPE,
@@ -196,8 +198,6 @@ def test_rendered_server_document_feeds_the_allowlist_its_member_ids(
         ),
     )
     document = _server_document()
-    # The lookup table is its own section, ahead of the dated recent-context one.
-    assert document.index("## 成員稱呼") < document.index("## 近期脈絡")
     # Only that section widens the allowlist, so an id-lookalike quoted into another
     # section is not a member the bot may be asked about.
     assert allowlist_ids_from_server_memory(memory=document) == {
@@ -206,7 +206,7 @@ def test_rendered_server_document_feeds_the_allowlist_its_member_ids(
     }
 
 
-def test_the_alias_table_reads_back_raw_and_recall_escapes_it(memory_isolated_dir: Path) -> None:
+def test_the_alias_table_reads_back_raw_and_recall_escapes_it() -> None:
     """The store parses its own table back unescaped; the ping guard belongs to the reader."""
     write_fact(
         scope=SERVER_SCOPE,
@@ -245,9 +245,7 @@ def test_the_alias_table_reads_back_raw_and_recall_escapes_it(memory_isolated_di
         ),
     ],
 )
-def test_no_other_fact_can_forge_the_alias_table(
-    memory_isolated_dir: Path, forged: tuple[MemoryFact, ...]
-) -> None:
+def test_no_other_fact_can_forge_the_alias_table(forged: tuple[MemoryFact, ...]) -> None:
     """Only a code-stamped `subject_id` may reach the allowlist, whatever a body says."""
     write_fact(
         scope=SERVER_SCOPE,

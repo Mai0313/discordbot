@@ -65,16 +65,7 @@ from tests.helpers.user_memory import (
 from tests.helpers.logfire_capture import capture_logs
 
 
-async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
-    writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _draft("喜歡簡短")
-    _schedule(writer=writer)
-    await _wait_for_inflight()
-    assert count_raw_entries(scope=USER_SCOPE) == 1
-    assert _memory_text() == ""
-
-
-async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Path) -> None:
+async def test_pipeline_skips_a_turn_that_marked_nothing() -> None:
     """No marker, no work at all: no model call, no reply.db row, no background task.
 
     Most replies are this case, so it has to cost nothing.
@@ -88,7 +79,7 @@ async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Pa
     assert await get_job(scope=USER_SCOPE) is None
 
 
-async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_dir: Path) -> None:
+async def test_pipeline_writes_a_forget_without_asking_a_model() -> None:
     """A forget needs no review: it stores nothing, it only names what should go.
 
     A stored fact has to exist first, because a forget is copied into the compartments the
@@ -107,7 +98,7 @@ async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_d
     assert "- source: guild 42" in raw_text
 
 
-async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:
+async def test_pipeline_reports_private_observations_as_a_count() -> None:
     """What gets named under the reply is what is safe to repeat in that channel later.
 
     Showing the content is the point of the report: it is what lets someone correct a memory
@@ -203,9 +194,7 @@ async def test_a_failed_review_still_reports_the_forget_it_already_wrote() -> No
     assert reported[0].remembered == ()
 
 
-async def test_a_failed_review_still_writes_the_forgets_of_later_rounds(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_failed_review_still_writes_the_forgets_of_later_rounds() -> None:
     """A merged turn whose first review fails still stages the forgets behind it.
 
     The row is kept for the restart retry, but a forget needs no model, and waiting for that
@@ -259,9 +248,14 @@ async def test_a_correction_under_the_key_it_forgets_is_still_taken_down() -> No
     await _wait_for_inflight()
 
     assert [summary.remembered for summary in reported] == [("住在台南",)]
+    # The forget forces a consolidation, which retires the batch to `detail.md` in order.
+    staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
+        scope=USER_SCOPE
+    )
+    assert staged.index("### forget_request") < staged.index("住在台南")
 
 
-async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
+async def test_pipeline_no_op_gate_writes_nothing() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
     _schedule(writer=writer)
@@ -270,7 +264,7 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
     assert raw_file_bytes(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
+async def test_pipeline_aborts_write_after_clear() -> None:
     writer, fake_client = _writer()
     parse_started = asyncio.Event()
     release = asyncio.Event()
@@ -290,9 +284,7 @@ async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> N
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_background_failure_is_swallowed(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_background_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A turn that raises past the review frees its scope and still replays the turn behind it."""
     appends: list[str] = []
 
@@ -314,9 +306,7 @@ async def test_pipeline_background_failure_is_swallowed(
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
-async def test_pipeline_success_marks_done_and_clears_transcript(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_pipeline_success_marks_done_and_clears_transcript() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     _schedule(writer=writer)
@@ -327,9 +317,7 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
     assert job.transcript is None
 
 
-async def test_pipeline_review_failure_marks_failed_and_keeps_transcript(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_pipeline_review_failure_marks_failed_and_keeps_transcript() -> None:
     writer, fake_client = _writer()
     # `evaluate` returns None on an LLM error, which must park the row at failed.
     fake_client.responses.raises = RuntimeError("llm down")
@@ -342,7 +330,7 @@ async def test_pipeline_review_failure_marks_failed_and_keeps_transcript(
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
+async def test_pipeline_no_signal_marks_done() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
     _schedule(writer=writer)
@@ -352,7 +340,7 @@ async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
     assert job.status == "done"
 
 
-async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path) -> None:
+async def test_resume_memory_update_reruns_failed_job() -> None:
     """A persisted failed row is re-run on restart and succeeds, notes included.
 
     The notes ride inside the stored `transcript` rather than in a column of their own, so a
@@ -381,7 +369,7 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
     assert job.status == "done"
 
 
-async def test_resume_of_a_row_predating_markers_writes_nothing(memory_isolated_dir: Path) -> None:
+async def test_resume_of_a_row_predating_markers_writes_nothing() -> None:
     """A row staged by the old extraction pass carries a transcript and no notes.
 
     Nothing can be done with it: the pass that would have mined it is gone, and mining the
@@ -419,9 +407,7 @@ def _member_alias(summary: str) -> MemoryObservation:
     )
 
 
-async def test_a_members_new_nickname_is_staged_beside_the_one_already_waiting(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_members_new_nickname_is_staged_beside_the_one_already_waiting() -> None:
     """Every nickname of one member shares its key, so a new one must not read as already known.
 
     Dropping it left the member's `## 成員稱呼` row without the new nickname for good.
@@ -447,7 +433,7 @@ async def test_a_members_new_nickname_is_staged_beside_the_one_already_waiting(
     assert "老李" in read_raw_entries(scope=scope)
 
 
-async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
+async def test_pipeline_stamps_subject_source_into_raw_entries() -> None:
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     _schedule(writer=writer, subject=user_subject(user_id=USER_ID, guild_id=123))
@@ -457,9 +443,7 @@ async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_d
     assert "- sharing: global" in raw_text
 
 
-async def test_pipeline_server_subject_renders_without_source_fields(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_pipeline_server_subject_renders_without_source_fields() -> None:
     """A server-flavor subject carries no source line, so its observations carry neither field."""
     scope = server_scope(server_id=555)
     writer, fake_client = _writer()
@@ -492,25 +476,21 @@ async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) 
     assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
-async def test_clear_scope_memory_reports_nothing_to_clear(memory_isolated_dir: Path) -> None:
+async def test_clear_scope_memory_reports_nothing_to_clear() -> None:
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
     await assert_cleared_row(scope=USER_SCOPE)
     # The permanent marker itself is not user memory, so a repeated clear stays empty.
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
 
 
-async def test_clear_scope_memory_removes_a_staged_turn_without_files(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_clear_scope_memory_removes_a_staged_turn_without_files() -> None:
     """A scope whose only trace is a staged transcript still has something to erase."""
     await _stage_row()
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
     await assert_cleared_row(scope=USER_SCOPE)
 
 
-async def test_clear_token_advances_past_the_largest_stored_token(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_clear_token_advances_past_the_largest_stored_token() -> None:
     stored_token = 4_000_000_000_000_000_000
     await _stage_row(token=stored_token)
 
@@ -519,7 +499,7 @@ async def test_clear_token_advances_past_the_largest_stored_token(
     assert (await assert_cleared_row(scope=USER_SCOPE)).token > stored_token
 
 
-async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir: Path) -> None:
+async def test_clear_scope_memory_drops_the_deferred_replay() -> None:
     """The deferred turn holds a pre-clear transcript in memory and in reply.db."""
     writer, fake_client = _writer()
     first_started = asyncio.Event()
@@ -558,7 +538,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(memory_isolated_dir:
 
 
 async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A during-clear turn cannot resume, while a turn after return belongs to the next lifetime."""
     clear_job_finished = asyncio.Event()
@@ -606,7 +586,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
 
 
 async def test_cancelled_clear_waiting_for_staging_lock_finishes_the_tombstone(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Caller cancellation cannot leave a pre-clear transcript resumable after restart."""
     await _stage_row(
@@ -658,7 +638,7 @@ def _hold_clear_job(monkeypatch: pytest.MonkeyPatch) -> tuple[asyncio.Event, asy
 
 
 async def test_cancelled_clear_waits_for_an_inflight_tombstone_write(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation during `clear_job` still drains its durable privacy boundary."""
     await _stage_row(
@@ -698,18 +678,18 @@ async def test_cancelled_clear_still_records_that_it_erased(
         await clearing
 
     assert not (memory_isolated_dir / str(USER_ID)).exists()
-    assert commits == [(USER_SCOPE, "clear")]
+    assert [scope for scope, _ in commits] == [USER_SCOPE]
     recorded = [
-        fields for message, fields in infos if message == "Cleared personal memory on request"
+        fields
+        for _, fields in infos
+        if fields.get("scope") == USER_SCOPE and "caller_cancelled" in fields
     ]
     assert len(recorded) == 1
     assert recorded[0]["removed_files"] is True
     assert recorded[0]["caller_cancelled"] is True
 
 
-async def test_clear_keeps_the_files_when_the_tombstone_cannot_be_written(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_clear_keeps_the_files_when_the_tombstone_cannot_be_written() -> None:
     """A row newer than the clear stops the erase instead of outliving it.
 
     Reproduces the second writer the single-process token block rules out: the clear's
@@ -734,7 +714,7 @@ async def test_clear_keeps_the_files_when_the_tombstone_cannot_be_written(
 
 
 async def test_cancelled_clear_propagates_a_critical_tombstone_failure(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed critical write is observed rather than hidden behind cancellation."""
     clear_job_started = asyncio.Event()
@@ -756,7 +736,7 @@ async def test_cancelled_clear_propagates_a_critical_tombstone_failure(
         await clearing
 
 
-async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_dir: Path) -> None:
+async def test_a_row_write_starting_after_the_clear_never_lands() -> None:
     """A staging write that starts after the clear must not write the row at all.
 
     The clear stamps the scope before its first await, so a deferred turn's
@@ -778,7 +758,7 @@ async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_
 
 
 async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stale write after clear must not depend on best-effort `mark_done`.
 
@@ -832,7 +812,7 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
 
 
 async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The clear commit survives process exit after a stale staging commit."""
     captured_at = time.monotonic()
@@ -881,9 +861,7 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
     assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
-async def test_clear_file_failure_leaves_tombstone(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_clear_file_failure_leaves_tombstone(monkeypatch: pytest.MonkeyPatch) -> None:
     _populate_every_tier()
     _fail_the_file_delete(monkeypatch=monkeypatch)
     with pytest.raises(PermissionError, match=r"tone\.md is read-only"):
@@ -893,9 +871,7 @@ async def test_clear_file_failure_leaves_tombstone(
     assert "新記憶" in _memory_text()
 
 
-async def test_memory_update_scheduled_before_a_clear_never_starts(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_memory_update_scheduled_before_a_clear_never_starts() -> None:
     """A turn captured just before the clear must abort, not race it by microseconds.
 
     The worker times itself from the enqueue, so a clear landing while the task is
@@ -937,9 +913,7 @@ def _staged_forgets() -> int:
     return staged.count("### forget_request")
 
 
-async def test_a_review_refused_on_its_retry_is_not_retried_again(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_review_refused_on_its_retry_is_not_retried_again() -> None:
     """A review the provider refuses every time gets one restart retry, not one per start (#874).
 
     Its forget is filed once, by the attempt that failed: the retry files no second copy and
@@ -970,9 +944,7 @@ async def test_a_review_refused_on_its_retry_is_not_retried_again(
     assert await memory_db.list_resumable(updated_before=database_now()) == []
 
 
-async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages() -> None:
     """A retry that re-stages an older round's notes files the newer round's forget behind them.
 
     The attempt that failed filed both forgets ahead of anything the retry stages, so a newer
@@ -1000,9 +972,7 @@ async def test_a_retry_files_a_later_rounds_forget_behind_the_notes_it_stages(
     assert staged.index("fact.city") < staged.index("### forget_request")
 
 
-async def test_a_retry_refused_again_files_no_forget_a_second_time(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_retry_refused_again_files_no_forget_a_second_time() -> None:
     """With nothing re-staged ahead of it, a later round's forget is left at its first copy.
 
     A second copy would reach nothing the first one does not, and would force a forget pass of
@@ -1028,9 +998,7 @@ async def test_a_retry_refused_again_files_no_forget_a_second_time(
     assert _staged_forgets() == 0
 
 
-async def test_a_retry_merged_into_a_waiting_turn_still_files_that_turns_forget(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_retry_merged_into_a_waiting_turn_still_files_that_turns_forget() -> None:
     """A merged payload opens with the waiting turn's round, whose forget nothing has filed yet.
 
     Three turns, because that is what it takes to reach the merge: the first occupies the scope

@@ -363,7 +363,7 @@ def _forget_four_answer(observe: ConsolidatedMemory) -> MemoryAnswer:
 
 _GUILD_222 = guild_compartment(guild_id=222)
 # The `_compartment_note` a guild call carries, used to tell the fan-out's calls apart.
-_GUILD_222_NOTE = "Discord server 222"
+_GUILD_222_NOTE = consolidation._compartment_note(compartment=_GUILD_222, flavor="user")
 
 
 def _stage_raw_observation(  # noqa: PLR0913 -- one observation's routing fields plus its category

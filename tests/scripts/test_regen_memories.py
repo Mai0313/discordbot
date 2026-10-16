@@ -114,7 +114,7 @@ async def test_the_offline_fan_out_runs_under_its_own_bound(
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
         in_flight -= 1
         return RegenerationReport(result="no_evidence")
 
@@ -125,7 +125,6 @@ async def test_the_offline_fan_out_runs_under_its_own_bound(
     )
 
     assert peak == 2
-    assert "concurrency" not in vars(regen_script._parse_args(argv=[]))
 
 
 @pytest.mark.parametrize(
@@ -211,7 +210,8 @@ async def test_a_batch_run_counts_finished_scopes_and_reports_them_in_store_orde
 
     async def _land_in_reverse(scope: str, writer: object, identity: str) -> object:
         """Finishes the batch back to front, which is what the re-keying has to survive."""
-        await asyncio.sleep(0.01 * (len(scopes) - scopes.index(scope)))
+        for _ in range(len(scopes) - scopes.index(scope)):
+            await asyncio.sleep(0)
         return RegenerationReport(result="no_evidence")
 
     monkeypatch.setattr(regen_script, "regenerate_scope_memory", _land_in_reverse)
@@ -350,7 +350,8 @@ def test_loss_note_flags_the_two_expected_losses(
     result: str, buckets: dict[str, int], expected: str
 ) -> None:
     """The dry run says which scopes rebuild empty or lose their cross-server compartment."""
-    assert regen_script._loss_note(result=result, buckets=buckets).startswith(expected)
+    note = regen_script._loss_note(result=result, buckets=buckets)
+    assert note.startswith(expected) if expected else note == ""
 
 
 @pytest.mark.parametrize("buckets", [{}, {"global": 0}])

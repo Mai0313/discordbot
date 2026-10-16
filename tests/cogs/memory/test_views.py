@@ -1,7 +1,6 @@
 """Tests for the `/memory` views: pagination and the clear confirmation."""
 
 from typing import Any, cast
-from pathlib import Path
 from collections.abc import Callable
 
 import pytest
@@ -14,6 +13,9 @@ from discordbot.cogs.memory.views import (
     MemoryClearConfirmView,
     paginate_on_lines,
     memory_footer_text,
+    build_clear_failed_embed,
+    build_clear_result_embed,
+    build_clear_cancelled_embed,
 )
 from discordbot.services.memory.store import (
     read_tone,
@@ -78,8 +80,8 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     embed = interaction.response.edited[-1]["embed"]
     assert isinstance(embed, Embed)
     assert embed.description == "第二頁"
-    assert "第 2/3 頁" in (embed.footer.text or "")
-    assert "1 筆" in (embed.footer.text or "")
+    assert "2/3" in (embed.footer.text or "")
+    assert memory_footer_text(pending_count=1) in (embed.footer.text or "")
     assert prev_button.disabled is False
 
     await next_button.callback(as_interaction(fake=interaction))
@@ -155,7 +157,7 @@ def _confirm_button(view: MemoryClearConfirmView) -> "Button[Any]":
     return cast("Button[Any]", view.confirm_clear)
 
 
-async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Path) -> None:
+async def test_memory_clear_confirm_button_erases_memory() -> None:
     _populate_every_tier()
     await _stage_row()
     view = MemoryClearConfirmView(scope=USER_SCOPE)
@@ -171,13 +173,11 @@ async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Pa
     assert payload["view"] is None
     embed = payload["embed"]
     assert isinstance(embed, Embed)
-    assert "都清掉了" in (embed.description or "")
+    assert embed.description == build_clear_result_embed(removed=True).description
     assert view.is_finished() is True
 
 
-async def test_memory_clear_confirm_button_reports_an_empty_scope(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_memory_clear_confirm_button_reports_an_empty_scope() -> None:
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
 
@@ -185,10 +185,10 @@ async def test_memory_clear_confirm_button_reports_an_empty_scope(
 
     embed = interaction.edits[-1]["embed"]
     assert isinstance(embed, Embed)
-    assert "沒有東西需要清除" in (embed.description or "")
+    assert embed.description == build_clear_result_embed(removed=False).description
 
 
-async def test_memory_clear_cancel_button_keeps_memory(memory_isolated_dir: Path) -> None:
+async def test_memory_clear_cancel_button_keeps_memory() -> None:
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊記憶"))
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
@@ -201,13 +201,11 @@ async def test_memory_clear_cancel_button_keeps_memory(memory_isolated_dir: Path
     edited = interaction.response.edited[-1]
     embed = edited["embed"]
     assert isinstance(embed, Embed)
-    assert "已取消" in (embed.description or "")
+    assert embed.description == build_clear_cancelled_embed().description
     assert edited["view"] is None
 
 
-async def test_memory_clear_second_click_does_not_overwrite_the_outcome(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_memory_clear_second_click_does_not_overwrite_the_outcome() -> None:
     """A double click must not re-run the clear and report "nothing to clear"."""
     _populate_every_tier()
     view = MemoryClearConfirmView(scope=USER_SCOPE)
@@ -222,11 +220,11 @@ async def test_memory_clear_second_click_does_not_overwrite_the_outcome(
     assert second.edits == []
     embed = first.edits[-1]["embed"]
     assert isinstance(embed, Embed)
-    assert "都清掉了" in (embed.description or "")
+    assert embed.description == build_clear_result_embed(removed=True).description
 
 
 async def test_memory_clear_failure_keeps_memory_and_says_so(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A reply.db failure must not half-clear: the tombstone write runs before any unlink."""
     _populate_every_tier()
@@ -246,14 +244,14 @@ async def test_memory_clear_failure_keeps_memory_and_says_so(
     assert count_raw_entries(scope=USER_SCOPE) == 1
     embed = interaction.edits[-1]["embed"]
     assert isinstance(embed, Embed)
-    assert "沒有完成" in (embed.description or "")
+    assert embed.description == build_clear_failed_embed().description
     # The stamp is deliberately NOT rolled back, which is why the message must
     # not claim nothing happened: turns in flight for this scope still abort.
     assert cleared_since(scope=USER_SCOPE, started_at=0.0) is True
 
 
 async def test_memory_clear_reports_a_file_failure_without_claiming_success(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The file half walks the tiers one at a time, so it can stop part way.
 
@@ -271,6 +269,6 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
 
     embed = interaction.edits[-1]["embed"]
     assert isinstance(embed, Embed)
-    assert "沒有完成" in (embed.description or "")
+    assert embed.description == build_clear_failed_embed().description
     # The durable marker goes before the files, so recovery can finish later.
     await assert_cleared_row(scope=USER_SCOPE)

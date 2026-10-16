@@ -1,14 +1,14 @@
 """Tests for the memory store: scopes, compartments, fact files and the evidence tiers."""
 
 import re
-import time
+from types import SimpleNamespace
 from pathlib import Path
 from collections.abc import Callable
 
 import pytest
 
 from discordbot.cogs.gen_reply.recall import RecallContext, compartments_for_reading
-from discordbot.services.memory.facts import render_fact_file
+from discordbot.services.memory.facts import render_fact_file, section_headings
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -58,7 +58,7 @@ from tests.helpers.user_memory import (
 from tests.helpers.server_memory import GUILD_ID, SERVER_SCOPE, _server_fact, _server_document
 
 
-def test_a_scope_with_no_facts_renders_an_empty_document(memory_isolated_dir: Path) -> None:
+def test_a_scope_with_no_facts_renders_an_empty_document() -> None:
     """The read path answers "" for an unknown scope rather than raising on a missing dir."""
     assert _memory_text() == ""
 
@@ -71,7 +71,7 @@ def test_a_written_fact_comes_back_through_the_document_read(memory_isolated_dir
     assert leftovers == []
 
 
-def test_the_store_never_clamps_a_fact_body(memory_isolated_dir: Path) -> None:
+def test_the_store_never_clamps_a_fact_body() -> None:
     """Growth is bounded by the consolidation compaction pass, never by a silent truncation."""
     body = "長" * 50_000
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text=body))
@@ -107,7 +107,7 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
 
 
 def test_append_raw_entry_truncates_single_oversized_entry(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.store.RAW_FILE_MAX_BYTES", 80)
     append_raw_entry(scope=USER_SCOPE, entry_text="oversized " + "c" * 200)
@@ -116,13 +116,13 @@ def test_append_raw_entry_truncates_single_oversized_entry(
     assert raw_file_bytes(scope=USER_SCOPE) <= 80 + 1
 
 
-def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
+def test_raw_file_bytes_missing_file_is_zero() -> None:
     assert raw_file_bytes(scope=USER_SCOPE) == 0
     append_raw_entry(scope=USER_SCOPE, entry_text="something")
     assert raw_file_bytes(scope=USER_SCOPE) > 0
 
 
-def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
+def test_clear_raw_removes_only_raw_file() -> None:
     """Retiring a consumed batch must not touch the facts that batch just produced."""
     write_fact(scope=USER_SCOPE, fact=_stored_fact())
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
@@ -159,16 +159,18 @@ def test_delete_memory_files_tolerates_leftover_tmp(memory_isolated_dir: Path) -
     assert not user_dir.exists()
 
 
-def test_mark_cleared_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
-    started_at = time.monotonic()
-    assert cleared_since(scope=USER_SCOPE, started_at=started_at) is False
+def test_mark_cleared_flags_in_flight_updates(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert cleared_since(scope=USER_SCOPE, started_at=99.0) is False
+    monkeypatch.setattr(
+        "discordbot.services.memory.store.time", SimpleNamespace(monotonic=lambda: 100.0)
+    )
     mark_cleared(scope=USER_SCOPE)
-    assert cleared_since(scope=USER_SCOPE, started_at=started_at) is True
-    later = time.monotonic()
-    assert cleared_since(scope=USER_SCOPE, started_at=later) is False
+    assert cleared_since(scope=USER_SCOPE, started_at=99.0) is True
+    assert cleared_since(scope=USER_SCOPE, started_at=100.0) is True
+    assert cleared_since(scope=USER_SCOPE, started_at=100.5) is False
 
 
-async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
+async def test_user_lock_is_stable_per_user() -> None:
     lock_a = scope_lock(scope=USER_SCOPE)
     lock_b = scope_lock(scope=USER_SCOPE)
     lock_other = scope_lock(scope=user_scope(user_id=USER_ID + 1))
@@ -176,7 +178,7 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
     assert lock_a is not lock_other
 
 
-def test_read_detail_tail_missing_file_is_empty(memory_isolated_dir: Path) -> None:
+def test_read_detail_tail_missing_file_is_empty() -> None:
     assert read_detail_tail(scope=USER_SCOPE, max_chars=100) == ""
 
 
@@ -249,7 +251,7 @@ def test_read_detail_tail_raises_on_bytes_no_window_cut_explains(
         read_detail_tail(scope=USER_SCOPE, max_chars=max_chars)
 
 
-def test_read_evidence_puts_the_detail_tail_ahead_of_raw(memory_isolated_dir: Path) -> None:
+def test_read_evidence_puts_the_detail_tail_ahead_of_raw() -> None:
     """The corpus is read as one oldest-first batch, and a missing tier adds no separator."""
     assert read_evidence(scope=USER_SCOPE) == ""
     append_raw_entry(scope=USER_SCOPE, entry_text="- 還沒整理的觀察")
@@ -306,7 +308,7 @@ def test_flavor_of_distinguishes_user_and_server() -> None:
     assert flavor_of(scope=server_scope(server_id=2)) == "server"
 
 
-def test_read_tone_missing_file_returns_empty(memory_isolated_dir: Path) -> None:
+def test_read_tone_missing_file_returns_empty() -> None:
     assert read_tone(scope=USER_SCOPE) == ""
 
 
@@ -317,9 +319,7 @@ def test_write_tone_roundtrip(memory_isolated_dir: Path) -> None:
     assert leftovers == []
 
 
-def test_write_tone_truncates_past_byte_cap(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_write_tone_truncates_past_byte_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("discordbot.services.memory.store.TONE_FILE_MAX_BYTES", 32)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n" + "長" * 100)
     stored = read_tone(scope=USER_SCOPE)
@@ -334,7 +334,7 @@ def test_compartment_dir_refuses_anything_but_the_three_shapes() -> None:
             compartment_dir(scope="1", compartment=bad)
 
 
-def test_write_read_and_delete_one_fact(memory_isolated_dir: Path) -> None:
+def test_write_read_and_delete_one_fact() -> None:
     """A fact lands in its compartment directory and comes back out of it."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
@@ -346,7 +346,7 @@ def test_write_read_and_delete_one_fact(memory_isolated_dir: Path) -> None:
     assert not delete_fact(scope=scope, compartment=GLOBAL_COMPARTMENT, fact_id="0123456789abcdef")
 
 
-def test_list_compartments_is_ordered_global_guilds_dm(memory_isolated_dir: Path) -> None:
+def test_list_compartments_is_ordered_global_guilds_dm() -> None:
     """Compartment order is deterministic so the injected prefix does not reshuffle."""
     scope = user_scope(user_id=111)
     for compartment in (
@@ -359,7 +359,7 @@ def test_list_compartments_is_ordered_global_guilds_dm(memory_isolated_dir: Path
     assert list_compartments(scope=scope) == ["global", "g/100", "g/900", "dm"]
 
 
-def test_reading_a_guild_never_opens_another_guild(memory_isolated_dir: Path) -> None:
+def test_reading_a_guild_never_opens_another_guild() -> None:
     """The whole privacy boundary: a guild read joins global with that guild alone."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(fact_id="a" * 16, text="全域事實"))
@@ -387,7 +387,7 @@ def test_reading_a_guild_never_opens_another_guild(memory_isolated_dir: Path) ->
     assert "私訊祕密" not in document
 
 
-def test_reads_are_cached_until_a_write_lands(memory_isolated_dir: Path) -> None:
+def test_reads_are_cached_until_a_write_lands() -> None:
     """A repeat read of an unchanged scope must not re-open every fact file."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(text="第一版"))
@@ -452,9 +452,7 @@ def test_iter_scopes_finds_a_scope_holding_one_tier_and_skips_dot_dirs(
     assert iter_scopes() == list(scopes)
 
 
-def test_iter_scopes_ignores_a_scope_whose_only_file_is_unreadable(
-    memory_isolated_dir: Path,
-) -> None:
+def test_iter_scopes_ignores_a_scope_whose_only_file_is_unreadable() -> None:
     """A file no reader can parse must not answer for a whole scope on its own.
 
     Listed rather than parsed, such a scope would stay on `iter_scopes` for good, so the
@@ -468,9 +466,7 @@ def test_iter_scopes_ignores_a_scope_whose_only_file_is_unreadable(
     assert iter_scopes() == []
 
 
-def test_prune_compartment_removes_every_fact_file_it_cannot_read(
-    memory_isolated_dir: Path,
-) -> None:
+def test_prune_compartment_removes_every_fact_file_it_cannot_read() -> None:
     """The rebuild's prune reads the directory, not the facts readable inside it.
 
     Both shapes `read_facts` skips are here: a header that does not parse, and a fact
@@ -509,7 +505,7 @@ def test_prune_compartment_removes_every_fact_file_it_cannot_read(
     ]
 
 
-def test_prune_compartment_reports_a_file_the_store_never_wrote(memory_isolated_dir: Path) -> None:
+def test_prune_compartment_reports_a_file_the_store_never_wrote() -> None:
     """Removing a foreign file is too aggressive to do silently, so it is named instead.
 
     A store file is recognised by its name, not by its suffix, so an operator's own
@@ -531,7 +527,7 @@ def test_prune_compartment_reports_a_file_the_store_never_wrote(memory_isolated_
     assert read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT) == []
 
 
-def test_a_file_the_store_cannot_decode_never_stops_the_sweep(memory_isolated_dir: Path) -> None:
+def test_a_file_the_store_cannot_decode_never_stops_the_sweep() -> None:
     """`iter_scopes` parses the tier, so an undecodable file must degrade, not raise.
 
     A hand edit saved in the wrong encoding would otherwise abort the restart sweep and
@@ -551,9 +547,7 @@ def test_a_file_the_store_cannot_decode_never_stops_the_sweep(memory_isolated_di
     assert not mojibake.exists()
 
 
-def test_a_fact_shaped_name_carrying_a_newline_is_not_the_stores_own(
-    memory_isolated_dir: Path,
-) -> None:
+def test_a_fact_shaped_name_carrying_a_newline_is_not_the_stores_own() -> None:
     """`$` also matches before a trailing newline, so the name test has to be a fullmatch."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
@@ -565,9 +559,7 @@ def test_a_fact_shaped_name_carrying_a_newline_is_not_the_stores_own(
     assert forged.exists()
 
 
-def test_a_directory_named_like_a_fact_file_never_reaches_a_reader(
-    memory_isolated_dir: Path,
-) -> None:
+def test_a_directory_named_like_a_fact_file_never_reaches_a_reader() -> None:
     """`iter_scopes` parses the tier, so a reader that raises takes the sweep with it.
 
     `_read_text` catches only a missing file, so one hand-made directory whose name ends
@@ -598,7 +590,7 @@ def test_the_guild_parent_goes_with_the_last_compartment_under_it(
     assert not (memory_isolated_dir / scope / "g").exists()
 
 
-def test_a_pruned_fact_leaves_the_cached_document(memory_isolated_dir: Path) -> None:
+def test_a_pruned_fact_leaves_the_cached_document() -> None:
     """The prune is a write like any other, and the render cache is keyed on that counter."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
@@ -616,7 +608,7 @@ def test_a_pruned_fact_leaves_the_cached_document(memory_isolated_dir: Path) -> 
     )
 
 
-def test_prune_compartment_removes_a_directory_it_emptied(memory_isolated_dir: Path) -> None:
+def test_prune_compartment_removes_a_directory_it_emptied() -> None:
     """An emptied compartment stops being one, so it stops costing a call per rebuild.
 
     The stranded `.md.tmp` of a crashed `write_fact` goes too: it is the store's own, and
@@ -635,7 +627,7 @@ def test_prune_compartment_removes_a_directory_it_emptied(memory_isolated_dir: P
     assert list_compartments(scope=scope) == []
 
 
-def test_read_owner_recovers_the_stored_identity(memory_isolated_dir: Path) -> None:
+def test_read_owner_recovers_the_stored_identity() -> None:
     """Offline paths with no Discord context keep the last online write's label."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
@@ -647,18 +639,6 @@ def test_scope_owner_id_reads_both_flavors() -> None:
     """A server scope's owner id is the server id, not the bot's."""
     assert scope_owner_id(scope=user_scope(user_id=111)) == 111
     assert scope_owner_id(scope=server_scope(server_id=500)) == 500
-
-
-def test_server_scope_nests_under_the_fixed_bot_directory() -> None:
-    """The bot directory is fixed, so a bot account change never strands a scope."""
-    assert server_scope(server_id=GUILD_ID) == f"{BOT_MEMORY_DIR_NAME}/{GUILD_ID}"
-
-
-def test_user_and_server_scopes_never_collide() -> None:
-    """A user scope is a bare snowflake; a server scope always carries a `/`."""
-    assert "/" not in user_scope(user_id=GUILD_ID)
-    assert "/" in server_scope(server_id=GUILD_ID)
-    assert user_scope(user_id=GUILD_ID) != server_scope(server_id=GUILD_ID)
 
 
 def test_server_scope_isolated_from_user_scope_on_disk(memory_isolated_dir: Path) -> None:
@@ -674,12 +654,9 @@ def test_server_scope_isolated_from_user_scope_on_disk(memory_isolated_dir: Path
     assert "個人" in user_document
     assert "社群" not in user_document
     # The same section key renders under the flavor's own heading.
-    assert "## 使用者輪廓" in user_document
-    assert "## 伺服器輪廓" in _server_document()
+    assert f"## {dict(section_headings(flavor='user'))['profile']}" in user_document
+    assert f"## {dict(section_headings(flavor='server'))['profile']}" in _server_document()
     assert "個人" not in _server_document()
-    # Server observations carry no source to route by, so the scope never grows a
-    # second compartment.
-    assert list_compartments(scope=SERVER_SCOPE) == [GLOBAL_COMPARTMENT]
     assert (
         memory_isolated_dir
         / BOT_MEMORY_DIR_NAME

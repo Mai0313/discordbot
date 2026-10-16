@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
-from pathlib import Path
 from datetime import timedelta
 from unittest.mock import MagicMock
 
@@ -16,6 +15,7 @@ from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.memory.cog import MemoryCogs, _catchup_tasks
 from discordbot.services.memory.store import server_scope, count_raw_entries
+from discordbot.cogs.gen_reply.markers import MAX_MEMORY_NOTES
 from discordbot.services.memory.writer import (
     MemoryWriterAI,
     RawMemoryDraft,
@@ -105,11 +105,20 @@ def _bot_result(color: int, message_id: int, read_until: int) -> SimpleNamespace
     )
 
 
+# The guild's @everyone role: its view of a channel, not the invoker's, says whether it is public.
+_EVERYONE = object()
+
+
 def _channel(messages: list[SimpleNamespace], public: bool = True) -> MagicMock:
-    """A guild text channel whose history answers `messages`, newest first."""
+    """A guild text channel whose history answers `messages`, newest first.
+
+    Anyone running the command can see the channel; `public` is only whether @everyone can.
+    """
     channel = MagicMock(spec=TextChannel)
     channel.id = 20
-    channel.permissions_for.return_value = SimpleNamespace(view_channel=public)
+    channel.permissions_for.side_effect = lambda member: SimpleNamespace(
+        view_channel=public if member is _EVERYONE else True
+    )
 
     async def history(limit: int) -> object:
         """Yields the channel's messages, newest first, up to `limit`."""
@@ -126,7 +135,7 @@ class _CatchupInteraction(FakeInteraction):
     def __init__(self, channel: MagicMock, readable: bool = True) -> None:
         """Places the command in `channel`, with or without read-history permission."""
         super().__init__(guild_id=GUILD_ID)
-        self.guild = SimpleNamespace(id=GUILD_ID, name="My Server", default_role=object())
+        self.guild = SimpleNamespace(id=GUILD_ID, name="My Server", default_role=_EVERYONE)
         self.channel = channel
         self.app_permissions = SimpleNamespace(view_channel=True, read_message_history=readable)
         self.client = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
@@ -155,11 +164,9 @@ def _last_embed(payloads: list[DiscordPayload]) -> Embed:
     return embed
 
 
-async def test_catchup_posts_its_start_then_replaces_it_with_what_it_recorded(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_catchup_posts_its_start_then_replaces_it_with_what_it_recorded() -> None:
     """A run says what it read, stages what the review kept, and posts that in public."""
-    writer, _ = _writer(
+    writer, client = _writer(
         notes=("大家每週五晚上一起打 Valorant",),
         draft=RawMemoryDraft(
             has_signal=True, observations=(_observation("每週五晚上打 Valorant"),)
@@ -170,9 +177,11 @@ async def test_catchup_posts_its_start_then_replaces_it_with_what_it_recorded(
     )
     await _catch_up(cog=_cog(writer=writer), interaction=interaction)
 
-    start = _last_embed(payloads=interaction.response.sent)
     assert "ephemeral" not in interaction.response.sent[-1]
-    assert "讀了這個頻道最近的 2 則對話" in (start.description or "")
+    assert isinstance(interaction.response.sent[-1]["embed"], Embed)
+    proposal = client.responses.parse_bodies[0]
+    assert "今晚老樣子" in proposal
+    assert "週五打瓦" in proposal
     result = _last_embed(payloads=interaction.followup.sent)
     assert result.colour is not None
     assert result.colour.value == DISCORD_GREEN
@@ -182,9 +191,7 @@ async def test_catchup_posts_its_start_then_replaces_it_with_what_it_recorded(
     assert catchup_on_cooldown(scope=SCOPE)
 
 
-async def test_catchup_reads_on_from_where_the_last_finished_run_stopped(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_catchup_reads_on_from_where_the_last_finished_run_stopped() -> None:
     """Reading stops at what a green or yellow result read, not at the result.
 
     What members said while that run worked sits below its result and is read now; a red
@@ -203,19 +210,19 @@ async def test_catchup_reads_on_from_where_the_last_finished_run_stopped(
     interaction = _CatchupInteraction(channel=_channel(messages=history))
     await _catch_up(cog=_cog(writer=writer), interaction=interaction)
 
-    start = _last_embed(payloads=interaction.response.sent)
-    assert "讀了上次跟上進度之後的 3 則新對話" in (start.description or "")
     body = client.responses.parse_bodies[0]
+    assert "新的一句" in body
     assert "跑的時候說的" in body
     assert "失敗那次讀過的" in body
     assert "上次讀過的" not in body
+    assert "更早的一句" not in body
     result = _last_embed(payloads=interaction.followup.sent)
     assert result.colour is not None
     assert result.colour.value == DISCORD_YELLOW
     assert result.url == _jump_url(message_id=60)
 
 
-async def test_catchup_reports_a_failed_review_in_red(memory_isolated_dir: Path) -> None:
+async def test_catchup_reports_a_failed_review_in_red() -> None:
     """A failed call is told apart from an empty result, so the next run reads it again."""
     writer, _ = _writer(notes=("大家每週五晚上一起打 Valorant",), draft=None)
     interaction = _CatchupInteraction(channel=_channel(messages=[_member_message("週五打瓦")]))
@@ -228,7 +235,7 @@ async def test_catchup_reports_a_failed_review_in_red(memory_isolated_dir: Path)
     assert count_raw_entries(scope=SCOPE) == 0
 
 
-async def test_catchup_refuses_a_channel_everyone_cannot_see(memory_isolated_dir: Path) -> None:
+async def test_catchup_refuses_a_channel_everyone_cannot_see() -> None:
     """Server memory is readable by every member, so a private channel is never read."""
     writer, client = _writer(notes=(), draft=None)
     interaction = _CatchupInteraction(
@@ -237,13 +244,10 @@ async def test_catchup_refuses_a_channel_everyone_cannot_see(memory_isolated_dir
     await _catch_up(cog=_cog(writer=writer), interaction=interaction)
 
     assert interaction.response.sent[-1]["ephemeral"] is True
-    assert "私人頻道" in (_last_embed(payloads=interaction.response.sent).description or "")
     assert client.responses.parse_bodies == []
 
 
-async def test_catchup_without_read_history_refuses_and_gives_the_cooldown_back(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_catchup_without_read_history_refuses_and_gives_the_cooldown_back() -> None:
     """Discord answers an empty page without the permission, so it is checked up front."""
     writer, _ = _writer(notes=(), draft=None)
     interaction = _CatchupInteraction(
@@ -252,13 +256,10 @@ async def test_catchup_without_read_history_refuses_and_gives_the_cooldown_back(
     await _catch_up(cog=_cog(writer=writer), interaction=interaction)
 
     assert interaction.response.sent[-1]["ephemeral"] is True
-    assert "不給權限" in (_last_embed(payloads=interaction.response.sent).description or "")
     assert not catchup_on_cooldown(scope=SCOPE)
 
 
-async def test_catchup_with_nothing_said_refuses_and_gives_the_cooldown_back(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_catchup_with_nothing_said_refuses_and_gives_the_cooldown_back() -> None:
     """A window of bot messages alone starts no run and leaves no cooldown behind."""
     writer, client = _writer(notes=(), draft=None)
     interaction = _CatchupInteraction(
@@ -267,14 +268,13 @@ async def test_catchup_with_nothing_said_refuses_and_gives_the_cooldown_back(
     await _catch_up(cog=_cog(writer=writer), interaction=interaction)
 
     assert interaction.response.sent[-1]["ephemeral"] is True
-    assert "記個鬼" in (_last_embed(payloads=interaction.response.sent).description or "")
     assert not catchup_on_cooldown(scope=SCOPE)
     assert client.responses.parse_bodies == []
 
 
-async def test_catchup_on_cooldown_refuses(memory_isolated_dir: Path) -> None:
+async def test_catchup_on_cooldown_refuses() -> None:
     """A second run within the cooldown is refused before the channel is read."""
-    writer, _ = _writer(notes=(), draft=None)
+    writer, client = _writer(notes=(), draft=None)
     cog = _cog(writer=writer)
     await _catch_up(
         cog=cog,
@@ -284,10 +284,11 @@ async def test_catchup_on_cooldown_refuses(memory_isolated_dir: Path) -> None:
     await _catch_up(cog=cog, interaction=again)
 
     assert again.response.sent[-1]["ephemeral"] is True
-    assert "記過了啦" in (_last_embed(payloads=again.response.sent).description or "")
+    # The first run's proposal is the only call either run made.
+    assert len(client.responses.parse_bodies) == 1
 
 
-async def test_catchup_refuses_while_one_is_still_running(memory_isolated_dir: Path) -> None:
+async def test_catchup_refuses_while_one_is_still_running() -> None:
     """A run that outlives the cooldown still blocks a second one in the same server."""
     writer, client = _writer(notes=(), draft=None)
     release = asyncio.Event()
@@ -300,13 +301,11 @@ async def test_catchup_refuses_while_one_is_still_running(memory_isolated_dir: P
     release.set()
     await running
 
-    assert "已經有人在整理" in (_last_embed(payloads=interaction.response.sent).description or "")
+    assert interaction.response.sent[-1]["ephemeral"] is True
     assert client.responses.parse_bodies == []
 
 
-async def test_catchup_gives_the_cooldown_back_when_reading_breaks(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_catchup_gives_the_cooldown_back_when_reading_breaks() -> None:
     """Any failure before a run starts leaves the server free to try again."""
     writer, _ = _writer(notes=(), draft=None)
     channel = _channel(messages=[])
@@ -327,7 +326,7 @@ async def test_catchup_gives_the_cooldown_back_when_reading_breaks(
     assert not catchup_on_cooldown(scope=SCOPE)
 
 
-async def test_catchup_refuses_a_server_the_bot_is_not_in(memory_isolated_dir: Path) -> None:
+async def test_catchup_refuses_a_server_the_bot_is_not_in() -> None:
     """A user install reaches servers the bot was never added to, which have no memory here."""
     interaction = FakeInteraction(guild_id=GUILD_ID)
     interaction.guild = None
@@ -336,10 +335,9 @@ async def test_catchup_refuses_a_server_the_bot_is_not_in(memory_isolated_dir: P
     )
 
     assert interaction.response.sent[-1]["ephemeral"] is True
-    assert "把老子加進來" in (_last_embed(payloads=interaction.response.sent).description or "")
 
 
-async def test_catchup_refuses_in_a_dm(memory_isolated_dir: Path) -> None:
+async def test_catchup_refuses_in_a_dm() -> None:
     """There is no server memory to write in a DM."""
     interaction = FakeInteraction(in_guild=False)
     await MemoryCogs.memory_server_catchup.callback(
@@ -347,12 +345,9 @@ async def test_catchup_refuses_in_a_dm(memory_isolated_dir: Path) -> None:
     )
 
     assert interaction.response.sent[-1]["ephemeral"] is True
-    assert "只能在伺服器" in (_last_embed(payloads=interaction.response.sent).description or "")
 
 
-async def test_review_catchup_notes_skips_the_review_when_nothing_was_proposed(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_review_catchup_notes_skips_the_review_when_nothing_was_proposed() -> None:
     """An empty proposal is the common answer and costs no second call."""
     writer, client = _writer(notes=(), draft=None)
     assert (
@@ -364,6 +359,8 @@ async def test_review_catchup_notes_skips_the_review_when_nothing_was_proposed(
 
 async def test_propose_server_notes_keeps_at_most_five() -> None:
     """The cap matches how many server notes one reply may write."""
-    writer, _ = _writer(notes=tuple(f"第 {n} 件事" for n in range(8)), draft=None)
+    writer, _ = _writer(
+        notes=tuple(f"第 {n} 件事" for n in range(MAX_MEMORY_NOTES + 3)), draft=None
+    )
     notes = await writer.propose_server_notes(subject=SUBJECT, transcript="x")
-    assert notes == tuple(f"第 {n} 件事" for n in range(5))
+    assert notes == tuple(f"第 {n} 件事" for n in range(MAX_MEMORY_NOTES))

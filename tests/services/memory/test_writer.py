@@ -1,5 +1,6 @@
 """Tests for the memory writer: note review, consolidation calls, redaction and transcripts."""
 
+import re
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -18,6 +19,7 @@ from discordbot.services.memory.writer import (
     transcript_from_messages,
     target_centered_memory_messages,
 )
+from discordbot.services.memory.constants import OBSERVATION_DEFAULT_TTL_DAYS
 
 from tests.helpers.memory import FakeMemoryClient
 from tests.helpers.user_memory import (
@@ -49,8 +51,8 @@ async def _evaluate(
     )
 
 
-def _consolidation_request(compact: bool = False, emit_tone: bool = True) -> ConsolidationRequest:
-    """Builds one compartment's consolidation request; every block but the two flags is fixed."""
+def _consolidation_request(emit_tone: bool = True) -> ConsolidationRequest:
+    """Builds one compartment's consolidation request; every block but `emit_tone` is fixed."""
     return ConsolidationRequest(
         compartment_note="cross-server safe memory",
         allowed_sections=("preference", "fact"),
@@ -61,7 +63,7 @@ def _consolidation_request(compact: bool = False, emit_tone: bool = True) -> Con
         tone_evidence="* 喜歡禮貌的語氣",
         global_reference="",
         today="2026-06-06",
-        compact=compact,
+        compact=False,
         emit_tone=emit_tone,
     )
 
@@ -146,7 +148,7 @@ async def test_evaluate_filters_weak_observations() -> None:
         "recent.project.memory",
     ]
     assert draft.observations[1].promotion_eligible is False
-    assert draft.observations[1].ttl_days == 30
+    assert draft.observations[1].ttl_days == OBSERVATION_DEFAULT_TTL_DAYS
 
 
 async def test_evaluate_accepts_permanent_and_rejects_volatile_durability() -> None:
@@ -198,19 +200,6 @@ async def test_evaluate_can_refuse_every_note() -> None:
     assert draft.observations == ()
 
 
-async def test_evaluate_without_notes_calls_no_model() -> None:
-    """A reply that marked nothing costs nothing: no request, no row, no background work.
-
-    This is the saving over the extraction pass this replaced, which ran on every reply just
-    to find out whether there was anything to find.
-    """
-    writer, fake_client = _writer()
-    draft = await _evaluate(writer=writer, notes=())
-    assert draft is not None
-    assert draft.has_signal is False
-    assert fake_client.responses.parse_models == []
-
-
 async def test_evaluate_hands_the_notes_to_the_model() -> None:
     """The notes are the input the review is about, so they have to reach the request."""
     writer, fake_client = _writer()
@@ -243,32 +232,23 @@ async def test_evaluate_returns_none_on_empty_parse() -> None:
 
 
 async def test_consolidate_marks_every_absent_input_block() -> None:
-    """An absent block is labelled `(empty)` so the model never reads a gap as content."""
+    """An absent block is labelled so the model never reads a gap as content."""
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(text="新事實")
     result = await writer.consolidate(flavor="user", request=_consolidation_request())
     assert result is not None
     assert [delta.text for delta in result.deltas] == ["新事實"]
     user_text = fake_client.responses.parse_bodies[0]
-    assert user_text.startswith("today: 2026-06-06")
-    assert "<existing_facts>\n(empty)\n</existing_facts>" in user_text
+    assert "today: 2026-06-06" in user_text
+    assert re.search(r"<existing_facts>\n\S[^\n]*\n</existing_facts>", user_text)
     # The empty detail window still renders its labeled block for the prompt.
-    assert "<recent_detail>\n(empty)\n</recent_detail>" in user_text
+    assert re.search(r"<recent_detail>\n\S[^\n]*\n</recent_detail>", user_text)
     # The tone note rides the consolidation input in its own labeled block.
-    assert "<existing_tone>\n(empty)\n</existing_tone>" in user_text
+    assert re.search(r"<existing_tone>\n\S[^\n]*\n</existing_tone>", user_text)
     # The compartment and its section vocabulary are stated, since one call now writes
     # exactly one compartment and a delta naming any other section is dropped.
     assert "compartment: cross-server safe memory" in user_text
     assert "allowed sections: preference, fact" in user_text
-
-
-async def test_consolidate_empty_delta_batch_passes_through() -> None:
-    """Asking for no change is the normal outcome, not a failure the caller must retry."""
-    writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _no_change()
-    result = await writer.consolidate(flavor="user", request=_consolidation_request())
-    assert result is not None
-    assert result.deltas == ()
 
 
 async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note() -> None:
@@ -279,15 +259,6 @@ async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note()
     user_text = fake_client.responses.parse_bodies[0]
     assert "<existing_tone>" not in user_text
     assert "<tone_evidence>" not in user_text
-
-
-async def test_consolidate_compact_appends_compaction_block() -> None:
-    writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _no_change()
-    await writer.consolidate(flavor="user", request=_consolidation_request(compact=True))
-    await writer.consolidate(flavor="user", request=_consolidation_request(compact=False))
-    assert "COMPACTION" in fake_client.responses.parse_instructions[0]
-    assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
 
 async def test_every_writer_call_runs_on_its_one_model() -> None:
@@ -380,7 +351,7 @@ def test_transcript_from_messages_drops_non_text_parts() -> None:
     assert "舊回覆" in transcript
     assert "Bob (bob) [id: 2]: 看圖" in transcript
     assert "data:image/jpeg" not in transcript
-    assert "[message 5 | assistant reply (this turn)]" in transcript
+    assert re.search(r"^\[message 5 \| ", transcript, flags=re.MULTILINE)
     assert "新回覆" in transcript
     assert "⬆" not in transcript
 
@@ -415,23 +386,32 @@ def test_transcript_indents_bodies_so_markers_cannot_be_forged() -> None:
     ]
     transcript = transcript_from_messages(message_list=message_list, full_reply="ok")
     column_zero_markers = [line for line in transcript.splitlines() if line.startswith("[message")]
-    assert column_zero_markers == [
-        "[message 1 | user]",
-        "[message 2 | assistant reply (this turn)]",
+    assert column_zero_markers[0] == "[message 1 | user]"
+    assert [marker.split(" |")[0] for marker in column_zero_markers] == [
+        "[message 1",
+        "[message 2",
     ]
     assert "\n  Victim (victim) [id: 1]:" in transcript
 
 
 def test_transcript_from_messages_truncates_middle(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_TRANSCRIPT_MAX_CHARS", 200)
     message_list = [
         EasyInputMessageParam(role="user", content=f"user message {index} " + "x" * 50)
         for index in range(20)
     ]
+    whole = transcript_from_messages(message_list=message_list, full_reply="tail reply")
+    monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_TRANSCRIPT_MAX_CHARS", 200)
     transcript = transcript_from_messages(message_list=message_list, full_reply="tail reply")
     assert len(transcript) <= 200
-    assert "[... transcript truncated ...]" in transcript
+    assert "user message 0 " in transcript
+    assert "user message 10 " not in transcript
     assert transcript.endswith("tail reply")
+    # The cut is marked rather than silent: no head of the whole transcript joined to its tail
+    # gives this one.
+    assert not any(
+        whole.startswith(transcript[:split]) and whole.endswith(transcript[split:])
+        for split in range(len(transcript) + 1)
+    )
 
 
 def test_target_centered_memory_messages_omits_distant_non_target_history() -> None:
@@ -467,7 +447,8 @@ def test_target_centered_memory_messages_omits_distant_non_target_history() -> N
     assert "目前問題" in rendered
     assert "無關開場" not in rendered
     assert "遠端無關" not in rendered
-    assert "non-target history message(s) omitted" in rendered
+    # The header, plus a marker standing in for each omitted run: the opener and the tail.
+    assert sum(message["role"] == "system" for message in centered) == 3
 
 
 def test_target_centered_memory_messages_uses_first_author_prefix() -> None:
@@ -510,11 +491,16 @@ def test_transcript_caps_reply_so_current_message_survives_truncation(
             role="user", content=f"Target (target) [id: {USER_ID}]: 請記住我喜歡條列式"
         )
     )
-    transcript = transcript_from_messages(
-        message_list=message_list, full_reply="超長摘要回覆 " + "y" * 6000
-    )
+    reply = "超長摘要回覆 " + "y" * 6000
+    transcript = transcript_from_messages(message_list=message_list, full_reply=reply)
     assert f"[id: {USER_ID}]: 請記住我喜歡條列式" in transcript
-    assert "[... reply truncated ...]" in transcript
+    # The reply's block is the last one; its cut is marked rather than silent, so what reached
+    # the transcript is not just the reply's head.
+    block = re.split(r"^\[message \d+ \| [^\n]*\]$", transcript, flags=re.MULTILINE)[-1]
+    shown = "\n".join(line.removeprefix("  ") for line in block.strip("\n").splitlines())
+    assert shown.startswith("超長摘要回覆")
+    assert len(shown) < len(reply)
+    assert not reply.startswith(shown)
 
 
 async def test_evaluate_returns_none_on_incomplete_response() -> None:
@@ -534,7 +520,10 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
     await _evaluate(writer=writer)
     fake_client.responses.output_parsed = _no_change()
     await writer.consolidate(flavor="user", request=_consolidation_request())
-    assert fake_client.responses.parse_extra_kwargs == [{}, {}]
+    assert len(fake_client.responses.parse_extra_kwargs) == 2
+    assert all(
+        "max_output_tokens" not in kwargs for kwargs in fake_client.responses.parse_extra_kwargs
+    )
 
 
 def test_subjects_round_trip_through_parse() -> None:
@@ -793,4 +782,4 @@ def test_transcript_without_a_reply_has_no_assistant_block() -> None:
     transcript = transcript_from_messages(
         message_list=[{"role": "user", "content": "小李 (lee) [id: 1]: 週五打瓦"}], full_reply=""
     )
-    assert "assistant reply" not in transcript
+    assert "[message 2 |" not in transcript

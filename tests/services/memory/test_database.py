@@ -1,7 +1,5 @@
 """Tests for the `memory_job` rows that make a turn resumable after a restart."""
 
-from pathlib import Path
-
 import pytest
 
 from discordbot.utils.timezone import database_now
@@ -11,7 +9,7 @@ from tests.helpers.memory import get_job, assert_cleared_row
 from tests.helpers.user_memory import USER_ID, IDENTITY, USER_SCOPE, _stage_row
 
 
-async def test_db_upsert_pending_then_get(memory_isolated_dir: Path) -> None:
+async def test_db_upsert_pending_then_get() -> None:
     await _stage_row(transcript="逐字稿", subject=f"target_user_id: {USER_ID}", identity=IDENTITY)
     job = await get_job(scope=USER_SCOPE)
     assert job is not None
@@ -21,7 +19,7 @@ async def test_db_upsert_pending_then_get(memory_isolated_dir: Path) -> None:
     assert job.token == 1
 
 
-async def test_db_upsert_newest_wins_and_older_token_noop(memory_isolated_dir: Path) -> None:
+async def test_db_upsert_newest_wins_and_older_token_noop() -> None:
     await _stage_row(token=10, transcript="新")
     # An older token must not clobber the newer row.
     await _stage_row(token=5, transcript="舊")
@@ -31,9 +29,7 @@ async def test_db_upsert_newest_wins_and_older_token_noop(memory_isolated_dir: P
     assert job.transcript == "新"
 
 
-async def test_db_mark_done_clears_transcript_and_is_token_guarded(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_db_mark_done_clears_transcript_and_is_token_guarded() -> None:
     await _stage_row(token=7, transcript="逐字稿")
     # A stale token does not transition the row.
     await memory_db.mark_done(scope=USER_SCOPE, token=6)
@@ -48,7 +44,7 @@ async def test_db_mark_done_clears_transcript_and_is_token_guarded(
     assert job.transcript is None
 
 
-async def test_db_mark_failed_keeps_transcript(memory_isolated_dir: Path) -> None:
+async def test_db_mark_failed_keeps_transcript() -> None:
     await _stage_row(token=3, transcript="逐字稿")
     await memory_db.mark_failed(scope=USER_SCOPE, token=3, error="boom")
     job = await get_job(scope=USER_SCOPE)
@@ -58,7 +54,7 @@ async def test_db_mark_failed_keeps_transcript(memory_isolated_dir: Path) -> Non
     assert job.last_error == "boom"
 
 
-async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> None:
+async def test_db_list_resumable_excludes_done() -> None:
     await _stage_row(transcript="a", scope="111")
     await _stage_row(transcript="b", scope="222")
     await memory_db.mark_done(scope="222", token=1)
@@ -66,7 +62,7 @@ async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> Non
     assert scopes == {"111"}
 
 
-async def test_db_logical_tokens_follow_capture_order(memory_isolated_dir: Path) -> None:
+async def test_db_logical_tokens_follow_capture_order() -> None:
     older = memory_db.new_token()
     newer = memory_db.new_token()
     await _stage_row(token=older, transcript="older", scope="111")
@@ -80,7 +76,7 @@ async def test_db_logical_tokens_follow_capture_order(memory_isolated_dir: Path)
 
 
 async def test_db_new_process_reserves_a_newer_token_block(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _stage_row(token=memory_db.new_token(), transcript="first process", scope="111")
     first_job = await get_job(scope="111")
@@ -96,7 +92,7 @@ async def test_db_new_process_reserves_a_newer_token_block(
     assert second_job.token > first_job.token
 
 
-async def test_db_clear_job_scrubs_payload_and_is_not_resumable(memory_isolated_dir: Path) -> None:
+async def test_db_clear_job_scrubs_payload_and_is_not_resumable() -> None:
     """A durable clear marker must retain no extractable conversation content."""
     await _stage_row(
         token=7,
@@ -114,9 +110,7 @@ async def test_db_clear_job_scrubs_payload_and_is_not_resumable(memory_isolated_
     }
 
 
-async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn() -> None:
     await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=20)
     await _stage_row(
         token=19, transcript="stale transcript", subject="stale subject", identity="stale identity"
@@ -144,9 +138,7 @@ async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
     assert job.transcript == "new transcript"
 
 
-async def test_db_clear_job_keeps_an_empty_tombstone_and_is_idempotent(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_db_clear_job_keeps_an_empty_tombstone_and_is_idempotent() -> None:
     await _stage_row(transcript="逐字稿")
     assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=2) is True
     await assert_cleared_row(scope=USER_SCOPE)

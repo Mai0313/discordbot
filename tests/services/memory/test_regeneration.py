@@ -26,6 +26,7 @@ from discordbot.services.memory.store import (
     delete_memory_files,
 )
 from discordbot.services.memory.writer import ToneForget, MemoryWriterAI, ConsolidatedMemory
+from discordbot.services.memory.prompts import PHASE2_COMPACTION_BLOCK
 
 from tests.helpers.memory import MemoryAnswer, make_delta
 from tests.helpers.user_memory import (
@@ -66,7 +67,7 @@ async def _regenerate(writer: MemoryWriterAI) -> regeneration.RegenerationReport
 
 
 async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The replay prunes both files, so the rest of the rebuild must not use its earlier copies.
 
@@ -125,7 +126,7 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
     )
 
 
-async def test_a_rebuild_keeps_a_fact_restated_after_its_forget(memory_isolated_dir: Path) -> None:
+async def test_a_rebuild_keeps_a_fact_restated_after_its_forget() -> None:
     """A rebuild takes the evidence one forget at a time, as consolidation took it (#870).
 
     Rebuilt from all of it and only then handed the forget, the city came back from the
@@ -152,9 +153,7 @@ async def test_a_rebuild_keeps_a_fact_restated_after_its_forget(memory_isolated_
     assert "2026-09-03" in detail
 
 
-async def test_a_rebuild_takes_each_forget_against_only_what_came_before_it(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_rebuild_takes_each_forget_against_only_what_came_before_it() -> None:
     """A later forget about something else must not let an older one reach a restatement.
 
     Replayed together, the two forgets deleted the restated city, and the newer one's stamp
@@ -179,7 +178,7 @@ async def test_a_rebuild_takes_each_forget_against_only_what_came_before_it(
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
 
 
-async def test_a_rebuild_hands_no_compartment_an_empty_corpus(memory_isolated_dir: Path) -> None:
+async def test_a_rebuild_hands_no_compartment_an_empty_corpus() -> None:
     """A compartment whose evidence all follows a forget is emptied first without a call.
 
     The call could only answer with an empty batch: one more paid request, and one more way
@@ -208,9 +207,9 @@ async def test_a_rebuild_hands_no_compartment_an_empty_corpus(memory_isolated_di
     assert [fact.summary for fact in facts] == [_CITY.summary_zh]
 
 
-async def test_a_refused_pass_after_a_forget_fails_the_rebuild_and_puts_back_what_it_replaced(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_refused_pass_after_a_forget_fails_the_rebuild_and_puts_back_what_it_replaced() -> (
+    None
+):
     """The pass merging what came after a forget keeps the mass-delete guard.
 
     It is shown the rebuilt facts but not the evidence behind them, so it may not wipe them. A
@@ -264,7 +263,7 @@ async def test_a_refused_pass_after_a_forget_fails_the_rebuild_and_puts_back_wha
     assert count_raw_entries(scope=USER_SCOPE) == 3
 
 
-async def test_a_rebuild_replays_a_forget_naming_several_facts(memory_isolated_dir: Path) -> None:
+async def test_a_rebuild_replays_a_forget_naming_several_facts() -> None:
     """The rebuild's forget replay is a forget pass too, so the same forget completes it."""
     _stage_raw(
         _entry("2026-09-01T00:00:00+00:00", *_SIX), _forget_entry("2026-09-02T00:00:00+00:00")
@@ -352,11 +351,7 @@ def _roast_forget_answer(rebuilt: bool = True) -> MemoryAnswer:
     ],
 )
 async def test_a_rebuild_replays_each_forget_over_the_tone_evidence(
-    memory_isolated_dir: Path,
-    note: str,
-    detail: tuple[str, ...],
-    raw: tuple[str, ...],
-    expected: str,
+    note: str, detail: tuple[str, ...], raw: tuple[str, ...], expected: str
 ) -> None:
     """A tone preference is never a fact, so the fact replay cannot keep it out of the note (#971).
 
@@ -378,9 +373,7 @@ async def test_a_rebuild_replays_each_forget_over_the_tone_evidence(
     assert read_tone(scope=USER_SCOPE) == expected
 
 
-async def test_a_rebuild_failing_after_its_tone_replay_leaves_the_note_alone(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_rebuild_failing_after_its_tone_replay_leaves_the_note_alone() -> None:
     """The replay reaches only the tone evidence; the note is the rebuild's to rewrite.
 
     Its lines carry no stamp, so the older forget would be offered the roast the user restated
@@ -398,9 +391,7 @@ async def test_a_rebuild_failing_after_its_tone_replay_leaves_the_note_alone(
     assert read_tone(scope=USER_SCOPE) == _TONE_NOTE
 
 
-async def test_regenerate_scope_memory_rebuilds_from_evidence_only(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_rebuilds_from_evidence_only() -> None:
     """The rebuild distils the cold-tier evidence alone; the stored facts never reach the model."""
     writer, fake_client = _writer()
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
@@ -421,9 +412,8 @@ async def test_regenerate_scope_memory_rebuilds_from_evidence_only(
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert "喜歡簡短回覆" in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
     # Pure-evidence rebuild: no existing facts are shown, compaction always applied.
-    assert "COMPACTION" in fake_client.responses.parse_instructions[-1]
+    assert PHASE2_COMPACTION_BLOCK in fake_client.responses.parse_instructions[-1]
     user_text = fake_client.responses.parse_bodies[-1]
-    assert "<existing_facts>\n(empty)\n</existing_facts>" in user_text
     assert "舊的整理" not in user_text
     assert "喜歡條列式" in user_text
     assert "喜歡簡短回覆" in user_text
@@ -520,9 +510,7 @@ async def test_regenerate_scope_memory_prunes_a_compartment_it_never_handed_to_t
     assert report.unreadable_removed == 1
 
 
-async def test_regenerate_scope_memory_without_evidence_skips_llm(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_without_evidence_skips_llm() -> None:
     writer, fake_client = _writer()
     # Stored facts alone are not evidence: the rebuild never reads them back in.
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
@@ -536,7 +524,7 @@ async def test_regenerate_scope_memory_without_evidence_skips_llm(
     assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
-def test_regeneration_has_evidence_tracks_raw_and_detail(memory_isolated_dir: Path) -> None:
+def test_regeneration_has_evidence_tracks_raw_and_detail() -> None:
     # Stored facts alone are not evidence; only raw or detail counts.
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     assert regeneration.regeneration_has_evidence(scope=USER_SCOPE) is False
@@ -544,14 +532,12 @@ def test_regeneration_has_evidence_tracks_raw_and_detail(memory_isolated_dir: Pa
     assert regeneration.regeneration_has_evidence(scope=USER_SCOPE) is True
 
 
-def test_regeneration_has_evidence_detects_detail_only(memory_isolated_dir: Path) -> None:
+def test_regeneration_has_evidence_detects_detail_only() -> None:
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     assert regeneration.regeneration_has_evidence(scope=USER_SCOPE) is True
 
 
-async def test_regenerate_scope_memory_failure_keeps_existing_state(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_failure_keeps_existing_state() -> None:
     writer, fake_client = _writer()
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
@@ -667,7 +653,7 @@ def _stopping_rebuild(stop: str, reached: asyncio.Event) -> MemoryAnswer:
     "stop", ["call fails", "times out", "cancelled", "raises", "replay fails"]
 )
 async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_replaced(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, stop: str
+    monkeypatch: pytest.MonkeyPatch, stop: str
 ) -> None:
     """Until the replay has run everywhere, a replaced compartment can hold a forgotten fact.
 
@@ -676,8 +662,21 @@ async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_r
     city back in every server and DM, and nothing but a rebuild that completes would remove it
     again (#893).
     """
+    deadlines: list[asyncio.Timeout] = []
     if stop == "times out":
-        monkeypatch.setattr(regeneration, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 0.05)
+        # The run's deadline is far off and fired by hand once the guild's call is in flight,
+        # so how long the `global` call took on this machine cannot decide where it lands.
+        monkeypatch.setattr(regeneration, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 3600.0)
+        real_timeout = asyncio.timeout
+
+        def recording_timeout(delay: float | None) -> asyncio.Timeout:
+            """Keeps the run's own deadline, the one set for the patched delay."""
+            deadline = real_timeout(delay)
+            if delay == regeneration.MEMORY_CONSOLIDATE_TIMEOUT_SECONDS:
+                deadlines.append(deadline)
+            return deadline
+
+        monkeypatch.setattr(asyncio, "timeout", recording_timeout)
     if stop == "raises":
         real_replace = regeneration._replace_compartment
 
@@ -694,6 +693,10 @@ async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_r
     fake_client.responses.answer = _stopping_rebuild(stop=stop, reached=reached)
 
     task = asyncio.create_task(_regenerate(writer=writer))
+    if stop == "times out":
+        await reached.wait()
+        [deadline] = deadlines
+        deadline.reschedule(asyncio.get_running_loop().time())
     if stop == "cancelled":
         await reached.wait()
         task.cancel()
@@ -704,16 +707,13 @@ async def test_a_rebuild_that_stops_before_its_forget_replay_puts_back_what_it_r
             await task
     else:
         assert (await task).result == "failed"
-    if stop == "times out":
-        # The deadline covers the `global` call too; a timeout landing there proves nothing.
-        assert reached.is_set()
 
     assert [
         fact.summary for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     ] == ["養了一隻貓"]
 
 
-async def test_a_rebuild_stopped_by_a_clear_puts_nothing_back(memory_isolated_dir: Path) -> None:
+async def test_a_rebuild_stopped_by_a_clear_puts_nothing_back() -> None:
     """Putting a replaced compartment back is a write, so a clear that stopped the run stops it."""
     _stage_forgotten_city()
     writer, fake_client = _writer()
@@ -725,7 +725,7 @@ async def test_a_rebuild_stopped_by_a_clear_puts_nothing_back(memory_isolated_di
     assert _memory_text() == ""
 
 
-def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:
+def test_regeneration_cooldown_resets_after_clear() -> None:
     regeneration._last_regeneration[USER_SCOPE] = time.monotonic()
     assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is True
     # A clear wipes the memory the cooldown belonged to; the fresh post-clear
@@ -734,9 +734,7 @@ def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> 
     assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
-async def test_regenerate_scope_memory_recheck_cooldown_under_lock(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_recheck_cooldown_under_lock() -> None:
     writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     # An invocation queued behind a held lock passes the command-level check
@@ -750,7 +748,7 @@ async def test_regenerate_scope_memory_recheck_cooldown_under_lock(
     assert fake_client.responses.parse_models == []
 
 
-async def test_regenerate_scope_memory_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
+async def test_regenerate_scope_memory_aborts_write_after_clear() -> None:
     writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
 
@@ -766,9 +764,7 @@ async def test_regenerate_scope_memory_aborts_write_after_clear(memory_isolated_
     assert _memory_text() == ""
 
 
-async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_call(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_call() -> None:
     """The rebuild's tone call is its last await before the raw batch retires into
     `detail.md`, so a clear landing there must stop that tail too (#714).
     """
@@ -784,7 +780,7 @@ async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_
     assert "喜歡有禮貌的回覆" not in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
 
 
-async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_dir: Path) -> None:
+async def test_schedule_memory_regeneration_runs_in_background() -> None:
     writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="背景重建後的記憶")
@@ -802,7 +798,7 @@ async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_d
 
 
 async def test_schedule_memory_regeneration_dedupes_in_flight(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     writer, _ = _writer()
     release = asyncio.Event()
@@ -831,9 +827,7 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     await task
 
 
-async def test_regenerate_scope_memory_writes_tone_and_ignores_existing_tone(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_writes_tone_and_ignores_existing_tone() -> None:
     writer, fake_client = _writer()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     # Structured evidence, because the rebuild's tone note is distilled from the batch's
@@ -861,9 +855,7 @@ async def test_regenerate_scope_memory_writes_tone_and_ignores_existing_tone(
     assert "舊語氣" not in user_text
 
 
-async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output() -> None:
     """A full-evidence rebuild with no tone signal removes the now-unsupported note.
 
     Unlike an incremental consolidation (empty tone = "no signal in this batch",
@@ -889,11 +881,7 @@ async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output(
     ],
 )
 async def test_regenerate_scope_memory_clears_the_tone_note_on_an_empty_answer_only(
-    memory_isolated_dir: Path,
-    tone_answer: ConsolidatedMemory | None,
-    expected: str,
-    result: str,
-    raw_left: int,
+    tone_answer: ConsolidatedMemory | None, expected: str, result: str, raw_left: int
 ) -> None:
     """A failed tone call says nothing about the evidence; only an empty answer reads as no signal.
 

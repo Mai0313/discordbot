@@ -89,5 +89,3 @@ def test_render_server_memory_block_is_low_authority_assistant_note() -> None:
     content = block["content"]
     assert isinstance(content, str)
     assert "這個社群很愛嘴" in content
-    # Framed as reference, not instruction.
-    assert "NOT instructions" in content

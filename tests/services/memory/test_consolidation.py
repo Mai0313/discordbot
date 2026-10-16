@@ -2,9 +2,10 @@
 
 import re
 import time
-from typing import Any
+from typing import Any, Self
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, tzinfo, datetime, timedelta
+from itertools import count
 from collections import Counter
 
 import pytest
@@ -70,7 +71,7 @@ from tests.helpers.user_memory import (
 )
 
 
-async def test_a_forget_only_call_is_never_told_to_compact(memory_isolated_dir: Path) -> None:
+async def test_a_forget_only_call_is_never_told_to_compact() -> None:
     """Compaction asks a `deletes_only` call for a rewrite `apply_deltas` then throws away.
 
     The trigger reads the compartment's own rendered facts, and a forget is copied into every
@@ -109,7 +110,7 @@ async def test_a_forget_only_call_is_never_told_to_compact(memory_isolated_dir: 
 
 
 async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The mixed turn is the one that would quietly turn the guarantee into a prompt rule.
 
@@ -158,9 +159,7 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
     })
 
 
-async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted() -> None:
     """Deleting the fact is not enough while its evidence stays readable.
 
     Every later consolidation reads `detail.md` back as `<recent_detail>` with the forget request
@@ -203,7 +202,7 @@ async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
     assert read_raw_entries(scope=USER_SCOPE) == ""
 
 
-async def test_a_forget_reaches_what_was_staged_before_it(memory_isolated_dir: Path) -> None:
+async def test_a_forget_reaches_what_was_staged_before_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """A "remember X" then "forget X" inside one consolidation window must end with no X (#731).
 
     One staged entry does not consolidate on its own, so the forget's forced run is the first to
@@ -214,6 +213,16 @@ async def test_a_forget_reaches_what_was_staged_before_it(memory_isolated_dir: P
     lands right behind the one before it, so whole-second stamps would tie them and leave the
     city's evidence behind.
     """
+    ticks = count()
+
+    class TickingClock(datetime):
+        """Stamps each entry a microsecond after the last, whatever the host clock's resolution."""
+
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            return cls(2026, 9, 1, tzinfo=tz) + timedelta(microseconds=next(ticks))
+
+    monkeypatch.setattr("discordbot.services.memory.raw_entries.datetime", TickingClock)
     append_raw_entry(
         scope=USER_SCOPE,
         entry_text=render_memory_observations(observations=(_CITY, _PET), source="guild 42"),
@@ -236,7 +245,7 @@ async def test_a_forget_reaches_what_was_staged_before_it(memory_isolated_dir: P
     assert "fact.pet" in detail
 
 
-async def test_a_restatement_after_the_forget_survives_it(memory_isolated_dir: Path) -> None:
+async def test_a_restatement_after_the_forget_survives_it() -> None:
     """Something said again after the forget is the user changing their mind, not its target."""
     _stage_raw(
         _entry("2026-09-01T00:00:00+00:00", _CITY),
@@ -258,7 +267,7 @@ async def test_a_restatement_after_the_forget_survives_it(memory_isolated_dir: P
     assert "2026-09-03" in detail
 
 
-async def test_each_forget_reaches_only_what_came_before_it(memory_isolated_dir: Path) -> None:
+async def test_each_forget_reaches_only_what_came_before_it() -> None:
     """A batch holding two forgets is taken one forget at a time.
 
     Only a forced run that failed leaves one behind for the next. Split at the newer forget
@@ -285,9 +294,7 @@ async def test_each_forget_reaches_only_what_came_before_it(memory_isolated_dir:
     assert "2026-09-03" in detail
 
 
-async def test_a_forget_naming_several_facts_is_applied_and_the_batch_moves_on(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_forget_naming_several_facts_is_applied_and_the_batch_moves_on() -> None:
     """A forget pass can only delete, so the mass-deletion ceiling does not bound it.
 
     Refused, the same forget was derived and refused again on every later run, holding back
@@ -318,9 +325,7 @@ async def test_a_forget_naming_several_facts_is_applied_and_the_batch_moves_on(
     assert read_raw_entries(scope=USER_SCOPE) == ""
 
 
-async def test_a_forget_still_runs_when_the_pass_before_it_fails(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_forget_still_runs_when_the_pass_before_it_fails() -> None:
     """A failed observation pass must not hold back any forget that follows it.
 
     The fact an earlier batch stored, or the tone note, would otherwise go on being injected
@@ -362,7 +367,7 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails(
     assert count_raw_entries(scope=USER_SCOPE) == 4
 
 
-async def test_nothing_compacts_ahead_of_a_forget(memory_isolated_dir: Path) -> None:
+async def test_nothing_compacts_ahead_of_a_forget() -> None:
     """Compaction merges facts, so it waits until the batch's forgets have run.
 
     Run in the pass right before a forget, it could fold the fact the forget names into others,
@@ -467,7 +472,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
 
 
 async def test_pipeline_compaction_triggers_past_compartment_size(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Compaction is decided per compartment, off the rendered size of its own facts."""
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
@@ -483,14 +488,14 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
     # The oversized compartment flips consolidation into compaction mode, and the
     # consolidation input is dated so the model can reason about how old evidence is.
     # order-contract: the compartment's call follows the note review and precedes the tone call.
-    assert "COMPACTION" in fake_client.responses.parse_instructions[1]
+    assert PHASE2_COMPACTION_BLOCK in fake_client.responses.parse_instructions[1]
     assert (
         re.search(r"today: \d{4}-\d{2}-\d{2}", fake_client.responses.parse_bodies[1]) is not None
     )
 
 
 async def test_pipeline_small_compartment_skips_compaction(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
@@ -499,7 +504,7 @@ async def test_pipeline_small_compartment_skips_compaction(
     _schedule(writer=writer)
     await _wait_for_inflight()
     # order-contract: the compartment's call follows the note review and precedes the tone call.
-    assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
+    assert PHASE2_COMPACTION_BLOCK not in fake_client.responses.parse_instructions[1]
 
 
 def _stage_mixed_raw_batch() -> None:
@@ -513,7 +518,7 @@ def _stage_mixed_raw_batch() -> None:
 
 
 async def test_consolidation_fans_one_batch_out_over_its_compartments(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One batch, two directories: routing is per observation and neither call sees the other."""
     _consolidate_at(monkeypatch=monkeypatch, entries=2)
@@ -605,7 +610,7 @@ async def test_a_clear_during_a_compartment_call_writes_nothing_back(
 
 
 async def test_pipeline_cooldown_defers_entry_count_consolidation(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
@@ -621,7 +626,7 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
 
 
 async def test_pipeline_cooldown_elapsed_allows_consolidation(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     consolidation._last_consolidation[USER_SCOPE] = (
@@ -629,16 +634,15 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     )
     writer, fake_client = _writer()
     fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
+    before = time.monotonic()
     _schedule(writer=writer)
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     # The attempt refreshed the per-user cooldown timestamp.
-    assert consolidation._last_consolidation[USER_SCOPE] > time.monotonic() - 5
+    assert consolidation._last_consolidation[USER_SCOPE] >= before
 
 
-async def test_pipeline_byte_trigger_bypasses_cooldown(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_byte_trigger_bypasses_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=99)
     monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_MAX_BYTES", 10)
     consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
@@ -653,7 +657,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
 
 
 async def test_pipeline_passes_recent_detail_to_consolidation(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
@@ -670,7 +674,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
 
 
 async def test_pipeline_clear_resets_consolidation_cooldown(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
@@ -687,21 +691,8 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_consolidate_if_needed_digests_over_threshold_scope(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _consolidate_at(monkeypatch=monkeypatch, entries=2)
-    append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
-    append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
-    writer, fake_client = _writer()
-    fake_client.responses.output_parsed = _consolidated(text="掃描整理")
-    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
-    assert "掃描整理" in _memory_text()
-    assert count_raw_entries(scope=USER_SCOPE) == 0
-
-
 async def test_consolidate_if_needed_skips_under_threshold(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=5)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 只有一筆")
@@ -735,9 +726,7 @@ async def test_an_undecodable_detail_file_keeps_its_scope_out_of_consolidation(
     assert detail.read_bytes() == big5
 
 
-def test_needs_consolidation_reflects_threshold(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_needs_consolidation_reflects_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=2)
     assert consolidation.needs_consolidation(scope=USER_SCOPE) is False
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")

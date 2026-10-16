@@ -67,9 +67,7 @@ def _tone_forget_answer(answer: ToneForget | None) -> MemoryAnswer:
     return respond
 
 
-async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_forget_takes_what_it_names_out_of_the_tone_note() -> None:
     """A tone preference is never a fact, so only its own pass can forget it.
 
     The answer is numbers into what the call was shown, so it can only drop: a number it was
@@ -126,7 +124,7 @@ async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
     ],
 )
 async def test_a_forget_reaches_a_tone_note_under_any_header_the_write_accepts(
-    memory_isolated_dir: Path, note: str, expected: str
+    note: str, expected: str
 ) -> None:
     """The write keeps any note leading with the header, so the forget must reach all of it."""
     write_tone(scope=USER_SCOPE, content=note)
@@ -152,7 +150,7 @@ async def test_a_forget_reaches_a_tone_note_under_any_header_the_write_accepts(
     assert read_tone(scope=USER_SCOPE) == expected
 
 
-async def test_each_tone_forget_sees_only_what_came_before_it(memory_isolated_dir: Path) -> None:
+async def test_each_tone_forget_sees_only_what_came_before_it() -> None:
     """A tone preference restated between two forgets is not offered to the first of them.
 
     The evidence lines carry no stamp, so the model could not tell a restatement from what
@@ -175,7 +173,7 @@ async def test_each_tone_forget_sees_only_what_came_before_it(memory_isolated_di
     assert _ROAST.summary_zh in tone_calls[1]
 
 
-async def test_a_failed_tone_forget_keeps_the_batch(memory_isolated_dir: Path) -> None:
+async def test_a_failed_tone_forget_keeps_the_batch() -> None:
     """The note is injected into every reply, so a forget it has not taken yet must be retried.
 
     Retiring the batch would leave the request in `detail.md`, where only a rebuild reads it.
@@ -197,7 +195,7 @@ async def test_a_failed_tone_forget_keeps_the_batch(memory_isolated_dir: Path) -
 
 
 async def test_a_source_only_batch_still_updates_the_tone_note(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Tone is written by its own call fed the WHOLE batch, so a `source_only`-only
     conversation still updates it.
@@ -232,8 +230,10 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
     # write and no raw bucket, so it structurally cannot store one anywhere.
     assert len(tone_calls) == 1
     assert "喜歡有禮貌的回覆" in tone_calls[0]
-    assert "<raw_entries>\n(empty)\n</raw_entries>" in tone_calls[0]
-    assert "<existing_facts>\n(empty)\n</existing_facts>" in tone_calls[0]
+    raw_block = tone_calls[0].split("<raw_entries>")[1].split("</raw_entries>")[0]
+    facts_block = tone_calls[0].split("<existing_facts>")[1].split("</existing_facts>")[0]
+    assert "### " not in raw_block
+    assert "[" not in facts_block
     # No compartment call was shown the `source_only` summary outside its own bucket.
     assert fact_calls
     for text in fact_calls:
@@ -298,9 +298,7 @@ async def test_a_failed_tone_call_keeps_the_batch(
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_consolidation_writes_tone_note(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pipeline_consolidation_writes_tone_note(monkeypatch: pytest.MonkeyPatch) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     writer, fake_client = _writer()
@@ -327,7 +325,7 @@ async def test_pipeline_consolidation_writes_tone_note(
 
 
 async def test_pipeline_no_op_consolidation_still_writes_tone(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
@@ -353,7 +351,7 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
     ids=["empty-tone", "malformed-tone"],
 )
 async def test_pipeline_bad_tone_output_keeps_existing_note(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, bad_tone: str
+    monkeypatch: pytest.MonkeyPatch, bad_tone: str
 ) -> None:
     """An unusable tone note is dropped on its own; the facts it rode with still commit.
 
@@ -422,6 +420,10 @@ def test_tone_evidence_carries_the_evidence_kind() -> None:
         "- sharing: global\n"
         "- summary_zh: 會主動嗆機器人\n"
     )
-    evidence = tone_evidence_from_raw(raw_text=text)
-    assert "* [explicit_preference] 要求對本人使用尊敬語氣" in evidence
-    assert "* [repeated_behavior] 會主動嗆機器人" in evidence
+    lines = tone_evidence_from_raw(raw_text=text).splitlines()
+    stated = next(line for line in lines if "要求對本人使用尊敬語氣" in line)
+    inferred = next(line for line in lines if "會主動嗆機器人" in line)
+    assert "explicit_preference" in stated
+    assert "repeated_behavior" not in stated
+    assert "repeated_behavior" in inferred
+    assert "explicit_preference" not in inferred

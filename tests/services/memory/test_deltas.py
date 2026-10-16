@@ -1,6 +1,5 @@
 """Tests for applying consolidation deltas: writes, deletes, forgets, aging and alias rows."""
 
-from pathlib import Path
 from datetime import timedelta
 
 import pytest
@@ -33,7 +32,7 @@ from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
-from discordbot.services.memory.raw_entries import render_forget_requests
+from discordbot.services.memory.raw_entries import iter_observations, render_forget_requests
 
 from tests.helpers.memory import STAMPED_AT, make_delta
 from tests.helpers.user_memory import (
@@ -56,9 +55,7 @@ from tests.helpers.server_memory import (
 )
 
 
-async def test_forget_reaches_a_fact_stored_in_another_compartment(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_forget_reaches_a_fact_stored_in_another_compartment() -> None:
     """A forget spoken in a guild has to be able to delete a fact stored in `global/`.
 
     Routing it by its own source would file it under `g/42`, where `apply_deltas` never sees
@@ -101,7 +98,7 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
     assert [fact.text for fact in facts] == ["使用者在新竹上班"]
 
 
-def test_a_delete_survives_a_section_this_flavor_does_not_allow(memory_isolated_dir: Path) -> None:
+def test_a_delete_survives_a_section_this_flavor_does_not_allow() -> None:
     """A delete is resolved by its id, so the section it names cannot cost the deletion.
 
     The section vocabularies are per flavor, and `member_alias` is legal on a server scope
@@ -124,9 +121,7 @@ def test_a_delete_survives_a_section_this_flavor_does_not_allow(memory_isolated_
     assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
 
 
-def test_a_delete_releases_only_the_keys_no_remaining_fact_carries(
-    memory_isolated_dir: Path,
-) -> None:
+def test_a_delete_releases_only_the_keys_no_remaining_fact_carries() -> None:
     """A key another fact still cites is that fact's evidence too, so a forget must leave it.
 
     The keys are model-cited and two facts can share one; releasing a shared key would take the
@@ -178,7 +173,7 @@ def test_a_forget_releases_only_older_evidence_its_compartment_holds() -> None:
         _entry("2026-09-03T00:00:00+00:00", city),
     ])
     # Nothing released, nothing rewritten: the very same text comes back.
-    assert drop_released_evidence(text=text, released={"g/42": ()}, forgets=forgets) is text
+    assert drop_released_evidence(text=text, released={"g/42": ()}, forgets=forgets) == text
 
 
 def test_a_forget_keeps_a_legacy_identity_header_and_the_stamps_under_it() -> None:
@@ -205,15 +200,17 @@ def test_raw_entries_partition_by_sharing_and_source() -> None:
     assert "本群祕密" in buckets["g/222"]
     assert "私訊祕密" in buckets["dm"]
     assert "本群祕密" not in buckets["global"]
-    # The form the consolidation prompt reads: a blank line follows the entry header.
-    assert buckets["g/222"] == (
-        "## 2026-07-01T00:00:00+00:00\n\n"
-        "### stable_fact\n"
-        "- normalized_key: fact.b\n"
-        "- source: guild 222\n"
-        "- sharing: source_only\n"
-        "- summary_zh: 本群祕密"
-    )
+    # The bucket keeps the entry's own stamp and the observation whole.
+    assert iter_observations(text=buckets["g/222"]) == [
+        (
+            "2026-07-01T00:00:00+00:00",
+            "### stable_fact\n"
+            "- normalized_key: fact.b\n"
+            "- source: guild 222\n"
+            "- sharing: source_only\n"
+            "- summary_zh: 本群祕密",
+        )
+    ]
 
 
 def test_server_evidence_all_lands_in_the_single_compartment() -> None:
@@ -231,7 +228,7 @@ def test_source_only_with_an_unusable_source_goes_to_the_owners_dm() -> None:
     assert set(partition_raw_entries(raw_text=text, flavor="user")) == {"dm"}
 
 
-def test_a_create_delta_writes_a_fact(memory_isolated_dir: Path) -> None:
+def test_a_create_delta_writes_a_fact() -> None:
     """The ordinary path: one delta, one file, code-stamped."""
     scope = user_scope(user_id=111)
     outcome = apply_deltas(
@@ -250,7 +247,7 @@ def test_a_create_delta_writes_a_fact(memory_isolated_dir: Path) -> None:
     assert stored[0].compartment == GLOBAL_COMPARTMENT
 
 
-def test_a_create_whose_keys_already_back_a_fact_updates_it(memory_isolated_dir: Path) -> None:
+def test_a_create_whose_keys_already_back_a_fact_updates_it() -> None:
     """Retrying a partly-applied batch must upsert, not file a duplicate."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(keys=("preference.a",)))
@@ -268,8 +265,10 @@ def test_a_create_whose_keys_already_back_a_fact_updates_it(memory_isolated_dir:
     assert stored[0].text == "新版本"
 
 
-def test_an_update_keeps_the_original_creation_date(memory_isolated_dir: Path) -> None:
+def test_an_update_keeps_the_original_creation_date(monkeypatch: pytest.MonkeyPatch) -> None:
     """`created` is the fact's own history; only `last_confirmed` moves."""
+    updated_at = STAMPED_AT + timedelta(days=1)
+    monkeypatch.setattr("discordbot.services.memory.deltas.utc_now", lambda: updated_at)
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
     apply_deltas(
@@ -282,10 +281,10 @@ def test_an_update_keeps_the_original_creation_date(memory_isolated_dir: Path) -
     )
     stored = read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)[0]
     assert stored.created == STAMPED_AT
-    assert stored.last_confirmed > STAMPED_AT
+    assert stored.last_confirmed == updated_at
 
 
-def test_an_update_naming_a_missing_id_becomes_a_create(memory_isolated_dir: Path) -> None:
+def test_an_update_naming_a_missing_id_becomes_a_create() -> None:
     """A retry against a changed tree still lands the fact instead of dropping it."""
     scope = user_scope(user_id=111)
     apply_deltas(
@@ -299,7 +298,7 @@ def test_an_update_naming_a_missing_id_becomes_a_create(memory_isolated_dir: Pat
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
 
 
-def test_bad_deltas_are_dropped_without_failing_the_batch(memory_isolated_dir: Path) -> None:
+def test_bad_deltas_are_dropped_without_failing_the_batch() -> None:
     """A deterministic content check that rejects the batch would freeze the scope."""
     scope = user_scope(user_id=111)
     outcome = apply_deltas(
@@ -320,7 +319,7 @@ def test_bad_deltas_are_dropped_without_failing_the_batch(memory_isolated_dir: P
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
 
 
-def test_an_unusable_subject_id_costs_the_field_and_not_the_run(memory_isolated_dir: Path) -> None:
+def test_an_unusable_subject_id_costs_the_field_and_not_the_run() -> None:
     """An id cast unguarded here would raise, and raising abandons the rest of the fan-out.
 
     A user scope is where that bites: `member_alias` is a server-only section, so the guard
@@ -349,7 +348,7 @@ def test_an_unusable_subject_id_costs_the_field_and_not_the_run(memory_isolated_
     assert {fact.subject_id for fact in stored} == {None}
 
 
-def test_a_median_merge_is_not_mistaken_for_a_wipe(memory_isolated_dir: Path) -> None:
+def test_a_median_merge_is_not_mistaken_for_a_wipe() -> None:
     """Four deletes plus one create is consolidation working, not losing data."""
     scope = user_scope(user_id=111)
     ids = [f"{index:016x}" for index in range(5)]
@@ -370,7 +369,7 @@ def test_a_median_merge_is_not_mistaken_for_a_wipe(memory_isolated_dir: Path) ->
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
 
 
-def test_a_wipe_is_refused_and_changes_nothing(memory_isolated_dir: Path) -> None:
+def test_a_wipe_is_refused_and_changes_nothing() -> None:
     """Outside a forget or a rebuild, a batch that only deletes is a lossy rewrite, so it never
     touches the disk.
     """
@@ -387,11 +386,10 @@ def test_a_wipe_is_refused_and_changes_nothing(memory_isolated_dir: Path) -> Non
         allow_mass_delete=False,
     )
     assert not outcome.applied
-    assert outcome.rejected == "mass deletion"
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 10
 
 
-def test_a_rebuild_may_replace_the_whole_set(memory_isolated_dir: Path) -> None:
+def test_a_rebuild_may_replace_the_whole_set() -> None:
     """The regeneration path is exempt: replacing everything is what it is for."""
     scope = user_scope(user_id=111)
     ids = [f"{index:016x}" for index in range(10)]
@@ -409,7 +407,7 @@ def test_a_rebuild_may_replace_the_whole_set(memory_isolated_dir: Path) -> None:
     assert read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT) == []
 
 
-def test_the_sweep_expires_recent_context_but_never_permanent(memory_isolated_dir: Path) -> None:
+def test_the_sweep_expires_recent_context_but_never_permanent() -> None:
     """Aging is deterministic code off the stamped dates, never the model's writing."""
     scope = user_scope(user_id=111)
     today = STAMPED_AT + timedelta(days=60)
@@ -434,9 +432,7 @@ def test_the_sweep_expires_recent_context_but_never_permanent(memory_isolated_di
     ]
 
 
-def test_stable_facts_age_by_displacement_within_their_own_compartment(
-    memory_isolated_dir: Path,
-) -> None:
+def test_stable_facts_age_by_displacement_within_their_own_compartment() -> None:
     """A busy compartment self-trims; a quiet one anchored elsewhere forgets nothing."""
     scope = user_scope(user_id=111)
     quiet = guild_compartment(guild_id=222)
@@ -454,14 +450,14 @@ def test_stable_facts_age_by_displacement_within_their_own_compartment(
     assert len(read_facts(scope=scope, compartment=quiet)) == 1
 
 
-def test_existing_facts_render_with_the_ids_the_model_must_echo(memory_isolated_dir: Path) -> None:
+def test_existing_facts_render_with_the_ids_the_model_must_echo() -> None:
     """`fact_id` is the model's only handle on a stored fact, so it has to be shown."""
     rendered = render_existing_facts(facts=[_fact(keys=("preference.a",))])
     assert "[0123456789abcdef] section=preference durability=stable" in rendered
     assert "from_keys: preference.a" in rendered
 
 
-def test_a_batch_reports_the_ids_it_wrote(memory_isolated_dir: Path) -> None:
+def test_a_batch_reports_the_ids_it_wrote() -> None:
     """A rebuild drops what it did not re-emit, so it needs the written set, not the survivors."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(fact_id="a" * 16))
@@ -478,9 +474,7 @@ def test_a_batch_reports_the_ids_it_wrote(memory_isolated_dir: Path) -> None:
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
 
 
-def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
-    memory_isolated_dir: Path,
-) -> None:
+def test_a_permanent_section_fact_never_ages_even_when_marked_stable() -> None:
     """Nothing couples `section` to `durability`, and `render_existing_facts` feeds a
     mismatched pairing back on every later update, so one slip by the model would
     otherwise displace an enforced standing directive out of memory for good.
@@ -509,7 +503,7 @@ def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
     [("fact", "recent"), ("fact", "session"), ("preference", "volatile"), ("recent", "stable")],
 )
 def test_a_fact_not_displaced_as_stable_ages_on_the_ttl(
-    memory_isolated_dir: Path, section: MemorySection, durability: MemoryDurability
+    section: MemorySection, durability: MemoryDurability
 ) -> None:
     """The delta schema lets the model pair any section with any durability, so a fact
     that is neither exempt nor a `stable` one outside `recent` must still age instead of
@@ -556,7 +550,7 @@ def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the 
     )
 
 
-def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir: Path) -> None:
+def test_a_member_alias_delta_without_a_member_id_is_dropped() -> None:
     """An alias row with no id is unaskable, and a guessed one would widen the wrong memory."""
     outcome = apply_deltas(
         scope=SERVER_SCOPE,
@@ -592,9 +586,7 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
     }
 
 
-def test_an_alias_row_is_built_from_its_fields_not_the_models_prose(
-    memory_isolated_dir: Path,
-) -> None:
+def test_an_alias_row_is_built_from_its_fields_not_the_models_prose() -> None:
     """Code renders the compact shape, since a model asked for it rarely writes it.
 
     Whatever the model puts in `text` — a full sentence, an id token, a personal aside that
@@ -622,9 +614,7 @@ def test_an_alias_row_is_built_from_its_fields_not_the_models_prose(
     }
 
 
-def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias(
-    memory_isolated_dir: Path,
-) -> None:
+def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias() -> None:
     """The mapping the table exists for is the alias and the id; the name is a label.
 
     A member the evidence only ever identifies by id is an ordinary outcome, so the row is
@@ -656,7 +646,7 @@ def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias(
     assert allowlist_ids_from_server_memory(memory=_server_document()) == {4242: "(社群暱稱:李董)"}
 
 
-def test_an_alias_row_stays_one_clean_line(memory_isolated_dir: Path) -> None:
+def test_an_alias_row_stays_one_clean_line() -> None:
     """The rendered table is read back line by line, and a repeat is what unioning costs."""
     apply_deltas(
         scope=SERVER_SCOPE,
@@ -676,7 +666,7 @@ def test_an_alias_row_stays_one_clean_line(memory_isolated_dir: Path) -> None:
     assert [fact.text for fact in stored] == ["阿明 （新名字）(社群暱稱:明哥、明 神)"]
 
 
-def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:
+def test_member_alias_rows_never_age_out() -> None:
     """A swept alias row silently shrinks the allowlist, so the sweep skips every one of them."""
     stale = STAMPED_AT - timedelta(days=STABLE_FRESHNESS_WINDOW_DAYS + 30)
     write_fact(

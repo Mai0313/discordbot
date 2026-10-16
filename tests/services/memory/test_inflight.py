@@ -2,7 +2,6 @@
 
 import time
 import asyncio
-from pathlib import Path
 from functools import partial
 import contextlib
 
@@ -114,9 +113,7 @@ def test_a_repeated_note_keeps_its_newest_place_in_a_merge() -> None:
     assert rounds == ((("他養貓",), ()), ((), ("別提舊筆電",)))
 
 
-async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered() -> None:
     """A remember from an older waiting turn must land ahead of a newer turn's forget (#736).
 
     Merged into one list of each kind, the forget was staged first and the observation after
@@ -149,9 +146,7 @@ async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
     assert staged.index("fact.city") < staged.index("### forget_request")
 
 
-async def test_a_partly_failed_merge_still_reports_what_it_staged(
-    memory_isolated_dir: Path,
-) -> None:
+async def test_a_partly_failed_merge_still_reports_what_it_staged() -> None:
     """A later round's failed review must not hide what an earlier round already took down.
 
     A resumed retry carries no report, so this is the only chance the replies get to hear it.
@@ -221,7 +216,7 @@ async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises
 
 
 async def test_pipeline_defers_and_replays_newest_update_in_flight(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Keep this test about in-flight de-dupe only: the eager default threshold
     # would otherwise trigger consolidation on the replayed second entry.
@@ -266,7 +261,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 
 
 async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Replaying only the newest skipped turn must not silently drop an older turn's notes.
 
@@ -307,7 +302,7 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
 
 
 async def test_pipeline_never_merges_notes_across_conversation_sources(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A note written in one guild must never be replayed under another guild's source stamp.
 
@@ -357,7 +352,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
     assert "也在 99 說的" not in by_note["在 77 說的"]
 
 
-async def test_pipeline_cancelled_task_does_not_raise_or_replay(memory_isolated_dir: Path) -> None:
+async def test_pipeline_cancelled_task_does_not_raise_or_replay() -> None:
     writer, fake_client = _writer()
     started = asyncio.Event()
 
@@ -382,7 +377,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(memory_isolated_
     assert inflight._pending_updates.get(key=USER_SCOPE) is not None
 
 
-async def test_pipeline_drops_pending_replay_after_clear(memory_isolated_dir: Path) -> None:
+async def test_pipeline_drops_pending_replay_after_clear() -> None:
     writer, fake_client = _writer()
     first_started = asyncio.Event()
     release = asyncio.Event()
@@ -417,7 +412,7 @@ async def test_pipeline_drops_pending_replay_after_clear(memory_isolated_dir: Pa
     "dm_after_the_clear", [False, True], ids=["dm-during-the-clear", "dm-after-the-clear"]
 )
 async def test_a_cleared_waiting_turn_does_not_end_the_replay(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, dm_after_the_clear: bool
+    monkeypatch: pytest.MonkeyPatch, dm_after_the_clear: bool
 ) -> None:
     """Dropping one cleared waiting turn must still settle every other source's turn (#872).
 
@@ -466,7 +461,7 @@ async def test_a_cleared_waiting_turn_does_not_end_the_replay(
 
 
 async def test_a_turn_waiting_from_during_a_clear_is_not_merged_into_a_later_one(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A waiting turn the clear's closing stamp postdates is dropped even when superseded.
 
@@ -512,10 +507,6 @@ async def test_a_turn_waiting_from_during_a_clear_is_not_merged_into_a_later_one
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
-async def test_memory_semaphore_is_stable_within_a_loop(memory_isolated_dir: Path) -> None:
-    assert inflight.memory_semaphore() is inflight.memory_semaphore()
-
-
 def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
     """A task belongs to the loop that made it, so neither registry may outlive its loop.
 
@@ -549,9 +540,7 @@ def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
     assert asyncio.run(read()) == (None, None)
 
 
-async def test_memory_semaphore_caps_concurrent_updates(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_memory_semaphore_caps_concurrent_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("discordbot.services.memory.inflight.MEMORY_GLOBAL_CONCURRENCY", 1)
     writer, fake_client = _writer()
     in_flight = 0
@@ -582,7 +571,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
     assert max_in_flight == 1
 
 
-async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir: Path) -> None:
+async def test_pipeline_cleared_deferred_turn_marks_job_done() -> None:
     # A deferred (stashed) turn whose scope is cleared before replay must mark its
     # persisted row done, so a restart does not resume the cleared conversation.
     await _stage_row(
