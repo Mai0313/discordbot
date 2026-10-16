@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
+from tests.helpers.gen_reply import FakeGeminiClient
 from tests.helpers.discord_mocks import FakeDiscordMessage
 
 if TYPE_CHECKING:
@@ -54,10 +55,8 @@ class _FakeInteractions:
         return self._terminal
 
 
-def _fake_client(streams: list[_FakeStream], terminal: object) -> SimpleNamespace:
-    return SimpleNamespace(
-        aio=SimpleNamespace(interactions=_FakeInteractions(streams=streams, terminal=terminal))
-    )
+def _fake_client(streams: list[_FakeStream], terminal: object) -> FakeGeminiClient:
+    return FakeGeminiClient(interactions=_FakeInteractions(streams=streams, terminal=terminal))
 
 
 def _as_event(fake: object) -> "InteractionSSEEvent":

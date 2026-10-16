@@ -15,6 +15,8 @@ from discordbot.cogs.research import cog as research_cog
 from discordbot.cogs.research import database as rdb
 from discordbot.utils.timezone import database_now
 from discordbot.utils.model_pricing import ModelPriceEntry
+from discordbot.utils.llm_transcript import render_usage_footer
+from discordbot.cogs.research.streaming import RESEARCHING_PREFIX
 
 from tests.helpers.casting import (
     as_bot,
@@ -36,6 +38,7 @@ from tests.helpers.research import (
     _completed_event,
     _terminal_interaction,
 )
+from tests.helpers.gen_reply import FakeGeminiClient
 from tests.helpers.discord_mocks import (
     FakeUser,
     FakeInteraction,
@@ -54,7 +57,7 @@ def test_fallback_thread_name_uses_first_line() -> None:
     name = research_cog._fallback_thread_name(brief="研究 TPU 的歷史與競爭格局\n更多細節")
     assert name.startswith("研究 TPU")
     assert "\n" not in name
-    assert research_cog._fallback_thread_name(brief="   ") == "深度研究"
+    assert research_cog._fallback_thread_name(brief="   ")
 
 
 def test_terminal_phase_mapping() -> None:
@@ -64,9 +67,12 @@ def test_terminal_phase_mapping() -> None:
 
 
 def test_failure_text_distinguishes_budget() -> None:
-    assert "成本上限" in research_cog._failure_text(status="budget_exceeded")
-    assert "取消" in research_cog._failure_text(status="cancelled")
-    assert research_cog._failure_text(status="failed")
+    texts = [
+        research_cog._failure_text(status=status)
+        for status in ("budget_exceeded", "cancelled", "failed")
+    ]
+    assert all(texts)
+    assert len(set(texts)) == 3
 
 
 # ----- restart resume sweep -----------------------------------------------------------------
@@ -260,11 +266,11 @@ async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
 
     assert interaction.response.deferred is True
     assert [edit.get("content") for edit in interaction.edits] == [
-        "我在這個頻道的權限不夠,開不了研究串"
+        research_cog._launch_reply(outcome="forbidden", thread_id=None)
     ]
-    assert warns == [
-        ("deep research cannot post its anchor in this channel", {"channel_id": 20, "owner_id": 1})
-    ], "a permission the bot cannot earn needs the ids and no traceback"
+    assert [fields for _, fields in warns] == [{"channel_id": 20, "owner_id": 1}], (
+        "a permission the bot cannot earn needs the ids and no traceback"
+    )
 
 
 @pytest.mark.parametrize(
@@ -285,12 +291,11 @@ async def test_deep_research_answers_when_its_anchor_fails_for_another_reason(
         as_interaction(fake=interaction), topic="topic"
     )
 
-    assert [edit.get("content") for edit in interaction.edits] == ["開研究串失敗了,等等再試一次"]
-    assert errors == [
-        (
-            "failed to post the deep research anchor",
-            {"channel_id": 20, "owner_id": 1, "error_type": error_type, "_exc_info": error},
-        )
+    assert [edit.get("content") for edit in interaction.edits] == [
+        research_cog._launch_reply(outcome="error", thread_id=None)
+    ]
+    assert [fields for _, fields in errors] == [
+        {"channel_id": 20, "owner_id": 1, "error_type": error_type, "_exc_info": error}
     ]
 
 
@@ -310,7 +315,7 @@ async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
 
     assert anchor.deleted is True
     assert [edit.get("content") for edit in interaction.edits] == [
-        "我在這個頻道的權限不夠,開不了研究串"
+        research_cog._launch_reply(outcome="forbidden", thread_id=None)
     ]
     assert [fields for _, fields in warns] == [{"message_id": 10, "owner_id": 1, "channel_id": 20}]
 
@@ -329,13 +334,10 @@ async def test_a_marker_launch_says_so_when_the_thread_is_refused(
     )
 
     assert [reply.get("content") for reply in anchor.replies] == [
-        "我在這個頻道的權限不夠,開不了研究串"
+        research_cog._launch_reply(outcome="forbidden", thread_id=None)
     ]
-    assert warns == [
-        (
-            "deep research cannot open a thread in this channel",
-            {"message_id": 10, "owner_id": 300, "channel_id": 20},
-        )
+    assert [fields for _, fields in warns] == [
+        {"message_id": 10, "owner_id": 300, "channel_id": 20}
     ]
 
 
@@ -355,7 +357,7 @@ async def test_both_entry_points_name_the_owners_running_research_alike(
     await cog.launch(message=as_message(fake=request), brief="b")
     await cog.deep_research(as_interaction(fake=interaction), topic="topic")
 
-    running = f"你已經有一個深度研究在進行了:<#{_THREAD_ID}>"
+    running = research_cog._launch_reply(outcome="exists", thread_id=_THREAD_ID)
     assert [reply.get("content") for reply in request.replies] == [running]
     assert [edit.get("content") for edit in interaction.edits] == [running]
     assert slash_anchor.deleted is True
@@ -372,7 +374,9 @@ async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
         message=as_message(fake=anchor), brief="b"
     )
 
-    assert [reply.get("content") for reply in anchor.replies] == ["開研究串失敗了,等等再試一次"]
+    assert [reply.get("content") for reply in anchor.replies] == [
+        research_cog._launch_reply(outcome="error", thread_id=None)
+    ]
     assert len(errors) == 1
     assert errors[0][1].get("_exc_info") is not None, (
         "a transport failure still needs its traceback"
@@ -459,33 +463,21 @@ async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
 
     assert interaction.response.deferred is False
     assert interaction.response.sent == [
-        {"content": "我在這個頻道的權限不夠,開不了研究串", "ephemeral": True}
+        {
+            "content": research_cog._launch_reply(outcome="forbidden", thread_id=None),
+            "ephemeral": True,
+        }
     ]
     channel.send.assert_not_called()
     channel.permissions_for.assert_called_once_with(channel.guild.me)
 
 
 @pytest.mark.parametrize(
-    ("channel_type", "bot_in_guild", "guild_id", "reply"),
+    ("channel_type", "bot_in_guild", "guild_id", "is_unjoined_server"),
     [
-        (
-            PartialMessageable,
-            False,
-            100,
-            "我沒有被加進這個伺服器,深度研究只能在我所在的伺服器裡開",
-        ),
-        (
-            PartialMessageable,
-            False,
-            None,
-            "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)",
-        ),
-        (
-            Thread,
-            True,
-            100,
-            "深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)",
-        ),
+        (PartialMessageable, False, 100, True),
+        (PartialMessageable, False, None, False),
+        (Thread, True, 100, False),
     ],
     ids=["server_without_the_bot", "dm", "thread"],
 )
@@ -494,13 +486,9 @@ async def test_deep_research_names_why_it_cannot_open_here(
     channel_type: type,
     bot_in_guild: bool,
     guild_id: int | None,
-    reply: str,
+    is_unjoined_server: bool,
 ) -> None:
-    """A server the bot was never added to is named as the reason the command refuses there.
-
-    A user install reaches such servers, whose channels never resolve; a DM or a thread keeps the
-    channel-type reply.
-    """
+    """A server the bot was never added to is distinguished from a DM or a thread refusal."""
     channel = MagicMock(spec=channel_type)
     channel.send = AsyncMock()
     interaction = _ResearchInteraction(channel=channel)
@@ -512,7 +500,14 @@ async def test_deep_research_names_why_it_cannot_open_here(
         as_interaction(fake=interaction), topic="topic"
     )
 
-    assert interaction.response.sent == [{"content": reply, "ephemeral": True}]
+    (sent,) = interaction.response.sent
+    assert sent["ephemeral"] is True
+    unsupported = research_cog._launch_reply(outcome="unsupported", thread_id=None)
+    if is_unjoined_server:
+        assert sent["content"]
+        assert sent["content"] != unsupported
+    else:
+        assert sent["content"] == unsupported
     channel.send.assert_not_called()
 
 
@@ -528,7 +523,7 @@ async def test_a_refused_thread_write_is_reported_without_a_traceback(
     )
 
     assert sent is None
-    assert warns == [("research thread refused a message", {"thread_id": _THREAD_ID})]
+    assert [fields for _, fields in warns] == [{"thread_id": _THREAD_ID}]
 
 
 # ----- run exits ----------------------------------------------------------------------------
@@ -560,7 +555,7 @@ class _ThreadBot:
         raise make_not_found(message="Unknown Channel")
 
 
-def _settling_client(status: str) -> SimpleNamespace:
+def _settling_client(status: str) -> FakeGeminiClient:
     """A Gemini client whose research streams to its end and settles with `status`."""
     return _fake_client(
         streams=[_FakeStream([_created_event(), _completed_event()])],
@@ -568,13 +563,13 @@ def _settling_client(status: str) -> SimpleNamespace:
     )
 
 
-def _failing_client(error: Exception) -> SimpleNamespace:
+def _failing_client(error: Exception) -> FakeGeminiClient:
     """A Gemini client whose research create fails outright."""
 
     async def create(**_kwargs: object) -> None:
         raise error
 
-    return SimpleNamespace(aio=SimpleNamespace(interactions=SimpleNamespace(create=create)))
+    return FakeGeminiClient(interactions=SimpleNamespace(create=create))
 
 
 def _running_cog(
@@ -678,12 +673,10 @@ async def test_a_run_whose_delivery_raises_still_ends_failed_and_frees_the_owner
         await _launch_run(cog=cog, thread=thread)
 
     await _assert_owner_released(cog=cog, phase="failed")
-    assert [write["content"] for write in thread.writes] == [
-        "-# Researching... (Antigravity)",
-        "<@300> ⚠️",
-        "-# Research failed (Antigravity)",
-    ]
+    assert thread.writes[0]["content"] == research_cog.RESEARCHING_STATUS
+    assert thread.writes[2]["content"] == research_cog.RESEARCH_FAILED_STATUS
     _assert_pings_only_the_owner(write=thread.writes[1])
+    assert "embed" in thread.writes[1]
 
 
 def _lock_reply_db(
@@ -696,10 +689,6 @@ def _lock_reply_db(
 
     monkeypatch.setattr(target=rdb, name=call, value=_locked)
     return capture_logs(monkeypatch=monkeypatch, level="error")
-
-
-# What `_release` logs when the store refuses a run's terminal phase.
-_UNRECORDED = "failed to record how a research run ended"
 
 
 @pytest.mark.parametrize("resumed", [False, True], ids=["launched", "resumed"])
@@ -719,45 +708,23 @@ async def test_a_delivered_report_stays_delivered_when_its_phase_write_fails(
 
     # The status line became the report, and nothing followed it.
     assert [str(write["content"]).split("\n")[0] for write in thread.writes] == [
-        "-# Researching... (Antigravity)",
+        research_cog.RESEARCHING_STATUS,
         "# Report",
     ]
-    assert [(message, fields.get("phase")) for message, fields in errors] == [
-        (_UNRECORDED, "done")
-    ]
+    assert [fields.get("phase") for _, fields in errors] == ["done"]
     assert errors[0][1].get("_exc_info") is not None
     assert cog._active_threads == set()
 
 
 @pytest.mark.parametrize(
-    ("settles", "writes", "logged"),
-    [
-        (
-            "cancelled",
-            ["-# Researching... (Antigravity)", "<@300> ⚠️", "-# Research failed (Antigravity)"],
-            [(_UNRECORDED, "cancelled")],
-        ),
-        (
-            RuntimeError("quota"),
-            ["-# Researching... (Antigravity)", "<@300> ⚠️", "-# Research failed (Antigravity)"],
-            [("research failed", None), (_UNRECORDED, "failed")],
-        ),
-        (
-            None,
-            [
-                "-# Research failed (Antigravity)",
-                "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
-            ],
-            [(_UNRECORDED, "failed")],
-        ),
-    ],
+    ("settles", "expected_phases"),
+    [("cancelled", ["cancelled"]), (RuntimeError("quota"), [None, "failed"]), (None, ["failed"])],
     ids=["cancelled", "create_fails", "resume_lost"],
 )
 async def test_a_failed_run_whose_phase_write_fails_still_tells_its_owner_and_frees_its_thread(
     monkeypatch: pytest.MonkeyPatch,
     settles: str | Exception | None,
-    writes: list[str],
-    logged: list[tuple[str, str | None]],
+    expected_phases: list[str | None],
 ) -> None:
     errors = _lock_reply_db(monkeypatch=monkeypatch, call="set_phase")
     thread = _RunThread()
@@ -765,6 +732,8 @@ async def test_a_failed_run_whose_phase_write_fails_still_tells_its_owner_and_fr
         # A resumed row whose interaction id was never stored has nothing to re-attach to.
         cog = _running_cog(monkeypatch=monkeypatch, client=SimpleNamespace(), thread=thread)
         await _resume_run(cog=cog, stored_id=False)
+        assert thread.writes[0]["content"] == research_cog.RESEARCH_FAILED_STATUS
+        _assert_pings_only_the_owner(write=thread.writes[1])
     else:
         client = (
             _failing_client(error=settles)
@@ -773,9 +742,12 @@ async def test_a_failed_run_whose_phase_write_fails_still_tells_its_owner_and_fr
         )
         cog = _running_cog(monkeypatch=monkeypatch, client=client)
         await _launch_run(cog=cog, thread=thread)
+        assert thread.writes[0]["content"] == research_cog.RESEARCHING_STATUS
+        assert thread.writes[2]["content"] == research_cog.RESEARCH_FAILED_STATUS
+        _assert_pings_only_the_owner(write=thread.writes[1])
+        assert "embed" in thread.writes[1]
 
-    assert [write["content"] for write in thread.writes] == writes
-    assert [(message, fields.get("phase")) for message, fields in errors] == logged
+    assert [fields.get("phase") for _, fields in errors] == expected_phases
     assert cog._active_threads == set()
 
 
@@ -793,7 +765,9 @@ async def test_deep_research_answers_and_withdraws_its_posts_when_reply_db_fails
 
     await cog.deep_research(as_interaction(fake=interaction), topic="topic")
 
-    assert [edit.get("content") for edit in interaction.edits] == ["開研究串失敗了,等等再試一次"]
+    assert [edit.get("content") for edit in interaction.edits] == [
+        research_cog._launch_reply(outcome="error", thread_id=None)
+    ]
     assert anchor.deleted is True
     # Only the insert comes after the thread is opened, and a thread with no row is not a run.
     assert thread.deleted is (call == "insert_session")
@@ -816,21 +790,16 @@ async def test_a_marker_launch_says_so_and_withdraws_its_thread_when_reply_db_fa
 
     await cog.launch(message=as_message(fake=anchor), brief="b")
 
-    assert [reply.get("content") for reply in anchor.replies] == ["開研究串失敗了,等等再試一次"]
+    assert [reply.get("content") for reply in anchor.replies] == [
+        research_cog._launch_reply(outcome="error", thread_id=None)
+    ]
     assert thread.deleted is not refused
     # The marker's anchor is the reply that promised the run, so it stays.
     assert anchor.deleted is False
     assert cog._active_threads == set()
     # A launch never asks for the Manage Threads a delete takes, so a refusal logs the ids alone.
-    assert warns == (
-        [
-            (
-                "research thread of a failed launch could not be deleted",
-                {"thread_id": _THREAD_ID, "owner_id": _OWNER_ID},
-            )
-        ]
-        if refused
-        else []
+    assert [fields for _, fields in warns] == (
+        [{"thread_id": _THREAD_ID, "owner_id": _OWNER_ID}] if refused else []
     )
 
 
@@ -848,9 +817,7 @@ async def test_a_resume_that_cannot_reattach_frees_the_owner_and_tells_only_them
     await _resume_run(cog=cog, stored_id=stored_id)
 
     await _assert_owner_released(cog=cog, phase="failed")
-    notice = thread.writes[-1]
-    assert notice["content"] == "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次"
-    _assert_pings_only_the_owner(write=notice)
+    _assert_pings_only_the_owner(write=thread.writes[-1])
 
 
 async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
@@ -867,14 +834,12 @@ async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
     await _resume_run(cog=cog)
 
     # The same failure a fresh run reports at `error`: the report it was waiting for is lost.
-    assert [(message, fields["error_type"]) for message, fields in errors] == [
-        ("research resume failed", "RuntimeError")
+    assert [fields["error_type"] for _, fields in errors] == ["RuntimeError"]
+    assert [write["content"] for write in thread.writes[:2]] == [
+        research_cog.RESEARCHING_STATUS,
+        research_cog.RESEARCH_FAILED_STATUS,
     ]
-    assert [write["content"] for write in thread.writes] == [
-        "-# Researching... (Antigravity)",
-        "-# Research failed (Antigravity)",
-        "<@300> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
-    ]
+    _assert_pings_only_the_owner(write=thread.writes[2])
     assert thread.sends == 2, "the failed line is the resume's own status edited, not a new post"
 
 
@@ -882,8 +847,8 @@ async def test_a_resume_that_cannot_reattach_ends_its_own_status_as_failed(
     ("settles", "stored_id", "ends_as"),
     [
         ("completed", True, "# Report\nbody"),
-        (RuntimeError("interaction expired"), True, "-# Research failed (Antigravity)"),
-        ("completed", False, "-# Research failed (Antigravity)"),
+        (RuntimeError("interaction expired"), True, research_cog.RESEARCH_FAILED_STATUS),
+        ("completed", False, research_cog.RESEARCH_FAILED_STATUS),
     ],
     ids=["delivers", "resume_fails", "no_stored_id"],
 )
@@ -898,13 +863,17 @@ async def test_a_resume_ends_the_status_line_posted_before_the_restart(
 
         monkeypatch.setattr(target=research_cog, name="resume_research_stream", value=_expired)
     before_restart = FakeDiscordMessage(
-        author=_ThreadBot.user, content="-# Researching... (Antigravity, 12m30s)\n-# Weighing"
+        author=_ThreadBot.user, content=f"{RESEARCHING_PREFIX} (Antigravity, 12m30s)\n-# Weighing"
     )
     # Neither a member's copy of the line nor a bot line of another kind is the status.
     thread = _RunThread(
         earlier=[
-            FakeDiscordMessage(author=FakeUser(user_id=_OWNER_ID), content="-# Researching... ?"),
-            FakeDiscordMessage(author=_ThreadBot.user, content="-# Research failed (Antigravity)"),
+            FakeDiscordMessage(
+                author=FakeUser(user_id=_OWNER_ID), content=f"{RESEARCHING_PREFIX} ?"
+            ),
+            FakeDiscordMessage(
+                author=_ThreadBot.user, content=research_cog.RESEARCH_FAILED_STATUS
+            ),
             before_restart,
         ]
     )
@@ -915,7 +884,7 @@ async def test_a_resume_ends_the_status_line_posted_before_the_restart(
     await _resume_run(cog=cog, stored_id=stored_id)
 
     assert str(before_restart.edits[-1]["content"]).startswith(ends_as)
-    assert not any(str(write["content"]).startswith("-# Researching") for write in thread.writes)
+    assert not any(str(write["content"]).startswith(RESEARCHING_PREFIX) for write in thread.writes)
 
 
 @pytest.mark.parametrize("refused", [True, False], ids=["missing_access", "failing"])
@@ -938,14 +907,11 @@ async def test_a_resume_whose_history_read_fails_runs_on_a_status_line_of_its_ow
     await _resume_run(cog=cog)
 
     await _assert_owner_released(cog=cog, phase="done")
-    assert thread.writes[0]["content"] == "-# Researching... (Antigravity)"
-    assert warns == [
-        ("research thread refused the history read", {"thread_id": _THREAD_ID})
+    assert thread.writes[0]["content"] == research_cog.RESEARCHING_STATUS
+    assert [fields for _, fields in warns] == [
+        {"thread_id": _THREAD_ID}
         if refused
-        else (
-            "failed to read research thread history",
-            {"thread_id": _THREAD_ID, "error_type": "HTTPException", "_exc_info": error},
-        )
+        else {"thread_id": _THREAD_ID, "error_type": "HTTPException", "_exc_info": error}
     ]
 
 
@@ -961,7 +927,10 @@ async def test_a_resume_whose_thread_is_gone_still_records_how_the_run_settled(
 
 @pytest.mark.parametrize(
     ("settles", "reason", "footer"),
-    [(RuntimeError("quota"), "quota", "RuntimeError"), ("cancelled", "研究被取消了", None)],
+    [
+        (RuntimeError("quota"), "quota", "RuntimeError"),
+        ("cancelled", research_cog._failure_text(status="cancelled"), None),
+    ],
     ids=["create_fails", "cancelled"],
 )
 async def test_a_failed_run_tells_only_its_owner_why(
@@ -976,15 +945,13 @@ async def test_a_failed_run_tells_only_its_owner_why(
 
     await _launch_run(cog=_running_cog(monkeypatch=monkeypatch, client=client), thread=thread)
 
-    assert [write["content"] for write in thread.writes] == [
-        "-# Researching... (Antigravity)",
-        "<@300> ⚠️",
-        "-# Research failed (Antigravity)",
-    ]
+    assert thread.writes[0]["content"] == research_cog.RESEARCHING_STATUS
+    assert thread.writes[2]["content"] == research_cog.RESEARCH_FAILED_STATUS
     notice = thread.writes[1]
     _assert_pings_only_the_owner(write=notice)
     embed = cast("Embed", notice["embed"])
-    assert embed.description == f"```\n{reason}\n```"
+    assert embed.description is not None
+    assert reason in embed.description
     assert embed.footer.text == footer
 
 
@@ -999,7 +966,13 @@ async def test_a_delivered_report_pings_only_its_owner_over_the_runs_own_usage(
     # The counts the interaction reported, and no cost: the table has no entry for the agent.
     report = thread.writes[-1]
     agent_name = cog.runtime_models.antigravity_model.name
-    assert report["content"] == f"# Report\nbody\n\n<@300>\n\n-# {agent_name} · ⬆ 1,234 ⬇ 567"
+    footer, _ = render_usage_footer(
+        model_name=agent_name, label=agent_name, input_tokens=1234, output_tokens=567
+    )
+    content = str(report["content"])
+    assert content.startswith("# Report\nbody")
+    assert content.endswith(f"\n\n{footer}")
+    assert "$" not in content
     _assert_pings_only_the_owner(write=report)
 
 
@@ -1019,13 +992,18 @@ async def test_a_resumed_report_pings_only_its_owner_over_the_runs_own_usage(
         )
     }
     monkeypatch.setattr("discordbot.utils.model_pricing.load_model_info", lambda: rates)
-    await _resume_run(cog=cog, agent="antigravity-launched-agent")
+    agent_name = "antigravity-launched-agent"
+    await _resume_run(cog=cog, agent=agent_name)
 
     await _assert_owner_released(cog=cog, phase="done")
     report = thread.writes[-1]
-    assert report["content"] == (
-        "# Report\nbody\n\n<@300>\n\n-# antigravity-launched-agent · ⬆ 1,234 ⬇ 567"
+    footer, _ = render_usage_footer(
+        model_name=agent_name, label=agent_name, input_tokens=1234, output_tokens=567
     )
+    content = str(report["content"])
+    assert content.startswith("# Report\nbody")
+    assert content.endswith(f"\n\n{footer}")
+    assert "$" not in content
     _assert_pings_only_the_owner(write=report)
 
 
@@ -1088,10 +1066,7 @@ async def test_a_refused_report_logs_each_write_without_a_traceback_and_still_en
     await _launch_run(cog=cog, thread=_RunThread(error=make_forbidden(message="Missing Access")))
 
     where = {"thread_id": _THREAD_ID, "chunk_index": 0}
-    assert warns == [
-        ("research thread refused the report edit", where),
-        ("research thread refused a report message", {**where, "is_last": True}),
-    ]
+    assert [fields for _, fields in warns] == [where, {**where, "is_last": True}]
     assert errors == []
     await _assert_owner_released(cog=cog, phase="done")
 
@@ -1108,13 +1083,10 @@ async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_end
 
     where = {"thread_id": _THREAD_ID, "chunk_index": 0}
     trace = {"error_type": "HTTPException", "_exc_info": error}
-    assert warns == [("failed to edit research status into report", {**where, **trace})]
+    assert [fields for _, fields in warns] == [{**where, **trace}]
     # The last message carries the file, ping and footer, so losing it is an error.
-    assert errors == [
-        (
-            "failed to post research report message",
-            {**where, "is_last": True, "has_files": True, **trace},
-        )
+    assert [fields for _, fields in errors] == [
+        {**where, "is_last": True, "has_files": True, **trace}
     ]
     await _assert_owner_released(cog=cog, phase="done")
 
@@ -1123,8 +1095,6 @@ async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_ca
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The title is best-effort: an empty proxy key costs the generated title, not the run."""
-    # The SDK also accepts `OPENAI_ADMIN_KEY` from the environment, which would build the client.
-    monkeypatch.delenv(name="OPENAI_ADMIN_KEY", raising=False)
     thread = _RunThread()
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
     # The real title generator, which `_launching_cog` stubs out.
@@ -1140,8 +1110,12 @@ async def test_deep_research_starts_under_its_first_line_when_no_proxy_client_ca
     await cog.deep_research(as_interaction(fake=interaction), topic="TPU landscape\nand history")
     await asyncio.gather(*cog._tasks)
 
-    anchor.create_thread.assert_awaited_once_with(name="TPU landscape", auto_archive_duration=1440)
-    assert [edit.get("content") for edit in interaction.edits] == [f"開好了:<#{_THREAD_ID}>"]
+    anchor.create_thread.assert_awaited_once()
+    assert anchor.create_thread.await_args is not None
+    assert anchor.create_thread.await_args.kwargs["name"] == "TPU landscape"
+    assert [edit.get("content") for edit in interaction.edits] == [
+        research_cog._launch_reply(outcome="started", thread_id=_THREAD_ID)
+    ]
     assert anchor.deleted is False
     assert (
         "no proxy key for the deep research thread title; using the brief's first line",

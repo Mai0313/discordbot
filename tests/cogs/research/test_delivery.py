@@ -10,6 +10,7 @@ from nextcord import File, Thread, AllowedMentions
 from discordbot.cogs.research import agent
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
+from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.cogs.research.delivery import (
     split_report,
     deliver_report,
@@ -126,12 +127,12 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     assert footer in str(footer_send["content"])
     assert footer_send["files"]
     # Every report message carries the owner-only mention policy so agent text can't mass-ping.
-    mentions = cast("AllowedMentions", footer_send["allowed_mentions"])
-    assert mentions.everyone is False
-    assert mentions.roles is False
-    assert isinstance(mentions.users, list)
-    assert [user.id for user in mentions.users] == [1]
-    assert thread.writes[0]["allowed_mentions"] is mentions
+    for write in thread.writes:
+        mentions = cast("AllowedMentions", write["allowed_mentions"])
+        assert mentions.everyone is False
+        assert mentions.roles is False
+        assert isinstance(mentions.users, list)
+        assert [user.id for user in mentions.users] == [1]
 
 
 async def test_delivery_inlines_footer_for_short_reports() -> None:
@@ -211,11 +212,8 @@ async def test_delivery_names_a_report_file_it_leaves_out(monkeypatch: pytest.Mo
         media_delivery=hosting_off_planner(),
     )
     assert not thread.writes[0].get("files")
-    assert warns == [
-        (
-            "research report file too big to attach and not hosted; left out",
-            {"thread_id": _THREAD_ID, "filename": "research.md"},
-        )
+    assert [fields for _, fields in warns] == [
+        {"thread_id": _THREAD_ID, "filename": "research.md"}
     ]
 
 
@@ -234,7 +232,9 @@ async def test_a_delivered_reports_usage_footer_never_reaches_the_bots_history(
     if hosted:
         thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
         planner = hosting_planner(serve_dir=tmp_path)
-    footer = "-# antigravity-preview-09-2026 · ⬆ 1,234 ⬇ 567"
+    footer, _ = render_usage_footer(
+        model_name="m", label="antigravity-preview-09-2026", input_tokens=1234, output_tokens=567
+    )
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
         status=as_message(fake=status),  # minimal status-message double
@@ -290,11 +290,8 @@ async def test_a_refused_report_is_a_warn_even_on_its_last_message(
     )
 
     assert errors == []
-    assert warns == [
-        (
-            "research thread refused a report message",
-            {"thread_id": _THREAD_ID, "chunk_index": 0, "is_last": True},
-        )
+    assert [fields for _, fields in warns] == [
+        {"thread_id": _THREAD_ID, "chunk_index": 0, "is_last": True}
     ]
 
 
@@ -342,6 +339,4 @@ async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file
     )
 
     assert thread.bodies == [b"the whole report"]
-    assert warns == [
-        ("research thread refused the report edit", {"thread_id": 1, "chunk_index": 0})
-    ]
+    assert [fields for _, fields in warns] == [{"thread_id": 1, "chunk_index": 0}]

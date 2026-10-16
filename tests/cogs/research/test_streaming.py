@@ -8,7 +8,7 @@ import pytest
 
 from discordbot.cogs.research import streaming as research_streaming
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
-from discordbot.cogs.research.streaming import ResearchProgressStreamer
+from discordbot.cogs.research.streaming import RESEARCHING_PREFIX, ResearchProgressStreamer
 
 from tests.helpers.casting import (
     make_forbidden,
@@ -47,7 +47,7 @@ def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
     streamer.reasoning = "first line\n@everyone please\nlast line"
     preview = streamer._render_preview()
-    assert preview.startswith("-# Researching... (Antigravity,")
+    assert preview.startswith(RESEARCHING_PREFIX)
     assert "@everyone" not in preview  # agent text is escaped so the thinking can never ping
     assert "last line" in preview
 
@@ -162,7 +162,5 @@ async def test_a_failing_preview_edit_is_logged_once_and_the_editor_keeps_going(
     await asyncio.wait_for(status.seen.wait(), timeout=5)
     await streamer._stop_editor()
 
-    assert [(message, fields["error_type"]) for message, fields in warns] == [
-        ("research preview edit failed; continuing the run", "HTTPException")
-    ]
+    assert [fields["error_type"] for _, fields in warns] == ["HTTPException"]
     assert warns[0][1]["_exc_info"] is not None
