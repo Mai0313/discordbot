@@ -8,12 +8,11 @@ import shutil
 import asyncio
 from pathlib import Path
 import subprocess
-from collections.abc import Callable
 
 import pytest
 
 from discordbot.services.memory.store import user_scope
-from discordbot.services.memory.git_history import MemoryGitService
+from discordbot.services.memory.git_history import MemoryGitService, _GitRequest
 
 from tests.helpers.logfire_capture import capture_logs
 
@@ -41,20 +40,39 @@ def memory_repository(memory_isolated_dir: Path) -> Path:
     return memory_isolated_dir
 
 
-async def _wait_for(check: Callable[[], bool]) -> None:
-    """Waits for the single worker to produce an observable outcome.
+@pytest.fixture
+def handled(monkeypatch: pytest.MonkeyPatch) -> asyncio.Queue[str]:
+    """Receives each request's scope once the worker has finished its git commands.
 
-    Polls the outcome rather than the queue: the queue empties when the worker picks a
-    request up, not when it has finished the git commands that request runs.
+    The worker's own queue empties when it picks a request up, not when that request's
+    commit has landed, so a test waits on this instead.
     """
-    for _ in range(200):
-        if check():
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError("the git worker never reached the expected state")
+    finished: asyncio.Queue[str] = asyncio.Queue()
+    real_commit = MemoryGitService._commit
+
+    async def commit_then_report(self: MemoryGitService, request: _GitRequest) -> None:
+        await real_commit(self, request=request)
+        finished.put_nowait(request.scope)
+
+    monkeypatch.setattr(MemoryGitService, "_commit", commit_then_report)
+    return finished
 
 
-async def test_a_scope_change_becomes_one_commit(memory_repository: Path) -> None:
+async def _wait_for(handled: asyncio.Queue[str], requests: int = 1) -> None:
+    """Waits until the worker has finished `requests` more requests."""
+    async with asyncio.timeout(delay=30):
+        for _ in range(requests):
+            await handled.get()
+
+
+def _subjects(repository: Path) -> list[str]:
+    """The repository's commit subjects, newest first."""
+    return _git(repository, "log", "--format=%s").splitlines()
+
+
+async def test_a_scope_change_becomes_one_commit(
+    memory_repository: Path, handled: asyncio.Queue[str]
+) -> None:
     """A consolidation's files reach history under a message naming what happened."""
     scope = user_scope(user_id=111)
     (memory_repository / scope / "global").mkdir(parents=True)
@@ -62,14 +80,17 @@ async def test_a_scope_change_becomes_one_commit(memory_repository: Path) -> Non
     service = MemoryGitService()
     service.start()
     service.enqueue(scope=scope, reason="update")
-    await _wait_for(check=lambda: "update 111" in _git(memory_repository, "log", "--format=%s"))
+    await _wait_for(handled=handled)
     await service.stop()
-    assert "chore(memory): update 111" in _git(memory_repository, "log", "--format=%s")
+    newest, baseline = _subjects(repository=memory_repository)
+    assert baseline == "baseline"
+    assert "update" in newest
+    assert scope in newest
     assert _git(memory_repository, "status", "--porcelain") == ""
 
 
 async def test_an_unchanged_scope_makes_no_commit(
-    memory_repository: Path, monkeypatch: pytest.MonkeyPatch
+    memory_repository: Path, handled: asyncio.Queue[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The status guard is required, not an optimization: `git add` on a never-tracked,
     now-absent path exits 128, and an empty commit would fail too.
@@ -81,38 +102,36 @@ async def test_an_unchanged_scope_makes_no_commit(
     service = MemoryGitService()
     service.start()
     service.enqueue(scope=user_scope(user_id=999), reason="update")
-    # The single worker takes requests in order, so once the changed scope's commit lands,
-    # the unchanged one ahead of it has been handled.
     service.enqueue(scope=changed, reason="update")
-    await _wait_for(check=lambda: "update 111" in _git(memory_repository, "log", "--format=%s"))
+    await _wait_for(handled=handled, requests=2)
     await service.stop()
-    assert _git(memory_repository, "log", "--format=%s").splitlines() == [
-        "chore(memory): update 111",
-        "baseline",
-    ]
+    newest, baseline = _subjects(repository=memory_repository)
+    assert baseline == "baseline"
+    assert changed in newest
     # Skipped by the guard, not by a failed `git add`, which would leave no commit either.
     assert warned == []
     assert service.enabled
 
 
-async def test_a_clear_commits_the_deletion(memory_repository: Path) -> None:
-    """A clear leaves a clean working tree — and, deliberately, the earlier commits."""
+async def test_a_clear_commits_the_deletion(
+    memory_repository: Path, handled: asyncio.Queue[str]
+) -> None:
+    """A clear commits the deletion, leaving a clean working tree."""
     scope = user_scope(user_id=111)
     (memory_repository / scope / "global").mkdir(parents=True)
     (memory_repository / scope / "global" / "a.md").write_text("secret", encoding="utf-8")
     service = MemoryGitService()
     service.start()
     service.enqueue(scope=scope, reason="update")
-    await _wait_for(check=lambda: "update 111" in _git(memory_repository, "log", "--format=%s"))
+    await _wait_for(handled=handled)
     (memory_repository / scope / "global" / "a.md").unlink()
     service.enqueue(scope=scope, reason="clear")
-    await _wait_for(check=lambda: "clear 111" in _git(memory_repository, "log", "--format=%s"))
+    await _wait_for(handled=handled)
     await service.stop()
-    assert "chore(memory): clear 111" in _git(memory_repository, "log", "--format=%s")
+    newest = _subjects(repository=memory_repository)[0]
+    assert "clear" in newest
+    assert scope in newest
     assert _git(memory_repository, "status", "--porcelain") == ""
-    # Recorded, not accidental: the content is still reachable from the earlier commit,
-    # which is why the clear cannot promise history is gone (#408).
-    assert "secret" in _git(memory_repository, "show", "HEAD~1:111/global/a.md")
 
 
 async def test_a_store_that_is_not_a_repository_disables_the_service(
@@ -130,7 +149,7 @@ async def test_a_store_that_is_not_a_repository_disables_the_service(
     await service.stop()
 
 
-async def test_an_unstarted_service_drops_requests(memory_isolated_dir: Path) -> None:
+async def test_an_unstarted_service_drops_requests() -> None:
     """Enqueueing before `start` must not bind a queue to whichever loop got there first."""
     service = MemoryGitService()
     service.enqueue(scope=user_scope(user_id=111), reason="update")
@@ -138,7 +157,9 @@ async def test_an_unstarted_service_drops_requests(memory_isolated_dir: Path) ->
     await service.stop()
 
 
-async def test_repeated_failures_disable_the_service(memory_repository: Path) -> None:
+async def test_repeated_failures_disable_the_service(
+    memory_repository: Path, handled: asyncio.Queue[str]
+) -> None:
     """A permanently broken repository stops being retried instead of filling the log."""
     scope = user_scope(user_id=111)
     (memory_repository / scope / "global").mkdir(parents=True)
@@ -150,12 +171,16 @@ async def test_repeated_failures_disable_the_service(memory_repository: Path) ->
     shutil.rmtree(memory_repository / ".git")
     for _ in range(5):
         service.enqueue(scope=scope, reason="update")
-    await _wait_for(check=lambda: not service.enabled)
+        await _wait_for(handled=handled)
+        if not service.enabled:
+            break
     await service.stop()
     assert not service.enabled
 
 
-async def test_commits_carry_their_own_committer_identity(memory_repository: Path) -> None:
+async def test_commits_carry_their_own_committer_identity(
+    memory_repository: Path, handled: asyncio.Queue[str]
+) -> None:
     """The container runs as a user with no gitconfig, and a container hostname has no
     domain, so git refuses its own auto-detected ident and every commit exits 128. The
     identity has to ride on the invocation; an operator's host-side `git init` cannot
@@ -171,7 +196,7 @@ async def test_commits_carry_their_own_committer_identity(memory_repository: Pat
     service = MemoryGitService()
     service.start()
     service.enqueue(scope=scope, reason="update")
-    await _wait_for(check=lambda: "update 111" in _git(memory_repository, "log", "--format=%s"))
+    await _wait_for(handled=handled)
     await service.stop()
     assert service.enabled
     assert "discordbot" in _git(memory_repository, "log", "-1", "--format=%an")

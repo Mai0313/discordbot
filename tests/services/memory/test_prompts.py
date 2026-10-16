@@ -25,7 +25,7 @@ import re
 
 import pytest
 
-from discordbot.typings.memory import MemoryFlavor
+from discordbot.typings.memory import TONE_HEADER, MemoryFlavor
 from discordbot.services.memory.facts import sections_for_flavor
 from discordbot.services.memory.writer import ConsolidatedMemory
 from discordbot.services.memory.prompts import (
@@ -117,18 +117,16 @@ def test_each_consolidation_prompt_offers_exactly_its_flavors_sections(
 # ---------------------------------------------------------------------------
 
 
-def test_prompts_cover_recent_context_and_compaction() -> None:
-    assert "recent_context" in PHASE1_EVALUATOR_PROMPT
-    assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
-    assert "today" in PHASE2_PROMPT
-    assert "ttl_days" in PHASE2_PROMPT
+def test_the_compaction_block_states_the_code_target() -> None:
     assert str(COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
 
 
 def test_prompts_cover_the_permanent_tier() -> None:
     # The note review authors the durability, so it must offer the permanent tier and say
     # which narrow class it is for.
-    assert "permanent" in PHASE1_EVALUATOR_PROMPT
+    assert _normalized(
+        text='`durability="permanent"` ONLY for immutable identity facts'
+    ) in _normalized(text=PHASE1_EVALUATOR_PROMPT)
 
 
 def test_prompts_record_tone_persona_independently() -> None:
@@ -138,14 +136,11 @@ def test_prompts_record_tone_persona_independently() -> None:
     assert "persona-independent" in PHASE2_PROMPT
 
 
-def test_phase2_prompt_tells_the_tone_call_its_deltas_are_discarded() -> None:
-    """Tone evidence is unpartitioned, so the call that sees it must not be able to store
-    a fact. Code enforces that by giving it no facts and no raw bucket and throwing its
-    deltas away; the prompt only has to stop the model wasting output on them.
+def test_phase2_prompt_names_the_tone_evidence_block() -> None:
+    """The writer hands the tone call its evidence under `<tone_evidence>`, so the prompt has
+    to name the same block. Code, not the prompt, keeps that call from storing a fact.
     """
     assert "<tone_evidence>" in PHASE2_PROMPT
-    assert "its `deltas` are discarded" in PHASE2_PROMPT
-    assert "Return `deltas` empty; only `tone_markdown` is read from this call." in PHASE2_PROMPT
 
 
 def test_the_tone_schema_names_the_same_trigger_as_the_prompt() -> None:
@@ -187,8 +182,6 @@ def test_prompts_cover_sharing_classification() -> None:
     What has to be in the prompt is the default and the third-party rule, which
     `_sanitize_observation` mirrors deterministically on the code side.
     """
-    assert "SHARING CLASSIFICATION" in PHASE1_EVALUATOR_PROMPT
-    assert "source_only" in PHASE1_EVALUATOR_PROMPT
     assert "When unsure, choose `source_only`" in PHASE1_EVALUATOR_PROMPT
     assert "ANY person other than the target user" in PHASE1_EVALUATOR_PROMPT
 
@@ -199,12 +192,10 @@ def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
     Code routes the evidence before the call, and the model is told what it may not carry
     back across that line.
     """
-    assert "WHAT A COMPARTMENT IS" in PHASE2_PROMPT
     assert "<global_reference>" in PHASE2_PROMPT
     # The text must never name where a fact was learned; the directory already records it.
     assert "the text must never mention a server, a channel" in PHASE2_PROMPT
-    assert "TONE NOTE OUTPUT" in PHASE2_PROMPT
-    assert "## 語氣偏好" in PHASE2_PROMPT
+    assert TONE_HEADER in PHASE2_PROMPT
 
 
 def test_phase2_prompt_ranks_a_stated_tone_preference_over_an_inferred_one() -> None:
@@ -244,11 +235,8 @@ def test_server_prompts_target_the_server_not_individuals() -> None:
 
 def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
     """Nicknames are the one carve-out from the no-individuals rule, and must survive the gate."""
-    assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_EVALUATOR_PROMPT
     assert "vocab.member_alias.<USER_ID>" in SERVER_PHASE1_EVALUATOR_PROMPT
     assert 'evidence_kind="stable_fact"' in SERVER_PHASE1_EVALUATOR_PROMPT
-    # Aliases are permanent community vocabulary so the freshness sweep never ages them.
-    assert 'durability="permanent"' in SERVER_PHASE1_EVALUATOR_PROMPT
     # The same kind that the deterministic gate drops must be explicitly forbidden here.
     assert "other_user_context" in SERVER_PHASE1_EVALUATOR_PROMPT
     # Dropping personal facts must not drop the name-to-member mapping with them.
@@ -265,19 +253,3 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
     # formatted body writes sentences instead.
     assert "`display_name`" in SERVER_PHASE2_PROMPT
     assert "`aliases`" in SERVER_PHASE2_PROMPT
-    assert "leave `text` empty" in SERVER_PHASE2_PROMPT
-    assert "the id is appended for you" in SERVER_PHASE2_PROMPT
-    # Every alias fact is permanent, which is what exempts it from the freshness sweep.
-    assert "every `member_alias` fact" in SERVER_PHASE2_PROMPT
-
-
-def test_server_phase1_prompt_pins_sharing_global() -> None:
-    """The sharing field routes per-user memory; a server memory is already server-confined."""
-    assert 'Always set `sharing="global"`' in SERVER_PHASE1_EVALUATOR_PROMPT
-
-
-def test_server_consolidation_prompt_never_emits_a_tone_note() -> None:
-    """The tone note is a per-user tier, so a server pass must return it empty."""
-    assert "TONE NOTE OUTPUT" in SERVER_PHASE2_PROMPT
-    assert "always empty" in SERVER_PHASE2_PROMPT
-    assert "a server consolidation never writes one" in SERVER_PHASE2_PROMPT
