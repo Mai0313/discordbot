@@ -52,9 +52,7 @@ async def test_guild_avatar_url_reads_a_member_without_asking_the_guild() -> Non
 
     avatar_url = await guild_avatar_url(user=member, guild=as_guild(fake=guild))
 
-    assert (
-        avatar_url == "https://cdn.discordapp.com/guilds/100/users/7/avatars/fresh.png?size=1024"
-    )
+    assert avatar_url == member.display_avatar.url
 
 
 async def test_guild_avatar_url_prefers_cached_guild_avatar() -> None:

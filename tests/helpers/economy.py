@@ -9,10 +9,7 @@ from discordbot.utils.timezone import as_taipei, database_now
 from discordbot.typings.economy import (
     LoanLenderType,
     LoanContractView,
-    LoanProposalKind,
-    LoanProposalView,
     LoanContractStatus,
-    LoanProposalStatus,
     LoanProposalAcceptResult,
 )
 from discordbot.services.economy.database import (
@@ -135,25 +132,6 @@ def personal_loan_contract(
         opened_at=opened_at,
         last_interest_accrued_at=opened_at,
         status=LoanContractStatus.ACTIVE,
-    )
-
-
-def fake_loan_proposal(kind: LoanProposalKind) -> LoanProposalView:
-    """Builds a fake loan proposal view."""
-    return LoanProposalView(
-        proposal_id=1,
-        kind=kind,
-        status=LoanProposalStatus.PENDING,
-        lender_type=LoanLenderType.CENTRAL_BANK
-        if kind == LoanProposalKind.CENTRAL_BANK_REQUEST
-        else LoanLenderType.USER,
-        borrower_id=1,
-        borrower_name="alice",
-        lender_id=None if kind == LoanProposalKind.CENTRAL_BANK_REQUEST else 2,
-        lender_name="bob",
-        amount=100,
-        monthly_rate_bps=300,
-        created_at=datetime.now(tz=UTC),
     )
 
 

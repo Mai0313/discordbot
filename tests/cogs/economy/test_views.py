@@ -1,20 +1,22 @@
 """Tests for the loan-decision panels: who may press each button, and how a panel closes."""
 
 from typing import Any
+from collections.abc import Callable, Awaitable
 
 import pytest
+from sqlalchemy import select
 
 from discordbot.cogs.economy import views
 from discordbot.typings.economy import (
+    CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
-    LoanProposalKind,
-    LoanProposalView,
     LoanProposalStatus,
-    LoanProposalAcceptResult,
 )
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.services.economy.database import (
+    LoanProposal,
     get_balance,
+    open_session,
     create_personal_loan_request,
     create_central_bank_loan_request,
 )
@@ -33,164 +35,149 @@ from tests.helpers.economy import (
     approve_as_admin,
     seed_participant,
     backdate_proposal,
-    fake_loan_proposal,
-    personal_loan_contract,
 )
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_levels
 from tests.helpers.message_cleanup import record_scheduled_deletes
 
 
-async def fake_reject_loan_proposal(
-    proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
-) -> LoanProposalView:
-    """Returns a rejected fake proposal."""
-    proposal = fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
-    return proposal.model_copy(update={"status": LoanProposalStatus.REJECTED})
+async def _status(proposal_id: int) -> str:
+    """Reads one loan request's stored status, which compares equal to its `LoanProposalStatus`."""
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(LoanProposal.status).where(LoanProposal.id == proposal_id)
+        )
+        return result.scalar_one()
 
 
-async def fake_cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView:
-    """Returns a canceled fake proposal."""
-    proposal = fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST)
-    return proposal.model_copy(update={"status": LoanProposalStatus.CANCELED})
-
-
-async def fake_accept_loan_proposal(**_kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
-    """Returns a fake accepted proposal result."""
-    return LoanProposalAcceptResult(
-        contract=personal_loan_contract(),
-        borrower_balance=250,
-        lender_balance=100,
-        central_bank_available_credit=1_000,
+async def _expired_credit_request() -> int:
+    """Files alice's request to bob and ages it past its decision window; returns its id."""
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
     )
+    await backdate_proposal(
+        proposal_id=proposal.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS
+    )
+    return proposal.proposal_id
 
 
-async def test_central_bank_decision_buttons_require_admin_and_allow_self_approval(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_central_bank_decision_buttons_require_admin_and_allow_self_approval() -> None:
     """Central bank buttons are gated on the server admin permission Discord sent.
 
     Read off `Interaction.permissions` rather than looked up, which is also what refuses a
     DM: outside a guild Discord resolves no permissions at all.
     """
-    captured_accept_kwargs: dict[str, Any] = {}
-    captured_cancel_kwargs: dict[str, int] = {}
-
-    async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
-        """Records approval arguments and returns a fake accepted proposal."""
-        captured_accept_kwargs.update(kwargs)
-        return await fake_accept_loan_proposal()
-
-    async def fake_cancel_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
-        """Records cancellation arguments and returns a fake canceled proposal."""
-        captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
-        return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
-
-    monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
-    monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
-    view = CentralBankLoanDecisionView(proposal_id=42, creator_id=1, allow_self_approval=True)
+    await seed_participant(user_id=1, name="alice", amount=CENTRAL_BANK_BASE_CAPACITY)
+    # Past the base capacity every guild lends on, so only this guild's own pool can fund it.
+    amount = CENTRAL_BANK_BASE_CAPACITY + 1
+    proposal = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=amount, monthly_rate_bps=0
+    )
+    view = CentralBankLoanDecisionView(
+        proposal_id=proposal.proposal_id, creator_id=1, allow_self_approval=True
+    )
     approve_button = attached_button(view=view, custom_id="central_bank:approve")
 
-    denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"), administrator=False)
+    denied = FakeInteraction(
+        user=FakeUser(user_id=2, name="bob"), guild_id=LENDING_GUILD, administrator=False
+    )
     await approve_button.callback(as_interaction(fake=denied))
     assert denied.followup.sent[0]["ephemeral"] is True
-    assert captured_accept_kwargs == {}
 
     in_a_dm = FakeInteraction(
         user=FakeUser(user_id=1, name="alice"), in_guild=False, administrator=False
     )
     await approve_button.callback(as_interaction(fake=in_a_dm))
     assert in_a_dm.followup.sent[0]["ephemeral"] is True
-    assert captured_accept_kwargs == {}
+    assert await _status(proposal_id=proposal.proposal_id) == LoanProposalStatus.PENDING
 
+    # The borrower approving her own request in her own server: it goes through only if the
+    # panel hands the ledger the self-approval flag, the admin's word and this guild's pool.
     allowed = FakeInteraction(
-        user=FakeUser(user_id=1, name="alice"), guild_id=321, administrator=True
+        user=FakeUser(user_id=1, name="alice"), guild_id=LENDING_GUILD, administrator=True
     )
     await approve_button.callback(as_interaction(fake=allowed))
-    assert captured_accept_kwargs["proposal_id"] == 42
-    assert captured_accept_kwargs["actor_id"] == 1
-    assert captured_accept_kwargs["guild_id"] == 321
-    assert captured_accept_kwargs["approver_is_guild_admin"] is True
-    assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
     assert allowed.edits[0]["view"] is None
+    assert await get_balance(user_id=1) == CENTRAL_BANK_BASE_CAPACITY + amount
 
-    cancel_view = CentralBankLoanDecisionView(proposal_id=43, creator_id=1)
+    withdrawn = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=100
+    )
+    cancel_view = CentralBankLoanDecisionView(proposal_id=withdrawn.proposal_id, creator_id=1)
     cancel_button = attached_button(view=cancel_view, custom_id="central_bank:cancel")
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
     assert denied_cancel.followup.sent[0]["ephemeral"] is True
-    assert captured_cancel_kwargs == {}
+    assert (
+        denied_cancel.followup.sent[0]["embed"].description
+        == CentralBankLoanDecisionView.CANCEL_DENIED_NOTICE
+    )
+    assert await _status(proposal_id=withdrawn.proposal_id) == LoanProposalStatus.PENDING
 
     allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
     await cancel_button.callback(as_interaction(fake=allowed_cancel))
-    assert captured_cancel_kwargs == {"proposal_id": 43, "actor_id": 1}
+    assert await _status(proposal_id=withdrawn.proposal_id) == LoanProposalStatus.CANCELED
     assert allowed_cancel.edits[0]["view"] is None
 
 
-async def test_credit_decision_buttons_gate_lender_and_creator(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_credit_decision_buttons_gate_lender_and_creator() -> None:
     """Personal credit request buttons are lender-gated, while cancel is creator-gated."""
-    captured_accept_kwargs: dict[str, Any] = {}
-    captured_reject_kwargs: dict[str, int] = {}
-    captured_cancel_kwargs: dict[str, int] = {}
+    await seed_balance(user_id=2, name="bob", amount=1_000)
+    requests = [
+        await create_personal_loan_request(
+            borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
+        )
+        for _ in range(3)
+    ]
+    approved, rejected, withdrawn = (request.proposal_id for request in requests)
 
-    async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
-        """Records approval arguments and returns a fake accepted proposal."""
-        captured_accept_kwargs.update(kwargs)
-        return await fake_accept_loan_proposal()
-
-    async def fake_reject_for_button(
-        proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
-    ) -> LoanProposalView:
-        """Records rejection arguments and returns a fake rejected proposal."""
-        captured_reject_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
-        return await fake_reject_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
-
-    async def fake_cancel_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
-        """Records cancellation arguments and returns a fake canceled proposal."""
-        captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
-        return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
-
-    monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
-    monkeypatch.setattr(views, "reject_loan_proposal", fake_reject_for_button)
-    monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
-    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view = CreditLoanDecisionView(proposal_id=approved, lender_id=2, creator_id=1)
     approve_button = attached_button(view=view, custom_id="credit:approve")
-
+    # The ledger turns a stranger away too; the panel must do it first, saying why.
     denied_approve = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
     await approve_button.callback(as_interaction(fake=denied_approve))
     assert denied_approve.followup.sent[0]["ephemeral"] is True
-    assert captured_accept_kwargs == {}
+    assert (
+        denied_approve.followup.sent[0]["embed"].description
+        != CreditLoanDecisionView.APPROVE_FAILED_NOTICE
+    )
+    assert await _status(proposal_id=approved) == LoanProposalStatus.PENDING
 
     allowed_approve = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await approve_button.callback(as_interaction(fake=allowed_approve))
-    assert captured_accept_kwargs["proposal_id"] == 42
-    assert captured_accept_kwargs["actor_id"] == 2
+    assert await get_balance(user_id=1) == 100
     assert allowed_approve.edits[0]["view"] is None
 
-    reject_view = CreditLoanDecisionView(proposal_id=43, lender_id=2, creator_id=1)
+    reject_view = CreditLoanDecisionView(proposal_id=rejected, lender_id=2, creator_id=1)
     reject_button = attached_button(view=reject_view, custom_id="credit:reject")
     denied_reject = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
     await reject_button.callback(as_interaction(fake=denied_reject))
     assert denied_reject.followup.sent[0]["ephemeral"] is True
-    assert captured_reject_kwargs == {}
+    assert (
+        denied_reject.followup.sent[0]["embed"].description
+        != CreditLoanDecisionView.REJECT_FAILED_NOTICE
+    )
+    assert await _status(proposal_id=rejected) == LoanProposalStatus.PENDING
 
     allowed_reject = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await reject_button.callback(as_interaction(fake=allowed_reject))
-    assert captured_reject_kwargs == {"proposal_id": 43, "actor_id": 2}
+    assert await _status(proposal_id=rejected) == LoanProposalStatus.REJECTED
     assert allowed_reject.edits[0]["view"] is None
 
-    cancel_view = CreditLoanDecisionView(proposal_id=44, lender_id=2, creator_id=1)
+    cancel_view = CreditLoanDecisionView(proposal_id=withdrawn, lender_id=2, creator_id=1)
     cancel_button = attached_button(view=cancel_view, custom_id="credit:cancel")
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
     assert denied_cancel.followup.sent[0]["ephemeral"] is True
-    assert captured_cancel_kwargs == {}
+    assert (
+        denied_cancel.followup.sent[0]["embed"].description
+        == CreditLoanDecisionView.CANCEL_DENIED_NOTICE
+    )
+    assert await _status(proposal_id=withdrawn) == LoanProposalStatus.PENDING
 
     allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
     await cancel_button.callback(as_interaction(fake=allowed_cancel))
-    assert captured_cancel_kwargs == {"proposal_id": 44, "actor_id": 1}
+    assert await _status(proposal_id=withdrawn) == LoanProposalStatus.CANCELED
     assert allowed_cancel.edits[0]["view"] is None
 
 
@@ -199,51 +186,64 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
 ) -> None:
     """Approving is where a lender is actually debited, so the ack cannot wait for the result.
 
-    The sweep in `tests/guards/test_ack_before_write.py` reads the order off the source. This one observes it, so a defer that is
-    present but unreachable — moved behind a guard, or into one branch — still fails here.
+    The sweep in `tests/guards/test_ack_before_write.py` reads the order off the source. This one
+    observes it, so a defer that is present but unreachable — moved behind a guard, or into one
+    branch — still fails here.
 
     Every writer, because the panel is the surface someone edits one button of.
     """
     clicked: list[tuple[str, FakeInteraction]] = []
     acked_at_write: dict[str, bool] = {}
 
-    async def accept_and_note(**_kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
-        """Records whether the click was acknowledged before the ledger was reached."""
-        custom_id, interaction = clicked[-1]
-        acked_at_write[custom_id] = interaction.response.deferred
-        return await fake_accept_loan_proposal()
+    def noting_the_ack(
+        write: Callable[..., Awaitable[object]],
+    ) -> Callable[..., Awaitable[object]]:
+        """Wraps a ledger write to note whether the click was acknowledged before it ran."""
 
-    async def resolve_and_note(**_kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
-        """Same, for the writes that close a proposal without moving money."""
-        custom_id, interaction = clicked[-1]
-        acked_at_write[custom_id] = interaction.response.deferred
-        return await fake_cancel_loan_proposal(proposal_id=1, actor_id=1)
+        async def note_then_write(**kwargs: Any) -> object:  # noqa: ANN401 -- passes the write's own arguments through
+            custom_id, interaction = clicked[-1]
+            acked_at_write[custom_id] = interaction.response.deferred
+            return await write(**kwargs)
 
-    monkeypatch.setattr(views, "accept_loan_proposal", accept_and_note)
-    monkeypatch.setattr(views, "reject_loan_proposal", resolve_and_note)
-    monkeypatch.setattr(views, "cancel_loan_proposal", resolve_and_note)
+        return note_then_write
 
-    central = CentralBankLoanDecisionView(proposal_id=42, creator_id=1, allow_self_approval=True)
-    credit = CreditLoanDecisionView(proposal_id=43, lender_id=1, creator_id=1)
-    buttons = [
-        (central, "central_bank:approve"),
-        (central, "central_bank:reject"),
-        (central, "central_bank:cancel"),
-        (credit, "credit:approve"),
-        (credit, "credit:reject"),
-        (credit, "credit:cancel"),
-    ]
+    for write in ("accept_loan_proposal", "reject_loan_proposal", "cancel_loan_proposal"):
+        monkeypatch.setattr(views, write, noting_the_ack(write=getattr(views, write)))
 
-    for view, custom_id in buttons:
+    # alice can fund every request below and decides them; bob asked her for the personal ones.
+    await seed_participant(user_id=1, name="alice", amount=1_000)
+    buttons: list[tuple[views.LoanDecisionViewBase, str, int]] = []
+    for custom_id in ("central_bank:approve", "central_bank:reject", "central_bank:cancel"):
+        central = await create_central_bank_loan_request(
+            borrower_id=1, borrower_name="alice", amount=100
+        )
+        view = CentralBankLoanDecisionView(
+            proposal_id=central.proposal_id, creator_id=1, allow_self_approval=True
+        )
+        buttons.append((view, custom_id, 1))
+    for custom_id, presser_id in (
+        ("credit:approve", 1),
+        ("credit:reject", 1),
+        ("credit:cancel", 2),
+    ):
+        credit = await create_personal_loan_request(
+            borrower_id=2, borrower_name="bob", lender_id=1, lender_name="alice", amount=100
+        )
+        view = CreditLoanDecisionView(proposal_id=credit.proposal_id, lender_id=1, creator_id=2)
+        buttons.append((view, custom_id, presser_id))
+
+    for view, custom_id, presser_id in buttons:
         button = attached_button(view=view, custom_id=custom_id)
-        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
+        interaction = FakeInteraction(
+            user=FakeUser(user_id=presser_id), guild_id=LENDING_GUILD, administrator=True
+        )
         clicked.append((custom_id, interaction))
         await button.callback(as_interaction(fake=interaction))
         assert interaction.edits, f"{custom_id} never edited the panel it was clicked on"
 
     # Keyed by button rather than collected in order: which of them acked first says nothing,
     # while a missing key is a button that reached no write at all and so proved nothing.
-    assert acked_at_write == {custom_id: True for _, custom_id in buttons}, (
+    assert acked_at_write == {custom_id: True for _, custom_id, _ in buttons}, (
         f"a loan button wrote before acknowledging: {acked_at_write}"
     )
 
@@ -252,40 +252,31 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Loan request views reject stale proposals and remove buttons on timeout."""
-    rejected: list[int] = []
-
-    async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
-        """Records the expired proposal rejection."""
-        rejected.append(proposal_id)
-        return fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
-            update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
-        )
-
-    monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    credit_id = await _expired_credit_request()
+    central = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=100
+    )
+    await backdate_proposal(proposal_id=central.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS)
 
     credit_message = FakeDiscordMessage()
-    credit_view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    credit_view = CreditLoanDecisionView(proposal_id=credit_id, lender_id=2, creator_id=1)
     credit_view.message = as_message(fake=credit_message)
     await credit_view.on_timeout()
 
     central_message = FakeDiscordMessage()
-    central_view = CentralBankLoanDecisionView(proposal_id=43, creator_id=1)
+    central_view = CentralBankLoanDecisionView(proposal_id=central.proposal_id, creator_id=1)
     central_view.message = as_message(fake=central_message)
     await central_view.on_timeout()
 
-    # order-contract: each `on_timeout` is awaited to completion before the next view exists.
-    assert rejected == [42, 43]
+    assert await _status(proposal_id=credit_id) == LoanProposalStatus.REJECTED
+    assert await _status(proposal_id=central.proposal_id) == LoanProposalStatus.REJECTED
     # order-contract: same sequential awaits, so cleanup is scheduled in construction order.
     assert scheduled.messages == [credit_message, central_message]
     assert credit_message.edits[0]["view"] is None
     assert central_message.edits[0]["view"] is None
-    credit_timeout_title = credit_message.edits[0]["embed"].title
-    assert credit_timeout_title is not None
-    assert "逾時" in credit_timeout_title
-    central_timeout_title = central_message.edits[0]["embed"].title
-    assert central_timeout_title is not None
-    assert "逾時" in central_timeout_title
+    assert credit_message.edits[0]["embed"].title == CreditLoanDecisionView.TIMEOUT_TITLE
+    assert central_message.edits[0]["embed"].title == CentralBankLoanDecisionView.TIMEOUT_TITLE
 
 
 @pytest.mark.parametrize(
@@ -301,19 +292,12 @@ async def test_a_loan_timeout_edit_that_fails_is_reported_and_still_cleaned_up(
     monkeypatch: pytest.MonkeyPatch, failure: Exception, level: str, traceback: bool
 ) -> None:
     """Nothing awaits a timeout, so its failure is logged here at the level its cause earns."""
-
-    async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
-        """Answers the rejection the timeout asks for."""
-        return fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
-            update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
-        )
-
-    monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
+    proposal_id = await _expired_credit_request()
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
     reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
     message = FakeDiscordMessage()
     message.edit_failure = failure
-    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view = CreditLoanDecisionView(proposal_id=proposal_id, lender_id=2, creator_id=1)
     view.message = as_message(fake=message)
 
     await view.on_timeout()
@@ -336,28 +320,26 @@ async def test_a_loan_panel_kept_open_by_a_refused_press_closes_through_it(
 
     By then the slash command's own token, the only other way to the panel, can be past its life.
     """
-
-    async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
-        """Answers the rejection the timeout asks for."""
-        return fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
-            update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
-        )
-
-    monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
+    )
     followup = FakeDiscordMessage()
     followup.edit_failure = make_not_found(message="Unknown Webhook")
-    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
     view.message = as_message(fake=followup)
     panel = FakeDiscordMessage()
     press = FakeInteraction(user=FakeUser(user_id=user_id, name="charlie"), message=panel)
     button = attached_button(view=view, custom_id=custom_id)
 
     await button.callback(as_interaction(fake=press))
+    await backdate_proposal(
+        proposal_id=proposal.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS
+    )
     await view.on_timeout()
 
     assert [(edit["embed"].title, edit["view"]) for edit in press.edits] == [
-        ("信貸申請已逾時", None)
+        (CreditLoanDecisionView.TIMEOUT_TITLE, None)
     ]
     assert (scheduled.messages, scheduled.interactions) == ([panel], [press])
     assert [sent["ephemeral"] for sent in press.followup.sent] == [True]
@@ -371,9 +353,11 @@ async def test_a_decided_loan_panel_is_deleted_through_the_deciding_press(
     Refused presses can have kept the panel open until the slash command's own token is near
     its end, so the delete cannot ride that one.
     """
-    monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_loan_proposal)
     scheduled = record_scheduled_deletes(monkeypatch=monkeypatch)
-    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100
+    )
+    view = CreditLoanDecisionView(proposal_id=proposal.proposal_id, lender_id=2, creator_id=1)
     view.message = as_message(fake=FakeDiscordMessage())
     panel = FakeDiscordMessage()
     press = FakeInteraction(user=FakeUser(user_id=1, name="alice"), message=panel)
@@ -381,7 +365,7 @@ async def test_a_decided_loan_panel_is_deleted_through_the_deciding_press(
 
     await button.callback(as_interaction(fake=press))
 
-    assert press.edits[0]["embed"].title == "信貸申請已取消"
+    assert press.edits[0]["embed"].title == CreditLoanDecisionView.CANCEL_TITLE
     assert (scheduled.messages, scheduled.interactions) == ([panel], [press])
 
 
@@ -415,7 +399,7 @@ async def test_a_press_past_the_window_closes_the_panel_as_expired(
     await button.callback(as_interaction(fake=presser))
 
     assert presser.followup.sent == []
-    assert presser.edits[0]["embed"].title == "信貸申請已逾時"
+    assert presser.edits[0]["embed"].title == CreditLoanDecisionView.TIMEOUT_TITLE
     assert presser.edits[0]["view"] is None
     assert view.is_finished()
     assert scheduled.messages == [panel]
@@ -441,7 +425,7 @@ async def test_an_administrator_rejects_a_central_bank_request_from_its_panel() 
     await reject_button.callback(as_interaction(fake=admin))
 
     assert admin.followup.sent == []
-    assert admin.edits[0]["embed"].title == "🏛️ 央行申請已拒絕"
+    assert admin.edits[0]["embed"].title == CentralBankLoanDecisionView.REJECT_TITLE
     assert (
         await approve_as_admin(proposal_id=proposal.proposal_id, actor_id=99, name="banker")
         is None

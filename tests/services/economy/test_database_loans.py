@@ -115,6 +115,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
         lender_id=10,
         lender_name="lender",
         amount=large_amount,
+        monthly_rate_bps=300,
     )
     assert proposal is not None
 
@@ -278,9 +279,19 @@ async def test_calling_personal_loans_collects_accrued_interest_owed_to_that_len
     """Calling in everything owed includes interest accrued up to now, and no other lender's loan."""
     await seed_balance(user_id=2, name="bob", amount=1_000)
     await seed_balance(user_id=3, name="carol", amount=1_000)
-    from_bob = await open_personal_loan(
-        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    asked_bob = await create_personal_loan_request(
+        borrower_id=1,
+        borrower_name="alice",
+        lender_id=2,
+        lender_name="bob",
+        amount=500,
+        monthly_rate_bps=300,
     )
+    accepted = await accept_loan_proposal(
+        proposal_id=asked_bob.proposal_id, actor_id=2, actor_name="bob"
+    )
+    assert accepted is not None
+    from_bob = accepted.contract
     from_carol = await open_personal_loan(
         borrower_id=1, borrower_name="alice", lender_id=3, lender_name="carol", amount=200
     )
@@ -554,10 +565,19 @@ async def _borrower_with_unwritten_interest() -> None:
     """Leaves alice at 1,100,000 owing 100,000 plus 5,000 interest, 2,000 of it unwritten."""
     await seed_participant(user_id=1, name="alice", amount=1_000_000)
     await seed_balance(user_id=2, name="bob", amount=100_000)
-    contract = await open_personal_loan(
-        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=100_000
+    proposal = await create_personal_loan_request(
+        borrower_id=1,
+        borrower_name="alice",
+        lender_id=2,
+        lender_name="bob",
+        amount=100_000,
+        monthly_rate_bps=300,
     )
-    await _backdate_contract(contract_id=contract.contract_id, days=50)
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob"
+    )
+    assert accepted is not None
+    await _backdate_contract(contract_id=accepted.contract.contract_id, days=50)
 
 
 async def test_the_ceiling_counts_interest_owed_but_not_yet_written() -> None:

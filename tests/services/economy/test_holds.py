@@ -2,7 +2,8 @@
 
 from types import SimpleNamespace
 import asyncio
-from collections.abc import Callable, Coroutine
+from contextlib import asynccontextmanager
+from collections.abc import Callable, Coroutine, AsyncIterator
 
 import pytest
 from pydantic import Field, BaseModel
@@ -10,6 +11,7 @@ from pydantic import Field, BaseModel
 from discordbot.typings.economy import VIP_PURCHASE_COST
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.games.seats import claim_seat, release_seats, hand_over_seats
+from discordbot.cogs.economy.embeds import ON_TABLE_NOTE
 from discordbot.cogs.games.blackjack import max_round_loss
 from discordbot.services.economy.holds import (
     spending,
@@ -201,104 +203,97 @@ async def test_a_claim_waits_out_a_debit_already_in_flight() -> None:
     await waiter
 
 
-async def test_a_transfer_runs_under_the_senders_spending_lock() -> None:
-    """A transfer waits for the sender's lock, so a table's claim and a debit never interleave."""
-    await seed_balance(user_id=1, name="alice", amount=1_000)
-    release = asyncio.Event()
+def _record_reads_under_the_spending_lock(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Records, for each hold the ledger reads, whether the reader held that user's lock.
 
-    async def claim_holding_the_lock() -> None:
-        async with spending(user_id=1):
-            await release.wait()
+    Delegates to the real lock and hold functions, so the debit itself runs unchanged.
+    """
+    locked: set[int] = set()
+    reads: list[bool] = []
 
-    claim = asyncio.create_task(claim_holding_the_lock())
-    await asyncio.sleep(0)
-    sending = asyncio.create_task(
-        transfer(sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=100)
-    )
-    await asyncio.sleep(0.05)
+    @asynccontextmanager
+    async def watched_spending(user_id: int) -> AsyncIterator[None]:
+        async with spending(user_id=user_id):
+            locked.add(user_id)
+            try:
+                yield
+            finally:
+                locked.discard(user_id)
 
-    assert not sending.done()
-    release.set()
-    await claim
-    assert await sending is not None
+    def watched_held_amount(user_id: int) -> int | None:
+        reads.append(user_id in locked)
+        return held_amount(user_id=user_id)
+
+    def watched_spendable(user_id: int, balance: int) -> int:
+        reads.append(user_id in locked)
+        return spendable(user_id=user_id, balance=balance)
+
+    monkeypatch.setattr("discordbot.services.economy.database.spending", watched_spending)
+    monkeypatch.setattr("discordbot.services.economy.database.held_amount", watched_held_amount)
+    monkeypatch.setattr("discordbot.services.economy.database.spendable", watched_spendable)
+    return reads
 
 
 @pytest.mark.parametrize(
     argnames="debit",
     argvalues=[
-        pytest.param(lambda: buy_vip(user_id=1, name="alice"), id="buy_vip"),
         pytest.param(
-            lambda: repay_personal_loans(
+            lambda _: transfer(
+                sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=100
+            ),
+            id="transfer",
+        ),
+        pytest.param(lambda _: buy_vip(user_id=1, name="alice"), id="buy_vip"),
+        pytest.param(
+            lambda _: repay_personal_loans(
                 borrower_id=1, borrower_name="alice", lender_id=2, amount=10
             ),
             id="repay_personal_loans",
         ),
         pytest.param(
-            lambda: call_personal_loans(
+            lambda _: call_personal_loans(
                 lender_id=2, borrower_id=1, borrower_name="alice", amount=10
             ),
             id="call_personal_loans",
         ),
+        pytest.param(
+            lambda proposal_id: accept_loan_proposal(
+                proposal_id=proposal_id, actor_id=1, actor_name="alice"
+            ),
+            id="accept_loan_proposal",
+        ),
     ],
 )
-async def test_every_voluntary_debit_waits_for_the_users_spending_lock(
-    debit: Callable[[], Coroutine[object, object, object]],
+async def test_every_voluntary_debit_reads_the_hold_under_the_payers_spending_lock(
+    monkeypatch: pytest.MonkeyPatch, debit: Callable[[int], Coroutine[object, object, object]]
 ) -> None:
-    """Each one queues behind a table's claim on the same wallet."""
+    """A table's claim takes the same lock, so it and a debit never interleave.
+
+    Read under the lock, the hold a claim places is either already there or placed after the
+    debit has committed; read outside it, the debit can spend what the table is about to hold.
+    """
     await seed_balance(user_id=2, name="bob", amount=1_000)
     await open_personal_loan(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
     )
-    release = asyncio.Event()
-
-    async def claim_holding_the_lock() -> None:
-        async with spending(user_id=1):
-            await release.wait()
-
-    claim = asyncio.create_task(claim_holding_the_lock())
-    await asyncio.sleep(0)
-    pending = asyncio.create_task(debit())
-    await asyncio.sleep(0.05)
-
-    assert not pending.done()
-    release.set()
-    await claim
-    await pending
-
-
-async def test_funding_a_loan_waits_for_the_lenders_spending_lock() -> None:
-    """Approving a personal loan queues behind a table's claim on the lender's wallet."""
-    await seed_balance(user_id=2, name="bob", amount=1_000)
-    proposal = await create_personal_loan_request(
-        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=200
+    asked_alice = await create_personal_loan_request(
+        borrower_id=2, borrower_name="bob", lender_id=1, lender_name="alice", amount=100
     )
-    assert proposal is not None
-    release = asyncio.Event()
+    reads = _record_reads_under_the_spending_lock(monkeypatch=monkeypatch)
 
-    async def claim_holding_the_lock() -> None:
-        async with spending(user_id=2):
-            await release.wait()
+    await debit(asked_alice.proposal_id)
 
-    claim = asyncio.create_task(claim_holding_the_lock())
-    await asyncio.sleep(0)
-    pending = asyncio.create_task(
-        accept_loan_proposal(proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob")
-    )
-    await asyncio.sleep(0.05)
-
-    assert not pending.done()
-    release.set()
-    await claim
-    assert await pending is not None
+    assert reads, "the debit never read the hold"
+    assert all(reads), "the debit read the hold outside the payer's spending lock"
 
 
 @pytest.mark.parametrize(
-    argnames=("held", "heading"),
-    argvalues=[(1_000, "### 沒有可還的餘額"), (400, "### 沒有可還給 Bob 的有效個人借款")],
+    argnames=("held", "blames_table"),
+    argvalues=[(1_000, True), (400, False)],
     ids=["table-holds-it-all", "no-such-loan"],
 )
 async def test_a_refused_repayment_blames_the_table_only_when_it_holds_everything(
-    held: int, heading: str
+    held: int, blames_table: bool
 ) -> None:
     """With money to spend, a refused repayment means there is no such loan."""
     await seed_balance(user_id=1, name="alice", amount=1_000)
@@ -311,6 +306,4 @@ async def test_a_refused_repayment_blames_the_table_only_when_it_holds_everythin
     )
 
     (sent,) = interaction.followup.sent
-    description = sent["embed"].description
-    assert description is not None
-    assert description.startswith(heading)
+    assert (ON_TABLE_NOTE in (sent["embed"].description or "")) is blames_table

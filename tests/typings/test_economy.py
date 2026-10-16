@@ -2,7 +2,12 @@
 
 import pytest
 
-from discordbot.typings.economy import apply_vip_blackjack_bonus, monthly_rate_percent_to_bps
+from discordbot.typings.economy import (
+    MAX_LOAN_MONTHLY_RATE_BPS,
+    MIN_LOAN_MONTHLY_RATE_BPS,
+    apply_vip_blackjack_bonus,
+    monthly_rate_percent_to_bps,
+)
 
 
 @pytest.mark.parametrize(
@@ -23,7 +28,13 @@ def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> N
 
 @pytest.mark.parametrize(
     argnames=("monthly_rate_percent", "expected_bps"),
-    argvalues=[(3.0, 300), (0.0, 0), (100.0, 10_000), (150.0, 10_000), (-1.0, 0)],
+    argvalues=[
+        (3.0, 300),
+        (0.0, 0),
+        (50.0, 5_000),
+        (MAX_LOAN_MONTHLY_RATE_BPS / 100 + 50, MAX_LOAN_MONTHLY_RATE_BPS),
+        (MIN_LOAN_MONTHLY_RATE_BPS / 100 - 1, MIN_LOAN_MONTHLY_RATE_BPS),
+    ],
 )
 def test_a_monthly_rate_percent_converts_to_bps_inside_the_allowed_range(
     monthly_rate_percent: float, expected_bps: int

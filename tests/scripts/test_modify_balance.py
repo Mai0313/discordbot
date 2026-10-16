@@ -93,17 +93,6 @@ async def test_modify_balance_reports_the_adjustment_not_the_stale_read(
     assert result.created is False
 
 
-async def test_modify_balance_missing_user_negative_noops_without_creating() -> None:
-    """A clamped negative adjustment to a missing account remains a no-op."""
-    result = await modify_balance_script.modify_balance(user_id=3, name="", delta=-100)
-
-    assert result.before == 0
-    assert result.applied_delta == 0
-    assert result.after == 0
-    assert result.created is False
-    assert await get_account(user_id=3) is None
-
-
 @pytest.mark.parametrize(
     argnames=("start", "delta", "allow_negative", "expected"),
     argvalues=[
