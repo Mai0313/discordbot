@@ -26,7 +26,6 @@ from discordbot.cogs.gen_reply.ask_store import AskTurn
 
 if TYPE_CHECKING:
     from nextcord.state import ConnectionState
-    from nextcord.types.user import User as UserPayload
     from nextcord.types.message import Message as MessagePayload
 
 
@@ -163,16 +162,13 @@ def rebuild_conversation(
     state = interaction._state  # noqa: SLF001 -- the connection state the interaction arrived on
     bot_author = User(
         state=state,
-        data=cast(
-            "UserPayload",
-            {
-                "id": str(bot_user.id),
-                "username": bot_user.name,
-                "discriminator": bot_user.discriminator,
-                "avatar": None,
-                "bot": True,
-            },
-        ),
+        data={
+            "id": str(bot_user.id),
+            "username": bot_user.name,
+            "discriminator": bot_user.discriminator,
+            "avatar": None,
+            "bot": True,
+        },
     )
     messages: list[Message] = []
     for turn in turns:

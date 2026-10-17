@@ -16,7 +16,7 @@ import time
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 import logfire
 from nextcord import Message
@@ -95,7 +95,7 @@ class MediaReplyRoutes(BaseModel):
     @contextlib.asynccontextmanager
     async def _delivery_window(
         self, context_task: asyncio.Task[ReplyContext]
-    ) -> AsyncIterator[asyncio.Timeout]:
+    ) -> AsyncGenerator[asyncio.Timeout]:
         """Bounds a generation by what the surface has left, and drains the context on failure.
 
         The caller enters the yielded timeout around the generation alone and delivers outside
