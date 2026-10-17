@@ -88,7 +88,7 @@ class ModelSettings(BaseModel):
             )
         if "grok" in self.name:
             return cast("list[ToolParam]", [{"type": "web_search"}, {"type": "x_search"}])
-        return cast("list[ToolParam]", [{"type": "web_search"}])
+        return [{"type": "web_search"}]
 
 
 class RuntimeModelCatalog(BaseModel):

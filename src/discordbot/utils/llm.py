@@ -10,14 +10,13 @@ a deadline of its OWN, not a guard against a hung provider. The client already b
 restate that bound for nothing.
 """
 
-from typing import cast
 import asyncio
 
 from openai import AsyncOpenAI
 import logfire
 from pydantic import BaseModel, ValidationError
 from openai.types.responses import Response
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.models import ModelSettings
 
@@ -65,9 +64,7 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
             responses = await client.responses.parse(
                 model=model.name,
                 instructions=instructions,
-                input=cast(
-                    "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
-                ),
+                input=[EasyInputMessageParam(role="user", content=user_text)],
                 text_format=text_format,
                 reasoning=model.reasoning,
                 service_tier="auto",
@@ -132,9 +129,7 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
             responses = await client.responses.create(
                 model=model.name,
                 instructions=instructions,
-                input=cast(
-                    "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
-                ),
+                input=[EasyInputMessageParam(role="user", content=user_text)],
                 reasoning=model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": end_user_id},

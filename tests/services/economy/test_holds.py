@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 import asyncio
 from contextlib import asynccontextmanager
-from collections.abc import Callable, Coroutine, AsyncIterator
+from collections.abc import Callable, Coroutine, AsyncGenerator
 
 import pytest
 from pydantic import Field, BaseModel
@@ -212,7 +212,7 @@ def _record_reads_under_the_spending_lock(monkeypatch: pytest.MonkeyPatch) -> li
     reads: list[bool] = []
 
     @asynccontextmanager
-    async def watched_spending(user_id: int) -> AsyncIterator[None]:
+    async def watched_spending(user_id: int) -> AsyncGenerator[None]:
         async with spending(user_id=user_id):
             locked.add(user_id)
             try:

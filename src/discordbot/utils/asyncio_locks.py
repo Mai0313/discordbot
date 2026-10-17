@@ -14,7 +14,7 @@ from typing import Any
 import asyncio
 from functools import partial
 from contextlib import asynccontextmanager
-from collections.abc import Callable, Coroutine, AsyncIterator
+from collections.abc import Callable, Coroutine, AsyncGenerator
 
 import logfire
 from pydantic import Field, BaseModel, PrivateAttr
@@ -114,7 +114,7 @@ class KeyedLockManager[K](BaseModel):
             self._loop = loop
 
     @asynccontextmanager
-    async def hold(self, key: K) -> AsyncIterator[None]:
+    async def hold(self, key: K) -> AsyncGenerator[None]:
         """Holds the per-key lock for the duration of the context, refcounting the key."""
         self._bind()
         lock = self._locks.setdefault(key, asyncio.Lock())

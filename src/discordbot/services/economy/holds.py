@@ -14,7 +14,7 @@ goes with it.
 
 from typing import Protocol
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry
 
@@ -73,7 +73,7 @@ def spendable(user_id: int, balance: int) -> int:
 
 
 @asynccontextmanager
-async def spending(user_id: int) -> AsyncIterator[None]:
+async def spending(user_id: int) -> AsyncGenerator[None]:
     """Serializes the user's voluntary debits, check through commit, against a table's claim."""
     async with _spending.hold(key=user_id):
         yield

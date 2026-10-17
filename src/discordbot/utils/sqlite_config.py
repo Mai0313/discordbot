@@ -10,7 +10,7 @@ schema creation and the session factory.
 
 from typing import Any, Protocol, runtime_checkable
 import contextlib
-from collections.abc import Awaitable, AsyncIterator
+from collections.abc import Awaitable, AsyncGenerator
 
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 from sqlalchemy import MetaData, event
@@ -139,7 +139,7 @@ class SqliteBootstrap(BaseModel):
             self._ready_for = engine
 
     @contextlib.asynccontextmanager
-    async def open_session(self, engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    async def open_session(self, engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
         """Opens an async session on the module's current engine, its schema ensured first.
 
         A module opens every session here, so no caller can reach a table before it exists.
