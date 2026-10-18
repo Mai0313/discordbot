@@ -19,7 +19,7 @@ uv sync --all-groups
 cp .env.example .env
 ```
 
-Fill in the Discord and OpenAI-compatible endpoint values in `.env`. Set `GEMINI_API_KEY` (a Google AI Studio key) to enable the direct-to-Google features: video and music generation, Gemini Files API uploads of attachments and linked-post media, YouTube video answers, and deep research.
+Fill in `.env` following the comments in `.env.example`.
 
 Run the bot:
 
@@ -27,29 +27,21 @@ Run the bot:
 uv run discordbot
 ```
 
-Useful checks:
+The `scripts/*_dev.py` smoke tests call the live APIs using the credentials in `.env`, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run `uv run python -m scripts.<name>`. `make gen-docs` regenerates `docs/` and the `mkdocs.yml` nav from the README files, `CONTRIBUTING.md`, and the Python sources.
 
-```bash
-uv run pytest
-uvx pre-commit run -a
-make fmt
-make gen-docs
+## Architecture
+
+Imports under `src/discordbot/` flow left to right only (`tests/guards/test_package_layering.py`):
+
+```mermaid
+flowchart LR
+    CLI["cli.py<br/>Entry point"] --> Cogs["cogs/&lt;name&gt;/<br/>One cog per dir"]
+    Cogs --> Services["services/<br/>Domain engines"]
+    Services --> Utils["utils/<br/>Helpers"]
+    Utils --> Typings["typings/<br/>Models & settings"]
 ```
 
-`make fmt` runs the same project-level check as `uvx pre-commit run -a`. `make gen-docs` regenerates `docs/` from the README files, `CONTRIBUTING.md`, and Python sources.
-
-## Project Layout
-
-- `src/discordbot/cli.py`: bot entry point, intent setup, cog loading, global message reward, and application-command sync.
-- `src/discordbot/cogs/`: nextcord cogs, one directory each. `cogs/<name>/cog.py` is the module the loader imports; everything beside it in that directory is that cog's own code.
-- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store, the per-platform link readers in `services/platforms/`). Discord-free, and never imports from `cogs/`, both enforced by `tests/guards/test_package_layering.py`.
-- `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
-- `src/discordbot/utils/`: generic helpers — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
-- `tests/`: pytest suite.
-- `scripts/`: local maintenance and development tools. The `*_dev.py` scripts are smoke tests against the live APIs, using the credentials in `.env` the way the bot does, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run one with `uv run python -m scripts.<name>`.
-- `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
-- `docker/` and `docker-compose.yaml`: container build and runtime setup.
-- `.github/workflows/`: CI, code quality, docs deploy, release, and image publishing workflows.
+Any layer may import from the layers to its right, never to its left; `services/` is Discord-free, and a cog directory never imports from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`.
 
 ## Workflow
 
@@ -66,12 +58,7 @@ docs: simplify user README
 - Add or update tests for behavior changes.
 - Update user-facing docs when commands, configuration, or visible behavior changes.
 - For slash-command behavior, update `src/discordbot/cogs/gen_reply/capabilities.md` and the command table of all three READMEs in the same change, and keep `tests/guards/test_capabilities.py` passing. That English document is injected into the reply so the bot can answer "what can you do" in the asker's language; the guard covers group subcommands, so each `/<group> <subcommand>` needs its own line there.
-- Run local checks before opening the PR:
-
-```bash
-uv run pytest
-uvx pre-commit run -a
-```
+- Run the local checks in [Tests And Quality Gates](#tests-and-quality-gates) before opening the PR.
 
 ## Code Conventions
 
@@ -88,7 +75,6 @@ def setup(bot: commands.Bot) -> None:
 `async def setup` is not safe here: cogs load inside `DiscordBot()` before any event loop runs, so nextcord's attempt to schedule it raises and boot aborts with `ExtensionFailed`.
 
 - Slash commands take their English `name` and `description` as the defaults, plus `name_localizations` and `description_localizations` for `Locale.zh_TW` and `Locale.ja`.
-- A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/guards/test_package_layering.py` enforces this.
 - Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
 - Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`. A new one goes into `.env.example` in the same change: it is the only settings list a deployer sees.
 - Keep `Field(description=..., examples=...)` populated for configurable values. These descriptions document the environment contract.
@@ -146,49 +132,26 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - `LOG_LEVEL` sets the console and log-file floor, defaulting to `debug` so `./data/logs` holds the full trace.
 - Feature usage is not logged, it is recorded: one JSON line per slash invocation and per AI reply in `./data/usage/<YYYY-MM>.jsonl`, so an occasional stocktake can find the features nobody uses. Those records are outside `./data/logs` on purpose — that file is debug-level, hand-cleaned and gated on `LOG_LEVEL`, so a history kept inside it dies with it. They hold numeric ids plus the Discord username as a label, never message content or command arguments, and nothing prunes them. `USAGE_LOG_ENABLED=false` turns recording off.
 
-## LLM And Media Paths
+## Domain Invariants And Documentation
 
-- Runtime LLM calls go through `AsyncOpenAI` clients and the OpenAI Responses API, apart from the direct-to-Google paths below.
-- `OPENAI_BASE_URL` usually points at LiteLLM. Provider-specific behavior should be expressed through model names, `ModelSettings`, tools, or `extra_body`.
-- Do not import a provider-native SDK such as `anthropic` into a request path. `google-genai` is allowed only on the direct-to-Google paths that [AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#backend-and-invariants) lists. Development scripts may use any of them.
-- Runtime model strings for `./src` live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; update that catalog instead of hardcoding names at call sites.
-- Preserve the reaction-based progress UX for AI replies. The bot should not send intermediate "thinking" messages there.
-- A link expansion is the exception, and it takes video delivery's shape rather than a status message of its own: the cog replies with one subtext line as it starts and edits that same message into the finished card, so the card cannot drift away from the link while the post is being read. A failure deletes it and the reaction is the whole report. That placeholder is persisted, so a restart runs the interrupted expansion again instead of leaving a line that never resolves. It is also claimed before any reaction goes on, since reactions share a per-channel rate-limit bucket that a message send does not.
-- An auto-expansion cog subclasses `ExpansionCog` (`src/discordbot/utils/expansion_cog.py`), which owns the listener, the reply slot, the restart sweep, the failure classification and one reaction vocabulary — ✅ delivered, ⏱️ refused or stalled and worth retrying, ⚠️ nothing showable in what the platform served, ❌ the bot broke. Which one a read failure earns comes off the exception's class (`src/discordbot/utils/link_errors.py`), so no cog decides it. A cog supplies its URL pattern, its constants, a `read` and a `build_delivery`, or, subclassing `ConversationExpansionCog` (a platform read in one blocking call), which writes both, its reader and the card's platform-specific hooks; only the card differs per platform. `tests/guards/test_expansion_contract.py` holds every cog to that and fails until a new source is written into it.
-- An expansion never posts a second message. Anything the card cannot carry is counted inside it — a follow-up reply lands wherever the channel has got to, which is exactly what the placeholder exists to prevent.
-- Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL. A lone file too big to upload is posted as its hosted link alone, since a second URL stops Discord rendering the inline player.
-
-## Long-Term Memory
-
-The memory store's invariants live in the [Memory section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#memory); read it before changing anything that reads or writes `data/memories`.
-
-## Economy And Games
-
-The ledger and casino invariants live in the [Economy](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#economy) and [Games](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#games) sections of AGENTS.md; read them before changing anything that moves 虛擬歡樂豆.
+Subsystem invariants — the [AI pipeline](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#ai-pipeline), [link-expansion cogs](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#other-cogs), [long-term memory](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#memory), [economy](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#economy), [games](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#games), and the [documentation split](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split) — live in [AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md); read the relevant section before changing those paths. `CONTRIBUTING.md` itself is developer-facing and stays in English.
 
 ## Tests And Quality Gates
 
-The pytest configuration lives in `pyproject.toml`.
+The pytest configuration lives in `pyproject.toml`, and the CI trigger rules live in `.github/workflows/test.yml`.
 
 ```bash
 uv run pytest
+uv run pytest <path> --no-cov
 ```
 
-Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`. What decides whether they run is the diff, never the branch name: the suite is skipped when every changed file is Markdown, and `src/discordbot/cogs/gen_reply/capabilities.md` and the three READMEs do not count as Markdown there because `tests/guards/test_capabilities.py` reads them.
+Coverage must stay at or above 80% on the full suite (`--no-cov` skips that gate on a focused run). Async tests that record nested test-double calls in a list must compare a stable invariant such as a mapping, set, `Counter`, or sorted value; an exact sequence assertion needs an adjacent `# order-contract: <reason>` explaining the production guarantee (`tests/guards/test_async_order_contracts.py`).
 
-Async tests that record nested test-double calls in a list must compare a stable invariant such as a mapping, set, `Counter`, or sorted value. An exact sequence assertion needs an adjacent `# order-contract: <reason>` explaining the production guarantee. When completion order is the behavior under test, control it with an event or barrier instead of relying on scheduler timing.
-
-The pre-commit gate is the canonical local quality check:
+The pre-commit gate (`make fmt`), configured in `.pre-commit-config.yaml`, is the canonical local quality check:
 
 ```bash
 uvx pre-commit run -a
 ```
-
-It runs Ruff formatting and linting, ty type checking, Markdown formatting, ShellCheck, codespell, gitleaks, uv lock checks, and standard file hygiene hooks.
-
-## Documentation
-
-Which document is for whom, and what must move together, lives in the [Documentation Split section of AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split). `CONTRIBUTING.md` itself is developer-facing and stays in English.
 
 ## Text Formatting
 
