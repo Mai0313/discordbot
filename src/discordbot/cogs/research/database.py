@@ -28,8 +28,8 @@ from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
-# Lifecycle of a research session, persisted in the `phase` column. A stored value outside this
-# set (a legacy `planning` row) is inert: nothing selects it.
+# Lifecycle of a research session, persisted in the `phase` column. Any stored value outside
+# this set is inert: nothing selects it.
 ResearchPhase = Literal["researching", "done", "failed", "cancelled"]
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
@@ -45,20 +45,17 @@ class ResearchSessionRow(Base):
     """One launched deep-research thread.
 
     Attributes:
-        thread_id: Discord thread ID; primary key.
-        owner_id: Discord user ID that launched the research.
-        channel_id: The thread's parent channel ID.
-        guild_id: Guild ID. Nullable in the schema, but never written `None`: a launch outside a
-            guild text channel is refused before any row exists.
-        source_message_id: The message the thread was anchored to.
-        agent: The Gemini agent string currently running this session.
-        interaction_id: The running interaction's id; `None` before it starts.
-        brief: The research brief. Nothing reads it back, but it is the row's only human-readable
-            identity, and the column is `NOT NULL` with no server default, so dropping it from the
-            model would break every INSERT against an already-deployed `reply.db`.
-        phase: Lifecycle phase (see `ResearchPhase`).
-        created_at: First-write timestamp.
-        updated_at: Latest-write timestamp.
+        thread_id (Mapped[int]): Discord thread ID; primary key.
+        owner_id (Mapped[int]): Discord user ID that launched the research.
+        channel_id (Mapped[int]): The thread's parent channel ID.
+        guild_id (Mapped[int | None]): Guild ID; nullable in the schema, never written `None`.
+        source_message_id (Mapped[int]): The message the thread was anchored to.
+        agent (Mapped[str]): The Gemini agent string running this session.
+        interaction_id (Mapped[str | None]): Running interaction ID, or `None` before creation.
+        brief (Mapped[str]): Research brief; kept `NOT NULL` for existing `reply.db` tables.
+        phase (Mapped[str]): Lifecycle phase (`ResearchPhase`).
+        created_at (Mapped[datetime]): First-write timestamp.
+        updated_at (Mapped[datetime]): Latest-write timestamp.
     """
 
     __tablename__ = "research"
@@ -79,12 +76,7 @@ class ResearchSessionRow(Base):
 
 
 class PersistentResearchSession(BaseModel):
-    """A research session row read back from `reply.db`.
-
-    Only what the resume sweep reads. Every other column stays in the table (dropping one would
-    break every INSERT against a deployed `reply.db`, which has no migration mechanism) but is not
-    projected here.
-    """
+    """A research session row read back from `reply.db` for restart resume."""
 
     thread_id: int = Field(..., description="Discord thread ID; primary key.")
     owner_id: int = Field(..., description="Discord user ID that launched the research.")
@@ -98,7 +90,7 @@ _database = SqliteBootstrap(metadata=Base.metadata)
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Opens an async session on the current reply.db engine, the `research` table ensured."""
+    """Returns an async session context manager on `_engine` with the `research` table ensured."""
     return _database.open_session(engine=_engine)
 
 
@@ -121,7 +113,17 @@ async def insert_session(  # noqa: PLR0913 -- one row's columns are all per-call
     agent: str,
     brief: str,
 ) -> None:
-    """Records a just-opened thread as `researching`, before its interaction id exists."""
+    """Records a newly opened thread as `researching` before its interaction ID exists.
+
+    Args:
+        thread_id (int): Discord thread ID; primary key.
+        owner_id (int): Discord user ID that launched the research.
+        channel_id (int): Parent channel ID of the thread.
+        guild_id (int | None): Discord guild ID.
+        source_message_id (int): Anchor message ID.
+        agent (str): Gemini agent identifier.
+        brief (str): Research brief text.
+    """
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -143,7 +145,12 @@ async def insert_session(  # noqa: PLR0913 -- one row's columns are all per-call
 
 
 async def set_interaction(thread_id: int, interaction_id: str) -> None:
-    """Records the running interaction id for a thread, so a restart can re-attach to it."""
+    """Records the running `interaction_id` for `thread_id`.
+
+    Args:
+        thread_id (int): Discord thread ID of the session.
+        interaction_id (str): Gemini interaction ID to persist.
+    """
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -155,7 +162,12 @@ async def set_interaction(thread_id: int, interaction_id: str) -> None:
 
 
 async def set_phase(thread_id: int, phase: ResearchPhase) -> None:
-    """Transitions a session to a new lifecycle phase."""
+    """Transitions `thread_id`'s session to `phase`.
+
+    Args:
+        thread_id (int): Discord thread ID of the session.
+        phase (ResearchPhase): New lifecycle phase.
+    """
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -167,11 +179,11 @@ async def set_phase(thread_id: int, phase: ResearchPhase) -> None:
 
 
 async def list_resumable(created_before: datetime) -> list[PersistentResearchSession]:
-    """Returns sessions launched before `created_before` and still `researching`.
+    """Returns sessions launched before `created_before` that are still `researching`.
 
     Args:
-        created_before: When this process started. A launch can run before `on_ready` does, so
-            a session created since is one this process is still running.
+        created_before (datetime): Process start timestamp; excludes sessions launched by the
+            current process before `on_ready`.
     """
     async with open_session() as session:
         result = await session.execute(
@@ -185,10 +197,10 @@ async def list_resumable(created_before: datetime) -> list[PersistentResearchSes
 
 
 async def active_thread_for_owner(owner_id: int) -> int | None:
-    """Returns an owner's in-flight research thread id, or `None` when they have none.
+    """Returns `owner_id`'s in-flight research thread ID, or `None` when none is active.
 
-    The concurrency guard: an owner may only have one `researching` session at a time, so a new
-    launch is refused while one is active.
+    Args:
+        owner_id (int): Discord user ID to check.
     """
     async with open_session() as session:
         result = await session.execute(

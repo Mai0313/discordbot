@@ -4,14 +4,15 @@ from nextcord import Guild
 
 
 def channel_is_public(guild: Guild | None, channel: object) -> bool:
-    """Whether @everyone can view `channel`, so its content is not private.
+    """Returns whether `@everyone` can view `channel`.
 
-    `channel` is whatever messageable a message or an interaction carries, so visibility is read
-    defensively (mirrors `utils.discord_embeds`): a private thread is never public; a thread
-    otherwise inherits its parent channel's `@everyone` visibility; a regular guild channel uses
-    its own. No guild, or any channel whose permissions cannot be resolved, counts as non-public
-    — so content from channels members cannot see never enters the server-wide memory any member
-    can read via `/memory server show`.
+    A private thread is never public; any other thread inherits its parent channel's `@everyone`
+    visibility; a regular guild channel uses its own. Missing guild context or unresolvable
+    permissions count as non-public.
+
+    Args:
+        guild (Guild | None): Guild that owns `channel`, or None outside a guild.
+        channel (object): Channel or thread carried by a message or interaction.
     """
     if guild is None:
         return False

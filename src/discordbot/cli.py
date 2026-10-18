@@ -88,14 +88,9 @@ class DiscordBot(commands.Bot):
     def _load_cogs_sync(self) -> None:
         """Loads every cog directory under `cogs/`.
 
-        A cog is a directory holding both `__init__.py` and `cog.py`, the latter being
-        the module nextcord reads `setup` off; everything else in the directory is that
-        cog's own helpers. The scan is one level deep on purpose: a nested helper
-        subpackage such as `gen_reply/link_sources/` carries an `__init__.py` too, and
-        handing one to `load_extensions` raises `NoEntryPointError` and aborts boot
-        under `stop_at_error=True`. A `_`-prefixed entry is skipped, which is what keeps
-        `__pycache__` from raising; anything else that is not a cog raises here rather
-        than being skipped, so a half-finished move cannot silently stop loading a cog.
+        Scans one level deep for non-`_`-prefixed directories holding both `__init__.py` and
+        `cog.py`, raising on any directory missing either so an incomplete move cannot fail
+        silently while nested helper packages are not mistaken for extensions.
         """
         cog_dir = Path(__file__).parent / "cogs"
         cog_files: list[str] = []
@@ -114,30 +109,28 @@ class DiscordBot(commands.Bot):
     def get_interaction(
         self, data: "InteractionPayload", cls: type[Interaction[Any]] = AttachmentLimitInteraction
     ) -> Interaction[Any]:
-        """Builds every gateway interaction as one that keeps Discord's attachment size limit.
+        """Returns a gateway interaction that preserves Discord's attachment size limit.
 
-        `upload_limit_for` reads that limit off the interaction, so without this override a
-        slash command replying with media falls back to the guild's boost tier and never sees
-        the invoking user's Nitro allowance.
+        Without this override, `upload_limit_for` cannot read the invoking user's Nitro
+        upload allowance off the interaction and falls back to the guild's boost tier.
+
+        Args:
+            data ("InteractionPayload"): Raw interaction payload from the Discord gateway.
+            cls (type[Interaction[Any]]): Interaction class to instantiate.
         """
         return cls(data=data, state=self._connection)
 
     async def on_connect(self) -> None:
-        """Called when the bot has successfully connected to Discord.
+        """Rebuilds the local application-command registry and starts background tasks on connect.
 
-        The rebuild is what this override owes the `Client.on_connect` it replaces.
-        `ConnectionState.parse_ready` empties the local application-command registry on every
-        READY, and an empty one sends the next interaction whose guild does not resolve — a DM,
-        a group DM, a user install in a server the bot is not in — down nextcord's lazy-load
-        path into a global `delete_unknown` pass that deletes every command Discord holds, with
-        nothing in `data/logs` saying so. One reconnect and one DM command are enough, and the
-        commands stay gone until the next restart re-syncs them. It runs before the `user` guard
-        because a registry left empty is not a logging concern, and it reaches no API. The
-        re-sync the base method also does stays dropped on purpose; `on_ready` owns that, once
-        per process.
+        `ConnectionState.parse_ready` empties the local command registry on every `READY`;
+        leaving it empty causes nextcord's lazy-load path on a guildless interaction (DM,
+        group DM, or user install) to run a global `delete_unknown` pass that wipes every
+        registered command. `add_all_application_commands` restores the local registry
+        without calling the API, while `on_ready` owns the one-time command sync.
         """
         self.add_all_application_commands()
-        # Started at READY, ahead of `on_ready`'s command sync, which can raise; a READY that
+        # Started at `READY`, ahead of `on_ready`'s command sync, which can raise; a `READY` that
         # finds the loop already running leaves it be.
         if not self.price_table_task.is_running():
             self.price_table_task.start()
@@ -147,20 +140,11 @@ class DiscordBot(commands.Bot):
         logfire.info("Bot Connected", bot_name=bot_user.name, bot_id=bot_user.id)
 
     async def _count_registered_commands(self) -> int | None:
-        """How many application commands Discord holds, read BEFORE the sync overwrites the answer.
+        """Returns how many global application commands Discord holds before syncing, or None on error.
 
-        A zero here against a non-zero local count is the entire signature of the registry
-        having been wiped, and no other line in the process says it: the sync repairs the
-        damage on its way past and leaves the log looking like an ordinary boot.
-
-        `sync_all_application_commands` makes this identical request itself and takes a `data=`
-        to skip it, so this looks like a free saving. It is not: `with_localizations=False` is
-        what keeps a count cheap, while the sync's deep check compares `name_localizations` and
-        `description_localizations`, so feeding it this payload would fail every command and
-        re-upsert all of them on every boot.
-
-        Returns:
-            The count Discord reports, or None when it could not be read.
+        Queries with `with_localizations=False` to keep the diagnostic check cheap; do not pass
+        the returned payload to `sync_all_application_commands(data=...)`, which compares
+        localization dicts and would re-upsert every command on every boot.
         """
         application_id = self.application_id
         if application_id is None:
@@ -181,20 +165,17 @@ class DiscordBot(commands.Bot):
         return len(registered)
 
     async def on_error(self, event_method: str, *args: object, **kwargs: object) -> None:
-        """Records an exception that nextcord's own default would print where nothing reads it.
+        """Logs an unhandled event-handler exception through logfire.
 
-        `Client._run_event` funnels every unhandled exception from every event handler and
-        every cog listener here, and the default implementation prints it to `sys.stderr`,
-        which `_TeeStream` does not tee into `./data/logs` — the same gap
-        `on_application_command_error` exists to close, one door wider.
-
-        Called from inside `_run_event`'s `except` block, so the live exception is still on
-        `sys.exc_info()`; a None there is a no-op for logfire rather than a second failure.
+        `Client._run_event` funnels unhandled exceptions from event handlers and cog listeners
+        here, and nextcord's default implementation prints only to `sys.stderr`, which never
+        reaches `./data/logs`. Called inside `_run_event`'s `except` block while the active
+        exception is on `sys.exc_info()`.
 
         Args:
-            event_method: Name of the event whose handler raised.
-            args: Positional arguments the handler was dispatched with.
-            kwargs: Keyword arguments the handler was dispatched with.
+            event_method (str): Name of the event whose handler raised.
+            args (object): Positional arguments the handler was dispatched with.
+            kwargs (object): Keyword arguments the handler was dispatched with.
         """
         logfire.error(
             "Unhandled exception in an event handler",
@@ -269,10 +250,9 @@ class DiscordBot(commands.Bot):
     async def price_table_task(self) -> None:
         """Loads the LiteLLM price table, re-checking upstream while degraded and daily after.
 
-        `tasks.Loop` runs its body immediately, so the first pass is the warm-up that keeps
-        the first AI reply from stalling on a synchronous network call; once upstream has
-        served, every later one is a branch until that table is a day old. Off the event loop
-        for the same reason the warm-up always was.
+        `tasks.Loop` runs its first iteration immediately on start, warming the cache off the
+        event loop so the first AI reply does not stall on a synchronous network call; once
+        upstream has served, subsequent passes no-op until the cached table is a day old.
         """
         try:
             await asyncio.to_thread(refresh_model_info)
@@ -291,7 +271,7 @@ class DiscordBot(commands.Bot):
         credit or participation write is logged and swallowed.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
         if message.author == self.user or message.author.bot:
             return
@@ -354,22 +334,21 @@ class DiscordBot(commands.Bot):
     async def on_application_command_error(
         self, interaction: Interaction[commands.Bot], exception: ApplicationError
     ) -> None:
-        """Records a slash command that raised, which nothing else here does, and tells its caller.
+        """Logs an unhandled slash-command error and notifies the caller when already acknowledged.
 
         No prefix command or `on_command_*` handler can fire: `on_message` never calls
-        `process_commands`, and `command_prefix` is never passed to `commands.Bot`, so nextcord
-        defaults it to `()`, which no message's content starts with. Adding one takes both a
-        prefix and that call.
+        `process_commands` and `command_prefix` defaults to `()`. Nextcord's default handler
+        prints only to `sys.stderr`, which `_TeeStream` does not tee into `./data/logs`.
 
-        nextcord's own default here prints the traceback to `sys.stderr`, while `./data/logs`
-        receives only logfire's console output (`_TeeStream`), so without this override a failing slash
-        command leaves no line in the file this project is debugged from.
+        An unanswered interaction shows Discord's own failure notice, whereas an answered or
+        deferred one shows none and leaves a deferred placeholder hanging, so this handler
+        sends a follow-up notice. Because the failure may happen after a write committed, the
+        notice warns that partial changes may have taken effect; a command that reports its
+        own failure must catch it rather than re-raise.
 
-        An unanswered interaction already shows Discord's own failure notice, but one the command
-        answered or deferred shows none, and a deferred one keeps its thinking placeholder for
-        good, so the caller is told here. The raise can come after the command's write committed,
-        so the notice never says nothing happened. A command that reports its own failure
-        therefore catches it rather than re-raising, or the caller is told twice.
+        Args:
+            interaction (Interaction[commands.Bot]): Interaction whose command raised.
+            exception (ApplicationError): Exception raised by the application command.
         """
         # nextcord wraps a command-body failure in ApplicationInvokeError, so report the
         # unwrapped type to name the real defect.
@@ -403,8 +382,7 @@ class DiscordBot(commands.Bot):
             )
             return
         # The first followup after a defer fills its placeholder and keeps the defer's flag, so a
-        # public defer's notice is public and expires like the commands' own public replies. That
-        # the returned flags are the kept ones is read off Discord's docs rather than measured.
+        # public defer's notice is public and expires like the commands' own public replies.
         if not notice.flags.ephemeral:
             schedule_public_message_delete(
                 message=notice,

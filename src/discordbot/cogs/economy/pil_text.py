@@ -11,7 +11,12 @@ _WARNED_FALLBACK_WEIGHTS: set[str] = set()
 
 
 def load_font(size: int, bold: bool) -> Font:
-    """Loads a CJK-capable font when available, else the Pillow default."""
+    """Returns a CJK-capable font when available, else the Pillow default.
+
+    Args:
+        size (int): Font size in points.
+        bold (bool): Whether to load the bold weight.
+    """
     candidates = (
         (
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
@@ -44,13 +49,26 @@ def load_font(size: int, bold: bool) -> Font:
 
 
 def text_width(draw: ImageDraw.ImageDraw, text: str, font: Font) -> int:
-    """Returns the rendered pixel width of `text`."""
+    """Returns the rendered pixel width of `text`.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Drawing context used to measure `text`.
+        text (str): Text to measure.
+        font (Font): Font used to measure `text`.
+    """
     bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
     return int(bbox[2] - bbox[0])
 
 
 def fit_text(draw: ImageDraw.ImageDraw, text: str, font: Font, max_width: int) -> str:
-    """Truncates `text` with an ellipsis so it fits within `max_width` pixels."""
+    """Returns `text` truncated with an ellipsis to fit within `max_width` pixels.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Drawing context used to measure `text`.
+        text (str): Text to fit.
+        font (Font): Font used to measure `text`.
+        max_width (int): Maximum allowed width in pixels.
+    """
     if text_width(draw=draw, text=text, font=font) <= max_width:
         return text
     suffix = "..."
@@ -75,7 +93,15 @@ def draw_text_right(
     font: Font,
     fill: tuple[int, int, int],
 ) -> None:
-    """Draws `text` with its right edge anchored at x."""
+    """Draws `text` with its right edge anchored at `xy`.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Drawing context to draw on.
+        text (str): Text to draw.
+        xy (tuple[int, int]): Right-edge x and top y coordinates.
+        font (Font): Font to render with.
+        fill (tuple[int, int, int]): RGB fill color.
+    """
     right, y = xy
     draw.text(
         xy=(right - text_width(draw=draw, text=text, font=font), y),
@@ -92,7 +118,15 @@ def draw_text_center(
     font: Font,
     fill: tuple[int, int, int],
 ) -> None:
-    """Draws `text` centered horizontally around a point."""
+    """Draws `text` centered horizontally around `center`.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Drawing context to draw on.
+        text (str): Text to draw.
+        center (tuple[int, int]): Center x and top y coordinates.
+        font (Font): Font to render with.
+        fill (tuple[int, int, int]): RGB fill color.
+    """
     x, y = center
     width = text_width(draw=draw, text=text, font=font)
     draw.text(xy=(x - width // 2, y), text=text, font=font, fill=fill)

@@ -17,22 +17,16 @@ _MAX_IMAGE_DIMENSION = 3072
 
 
 def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> LoadedMedia:
-    """Downscales an image to the provider's effective resolution and re-encodes it.
+    """Returns `payload` downscaled to the provider's effective resolution and re-encoded.
 
-    Photos re-encode as JPEG quality 95 (near-lossless, a fraction of PNG photo
-    bytes); images with transparency or an indexed palette stay PNG (alpha must
-    survive, and JPEG artifacts are visible on flat-color palette graphics);
-    GIFs and other animated images pass through untouched so motion context
-    survives. Anything PIL cannot decode passes through unchanged, as does an
-    image already within the cap: those come back byte-identical, never re-encoded.
+    Photos re-encode as JPEG quality 95; images with transparency or an indexed palette stay PNG;
+    GIFs and other animated images pass through untouched so motion context survives. Anything PIL
+    cannot decode passes through unchanged, as does an image already within the cap.
 
     Args:
-        payload: The original encoded image bytes.
-        content_type: The image's MIME type, used to pick passthrough cases.
-        filename: The source's upload filename, logged when the payload cannot be decoded.
-
-    Returns:
-        The (possibly re-encoded) image bytes and their MIME type.
+        payload (bytes): The original encoded image bytes.
+        content_type (str): The image's MIME type, used to pick passthrough cases.
+        filename (str): The source's upload filename, logged when the payload cannot be decoded.
     """
     unchanged = LoadedMedia(data=payload, mime_type=content_type)
     if content_type == "image/gif":
@@ -68,17 +62,14 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
 
 
 def get_image_data(image_file: str) -> LoadedMedia:
-    """Fetches an image URL as one still, downscaled to the provider's effective resolution.
+    """Returns the image at `image_file` as one downscaled still and its MIME type.
 
     Unlike an attachment, an animated image keeps only its first frame: linked GIFs are mostly
     GIF-picker clips of several megabytes, and a reply's history can carry several of them.
     A still with transparency stays PNG so its alpha survives; anything else becomes JPEG.
 
     Args:
-        image_file: `http(s)://...` URL.
-
-    Returns:
-        The re-encoded still and its MIME type.
+        image_file (str): `http(s)://...` URL.
 
     Raises:
         requests.RequestException: The URL could not be fetched, or is not `http(s)://`.
@@ -100,15 +91,13 @@ def get_image_data(image_file: str) -> LoadedMedia:
 
 
 def to_data_uri(data: bytes, mime_type: str | None = None) -> str:
-    """Encodes bytes already in hand as a `data:<mime>;base64,...` URI.
+    """Returns `data` encoded as a `data:<mime>;base64,...` URI.
 
     Args:
-        data: The payload to inline.
-        mime_type: The payload's MIME type, or None to sniff an image type from its first 12
-            bytes (enough for every format recognised here), `image/jpeg` when unrecognised.
-
-    Returns:
-        A data URI carrying the MIME type and the base64-encoded payload.
+        data (bytes): The payload to inline.
+        mime_type (str | None): The payload's MIME type, or None to sniff an image type from its
+            first 12 bytes (enough for every format recognised here), `image/jpeg` when
+            unrecognised.
     """
     if mime_type is None:
         header = data[:12]

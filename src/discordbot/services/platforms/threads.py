@@ -43,7 +43,7 @@ from discordbot.services.platforms.file_downloads import stream_to_file
 # Matches the two shapes that name a post on both threads.net and threads.com: the
 # canonical `@user/post/<code>`, and the `share/<code>` form the app's share button copies. Both
 # paths are anchored, so a profile or any other Threads page still matches nothing. The shortcode
-# + query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
+# + query tail is matched as ASCII URL characters only and must end on `[A-Za-z0-9_-]` (the only
 # characters a valid Threads code or query value ends in), optionally followed by the trailing
 # slash both share buttons copy. Restricting to ASCII stops the match at any non-ASCII terminator,
 # and the trailing class strips ASCII sentence punctuation, so a link written mid-sentence is
@@ -66,7 +66,7 @@ _POST_PATH_RE = re.compile(pattern=r"^/@[^/]+/post/([^/]+)/?$")
 # Where a Threads fetch has to be aimed, and every spelling of the host that is aimed there.
 # Threads lives on `https://www.threads.com` and 301s everything else to it, so normalising the
 # other way costs a redirect on every single read. Measured logged out with this module's own
-# headers (#394): `www.threads.net`, `threads.net` and bare `threads.com` each answer 301 to the
+# headers: `www.threads.net`, `threads.net` and bare `threads.com` each answer 301 to the
 # canonical form, `http://` answers 301 to `https://`, and the canonical form answers 200 with
 # the same page payload the `.net` host redirected to. Only these hosts are rewritten, so a
 # redirect that ever lands somewhere else is fetched where it actually landed rather than
@@ -109,7 +109,7 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def clean_url(self) -> str:
-        """The cleaned and normalised URL, aimed where Threads actually answers.
+        """Returns the URL on the canonical origin, with query parameters and any trailing slash removed.
 
         Every accepted spelling of the host collapses onto `https://www.threads.com`, which is
         the one form the platform serves without a redirect; see `_CANONICAL_THREADS_ORIGIN` for
@@ -119,9 +119,6 @@ class ThreadsURL(BaseModel):
         without one, so leaving it would publish two spellings of the same post and make the two
         unequal as strings. Trimming is safe on any path this module accepts, every one of which
         names a post rather than a directory.
-
-        Returns:
-            The URL on the canonical origin, with query parameters and any trailing slash removed.
         """
         parsed = urlparse(self.raw_url)
         path = parsed.path.rstrip("/")
@@ -132,15 +129,12 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def post_code(self) -> str:
-        """The post short code the URL names.
+        """Returns the post short code the URL names, or an empty string when not a canonical post URL.
 
         Read off the canonical `/@<user>/post/<code>` path rather than taken as the last path
         segment, so a URL that names no post yields nothing instead of a segment of whatever it
-        does name. That distinction is the whole share-link handling: the share form's own code
-        is not the post's, so an empty result here means "fetch it and read the redirect".
-
-        Returns:
-            The short code, or an empty string when the URL is not a canonical post URL.
+        does name. The share form's own code is not the post's, so an empty result here means
+        "fetch it and read the redirect".
         """
         match = _POST_PATH_RE.match(string=urlparse(self.raw_url).path)
         return match.group(1) if match else ""
@@ -205,12 +199,7 @@ class MediaContainer(_ThreadsModel):
 
     @property
     def media_urls(self) -> list[str]:
-        """The list of media URLs extracted from the container.
-
-        Returns:
-            First media URL from each carousel item, or the first standalone
-            video or image URL, with empty values removed.
-        """
+        """Returns the first media URL from each carousel item, or the first standalone video or image URL."""
         urls: list[str] = []
         if self.carousel_media:
             for item in self.carousel_media:
@@ -266,19 +255,18 @@ def _isolate(value: object, handler: ValidatorFunctionWrapHandler, message: str)
 class ShareInfo(_ThreadsModel):
     """Represents what a post quotes or reposts.
 
-    `quoted_post` is a WHOLE post payload, not a reference: measured live across 96 quote
+    `quoted_post` is a whole post payload, not a reference: measured live across 96 quote
     relations it carries `user`, `caption` / `text_fragments`, `image_versions2` /
     `carousel_media` / `video_versions`, `like_count`, `taken_at` and its own
     `text_post_app_info`, and it arrives at full depth whenever the quoting post is the page target
-    (it can still be the tombstone `Post.is_unavailable` describes) — which is the only case
-    either caller reads. So it is typed as `Post`, which makes
-    `Post -> TextPostAppInfo -> ShareInfo -> Post` a real cycle, hence the forward reference. No
-    `model_rebuild()` is needed for it: measured in a cold process, `Post` is already
+    (it can still be the tombstone `Post.is_unavailable` describes). So it is typed as `Post`,
+    which makes `Post -> TextPostAppInfo -> ShareInfo -> Post` a real cycle, hence the forward
+    reference. No `model_rebuild()` is needed for it: measured in a cold process, `Post` is already
     `__pydantic_complete__` at import because pydantic resolves the reference as a self-reference,
-    and `ShareInfo`'s own standalone schema heals on first use. What the cycle DOES cost is blast
+    and `ShareInfo`'s own standalone schema heals on first use. What the cycle does cost is blast
     radius, which `_isolate_quoted_post` below contains.
 
-    Two sibling fields are deliberately NOT modelled, each because a guess would be worse than
+    Two sibling fields are deliberately not modelled, each because a guess would be worse than
     the omission. `quoted_attachment_post` is a separate, mutually exclusive carrier (3 of 404
     posts, never non-null alongside `quoted_post`, and the only one shipping a ready-made
     `permalink`) whose relationship to the quoting post was never established, so rendering it
@@ -300,16 +288,9 @@ class ShareInfo(_ThreadsModel):
         """Drops an unparsable quoted post instead of failing the post that quotes it.
 
         Typing this field as a whole `Post` pulls every model in this module into the validation
-        of the fragment that also holds the TARGET, and `_collect_fragments` discards a fragment
+        of the fragment that also holds the target, and `_collect_fragments` discards a fragment
         on any `ValidationError` — so without this, one unmodelled shape anywhere inside a quoted
-        payload costs the linked post itself. Measured on the way in: a `quoted_post` carrying
-        `image_versions2: {"candidates": null}`, `text_fragments: {"fragments": null}`,
-        `carousel_media: [null]` or a non-numeric `like_count` each took the target down with it,
-        and it did not even have to be the TARGET's own quoted post — an ancestor's was enough.
-
-        This is the same isolation `_isolate_post` gives a post in a connection, one level lower:
-        the quote is the most disposable thing in the payload, and losing only it leaves the post
-        read as one that quotes nothing.
+        payload costs the linked post itself.
         """
         return _isolate(
             value=value,
@@ -349,11 +330,7 @@ class PostConnection(_ThreadsModel):
 
     @property
     def posts(self) -> list["Post"]:
-        """The connection's posts, oldest first.
-
-        Returns:
-            Every edge's post, with the empty edges dropped.
-        """
+        """Returns every edge's post in page order, with empty edges dropped."""
         return [edge.node for edge in self.edges if edge.node]
 
 
@@ -400,11 +377,7 @@ class ThreadConnection(_ThreadsModel):
 
     @property
     def threads(self) -> list[list["Post"]]:
-        """Each thread's posts, dropping the threads that carry none.
-
-        Returns:
-            One list per thread, each ordered from the direct reply outward.
-        """
+        """Returns one post list per non-empty thread, ordered from the direct reply outward."""
         return [
             edge.node.posts.posts
             for edge in self.edges
@@ -468,12 +441,7 @@ class Post(MediaContainer):
 
     @property
     def caption_text(self) -> str:
-        """The extracted caption text or fallback link preview title.
-
-        Returns:
-            Structured text fragments, caption text, link preview title, or an
-            empty string in that priority order.
-        """
+        """Returns structured text fragments, caption text, link preview title, or an empty string in that priority order."""
         if self.text_post_app_info and self.text_post_app_info.text_fragments:
             fragments_text = "".join(
                 f.plaintext for f in self.text_post_app_info.text_fragments.fragments
@@ -490,116 +458,73 @@ class Post(MediaContainer):
 
     @property
     def author_name(self) -> str:
-        """The username of the post author.
-
-        Returns:
-            Author username, or an empty string when author data is missing.
-        """
+        """Returns the author username, or an empty string when author data is missing."""
         return self.user.username if self.user else ""
 
     @property
     def author_icon_url(self) -> str:
-        """The profile picture URL of the post author.
-
-        Returns:
-            Author profile picture URL, or an empty string when author data is
-            missing.
-        """
+        """Returns the author profile picture URL, or an empty string when author data is missing."""
         return self.user.profile_pic_url if self.user else ""
 
     @property
     def reply_count(self) -> int:
-        """The number of direct replies to the post.
-
-        Returns:
-            Direct reply count, or 0 when engagement data is missing.
-        """
+        """Returns the direct reply count, or `0` when engagement data is missing."""
         return (self.text_post_app_info.direct_reply_count or 0) if self.text_post_app_info else 0
 
     @property
     def repost_count(self) -> int:
-        """The number of reposts.
-
-        Returns:
-            Repost count, or 0 when engagement data is missing.
-        """
+        """Returns the repost count, or `0` when engagement data is missing."""
         return (self.text_post_app_info.repost_count or 0) if self.text_post_app_info else 0
 
     @property
     def quote_count(self) -> int:
-        """The number of quote posts.
-
-        Returns:
-            Quote post count, or 0 when engagement data is missing.
-        """
+        """Returns the quote post count, or `0` when engagement data is missing."""
         return (self.text_post_app_info.quote_count or 0) if self.text_post_app_info else 0
 
     @property
     def reshare_count(self) -> int:
-        """The total reshare count.
-
-        Returns:
-            Reshare count, or 0 when engagement data is missing.
-        """
+        """Returns the total reshare count, or `0` when engagement data is missing."""
         return (self.text_post_app_info.reshare_count or 0) if self.text_post_app_info else 0
 
     @property
     def reply_to_username(self) -> str:
-        """The username of the post being directly replied to.
-
-        Returns:
-            Username from `text_post_app_info.reply_to_author`, or an empty
-            string when this post is not a reply or the field is missing.
-        """
+        """Returns the username from `text_post_app_info.reply_to_author`, or an empty string when absent."""
         if self.text_post_app_info and self.text_post_app_info.reply_to_author:
             return self.text_post_app_info.reply_to_author.username
         return ""
 
     @property
     def quoted_post(self) -> "Post | None":
-        """The post this one quotes, as the whole payload Threads ships for it.
-
-        Returns:
-            The quoted post, or None when this post quotes nothing.
-        """
+        """Returns the quoted `Post` payload, or `None` when this post quotes nothing."""
         if self.text_post_app_info and self.text_post_app_info.share_info:
             return self.text_post_app_info.share_info.quoted_post
         return None
 
     @property
     def is_unavailable(self) -> bool:
-        """Whether Threads reports this post itself as deleted or private.
+        """Returns whether Threads reports this post itself as deleted or private.
 
-        This is the ONLY tell for a quoted post that is gone, and it is not the one the field
-        names suggest. Measured live: `share_info.quoted_attachment_post_unavailable` was False
-        in all 465 nodes sampled, INCLUDING all 15 whose quoted post was genuinely gone — it
-        belongs to the mutually exclusive `quoted_attachment_post` family, not to `quoted_post`.
-        The gone state instead arrives as a tombstone inside `quoted_post` itself: every field
-        null bar `id`, `pk` and a `text_post_app_info` holding only this flag. 15 of 96 quote
-        relations were that shape, so it is an ordinary outcome, not an exotic one.
-
-        Returns:
-            True when `text_post_app_info.is_post_unavailable` is set.
+        This is the only tell for a quoted post that is gone: measured live,
+        `share_info.quoted_attachment_post_unavailable` was `False` in all 465 nodes sampled,
+        including all 15 whose quoted post was genuinely gone (it belongs to the mutually
+        exclusive `quoted_attachment_post` family, not to `quoted_post`). The gone state instead
+        arrives as a tombstone inside `quoted_post` itself: every field null bar `id`, `pk`, and a
+        `text_post_app_info` holding only this flag.
         """
         return bool(self.text_post_app_info and self.text_post_app_info.is_post_unavailable)
 
     @property
     def is_readable(self) -> bool:
-        """Whether this payload holds enough of a post to render at all.
+        """Returns whether this post is not reported unavailable and has an author, code, text, or media.
 
         Both halves earn their keep on the tombstone above: the flag is the platform's own
         statement, and the content test catches a payload that carries nothing to show whether
         or not the flag came with it. A tombstone yields no username and no shortcode either, so
         there is not even a permalink to fall back on.
 
-        Deliberately NOT the rule `PlatformOutput.is_readable` answers with, which every source
-        shares: that one asks whether there is anything worth showing, while this one also honours
-        Threads' own unavailable flag and counts a bare author or shortcode as enough, having a
-        permalink to fall back on.
-
-        Returns:
-            True when the post is not reported unavailable and has an author, code, text or
-            media to render.
+        Distinct from `PlatformOutput.is_readable`: that one asks whether there is text or media
+        worth showing, while this one also honours Threads' own unavailable flag and counts a bare
+        author or shortcode as enough, having a permalink to fall back on.
         """
         if self.is_unavailable:
             return False
@@ -607,12 +532,7 @@ class Post(MediaContainer):
 
     @property
     def media_urls(self) -> list[str]:
-        """The list of media URLs, including inline media and link preview images.
-
-        Returns:
-            Deduplicated non-empty media URLs from post media, linked inline
-            media, or the link preview image fallback.
-        """
+        """Returns deduplicated non-empty media URLs from post media, linked inline media, or the link preview image fallback."""
         urls = super().media_urls
         app_info = self.text_post_app_info
         if app_info and app_info.linked_inline_media:
@@ -653,7 +573,7 @@ class ParsedPage(BaseModel):
     a full payload (the recommendation rail Threads pads the page with) that just does not
     contain the requested code. Only the first is worth fetching again.
 
-    It is not the whole answer, because a page the platform served ABOUT the post and then
+    It is not the whole answer, because a page the platform served about the post and then
     refused carries no post JSON either. `_served_route` is what tells those apart before this
     flag is ever read.
     """
@@ -671,7 +591,7 @@ class ParsedPage(BaseModel):
 class ThreadsOutput(PlatformOutput):
     """Output model for a single Threads post.
 
-    The nine shared fields and `is_readable` come from `PlatformOutput`; what is declared here is
+    The shared fields and `is_readable` come from `PlatformOutput`; what is declared here is
     Threads' own reality — the files this path writes to disk, the three reshare counters Threads
     publishes separately, who a reply answers, and the post it quotes.
     """
@@ -703,7 +623,7 @@ class ThreadsOutput(PlatformOutput):
     )
 
     def counters_line(self) -> str:
-        """The five counters Threads publishes, as one line."""
+        """Returns the five counters Threads publishes formatted as one line."""
         return (
             f"❤️ {self.like_count:,} | 💬 {self.comment_count:,} | 🔁 {self.repost_count:,} | "
             f"🔗 {self.quote_count:,} | ↗️ {self.share_count:,}"
@@ -736,21 +656,19 @@ _SJS_PATTERN = re.compile(
 # longer exists redirects to the feed (`?error=invalid_post`, measured 2026-09-19), which carries
 # post payloads and no `media` node anywhere. Narrowing this to `"media"` would read that page as
 # "no post JSON" and spend every retry before failing a dead link as a throttle, telling the user
-# it is worth trying again — the one thing the reaction vocabulary must never say. It is a strict
-# superset of the `thread_items` it replaced, and widening it costs nothing at the end that decides
-# the flag: the throttle answers a ~320 KB shell carrying this key zero times (measured 2026-09-19
-# against a fingerprint the platform had started refusing), so both markers read that page the same
-# way. Where they differ, a block carrying a post payload IS an answer.
+# it is worth trying again — the one thing the reaction vocabulary must never say. The throttle
+# answers a ~320 KB shell carrying this key zero times (measured 2026-09-19 against a fingerprint
+# the platform had started refusing), while any block carrying this key is a real answer.
 _POST_PAYLOAD_MARKER = "text_post_app_info"
 
 # The route Threads' own server rendered the page with, named exactly once per page and never in
-# a page it did not serve. It is what separates a refusal ABOUT this post from a refusal of the
+# a page it did not serve. It is what separates a refusal about this post from a refusal of the
 # request: the geo-block page carries the post's own media id (`DdeVIevkwd7` -> 3989719261639804795,
 # measured 2026-09-20), so the server resolved what was asked for and then declined it, which a
 # throttled fetch cannot do. Read the route rather than the banner beside it, which is localized.
 _SERVED_ROUTE_RE = re.compile(pattern=r'"canonicalRouteName":"(?P<route>[^"]+)"')
 
-# Matched POSITIVELY and by name. This page is byte-for-byte the same SHAPE as the throttle — a
+# Matched positively and by name. This page is byte-for-byte the same shape as the throttle — a
 # ~320 KB shell with the payload marker zero times — so reading "any route that is not the post
 # route" as an answer would report a throttled fetch as a post that cannot be read, the one thing
 # the reaction vocabulary must never say. The cost of the narrow test is that Threads' other
@@ -762,7 +680,7 @@ _GEO_BLOCK_ROUTE = "comet.barcelonawebloggedout.BarcelonaGeoBlockRoute"
 # platform's soft throttle rather than an answer about the post (see `ParsedPage`). Both entry
 # points are one-shot — the user pastes a link or mentions the bot once — so a throttle that a
 # second fetch usually clears would otherwise spend a real user-visible failure on nothing. A
-# page that DID answer, without the post in it, is never retried: that is what keeps a private
+# page that did answer, without the post in it, is never retried: that is what keeps a private
 # or deleted post a fast failure instead of a slow one.
 THREADS_EMPTY_PAGE_RETRIES = 2
 
@@ -826,27 +744,13 @@ class ThreadsDownloader(PlatformDownloader):
     def _thread_around(
         fragments: list[Post], media_id: str
     ) -> tuple[list[Post], list[list[Post]]]:
-        """The ancestors above the target and the reply branches below it.
+        """Returns `(ancestors, reply_branches)` joined by `media_id` across `fragments`.
 
-        Both arrive on fragments other than the one carrying the post's own fields, and the media
-        id is the only thing saying they describe the same post: they come in no fixed order and
-        only the fragment holding the post's own fields names its code. An empty id therefore
-        joins nothing, rather than matching every other fragment serialised without one.
-
-        The first fragment to carry something wins, because more than one can claim the same id
-        and at least one of them is routinely empty — a post with no replies still gets a
-        `direct_replies` fragment with no edges in it. Overwriting on each match would let that
-        empty one land last and silently take the whole discussion with it, leaving a post that
-        renders perfectly with none of its context and nothing anywhere saying so.
-
-        Args:
-            fragments: Every media fragment the page yielded, in page order.
-            media_id: The target's media id.
-
-        Returns:
-            A tuple containing:
-                - The target's ancestors, oldest first, the target itself not among them.
-                - One list per reply branch, each ordered from the direct reply outward.
+        Both arrive on fragments other than the one carrying the post's own fields, and `media_id`
+        is the only field tying them to the same post; an empty `media_id` therefore joins nothing.
+        The first fragment with non-empty data wins because a post can also carry an empty
+        `direct_replies` fragment that would otherwise overwrite the discussion if it appeared
+        later in the page.
         """
         ancestors: list[Post] = []
         branches: list[list[Post]] = []
@@ -864,7 +768,7 @@ class ThreadsDownloader(PlatformDownloader):
 
     @staticmethod
     def _served_route(html: str) -> str:
-        """The route Threads rendered this page with, or empty when the page names none."""
+        """Returns the route Threads rendered this page with, or an empty string when absent."""
         match = _SERVED_ROUTE_RE.search(string=html)
         return match.group("route") if match else ""
 
@@ -919,17 +823,17 @@ class ThreadsDownloader(PlatformDownloader):
         return ".mp4" in path_lower or "video" in media_url or "mp4" in media_url
 
     def download_media(self, url: str, filename: str) -> Path:
-        """Downloads media from the given URL to the output folder.
+        """Downloads media from `url` to `output_folder/filename`.
 
         `output_folder` is the caller's to create, and removing it is the stop signal a
         cancellation could not deliver (`stream_to_file` has how).
 
         Args:
-            url: The URL of the media to download.
-            filename: The name to save the file as.
+            url (str): The URL of the media to download.
+            filename (str): The name to save the file as.
 
         Returns:
-            The Path to the downloaded file.
+            The `Path` to the downloaded file.
 
         Raises:
             LinkRetryableError: The CDN refused the transfer, never answered, or lost the
@@ -973,7 +877,7 @@ class ThreadsDownloader(PlatformDownloader):
         post still fails on the first attempt.
 
         Args:
-            url: The raw Threads post URL, canonical or share form.
+            url (str): The raw Threads post URL, canonical or share form.
 
         Returns:
             The parsed page; its `chain` is empty when the post could not be found.
@@ -1024,11 +928,10 @@ class ThreadsDownloader(PlatformDownloader):
                 html_length=len(fetched.html),
             )
             time.sleep(THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS)
-        # Every retry spent and the page still carries no post JSON, which this module already
-        # calls the platform's soft throttle. Raising rather than answering with an empty page
-        # is what lets the caller tell it from a page that DID answer without the post in it:
-        # the two used to arrive identically, so a throttle was reported as a post that cannot
-        # be read, which is the one thing the reaction vocabulary must never say.
+        # Every retry spent and the page still carries no post JSON, which is the platform's
+        # soft throttle. Raising rather than answering with an empty page lets the caller
+        # distinguish a throttle from a page that did answer without the post in it, so a
+        # transient throttle is never reported as an unreadable post.
         logfire.warn(
             "Threads kept answering without any post JSON; treating it as a throttle",
             post_code=post_code,
@@ -1052,7 +955,7 @@ class ThreadsDownloader(PlatformDownloader):
         at all; nothing is left to strip but the query.
 
         Args:
-            url: The Threads post URL, canonical or share form.
+            url (str): The Threads post URL, canonical or share form.
 
         Returns:
             The canonical post URL, or an empty string when the share link led somewhere that
@@ -1089,12 +992,12 @@ class ThreadsDownloader(PlatformDownloader):
     def _build_output(
         self, post: Post, url: str, download: bool, include_quoted: bool = True
     ) -> ThreadsOutput:
-        """Builds a ThreadsOutput object from a Post object.
+        """Builds a `ThreadsOutput` object from a `Post` object.
 
-        `include_quoted` is how the quoted post is bounded to ONE level, and one level is what
-        the platform serialises rather than a limit chosen here. Measured live: a quote-of-a-quote
-        (2 of 96 relations) comes back as a username-only stub — no code, no caption, no counters,
-        no media — and the same post was observed full at depth 0 and stubbed at depth 1 on one
+        `include_quoted` bounds the quoted post to one level, which is what the platform
+        serialises rather than a limit chosen here. Measured live: a quote-of-a-quote (2 of 96
+        relations) comes back as a username-only stub — no code, no caption, no counters, no
+        media — and the same post was observed full at depth 0 and stubbed at depth 1 on one
         page, so the degradation is a serialisation-depth artifact. Threads does supply a
         `quoted_post_caption` preview string ("<username>: <text>") exactly where that stub
         appears, if a second level is ever worth rendering.
@@ -1145,24 +1048,18 @@ class ThreadsDownloader(PlatformDownloader):
             share_count=post.reshare_count,
             taken_at=taken_at,
             quoted=quoted,
-            # Only ever set when the post DOES quote something and that something came back
+            # Only ever set when the post does quote something and that something came back
             # unreadable, so a post quoting nothing is never reported as quoting a dead post.
             quoted_unavailable=quoted_post is not None and quoted is None,
         )
 
     def _build_conversation(self, url: str, download: bool) -> ThreadsConversation:
-        """Fetches the page once and builds every post it yielded.
+        """Returns the `ThreadsConversation` for `url`, downloading only the target's videos when `download` is set.
 
-        The single walk both public entry points share; `download` is the only thing that ever
-        differed between them, and it applies to the target alone. Ancestors and replies stay
-        metadata-only in both modes: their media is never part of what the callers deliver.
-
-        Args:
-            url: The Threads post URL.
-            download: Whether to write the target post's videos to `output_folder`.
-
-        Returns:
-            The parsed conversation; empty when the post could not be found.
+        Every post in the conversation gets a reconstructed canonical URL (with `page.url`, which
+        already has its query stripped, as the target's fallback) so neither a `share/<code>` link
+        nor the `?xmt=` token its redirect answers with — both minted per share and naming whoever
+        shared the post — can be echoed into an embed or prompt.
         """
         page = self.extract_post_data(url=url)
         if not page.chain:
@@ -1199,7 +1096,7 @@ class ThreadsDownloader(PlatformDownloader):
         and removing it is what deletes the downloads (`download_media` has why).
 
         Args:
-            url: The Threads post URL.
+            url (str): The Threads post URL.
 
         Returns:
             The parsed conversation. Its `chain` is empty when no post is found.
@@ -1207,15 +1104,13 @@ class ThreadsDownloader(PlatformDownloader):
         return self._build_conversation(url=url, download=True)
 
     def parse_metadata(self, url: str) -> ThreadsConversation:
-        """Parses a Threads post URL into the conversation WITHOUT downloading media.
+        """Parses a Threads post URL into the conversation without downloading media.
 
         Mirrors `parse` with `download=False`, so no video is written to disk and there is
-        nothing to clean up. The reply pipeline uses this: it fetches the media it wants (the
-        target's, plus that of the post it quotes) from the returned URLs itself, straight to
-        the answer model.
+        nothing to clean up.
 
         Args:
-            url: The Threads post URL.
+            url (str): The Threads post URL.
 
         Returns:
             The parsed conversation; empty when no post is found.

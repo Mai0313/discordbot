@@ -1,6 +1,6 @@
 """The per-user tone note: the one memory tier that is not partitioned.
 
-Tone is cross-server safe by construction, which is exactly why it must NOT be routed
+Tone is cross-server safe by construction, which is why it must not be routed
 through the compartments: nearly half of all observations are `source_only`, so a note fed
 only the `global` bucket would simply stop updating for those conversations. Both writes
 therefore run as their own consolidation call, whose deltas are discarded by code, and both
@@ -36,23 +36,24 @@ from discordbot.services.memory.raw_entries import (
     observation_category,
 )
 
-# Observation categories that carry how the user wants the bot to SOUND. Everything
+# Observation categories that carry how the user wants the bot to sound. Everything
 # else is a fact and has no business in the always-injected tone note.
 _TONE_CATEGORIES = frozenset({"interaction_style", "stable_preference"})
 
 
 async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> bool:
-    """Rewrites the per-user tone note from the WHOLE batch, in its own call.
+    """Rewrites the per-user tone note from the whole batch in its own consolidation call.
 
-    It gets a call of its own rather than riding on the `global` compartment's, whose input
-    is partitioned by construction. Here the deltas are discarded by CODE — this call cannot
-    write a fact anywhere, whatever it returns — which is what makes unpartitioned input safe.
+    Deltas returned by this call are discarded by code so unpartitioned input cannot write a
+    fact into any compartment. An empty or headerless output leaves the existing note in place.
 
-    Returns False when the call failed or a clear overtook it, so the caller keeps the raw
-    batch: retired into `detail.md`, its tone evidence is out of every later update's reach.
-    An answer that is empty or lacks `TONE_HEADER` is not a failure, since asking again over
-    the same evidence would only re-derive it: the existing note stands and this returns True,
-    as it does when the call ran or had nothing to do.
+    Args:
+        run (ConsolidationRun): Active consolidation run context.
+        raw_entries (str): Raw entries from the batch being consolidated.
+
+    Returns:
+        True when the call succeeded or had nothing to do; False when the call failed or a
+        clear overtook it and the caller must keep the raw batch.
     """
     if run.flavor != "user":
         return True
@@ -77,15 +78,18 @@ async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> bool:
 
 
 async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
-    """Rebuilds the tone note from the whole evidence corpus, in its own call.
+    """Rebuilds the per-user tone note from the full evidence corpus, clearing it when empty.
 
-    This pass saw everything, so no signal anywhere means a surviving note is stale and
-    would keep injecting a preference the evidence no longer supports. It is the only path
-    allowed to delete the note for want of signal; `forget_tone` deletes it only by taking
-    its last line.
+    Because this pass sees the whole evidence corpus, a lack of tone signal clears any stale
+    note on disk.
 
-    Returns False when the call failed or a clear overtook it, so the rebuild keeps the raw
-    batch whose tone evidence the note never absorbed; True when it ran or had nothing to do.
+    Args:
+        run (ConsolidationRun): Active rebuild run context.
+        evidence (str): Full evidence corpus (`detail.md` tail plus `raw.md`).
+
+    Returns:
+        True when the rebuild succeeded or had no tone evidence; False when the call failed or
+        a clear overtook it.
     """
     if run.flavor != "user":
         return True
@@ -113,20 +117,21 @@ async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> bool:
 
 
 async def forget_tone(run: ConsolidationRun, forgets: str, evidence_only: bool = False) -> bool:
-    """Takes what forget requests name out of the tone note and out of the evidence behind it.
+    """Removes lines and evidence named by `forgets` from the per-user tone tier.
 
-    A tone preference is never stored as a fact, so the fact pass has nothing to delete for one,
-    and the note would go on carrying it into every reply while its evidence waited for the
-    next rebuild to read it back. Only evidence stamped before the newest request is offered,
-    since anything later restates what was forgotten. The call can only point at lines it was
-    shown, so this drops and never writes: the forget's own sentence has nowhere to go.
+    Only evidence stamped before the newest forget request is offered so later restatements
+    survive, and the model answers with line numbers only so the forget's own sentence can
+    never be written into the note.
 
-    `evidence_only` leaves the note out, for a rebuild that rewrites it from the evidence next:
-    the note's lines carry no stamp, so an older forget would be offered a preference restated
-    after it, and a rebuild failing past the replay would leave the note without it.
+    Args:
+        run (ConsolidationRun): Active consolidation or rebuild run context.
+        forgets (str): Raw forget-request entries for this segment.
+        evidence_only (bool): Whether to skip the note itself when a rebuild is about to
+            rewrite it from the surviving evidence.
 
-    Returns False when the call failed, so a caller that must not lose the forget keeps its
-    batch for a retry; True when it ran or had nothing to do.
+    Returns:
+        True when the pass succeeded or had nothing to offer; False when the call failed or a
+        clear overtook it.
     """
     if run.flavor != "user" or not forgets:
         return True
@@ -170,17 +175,13 @@ async def forget_tone(run: ConsolidationRun, forgets: str, evidence_only: bool =
 
 
 def tone_evidence_from_raw(raw_text: str) -> str:
-    """Returns the whole batch's tone-bearing observations, ignoring compartments.
+    """Returns `raw_text`'s tone-bearing observations as `[evidence_kind] summary` bullets.
 
-    Each line carries its `evidence_kind` and then the summary, oldest-first — the note's "a
-    later stated preference wins" rule has no other clock.
+    Prefixing `evidence_kind` oldest-first lets consolidation distinguish a stated preference
+    from one inferred off the user's own behavior across batches.
 
-    The kind is what tells a preference the user stated apart from one inferred off their
-    own behaviour, and the note is a merge of many batches, so without it every bullet reads
-    alike and the note converges on whichever reading has the most bullets. That is not
-    hypothetical: in the live store one stated preference lost to five inferred from the
-    user's own trash-talk across a guild, and the note came out telling the bot to trash-talk
-    them back.
+    Args:
+        raw_text (str): Raw or evidence text to extract tone observations from.
     """
     return "\n".join(f"* {line}" for _, _, line in _tone_observations(text=raw_text))
 

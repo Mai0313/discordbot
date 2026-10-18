@@ -23,7 +23,7 @@ class StakeHolder(Protocol):
     """A lobby or table that can hold a player's stake."""
 
     def holds_seats(self) -> bool:
-        """Whether this holder's seats, and so its holds, still count."""
+        """Returns whether this holder's seats, and so its holds, still count."""
 
 
 # user id -> id(holder) -> (holder, held amount), where None holds the whole wallet. Keyed by
@@ -34,12 +34,23 @@ _spending: KeyedLockManager[int] = KeyedLockManager()
 
 
 def hold_stake(user_id: int, holder: StakeHolder, amount: int | None) -> None:
-    """Holds `amount` of the user's wallet for `holder`; None holds all of it."""
+    """Holds `amount` of the user's wallet for `holder`; None holds all of it.
+
+    Args:
+        user_id (int): Discord user ID whose wallet is held.
+        holder (StakeHolder): Lobby or table placing the hold.
+        amount (int | None): Points to hold, or None to hold the entire wallet.
+    """
     _holds.setdefault(key=user_id, default={})[id(holder)] = (holder, amount)
 
 
 def release_stake(user_id: int, holder: StakeHolder) -> None:
-    """Drops `holder`'s hold on the user's wallet, leaving any other hold alone."""
+    """Drops `holder`'s hold on the user's wallet, leaving any other hold alone.
+
+    Args:
+        user_id (int): Discord user ID whose hold is released.
+        holder (StakeHolder): Lobby or table releasing its hold.
+    """
     held = _holds.get(key=user_id)
     if held is None:
         return
@@ -53,6 +64,9 @@ def held_amount(user_id: int) -> int | None:
 
     A holder that no longer holds seats holds nothing, so a hold its table failed to release
     cannot freeze the wallet.
+
+    Args:
+        user_id (int): Discord user ID to inspect.
     """
     live = [
         amount
@@ -65,7 +79,12 @@ def held_amount(user_id: int) -> int | None:
 
 
 def spendable(user_id: int, balance: int) -> int:
-    """Returns the part of `balance` no table holds."""
+    """Returns the part of `balance` no table holds.
+
+    Args:
+        user_id (int): Discord user ID whose holds apply.
+        balance (int): Observed wallet balance before holds.
+    """
     held = held_amount(user_id=user_id)
     if held is None:
         return 0
@@ -74,13 +93,21 @@ def spendable(user_id: int, balance: int) -> int:
 
 @asynccontextmanager
 async def spending(user_id: int) -> AsyncGenerator[None]:
-    """Serializes the user's voluntary debits, check through commit, against a table's claim."""
+    """Serializes the user's voluntary debits, check through commit, against a table's claim.
+
+    Args:
+        user_id (int): Discord user ID whose voluntary debits are serialized.
+    """
     async with _spending.hold(key=user_id):
         yield
 
 
 async def wait_for_spending(user_ids: list[int]) -> None:
-    """Returns once no voluntary debit of these users that started before the call is in flight."""
+    """Waits until no voluntary debit of `user_ids` that started before the call is in flight.
+
+    Args:
+        user_ids (list[int]): Discord user IDs to wait on in order.
+    """
     for user_id in user_ids:
         async with _spending.hold(key=user_id):
             pass

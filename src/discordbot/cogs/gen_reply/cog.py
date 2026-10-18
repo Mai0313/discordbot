@@ -1,16 +1,9 @@
-"""Cog that routes Discord messages through the AI reply pipeline.
+"""Cog that routes Discord messages and `/ask` invocations through the AI reply pipeline.
 
-What is left here is what belongs to the PROCESS rather than to one turn: the gateway listeners,
-the clients and the toolkit every reply composes itself from, the restart memory resume, and the
-last-resort failure notice. One turn's own work lives in `pipeline.py` and the phase modules
-beside it.
-
-`/ask` is the second entry point into that same pipeline, and it exists because the first one
-cannot reach three places a user-installed app can: a server the bot was never added to, a group
-DM, and a DM between two other people. There is no gateway message event in any of them, so
-mentioning the bot, replying to it and the link expansions all do nothing; the command hands the
-conversation back, running the identical turn over a `TurnSurface` that answers through the
-interaction instead of the channel.
+Holds process-wide state (gateway listeners, cached clients and toolkit, restart memory resume,
+and last-resort failure reporting), while per-turn execution lives in `pipeline.py`. `/ask`
+enters the same pipeline through an interaction-backed `TurnSurface` where gateway message events
+never arrive (unjoined servers, group DMs, and other users' DMs).
 """
 
 from typing import TYPE_CHECKING, TypedDict
@@ -51,10 +44,7 @@ if TYPE_CHECKING:
 
 
 class _MessageLogFields(TypedDict):
-    """Exact key set for `_message_log_fields`, so `**`-spreading it into a logfire call
-    keeps statically known keys (none underscore-prefixed) and never collides with logfire's
-    `_tags` / `_exc_info` keyword-only parameters.
-    """
+    """Statically typed non-underscored log fields for `**`-spreading into `logfire` calls."""
 
     user_id: int
     user_name: str
@@ -66,17 +56,10 @@ class _MessageLogFields(TypedDict):
 
 
 def _message_log_fields(surface: TurnSurface) -> _MessageLogFields:
-    """Standard Discord identifying fields for correlating one reply's logs.
+    """Returns the standard Discord identifying fields for correlating one reply's logs.
 
-    The cog's arrival records and `gen_reply failed` carry the full set; every other log of the
-    turn carries only `message_id` as the correlation key, so a whole turn reconstructs by
-    grepping it.
-    `user_name` is the stable handle, `display_name` the per-guild nickname;
-    `guild_id` / `guild_name` are None in a DM.
-
-    Read off the surface rather than the message so a `/ask` turn in a server is not logged as
-    a DM. `guild_name` still comes from the message and so stays None there, since the
-    synthesized message carries no guild.
+    Reads `guild_id` from `surface` rather than `message.guild` so a `/ask` turn in a server is
+    not logged as a DM.
     """
     message = surface.message
     guild = message.guild
@@ -95,16 +78,16 @@ class ReplyGeneratorCogs(commands.Cog):
     """Generates AI replies for Discord messages.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
-        config: The LLM client configuration loaded for reply generation.
-        usage_recorder: The per-reply usage-record writer read by `scripts/usage_report.py`.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
+        config (LLMConfig): The LLM client configuration loaded for reply generation.
+        usage_recorder (UsageRecorder): The per-reply usage-record writer.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initializes the ReplyGeneratorCogs instance.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.config = LLMConfig()
@@ -118,25 +101,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def openai_client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client for all LiteLLM-proxy Responses / audio / image calls.
-
-        Returns:
-            A configured AsyncOpenAI client reused across reply requests.
-        """
+        """Returns the cached `AsyncOpenAI` client for LiteLLM-proxy calls."""
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     @cached_property
     def toolkit(self) -> ReplyToolkit:
-        """The clients, generators and caches every turn composes its reply from.
-
-        Built on first use and kept for the life of the process, which is what the caches
-        inside it are for: the input builder holds the Files API uris a message's attachments
-        were uploaded to, so a message that stays in the history window is uploaded once
-        rather than once per reply.
-
-        Returns:
-            The process-wide reply toolkit.
-        """
+        """Returns the process-wide `ReplyToolkit` shared across turns."""
         return ReplyToolkit(
             bot=self.bot,
             openai_client=self.openai_client,
@@ -145,13 +115,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def media_delivery(self) -> MediaDeliveryPlanner:
-        """The media-delivery planner, built on first use and kept for the life of the process.
-
-        Returns:
-            A planner that decides which media attach natively and which are hosted as a public
-            URL (media too big for Discord's upload limit); its host self-disables when
-            unconfigured, so every oversize item then degrades to the route's host-free path.
-        """
+        """Returns the process-wide `MediaDeliveryPlanner` for attach-vs-host routing."""
         return build_media_delivery_planner()
 
     @commands.Cog.listener()
@@ -174,14 +138,8 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _resume_memory(self) -> None:
         """Re-enqueues persisted review jobs and consolidates over-threshold scopes.
 
-        Two paths, both riding the existing per-scope lock + global concurrency
-        semaphore: persisted `pending`/`failed` jobs are re-run (transcript intact),
-        and every scope whose raw backlog is over threshold is swept. The sweep
-        covers scopes with a resumed job too: the per-scope lock plus the under-lock
-        `_should_consolidate` re-check make the resumed review and the sweep
-        idempotent, so a consolidation interrupted by the restart still finishes
-        even when the resumed review early-returns (failed, no signal, or all
-        duplicates) before it would reach the consolidation check.
+        Both paths serialize on the per-scope lock and re-check the consolidation threshold under
+        lock, making the resumed review and the sweep idempotent.
         """
         jobs = await safe_list_resumable(updated_before=self._started_at)
         for job in jobs:
@@ -216,19 +174,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.info("scheduled memory consolidation sweep", count=swept)
 
     async def _deliver_failure_notice(self, surface: TurnSurface, error_embed: Embed) -> None:
-        """Shows the turn's failure, on the reply it was streaming into where there is one.
-
-        Half the turns that fail here already painted something, and left beside that reply the
-        embed reads as unrelated while the reply itself, carrying no usage footer, reads as an
-        answer that merely stopped. So the streamer is asked first and takes the error onto its
-        own message. Everything it turns down -- every failure before the answer, and a retry
-        notice already withdrawn -- gets a fresh message here.
-
-        Through the surface rather than `message.reply`, because on the `/ask` route a failure
-        before the first content delta is the whole of what the user ever sees: there is no
-        channel to post into, and Discord would otherwise leave the deferred response hanging
-        until it expired with nothing in it.
-        """
+        """Delivers `error_embed` onto the in-progress answer message or as a fresh surface reply."""
         streamer = current_answer_streamer.get()
         if streamer is not None and await streamer.land_failure(embed=error_embed):
             return
@@ -247,13 +193,7 @@ class ReplyGeneratorCogs(commands.Cog):
             await surface.send_unparented(embed=error_embed, **fresh_spacer)
 
     async def _run_turn(self, surface: TurnSurface, content: str) -> None:
-        """Runs one turn and reports whatever it failed on, whichever entry point started it.
-
-        Shared by `on_message` and `/ask` because everything that differs between them is
-        already inside the surface: where the answer lands, what history it may read, and
-        whether the source message can be reacted to at all. Reading the request is inside the
-        report too, since that is what first builds the toolkit.
-        """
+        """Runs one turn and delivers a last-resort failure notice if an unhandled error escapes."""
         message = surface.message
         reactions = surface.status_chain(bot_user=self.bot.user)
         try:
@@ -290,17 +230,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _start_turn(
         self, surface: TurnSurface, content: str, reactions: ReactionStatusChain
     ) -> None:
-        """Runs a turn on the request, or answers `?` when the message asks for nothing.
-
-        Shared by `on_message` and `/ask`. Everything that differs between them is inside the
-        surface: a synthesized `/ask` message carries no stickers and no forwarded snapshot, and
-        its `?` goes out without the ❓ reaction because the surface has nothing to react to.
-
-        Args:
-            surface: Where the turn happens.
-            content: The text of the message, mention included.
-            reactions: The turn's status-reaction chain.
-        """
+        """Dispatches `ReplyPipeline` on the turn's prompt, or replies with `?` when empty."""
         message = surface.message
         user_prompt = await self.toolkit.input_builder.get_user_prompt(content=content)
         has_attachment = bool(message.attachments or message.stickers)
@@ -390,16 +320,13 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Answers one message through the interaction, where no gateway event ever arrives.
 
-        The response is deferred first and always: Discord invalidates the token after three
-        seconds, and every phase of the turn is slower than that. It is deliberately not
-        ephemeral — in a group DM the answer is the conversation, and the only place the choice
-        would matter is one where Discord may force ephemeral on us regardless.
+        Defers non-ephemerally up front so the interaction token stays valid across the turn and
+        group-DM replies remain visible to the conversation.
 
         Args:
-            interaction: The invocation to answer through.
-            question: What the user wants to say.
-            attachment: An optional file to send with it; the only way to give the bot one here,
-                since there is no message of theirs for it to hang off.
+            interaction (Interaction[commands.Bot]): The invocation to answer through.
+            question (str): What the user wants to say.
+            attachment (Attachment | None): Optional file attached to the invocation.
         """
         await interaction.response.defer()
         surface = TurnSurface.for_interaction(interaction=interaction, question=question)
@@ -410,9 +337,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """Listens for messages and handles AI reply generation.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
-        # Ignore messages from bots.
         if message.author.bot:
             return
 
@@ -437,6 +363,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the ReplyGeneratorCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)

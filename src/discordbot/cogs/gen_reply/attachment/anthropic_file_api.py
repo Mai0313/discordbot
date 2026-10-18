@@ -57,15 +57,9 @@ class AnthropicFileUploader(FileUploadRenderer):
 
     @cached_property
     def anthropic_client(self) -> AsyncAnthropic:
-        """The Anthropic client for direct Files API uploads, built lazily on first use.
+        """Returns the Anthropic client for direct Files API uploads, built lazily on first use.
 
-        Built in this module, which the bot never imports while `select.py` keeps the renderer
-        disabled, so the `anthropic` import stays out of the live request path until the Claude
-        path is wired on. A missing key does not fail construction; it surfaces at the upload
-        call.
-
-        Returns:
-            An Anthropic client reused across uploads.
+        A missing key does not fail construction; it surfaces at the upload call.
         """
         return AsyncAnthropic(api_key=self.config.anthropic_api_key)
 
@@ -75,6 +69,13 @@ class AnthropicFileUploader(FileUploadRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
+        """Returns `source` uploaded to the Anthropic Files API as an `input_image` part, or `None`.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
+            cache_key (int | str): Per-source identifier for dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
         source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,

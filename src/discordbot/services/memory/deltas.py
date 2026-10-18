@@ -87,23 +87,21 @@ class DeltaOutcome(BaseModel):
 
     @property
     def applied(self) -> bool:
-        """Whether the batch landed (a batch that changed nothing still counts)."""
+        """Returns whether the batch landed (a batch that changed nothing still counts)."""
         return not self.rejected
 
 
 def partition_raw_entries(raw_text: str, flavor: MemoryFlavor) -> dict[str, str]:
-    """Splits a raw batch into per-compartment texts, keyed by compartment.
+    """Returns `raw_text` split into per-compartment observation texts keyed by compartment.
 
-    Routing is entirely deterministic: `sharing: global` is cross-server safe and goes
-    to `global`, and `source_only` goes to whichever conversation it was learned in.
-    Server-flavor observations carry neither field by design (a server memory is one
-    guild by construction), so they all land in that scope's single compartment.
+    `sharing: global` routes to `global` and `source_only` routes to the conversation source it
+    was learned in; server-flavor observations route to `global`. Forget requests are excluded
+    and handled separately by `partition_forget_requests`. Each observation keeps its
+    `## <timestamp>` header.
 
-    Forget requests are NOT here: they are their own pass, in `partition_forget_requests`,
-    for the reason that function gives.
-
-    Each observation keeps the `## <timestamp>` header of the entry it came from, so
-    the consolidation prompt still sees dated, oldest-first evidence.
+    Args:
+        raw_text (str): Raw or detail entries to partition.
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
     """
     buckets: dict[str, list[tuple[str, str]]] = {}
     for timestamp, block in iter_observations(text=raw_text):
@@ -117,18 +115,17 @@ def partition_raw_entries(raw_text: str, flavor: MemoryFlavor) -> dict[str, str]
 
 
 def partition_forget_requests(raw_text: str, compartments: tuple[str, ...]) -> dict[str, str]:
-    """Splits the forget requests in a raw batch into their own per-compartment texts.
+    """Returns the forget requests in `raw_text` split into per-compartment texts.
 
-    Deliberately separate from `partition_raw_entries` rather than a bucket alongside the
-    observations, because a forget must never share a consolidation call with them. The call
-    that carries one is applied with `deletes_only`, and that flag is per CALL: a combined
-    bucket on a turn that both remembered and forgot something would leave nothing but a prompt
-    line stopping the model writing the forget's own sentence into a compartment it was copied
-    into precisely because it could not reach the fact any other way.
+    Kept separate from `partition_raw_entries` so a forget never shares a consolidation call
+    with observations: a forget call runs with `deletes_only` per call, preventing a turn that
+    both remembered and forgot something from writing the forget's own sentence into another
+    compartment. Each request is copied into every compartment its speaker could read from
+    (`_forget_targets`); an empty `compartments` yields an empty dict.
 
-    A request is COPIED into every compartment its speaker could read from, since the fact it
-    names may be stored in any of them; `_forget_targets` decides which. An empty
-    `compartments` yields nothing at all.
+    Args:
+        raw_text (str): Raw entries containing forget requests.
+        compartments (tuple[str, ...]): Existing compartments for the scope.
     """
     buckets: dict[str, list[tuple[str, str]]] = {}
     for timestamp, block in iter_observations(text=raw_text):
@@ -173,21 +170,19 @@ def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...
 def drop_released_evidence(
     text: str, released: dict[str, tuple[str, ...]], forgets: dict[str, str]
 ) -> str:
-    """Removes from a raw or detail text the evidence behind the facts a forget deleted.
+    """Returns `text` with the evidence behind forget-deleted facts removed, or `text` unchanged.
 
-    Leaving it would hand it straight back: every later consolidation reads the detail tail as
-    `<recent_detail>`, and `partition_raw_entries` strips the forget request out of it, so the
-    model would see the evidence with nothing saying it had been forgotten.
+    Every later consolidation reads the detail tail as `<recent_detail>` with forget requests
+    stripped out, so leaving the released observations would hand forgotten evidence back to the
+    model. An observation is removed when it routes to a compartment in `released`, carries one
+    of that compartment's released `normalized_key`s, and predates the newest forget request
+    copied there; observations after the cutoff are restatements and stay, as do forget
+    requests themselves for `/memory regenerate` replay.
 
-    `released` maps each compartment to the keys its forget pass freed
-    (`DeltaOutcome.released_keys`), and `forgets` is that pass's input. An observation goes when
-    it routes to one of those compartments, carries one of its keys as `normalized_key`, and
-    predates the newest forget request copied there: something said after every forget is a
-    restatement, not what was forgotten. The newest, because one pass cannot tell which of its
-    requests deleted which fact, and its requests were made back to back, with nothing said
-    between them. Forget requests themselves stay, since `/memory regenerate` replays them.
-
-    Returns `text` itself when nothing matched, so the caller can skip the rewrite.
+    Args:
+        text (str): Raw or detail text to filter.
+        released (dict[str, tuple[str, ...]]): Released `normalized_key`s per compartment.
+        forgets (dict[str, str]): Per-compartment forget-request text from the pass.
     """
     cutoffs = {
         compartment: newest_stamp(text=forgets[compartment])
@@ -206,14 +201,14 @@ def drop_released_evidence(
 
 
 def forget_segments(raw_text: str) -> list[tuple[str, str]]:
-    """Splits a raw batch, in file order, into `(observations, the forget requests after them)`.
+    """Returns `raw_text` split in file order into `(observations, trailing_forgets)` segments.
 
-    What came before a forget is what it can be about, so it has to be consolidated before that
-    forget's pass runs, or the pass finds nothing to delete and the observation right behind it
-    stores what the user asked to drop. What came after is a restatement it must not reach, and
-    a batch can hold several forgets (a forced run that failed keeps its batch), so each one
-    gets its own segment. Only a batch ending in observations has a last segment with no
-    forget; a batch without any forget is that one segment.
+    Observations before a forget must be consolidated before that forget's pass runs so the
+    pass can delete the resulting facts, while observations after it are restatements it must
+    not reach.
+
+    Args:
+        raw_text (str): Raw or evidence text to split.
     """
     segments: list[tuple[str, str]] = []
     observations: list[tuple[str, str]] = []
@@ -247,11 +242,10 @@ def _is_released(
 
 
 def render_existing_facts(facts: list[MemoryFact]) -> str:
-    """Renders a compartment's current facts with their ids, for the model to edit.
+    """Returns a compartment's current facts rendered with their `[<fact_id>]` headers.
 
-    The id leads each entry because it is the only handle an `update` or `delete` delta
-    has; everything else is what the model needs to decide whether this batch changes
-    the fact at all.
+    Args:
+        facts (list[MemoryFact]): Stored facts in the compartment.
     """
     blocks: list[str] = []
     for fact in sorted(facts, key=lambda item: (item.section, item.fact_id)):
@@ -278,13 +272,20 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
 ) -> DeltaOutcome:
     """Validates and applies one compartment's delta batch.
 
-    Deletes run before writes so a fact narrowed from one compartment to another can
-    only ever be temporarily missing (it re-forms from evidence) instead of temporarily
-    present in both — the one ordering that cannot widen a fact's reach.
+    Deletes run before writes so a fact narrowed from one compartment to another is never
+    present in both at once.
 
-    `deletes_only` refuses every create and update in the batch, and is set when the bucket
-    carried nothing but forget requests; `partition_forget_requests` owns why a forget arrives
-    in a call of its own.
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment being modified.
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+        deltas (tuple[MemoryFactDelta, ...]): Candidate deltas emitted by consolidation.
+        owner (MemoryOwner): Owner identity stamped onto created and updated facts.
+        allow_mass_delete (bool): Whether to bypass the net-deletion ceiling.
+        deletes_only (bool): Whether to drop every non-delete delta in the batch.
+
+    Returns:
+        Outcome counts, written fact ids, and any evidence keys released by deletions.
     """
     existing = {fact.fact_id: fact for fact in read_facts(scope=scope, compartment=compartment)}
     allowed = sections_for_flavor(flavor=flavor)
@@ -367,18 +368,11 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
 ) -> tuple[str, bool] | None:
     """Resolves one delta to `(fact_id, is_delete)`, or None when it must be dropped.
 
-    An `update` naming an id that is gone becomes a `create` (the fact was aged out or
-    the batch is a retry against a changed tree), and a `create` whose evidence keys
-    already back an existing fact becomes an `update` of that fact. The second rule is
-    what makes a retried batch idempotent: ids are minted from the summary, so a model
-    that rewords slightly on the retry would otherwise file a duplicate.
-
-    A delete is resolved by its id alone, BEFORE the section gate: the section a delete
-    names is decoration, since the fact being removed already exists and carries its own,
-    and a flavor's section vocabulary is not the other's — so gating a delete on it loses
-    the deletion outright when the model names a section legal on the other flavor
-    (`member_alias` against a user scope). That is the path every `<forget-memory>` runs
-    through, where losing the delta means the bot goes on repeating what it was asked to drop.
+    An `update` naming an id that is gone becomes a `create`, and a `create` whose evidence keys
+    already back an existing fact becomes an `update` of that fact so retried batches stay
+    idempotent. A delete is resolved by its id alone before the section gate, since a delete's
+    section is unused and gating on it would drop a `<forget-memory>` deletion when the model
+    names a section from the other flavor.
     """
     named_id = delta.fact_id.strip()
     known = named_id if FACT_ID_RE.match(named_id) and named_id in existing else ""
@@ -404,15 +398,8 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
 def _subject_id_of(delta: MemoryFactDelta) -> int | None:
     """Returns the member id this delta names, or None when it names nothing usable.
 
-    The field is model-authored free text and only `member_alias` renders it, so on every
-    other section a junk id costs the field and nothing else — where raising instead would
-    abort the whole fan-out, `apply_deltas` going up past a broad handler that abandons the
-    compartments still queued behind it. An alias row that resolves to None is dropped in
-    `_resolve_delta` instead, because there the id IS the row.
-
-    The test and the cast live in one place so they cannot disagree, and it takes both
-    halves: `isdigit` accepts a "²" that `int()` refuses, and `isdecimal` alone still
-    accepts a digit string longer than CPython converts.
+    Both `isdecimal` and `int()` are checked: `isdigit` accepts superscripts like `"²"` that
+    `int()` refuses, and `isdecimal` alone accepts digit strings longer than CPython converts.
     """
     if not delta.subject_id.isdecimal():
         return None
@@ -453,15 +440,19 @@ def _fact_sharing_keys(delta: MemoryFactDelta, existing: dict[str, MemoryFact]) 
 
 
 def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[str, ...]) -> int:
-    """Stamps `last_confirmed` on each fact a batch observed again but did not rewrite.
+    """Stamps `last_confirmed` on facts restated in `raw_text` that `written` did not rewrite.
 
-    Returns how many it stamped.
+    A restatement that adds nothing emits no delta, so matching `normalized_key` overlap keeps
+    repeated facts from aging out.
 
-    A restatement that adds nothing draws no delta, which the prompt prefers, and only a
-    written delta stamps the date, so a fact the user keeps repeating would still age out.
-    Observed again means one of the fact's keys is the `normalized_key` of an observation in
-    `raw_text`, the overlap `_fact_sharing_keys` already reads as the same fact. The `written`
-    ids are skipped, since the batch stamped them itself.
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment whose facts are checked.
+        raw_text (str): Raw observations from the consolidated batch.
+        written (tuple[str, ...]): Fact ids already written by `apply_deltas` in this pass.
+
+    Returns:
+        Number of existing facts whose `last_confirmed` timestamp was refreshed.
     """
     observed = {
         fields_of(block=block).get("normalized_key")
@@ -477,19 +468,20 @@ def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[
 
 
 def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
-    """Deletes facts the freshness rules have aged out, returning how many went.
+    """Deletes facts aged out by the freshness rules, returning how many were removed.
 
-    Two rules, deterministic because `last_confirmed` is code-stamped:
+    `stable` facts outside `recent` age out once they fall `STABLE_FRESHNESS_WINDOW_DAYS`
+    behind the freshest `stable` fact in the same compartment; other non-permanent facts
+    expire `RECENT_CONTEXT_TTL_DAYS` after `last_confirmed`. `permanent` facts, facts in the
+    `permanent` section, and `member_alias` rows never age.
 
-    * a `stable` fact outside the `recent` section is displaced once it falls
-      `STABLE_FRESHNESS_WINDOW_DAYS` behind the freshest stable fact in the SAME
-      compartment, so a quiet compartment ages nothing and forgets nothing while a busy
-      one self-trims;
-    * every other fact expires `RECENT_CONTEXT_TTL_DAYS` after it was last confirmed,
-      whatever section and durability the model paired it with.
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment to sweep.
+        today (datetime): UTC day boundary for TTL comparison.
 
-    `permanent` facts, anything filed in the `permanent` section, and member-alias
-    rows never age.
+    Returns:
+        Number of expired facts deleted from disk.
     """
     facts = read_facts(scope=scope, compartment=compartment)
     stable = [fact.last_confirmed for fact in facts if fact.durability == "stable"]

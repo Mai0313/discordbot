@@ -57,7 +57,11 @@ AI_INGEST_QUALITY: VideoQuality = "low"
 
 
 def system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator or notice string as a low-authority system block."""
+    """Returns `text` wrapped as a low-authority `role="system"` input block.
+
+    Args:
+        text (str): Separator or notice text to wrap.
+    """
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
@@ -66,12 +70,15 @@ def system_block(text: str) -> EasyInputMessageParam:
 def link_context_blocks(
     separator: str, text: str, media_parts: Sequence[ResponseInputFileParam] = ()
 ) -> list[EasyInputMessageParam]:
-    """The separator plus the post itself, the shape a readable source returns.
+    """Returns the `[separator, user-content]` input blocks for a readable linked post.
 
-    The separator carries the source's own claim about what is attached, so it is the caller's
-    to choose: the same post renders under a "here is its media" wording when the upload landed
-    and under a "text only" one when it did not, and the difference is exactly what stops the
-    model describing media it never received.
+    The caller chooses `separator` to match what `media_parts` actually holds so the model never
+    claims to see media that was not attached.
+
+    Args:
+        separator (str): System-block preamble stating what is attached below.
+        text (str): Rendered post text.
+        media_parts (Sequence[ResponseInputFileParam]): Uploaded media parts to attach.
     """
     return [
         system_block(text=separator),
@@ -83,10 +90,10 @@ def link_context_blocks(
 
 
 class PostSeparators(BaseModel):
-    """What a source says around a post it could read, in that source's own words.
+    """System-block openers and closing trailer around a readable post.
 
-    Three strings rather than one, because which of the first two opens the block is decided by
-    what actually arrived rather than by what the post has.
+    Whether `attached` or `text_only` opens the block depends on whether media parts actually
+    arrived, not on whether the post carries media.
     """
 
     attached: str = Field(
@@ -109,21 +116,17 @@ def post_context_blocks(
     post_carries_media: bool,
     separators: PostSeparators,
 ) -> list[EasyInputMessageParam]:
-    """Assembles the blocks for a post that could be read.
+    """Returns the answer-model input blocks for a readable post.
 
-    The trailer rides AFTER the attachments rather than at the end of the text: the images are
-    the one part of this block nothing ever looked inside, so a fence that closed before them
-    would leave an instruction-shaped screenshot sitting past the end-of-data marker. That is
-    the reason this lives in one place rather than once per source.
+    `separators.trailer` is placed after `media_parts` rather than at the end of `text` so any
+    instruction-shaped text inside an attached image stays inside the quoted-data fence.
 
     Args:
-        text: The rendered post.
-        media_parts: Whatever the upload actually produced, which is not what the post carries.
-        post_carries_media: Whether the post has media at all, deciding which separator opens it.
-        separators: The source's own wording.
-
-    Returns:
-        Input blocks ready to splice into the answer input.
+        text (str): The rendered post text.
+        media_parts (Sequence[ResponseInputFileParam]): Uploaded media parts that arrived.
+        post_carries_media (bool): Whether the post has any media, selecting `separators.text_only`
+            when `media_parts` is empty.
+        separators (PostSeparators): The source's opener and trailer strings.
     """
     if media_parts:
         return [
@@ -163,22 +166,21 @@ async def read_post[ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 
     unavailable_notice: str,
     unreadable_notice: str,
 ) -> ConversationT | str:
-    """Reads a post URL into its conversation, or the notice to inject in its place.
+    """Returns the parsed conversation for `url`, or the notice string to inject when it fails.
 
-    Never raises, and logs whichever way it fails, so a caller only has to inject the notice.
+    Never raises; logs the failure at the severity matching its cause.
 
     Args:
-        platform: The platform's display name, for the log lines.
-        url: The post URL found in the conversation.
-        reader: Builds the platform's downloader.
-        readable: Whether the conversation holds a post worth showing. The source's own rule,
-            since what counts as readable differs per platform.
-        unavailable_notice: Returned when the platform answered and there is no post in it.
-        unreadable_notice: Returned when the read failed for a reason that says nothing about
-            the post, such as a throttle, a dropped connection or a 403.
-
-    Returns:
-        The conversation, or the notice chosen for why there is none.
+        platform (str): Display name of the platform for log messages.
+        url (str): The post URL found in the conversation.
+        reader (Callable[[], PostReader[ConversationT]]): Zero-argument factory for the platform
+            downloader.
+        readable (Callable[[ConversationT], bool]): Predicate deciding whether the parsed
+            conversation holds a showable post.
+        unavailable_notice (str): Notice returned when the platform reports the post is gone or
+            private.
+        unreadable_notice (str): Notice returned when the read fails without proving the post is
+            gone.
     """
     try:
         conversation = await asyncio.to_thread(reader().parse_metadata, url=url)
@@ -224,32 +226,29 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
     allow_media_ingest: bool,
     deadline: float,
 ) -> list[EasyInputMessageParam]:
-    """Reads a post URL into answer-model input blocks, uploading up to `image_cap` of its images.
+    """Returns answer-model input blocks for a post URL, uploading up to `image_cap` images.
 
-    Returns `[separator, user-content]` for a readable post, or a single notice block saying it
-    could not be read. Never raises: every failure degrades to a deterministic notice so the
-    reply pipeline is never broken by it.
+    Returns `[separator, user-content]` for a readable post, or a single system notice block when
+    the post cannot be read. Never raises.
 
     Args:
-        platform: The platform's display name, for the span and the log lines.
-        url: The post URL found in the conversation.
-        reader: Builds the platform's downloader.
-        render: Renders the readable post; handed the number of images that actually rode in.
-        separators: The source's own wording around the post.
-        unavailable_notice: What the model is told instead when the platform answered and there
-            is no post in it.
-        unreadable_notice: What it is told instead when the read failed for a reason that says
-            nothing about the post.
-        image_cap: How many of the post's images one reply may pay a fetch and an upload for.
-        answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the image upload, or None when no key
-            is configured, which reads the post as text just like a non-Gemini answer model.
-        allow_media_ingest: Kill-switch plus key check; when false only the text is read.
-        deadline: Event-loop time the pipeline cancels this build at, which the image upload
-            stops short of so the text still comes back.
-
-    Returns:
-        Input blocks ready to splice into the answer input before the current message.
+        platform (str): Display name of the platform for the span and log messages.
+        url (str): The post URL found in the conversation.
+        reader (Callable[[], PostReader[ConversationT]]): Zero-argument factory for the platform
+            downloader.
+        render (PostRenderer[OutputT, ConversationT]): Renders the post and conversation text
+            given the count of attached images.
+        separators (PostSeparators): System-block openers and closing trailer for the platform.
+        unavailable_notice (str): Notice returned when the platform reports the post is gone or
+            private.
+        unreadable_notice (str): Notice returned when the read fails without proving the post is
+            gone.
+        image_cap (int): Maximum number of post images to fetch and upload.
+        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API URI.
+        gemini_client (genai.Client | None): Direct-to-Google client for Files API uploads, or
+            `None` when unconfigured.
+        allow_media_ingest (bool): Whether media ingestion is enabled for this source.
+        deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span(f"gen_reply {platform.lower()} context"):
         conversation = await read_post(
@@ -298,22 +297,16 @@ _MARKER_TAG_RE = re.compile(
 
 
 def defuse_markers(text: str) -> str:
-    """Breaks the pipeline's own inline markers where they appear inside quoted post text.
+    """Returns `text` with inline pipeline marker tags neutralized into parenthesized names.
 
-    `extract_inline_markers` reads the answer model's OWN output, so a `<generate-video>` tag
-    written into a linked post or one of its comments becomes a real render the moment the model
-    quotes it back — which is exactly what "what does this comment say" asks it to do. Extraction
-    runs regardless of the kill-switches, so the tag has to stop being a tag here. Cheap to write
-    and cheap to abuse otherwise: a comment on a viral post costs an attacker nothing.
+    `extract_inline_markers` parses the answer model's own output regardless of kill-switches, so
+    a `<generate-video>` or `<forget-memory>` tag in quoted post or comment text would trigger a
+    media render or write into the replied-to user's long-term memory if the model quoted it
+    verbatim. Sources that inject surrounding posts or comments defuse their text here; Douyin
+    and Bilibili single-author metadata relies on `COMMON_PROMPT`'s never-echo rule.
 
-    The memory tags are defused for a different cost. A quoted `<forget-memory>` fires no render
-    and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
-    own long-term memory, and what it can reach there survives every later conversation.
-
-    Used by every source that hands the model posts around the linked one as well: its comments,
-    or the post it replies to or quotes. Douyin and Bilibili do not use it: a caption or a video
-    title is one line by its own author, and `tests/guards/test_prompt_guards.py` owns the prompt
-    rule that covers every undefused path.
+    Args:
+        text (str): Quoted post, author, or comment text to sanitize.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
 
@@ -321,22 +314,17 @@ def defuse_markers(text: str) -> str:
 def comment_lines[OutputT: LinkableCommentOutput](
     conversation: LinkableComments[OutputT], cap: int, served_as: str, handle_prefix: str
 ) -> list[str]:
-    """Renders up to `cap` comments under a header counting them, marking the one the link named.
+    """Returns up to `cap` rendered comment lines under a count header, plus any linked comment.
 
-    The named comment is labelled rather than moved to the front: its position in the thread is
-    part of reading it, and a model told which one was linked can answer about it without losing
-    what came before. One sitting past the cap rides after the others as one more, since it is the
-    comment the user is asking about, and the header counts it.
+    A comment matching `conversation.selected_comment_id` is marked in place rather than moved
+    to the front so thread order holds, and is appended past `cap` when it sits deeper in the
+    list.
 
     Args:
-        conversation: The post's conversation.
-        cap: How many comments ride, not counting a named one past it.
-        served_as: Closes the header, saying in the source's own words how much of the
-            discussion the page served.
-        handle_prefix: Written before each author's name, e.g. `@` where names are handles.
-
-    Returns:
-        Lines to append to the rendered post, none when it has no comments.
+        conversation (LinkableComments[OutputT]): Parsed conversation holding the comments.
+        cap (int): Maximum number of leading comments to include before the linked-comment check.
+        served_as (str): Header clause stating how much of the discussion the page served.
+        handle_prefix (str): Prefix placed before each author name, such as `"@"`.
     """
     comments = conversation.comments[:cap]
     selected = conversation.selected_comment
@@ -417,9 +405,5 @@ class LinkContextSource(BaseModel):
     )
 
     def timeout_blocks(self) -> list[EasyInputMessageParam]:
-        """The blocks injected in place of a build that outran the post-route grace.
-
-        Returns:
-            The timeout notice as a single system block.
-        """
+        """Returns `self.timeout_notice` wrapped as a single system block."""
         return [system_block(text=self.timeout_notice)]

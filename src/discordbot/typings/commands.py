@@ -1,18 +1,14 @@
-"""The installation and interaction contexts every root slash command declares.
+"""Installation and interaction contexts declared by every root slash command.
 
-Shared rather than spelled out per command because either list only means anything when all of
-them carry the same one: a command left out of `user_install` is missing for everyone who added
-the bot to their own account, and one left out of `private_channel` is missing from group DMs and
-from DMs with anyone but the bot itself.
+Every root command shares both tuples: omitting `user_install` hides a command from user-installed
+accounts, and omitting `private_channel` hides it from group DMs and DMs with other users.
 
-`contexts` has to be stated rather than left to a default. An unset one is stored as null, which
-Discord reads back through the deprecated `dm_permission` boolean, and that flag can express
-"DMs with the bot" and nothing else. Measured 2026-08-26 against the live app: with `contexts`
-null and `dm_permission` true, a user install worked in servers and in DMs with the bot while
-both private-channel surfaces came up empty, which is exactly the line that boolean can draw.
+`contexts` must be passed explicitly rather than left to default. Discord stores an unset `contexts`
+as null and falls back to the deprecated `dm_permission` boolean, which only enables DMs with the
+bot itself and leaves `private_channel` surfaces empty even on a user install.
 
-Tuples rather than lists so one command cannot mutate what every other command declares;
-nextcord takes any iterable and rebuilds its own list per command.
+Stored as tuples so no command can mutate the shared sequence; nextcord accepts any iterable and
+builds its own list per command.
 """
 
 from nextcord import IntegrationType, InteractionContextType

@@ -1,6 +1,6 @@
 """Douyin URL parsing, share-page scraping, and media download helpers.
 
-Douyin is deliberately NOT handled by `services.platforms.ytdlp`'s yt-dlp path. yt-dlp's `DouyinIE`
+Douyin is deliberately not handled by `services.platforms.ytdlp`'s yt-dlp path. yt-dlp's `DouyinIE`
 fetches `www.douyin.com/aweme/v1/web/aweme/detail/` unsigned, which Douyin answers with an
 empty body, so it fails outright unless the caller supplies cookies. It also only ever yields
 a video (never a photo post) and tops out at 720p on the samples tested.
@@ -50,7 +50,7 @@ from discordbot.services.platforms.file_downloads import DownloadTooLargeError, 
 # Detects a Douyin URL. Douyin's own share button emits the link inside a blob of noise
 # ("7.64 gOX:/ w@f.oD ... https://v.douyin.com/iR2syBRn/ 复制此链接，打开Dou音搜索"), so the
 # match has to survive being surrounded by CJK text: the path is matched as ASCII URL
-# characters only and must END on `[A-Za-z0-9_/-]`, which stops the match at a trailing
+# characters only and must end on `[A-Za-z0-9_/-]`, which stops the match at a trailing
 # `，`/`。`/`!` instead of swallowing it into the short code and breaking the lookup.
 # Only whole labels may precede the host (`(?:[A-Za-z0-9-]+\.)*`) and the `.com` must be followed
 # immediately by `/`, so a lookalike host such as `douyin.com.attacker.com/x` does not match.
@@ -65,7 +65,7 @@ _ROUTER_DATA_RE = re.compile(
     pattern=r"_ROUTER_DATA\s*=\s*(\{.*?\});?\s*</script>", flags=re.DOTALL
 )
 
-# The post id in a URL path. The other shape is a `modal_id` query parameter, which MUST be read
+# The post id in a URL path. The other shape is a `modal_id` query parameter, which must be read
 # before this one: `douyin.com/user/<sec_uid>?modal_id=<id>` carries both, and taking the path
 # first would yield the profile's sec_uid instead of the post.
 _PATH_ID_RE = re.compile(pattern=r"/(?:video|note|slides)/(\d+)")
@@ -89,17 +89,14 @@ _PHOTO_AWEME_TYPES = frozenset({2, 68})
 
 
 def is_douyin_url(url: str) -> bool:
-    """Reports whether a URL points at Douyin.
+    """Returns whether `url` points at `douyin.com` or `iesdouyin.com` (or a subdomain of either).
 
     Matches whole host labels, so a lookalike such as `douyin.com.attacker.com` is rejected.
-    A scheme-less paste (`v.douyin.com/xxx`) is accepted, since urlparse would otherwise read
+    A scheme-less paste (`v.douyin.com/xxx`) is accepted, since `urlparse` would otherwise read
     the whole string as a path with no hostname.
 
     Args:
-        url: The URL to test.
-
-    Returns:
-        True when the URL's host is douyin.com or iesdouyin.com, or a subdomain of either.
+        url (str): The URL to test.
     """
     host = normalized_host(url=url)
     return any(host_matches_domain(host=host, domain=allowed) for allowed in _ALLOWED_HOSTS)
@@ -119,21 +116,15 @@ def _extract_post_id(url: str) -> str:
 
 
 def is_douyin_post_url(url: str) -> bool:
-    """Reports whether a Douyin URL plausibly points at a single post.
+    """Returns whether a Douyin URL plausibly points at a single post.
 
-    `DOUYIN_URL_RE` matches the host, not the path, which is right for `/download_video` (a
-    human typed the link, so answering "that is not a post" is useful) but wrong for anything
-    that claims a message on its own: a pasted profile or live-room link would earn a warning
-    reaction nobody asked for, and would spend a Douyin request finding out.
-
-    A post id in the URL is proof. Otherwise only a bare single-segment path on a short-link
-    host can be a post: the same shape on `www.douyin.com` is a feed page such as `/jingxuan`.
+    `DOUYIN_URL_RE` matches the host rather than the path, so profile and live-room links also
+    match it. A post id in the URL is proof; otherwise only a bare single-segment path on a
+    short-link host can be a post, since the same shape on `www.douyin.com` is a feed page such
+    as `/jingxuan`.
 
     Args:
-        url: A URL already known to be a Douyin URL.
-
-    Returns:
-        True when the URL carries a post id or looks like a short link.
+        url (str): A URL already known to be a Douyin URL.
     """
     if _extract_post_id(url=url):
         return True
@@ -157,22 +148,19 @@ class DouyinUnavailableError(DouyinError, LinkUnavailableError):
 
 
 class DouyinBlockedError(DouyinError, LinkRetryableError):
-    """Douyin refused the request: a bot wall, its cookie gate, or a 429 on the share page or a
-    short link.
+    """Douyin refused the request with a bot wall, cookie gate, or HTTP 429.
 
     Retryable: the post itself is fine.
     """
 
 
 class DouyinTransferError(DouyinError, LinkRetryableError):
-    """A request never got through. Retryable, and NOT the refusal `DouyinBlockedError` is.
+    """A request never got through, distinct from the refusal `DouyinBlockedError` reports.
 
-    A read that stalled, never connected or was cut off part-way, or a Douyin 5xx, plus a media
-    download whose retries all ran out, a CDN 429 included. Both earn the same reaction, since
-    the reader's next move is the same either way. They are separate classes because a caller
-    that answers in words rather than a mark must not tell someone Douyin is refusing their
-    requests when a read simply stalled: that sends them off to wait out a wall that was never
-    there.
+    Covers a read that stalled, never connected, or was cut off part-way, a Douyin 5xx, and a
+    media download whose retries all ran out (a CDN 429 included). Kept separate from
+    `DouyinBlockedError` so callers that report failures in text do not blame a bot wall when a
+    transfer simply stalled.
     """
 
 
@@ -181,20 +169,11 @@ class DouyinTooLargeError(DouyinError):
 
 
 def _douyin_fetch_error(error: RequestException, url: str) -> RuntimeError:
-    """Returns the shared classifier's verdict on a failed Douyin request.
+    """Returns the classified Douyin error for `error` on `url`.
 
-    `link_fetch_error` decides whether the failure is worth retrying, says there is no post, or
-    says nothing. A retryable one is split once more, since only a 429 is Douyin refusing us;
-    the rest are no wall, so they say the request did not get through.
-
-    Args:
-        error: What `requests` raised.
-        url: The URL requested, for the message.
-
-    Returns:
-        `DouyinBlockedError` for a 429, `DouyinTransferError` for any other retryable failure,
-        `DouyinUnavailableError` for a URL HTTP says is gone, and a bare `RuntimeError` for
-        everything else.
+    Splits `link_fetch_error`'s retryable verdict into `DouyinBlockedError` on HTTP 429 and
+    `DouyinTransferError` on any other transient failure, and wraps `LinkUnavailableError` as
+    `DouyinUnavailableError`.
     """
     verdict = link_fetch_error(error=error, url=url)
     if isinstance(verdict, LinkUnavailableError):
@@ -240,12 +219,12 @@ class DouyinDownload(BaseModel):
 
     @property
     def total_bytes(self) -> int:
-        """Combined size of the downloaded files still in the download folder."""
+        """Returns the combined byte size of the downloaded files still in the download folder."""
         return sum(path.stat().st_size for path in self.filenames if path.exists())
 
     @property
     def omitted_images(self) -> int:
-        """Number of images present in the post but not downloaded."""
+        """Returns the number of images present in the post but not downloaded."""
         return max(0, self.total_images - len(self.filenames))
 
 
@@ -480,23 +459,12 @@ class DouyinDownloader(PlatformDownloader):
         return {"User-Agent": self.mobile_user_agent, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
 
     def _resolve_aweme_id(self, url: str) -> str:
-        """Extracts the numeric post id from any accepted Douyin URL form.
+        """Returns the numeric post id from `url`, resolving short links via redirect headers.
 
-        A short link (`v.douyin.com/...`, `jx.douyin.com/...`) carries no id, so it is resolved
-        by following redirects with the body left unread. Only `share/(video|note|slides)/<id>`
-        style targets are accepted: a short link can just as easily point at a profile
-        (`share/user/...`), a sound (`share/music/...`) or another ByteDance site entirely, and
-        blindly taking the last path segment would turn those into a bogus lookup.
-
-        Args:
-            url: The raw Douyin URL.
-
-        Returns:
-            The numeric aweme id.
-
-        Raises:
-            DouyinError: If the URL is not a Douyin post link or cannot be resolved.
-            RuntimeError: If a redirect probe failed in a way HTTP does not classify.
+        Short links (`v.douyin.com/...`, `jx.douyin.com/...`) carry no id and are resolved by
+        probing `Location` headers without reading the body. Only `share/(video|note|slides)/<id>`
+        targets are accepted so short links to profiles, sounds, or other ByteDance sites fail
+        cleanly rather than turning the last path segment into a bogus lookup.
         """
         cached = _cached_link_id(url=url)
         if cached:
@@ -525,20 +493,7 @@ class DouyinDownloader(PlatformDownloader):
         raise DouyinError(f"Could not find a Douyin post id in: {url}")
 
     def _redirect_target(self, url: str) -> str:
-        """Returns the Location of a single redirect hop, without fetching the body.
-
-        Args:
-            url: The URL to probe.
-
-        Returns:
-            The absolute redirect target, or an empty string when the URL does not redirect.
-
-        Raises:
-            DouyinBlockedError: If Douyin refused the probe with a 429.
-            DouyinTransferError: If the probe never got an answer or Douyin's server failed it.
-            DouyinUnavailableError: If Douyin answered that there is no such link.
-            RuntimeError: If the probe failed in a way HTTP does not classify, a 403 among them.
-        """
+        """Returns the absolute `Location` target of a single redirect hop without fetching the body."""
         try:
             with requests.Session() as session:
                 response = session.get(
@@ -561,24 +516,10 @@ class DouyinDownloader(PlatformDownloader):
         return urljoin(base=url, url=location)
 
     def _fetch_share_payload(self, aweme_id: str) -> _DouyinVideoInfo:
-        """Fetches and parses the share page for a post id.
+        """Returns the parsed `videoInfoRes` object from the share page for `aweme_id`.
 
-        A payload whose shape has moved far enough to fail validation is reported as
-        unreadable, never as unavailable: the two are kept apart everywhere in this module
-        because telling someone their working link is deleted is the worst thing it can do.
-
-        Args:
-            aweme_id: The numeric post id.
-
-        Returns:
-            The `videoInfoRes` object from the page's `_ROUTER_DATA`.
-
-        Raises:
-            DouyinBlockedError: If a bot wall, a 429 or the cookie gate answered instead of the post.
-            DouyinTransferError: If the read never finished or Douyin's server failed it.
-            DouyinUnavailableError: If Douyin answered that there is no such page.
-            DouyinError: If the page's structure changed.
-            RuntimeError: If the fetch failed in a way HTTP does not classify, a 403 among them.
+        A payload whose shape fails schema validation raises `DouyinError` rather than
+        `DouyinUnavailableError` so a parser break is never reported as a deleted link.
         """
         with _PAYLOAD_CACHE_LOCK:
             cached = _PAYLOAD_CACHE.get(aweme_id)
@@ -622,25 +563,10 @@ class DouyinDownloader(PlatformDownloader):
         return info
 
     def _get_share_page(self, url: str) -> str:
-        """Fetches a share page, carrying the guest cookie it needs to render the post.
+        """Returns the share page HTML for `url`, retrying up to three times to acquire `ttwid`.
 
-        The empty shell is asked for again, up to three requests in all: with the cookie it just
-        handed out, or still without one when it handed out none, which it does only some of the
-        time. A shell answered to a cookie that came back unchanged or not at all ends the read,
-        since asking again cannot help; so does a bot wall, which carries no `_ROUTER_DATA`.
-
-        Args:
-            url: The share page URL.
-
-        Returns:
-            The page's HTML.
-
-        Raises:
-            DouyinBlockedError: If Douyin refused the request with a 429, or served its shell
-                to a request that had no cookie to send.
-            DouyinTransferError: If the read never finished or Douyin's server failed it.
-            DouyinUnavailableError: If Douyin answered that there is no such page.
-            RuntimeError: If the fetch failed in a way HTTP does not classify, a 403 among them.
+        Stops early once a response carries `videoInfoRes`, a bot wall (no `_ROUTER_DATA`), or an
+        empty shell in answer to a request that already sent an accepted `ttwid`.
         """
         global _share_ttwid  # noqa: PLW0603 -- the process-wide guest cookie
 
@@ -674,18 +600,10 @@ class DouyinDownloader(PlatformDownloader):
 
     @staticmethod
     def _find_video_info(router_data: dict[str, Any]) -> dict[str, Any] | None:
-        """Finds the `videoInfoRes` object inside `loaderData`.
+        """Returns the `videoInfoRes` dict inside `loaderData`, or `None` when absent.
 
-        The `loaderData` key is named after the URL path that was fetched (`note_(id)/page` for a
-        note URL, `video_(id)/page` for a video one), so hardcoding either name breaks the moment
-        the other form is used. Scanning the values for the one carrying `videoInfoRes` is stable
-        across both.
-
-        Args:
-            router_data: The parsed `_ROUTER_DATA` object.
-
-        Returns:
-            The `videoInfoRes` object, or None when the payload has no such entry.
+        Scans `loaderData` values rather than indexing by route key because the key is named after
+        the fetched path (`note_(id)/page` vs `video_(id)/page`).
         """
         loader_data = router_data.get("loaderData")
         if not isinstance(loader_data, dict):
@@ -698,21 +616,10 @@ class DouyinDownloader(PlatformDownloader):
 
     @staticmethod
     def _first_item(info: _DouyinVideoInfo, aweme_id: str) -> _DouyinItem:
-        """Returns the post object, translating Douyin's soft failures into errors.
+        """Returns `info.item_list[0]`, or raises `DouyinUnavailableError` when Douyin filtered the post.
 
-        Douyin answers a deleted, private or region-locked post with HTTP 200, an empty
-        `item_list` and a populated `filter_list`, so treating a 200 as success would surface an
-        empty post instead of a real error.
-
-        Args:
-            info: The `videoInfoRes` object.
-            aweme_id: The numeric post id, used in the error message.
-
-        Returns:
-            The first entry of `item_list`.
-
-        Raises:
-            DouyinUnavailableError: If Douyin filtered the post out.
+        Douyin answers a deleted, private, or region-locked post with HTTP 200, an empty
+        `item_list`, and a populated `filter_list`.
         """
         if info.item_list:
             return info.item_list[0]
@@ -724,17 +631,10 @@ class DouyinDownloader(PlatformDownloader):
         raise DouyinUnavailableError(f"Douyin returned no post for {aweme_id}")
 
     def parse_metadata(self, url: str) -> DouyinMetadata:
-        """Parses a Douyin URL into post metadata WITHOUT downloading any media.
-
-        The expansion cog and the reply pipeline both need the caption and media URLs before (or
-        without) any local file, so the parse is kept separate from the download the same way
-        `ThreadsDownloader.parse_metadata` is split from `parse`.
+        """Returns post metadata parsed from `url` without downloading any media.
 
         Args:
-            url: The raw Douyin URL.
-
-        Returns:
-            The parsed post metadata.
+            url (str): The raw Douyin URL.
 
         Raises:
             DouyinError: If the URL cannot be resolved or the post cannot be read.
@@ -765,59 +665,28 @@ class DouyinDownloader(PlatformDownloader):
 
     @staticmethod
     def _image_urls(images: list[_DouyinImage]) -> list[str]:
-        """Picks one watermark-free URL per image.
+        """Returns one watermark-free JPEG URL per image in `images`.
 
-        Despite the names, `url_list` holds the clean images and `download_url_list` holds the
-        watermarked ones. Within `url_list` the last entry is the JPEG and the earlier ones are
-        WebP, which Discord renders less consistently.
-
-        Args:
-            images: The post's `images` array.
-
-        Returns:
-            One URL per image, skipping any Douyin served no usable URL for.
+        `url_list` holds the clean images while `download_url_list` holds the watermarked ones;
+        within `url_list`, the last entry is JPEG and earlier entries are WebP.
         """
         return [image.url_list[-1] for image in images if image.url_list]
 
     def _play_url(self, video_id: str, quality: VideoQuality) -> str:
-        """Builds the watermark-free play URL for a video.
+        """Returns the watermark-free `play` endpoint URL for `video_id` at `quality`.
 
-        The URL Douyin ships in `play_addr.url_list` points at the `playwm` endpoint, whose
-        output carries a corner logo and the author's handle, and runs a few seconds longer
-        because of the appended outro. The `play` endpoint serves the same clip clean.
-
-        Args:
-            video_id: Douyin's internal video id.
-            quality: The requested quality preset.
-
-        Returns:
-            The play endpoint URL.
+        `play_addr.url_list` points at `playwm`, which adds a corner logo, handle, and outro;
+        the `play` endpoint serves the clean clip.
         """
         ratio = self.quality_ratios[quality]
         return f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio={ratio}&line=0"
 
     def _download_to(self, url: str, filename: str, max_bytes: int | None = None) -> Path:
-        """Streams a remote file into the output folder, retrying a stalled transfer.
+        """Streams `url` into `output_folder/filename`, retrying stalled transfers up to `max_retries`.
 
-        The media CDN intermittently stalls mid-transfer, which surfaces as a read timeout
-        rather than an error status, so a failed attempt is retried from scratch, unless HTTP
-        answered with a status a retry would not change. `stream_to_file` owns the rest: the
-        output folder it must never re-create, the `max_bytes` fail-fast and the removal of a
-        partial file. An oversize file is deterministic — it would be oversize again next time —
-        so it is raised past this loop rather than through it, like that status.
-
-        Args:
-            url: The media URL.
-            filename: The name to save the file as.
-            max_bytes: Refuse media larger than this; None accepts any size.
-
-        Returns:
-            The path of the written file.
-
-        Raises:
-            DouyinTooLargeError: If the media exceeds `max_bytes`.
-            DouyinError: If every attempt fails.
-            RuntimeError: If HTTP refuses with a status a retry would not change.
+        The media CDN intermittently stalls mid-transfer (surfacing as a read timeout), so failed
+        attempts are retried unless HTTP answered with a non-retryable status or `stream_to_file`
+        raised `DownloadTooLargeError`.
         """
         filepath = Path(self.output_folder) / filename
 
@@ -865,20 +734,19 @@ class DouyinDownloader(PlatformDownloader):
         max_bytes: int | None = None,
         post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
-        """Downloads a Douyin post's media.
+        """Downloads a Douyin post's media and returns its local file paths.
 
         Args:
-            url: The raw Douyin URL.
-            quality: The requested quality preset. Ignored for a photo post.
-            max_images: Cap on images fetched from a photo post. None fetches all of them.
-            max_bytes: Per-file size cap; None accepts any size. See `_download_to`.
-            post: An already-parsed post, so a caller that needs the metadata regardless (to
-                report a caption when the download is refused) does not parse it twice. The
-                share payload is cached, so passing it saves bookkeeping rather than a request.
+            url (str): The raw Douyin URL.
+            quality (VideoQuality): The requested quality preset; ignored for a photo post.
+            max_images (int | None): Cap on images fetched from a photo post; `None` fetches all.
+            max_bytes (int | None): Per-file size cap in bytes; `None` accepts any size.
+            post (DouyinMetadata | None): Pre-parsed metadata for `url`, avoiding a second parse
+                when the caller already inspected the post.
 
         Returns:
             The downloaded files, with `total_images` recording the post's real image count so
-            the caller can report what a cap left out.
+            the caller can report what `max_images` left out.
 
         Raises:
             DouyinError: If the post cannot be resolved, read, or downloaded.

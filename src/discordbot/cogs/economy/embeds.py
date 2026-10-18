@@ -145,9 +145,14 @@ def build_error_embed(
     author_icon_url: str | None = None,
     thumbnail_url: str | None = None,
 ) -> Embed:
-    """Builds a red error embed with optional author and thumbnail.
+    """Returns a red error embed with optional author and thumbnail.
 
-    The `description` is used verbatim, including any leading Markdown heading.
+    Args:
+        title (str): Embed title.
+        description (str): Body text used verbatim, including any leading Markdown heading.
+        author_name (str | None): Optional author line name.
+        author_icon_url (str | None): Optional author icon URL when `author_name` is set.
+        thumbnail_url (str | None): Optional thumbnail URL.
     """
     embed = Embed(title=title, description=description, color=ERROR_COLOR)
     if author_name is not None:
@@ -158,12 +163,22 @@ def build_error_embed(
 
 
 def build_simple_embed(title: str, description: str, color: int) -> Embed:
-    """Builds a single-section embed."""
+    """Returns a single-section embed.
+
+    Args:
+        title (str): Embed title.
+        description (str): Embed body text.
+        color (int): RGB color integer.
+    """
     return Embed(title=title, description=description, color=color)
 
 
 def build_invalid_amount_embed(title: str) -> Embed:
-    """Builds the validation embed for malformed point amount text."""
+    """Returns the validation embed for malformed point amount text.
+
+    Args:
+        title (str): Failure title for the command that rejected the amount.
+    """
     return Embed(
         title=title,
         description="### 金額格式錯誤\n請輸入正整數，可以加逗號，例如 `1,000`。",
@@ -181,7 +196,18 @@ def build_admin_adjustment_embed(  # noqa: PLR0913 -- mirrors every visible adju
     result: BalanceAdjustmentResult,
     is_collect_clamped: bool,
 ) -> Embed:
-    """Builds the public result embed for an admin balance adjustment."""
+    """Returns the public result embed for an admin balance adjustment.
+
+    Args:
+        title (str): Operation title.
+        member_mention (str): Discord mention of the adjusted member.
+        actor_name (str): Display name of the admin who ran the adjustment.
+        actor_avatar_url (str): Avatar URL of the admin.
+        member_avatar_url (str): Avatar URL of the adjusted member.
+        requested_delta (int): Signed delta requested before any clamp.
+        result (BalanceAdjustmentResult): Applied delta and post-adjustment balance.
+        is_collect_clamped (bool): Whether a debit was clamped at zero balance.
+    """
     embed = Embed(
         title=title,
         description=(
@@ -209,7 +235,15 @@ def build_admin_adjustment_embed(  # noqa: PLR0913 -- mirrors every visible adju
 def build_balance_embed(
     display_name: str, avatar_url: str, portfolio: PortfolioView, is_vip: bool, age_days: int
 ) -> Embed:
-    """Builds the private financial-overview embed for a member."""
+    """Returns the private financial-overview embed for a member.
+
+    Args:
+        display_name (str): Member display name.
+        avatar_url (str): Member avatar URL.
+        portfolio (PortfolioView): Balance, debt, and net worth snapshot.
+        is_vip (bool): Whether the member owns the permanent VIP perk.
+        age_days (int): Age of the Discord account in days.
+    """
     embed = Embed(
         title="💰 財務總覽",
         color=BALANCE_COLOR,
@@ -236,7 +270,7 @@ def build_balance_embed(
 
 
 def build_empty_leaderboard_embed() -> Embed:
-    """Builds the public balance leaderboard shown when no visible account exists to rank."""
+    """Returns the public balance leaderboard shown when no visible account exists to rank."""
     return Embed(
         title=LEADERBOARD_TITLE,
         description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
@@ -245,7 +279,11 @@ def build_empty_leaderboard_embed() -> Embed:
 
 
 def build_leaderboard_embed(champion: LeaderboardEntry) -> Embed:
-    """Builds the public balance leaderboard embed referencing its board image."""
+    """Returns the public balance leaderboard embed referencing its board image.
+
+    Args:
+        champion (LeaderboardEntry): Top-ranked balance entry.
+    """
     embed = Embed(
         title=LEADERBOARD_TITLE,
         description="### 公開排行榜\n依可用餘額排序。",
@@ -258,7 +296,7 @@ def build_leaderboard_embed(champion: LeaderboardEntry) -> Embed:
 
 
 def build_empty_loss_leaderboard_embed() -> Embed:
-    """Builds the public daily loss leaderboard shown when no visible account has lost today."""
+    """Returns the public daily loss leaderboard shown when no visible account has lost today."""
     return Embed(
         title=LOSS_LEADERBOARD_TITLE,
         description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
@@ -267,7 +305,11 @@ def build_empty_loss_leaderboard_embed() -> Embed:
 
 
 def build_loss_leaderboard_embed(champion: LossLeaderboardEntry) -> Embed:
-    """Builds the public daily loss leaderboard embed referencing its board image."""
+    """Returns the public daily loss leaderboard embed referencing its board image.
+
+    Args:
+        champion (LossLeaderboardEntry): Top-ranked daily loss entry.
+    """
     embed = Embed(
         title=LOSS_LEADERBOARD_TITLE,
         description="### 今日累計輸排序\n以 gross loss 排名，贏回來不抵扣。",
@@ -283,7 +325,14 @@ def build_loss_leaderboard_embed(champion: LossLeaderboardEntry) -> Embed:
 def build_transfer_embed(
     amount: int, sender: EmbedParty, receiver: EmbedParty, result: TransferResult
 ) -> Embed:
-    """Builds the public transfer-completed embed."""
+    """Returns the public transfer-completed embed.
+
+    Args:
+        amount (int): Gross amount debited from the sender.
+        sender (EmbedParty): Display identity of the sender.
+        receiver (EmbedParty): Display identity of the receiver.
+        result (TransferResult): Post-transfer balances, net received, and tax burned.
+    """
     description = (
         f"### {currency_text(amount=amount, compact=True)}\n{sender.mention} → {receiver.mention}"
     )
@@ -314,9 +363,14 @@ ON_TABLE_NOTE = "-# 21 點桌上的錢要等這局結束才能動"
 def build_transfer_insufficient_embed(
     sender_name: str, sender_avatar_url: str, balance_now: int, amount: int, on_table: bool = False
 ) -> Embed:
-    """Builds the transfer failure embed for an insufficient sender balance.
+    """Returns the transfer failure embed for an insufficient sender balance.
 
-    `balance_now` is what the sender can spend; `on_table` says a Blackjack round holds the rest.
+    Args:
+        sender_name (str): Display name of the sender.
+        sender_avatar_url (str): Avatar URL of the sender.
+        balance_now (int): Spendable balance available to the sender.
+        amount (int): Requested transfer amount.
+        on_table (bool): Whether a Blackjack round holds the rest of the sender's wallet.
     """
     return build_error_embed(
         title="轉帳失敗",
@@ -332,7 +386,11 @@ def build_transfer_insufficient_embed(
 
 
 def build_casino_embed(snapshot: CasinoLedgerSnapshot) -> Embed:
-    """Builds the casino system cumulative P&L embed."""
+    """Returns the casino system cumulative P&L embed.
+
+    Args:
+        snapshot (CasinoLedgerSnapshot): Cumulative casino balance and gross flows.
+    """
     balance = snapshot.balance
     if balance > 0:
         verdict = rf"\+ {bold_currency(amount=balance, compact=True)}"
@@ -360,7 +418,15 @@ def build_casino_embed(snapshot: CasinoLedgerSnapshot) -> Embed:
 def build_pocat_embed(
     name: str, avatar_url: str, balance: int, total_earned: int, total_spent: int
 ) -> Embed:
-    """Builds the bot player's own wallet embed."""
+    """Returns the bot player's own wallet embed.
+
+    Args:
+        name (str): Bot display name.
+        avatar_url (str): Bot avatar URL.
+        balance (int): Current wallet balance.
+        total_earned (int): Lifetime gross inflows.
+        total_spent (int): Lifetime gross outflows.
+    """
     if balance > 0:
         verdict = rf"{bold_currency(amount=balance, compact=True)}"
         color = BALANCE_COLOR
@@ -388,7 +454,14 @@ def build_pocat_embed(
 def build_credit_request_embed(
     borrower: EmbedParty, lender: EmbedParty, amount: int, monthly_rate_bps: int
 ) -> Embed:
-    """Builds the public personal credit request embed."""
+    """Returns the public personal credit request embed.
+
+    Args:
+        borrower (EmbedParty): Display identity of the borrower.
+        lender (EmbedParty): Display identity of the requested lender.
+        amount (int): Requested principal amount.
+        monthly_rate_bps (int): Monthly simple-interest rate in basis points.
+    """
     embed = Embed(
         title="💴 信貸申請已建立",
         description=(
@@ -413,7 +486,13 @@ def build_credit_request_embed(
 def build_central_bank_request_embed(
     borrower: EmbedParty, amount: int, monthly_rate_bps: int
 ) -> Embed:
-    """Builds the public central-bank loan request embed."""
+    """Returns the public central-bank loan request embed.
+
+    Args:
+        borrower (EmbedParty): Display identity of the borrower.
+        amount (int): Requested principal amount.
+        monthly_rate_bps (int): Monthly simple-interest rate in basis points.
+    """
     embed = Embed(
         title="🏛️ 央行借款申請已建立",
         description=f"### {borrower.mention}\n{currency_text(amount=amount, compact=True)}",
@@ -437,7 +516,14 @@ def build_central_bank_request_embed(
 def build_credit_repay_embed(
     actor_name: str, actor_avatar_url: str, lender_display_name: str, result: LoanPaymentResult
 ) -> Embed:
-    """Builds the personal credit repayment result embed."""
+    """Returns the personal credit repayment result embed.
+
+    Args:
+        actor_name (str): Display name of the repaying borrower.
+        actor_avatar_url (str): Avatar URL of the repaying borrower.
+        lender_display_name (str): Display name of the lender repaid.
+        result (LoanPaymentResult): Applied payment breakdown and remaining debt.
+    """
     embed = Embed(
         title="🧾 信貸還款完成",
         description=(
@@ -458,7 +544,14 @@ def build_credit_repay_embed(
 def build_credit_call_embed(
     actor_name: str, actor_avatar_url: str, borrower_mention: str, result: LoanPaymentResult
 ) -> Embed:
-    """Builds the personal credit forced-collection result embed."""
+    """Returns the personal credit forced-collection result embed.
+
+    Args:
+        actor_name (str): Display name of the collecting lender.
+        actor_avatar_url (str): Avatar URL of the collecting lender.
+        borrower_mention (str): Discord mention of the borrower collected from.
+        result (LoanPaymentResult): Applied collection breakdown and remaining debt.
+    """
     embed = Embed(
         title="📣 信貸催收完成",
         description=(
@@ -473,11 +566,15 @@ def build_credit_call_embed(
 
 
 def build_credit_status_embed(contracts: list[LoanContractView], viewer_id: int) -> Embed:
-    """Builds the caller's active personal credit contracts embed, or its empty state.
+    """Returns the caller's active personal credit contracts embed, or its empty state.
 
     Overflow past the description budget is counted rather than dropped: a debt the
     borrower cannot see is one they will not repay while the interest keeps accruing.
     Contracts arrive oldest first, so the ones held back are the newest.
+
+    Args:
+        contracts (list[LoanContractView]): Active personal credit contracts, oldest first.
+        viewer_id (int): Discord user ID of the caller viewing the status.
     """
     if not contracts:
         return Embed(title="信貸狀態", description="### 目前沒有有效信貸", color=BORROW_COLOR)
@@ -502,7 +599,14 @@ def build_credit_status_embed(contracts: list[LoanContractView], viewer_id: int)
 def build_central_bank_repay_embed(
     actor_name: str, actor_avatar_url: str, user_mention: str, result: LoanPaymentResult
 ) -> Embed:
-    """Builds the central-bank repayment result embed."""
+    """Returns the central-bank repayment result embed.
+
+    Args:
+        actor_name (str): Display name of the repaying borrower.
+        actor_avatar_url (str): Avatar URL of the repaying borrower.
+        user_mention (str): Discord mention of the repaying borrower.
+        result (LoanPaymentResult): Applied payment breakdown and remaining debt.
+    """
     embed = Embed(
         title="🏛️ 央行還款完成",
         description=f"### {user_mention}\n" + _payment_summary_text(result=result),
@@ -520,7 +624,15 @@ def build_central_bank_call_embed(
     borrower_avatar_url: str,
     result: LoanPaymentResult,
 ) -> Embed:
-    """Builds the central-bank forced-collection result embed."""
+    """Returns the central-bank forced-collection result embed.
+
+    Args:
+        actor_name (str): Display name of the admin who ran the collection.
+        actor_avatar_url (str): Avatar URL of the admin.
+        borrower_mention (str): Discord mention of the borrower collected from.
+        borrower_avatar_url (str): Avatar URL of the borrower collected from.
+        result (LoanPaymentResult): Applied collection breakdown and remaining debt.
+    """
     embed = Embed(
         title="🏛️ 央行催收完成",
         description=f"### 從 {borrower_mention} 回收\n" + _payment_summary_text(result=result),
@@ -532,7 +644,11 @@ def build_central_bank_call_embed(
 
 
 def build_central_bank_status_embed(status: CentralBankStatus) -> Embed:
-    """Builds one server's central bank lending-capacity embed."""
+    """Returns one server's central bank lending-capacity embed.
+
+    Args:
+        status (CentralBankStatus): Collateral, outstanding principal, and available credit.
+    """
     embed = Embed(
         title="🏛️ 中央銀行狀態",
         description=f"## 可放貸 {bold_currency(amount=status.available_credit, compact=True)}",
@@ -547,9 +663,7 @@ def build_central_bank_status_embed(status: CentralBankStatus) -> Embed:
         ),
         inline=False,
     )
-    # Its own field, headed for the whole bank: the debt is deliberately not per server,
-    # and rendering it inside the section above had a server admin reading a bank-wide
-    # figure as their own.
+    # Its own field, headed for the whole bank: the debt is bank-wide rather than per server.
     embed.add_field(
         name="全行未還本金",
         value=amount_code(amount=status.outstanding_principal, compact=True),
@@ -568,7 +682,13 @@ def build_central_bank_status_embed(status: CentralBankStatus) -> Embed:
 
 
 def build_central_bank_ceiling_embed(borrower_mention: str, requested: int, ceiling: int) -> Embed:
-    """Builds the refusal shown when a request exceeds the borrower's own ceiling."""
+    """Returns the refusal shown when a request exceeds the borrower's own ceiling.
+
+    Args:
+        borrower_mention (str): Discord mention of the borrower.
+        requested (int): Requested principal amount.
+        ceiling (int): Maximum additional credit the borrower may draw.
+    """
     embed = Embed(
         title="🏛️ 超過個人信用上限",
         description=(
@@ -584,7 +704,12 @@ def build_central_bank_ceiling_embed(borrower_mention: str, requested: int, ceil
 
 
 def build_vip_already_embed(actor_name: str, avatar_url: str) -> Embed:
-    """Builds the embed shown when a member already owns VIP."""
+    """Returns the embed shown when a member already owns VIP.
+
+    Args:
+        actor_name (str): Display name of the caller.
+        avatar_url (str): Avatar URL of the caller.
+    """
     embed = Embed(
         title="已經是 VIP", description="### 你已經擁有永久 VIP 了, 不用再買一次", color=VIP_COLOR
     )
@@ -596,9 +721,13 @@ def build_vip_already_embed(actor_name: str, avatar_url: str) -> Embed:
 def build_vip_insufficient_embed(
     actor_name: str, avatar_url: str, balance_now: int, on_table: bool = False
 ) -> Embed:
-    """Builds the VIP purchase failure embed for an insufficient balance.
+    """Returns the VIP purchase failure embed for an insufficient balance.
 
-    `balance_now` is what the buyer can spend; `on_table` says a Blackjack round holds the rest.
+    Args:
+        actor_name (str): Display name of the buyer.
+        avatar_url (str): Avatar URL of the buyer.
+        balance_now (int): Spendable balance available to the buyer.
+        on_table (bool): Whether a Blackjack round holds the rest of the buyer's wallet.
     """
     embed = Embed(
         title="VIP 購買失敗",
@@ -616,7 +745,13 @@ def build_vip_insufficient_embed(
 
 
 def build_vip_success_embed(actor_name: str, avatar_url: str, result: VipPurchaseResult) -> Embed:
-    """Builds the VIP purchase success embed."""
+    """Returns the VIP purchase success embed.
+
+    Args:
+        actor_name (str): Display name of the buyer.
+        avatar_url (str): Avatar URL of the buyer.
+        result (VipPurchaseResult): Cost debited and post-purchase balance.
+    """
     embed = Embed(
         title="👑 升級 VIP 成功",
         description=(
@@ -637,7 +772,13 @@ def build_vip_success_embed(actor_name: str, avatar_url: str, result: VipPurchas
 def build_credit_approved_embed(
     result: LoanProposalAcceptResult, approver_mention: str, lender_avatar_url: str
 ) -> Embed:
-    """Builds the personal credit approval embed."""
+    """Returns the personal credit approval embed.
+
+    Args:
+        result (LoanProposalAcceptResult): Opened contract and post-approval balances.
+        approver_mention (str): Discord mention of the approving lender.
+        lender_avatar_url (str): Avatar URL of the approving lender.
+    """
     embed = Embed(
         title="✅ 信貸已批准",
         description=(
@@ -663,7 +804,12 @@ def build_credit_approved_embed(
 def build_central_bank_approved_embed(
     result: LoanProposalAcceptResult, approver_mention: str
 ) -> Embed:
-    """Builds the central-bank approval embed."""
+    """Returns the central-bank approval embed.
+
+    Args:
+        result (LoanProposalAcceptResult): Opened contract and remaining central-bank capacity.
+        approver_mention (str): Discord mention of the approving server administrator.
+    """
     embed = Embed(
         title="🏛️ 央行借款已批准",
         description=(

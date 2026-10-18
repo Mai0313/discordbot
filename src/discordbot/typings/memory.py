@@ -1,18 +1,18 @@
 """Pure types for long-term memory: the observation vocabulary and one stored fact.
 
-The write side speaks in *observations* (one conversational signal, phase-1) and the
-read side speaks in *facts* (one distilled memory, one file). ``MemorySection`` is the
-facts' vocabulary, shared by the consolidation's delta schema and the rendered document: it
-is an ASCII key, never the rendered heading, so the structured LLM schema stays English
+The write side speaks in observations (one conversational signal) and the read side
+speaks in facts (one distilled memory, one file). `MemorySection` is the facts'
+vocabulary, shared by the consolidation delta schema and the rendered document: it is an
+ASCII key rather than the rendered heading, so the structured LLM schema stays English
 while the injected document stays Traditional Chinese.
 
-A fact's fields split into two ownership zones. The model authors ``summary``,
-``section``, ``durability`` and the body, and names ``subject_id`` plus the keys a fact
-distils from; everything else is stamped by code — provenance the model cannot copy
-wrong. Stamped is not the same as hidden: ``MemoryFact`` below has what an update or
-delete is handed back and why. ``compartment`` is stamped too, but only so a tree edited
-outside the store can be *detected*: a fact whose stored value disagrees with its
-containing directory is skipped (``facts.parse_fact_file``).
+A fact's fields split into two ownership zones. The model authors `summary`, `section`,
+`durability` and the body, and names `subject_id` plus the keys a fact distils from;
+everything else is stamped by code so the model cannot copy provenance wrong. Stamped is
+not the same as hidden: `MemoryFact` below documents which fields an update or delete
+receives back. `compartment` is stamped too, so a tree edited outside the store can be
+detected: a fact whose stored value disagrees with its containing directory is skipped
+(`facts.parse_fact_file`).
 """
 
 from typing import Literal
@@ -161,7 +161,7 @@ class MemoryWriteSummary(BaseModel):
     Structured rather than pre-rendered because the wording is a Discord concern and the
     pipeline is not: `services/` never composes what a user reads.
 
-    `private` is a COUNT, not a list. A `source_only` observation is one the pipeline judged
+    `private` is a count, not a list. A `source_only` observation is one the pipeline judged
     unsafe to repeat outside the conversation it came from, and while the reply is in that
     conversation, the note under it stays in the channel long after the exchange scrolls past.
     Saying how many were taken keeps the report honest without publishing them.
@@ -198,7 +198,7 @@ class MemoryCredits(BaseModel):
 
     @property
     def total(self) -> int:
-        """How many users' memory this reply actually read."""
+        """Returns how many users' memory this reply read."""
         return len(self.named) + self.unnamed
 
 

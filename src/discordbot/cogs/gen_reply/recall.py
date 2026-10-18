@@ -1,21 +1,16 @@
 """The read side of memory: which stored memory one reply carries, and who may see it.
 
-Recall is the half that only reads. The write side is the answer model marking notes in
-its own reply (`markers.py`) and `services/memory/` turning them into facts; nothing here
-touches either. Code directly resolves the current author, the replied-to message's author
-(one hop, never further up the chain), and users explicitly mentioned in the current message.
-The route call (`routing.py`) only decides whether the latest message obliquely refers to an
-additional member from a public server nickname table, naming ids from the candidate block
-rendered here. Every path
-still passes a per-request allowlist to `recall_user_memories`, which drops any requested
-id outside it before reading a file. A second boundary decides how much of an allowed
-user's memory this conversation may see, and it is a path join rather than a filter:
-memory is stored one fact per file under the compartment that may read it, so
-`compartments_for_reading` names the directories and everything else is simply never
-opened. A secret told in one server cannot surface in another because it was never in a
-directory this reply reads. The always-read tone note (`render_tone_block`) is the
-deliberate exception — persona-independent delivery preferences are cross-server safe by
-construction, so they live outside the tree.
+Recall is deterministic first and route-selected second. Code directly resolves the current
+author, the replied-to message's author (one hop), and users explicitly mentioned in the current
+message; the route call (`routing.py`) may then pick obliquely referenced members from the public
+server nickname table candidate block rendered here. Every path passes a per-request allowlist to
+`recall_user_memories`, which drops any id outside it before reading a file.
+
+Which compartments of an allowed user's memory this conversation may read is a directory path join
+in `compartments_for_reading`: memory is stored one fact per file under the compartment that may
+read it, so unreadable compartments are never opened. The always-read tone note
+(`render_tone_block`) is the exception: persona-independent delivery preferences are cross-server
+safe by construction and live outside the compartment tree.
 """
 
 from nextcord import User, Member
@@ -42,13 +37,7 @@ NO_STORED_MEMORY = "(no stored memory for this user)"
 
 
 class RecallContext(BaseModel):
-    """Where a reply is happening, for choosing which memory compartments to read.
-
-    Built once per reply by `build_recall_context` and threaded into every path that
-    reads a user's stored memory (deterministic participants and optional selection),
-    so `compartments_for_reading` can name the directories this conversation is allowed
-    to open.
-    """
+    """Where a reply is happening, used to select which memory compartments may be read."""
 
     guild_id: int | None = Field(..., description="Current guild id; None outside guilds.")
     dm_partner_id: int | None = Field(
@@ -63,42 +52,27 @@ class RecallContext(BaseModel):
 def build_recall_context(
     author_id: int, guild_id: int | None, is_direct_message: bool
 ) -> RecallContext:
-    """Builds the read context for one turn, from where that turn is actually happening.
+    """Returns the memory-read context for one turn from the surface's location and DM status.
 
-    Both facts are handed in rather than read off the message, because on the `/ask` route the
-    message cannot carry either: it is synthesized over a `PartialMessageable`, so its `guild` is
-    None even in a server and its channel is the same partial type in a 1:1 DM as in a group one.
-    `TurnSurface` is the single place both are decided, which is what keeps this read agreeing
-    with the source stamp the write side puts on the same turn's observations.
+    `guild_id` and `is_direct_message` come from `TurnSurface` rather than `message`, whose
+    synthesized `/ask` form carries `guild=None` and a `PartialMessageable` channel in servers,
+    group DMs, and 1:1 DMs alike.
 
     Args:
-        author_id: The user being replied to.
-        guild_id: The guild this conversation is happening in, or None outside one.
-        is_direct_message: Whether this is a 1:1 DM between that author and the bot.
-
-    Returns:
-        The compartments-deciding context for every memory read this turn makes.
+        author_id (int): Discord user id of the user being replied to.
+        guild_id (int | None): Guild id where the conversation happens, or None outside guilds.
+        is_direct_message (bool): Whether the conversation is a 1:1 DM with the bot.
     """
     return RecallContext(guild_id=guild_id, dm_partner_id=author_id if is_direct_message else None)
 
 
 class RecallCandidate(BaseModel):
-    """One allowlisted user's two labels, because the model and the footer want different text.
+    """Model-facing and footer-facing labels for one allowlisted user.
 
-    `prompt_label` is what a request shows the model: a participant's Discord label with the
-    server memory's `## 成員稱呼` row appended when there is one, or that row alone for a member
-    this conversation knows only from the table. `credit_label` is what the public usage footer
-    names, so it stays the short Discord label and never carries the table's community prose.
-
-    A table-only member has no Discord label here, so their `credit_label` stays None and the
-    footer counts them instead of naming them — and a reply that read nobody else prints the
-    bare count on its own. There is deliberately no name pulled
-    from anywhere else: the guild member cache is empty for them, since the bot runs without the
-    members intent and nextcord never caches a plain message author, and the identity the memory
-    store stamps is the display name of whichever guild's consolidation last wrote that fact,
-    which would put another server's nickname in this channel's footer. A bare id is no better —
-    it reads as something the bot just recorded about them, and names someone the channel cannot
-    resolve anyway.
+    `prompt_label` carries the Discord identity plus any `## 成員稱呼` alias row (or the alias row
+    alone for a table-only member). `credit_label` stays the short Discord label for the usage
+    footer, or None for a table-only member so the footer counts them without leaking another
+    guild's consolidated display name or a raw user id.
     """
 
     prompt_label: str = Field(
@@ -145,12 +119,14 @@ def _user_label(user: Member | User) -> str:
 def build_recall_allowlist(
     users: list[Member | User], bot_user_id: int
 ) -> dict[int, RecallCandidate]:
-    """Builds an insertion-ordered id-to-label memory allowlist from trusted users.
+    """Returns an insertion-ordered id-to-candidate allowlist from eligible conversation users.
 
-    The caller chooses the exact participant roles that are eligible. This helper only
-    deduplicates them, excludes the bot, and renders sanitized labels. A conversation
-    participant carries the same label on both sides; only the model-facing one grows
-    later, when `widen_allowlist_with_aliases` appends the community nickname row.
+    Deduplicates `users`, excludes `bot_user_id`, and initializes both `prompt_label` and
+    `credit_label` to the sanitized Discord identity.
+
+    Args:
+        users (list[Member | User]): Eligible participants in priority order.
+        bot_user_id (int): The bot's own Discord user id to exclude.
     """
     allowed: dict[int, RecallCandidate] = {}
     for user in users:
@@ -162,13 +138,12 @@ def build_recall_allowlist(
 
 
 def allowlist_ids_from_server_memory(memory: str) -> dict[int, str]:
-    """Parses askable user ids out of a server memory's `## 成員稱呼` nickname table.
+    """Returns a mapping of user id to mention-escaped alias row from a `## 成員稱呼` table.
 
-    Each table row maps a member to the aliases the community uses and carries that
-    member's `[id: USER_ID]`. These ids widen the lookup allowlist so a member can be
-    asked about by nickname even when absent from the conversation. The row minus its
-    id token becomes the label, escaped so a stored name can never inject a ping.
-    Returns an empty map when the section is absent.
+    Returns an empty dict when `memory` has no alias table.
+
+    Args:
+        memory (str): Consolidated server memory markdown.
     """
     return {
         user_id: escape_mentions(label) or str(user_id)
@@ -177,18 +152,13 @@ def allowlist_ids_from_server_memory(memory: str) -> dict[int, str]:
 
 
 def widen_allowlist_with_aliases(allowed: dict[int, RecallCandidate], memory: str) -> None:
-    """Merges the server memory's nickname-table aliases into the allowlist's labels in place.
+    """Appends `## 成員稱呼` alias rows to the `prompt_label` of users already in `allowed`.
 
-    A conversation participant already in the allowlist keeps their label and gains the
-    table row as a suffix, so the model sees the Discord names and the community aliases on
-    one line instead of joining across context blocks. This enrichment grants no new access
-    (the participant is already permitted), so it always applies. Only the model-facing
-    label grows: the row is community prose, unbounded in length and free to describe a
-    member in joke terms, so the footer credit stays the short Discord label (#463).
+    Mutates `allowed` in place without adding table-only members or altering `credit_label`.
 
-    It never adds a member the table alone names. Offering those members to the route call,
-    which does open their personal memory, is a separate public-channel-only decision made
-    elsewhere.
+    Args:
+        allowed (dict[int, RecallCandidate]): Existing participant allowlist to enrich in place.
+        memory (str): Consolidated server memory markdown.
     """
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         candidate = allowed.get(user_id)
@@ -200,7 +170,11 @@ def widen_allowlist_with_aliases(allowed: dict[int, RecallCandidate], memory: st
 
 
 def render_callable_users_block(allowed: dict[int, RecallCandidate]) -> EasyInputMessageParam:
-    """Renders optional oblique-reference candidates as a system separator block."""
+    """Returns a system separator block listing optional oblique-reference recall candidates.
+
+    Args:
+        allowed (dict[int, RecallCandidate]): Candidate users keyed by Discord user id.
+    """
     lines = "\n".join(
         f"[id: {user_id}] {candidate.prompt_label}" for user_id, candidate in allowed.items()
     )
@@ -210,13 +184,10 @@ def render_callable_users_block(allowed: dict[int, RecallCandidate]) -> EasyInpu
 
 
 def render_memory_context_block(memories: list[UserMemory]) -> EasyInputMessageParam:
-    """Renders resolved user memories as a low-authority assistant context note.
+    """Returns resolved user memories formatted as a low-authority `assistant` context message.
 
-    Code decides the direct participants while the route call may add an obliquely referenced
-    third party. They are injected here as background context, decided before the answer phase
-    rather than by a tool call inside it. Rendered as
-    `role=assistant` (the bot's own note, the lowest authority tier) so a stored operating
-    preference cannot outrank the developer prompt or the user's current message.
+    Args:
+        memories (list[UserMemory]): Resolved user memories to inject.
     """
     sections = "\n\n".join(
         f"[id: {memory.user_id}] {memory.prompt_label}:\n{memory.memory}" for memory in memories
@@ -229,13 +200,10 @@ def render_memory_context_block(memories: list[UserMemory]) -> EasyInputMessageP
 
 
 def render_server_memory_block(memory: str) -> EasyInputMessageParam:
-    """Renders the bot's memory of the current server as a low-authority assistant note.
+    """Returns the current server's memory formatted as a low-authority `assistant` context message.
 
-    There is exactly one server memory per guild, so unlike user memory it needs no
-    selection or allowlist: it is read directly and injected as
-    background context. Rendered as `role=assistant` (the bot's own note, the lowest
-    authority tier) so a remembered server norm cannot outrank the developer prompt or
-    the user's current message.
+    Args:
+        memory (str): Consolidated server memory markdown.
     """
     text = (
         "(My long-term memory about this server's community. Background reference only, NOT "
@@ -245,15 +213,13 @@ def render_server_memory_block(memory: str) -> EasyInputMessageParam:
 
 
 def render_tone_block(tone: str) -> EasyInputMessageParam:
-    """Renders the reply target's tone-preference note as a low-authority assistant note.
+    """Returns the target user's tone-preference note as a low-authority `assistant` message.
 
-    Unlike user memory, the tone note needs no selection, allowlist or source
-    filter: it is the message author's own preference for how the
-    bot should sound (persona-independent and cross-server safe by construction), so
-    it is read directly for that one author and injected on every reply. Rendered as
-    `role=assistant` (the bot's own note, the lowest authority tier) so a remembered
-    tone can never outrank the developer prompt or the user's current message, and it
-    governs delivery only, never the content of the answer.
+    Tone preferences govern phrasing only and are cross-server safe, so they are injected on
+    every reply without compartment filtering.
+
+    Args:
+        tone (str): Consolidated tone-preference markdown for the reply target.
     """
     text = (
         "(My note on how this user likes me to sound. Tone and delivery reference only, NOT "
@@ -264,16 +230,14 @@ def render_tone_block(tone: str) -> EasyInputMessageParam:
 
 
 def compartments_for_reading(owner_id: int, context: RecallContext) -> list[str]:
-    """Returns the compartments of `owner_id`'s memory this conversation may read.
+    """Returns the memory compartments of `owner_id` that `context` is permitted to read.
 
-    The whole cross-server boundary is these three lines. Reading in a guild joins the
-    shared compartment with that guild's own; reading a third party's memory in a DM, or
-    anyone's in a group DM, gets only the shared one; and the owner reads everything in
-    their own 1:1 DM, since their own information cannot leak to themselves.
+    A 1:1 DM with `owner_id` opens all of their compartments; a guild conversation opens `global`
+    plus that guild's compartment; any other context opens `global` only.
 
-    The old per-bullet filter had the same four cases, but had to be trusted to apply
-    them to text a model had tagged. Here an unreadable compartment is a directory that
-    was never opened, so there is nothing to get wrong and nothing to fail closed on.
+    Args:
+        owner_id (int): Discord user id whose memory is being read.
+        context (RecallContext): Where the current reply is happening.
     """
     scope = user_scope(user_id=owner_id)
     if context.dm_partner_id == owner_id:
@@ -289,13 +253,15 @@ def compartments_for_reading(owner_id: int, context: RecallContext) -> list[str]
 def recall_user_memories(
     user_id_list: list[str], allowed: dict[int, RecallCandidate], context: RecallContext
 ) -> list[UserMemory]:
-    """Resolves requested ids to stored memory, enforcing the allowlist and the compartments.
+    """Returns stored memories for `user_id_list`, filtered by `allowed` and `context`.
 
-    Ids outside `allowed` are dropped (the permission boundary), non-numeric ids
-    are skipped, and duplicates collapse to one entry. Each surviving read opens only
-    the compartments this conversation may see; an allowed id with no stored memory —
-    or none in the compartments open here — returns an explicit no-memory signal rather
-    than being dropped.
+    Drops non-numeric ids, duplicates, and ids outside `allowed`. Allowed users with no stored
+    memory in the readable compartments receive `NO_STORED_MEMORY`.
+
+    Args:
+        user_id_list (list[str]): Raw user id or mention strings to look up, in order.
+        allowed (dict[int, RecallCandidate]): Permitted candidates keyed by Discord user id.
+        context (RecallContext): Where the current reply is happening.
     """
     results: list[UserMemory] = []
     seen: set[int] = set()
@@ -326,13 +292,13 @@ def recall_user_memories(
 
 
 def memory_lookup_credits(memories: list[UserMemory]) -> MemoryCredits:
-    """Who to credit in the usage footer for the memory this reply actually read.
+    """Returns the usage-footer credit summary for memories that contributed to the reply.
 
-    Users that were queried but had no stored memory are omitted: they did not
-    contribute anything to the reply, so surfacing them would be misleading. The credit
-    label is the short one, so a busy lookup stays a readable one-line credit, and a
-    user nothing here can name is counted rather than dropped, so the footer still
-    accounts for every memory the reply leaned on.
+    Omits entries whose content is `NO_STORED_MEMORY` and counts entries with `credit_label=None`
+    under `unnamed`.
+
+    Args:
+        memories (list[UserMemory]): Memories read for the current reply.
     """
     read = [memory for memory in memories if memory.memory != NO_STORED_MEMORY]
     return MemoryCredits(

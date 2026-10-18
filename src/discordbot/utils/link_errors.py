@@ -37,18 +37,10 @@ class LinkUnavailableError(LinkReadError):
 
 
 def is_retryable_fetch_failure(error: requests.RequestException) -> bool:
-    """Reports whether a failed request is worth making again, exactly as HTTP frames it.
-
-    Public rather than folded into `link_fetch_error` for the callers that raise a class or a
-    message of their own: a transport failure has to mean the same thing on every platform, or
-    the reaction stops meaning anything.
+    """Returns whether `error` is a transport failure, HTTP 429, or HTTP 5xx worth retrying.
 
     Args:
-        error: What `requests` raised.
-
-    Returns:
-        True for a request that never got an answer or lost it part-way through the body, a
-        429, or a 5xx.
+        error (requests.RequestException): What `requests` raised.
     """
     # `Timeout` subclasses `ConnectionError` for `ConnectTimeout` only, so both are named. A
     # connection lost after the headers, part-way through the body, raises
@@ -58,7 +50,7 @@ def is_retryable_fetch_failure(error: requests.RequestException) -> bool:
         requests.Timeout | requests.ConnectionError | requests.exceptions.ChunkedEncodingError,
     ):
         return True
-    # `Response.__bool__` is `self.ok`, so a 429 and a 503 are both FALSY: testing the response
+    # `Response.__bool__` is `self.ok`, so a 429 and a 503 are both falsy: testing the response
     # for truth here would classify nothing and raise nothing while looking correct.
     if error.response is None:
         return False
@@ -66,16 +58,11 @@ def is_retryable_fetch_failure(error: requests.RequestException) -> bool:
 
 
 def link_fetch_error(error: requests.RequestException, url: str) -> RuntimeError:
-    """Maps a failed page fetch to the error whose class says what the reader should do.
+    """Returns the classified exception (`LinkRetryableError`, `LinkUnavailableError`, or `RuntimeError`) for `error`.
 
     Args:
-        error: What `requests` raised.
-        url: The page being fetched, for the message.
-
-    Returns:
-        The exception to raise: a `LinkRetryableError` or `LinkUnavailableError` where the
-        status or the transport failure is unambiguous, and a plain `RuntimeError` everywhere
-        else.
+        error (requests.RequestException): What `requests` raised.
+        url (str): The page being fetched, for the message.
     """
     message = f"Failed to fetch HTML from {url}: {error}"
     if is_retryable_fetch_failure(error=error):

@@ -17,10 +17,9 @@ from discordbot.cogs.games.blackjack_ev import compute_true_count
 
 # Reshuffle a round before it starts once fewer than this many cards remain. It must cover
 # the most cards one round can deal, or the shoe empties mid-round into `draw_card`'s
-# infinite fallback and the count is corrupted; `tests/cogs/games/test_shoe.py` derives that
-# round from the rules and holds this to it. It cannot simply be raised for headroom either: what is
-# left under it is the penetration the count reads, and 96 of the 4-deck shoe's 208 cards
-# leaves ~54%, deep enough to count.
+# infinite fallback and the count is corrupted. It cannot simply be raised for headroom either:
+# what is left under it is the penetration the count reads, and 96 of the 4-deck shoe's 208
+# cards leaves ~54%, deep enough to count.
 RESHUFFLE_THRESHOLD_CARDS: Final[int] = 96
 
 
@@ -43,12 +42,14 @@ class BlackjackShoeStore(BaseModel):
     def take_shoe(self, channel_id: int, rng: Random) -> tuple[list[Card], int]:
         """Returns `(shoe, generation)` for a new round, removing the shoe from the store.
 
-        Rebuilds a fresh shoe when the channel has none or penetration crossed the
-        reshuffle threshold. The round deals from this shoe and the caller persists
-        depletion by saving the round's remaining shoe with `save_shoe` once it
-        settles (the round may deal from a copy, so the returned list itself is not
-        relied on to mutate). The `generation` stamps this round; pass it back to
-        `save_shoe` so an older in-flight round cannot overwrite a newer table's shoe.
+        Rebuilds a fresh shoe when the channel has none or fewer than
+        `RESHUFFLE_THRESHOLD_CARDS` remain. Pass `generation` back to `save_shoe`
+        once the round settles so an older in-flight round cannot overwrite a
+        newer table's shoe.
+
+        Args:
+            channel_id (int): Discord channel ID owning the shoe.
+            rng (Random): Random source used when building a fresh shoe.
         """
         generation = self._take_generation.get(channel_id, 0) + 1
         self._take_generation[channel_id] = generation
@@ -58,13 +59,16 @@ class BlackjackShoeStore(BaseModel):
         return existing, generation
 
     def save_shoe(self, channel_id: int, cards: list[Card], generation: int | None = None) -> None:
-        """Stores the cards remaining after a round for the next one in that channel.
+        """Stores a copy of `cards` for the next round in `channel_id`.
 
-        Copies the list so the stored shoe is decoupled from the live round object.
-        `generation` is the token `take_shoe` issued for this round; a save whose
-        generation is older than the last persisted one is dropped so an earlier-started
-        overlapping round cannot clobber a newer table's shoe. `None` forces an
-        unconditional write for direct seeding.
+        Drops the write when `generation` is older than the last saved one for
+        `channel_id`; `None` writes unconditionally.
+
+        Args:
+            channel_id (int): Discord channel ID owning the shoe.
+            cards (list[Card]): Remaining cards after the round settled.
+            generation (int | None): Token `take_shoe` issued for the round, or None
+                to force an unconditional write.
         """
         if generation is not None:
             if generation < self._saved_generation.get(channel_id, 0):
@@ -73,18 +77,25 @@ class BlackjackShoeStore(BaseModel):
         self.shoes[channel_id] = list(cards)
 
     def put_back_shoe(self, channel_id: int, cards: list[Card]) -> None:
-        """Returns a shoe taken for a round that never showed a card, as it was taken.
+        """Restores `cards` for a round that failed before showing a card.
 
-        A shoe another round saved to the channel since is kept instead, and no generation is
-        recorded, so a round already in play still saves over the returned shoe.
+        Leaves any shoe another round saved since untouched and records no
+        generation, so an in-flight round still saves over the restored shoe.
+
+        Args:
+            channel_id (int): Discord channel ID owning the shoe.
+            cards (list[Card]): Untouched shoe taken before the failed start.
         """
         self.shoes.setdefault(channel_id, list(cards))
 
     def true_count(self, channel_id: int) -> float:
-        """Returns the Hi-Lo true count the next round in this channel will start from.
+        """Returns the Hi-Lo true count the next round in `channel_id` will start from.
 
-        A channel with no stored shoe, or one already due for a reshuffle, is neutral
-        (0.0) because the upcoming round deals from a fresh shoe.
+        Returns 0.0 when `channel_id` has no stored shoe or is already due for a
+        reshuffle.
+
+        Args:
+            channel_id (int): Discord channel ID to inspect.
         """
         existing = self.shoes.get(channel_id)
         if existing is None or len(existing) < RESHUFFLE_THRESHOLD_CARDS:

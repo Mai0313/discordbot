@@ -68,25 +68,14 @@ from discordbot.cogs.gen_reply.status_marks import (
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 
-# Spacing between answer-stream attempts. A cadence rather than a bound, which is why it stays
-# here while `ANSWER_STREAM_MAX_ATTEMPTS` lives in `typings/timeouts.py`. Flat rather than
-# doubling, and wide enough that the wait is the point: a provider 5xx burst is what this retry
-# exists for, and re-opening the stream a second or two after one started reaches the same
-# unhealthy deployment, so the attempts are spent rather than spaced. Every attempt costs the
-# same, so the worst case for one reply is (`ANSWER_STREAM_MAX_ATTEMPTS` - 1) of these. The jitter
-# is a whole `wait_random` added beside the interval rather than a parameter of it, so dropping
-# that half removes jitter outright rather than falling back to a library default: it is what
-# stops a busy channel's replies retrying in lockstep, and being ADDITIVE and independent of the
-# interval is why a test zeroing the interval alone still sleeps.
+# Flat spacing between answer-stream attempts so a provider 5xx burst is outlasted rather than
+# immediately hit again. `wait_random` is added beside `wait_fixed` to keep concurrent replies
+# from retrying in lockstep without relying on a library-default jitter parameter.
 ANSWER_RETRY_INTERVAL_SECONDS = 5.0
 ANSWER_RETRY_JITTER_SECONDS = 1.0
 
-# Written the moment a reply carrying a memory marker lands, and replaced by the outcome once
-# the background review finishes. It exists because that review is seconds to minutes behind the
-# answer and can also end in nothing, which left four different turns — the model marked nothing,
-# the reviewer kept nothing, the review failed, the reply is still working — showing the reader
-# the same empty corner. It costs no extra Discord edit: `finalize_reply` splices it into the
-# content it was about to write anyway.
+# Shown when a reply with personal memory markers lands, and replaced once background review
+# finishes, without costing an extra Discord edit.
 MEMORY_PENDING_NOTE = f"-# {MEMORY_WRITE_EMOJI} 正在整理記憶⋯"
 
 # Closes a reply the surface could not carry to its end. Only `/ask` can reach it, and only on an
@@ -115,12 +104,10 @@ REASONING_PREVIEW_MAX_CHARS = 320
 
 
 def _count_url_citations(output: list[ResponseOutputItem]) -> int:
-    """Counts the grounding citations a completed response carried.
+    """Counts `url_citation` annotations across message output text parts in `output`.
 
-    The Responses bridge reports a grounded answer ONLY as `url_citation` annotations hanging off
-    the output text; it carries no `groundingMetadata` anywhere, which is what has repeatedly made
-    a grounded reply read as ungrounded. The walk is guarded on both discriminants because an
-    output item can also be a reasoning item and a content part can also be a refusal.
+    The Responses bridge reports grounding solely as `url_citation` annotations on `output_text`
+    parts and never populates `groundingMetadata`.
     """
     return sum(
         1
@@ -164,18 +151,10 @@ def _last_break(text: str, end: int, floor: int, outside_code: bool) -> int:
 
 
 def _cut_cleanly(text: str, budget: int, earliest: int) -> tuple[str, str]:
-    """Cuts a message of at most `budget` characters off the front of `text`, where a reader would.
+    """Splits `text` into a leading chunk of at most `budget` characters (not before `earliest`) and the remainder.
 
-    The cut never comes before `earliest`, nor before the back half of the budget so no message
-    is left mostly empty for a break, except to keep a code block whole: when text comes before
-    the block the cut would land in, the message ends before the block instead. A block that
-    opens the message and still overruns it is closed at the cut and reopened, language tag and
-    all, on the next, so both halves render as code; without room for that, it is cut as is.
-    Nothing else is added or dropped: the break's whitespace opens the next message, where
-    Discord trims it away.
-
-    Returns:
-        The message, and the text still to place.
+    Prefers breaking before a code block when text precedes it; otherwise closes an overrun code
+    block at the cut and reopens it with its language tag on the remainder.
     """
     floor = max(budget // 2, earliest)
     cut = _last_break(text=text, end=budget, floor=floor, outside_code=True)
@@ -330,7 +309,7 @@ class ResponseStreamer(BaseModel):
     _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
     _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
     # The usage footer appended to stored_content, kept so the media edit can splice any hosted-URL
-    # line BEFORE it (USAGE_FOOTER_RE strips only a footer at end-of-message).
+    # line before it (`USAGE_FOOTER_RE` strips only a footer at end-of-message).
     _usage_footer: str = PrivateAttr(default="")
     # The memory note currently on the reply, so the outcome can replace the pending one rather
     # than stack under it, and so the answer text handed back to the caller can drop it again.
@@ -346,9 +325,8 @@ class ResponseStreamer(BaseModel):
     # not repeat the same warn for the rest of the stream. Deliberately survives a retry reset:
     # a Discord edit that failed on one attempt fails on the next for the same reason.
     _preview_error_logged: bool = PrivateAttr(default=False)
-    # Set once the first-reasoning-delta latency has been logged. Separate from
-    # `reasoning_content`, which a retry clears: the record is per TURN (#568), so a retried
-    # answer must not emit a second one carrying the failed attempt's wait as its elapsed.
+    # Set once the first-reasoning-delta latency has been logged. Separate from `reasoning_content`
+    # (which a retry clears) so a retried turn logs first-reasoning latency only once.
     _reasoning_logged: bool = PrivateAttr(default=False)
     # How long the answer call itself took, stamped when the stream is consumed.
     _answer_seconds: float = PrivateAttr(default=0.0)
@@ -363,19 +341,11 @@ class ResponseStreamer(BaseModel):
     def _split_reply_for_discord(
         content: str, footer: str, max_messages: int | None = None
     ) -> tuple[str, list[str]]:
-        """Splits a completed reply into one parent message plus follow-up chunks.
+        """Splits `content` plus `footer` into a parent message and follow-up chunks within `max_messages`.
 
-        Each message ends where a reader would end it (`_cut_cleanly`), so a code block, a word,
-        a mention or an emoji is never torn across two messages.
-
-        `max_messages` bounds how many messages the split may occupy, for a surface that cannot
-        create as many as it likes: a user-installed app gets five follow-up POSTs per
-        interaction, and the sixth is refused. Over that bound the answer is cut back to what
-        fits and told so on the last message, because an answer that simply stops reads as the
-        model having been interrupted rather than as the platform running out of room. A clean
-        cut leaves part of its message unused, so under the bound one comes early only by what
-        the rest of the answer can spare: whether an answer fits is decided by its length, never
-        by where its breaks fall.
+        Each chunk is cut via `_cut_cleanly`. When `max_messages` is reached (such as `/ask`'s
+        follow-up limit), the final allowed message truncates remaining content and appends
+        `TRUNCATED_NOTICE`.
         """
         if len(f"{content}{footer}") <= DISCORD_MESSAGE_LIMIT:
             return f"{content}{footer}", []
@@ -622,27 +592,11 @@ class ResponseStreamer(BaseModel):
         self._ensure_editor_started()
 
     def reset_for_retry(self) -> None:
-        """Drops what one failed attempt accumulated so the next one starts clean.
+        """Resets per-attempt text state and re-arms the preview editor for the next attempt.
 
-        Only the text of the attempt goes. What stays, stays for a reason:
-
-        - `input_tokens` / `output_tokens`, because usage arrives on `response.completed`
-          alone, which a failed attempt never reached. The consequence is deliberate but real -- upstream
-          billed the failed attempt and the footer cannot see it, so `attempts` rides out on
-          `gen_reply reply finalized` to make an under-reported cost visible in the log.
-        - `reply`, so the retry edits the message already on screen instead of posting a
-          second one beside the first attempt's half-written text.
-        - `created_at`, so the footer and the latency logs report the wait the user actually
-          had, retries and backoff included.
-        - `content_ever_started` and `_reasoning_logged`, which are per-turn rather than
-          per-attempt (see their own notes).
-
-        The editor is the one piece that needs work rather than none: `consume`'s finally
-        stopped it by SETTING `_editor_stop`, and `_preview_editor` reads that before its
-        first tick, so a task started by the retry's first delta would exit immediately and
-        the whole retry would stream with no live preview. Clearing it is what keeps the
-        stale preview being replaced as the new text arrives rather than sitting frozen until
-        the final write.
+        Preserves `reply`, `created_at`, `content_ever_started`, `_reasoning_logged`, and token
+        counters across attempts, and clears `_editor_stop` so the next delta can restart live
+        preview edits.
         """
         self.attempts += 1
         self.stored_content = ""
@@ -651,20 +605,10 @@ class ResponseStreamer(BaseModel):
         self._editor_stop.clear()
 
     async def announce_retry(self) -> None:
-        """Tells the user the answer stalled and is being tried again.
+        """Marks the source message with `RETRY_HINT_EMOJI` and edits an existing reply to a retry notice.
 
-        Two surfaces because neither covers both cases. The reaction always lands, and is the
-        only signal when the stall came before anything was written; it rides the source
-        message independently of the pipeline's status chain, the same way a dropped-media
-        hint does. The notice takes over the reply's text because that is where someone
-        waiting is actually looking, and because what sits there otherwise is the dead
-        attempt's half-sentence, which reads as an answer that got cut off rather than as a
-        stall. It is written only onto a reply that already exists: creating one here would
-        leave a bare "Retrying" message behind on the turns that go on to fail anyway.
-
-        Both writes are best-effort. This is a hint about a failure and must never become one:
-        `update_reaction` suppresses its own, and a reply deleted mid-answer (or a rate-limited
-        edit) must not cost the retry it is announcing.
+        Does not create a new reply message when none exists yet, and suppresses Discord HTTP
+        errors so announcing a retry never aborts the retry itself.
         """
         await self.surface.mark(emoji=RETRY_HINT_EMOJI)
         if self.reply is None:
@@ -679,14 +623,7 @@ class ResponseStreamer(BaseModel):
         return f"-# {RETRY_HINT_EMOJI} Retrying... ({self.attempts}/{ANSWER_STREAM_MAX_ATTEMPTS})"
 
     async def withdraw_retry_notice(self) -> None:
-        """Removes a reply left showing nothing but the notice, once the attempts are spent.
-
-        The notice promises another attempt, so with none left it has to go: otherwise the turn
-        ends with one message saying work is still in flight sitting beside the error the
-        pipeline posts to say it is not. Only a message whose WHOLE content is still the notice
-        is removed -- once the last attempt put real text on screen, that text is the better
-        residue and the error is what says it is incomplete.
-        """
+        """Deletes `reply` if it is still showing only the retry notice after all attempts fail."""
         if self.reply is None or self.displayed_content != self._retry_notice():
             return
         with contextlib.suppress(HTTPException):
@@ -694,23 +631,15 @@ class ResponseStreamer(BaseModel):
         self.reply = None
 
     async def land_failure(self, embed: Embed) -> bool:
-        """Puts the turn's error onto the reply this answer was streaming into.
+        """Returns whether `embed` was edited onto the in-progress `reply` message.
 
-        The half-written reply is what the user is already looking at, so the error belongs on
-        it: left beside it, that reply carries no usage footer and reads as a complete answer
-        that got cut off, with an unrelated-looking embed under it. What the message keeps is
-        what it was showing. A partial answer stays, and the embed under it is what says the
-        answer is incomplete; a thinking preview is cleared instead, being a live glance at a
-        model that has stopped thinking rather than anything the user was reading.
+        Preserves any partial answer text while clearing a reasoning-only preview with `content=""`
+        (never `None`, which nextcord omits from multipart edits carrying the embed spacer file).
+        Returns False when no `reply` exists or Discord rejects the edit so the caller can send a
+        fresh failure message.
 
-        Clearing it takes an explicit empty string, never None: the embed brings a spacer file,
-        which sends the edit as multipart, and `http.py::get_message_payload` drops a None
-        content out of that body altogether instead of clearing it (it clears on the JSON path,
-        which is exactly what makes the difference easy to miss).
-
-        Returns False when the caller must post a fresh message instead: no reply was ever
-        created (every pre-answer failure, and every attempt that died before its first delta),
-        the retry notice was withdrawn just above, or Discord turned the edit down.
+        Args:
+            embed (Embed): Failure embed to attach to the reply.
         """
         if self.reply is None:
             return False
@@ -759,7 +688,6 @@ class ResponseStreamer(BaseModel):
                 self.model_name = response.response.model
             elif response.type == "response.completed":
                 self.model_name = response.response.model
-                # Usage only arrives on `completed`.
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
                     self.output_tokens += response.response.usage.output_tokens
@@ -776,7 +704,7 @@ class ResponseStreamer(BaseModel):
                 self._on_content_delta(delta=response.delta)
 
     async def finalize_reply(self) -> str:
-        """Writes the usage footer and final reply once the stream is consumed."""
+        """Returns the finalized reply text after extracting inline markers, writing the footer, and attaching media."""
         # Priced as the model the stream reports having answered from, which is not always the
         # one that was dispatched: a LiteLLM fallback shows up here and nowhere else.
         usage_line, cost = render_usage_footer(
@@ -789,11 +717,6 @@ class ResponseStreamer(BaseModel):
         )
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
-        # The answer model may wrap <generate-voice> segments (spoken aloud, kept in the reply) plus
-        # <generate-image> / <generate-music> / <generate-video> / <deep-research> blocks (requests,
-        # removed from the reply). Extract them all before the footer is built or anything is
-        # written. The <generate-voice> segments stay in the visible text; only they (not the whole
-        # reply) feed the spoken clip so the audio matches what is read.
         self.markers = extract_inline_markers(text=self.stored_content)
         self.stored_content = self.markers.cleaned_text
         # The spoken clip must not narrate raw Discord markup (a `<@id>` mention reads as a bare
@@ -830,7 +753,6 @@ class ResponseStreamer(BaseModel):
         if self._wants_pending_memory_note(footer_chars=len(usage_footer)):
             self._memory_note = MEMORY_PENDING_NOTE
             self.stored_content = f"{self.stored_content}\n{self._memory_note}"
-        # Final update to ensure complete message is displayed.
         await self._write_final_message(content=self.stored_content, footer=usage_footer)
         self.stored_content += usage_footer
         self._usage_footer = usage_footer
@@ -889,17 +811,10 @@ class ResponseStreamer(BaseModel):
         return stripped.replace(f"\n{self._hint_line}", "", 1)
 
     def _wants_pending_memory_note(self, footer_chars: int) -> bool:
-        """Whether this reply should say it is still working on the memory the model marked.
+        """Returns whether `reply` should display `MEMORY_PENDING_NOTE` before background review.
 
-        Both guards rule out a note nothing could ever take back. The turn must own this
-        surface: a media persona reply renders onto the DELIVERED image or video and schedules
-        no memory at all, so a promise there would caption a finished picture forever
-        (`carries_turn_notices` carries the same reasoning for the retry and error notices).
-        And the note must fit alongside the footer, which is the same check `set_memory_note`
-        makes and covers the chunked reply for the same reason: a reply chunks precisely when
-        its content plus footer already passes the limit, so one that would chunk cannot fit a
-        note either — and its footer would be on a follow-up message while the outcome edits
-        the parent, leaving the note with nothing to replace it.
+        Requires `carries_turn_notices`, at least one personal write or forget marker, and enough
+        room to fit the note and usage footer within `DISCORD_MESSAGE_LIMIT`.
         """
         if not self.carries_turn_notices:
             return False
@@ -909,36 +824,16 @@ class ResponseStreamer(BaseModel):
         return spliced <= DISCORD_MESSAGE_LIMIT
 
     async def set_memory_note(self, line: str) -> None:
-        """Puts the reply's memory note on it, replacing whatever note it already carries.
+        """Replaces the memory status line on `reply` before the usage footer.
 
-        Written for the memory report, which lands seconds to minutes after the answer did and
-        takes back the `正在整理記憶⋯` the answer landed with. Replace rather than append, so a
-        turn shows one memory note and not a running log of one.
+        Splices `line` above `_usage_footer` so `USAGE_FOOTER_RE` still strips the footer from
+        later history, and removes any previous note by value since hosted-media links may sit
+        between the note and the footer. Does nothing when `reply` is absent or when adding a
+        first note would exceed `DISCORD_MESSAGE_LIMIT`; when a replacement overflows an existing
+        pending note, withdraws the pending note instead of leaving it stuck.
 
-        The line goes BEFORE the usage footer, exactly as `_finalize_media_edit` places a
-        hosted-URL line: appending after it would leave `USAGE_FOOTER_RE` unable to strip the
-        footer, so every later history render would keep the model / token / cost line inside
-        the bot's own answer. Widening that regex's trailing group instead is not an option,
-        because it matches lines AFTER the ⬆⬇ line and loosening it would start eating any reply
-        that happens to end in stacked subtext; the note above the footer is taken by a leading
-        group anchored on the note's own marks.
-
-        The old note is removed by value rather than off the end, because it is not always at
-        the end: `_finalize_media_edit` rebuilds the content as body + hosted-URL line + footer,
-        which leaves the note sitting mid-string on any reply that hosted its media.
-
-        Declines rather than fails when there is nothing safe to edit: no reply, or a splice
-        that would overflow Discord's limit. That second check also covers the chunked reply,
-        whose footer lives on a follow-up message rather than on `self.reply`: a reply is
-        chunked precisely when its content plus footer already exceeds the limit, so adding a
-        line to it can only exceed it too. Only `content` is sent, so a reply carrying
-        generated attachments keeps them.
-
-        An overflow that finds a pending note already on the reply withdraws it instead of
-        declining. The note that fit was `MEMORY_PENDING_NOTE`, a dozen characters; the outcome
-        replacing it names what was recorded and runs several times that, so a reply close to
-        the limit can have room for the promise and none for the answer. Leaving the promise
-        standing is the one outcome worse than showing nothing.
+        Args:
+            line (str): Formatted memory subtext line to display.
         """
         if self.reply is None or not self._usage_footer:
             return
@@ -1029,7 +924,6 @@ class ResponseStreamer(BaseModel):
         so an oversized clip is not dropped here (there is deliberately no spoken-length cap).
         """
         if not self.markers.voice_requested:
-            # The expected common path: the answer model wrapped no <generate-voice> segment.
             logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
             return None
         if self.voice_generator is None:
@@ -1039,7 +933,6 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
-        # Mark the source message with the bot's `voice` app emoji while the clip synthesizes.
         await self.surface.mark(emoji=VOICE_EMOJI)
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
@@ -1111,18 +1004,14 @@ class ResponseStreamer(BaseModel):
                 requested=self.markers.image_requests,
                 cap=MAX_INLINE_IMAGES,
             )
-        # Mark the source message with the bot's `image` app emoji while the images render.
         await self.surface.mark(emoji=IMAGE_EMOJI)
         logfire.info(
             "Generating inline image reply",
             message_id=self.message.id,
             image_count=len(self.markers.image_prompts),
         )
-        # When the user uploaded image(s), feed them so an inline <generate-image> edits them instead of
-        # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
         source_images = await source_images_task if source_images_task is not None else []
         source_bytes = [loaded.data for loaded in source_images]
-        # Render every requested image concurrently so a slow one never delays the others.
         images = await asyncio.gather(
             *(
                 self.image_generator.generate(
@@ -1161,7 +1050,6 @@ class ResponseStreamer(BaseModel):
         upload-limit decision (attach vs host) is left to `_attach_generated_media`.
         """
         if self.markers.music_prompt is None:
-            # The expected common path: the answer model wrapped no <generate-music> block.
             logfire.debug("Music not requested by the answer model", message_id=self.message.id)
             return None
         if self.music_generator is None:
@@ -1171,7 +1059,6 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
-        # Mark the source message while the clip renders.
         await self.surface.mark(emoji=MUSIC_EMOJI)
         logfire.info("Generating inline music reply", message_id=self.message.id)
         clip = await self.music_generator.generate(user_prompt=self.markers.music_prompt)
@@ -1194,7 +1081,6 @@ class ResponseStreamer(BaseModel):
         clip is hosted as a URL rather than dropped for size.
         """
         if self.markers.video_prompt is None:
-            # The expected common path: the answer model wrapped no <generate-video> block.
             logfire.debug("Video not requested by the answer model", message_id=self.message.id)
             return None
         if self.video_generator is None:
@@ -1204,7 +1090,6 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
-        # Mark the source message with the bot's `video` app emoji while the clip renders.
         await self.surface.mark(emoji=VIDEO_EMOJI)
         logfire.info("Generating inline video reply", message_id=self.message.id)
         source_images = await source_images_task if source_images_task is not None else []
@@ -1318,15 +1203,10 @@ class ResponseStreamer(BaseModel):
     async def _finalize_media_edit(
         self, reply: Message, files: list[File], hosted_urls: list[str]
     ) -> bool:
-        """Runs the single media edit: native files plus any hosted-URL line on the reply.
+        """Edits `files` and any `hosted_urls` onto `reply`, returning whether delivery succeeded.
 
-        Hosted URLs are appended to the reply content when they fit Discord's 2000-char limit,
-        else posted as a follow-up reply so a long answer never overflows. There is nothing to do
-        when neither files nor URLs were produced.
-
-        Returns:
-            False when the edit or the follow-up failed, which this has already logged and
-            hinted; True otherwise.
+        Splices `hosted_urls` before the usage footer when they fit `DISCORD_MESSAGE_LIMIT`, or
+        posts them as a follow-up message otherwise.
         """
         if not files and not hosted_urls:
             return True
@@ -1335,9 +1215,9 @@ class ResponseStreamer(BaseModel):
         if hosted_urls:
             link_line = "\n-# 媒體過大，改用連結\n" + "\n".join(hosted_urls)
             if len(self.stored_content) + len(link_line) <= DISCORD_MESSAGE_LIMIT:
-                # Splice the link BEFORE the usage footer (stored_content ends with it): appending
-                # after the footer would leave USAGE_FOOTER_RE unable to strip it, so later history
-                # rendering would keep the model/token/cost footer inside the bot's answer.
+                # Splice the link before the usage footer (`stored_content` ends with it):
+                # appending after the footer would leave `USAGE_FOOTER_RE` unable to strip it from
+                # later history.
                 body = self.stored_content.removesuffix(self._usage_footer)
                 self.stored_content = f"{body}{link_line}{self._usage_footer}"
                 content = self.stored_content
@@ -1374,7 +1254,7 @@ class ResponseStreamer(BaseModel):
                 )
             except Exception as exc:
                 # Broad on purpose: a deleted parent or any Discord HTTP error must never raise
-                # into the reply pipeline. The follow-up IS the delivery of the hosted clip, so a
+                # into the reply pipeline. The follow-up is the delivery of the hosted clip, so a
                 # failure here means the media is gone.
                 logfire.warn(
                     "Hosted media link follow-up failed; the media URL was never posted",
@@ -1389,7 +1269,12 @@ class ResponseStreamer(BaseModel):
         return True
 
     async def consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> None:
-        """Streams one attempt's reply onto the message; `finalize_reply` writes it in full."""
+        """Consumes `responses` into this streamer and stops the live preview editor when done.
+
+        Args:
+            responses (AsyncIterator[ResponseStreamEvent]): Stream of Responses API events for one
+                attempt.
+        """
         if self.carries_turn_notices:
             current_answer_streamer.set(self)
         try:
@@ -1411,51 +1296,31 @@ type AnswerStreamFactory = Callable[[], Awaitable[AsyncIterator[ResponseStreamEv
 async def stream_answer_with_retry(
     streamer: ResponseStreamer, open_stream: AnswerStreamFactory, message_id: int
 ) -> str:
-    """Streams one answer turn, re-opening the stream on a transient upstream failure.
+    """Returns the finalized reply text after streaming `open_stream` into `streamer` with retries.
 
-    This is the one LLM call the bot re-issues itself mid-turn on an error. LiteLLM's router
-    applies `num_retries` and its configured fallbacks to the non-streaming proxied paths, which
-    is why the fast one-shots degrade instead of failing (the triage call has no fallback there
-    and degrades in `routing.py` instead). Through LiteLLM 1.103 a provider 5xx on a streaming
-    Responses request reached the client untouched -- and that is the one turn whose failure a
-    user watches happen. Since 1.104 the router falls back on it too, so this retry covers what
-    the fallback chain does not: a failure every hop shares, and the direct Interactions stream,
-    which has no proxy behind it.
+    The streaming answer turn is the only LLM request the bot re-issues mid-turn on an error:
+    non-streaming proxied calls rely on LiteLLM's router retries and fallbacks (or degrade
+    locally), whereas a streaming answer turn can fail across all proxy fallback hops or run
+    direct to Google on the Interactions API with no proxy behind it. Re-issuing is safe because
+    an answer turn is a pure read with no side effects before the stream completes, and stays on
+    the same client and model so uploaded Files API URIs remain valid.
 
-    Re-issuing the request is safe because an answer turn is a pure read: nothing is written
-    before the stream completes, and the retry stays on the same client and the same model, so
-    a Files API uri named in the input keeps resolving. Between
-    attempts `reset_for_retry` drops the dead attempt's text and revives the preview editor,
-    and `announce_retry` says so on screen, since a silent retry is indistinguishable from a
-    model that is simply thinking slowly.
-
-    The provider error reaches the caller only once every attempt is spent (`reraise=True`),
-    so the pipeline's error embed and its ❌ stay a single end-of-turn event rather than one
-    per attempt. Whether the user is told anything at all is the streamer's own
-    `carries_turn_notices`, not a parameter here: a media persona reply renders onto the
-    delivered image or video, which is nobody's status surface, and that route is silent to the
-    user by design -- the deliverable already landed and nobody is waiting on the words about it.
-
-    On `/ask` a turn that carries notices runs its attempts inside the surface's delivery budget:
-    an attempt still going when the interaction token dies would write into a 404, and so would
-    the error embed, so the turn gives up while the margin can still carry `WINDOW_EXPIRED_NOTICE`.
-    Finalizing stays outside the bound, since its inline media keep a bound of their own and the
-    ⏱️ it writes for them must not be cut off too. A media persona reply takes no bound: it has
-    no notice to save the margin for, and the margin is time it can still write in.
+    Between attempts, `reset_for_retry` clears partial text and revives the preview editor, and
+    `announce_retry` updates the surface when `streamer.carries_turn_notices` is True. When
+    `streamer.carries_turn_notices` is True, attempts run inside
+    `streamer.surface.delivery_budget_seconds()` so `/ask` expiry leaves margin to deliver
+    `WINDOW_EXPIRED_NOTICE`; `finalize_reply` runs outside that window because inline media
+    generation manages its own budget.
 
     Args:
-        streamer: The streamer rendering this reply; retried in place so every attempt writes
-            to the same Discord message.
-        open_stream: Issues the request and returns its event stream.
-        message_id: The turn's triggering message, so a retry is greppable with the rest of it.
-
-    Returns:
-        The finished reply text.
+        streamer (ResponseStreamer): Streamer rendering this reply in place across attempts.
+        open_stream (AnswerStreamFactory): Factory that issues the request and returns its event
+            stream.
+        message_id (int): Triggering Discord message id for log correlation.
 
     Raises:
-        TimeoutError: The `/ask` window ran out first, carrying `WINDOW_EXPIRED_NOTICE`.
-        Exception: Whatever the last attempt raised, unwrapped -- a caller's error path sees
-            the provider failure rather than a tenacity wrapper.
+        TimeoutError: The `/ask` delivery window expired, carrying `WINDOW_EXPIRED_NOTICE`.
+        Exception: The last attempt's unwrapped provider failure after all attempts are spent.
     """
 
     async def _before_retry(retry_state: RetryCallState) -> None:

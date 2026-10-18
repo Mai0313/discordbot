@@ -1,9 +1,9 @@
 """Custom emoji marking which platform's link the bot just read.
 
-Shared because two layers put the SAME marker on the same message and cannot import each other:
+Shared because two layers put the same marker on the same message and cannot import each other:
 the expansion shell marks a link it expanded into the channel, while the reply pipeline marks one
-it read into an answer instead, and `tests/guards/test_package_layering.py` forbids a cog reaching
-across to another for it. A platform with no expansion cog is marked by the reply path alone.
+it read into an answer instead. A platform with no expansion cog is marked by the reply path
+alone.
 
 Scope is the platform markers alone; the status marks an auto-expansion answers with live beside
 the protocol that gives each of them its meaning.
@@ -27,10 +27,8 @@ TWITTER_EMOJI: Final[str] = "<:twitter:1558536389287747604>"
 DOUYIN_EMOJI: Final[str] = "<:douyin:1546180677710385304>"
 BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
 
-# Keyed by `LinkContextSource.name`, so the reply path can mark whichever sources it read.
-# `tests/guards/test_link_source_emojis.py` pins every registered source to an entry here, which
-# is what lets the lookup be a plain subscript: a source added without one fails the test rather
-# than raising mid-reply.
+# Keyed by `LinkContextSource.name`, so the reply path can mark whichever sources it read with a
+# plain subscript.
 LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "threads": THREADS_EMOJI,
     "facebook": FACEBOOK_EMOJI,

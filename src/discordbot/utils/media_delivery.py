@@ -121,7 +121,7 @@ _TEMP_NAME_RE = re.compile(re.escape(_TEMP_PREFIX) + r"[A-Za-z0-9_-]+")
 
 # All directory scan+mutate critical sections take this module-level lock so service instances
 # sharing one serve dir never race each other; the multi-GB byte writes go to unique temp names
-# OUTSIDE the lock and stay fully concurrent. It is a threading.Lock (not asyncio.Lock) because
+# outside the lock and stay fully concurrent. It is a threading.Lock (not asyncio.Lock) because
 # publish/cleanup run in `asyncio.to_thread` worker threads.
 _SERVE_DIR_LOCK = threading.Lock()
 
@@ -137,7 +137,12 @@ class AttachmentLimitInteraction(Interaction[Client]):
     __slots__ = ("attachment_size_limit",)
 
     def __init__(self, data: "InteractionPayload", state: "ConnectionState") -> None:
-        """Parses the payload as nextcord does, then keeps its attachment size limit."""
+        """Parses the payload as nextcord does, then keeps its attachment size limit.
+
+        Args:
+            data (InteractionPayload): Raw Discord interaction payload.
+            state (ConnectionState): Gateway connection state.
+        """
         super().__init__(data=data, state=state)
         self.attachment_size_limit: int | None = data.get("attachment_size_limit")
 
@@ -155,12 +160,9 @@ def upload_limit_for(guild: "Guild | None", interaction: Interaction[Any] | None
     tier 0/1 against Discord's real 20 MiB base, so it self-corrects when nextcord updates it.
 
     Args:
-        guild: The destination guild, or None for a DM.
-        interaction: The interaction the media goes out through, or None when it is sent
-            through the channel.
-
-    Returns:
-        The maximum attachment size in bytes for that destination.
+        guild (Guild | None): The destination guild, or None for a DM.
+        interaction (Interaction[Any] | None): The interaction the media goes out through, or None
+            when it is sent through the channel.
     """
     if (
         isinstance(interaction, AttachmentLimitInteraction)
@@ -239,12 +241,12 @@ class MediaHostingConfig(BaseSettings):
 
     @property
     def available(self) -> bool:
-        """Whether hosting can actually run: enabled AND both base URL and serve dir are set."""
+        """Returns whether hosting can run: enabled and both base URL and serve dir are set."""
         return self.enabled and bool(self.base_url.strip()) and bool(self.serve_dir.strip())
 
     @property
     def cleanup_enabled(self) -> bool:
-        """Whether the cleanup loop should run: hosting available AND at least one cap is set."""
+        """Returns whether the cleanup loop should run: hosting available and at least one cap is set."""
         return self.available and (self.max_bytes > 0 or self.retention_hours > 0)
 
 
@@ -284,6 +286,9 @@ class MediaHostingService(BaseModel):
         `available` only checks for non-empty config; a typo'd or unmounted serve dir would
         write files nowhere nginx can see and every URL would 404 silently. Surfacing the
         resolved path (and warning when hosting is on but the dir is missing) makes that loud.
+
+        Args:
+            _context (object): Pydantic validation context (unused).
         """
         if not self.config.available:
             return
@@ -347,16 +352,7 @@ class MediaHostingService(BaseModel):
     def _destination(
         self, suffix: str, **source: Unpack[_HostedSource]
     ) -> tuple[Path, str] | None:
-        """The serve dir and normalized suffix a publish writes to, or None when it cannot host.
-
-        Args:
-            suffix: The file suffix the hosted name will carry.
-            **source: What is being hosted, named in the refusal's log line.
-
-        Returns:
-            `(serve_dir, suffix)`, or None when hosting is unavailable, the suffix is refused or
-            the serve dir is missing.
-        """
+        """Returns `(serve_dir, suffix)` for a publish, or None when hosting is unavailable or the suffix is refused."""
         if not self.config.available:
             return None
         ext = _normalize_suffix(suffix=suffix)
@@ -373,15 +369,15 @@ class MediaHostingService(BaseModel):
         return serve, ext
 
     def publish_bytes(self, data: bytes, suffix: str) -> str | None:
-        """Hosts bytes under a content-addressed name (dedup); returns the URL or None.
+        """Returns the public URL for `data` hosted under its content-addressed name, or None on failure.
 
         Identical bytes map to the same name, so a re-host refreshes the existing file and returns
         the same URL without rewriting; a miss writes to a sibling temp then `os.replace`s it onto
-        the final name (atomic) and enforces the size cap.
+        the final name and enforces the size cap.
 
-        Returns:
-            The public URL, or None when hosting is unavailable / the serve dir is missing / the
-            suffix is refused / the write fails.
+        Args:
+            data (bytes): Media bytes to publish.
+            suffix (str): File suffix determining the hosted extension.
         """
         destination = self._destination(suffix=suffix, size_bytes=len(data))
         if destination is None:
@@ -412,17 +408,15 @@ class MediaHostingService(BaseModel):
         return url
 
     def publish_path(self, file_path: Path) -> str | None:
-        """Hosts an on-disk file under a content-addressed name (dedup); returns the URL or None.
+        """Returns the public URL for `file_path` hosted under its content-addressed name, or None on failure.
 
-        The file is hashed by a streaming read (never loaded whole into memory), so a multi-GB clip
-        stays flat. On a dedup HIT the source is left in place for the caller's own cleanup; on a
-        miss it is copied into a serve-dir temp, `os.replace`d onto the final name, and the source is
-        unlinked (a failed unlink still returns the URL: the file is already published). The size cap
-        is enforced after a successful host.
+        The file is hashed by a streaming read so large clips are never loaded whole into memory.
+        On a dedup hit the source is left in place for the caller's own cleanup; on a miss it is
+        copied into a serve-dir temp, `os.replace`d onto the final name, and the source is
+        unlinked before enforcing the size cap.
 
-        Returns:
-            The public URL, or None when hosting is unavailable / the serve dir is missing / the
-            suffix is refused / the move fails.
+        Args:
+            file_path (Path): On-disk media file to publish.
         """
         destination = self._destination(suffix=file_path.suffix, path=str(file_path))
         if destination is None:
@@ -440,7 +434,7 @@ class MediaHostingService(BaseModel):
             return None
         hit = self._dedup_hit(serve=serve, name=name)
         if hit is not None:
-            return hit  # the source is left in place for the caller's own cleanup
+            return hit
         tmp = serve / f"{_TEMP_PREFIX}{secrets.token_urlsafe(8)}"
         try:
             shutil.copy2(str(file_path), str(tmp))
@@ -503,12 +497,13 @@ class MediaHostingService(BaseModel):
         return hosted
 
     def enforce_cap(self, now: float) -> int:
-        """Evicts oldest hosted files until total bytes <= max_bytes; returns the bytes freed.
+        """Returns the bytes freed after evicting oldest hosted files until total bytes <= `max_bytes`.
 
         Only the service's own files count and are evictable. A file hosted within the grace window
-        is protected (so a concurrent publisher's just-returned URL is never reaped), and a single
-        delivered file larger than the cap is kept: the loop stops when no evictable candidate
-        remains rather than reaping good recent files, leaving disk temporarily over cap.
+        is protected, and a single delivered file larger than the cap is kept.
+
+        Args:
+            now (float): Current epoch timestamp in seconds.
         """
         cap = self.config.max_bytes
         if cap <= 0:
@@ -541,7 +536,11 @@ class MediaHostingService(BaseModel):
         return freed
 
     def cleanup_expired(self, now: float) -> int:
-        """Deletes hosted files older than retention_hours; returns the count deleted."""
+        """Returns the count of hosted files older than `retention_hours` that were deleted.
+
+        Args:
+            now (float): Current epoch timestamp in seconds.
+        """
         retention = self.config.retention_hours
         if retention <= 0:
             return 0
@@ -568,8 +567,11 @@ class MediaHostingService(BaseModel):
     def sweep_stale_temps(self, now: float) -> None:
         """Unlinks crash-left bot temps older than the stale-temp window (best-effort).
 
-        Gated on the bot's own temp-name shape (like the reaper's 32-hex guard), so a foreign
-        `.tmp-*` parked in the shared serve dir is never reaped.
+        Gated on the bot's own temp-name shape, so a foreign `.tmp-*` parked in the shared serve
+        dir is never reaped.
+
+        Args:
+            now (float): Current epoch timestamp in seconds.
         """
         serve = self._serve_dir()
         if serve is None:
@@ -588,9 +590,12 @@ class MediaHostingService(BaseModel):
                     continue
 
     def run_maintenance(self, now: float) -> tuple[int, int]:
-        """One sweep for the cleanup loop: clear stale temps, reap expired, enforce the cap.
+        """Returns `(deleted_count, freed_bytes)` after sweeping stale temps, expired files, and the size cap.
 
-        Returns (deleted_count, freed_bytes). Age runs before size so the cap acts on what remains.
+        Age runs before size so the cap acts on what remains.
+
+        Args:
+            now (float): Current epoch timestamp in seconds.
         """
         self.sweep_stale_temps(now=now)
         deleted = self.cleanup_expired(now=now)
@@ -627,16 +632,18 @@ class MediaItem(BaseModel):
         return self.source.stat().st_size
 
     def to_file(self) -> File:
-        """Builds a fresh single-use nextcord File from the source bytes or on-disk path."""
+        """Returns a fresh single-use nextcord File from the source bytes or on-disk path."""
         if isinstance(self.source, bytes):
             return File(fp=BytesIO(self.source), filename=self.filename)
         return File(fp=str(self.source), filename=self.filename)
 
     def host_with(self, service: MediaHostingService) -> str | None:
-        """Hosts this item via the right primitive (publish_bytes vs publish_path); blocking.
+        """Returns the hosted public URL for this item via `service`, or None on failure.
 
-        The suffix for in-memory bytes comes from the filename so the host allowlist (and thus
-        inline playability of the link) is honored.
+        The suffix for in-memory bytes comes from `filename` so the host allowlist is honored.
+
+        Args:
+            service (MediaHostingService): Hosting service to publish through.
         """
         if isinstance(self.source, bytes):
             return service.publish_bytes(data=self.source, suffix=Path(self.filename).suffix)
@@ -696,23 +703,19 @@ class MediaDeliveryPlanner(BaseModel):
     async def plan(
         self, items: list[MediaItem], upload_limit: int, envelope_margin: int = 0
     ) -> MediaPlan:
-        """Splits items into native attachments, hosted URLs, dropped and clamped items.
+        """Returns a `MediaPlan` splitting `items` into native attachments, hosted URLs, dropped, and clamped items.
 
         (a) Each individually-oversize item is hosted (or dropped when hosting is off / fails),
         concurrently. (b) The native list is clamped to `DISCORD_ATTACHMENT_LIMIT` first, the
         trailing overflow set aside unhosted as clamped, so a marginal combined overflow then sheds
         a low-priority trailing image rather than a prioritized voice/music clip. (c) The largest
         remaining are peeled to hosted URLs until the combined body clears
-        `upload_limit - envelope_margin`. Input order is preserved in `native`, so a caller leading
-        with voice/music keeps a trailing image as the one left out.
+        `upload_limit - envelope_margin`. Input order is preserved in `native`.
 
         Args:
-            items: The built media items to deliver, in caller-preferred order.
-            upload_limit: The destination's attachment ceiling (see `upload_limit_for`).
-            envelope_margin: Headroom held back for the multipart body / embeds JSON.
-
-        Returns:
-            A `MediaPlan` partitioning the items.
+            items (list[MediaItem]): The built media items to deliver, in caller-preferred order.
+            upload_limit (int): The destination's attachment ceiling (see `upload_limit_for`).
+            envelope_margin (int): Headroom held back for the multipart body / embeds JSON.
         """
         sizes = {id(item): item.size for item in items}  # stat each path exactly once
         hosted_urls: list[str] = []
@@ -730,7 +733,7 @@ class MediaDeliveryPlanner(BaseModel):
                 else:
                     dropped.append(item)
 
-        # (b) Discord's per-message attachment cap, applied BEFORE byte peeling: items past the cap
+        # (b) Discord's per-message attachment cap, applied before byte peeling: items past the cap
         # cannot ride the edit anyway, so setting the trailing overflow aside first means a marginal
         # combined overflow sheds a low-priority trailing image instead of peeling the prioritized
         # voice/music clip (callers lead with those).
@@ -754,7 +757,7 @@ class MediaDeliveryPlanner(BaseModel):
 
 
 def build_media_delivery_planner() -> MediaDeliveryPlanner:
-    """Builds the default MediaDeliveryPlanner wired to the env-configured external media host.
+    """Returns the default MediaDeliveryPlanner wired to the env-configured external media host.
 
     `MediaHostingConfig` self-disables when the host is unconfigured, so a planner built here
     stays on the host-free path until hosting is set up.

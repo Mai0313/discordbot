@@ -1,7 +1,7 @@
 """The clients, generators and caches a reply is built out of, made once and reused.
 
 The pipeline is handed one toolkit and reads its clients, generators, model catalog and input
-builder off it, so no call site has to assemble any of that for itself. What is NOT here is
+builder off it, so no call site has to assemble any of that for itself. What is not here is
 deliberate: `media_delivery` and `usage_recorder` stay on the cog, being about delivering a
 reply rather than composing one.
 
@@ -53,110 +53,63 @@ class ReplyToolkit(BaseModel):
 
     @cached_property
     def runtime_models(self) -> RuntimeModelCatalog:
-        """The model catalog every tier is read off.
-
-        Returns:
-            The runtime catalog.
-        """
+        """Returns the runtime model catalog for every tier."""
         return RuntimeModelCatalog()
 
     @cached_property
     def gemini_client(self) -> genai.Client:
-        """The native Gemini client for every DIRECT-to-Google path (no proxy).
+        """Returns the native Gemini client for direct-to-Google paths.
 
-        An empty key raises at construction, so a caller that is reachable without one must go
-        through `gemini_client_if_configured` instead of touching this.
-
-        Returns:
-            A Gemini client bound to this toolkit's key.
+        Raises at construction when `gemini_api_key` is empty; callers that can run without a key
+        use `gemini_client_if_configured` instead.
         """
         return genai.Client(api_key=self.gemini_api_key)
 
     @property
     def gemini_client_if_configured(self) -> genai.Client | None:
-        """The direct Gemini client, or None when no key is configured.
-
-        For the paths that stay useful without a key: a linked post still contributes its
-        text, it just carries no uploaded media, and attachments inline instead of uploading.
-        Reading `gemini_client` there would raise before the feature's own kill-switch was ever
-        consulted.
-
-        Returns:
-            The client, or None when this toolkit holds no key.
-        """
+        """Returns the direct Gemini client, or None when `gemini_api_key` is blank."""
         if not self.gemini_api_key.strip():
             return None
         return self.gemini_client
 
     @cached_property
     def voice_generator(self) -> VoiceGenerator:
-        """The text-to-speech engine for spoken QA replies.
-
-        Returns:
-            A generator bound to the proxy client and the TTS deployment.
-        """
+        """Returns the text-to-speech generator for spoken QA replies."""
         return VoiceGenerator(
             client=self.openai_client, model_name=self.runtime_models.tts_model.name
         )
 
     @cached_property
     def image_generator(self) -> ImageGenerator:
-        """The image renderer, which edits when handed source images and generates otherwise.
-
-        Returns:
-            A generator bound to the proxy client and the image deployment.
-        """
+        """Returns the image generator and editor bound to the proxy client."""
         return ImageGenerator(
             client=self.openai_client, image_model=self.runtime_models.image_model
         )
 
     @cached_property
     def prompt_generator(self) -> PromptGenerator:
-        """The prompt director for the IMAGE and VIDEO routes.
-
-        Returns:
-            A director bound to the proxy client and the grounding-capable `fast_model`.
-        """
+        """Returns the prompt refiner for the IMAGE and VIDEO routes."""
         return PromptGenerator(
             client=self.openai_client, prompt_model=self.runtime_models.fast_model
         )
 
     @cached_property
     def video_generator(self) -> VideoGenerator:
-        """The video renderer.
-
-        Returns:
-            A generator bound to the DIRECT-to-Google Gemini client and the video model
-            (the Interactions API is Gemini-only, not reachable via the proxy).
-        """
+        """Returns the video generator bound to the direct Gemini client."""
         return VideoGenerator(
             client=self.gemini_client, video_model=self.runtime_models.video_model
         )
 
     @cached_property
     def music_generator(self) -> MusicGenerator:
-        """The music renderer for the QA-route `<generate-music>` marker.
-
-        Returns:
-            A generator bound to the DIRECT-to-Google Gemini client (Lyria runs on the
-            Interactions API, not the proxy) and the music model.
-        """
+        """Returns the music generator for `<generate-music>`, bound to the direct Gemini client."""
         return MusicGenerator(
             client=self.gemini_client, music_model=self.runtime_models.music_model
         )
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:
-        """The Discord-message-to-Responses-API input builder.
-
-        This is the piece that makes the toolkit worth holding onto: its rendered-part cache
-        keeps the Files API uris a message's attachments were uploaded to, so a message that
-        stays in the history window is uploaded once rather than once per reply.
-
-        Returns:
-            A builder bound to this bot, the runtime model catalog, and an attachment handler
-            uploading through this toolkit's direct Gemini client, or inlining without a key.
-        """
+        """Returns the Discord-message-to-Responses-API input builder and its attachment caches."""
         return MessageInputBuilder(
             bot=self.bot,
             runtime_models=self.runtime_models,
@@ -168,11 +121,7 @@ class ReplyToolkit(BaseModel):
 
     @cached_property
     def memory_writer(self) -> MemoryWriterAI:
-        """The memory writing service, for a user scope and a server scope alike.
-
-        Returns:
-            A writer bound to the proxy client, the memory deployments and the bot's own id.
-        """
+        """Returns the memory writer service for user and server scopes."""
         return MemoryWriterAI(
             client=self.openai_client,
             model=self.runtime_models.memory_writer_model,

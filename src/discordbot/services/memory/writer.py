@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 # which are common non-secret content in a developer Discord. The prompts
 # instruct the model to redact anything token-like as the generic backstop.
 # The dotted shapes anchor their start on ASCII word characters, not `\b`, which counts
-# Chinese as a word character and misses a token typed straight against it (#904).
+# Chinese as a word character and misses a token typed straight against it.
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"AIza[A-Za-z0-9_-]{30,}"),
@@ -83,7 +83,7 @@ _LATIN_NAME_RE = re.compile(r"^[\w.\- ]+$", flags=re.ASCII)
 # Another participant referenced inside an observation's text (an id token or a raw
 # Discord mention). Such an observation is about a relationship or someone else's
 # business, so the sharing gate locks it to its source conversation. The id is captured
-# so the gate can exempt the TARGET's own id and the bot's: neither names anybody else,
+# so the gate can exempt the target's own id and the bot's: neither names anybody else,
 # and both are the tokens most likely to be quoted into evidence (an author prefix, a
 # message addressed to the bot).
 _OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention_id>\d+)>")
@@ -356,24 +356,18 @@ class MemoryWriterAI(BaseModel):
     async def evaluate(
         self, flavor: MemoryFlavor, subject: str, transcript: str, notes: tuple[str, ...]
     ) -> RawMemoryDraft | None:
-        """Turns the answer model's own memory notes into validated observations.
+        """Returns validated observations reviewed from `notes` against `transcript`, or None on failure.
 
-        `notes` are the `<write-memory>` sentences the answer model wrote inside the reply it had
-        just given, so nothing here guesses at what mattered in a conversation it was not part of.
-        What is left for this call is the half that never worked well from the outside: reviewing
-        each note against the transcript it came from, and authoring the structured fields a raw
-        entry needs — which is why the evaluator prompt carries the field rules.
+        `<forget-memory>` notes bypass this call and are rendered directly into `raw.md` by
+        `render_forget_requests`.
 
-        `flavor` is the scope's, and picks the evaluator prompt. `subject` is the leading directive
-        naming the memory's target (`target_user_id: <id>` or `target_server_id: <id>`). The server
-        flavor deliberately parses to no target user, which leaves the roster empty too: a server
-        memory has no single subject for the sharing gate to protect, and its observations carry
-        no sharing field at all.
-
-        `<forget-memory>` notes do NOT come through here. A forget is an instruction to
-        consolidation rather than something to store, so it needs none of the fields this call
-        authors and none of the gates that decide whether a fact is worth keeping;
-        `raw_entries.py::render_forget_requests` writes it straight into the raw batch.
+        Args:
+            flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`), selecting the evaluator
+                prompt.
+            subject (str): Leading directive naming the target (`target_user_id: <id>` or
+                `target_server_id: <id>`).
+            transcript (str): Rendered conversation transcript.
+            notes (tuple[str, ...]): Candidate memory notes to review.
         """
         if not notes:
             return RawMemoryDraft(has_signal=False)
@@ -405,12 +399,14 @@ class MemoryWriterAI(BaseModel):
         )
 
     async def propose_server_notes(self, subject: str, transcript: str) -> tuple[str, ...] | None:
-        """Proposes community notes from a channel transcript, or None when the call fails.
+        """Returns up to five community notes proposed from `transcript`, or None when the call fails.
 
-        This is the one place a model reads a conversation it was not part of and decides what
-        to remember: `/memory server catchup` has no answer model to write markers, so this call
-        stands in for it, and its notes go through `evaluate` like any marker's. The cap mirrors
-        how many server-memory markers one reply may write.
+        Used by `/memory server catchup` on channels the bot was not addressed in; the returned
+        notes are then reviewed through `evaluate`.
+
+        Args:
+            subject (str): Phase-1 directive naming the target server.
+            transcript (str): Rendered channel transcript.
         """
         max_notes = 5
         proposal = await self._parse(
@@ -426,9 +422,12 @@ class MemoryWriterAI(BaseModel):
     async def consolidate(
         self, flavor: MemoryFlavor, request: ConsolidationRequest
     ) -> ConsolidatedMemory | None:
-        """Returns one compartment's consolidation deltas, or None when the LLM path fails.
+        """Returns one compartment's consolidation output, or None when the LLM path fails.
 
-        `flavor` is the scope's, and picks the consolidation prompt.
+        Args:
+            flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`), selecting the
+                consolidation prompt.
+            request (ConsolidationRequest): Per-compartment inputs and flags for the call.
         """
         sections = ", ".join(request.allowed_sections)
         blocks = [
@@ -464,11 +463,12 @@ class MemoryWriterAI(BaseModel):
     async def forget_tone(
         self, forgets: str, note_lines: tuple[str, ...], evidence: tuple[str, ...]
     ) -> ToneForget | None:
-        """Asks which tone-note lines and which tone evidence the forget requests name.
+        """Returns which `note_lines` and `evidence` numbers `forgets` name, or None on failure.
 
-        The answer is numbers into the two lists and nothing else, so a caller can only ever
-        drop what it rendered here: nothing a forget says, and nothing the model writes, can
-        land in the note. None means the LLM path failed.
+        Args:
+            forgets (str): Raw forget-request entries.
+            note_lines (tuple[str, ...]): Current tone note lines (without the header).
+            evidence (tuple[str, ...]): Tone-bearing observation lines predating the newest forget.
         """
         return await self._parse(
             instructions=TONE_FORGET_PROMPT,
@@ -486,14 +486,8 @@ class MemoryWriterAI(BaseModel):
     ) -> OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
-        Delegates to the shared `parse_responses_or_none`, which owns the call surface and
-        the degrade-to-None handling (refused output, an incomplete/truncated response — the
-        last matters here because a half-emitted delta batch is indistinguishable from a
-        complete one, and a caller may delete every fact the batch did not re-emit).
-
-        No deadline is passed: every phase runs in the background with nobody waiting on it,
-        so the client's own ceiling is the right bound. What the fan-out AROUND these calls
-        needs is a different question.
+        Delegates to `parse_responses_or_none` so refused or truncated outputs return None rather
+        than a half-emitted delta batch.
         """
         return await parse_responses_or_none(
             client=self.client,
@@ -530,16 +524,15 @@ def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
 def participant_names_from_transcript(
     transcript: str, target_user_id: int | None, bot_user_id: int | None
 ) -> tuple[str, ...]:
-    """Returns the display names and usernames of everyone but the target and the bot.
+    """Returns the matchable display names and usernames of participants other than target and bot.
 
-    The trusted author prefix is the only authorship signal in a rendered transcript,
-    so the roster is read from it rather than threaded down from the reply pipeline —
-    which also means a resumed job rebuilds the same roster from its stored transcript
-    with no extra column. The bot's own message carries that prefix when it had
-    attachments, so its id is skipped like the target's.
+    Reads the author prefixes from `transcript` so a resumed job rebuilds the same roster
+    from its stored transcript without an extra DB column.
 
-    A forged prefix inside someone's message body can only ADD a name, and an extra name
-    can only tighten an observation's sharing, so the untrusted position costs nothing.
+    Args:
+        transcript (str): Rendered conversation transcript.
+        target_user_id (int | None): Target user's Discord id, or None for server memory.
+        bot_user_id (int | None): Bot's own Discord user id, or None when unknown.
     """
     names: set[str] = set()
     for match in _PARTICIPANT_PREFIX_RE.finditer(transcript):
@@ -581,11 +574,14 @@ def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
 
 
 def transcript_from_messages(message_list: list[EasyInputMessageParam], full_reply: str) -> str:
-    """Renders the reply-pipeline input messages plus the streamed reply as plain text.
+    """Returns `message_list` and `full_reply` rendered as an indented block transcript.
 
-    Each message becomes a block whose `[message <n> | <role>]` marker sits at
-    column 0 while every content line is indented, so user-authored text can
-    never forge a block boundary or plant an author prefix at content start.
+    Each message opens with `[message <n> | <role>]` at column 0 and has its body indented by
+    two spaces so user-authored text cannot forge a block boundary or an author prefix.
+
+    Args:
+        message_list (list[EasyInputMessageParam]): Input messages from the reply context.
+        full_reply (str): Assistant reply text for the turn, or `""` when none.
     """
     blocks: list[str] = []
     for message in message_list:
@@ -615,7 +611,14 @@ def target_centered_memory_messages(
     current_message: list[EasyInputMessageParam],
     target_user_id: int,
 ) -> list[EasyInputMessageParam]:
-    """Narrows reply context to target-centered evidence for the memory review."""
+    """Returns reply context narrowed to target-centered evidence for the memory review.
+
+    Args:
+        hist_messages (list[EasyInputMessageParam]): Channel history messages (header first).
+        reference_messages (list[EasyInputMessageParam]): Referenced reply-chain messages.
+        current_message (list[EasyInputMessageParam]): Current turn's user message(s).
+        target_user_id (int): Target user's Discord id.
+    """
     return [
         *_target_centered_history_messages(
             hist_messages=hist_messages, target_user_id=target_user_id
@@ -631,16 +634,15 @@ type NoteRound = tuple[tuple[str, ...], tuple[str, ...]]
 
 
 def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
-    """Bundles one turn's transcript and its inline memory notes into a single stored string.
+    """Returns `transcript` and `rounds` bundled into a single string for `memory_job.transcript`.
 
-    The notes ride inside the `transcript` column rather than in columns of their own: nothing
-    migrates this schema, so a new column would take `/memory clear` down on a deployed bot.
-    What the column holds is still one thing — everything the background turn needs to run.
+    Notes ride inside `transcript` so `memory_job` needs no extra schema columns, and are
+    appended after the transcript's own truncation under column-0 `[memory notes | <kind>]`
+    markers with indented bodies so conversation content cannot forge them.
 
-    Appended AFTER the transcript's own truncation, so a long conversation can never push the
-    notes out of the payload. Each block reuses the column-0 marker shape the transcript
-    already uses, with the notes indented under it, so the split back out cannot be forged by
-    conversation content that happens to contain the header line.
+    Args:
+        transcript (str): Rendered conversation transcript.
+        rounds (tuple[NoteRound, ...]): Ordered `(remember_notes, forget_notes)` rounds.
     """
     blocks = [transcript]
     for position, (remember, forget) in enumerate(rounds, start=1):
@@ -655,13 +657,13 @@ def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
 
 
 def parse_turn_payload(payload: str) -> tuple[str, tuple[NoteRound, ...]]:
-    """Splits a stored payload back into its transcript and its rounds of notes, in order.
+    """Returns `payload` split back into `(transcript, rounds)` in round order.
 
-    The inverse of `render_turn_payload`. Rounds stay apart because they are staged in order: a
-    newer turn's forget can name what an older one asked to remember, which has to be in
-    `raw.md` ahead of it for the forget to reach. Each round writes its remember block before
-    its forget block, and a forget block closes a round, so a row stored as one turn with at
-    most one block of each kind still reads as the single round it was.
+    Rounds stay separate so an older turn's remember notes are staged into `raw.md` ahead of a
+    newer turn's forget requests.
+
+    Args:
+        payload (str): Combined turn payload created by `render_turn_payload`.
     """
     rounds: list[NoteRound] = []
     remember: list[str] = []
@@ -680,45 +682,61 @@ def parse_turn_payload(payload: str) -> tuple[str, tuple[NoteRound, ...]]:
 
 
 def render_memory_notes(notes: tuple[str, ...]) -> str:
-    """Renders the answer model's notes as the numbered candidate list the evaluator reviews."""
+    """Returns `notes` rendered as the numbered candidate list the evaluator reviews.
+
+    Args:
+        notes (tuple[str, ...]): Candidate memory notes.
+    """
     return "\n".join(
         f"{index}. {note_text(note=note)}" for index, note in enumerate(notes, start=1)
     )
 
 
 def note_text(note: str) -> str:
-    """Collapses one inline memory note to a single redacted, bounded line."""
+    """Returns `note` collapsed to a single redacted line bounded by `MEMORY_NOTE_MAX_CHARS`.
+
+    Args:
+        note (str): Raw inline memory note.
+    """
     return _trim_text(text=redact_secrets(text=note), max_chars=MEMORY_NOTE_MAX_CHARS)
 
 
 def user_subject(user_id: int, guild_id: int | None) -> str:
-    """Renders the subject of one user's memory review.
+    """Returns the phase-1 subject directive for `user_id` and conversation source.
 
-    The second line names where the conversation happened: the guild, or `dm` when
-    `guild_id` is None.
+    Args:
+        user_id (int): Target Discord user id.
+        guild_id (int | None): Guild id where the turn occurred, or None for DMs.
     """
     source = f"guild {guild_id}" if guild_id is not None else "dm"
     return f"target_user_id: {user_id}\nsource: {source}"
 
 
 def server_subject(server_id: int) -> str:
-    """Renders the subject of one server's memory review, which carries no source line."""
+    """Returns the phase-1 subject directive for `server_id` (with no source line).
+
+    Args:
+        server_id (int): Target Discord guild id.
+    """
     return f"target_server_id: {server_id}"
 
 
 def parse_subject_source(subject: str) -> str | None:
-    """Extracts the conversation source from a persisted subject, or None when absent.
+    """Returns the conversation source from `subject` (`'guild <id>'` or `'dm'`), or None.
 
-    None is the server flavor, whose subject never carries a source line: a server memory
-    is one guild by construction, so there is nothing to scope its observations by and they
-    render without per-observation source stamping.
+    Args:
+        subject (str): Phase-1 subject directive string.
     """
     match = _SUBJECT_SOURCE_RE.search(subject)
     return match.group("source") if match else None
 
 
 def redact_secrets(text: str) -> str:
-    """Replaces token-, key-, and password-like strings with a redaction marker."""
+    """Returns `text` with token-, key-, and credential-shaped strings replaced by `[REDACTED_SECRET]`.
+
+    Args:
+        text (str): Text to scrub.
+    """
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[REDACTED_SECRET]", text)
     return text
@@ -786,7 +804,7 @@ def _sanitize_observation(
         text=redact_secrets(text=observation.evidence_quote), max_chars=OBSERVATION_QUOTE_MAX_CHARS
     )
     # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
-    # are private by construction, and an observation about ANOTHER participant is
+    # are private by construction, and an observation about another participant is
     # about a relationship, not a portable fact (neither the target's own id nor the
     # bot's names anybody else, so both stay exempt). Scans the pre-trim text so a token
     # past the truncation point cannot dodge the gate. Code only ever tightens

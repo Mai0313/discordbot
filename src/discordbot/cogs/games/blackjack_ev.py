@@ -1,26 +1,15 @@
 """Blackjack expected-value engine for the bot player.
 
-The bot plays off exact multi-step no-replacement probability rather than a
-heuristic strategy table, so this pure module turns the table state into the
-EV-maximizing legal action: it works out the dealer's H17 final-total
-distribution and the expected value of every legal action, measured in
-multiples of the base hand bet, and returns the winning action alone.
+Computes exact multi-step no-replacement probabilities under H17 dealer rules,
+measuring every legal action's expected value in multiples of the base hand
+bet. The engine sees the dealer hole card as the bot's private informational
+edge, and only the recommended action leaves this module, never an EV figure.
 
-The engine knows the dealer hole card, which is the bot's private
-informational edge. Only the recommended action leaves this module, never an
-EV figure, so that action is the one output that can carry anything about the
-hole.
-
-Everything here is deterministic and order-independent: the shoe is collapsed
-to a 10-bucket value-count multiset (`2..9`, ten-value, ace), so results depend
-only on which cards remain, not their order. The recursions terminate naturally
-(dealer stands at hard 17+, a player hand auto-finishes at five non-bust cards),
-and per-call memoization computes each hand-and-deck state once per decision.
-
-This table's non-standard payouts are modeled directly: a five-card non-bust
-wins immediately, and a five-card 21 also earns a system-funded bonus. The
-VIP payout bonus is intentionally excluded; it is a settlement-layer perk, not
-a per-hand strategic lever.
+The shoe is collapsed into a 10-bucket value-count multiset (`2..9`, ten-value,
+ace), so results depend only on which cards remain, not their order. A
+five-card non-bust hand wins immediately and a five-card 21 earns a
+system-funded bonus; the settlement-layer VIP payout bonus is intentionally
+excluded.
 """
 
 from typing import Final
@@ -79,7 +68,11 @@ def _bucket_for_rank(rank: str) -> int:
 
 
 def build_shoe_value_counts(shoe: list[Card]) -> tuple[int, ...]:
-    """Collapses a card shoe into a 10-bucket value-count vector (2..9, ten, ace)."""
+    """Returns a 10-bucket value-count vector (`2..9`, ten-value, ace) for `shoe`.
+
+    Args:
+        shoe (list[Card]): Remaining cards in the shoe.
+    """
     counts = [0] * 10
     for card in shoe:
         counts[_bucket_for_rank(rank=card.rank)] += 1
@@ -87,14 +80,15 @@ def build_shoe_value_counts(shoe: list[Card]) -> tuple[int, ...]:
 
 
 def compute_true_count(shoe: list[Card]) -> float:
-    """Returns the Hi-Lo true count of the cards already dealt out of a shoe.
+    """Returns the Hi-Lo true count of the cards already dealt out of `shoe`.
 
     Hi-Lo assigns +1 to 2-6, 0 to 7-9, and -1 to ten-value cards and aces. A
     full balanced shoe sums to zero, so the running count of the dealt cards is
-    the negative of the Hi-Lo sum still in `shoe`. The true count divides that
-    running count by the decks remaining; a positive true count means the
-    remaining shoe is rich in ten-value cards and aces, which favors the player.
-    Returns 0.0 for an empty shoe (a neutral, just-shuffled count).
+    the negative of the Hi-Lo sum still in `shoe`, divided by the decks
+    remaining; returns 0.0 for an empty shoe.
+
+    Args:
+        shoe (list[Card]): Remaining cards in the shoe.
     """
     if not shoe:
         return 0.0
@@ -114,21 +108,7 @@ def _decrement(shoe: tuple[int, ...], bucket: int) -> tuple[int, ...]:
 
 
 def _add_value(total: int, soft: bool, bucket: int) -> tuple[int, bool]:
-    """Adds one drawn card to a running `(total, soft)` Blackjack hand state.
-
-    Mirrors `hand_value`/`is_soft_total`: at most one ace is ever counted high,
-    and any draw that would bust a soft hand demotes that high ace to 1. This
-    includes drawing a second ace into a soft hand (e.g. soft 21 + ace becomes
-    hard 12, not a bust).
-
-    Args:
-        total: Best current total with any high ace already counted as 11.
-        soft: Whether an ace is currently counted as 11.
-        bucket: Value bucket index of the drawn card.
-
-    Returns:
-        The updated `(total, soft)` state.
-    """
+    """Adds one drawn card to a running `(total, soft)` Blackjack hand state."""
     if bucket == _ACE_BUCKET and total + 11 <= 21:
         return total + 11, True
     increment = 1 if bucket == _ACE_BUCKET else _BUCKET_VALUES[bucket]
@@ -141,11 +121,7 @@ def _add_value(total: int, soft: bool, bucket: int) -> tuple[int, bool]:
 def _dealer_distribution(
     total: int, soft: bool, shoe: tuple[int, ...], memo: _DealerMemo
 ) -> _DealerDist:
-    """Computes the exact dealer final-total distribution under H17.
-
-    The dealer hits while below 17 and on soft 17, and stands on hard 17+.
-    Probabilities are over `{17, 18, 19, 20, 21, bust}`.
-    """
+    """Computes the exact dealer final-total distribution over `{17, 18, 19, 20, 21, bust}` under H17."""
     if total > 21:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
     if total > 17 or (total == 17 and not soft):
@@ -404,23 +380,19 @@ def recommend_action(
     allowed_actions: tuple[BotAction, ...],
     bet: int,
 ) -> BotAction:
-    """Returns the EV-maximizing legal action for one bot-player decision.
+    """Returns the EV-maximizing legal action from `allowed_actions` for one bot decision.
 
     EV is expressed in multiples of the base hand bet, under H17 rules and this
     table's five-card payouts, with the dealer playing out its actual cards.
-    A split is only preferred once its estimate clears the best other action by
+    A split is preferred only once its estimate clears the best other action by
     `SPLIT_EV_MARGIN`.
 
     Args:
-        hand_cards: The bot's active sub-hand cards.
-        dealer_cards: The dealer's cards (hole card first, then up-card).
-        shoe: The true remaining undealt shoe.
-        allowed_actions: Legal actions for the active hand.
-        bet: The base hand bet, which prices a surrender at the loss
-            `surrender_loss` settles it for.
-
-    Returns:
-        The recommended action, one of `allowed_actions`.
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        dealer_cards (list[Card]): The dealer's cards (hole card first, then up-card).
+        shoe (list[Card]): The true remaining undealt shoe.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+        bet (int): The base hand bet, which prices a surrender via `surrender_loss`.
     """
     evs = _evaluate_actions(
         ctx=_make_context(dealer_cards=dealer_cards),

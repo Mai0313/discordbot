@@ -94,9 +94,9 @@ _SHARE_PATH_RE = re.compile(pattern=r"^/share/p/[A-Za-z0-9]+")
 _COMMENT_ID_PARAM = "comment_id"
 _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 
-# Kept by `clean_url` but never read as a post id. `id` names the page or profile that OWNS the
+# Kept by `clean_url` but never read as a post id. `id` names the page or profile that owns the
 # post, and `permalink.php?story_fbid=<post>` cannot resolve without it — dropping it aims the
-# fetch at a URL naming no owner, and the post comes back unreadable. Deliberately NOT in
+# fetch at a URL naming no owner, and the post comes back unreadable. Deliberately not in
 # `_POST_ID_PARAMS`: `profile.php?id=<n>` carries the same parameter and is not a post at all.
 _OWNER_ID_PARAMS = ("id",)
 
@@ -112,18 +112,13 @@ _COMMENT_ID_RE = re.compile(pattern=r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9
 
 
 def is_facebook_post_url(url: str) -> bool:
-    """Whether a matched Facebook URL names one post rather than a profile or a feed.
+    """Returns whether a matched Facebook URL names one post rather than a profile or a feed.
 
-    The regex matches the host, so this is where a profile, a group home page, a marketplace
-    listing or a bare `facebook.com` link is refused. Refusing them matters twice over: the
-    expansion cog would otherwise put a failure reaction on an ordinary link, and the reply
-    pipeline would spend a full page fetch to learn there is no post.
+    `FACEBOOK_URL_RE` matches the host, so profile, group home, marketplace, and bare
+    `facebook.com` links are rejected here before any page fetch.
 
     Args:
-        url: A URL `FACEBOOK_URL_RE` matched.
-
-    Returns:
-        True when the URL names a readable post, whether directly or through a share redirect.
+        url (str): A URL `FACEBOOK_URL_RE` matched.
     """
     facebook_url = FacebookURL(raw_url=url)
     return bool(facebook_url.post_id or facebook_url.is_share_link or facebook_url.is_pfbid_link)
@@ -142,10 +137,10 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def clean_url(self) -> str:
-        """The URL aimed at `www.facebook.com`, carrying only the query that names content.
+        """Returns the URL aimed at `www.facebook.com`, carrying only content-identifying parameters.
 
-        Everything but `comment_id` and the post-id parameters is dropped, because `rdid` and
-        `share_url` are minted per share and name whoever passed the link on. That makes this
+        Everything but `comment_id` and the post-id/owner-id parameters is dropped, because `rdid`
+        and `share_url` are minted per share and name whoever passed the link on. That makes this
         the form safe to publish back into a channel as well as the form to fetch.
         """
         parsed = urlparse(self.raw_url)
@@ -167,7 +162,7 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def post_id(self) -> str:
-        """The numeric post id the URL names, or an empty string for a share or `pfbid` link."""
+        """Returns the numeric post id the URL names, or an empty string for a share or `pfbid` link."""
         parsed = urlparse(self.raw_url)
         for pattern in (_GROUP_POST_PATH_RE, _NUMERIC_POST_PATH_RE, _PAGE_POST_PATH_RE):
             match = pattern.match(string=parsed.path)
@@ -183,9 +178,9 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def group_id(self) -> str:
-        """The group the post sits in, or an empty string for a page or profile post.
+        """Returns the group id the post sits in, or an empty string for a page or profile post.
 
-        Read so the group's NAME can be matched on the page, which also serialises the groups
+        Read so the group's name can be matched on the page, which also serialises the groups
         it recommends beside the one being read.
         """
         match = _GROUP_POST_PATH_RE.match(string=urlparse(self.raw_url).path)
@@ -197,22 +192,22 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def comment_id(self) -> str:
-        """The comment id the URL singles out, or an empty string when it names no comment."""
+        """Returns the comment id the URL singles out, or an empty string when it names no comment."""
         values = parse_qs(urlparse(self.raw_url).query).get(_COMMENT_ID_PARAM)
         return values[0] if values and values[0].isdigit() else ""
 
     @computed_field
     @cached_property
     def is_share_link(self) -> bool:
-        """Whether the URL is the post share form, which names its post only through the redirect."""
+        """Returns whether the URL is the post share form, which names its post only through the redirect."""
         return bool(_SHARE_PATH_RE.match(string=urlparse(self.raw_url).path))
 
     @computed_field
     @cached_property
     def is_pfbid_link(self) -> bool:
-        """Whether the URL names its post by a `pfbid` id, which no story node carries.
+        """Returns whether the URL names its post by a `pfbid` id, which no story node carries.
 
-        So `post_id` stays empty and the read takes the page's story, as a share link's does.
+        `post_id` stays empty and the read takes the page's story, as a share link's does.
         A group feed's `multi_permalinks` is left out: that page serialises several posts.
         """
         parsed = urlparse(self.raw_url)
@@ -223,17 +218,14 @@ class FacebookURL(BaseModel):
 
 
 class FacebookOutput(LinkableCommentOutput):
-    """One post OR one comment, the single shape a conversation is built from.
+    """One post or one comment, the single shape a conversation is built from.
 
-    Deliberately one type for both, as on every platform with a conversation: a caller that
-    walks one platform's conversation walks the others with the same code. A comment
-    leaves empty the fields it has no version of — it carries no media, no group and no counts
-    of its own.
+    A comment leaves empty the fields it has no version of: it carries no media, no group, and no
+    counts of its own.
 
-    Two of the inherited fields mean something slightly narrower here. `url` is the POST's
-    permalink even on a comment, since Facebook's own comment permalink is a query on it rather
-    than a page of its own; and `comment_count` is what the post REPORTS, which exceeds what the
-    page preloads.
+    Two inherited fields have Facebook-specific semantics: `url` is the post's permalink even on
+    a comment (Facebook's own comment permalink is a query parameter on the post URL), and
+    `comment_count` is the total count the post reports, which exceeds what the page preloads.
     """
 
     group_name: str = Field(
@@ -260,11 +252,10 @@ def _text_of(value: JsonValue) -> str:
 
 
 def _comment_ids_of(node: dict[str, Any]) -> tuple[str, str]:
-    """The post a comment hangs off and the comment's own id, either half empty when unreadable.
+    """Returns `(post_id, comment_id)` for a comment node, with either half empty when unreadable.
 
-    Both come out of the base64 node id, which is what lets a group feed's other posts be told
-    apart from the one being read; `legacy_fbid` carries only the comment's own half and wins
-    for it, being there even on a node whose id does not decode.
+    Both come out of the base64 node id, which separates a group feed's other posts from the one
+    being read; `legacy_fbid` carries only the comment's own half and wins for it when present.
     """
     legacy = node.get("legacy_fbid")
     comment_id = str(legacy) if isinstance(legacy, (int, str)) and str(legacy).isdigit() else ""
@@ -297,7 +288,7 @@ class FacebookDownloader(PlatformDownloader):
 
     @staticmethod
     def _find_story(payloads: list[Any], post_id: str) -> dict[str, Any] | None:
-        """The story node for the wanted post, or None when the page carries none.
+        """Returns the story node for `post_id`, or `None` when the page carries none.
 
         A story is recognised by the fields it carries rather than by its path: the page nests
         the same node under several route-dependent keys (`data.node_v2`, `data.node`) and
@@ -333,7 +324,7 @@ class FacebookDownloader(PlatformDownloader):
 
     @staticmethod
     def _media_of(story: dict[str, Any]) -> tuple[list[str], list[str]]:
-        """Full-resolution image URLs and video permalinks carried by the story's attachments.
+        """Returns `(image_urls, video_urls)` extracted from `story`'s attachments.
 
         `viewer_image` is the full-resolution rendition and `image` the feed thumbnail, so the
         first is preferred; a post with one attachment serves it directly under `media` while a
@@ -368,19 +359,13 @@ class FacebookDownloader(PlatformDownloader):
     def _comment_branches(
         payloads: list[Any], post_url: str, post_id: str
     ) -> list[list[FacebookOutput]]:
-        """Every preloaded comment on THIS post, grouped into branches by `thread_branches`.
+        """Returns preloaded comments on `post_id`, grouped into branches by `thread_branches`.
 
         A reply names its own parent in `comment_direct_parent`, so it is threaded behind that
         comment rather than behind whichever one the page happened to serialise before it; a
-        comment whose parent is absent from the page opens a branch of its own. What comes back
-        is only what the page chose to preload — a handful — never the whole comment section.
-
-        The scan is page-wide because the comments are not nested under the story node, which on
-        a group feed means walking past the neighbouring posts' comments too; each comment's own
-        id says which post it belongs to, and that is what keeps them out.
-
-        The page serialises each comment two or three times, once fully and once as a stub for
-        its reply expander, so the fullest version of each wins.
+        comment whose parent is absent from the page opens a branch of its own. The page-wide
+        scan is scoped by `post_id` via `_comment_ids_of` because comments are not nested under
+        the story node and a group feed serialises neighbouring posts' comments alongside them.
         """
         found: dict[str, FacebookOutput] = {}
         parents: dict[str, str] = {}
@@ -411,7 +396,7 @@ class FacebookDownloader(PlatformDownloader):
 
     @staticmethod
     def _group_name_of(payloads: list[Any], group_id: str) -> str:
-        """The name of the group the post sits in, empty for a page or profile post.
+        """Returns the display name of `group_id`, or an empty string for a page or profile post.
 
         Matched on the URL's own group id and never guessed without one, since a page also
         serialises the groups it recommends alongside the one being read.
@@ -441,7 +426,7 @@ class FacebookDownloader(PlatformDownloader):
         conversation.
 
         Args:
-            url: The Facebook post URL in any accepted form.
+            url (str): The Facebook post URL in any accepted form.
 
         Returns:
             The parsed conversation; its `chain` is empty when the post could not be read.
@@ -512,7 +497,7 @@ class FacebookDownloader(PlatformDownloader):
 
 
 def _comment_total(story: dict[str, Any]) -> int:
-    """The post's total comment count, which the page nests differently per surface."""
+    """Returns the post's total comment count across Facebook's feedback paths."""
     for path in (
         ("feedback", "total_comment_count"),
         ("feedback", "comment_rendering_instance", "comments", "total_count"),

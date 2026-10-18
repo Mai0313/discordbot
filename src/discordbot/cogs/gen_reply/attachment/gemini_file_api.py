@@ -1,10 +1,13 @@
-"""Gemini Files API attachment renderer: activation bound, pending re-poll cache.
+"""Gemini Files API attachment renderer: activation bound and pending re-poll cache.
 
-Turns attachment bytes into an ACTIVE Gemini file URI referenced as an `input_file` part. The
-upload and the activation poll themselves are `files_api.py`'s; this module owns what an
-attachment does with them: the activation bound, and the per-source pending re-poll cache
-that adopts an upload which finished processing after that bound. Kept separate from
-`input.py` so the upload state machine does not tangle with source-to-part rendering.
+Uploads attachment bytes directly through the Gemini SDK (`files_api.py`) so each file can be
+polled to an `ACTIVE` state before it is referenced; the LiteLLM proxy's file resource reports
+only a deprecated `uploaded` status, which causes immediate references to fail with a 400 when
+still `PROCESSING`. The answer request references the full `https://.../files/<id>` URI so the
+proxy resolves it to a `fileData.fileUri` part rather than failing MIME lookup on a bare
+`files/<id>` resource name, and reuses the handle until the provider-reported `expiration_time`
+(~48h). Files still `PROCESSING` when the activation bound elapses are cached per source to be
+re-polled on later turns instead of re-uploaded.
 """
 
 import time
@@ -37,12 +40,10 @@ from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resol
 
 
 class PendingUpload(BaseModel):
-    """A Gemini Files upload still PROCESSING when the activation poll bound elapsed.
+    """A Gemini Files upload still `PROCESSING` when the activation poll bound elapsed.
 
-    Cached per attachment source so a slow upload (typically large video/media that
-    keeps cooking server-side past the bound) is re-polled on the next reference to
-    that source instead of re-uploaded from scratch. The answer never references a
-    pending uri; it is adopted only once a later `files.get` reports ACTIVE.
+    Cached per attachment source so a slow upload is re-polled on the next reference instead of
+    re-uploaded from scratch. Adopted only once a later `files.get` reports `ACTIVE`.
     """
 
     name: str = Field(
@@ -57,11 +58,7 @@ class PendingUpload(BaseModel):
 
 
 class PendingUploadRepoll(BaseModel):
-    """What re-polling an in-flight upload concluded.
-
-    Two fields rather than one optional, because "stop, there is nothing yet" and "carry on,
-    there was never anything to adopt" are different answers that both carry no file.
-    """
+    """Outcome of re-polling an in-flight `PendingUpload`."""
 
     handled: bool = Field(
         ..., description="True to stop here; False to fall through to a fresh upload."
@@ -72,24 +69,16 @@ class PendingUploadRepoll(BaseModel):
 
 
 def _expiry_of(uploaded: File) -> datetime:
-    """The file's provider-reported expiry, or a conservative 47h when the provider omits it.
-
-    47h sits under the ~48h a Gemini file lives, so a missing field never pins an unbounded
-    cache entry.
-    """
+    """Returns `uploaded.expiration_time`, or 47 hours from now when omitted."""
     return uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
 
 
 class GeminiFileUploader(FileUploadRenderer):
     """Uploads attachments to the Gemini Files API and references them by URI.
 
-    Uploads through the deployment's own direct client rather than one built from a key of
-    its own, because a file is readable only by the project that uploaded it: a uri uploaded
-    under any other key fails the whole answer rather than dropping the attachment.
-
-    Re-polls a pending upload before the shared upload resolution runs, and its `_upload_file`
-    caches a file still PROCESSING at the activation bound as a `PendingUpload` to re-poll
-    later, rather than failing it.
+    Uses the deployment's own direct Gemini client so the project that uploads a file is the
+    same project that reads it during the answer call. Re-polls any cached `PendingUpload`
+    before downloading or uploading a source again.
     """
 
     gemini_client: Callable[[], genai.Client | None] = Field(
@@ -100,10 +89,8 @@ class GeminiFileUploader(FileUploadRenderer):
             "None here only drops the upload with the missing key named."
         ),
     )
-    # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
-    # (attachment/sticker id or embed url). The next reference to that source re-polls the
-    # same file (usually ACTIVE by then) instead of re-uploading. Kept until the file's
-    # provider expiry; bounded like the render cache.
+    # Uploads that timed out while still `PROCESSING`, keyed by attachment source `cache_key`.
+    # Re-polled on the next reference and kept until provider expiry; bounded at 128 entries.
     _pending_uploads: OrderedDict[int | str, PendingUpload] = PrivateAttr(
         default_factory=OrderedDict
     )
@@ -114,6 +101,13 @@ class GeminiFileUploader(FileUploadRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
+        """Returns `source` uploaded to the Gemini Files API as an `input_file` part, or `None`.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
+            cache_key (int | str): Per-source identifier for pending and dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
         source_name = resolve_source_filename(source=source, url_fallback="image.png")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
@@ -186,21 +180,7 @@ class GeminiFileUploader(FileUploadRenderer):
         kind: UploadKind,
         allow_dead_cache: bool = False,
     ) -> UploadedFile | None:
-        """Returns an ACTIVE file (uri, expiry), re-polling a prior pending upload first.
-
-        A source whose first upload timed out while still PROCESSING is cached as a
-        `PendingUpload` keyed on its `cache_key`. The next reference re-polls that same
-        file once (it has usually finished cooking in the background by then) instead of
-        re-uploading from scratch, so a large-but-processable attachment becomes usable on
-        a later reply rather than being re-uploaded and re-dropped every time. Only an
-        ACTIVE file is ever returned, so the answer never references a not-yet-ready uri.
-
-        `load_data` fetches the source bytes (and their mime type) and is awaited only
-        when a fresh upload is actually needed: adopting a now-ACTIVE pending upload, or
-        dropping one still PROCESSING, never re-downloads the source. So a borderline file
-        keeps being adopted even after its Discord CDN url has expired and a re-download
-        would fail.
-        """
+        """Returns an `ACTIVE` uploaded file, re-polling any cached `PendingUpload` before fetching bytes."""
         repoll = await self._repoll_pending_upload(cache_key=cache_key)
         if repoll.handled:
             return repoll.uploaded
@@ -215,10 +195,7 @@ class GeminiFileUploader(FileUploadRenderer):
     async def _upload_file(
         self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
-        """Uploads one source, caching it as pending when it is still PROCESSING at the bound.
-
-        `kind` changes nothing here: Gemini uploads an image like any other file.
-        """
+        """Uploads `data`, caching the handle in `_pending_uploads` if still `PROCESSING` at the bound."""
         del kind
         result = await self._upload_or_pend(
             filename=filename, data=data, content_type=content_type
@@ -234,27 +211,7 @@ class GeminiFileUploader(FileUploadRenderer):
     async def _upload_or_pend(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
         self, filename: str, data: bytes, content_type: str
     ) -> UploadedFile | PendingUpload | None:
-        """Uploads bytes to the Gemini Files API, polling to ACTIVE within the bound.
-
-        Sending attachments by file URI instead of inlined base64 keeps oversized
-        payloads under Gemini's ~10MB per-part `inline_data` cap. The upload goes
-        through the Gemini SDK directly (not the LiteLLM proxy) so the file can be
-        polled to an ACTIVE `state` before it is referenced; the proxy's file resource
-        only ever reports a deprecated `uploaded` status, which is why a fresh upload
-        used immediately intermittently 400s with "not in an ACTIVE state".
-
-        The answer request still references the file through the proxy, by the full
-        `uri` (`https://.../files/<id>`): the proxy resolves that to a `fileData.fileUri`
-        part, while the bare `files/<id>` name fails its mime-type lookup. The upload +
-        activation poll runs in the background while the route call resolves, so small files (instant ACTIVE) add no latency and only large / video
-        uploads spend any of that overlap window waiting. A file still PROCESSING at the
-        bound returns a `PendingUpload` (the caller caches it to re-poll on the next
-        reference); a terminal non-active state or any failure returns None.
-
-        Returns the provider-reported `expiration_time` alongside the URI so the cache
-        can reuse the handle until it actually expires (Gemini files live ~48h) instead
-        of guessing a fixed TTL.
-        """
+        """Uploads `data` and polls until `ACTIVE`, returning a `PendingUpload` on poll timeout or `None` on failure."""
         started = time.monotonic()
         logfire.debug(
             "gemini upload start", filename=filename, content_type=content_type, bytes=len(data)

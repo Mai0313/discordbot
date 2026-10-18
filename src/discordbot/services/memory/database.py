@@ -20,7 +20,7 @@ annotations` — SQLAlchemy resolves the `Mapped[datetime]` columns when the cla
 and under postponed evaluation ruff's TC rules move the annotation-only `datetime` import
 under `TYPE_CHECKING`, where the mapper cannot resolve it and the module fails to import.
 
-The version / ordering token is a logical INTEGER, not a wall clock. Each process
+The version / ordering token is a logical `INTEGER`, not a wall clock. Each process
 reserves one range from `memory_token_clock`, above both the prior watermark and
 the largest token already in `memory_job`, then assigns turns and clears in
 capture order inside that range. This keeps newest-wins comparable across
@@ -72,19 +72,21 @@ class MemoryJobRow(Base):
     """One scope's persisted phase-1 review turn.
 
     Attributes:
-        scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
-        flavor: ``user`` or ``server``, the scope's flavor (``flavor_of``).
-        subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
-        transcript: The turn payload, the rendered transcript plus the turn's memory notes
-            (``render_turn_payload``); set to NULL once the turn is ``done``.
-        identity: Single-line identity ``parse_identity`` splits into the ``owner_id`` /
-            ``owner_name`` stamped on every fact this scope writes; persisted so a resume
-            needs no Discord context.
-        status: Lifecycle status (see ``MemoryJobStatus``).
-        token: Logical version / ordering token; guards newest-wins and the terminal update.
-        last_error: Bounded failure blurb when ``status='failed'``.
-        created_at: First-write timestamp.
-        updated_at: Latest-write timestamp.
+        scope (Mapped[str]): Opaque memory scope (`<user_id>` or `bot_memories/<server_id>`);
+            primary key.
+        flavor (Mapped[str]): `user` or `server`, the scope's flavor (`flavor_of`).
+        subject (Mapped[str]): Phase-1 directive naming the target (`target_user_id: <id>` etc.).
+        transcript (Mapped[str | None]): Turn payload, the rendered transcript plus the turn's
+            memory notes (`render_turn_payload`); set to `NULL` once the turn is `done`.
+        identity (Mapped[str]): Single-line identity `parse_identity` splits into the `owner_id` /
+            `owner_name` stamped on every fact this scope writes; persisted so a resume needs no
+            Discord context.
+        status (Mapped[str]): Lifecycle status (see `MemoryJobStatus`).
+        token (Mapped[int]): Logical version / ordering token; guards newest-wins and the terminal
+            update.
+        last_error (Mapped[str | None]): Bounded failure blurb when `status='failed'`.
+        created_at (Mapped[datetime]): First-write timestamp.
+        updated_at (Mapped[datetime]): Latest-write timestamp.
     """
 
     __tablename__ = "memory_job"
@@ -104,7 +106,12 @@ class MemoryJobRow(Base):
 
 
 class MemoryTokenClockRow(Base):
-    """Singleton high watermark for process-level logical token reservations."""
+    """Singleton high watermark for process-level logical token reservations.
+
+    Attributes:
+        id (Mapped[int]): Singleton row primary key (`1`).
+        high_watermark (Mapped[int]): Exclusive upper bound of the latest reserved token block.
+    """
 
     __tablename__ = "memory_token_clock"
 
@@ -131,17 +138,25 @@ _database = SqliteBootstrap(metadata=Base.metadata)
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Opens an async session on the current reply.db engine, this module's tables ensured."""
+    """Returns an async session context manager on `reply.db` with this module's tables ensured."""
     return _database.open_session(engine=_engine)
 
 
 def cast_flavor(value: str) -> MemoryFlavor:
-    """Narrows a stored flavor string, defaulting odd values to user."""
+    """Returns `value` narrowed to `MemoryFlavor`, defaulting unknown values to `'user'`.
+
+    Args:
+        value (str): Stored flavor string from `memory_job`.
+    """
     return "server" if value == "server" else "user"
 
 
 def cast_status(value: str) -> MemoryJobStatus:
-    """Narrows a stored status string, defaulting odd values to pending."""
+    """Returns `value` narrowed to `MemoryJobStatus`, defaulting unknown values to `'pending'`.
+
+    Args:
+        value (str): Stored status string from `memory_job`.
+    """
     if value in get_args(tp=MemoryJobStatus):
         return cast("MemoryJobStatus", value)
     return "pending"
@@ -222,7 +237,15 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 
     On conflict the row is overwritten only when the new `token` is strictly
     newer than the stored one, so an older turn's write can never clobber a newer
-    turn's row (the guard that keeps two interleaved turns consistent).
+    turn's row.
+
+    Args:
+        scope (str): Memory scope key.
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+        subject (str): Phase-1 directive naming the review target.
+        transcript (str): Rendered turn payload (transcript plus memory notes).
+        identity (str): Single-line owner identity stamped onto written facts.
+        token (int): Logical version token for ordering.
     """
     token = await _resolve_token(token=token)
     now = _database_now()
@@ -259,7 +282,12 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 
 
 async def mark_done(scope: str, token: int) -> None:
-    """Marks a turn done and drops its now-consumed transcript (token-guarded)."""
+    """Marks a turn done and drops its consumed transcript when `token` matches.
+
+    Args:
+        scope (str): Memory scope key.
+        token (int): Logical version token of the turn being completed.
+    """
     token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
@@ -272,7 +300,13 @@ async def mark_done(scope: str, token: int) -> None:
 
 
 async def mark_failed(scope: str, token: int, error: str) -> None:
-    """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
+    """Parks a turn at `failed`, keeping its transcript for a restart retry when `token` matches.
+
+    Args:
+        scope (str): Memory scope key.
+        token (int): Logical version token of the turn that failed.
+        error (str): Failure blurb to store in `last_error`.
+    """
     token = await _resolve_token(token=token)
     now = _database_now()
     # `last_error` is a bounded blurb, not a full traceback.
@@ -295,22 +329,21 @@ async def clear_job(scope: str, flavor: MemoryFlavor, token: int) -> bool:
     the existence check and tombstone upsert one serialized write transaction, so
     the caller can still distinguish an empty scope without reopening that race.
 
+    Args:
+        scope (str): Memory scope key to scrub.
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+        token (int): Logical version token for the clear tombstone.
+
     Returns:
         True when a non-cleared row existed and was scrubbed.
 
     Raises:
-        RuntimeError: When the scope already carries a row newer than this clear, so
-            the guarded upsert below would no-op. Reporting that as an ordinary
-            "nothing to scrub" would let the caller delete the files while the pre-clear
-            transcript stays in `reply.db` for the restart sweep to resume — the exact
-            failure the tombstone exists to close. Raising rolls this transaction back before
-            the caller's file pass, so every tier stays in place. A retry is harmless but
-            keeps refusing:
-            `_resolve_token` reserves ONE block per process, so the clear's token
-            only rises above the stray row after a restart picks a base above it.
-            That same reservation is why this cannot fire while one process owns the
-            block; the guard is what keeps a second writer against the same
-            `reply.db` loud instead of silent.
+        RuntimeError: The scope already carries a row newer than `token`, so the guarded
+            upsert would no-op and leave a pre-clear transcript in `reply.db` for the
+            restart sweep to resume. Raising rolls the transaction back before the caller's
+            file pass, keeping every tier in place. `_resolve_token` reserves one block per
+            process, so the clear's token only rises above a stray row after a restart picks
+            a base above it.
     """
     token = await _resolve_token(token=token)
     now = _database_now()
@@ -363,9 +396,9 @@ async def list_resumable(updated_before: datetime) -> list[MemoryJob]:
     """Returns the pending and failed rows last written before `updated_before`.
 
     Args:
-        updated_before: When this process started. A turn can run before `on_ready` does, so
-            a row written since is a turn this process is still running. `created_at` cannot
-            tell: the upsert keeps a scope's first write time and moves only `updated_at`.
+        updated_before (datetime): Process start timestamp; rows written since belong to turns this
+            process is still running (`created_at` keeps a scope's first write time and only
+            `updated_at` moves on upsert).
     """
     async with open_session() as session:
         result = await session.execute(

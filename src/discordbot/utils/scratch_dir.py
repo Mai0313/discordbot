@@ -2,7 +2,7 @@
 
 A caller opens one around a worker `asyncio.to_thread` cannot cancel, which keeps fetching past
 the caller's give-up, and a directory of its own is what keeps that overshoot from writing over a
-concurrent request's files or piling up in the system temp dir. What the directory is FOR past
+concurrent request's files or piling up in the system temp dir. What the directory is for past
 that depends on the writer, so do not read one into another. A writer that opens into a folder it
 never rebuilds (`services/platforms/file_downloads.py::stream_to_file`) takes the removal as its
 stop signal: its next open fails, and the file it has open stops at its next chunk. yt-dlp
@@ -13,7 +13,7 @@ writer only in the case that logs, where the worker ignored that join window.
 
 What that leaves everywhere is a teardown that can lose a race with a writer still running:
 `shutil.rmtree` walks a tree something is adding to, and its closing `rmdir` raises `ENOTEMPTY`
-for a file that arrived after the scan (a file that VANISHED under it is already absorbed, by
+for a file that arrived after the scan (a file that vanished under it is already absorbed, by
 `TemporaryDirectory`'s own handler, which is why the cleanup below stays that class's). That
 exception goes to whoever owned the `with` block, which is always the wrong reader: by then the
 caller has told the user what happened, so a raised cleanup replaces a timeout's own report with
@@ -24,7 +24,7 @@ That holds for the `gen_reply/link_sources/` builders too, although they degrade
 any failure. A cleanup raising while the post-route grace unwinds a build replaces its
 `CancelledError`, which `asyncio.wait_for` needs to raise `TimeoutError`, so a link that never
 answered would reach the model as one that answered without its media rather than as the
-source's own timeout notice. And each builder RETURNS its result from inside the `with`, so a
+source's own timeout notice. And each builder returns its result from inside the `with`, so a
 cleanup raising over a finished one would discard it.
 """
 
@@ -40,14 +40,11 @@ if TYPE_CHECKING:
 
 @contextlib.contextmanager
 def scratch_directory(prefix: str) -> "Generator[str]":
-    """Yields a private temp directory, removing it on the way out.
+    """Yields a private temp directory path, removing the directory on exit.
 
     Args:
-        prefix: Names the directory after the call site that owns it, so a leaked one is
+        prefix (str): Names the directory after the call site that owns it, so a leaked one is
             attributable in the system temp dir. Keep it unique across call sites.
-
-    Yields:
-        The directory path, for a downloader's `output_folder`.
     """
     holder = tempfile.TemporaryDirectory(prefix=prefix)
     try:

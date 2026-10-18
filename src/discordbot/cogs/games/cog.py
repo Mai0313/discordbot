@@ -45,15 +45,19 @@ class GamesCogs(commands.Cog):
     """Slash commands for the `/games` group.
 
     Blackjack and 射龍門 are multiplayer tables played against the casino
-    system; blackjack_history only reads stored rounds.
+    system; `blackjack_history` only reads stored rounds.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
-        rng: System randomness used for card draws.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
+        rng (SystemRandom): System randomness used for card draws.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialises the GamesCogs instance."""
+        """Initializes the `GamesCogs` instance.
+
+        Args:
+            bot (commands.Bot): The Discord bot instance.
+        """
         self.bot = bot
         self.rng = SystemRandom()
         self._blackjack_shoes = BlackjackShoeStore()
@@ -98,11 +102,7 @@ class GamesCogs(commands.Cog):
     async def _participant_from_user(
         self, user: User | Member, wager: int | None, mode: WagerMode, guild: Guild | None = None
     ) -> ParticipantPreparationResult:
-        """Builds a lobby participant under the requested wager and mode.
-
-        A None wager seats the user all in: the whole balance becomes the stake,
-        which `clamp` mode then caps like any other.
-        """
+        """Builds a lobby participant under the requested wager and mode (`None` wagers full balance)."""
         balance = await get_balance(user_id=user.id)
         return ParticipantPreparationResult(
             participant=build_wager_participant(
@@ -121,12 +121,7 @@ class GamesCogs(commands.Cog):
         mode: WagerMode,
         insufficient_embed_builder: Callable[[int], Embed],
     ) -> GameParticipant | None:
-        """Prepares a user who pressed a lobby Join button.
-
-        Refuses a player another started round seats, and sends the supplied
-        insufficient-balance embed (game-specific copy) when the user cannot cover
-        the wager. Returns the participant otherwise.
-        """
+        """Validates a lobby Join press and returns the participant, or sends a private refusal."""
         if interaction.user is None:
             return None
         if seated_elsewhere(user_id=interaction.user.id):
@@ -208,11 +203,7 @@ class GamesCogs(commands.Cog):
 
     @staticmethod
     async def _open_lobby(interaction: Interaction[commands.Bot], view: BaseGameLobbyView) -> None:
-        """Posts a lobby as the interaction's public followup and binds the message to it.
-
-        The message is recorded so a restart still deletes it; while the bot runs, the lobby's
-        timeout or its table's final render schedules that deletion.
-        """
+        """Posts a lobby as the interaction's public followup and tracks it for cleanup."""
         embed = view.lobby_embed()
         message = await interaction.followup.send(
             embed=embed,
@@ -233,7 +224,11 @@ class GamesCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def games(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group; every game runs from one of its subcommands."""
+        """Slash command group; every game runs from one of its subcommands.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
 
     @games.subcommand(
         name="blackjack",
@@ -259,7 +254,12 @@ class GamesCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Opens a Blackjack lobby. The owner starts the table from the lobby."""
+        """Opens a Blackjack lobby.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+            bet (str): Table stake input string (`0` goes all in).
+        """
         if interaction.user is None:
             return
         wager = parse_decimal_amount(raw=bet)
@@ -323,7 +323,11 @@ class GamesCogs(commands.Cog):
         },
     )
     async def dragon_gate(self, interaction: Interaction[commands.Bot]) -> None:
-        """Opens a 射龍門 lobby. The owner starts the table from the lobby."""
+        """Opens a 射龍門 lobby.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
         if interaction.user is None:
             return
         if seated_elsewhere(user_id=interaction.user.id):
@@ -399,7 +403,13 @@ class GamesCogs(commands.Cog):
             max_value=50,
         ),
     ) -> None:
-        """Publicly posts a player's recent Blackjack rounds as a text table."""
+        """Publicly posts a player's recent Blackjack rounds as a text table.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+            member (Member | None): Player to inspect, or None for the caller.
+            count (int): Maximum number of recent rounds to display.
+        """
         if interaction.user is None:
             await send_ephemeral_notice(
                 interaction=interaction,
@@ -416,9 +426,9 @@ class GamesCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the GamesCogs to the bot.
+    """Adds `GamesCogs` to `bot`.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(GamesCogs(bot), override=True)

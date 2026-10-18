@@ -23,22 +23,31 @@ class SeatHolder(Protocol):
     """A lobby or table that can hold players' seats."""
 
     def holds_seats(self) -> bool:
-        """Whether the seats this holder claimed still count; a stale holder blocks nobody."""
+        """Returns whether the seats this holder claimed still count."""
 
 
 _seats: LoopLocalRegistry[int, SeatHolder] = LoopLocalRegistry()
 
 
 def seated_elsewhere(user_id: int, holder: SeatHolder | None = None) -> bool:
-    """Returns whether the user holds a live seat anywhere but `holder`."""
+    """Returns whether `user_id` holds a live seat anywhere but `holder`.
+
+    Args:
+        user_id (int): Discord user ID to check.
+        holder (SeatHolder | None): Holder to exclude from the check, if any.
+    """
     current = _seats.get(key=user_id)
     return current is not None and current is not holder and current.holds_seats()
 
 
 def claim_seat(user_id: int, holder: SeatHolder) -> None:
-    """Seats the user at `holder`, holding their whole wallet until the stake is known.
+    """Seats `user_id` at `holder`, holding their whole wallet until the stake is known.
 
     The caller has just checked `seated_elsewhere`.
+
+    Args:
+        user_id (int): Discord user ID to seat.
+        holder (SeatHolder): Lobby claiming the seat.
     """
     _seats.set(key=user_id, value=holder)
     hold_stake(user_id=user_id, holder=holder, amount=None)
@@ -50,10 +59,11 @@ def hand_over_seats(
     """Moves the seats `from_holder` holds to `to_holder`, each holding its player's stake.
 
     Args:
-        stakes: What the table holds of each player's wallet: the most the round can take from
-            them (`blackjack.py::max_round_loss`), or 0 for a game that settles as it goes.
-        from_holder: The lobby that claimed the seats.
-        to_holder: The table that now plays them.
+        stakes (dict[int, int]): What the table holds of each player's wallet: the most the round
+            can take from them (`blackjack.py::max_round_loss`), or 0 for a game that settles as
+            it goes.
+        from_holder (SeatHolder): The lobby that claimed the seats.
+        to_holder (SeatHolder): The table that now plays them.
     """
     for user_id, stake in stakes.items():
         if _seats.get(key=user_id) is from_holder:
@@ -63,7 +73,12 @@ def hand_over_seats(
 
 
 def release_seats(user_ids: list[int], holder: SeatHolder) -> None:
-    """Frees the seats `holder` holds for these users, leaving anyone seated elsewhere alone."""
+    """Frees the seats `holder` holds for `user_ids`, leaving anyone seated elsewhere alone.
+
+    Args:
+        user_ids (list[int]): Discord user IDs whose seats to release.
+        holder (SeatHolder): Lobby or table releasing its seats.
+    """
     for user_id in user_ids:
         if _seats.get(key=user_id) is holder:
             _seats.pop(key=user_id)

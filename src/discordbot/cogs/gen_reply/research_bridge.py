@@ -15,12 +15,13 @@ from discordbot.typings.research import has_research_permissions
 
 
 def can_launch_research(message: Message) -> bool:
-    """Whether a research thread can be opened from this message.
+    """Returns whether a research thread can be opened from `message`.
 
-    Only a guild text channel can host a nested thread, and only when its overwrites let the bot
-    open one and write into it; anywhere else the `<deep-research>` marker is suppressed so the
-    answer model never promises a run that cannot actually start (the launch would otherwise be
-    refused right under the reply that promised it).
+    Requires a guild `TextChannel` where the bot has permissions to create and send in threads;
+    otherwise `<deep-research>` is suppressed from the QA instructions.
+
+    Args:
+        message (Message): Triggering Discord message.
     """
     if message.guild is None or not isinstance(message.channel, TextChannel):
         return False
@@ -33,7 +34,12 @@ def _research_cog(bot: commands.Bot) -> commands.Cog | None:
 
 
 def in_active_research_thread(bot: commands.Bot, channel_id: int) -> bool:
-    """Whether a channel id is a research thread the ResearchCogs cog is actively driving."""
+    """Returns whether `channel_id` is an active research thread managed by `ResearchCogs`.
+
+    Args:
+        bot (commands.Bot): Discord bot instance holding loaded cogs.
+        channel_id (int): Discord channel or thread id to check.
+    """
     checker = getattr(_research_cog(bot=bot), "is_research_thread", None)
     return bool(checker(channel_id=channel_id)) if checker is not None else False
 
@@ -41,10 +47,14 @@ def in_active_research_thread(bot: commands.Bot, channel_id: int) -> bool:
 async def maybe_launch_research(
     bot: commands.Bot, message: Message, anchor: Message | None, brief: str
 ) -> None:
-    """Hands a QA-emitted research brief to the ResearchCogs cog when it is loaded and enabled.
+    """Forwards a QA-emitted research brief to `ResearchCogs.launch` when the cog is loaded.
 
-    `anchor` is the bot's own reply message; the research thread hangs off it (more intuitive than
-    the user's message), falling back to the user's message inside the cog when it is None.
+    Args:
+        bot (commands.Bot): Discord bot instance holding loaded cogs.
+        message (Message): Triggering user message.
+        anchor (Message | None): Bot reply message to attach the research thread to, or None to
+            fall back to `message`.
+        brief (str): Self-contained research brief extracted from `<deep-research>`.
     """
     launcher = getattr(_research_cog(bot=bot), "launch", None)
     if launcher is None:

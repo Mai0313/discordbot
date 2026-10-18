@@ -1,15 +1,11 @@
 """Deep-research cog: long-running Gemini managed-agent research delivered in a Discord thread.
 
-A user asks for deep research (the QA answer model emits a `<deep-research>` marker, handed
-here by `gen_reply`, or they run `/deep_research`). The bot opens a thread, runs the
-`RuntimeModelCatalog.antigravity_model` agent, and posts the cited report there, pinging the
-user. That one report is the whole feature: there is no tier to upgrade into and no button under
-it.
+Triggered either by a `<deep-research>` marker from `gen_reply` or by `/deep_research`. Opens a
+thread, runs `RuntimeModelCatalog.antigravity_model` in a tracked background task, and posts the
+cited report there while pinging the requester.
 
-Everything talks DIRECT to Google (`gemini_api_key`, no proxy), like every Interactions API path
-in this project (see `agent.py`). Sessions persist in `reply.db` so a restart resumes an
-in-flight research (`store=True` keeps the interaction alive server-side). The cog never blocks
-the gateway: agent work runs in tracked background tasks.
+Calls Google directly (`gemini_api_key`, no proxy) via the Interactions API (`agent.py`) and
+persists sessions in `reply.db` so restarts can resume in-flight runs (`store=True`).
 """
 
 from typing import TYPE_CHECKING, Literal
@@ -80,17 +76,14 @@ RESEARCH_FAILED_STATUS = f"-# Research failed ({RESEARCH_LABEL})"
 
 
 def _fallback_thread_name(brief: str) -> str:
-    """Thread-title fallback (the brief's first line) when LLM title generation is unavailable."""
+    """Returns the brief's first non-empty line, trimmed to `THREAD_NAME_MAX`."""
     first_line = next((line.strip() for line in brief.splitlines() if line.strip()), "")
     title = first_line or "深度研究"
     return title[:THREAD_NAME_MAX]
 
 
 def _launch_reply(outcome: StartOutcome, thread_id: int | None) -> str:
-    """What either entry point tells the requester about a launch that ended with `outcome`.
-
-    `thread_id` is the run's thread for `started` and the owner's running one for `exists`.
-    """
+    """Returns the user-facing status message for a launch that ended with `outcome`."""
     if outcome == "started":
         return f"開好了:<#{thread_id}>"
     if outcome == "exists":
@@ -118,7 +111,7 @@ class ResearchCogs(commands.Cog):
         """Initializes the research cog.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.config = LLMConfig()
@@ -137,39 +130,32 @@ class ResearchCogs(commands.Cog):
 
     @cached_property
     def interactions_client(self) -> genai.Client:
-        """The Gemini Interactions client, built lazily on first use.
+        """Returns the direct-to-Google Gemini Interactions client, built lazily on first use.
 
-        DIRECT to Google (`gemini_api_key`, no base_url / proxy): a managed agent rides the native
-        Interactions API, which this project always calls direct. `genai.Client` raises
-        `ValueError` on a missing key rather than deferring it to the first call (measured), and
-        both run loops read this property inside their own try, so that raise still lands as a
-        thread failure notice instead of an unhandled background-task error.
+        Raises `ValueError` when `gemini_api_key` is missing; both run loops access this inside
+        their `try` blocks so a missing key surfaces as a thread failure notice.
         """
         return genai.Client(api_key=self.config.gemini_api_key)
 
     @cached_property
     def responses_client(self) -> AsyncOpenAI:
-        """The LiteLLM-proxy Responses client for small side calls (the thread-title generator).
-
-        Distinct from the direct `interactions_client`, since a plain Responses call rides the
-        proxy fine.
-        """
+        """Returns the LiteLLM-proxy Responses client for thread-title generation."""
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     def is_research_thread(self, channel_id: int) -> bool:
-        """Whether a channel id is a research thread the cog is actively driving."""
+        """Returns whether `channel_id` is a research thread the cog is actively driving.
+
+        Args:
+            channel_id (int): Discord channel or thread ID to check.
+        """
         return channel_id in self._active_threads
 
     def _system_instruction(self) -> str:
-        """The research agent system instruction with today's date appended for recency."""
+        """Returns the research agent system instruction with today's date appended."""
         return f"{RESEARCH_SYSTEM_INSTRUCTION}\n\nToday's date: {database_now():%Y-%m-%d}."
 
     async def _generate_thread_name(self, brief: str) -> str:
-        """Generates a short thread title from the brief via `triage_model`, best-effort.
-
-        Brevity is steered by the prompt (not a token cap); on timeout or failure the brief's
-        first line is used, and the result is trimmed to Discord's hard name limit as a safety net.
-        """
+        """Returns a short thread title generated via `triage_model`, or `_fallback_thread_name`."""
         try:
             raw = await create_text_or_none(
                 client=self.responses_client,
@@ -191,16 +177,15 @@ class ResearchCogs(commands.Cog):
         )
         return (title or _fallback_thread_name(brief=brief))[:THREAD_NAME_MAX]
 
-    # ----- entry points -------------------------------------------------------------------
-
     async def launch(
         self, message: "Message", brief: str, anchor: "Message | None" = None
     ) -> None:
-        """QA-marker entry: opens a thread and starts the research.
+        """Opens a thread from a `<deep-research>` QA marker and starts the research run.
 
-        `message` identifies the owner; `anchor` is the message the thread hangs off. The bot's
-        own reply reads more intuitively than the user's message, so the caller passes it; it
-        falls back to the user's message when the reply is unavailable.
+        Args:
+            message (Message): User message whose author owns the research session.
+            brief (str): Research brief extracted from the marker.
+            anchor (Message | None): Message to attach the thread to; defaults to `message`.
         """
         if not self.config.deep_research_available:
             return
@@ -262,11 +247,11 @@ class ResearchCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Opens a research thread for the given topic and starts the research.
+        """Opens a research thread for `topic` and starts the research run.
 
         Args:
-            interaction: The slash interaction.
-            topic: The research topic / brief.
+            interaction (Interaction[commands.Bot]): The slash command interaction.
+            topic (str): The research topic or brief.
         """
         if not self.config.deep_research_available:
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
@@ -339,10 +324,7 @@ class ResearchCogs(commands.Cog):
     async def _start_for(  # noqa: PLR0911 -- one early outcome per way a launch stops short
         self, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
-        """Claims the owner's slot, opens the thread, and spawns the research.
-
-        Returns `(outcome, thread_or_existing_id)`.
-        """
+        """Claims `owner_id`'s slot, opens the thread, spawns the run, and returns `(outcome, thread_id)`."""
         # A research thread can only hang off a message in a guild text channel; a DM, an existing
         # thread, or a forum post cannot host a nested thread, so refuse before promising research.
         if anchor.guild is None or not isinstance(anchor.channel, TextChannel):
@@ -442,8 +424,6 @@ class ResearchCogs(commands.Cog):
         )
         return "started", thread.id
 
-    # ----- research runs ------------------------------------------------------------------
-
     async def _run_research(self, thread: "Thread", owner_id: int, brief: str, agent: str) -> None:
         """Streams the Antigravity research and delivers the report into the thread."""
         status = await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
@@ -480,11 +460,7 @@ class ResearchCogs(commands.Cog):
     async def _fail_run(
         self, thread: "Thread", owner_id: int, status: Message | None, failure: Exception | str
     ) -> None:
-        """Tells the owner a run ended without a report, finalizes its status, and releases it.
-
-        `failure` is the exception that ended the run, or the non-completed terminal status the
-        interaction settled with, which also decides the phase recorded.
-        """
+        """Notifies `owner_id` of a failed or non-completed run, updates `status`, and releases `thread`."""
         if isinstance(failure, Exception):
             await self._post_failure(thread=thread, owner_id=owner_id, exc=failure)
             phase: db.ResearchPhase = "failed"
@@ -497,12 +473,7 @@ class ResearchCogs(commands.Cog):
         await self._release(thread_id=thread.id, phase=phase)
 
     async def _release(self, thread_id: int, phase: db.ResearchPhase) -> None:
-        """Ends a run: lets QA answer in its thread again and records its terminal phase.
-
-        The recorded phase is what frees the owner's one-research slot. Every caller has already
-        decided how the run ended, so a failed write is logged, never raised: a raise would read
-        as the run failing, or cut off the steps that tell the thread how it ended.
-        """
+        """Removes `thread_id` from active threads and records its terminal `phase` best-effort."""
         self._active_threads.discard(thread_id)
         try:
             await db.set_phase(thread_id=thread_id, phase=phase)
@@ -525,12 +496,7 @@ class ResearchCogs(commands.Cog):
         agent: str,
         status: Message | None,
     ) -> None:
-        """Delivers a terminal result, records its phase, and releases the thread.
-
-        On a completed run the opening status message is spent by `deliver_report`, which edits the
-        report's first chunk into it. Any other terminal status, or a delivery that raises before
-        any of the report lands, ends the run as a failure.
-        """
+        """Delivers `result` on completion or fails the run, then releases `thread`."""
         if not result.ok:
             await self._fail_run(
                 thread=thread, owner_id=owner_id, status=status, failure=result.status
@@ -568,12 +534,7 @@ class ResearchCogs(commands.Cog):
     async def _finalize_status(
         self, status: Message | None, thread: "Thread", content: str
     ) -> None:
-        """Edits the opening status message to its terminal content.
-
-        Falls back to a fresh send when there is no status message (its post failed, or a resume
-        found none from before the restart) or the edit fails (e.g. the opening message was
-        deleted).
-        """
+        """Edits `status` to `content`, falling back to a new message in `thread` if unavailable."""
         if status is not None:
             try:
                 await status.edit(content=content, allowed_mentions=AllowedMentions.none())
@@ -604,11 +565,7 @@ class ResearchCogs(commands.Cog):
         exc: Exception | None = None,
         reason: str | None = None,
     ) -> None:
-        """Posts the real failure reason as an error embed pinging the owner.
-
-        Pass `exc` for an exception path (the friendly error + its type are shown so the cause is
-        fixable) or `reason` for a non-completed terminal status.
-        """
+        """Posts an error embed in `thread` pinging `owner_id` with `exc` or `reason`."""
         if reason is None and exc is not None:
             reason = extract_friendly_error(exc=exc)
         embed = Embed(
@@ -627,8 +584,6 @@ class ResearchCogs(commands.Cog):
             failed="failed to post research failure notice",
         )
 
-    # ----- restart resume -----------------------------------------------------------------
-
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         """Resumes in-flight research after a restart (runs once)."""
@@ -638,19 +593,10 @@ class ResearchCogs(commands.Cog):
         spawn_tracked(coro=self._resume_all(), tasks=self._tasks, name="research-resume")
 
     async def _resume_all(self) -> None:
-        """Resumes every session an earlier process left `researching`.
+        """Resumes every session left `researching` before this process started.
 
-        `deep_research_available` gates this exactly as it gates `launch` and `/deep_research`,
-        so a missing key is refused here rather than at `genai.Client` inside the resume's own
-        try. The switch is flipped over a provider or a cost problem, and a run already open is
-        still work with that provider, so off means the bot re-attaches to nothing.
-
-        A skipped row is left `researching` rather than failed, which is the truth about it: the
-        interaction runs server-side under `background=True` / `store=True` whether or not the
-        bot is attached, so the next start with the switch on picks it up exactly as a plain
-        restart does, and marking it failed would throw away a report the provider has already
-        produced and billed for. Nothing is posted into the threads either, since this sweep runs
-        on every start and a notice would repeat for as long as the switch stays off.
+        When `deep_research_available` is false, rows stay `researching` without posting to their
+        threads so a later start with the setting enabled can still collect the server-side run.
         """
         sessions = await db.list_resumable(created_before=self._started_at)
         if not sessions:
@@ -671,11 +617,7 @@ class ResearchCogs(commands.Cog):
         logfire.info("resumed in-flight research sessions", count=len(sessions))
 
     async def _resume_one(self, session: db.PersistentResearchSession) -> None:
-        """Resumes one research session, delivering when it settles.
-
-        The status line the run posted before the restart is taken over, so it ends with the
-        resume instead of reading `Researching...` forever.
-        """
+        """Re-attaches to `session`, taking over its prior status message and delivering on completion."""
         thread = await self._fetch_thread(thread_id=session.thread_id)
         status = await self._find_prior_status(thread=thread) if thread is not None else None
         # No interaction id means the row was written but the bot restarted before the run id was
@@ -736,13 +678,7 @@ class ResearchCogs(commands.Cog):
         )
 
     async def _find_prior_status(self, thread: "Thread") -> Message | None:
-        """Returns the bot's status line from before the restart, or None when none is found.
-
-        Only the process that posted it held that message, so it is read back off the thread: the
-        run's first post, still headed `-# Researching...`. Without Read Message History, which a
-        launch never checks, Discord answers the read with no messages rather than an error, so
-        that gap logs nothing; an empty or failed read only means the resume posts its own line.
-        """
+        """Returns the bot's `RESEARCHING_PREFIX` status message from before the restart, if found."""
         try:
             # The thread's id predates every message in it, so the one default page read after it
             # holds the thread's oldest messages, the run's first post among them.
@@ -791,8 +727,6 @@ class ResearchCogs(commands.Cog):
             return None
         return fetched if isinstance(fetched, Thread) else None
 
-    # ----- helpers ------------------------------------------------------------------------
-
     async def _safe_send(  # noqa: PLR0913 -- one thread post plus the two log lines naming it
         self,
         thread: "Thread",
@@ -802,13 +736,7 @@ class ResearchCogs(commands.Cog):
         refused: str = "research thread refused a message",
         failed: str = "failed to send research thread message",
     ) -> Message | None:
-        """Best-effort `thread.send`, returning the message or None on failure.
-
-        Mentions default to fully suppressed (`AllowedMentions.none()`); a caller that wants the
-        owner pinged passes an owner-only policy, so agent-generated content can never mass-ping.
-        `refused` is logged, with the id alone, when Discord refuses the post, and `failed` with
-        its traceback for any other failure, so each caller's post stays apart in the log.
-        """
+        """Sends a message to `thread` best-effort, defaulting to `AllowedMentions.none()`."""
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
             # Two calls: none of nextcord's `send` overloads accepts `embed=None`.
@@ -826,7 +754,7 @@ class ResearchCogs(commands.Cog):
 
 
 def _failure_text(status: str) -> str:
-    """Friendly Chinese message for a non-completed terminal status."""
+    """Returns the user-facing Chinese failure message for a non-completed terminal `status`."""
     if status == "budget_exceeded":
         return "研究碰到成本上限了,先到這裡"
     if status == "cancelled":
@@ -835,5 +763,9 @@ def _failure_text(status: str) -> str:
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the ResearchCogs to the bot."""
+    """Adds `ResearchCogs` to the bot.
+
+    Args:
+        bot (commands.Bot): The Discord bot instance.
+    """
     bot.add_cog(ResearchCogs(bot), override=True)

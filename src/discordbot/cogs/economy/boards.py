@@ -81,7 +81,11 @@ _board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}
 
 
 def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> bytes:
-    """Renders the public balance leaderboard as a PNG board."""
+    """Returns the public balance leaderboard rendered as a PNG board.
+
+    Args:
+        rows (Sequence[LeaderboardEntry]): Ranked balance entries, best first.
+    """
     return _build_ranking_board_image(
         spec=_RankingBoardSpec(
             title=f"{CURRENCY_NAME} 排行榜",
@@ -97,7 +101,11 @@ def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> b
 
 
 def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> bytes:
-    """Renders the public daily loss leaderboard as a PNG board."""
+    """Returns the public daily loss leaderboard rendered as a PNG board.
+
+    Args:
+        rows (Sequence[LossLeaderboardEntry]): Ranked daily loss entries, highest loss first.
+    """
     return _build_ranking_board_image(
         spec=_RankingBoardSpec(
             title="今日輸錢榜",

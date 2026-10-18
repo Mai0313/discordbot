@@ -1,24 +1,24 @@
 """File-backed storage for long-term memory, keyed by an opaque scope.
 
-A scope is a relative path under ``data/memories/`` that doubles as the registry key.
-Per-user memory uses ``user_scope(user_id)`` (``<user_id>``); the bot's own per-server
-memory uses ``server_scope(server_id)`` (``bot_memories/<server_id>``).
+A scope is a relative path under `data/memories/` that doubles as the registry key.
+Per-user memory uses `user_scope(user_id)` (`<user_id>`); the bot's own per-server
+memory uses `server_scope(server_id)` (`bot_memories/<server_id>`).
 
 Inside a scope the consolidated tier is **one file per fact**, filed under the
-compartment that decides who may read it — ``global/`` (safe anywhere),
-``g/<guild_id>/`` (that guild only) and ``dm/`` (the owner's own DMs). The path *is*
-the privacy boundary: reading for guild G is ``global/`` plus ``g/<G>/``, two joins each
-guarded by ``_COMPARTMENT_RE``, with no read-time content filter to get wrong. A server
-scope has exactly one compartment (``global/``) because a server memory is per-guild by
+compartment that decides who may read it — `global/` (safe anywhere),
+`g/<guild_id>/` (that guild only) and `dm/` (the owner's own DMs). The path *is*
+the privacy boundary: reading for guild G is `global/` plus `g/<G>/`, two joins each
+guarded by `_COMPARTMENT_RE`, with no read-time content filter to get wrong. A server
+scope has one compartment (`global/`) because a server memory is per-guild by
 construction and its evidence carries no source to route by.
 
-The remaining tiers are per-scope: ``raw.md`` accumulates phase-1 entries
-until consolidation consumes them, ``detail.md`` is the append-only cold evidence log
+The remaining tiers are per-scope: `raw.md` accumulates phase-1 entries
+until consolidation consumes them, `detail.md` is the append-only cold evidence log
 (read as a tail window, trimmed to a hard byte cap, and losing only what a forget released),
-and ``tone.md`` is the short always-read note of how the user wants the bot to sound.
+and `tone.md` is the short always-read note of how the user wants the bot to sound.
 
 IO is synchronous, which one fact per file would otherwise make untenable on the reply
-path: ``read_memory_document`` is cached under a per-scope generation counter that
+path: `read_memory_document` is cached under a per-scope generation counter that
 every fact write bumps, so a repeat read costs no syscalls at all. The counter is exact
 because every write in this process goes through here; editing the tree from outside
 while the bot runs is not supported.
@@ -87,33 +87,57 @@ _render_cache: dict[tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[int, s
 
 
 def user_scope(user_id: int) -> str:
-    """Returns the storage scope for one user's memory."""
+    """Returns the storage scope for one user's memory.
+
+    Args:
+        user_id (int): Discord user id.
+    """
     return str(user_id)
 
 
 def server_scope(server_id: int) -> str:
-    """Returns the storage scope for the bot's memory of one server."""
+    """Returns the storage scope for the bot's memory of one server.
+
+    Args:
+        server_id (int): Discord guild id.
+    """
     return f"{BOT_MEMORY_DIR_NAME}/{server_id}"
 
 
 def guild_compartment(guild_id: int) -> str:
-    """Returns the compartment holding facts readable only inside one guild."""
+    """Returns the compartment holding facts readable only inside one guild.
+
+    Args:
+        guild_id (int): Discord guild id.
+    """
     return f"{_GUILD_DIR_NAME}/{guild_id}"
 
 
 def compartment_guild_id(compartment: str) -> int | None:
-    """Returns the guild a `guild_compartment` is readable in, or None for any other shape."""
+    """Returns the guild id a `guild_compartment` is readable in, or None for any other shape.
+
+    Args:
+        compartment (str): Compartment name.
+    """
     parent, _, guild_id = compartment.partition("/")
     return int(guild_id) if parent == _GUILD_DIR_NAME and guild_id.isdecimal() else None
 
 
 def scope_owner_id(scope: str) -> int:
-    """Returns the Discord id a scope belongs to (a user id, or a server id)."""
+    """Returns the Discord user or guild id `scope` belongs to.
+
+    Args:
+        scope (str): Memory scope key.
+    """
     return int(scope.rsplit("/", maxsplit=1)[-1])
 
 
 def flavor_of(scope: str) -> MemoryFlavor:
-    """Maps a scope to its memory flavor (`server_scope` carries a '/')."""
+    """Returns the memory flavor of `scope` (`'server'` when it contains `'/'`, else `'user'`).
+
+    Args:
+        scope (str): Memory scope key.
+    """
     return "server" if "/" in scope else "user"
 
 
@@ -130,11 +154,12 @@ def _scope_dir(scope: str) -> Path:
 def compartment_dir(scope: str, compartment: str) -> Path:
     """Returns the directory holding one compartment's fact files.
 
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment name (`'global'`, `'dm'`, or `'g/<guild_id>'`).
+
     Raises:
-        ValueError: The compartment is not one of the three known shapes. Callers build
-            compartments from ints, so this only fires on a programming error — but it
-            is the single chokepoint between a compartment string and a filesystem
-            path, so it refuses rather than joining whatever it was handed.
+        ValueError: `compartment` does not match `_COMPARTMENT_RE`.
     """
     if not _COMPARTMENT_RE.match(compartment):
         raise ValueError(f"invalid memory compartment: {compartment!r}")
@@ -142,11 +167,13 @@ def compartment_dir(scope: str, compartment: str) -> Path:
 
 
 def list_compartments(scope: str) -> list[str]:
-    """Returns every compartment that exists on disk for a scope, in a stable order.
+    """Returns every compartment that exists on disk for `scope`, in a stable order.
 
-    Ordered `global`, ascending guild id, then `dm` — deterministic rather than
-    `iterdir` order, so the assembled document (and therefore the prompt prefix) does
-    not reshuffle between reads of an unchanged scope.
+    Ordered `global`, ascending guild id, then `dm` so the assembled document does not
+    reshuffle between reads of an unchanged scope.
+
+    Args:
+        scope (str): Memory scope key.
     """
     scope_dir = _scope_dir(scope=scope)
     found: list[str] = []
@@ -282,17 +309,30 @@ def _fact_paths(directory: Path) -> list[Path]:
 
 
 def scope_lock(scope: str) -> asyncio.Lock:
-    """Returns the per-scope lock that serializes memory file writes."""
+    """Returns the per-scope lock that serializes memory file writes.
+
+    Args:
+        scope (str): Memory scope key.
+    """
     return _scope_locks.setdefault(key=scope, default=asyncio.Lock())
 
 
 def mark_cleared(scope: str) -> None:
-    """Records a manual memory clear so older in-flight updates abort their writes."""
+    """Records a manual memory clear so older in-flight updates abort their writes.
+
+    Args:
+        scope (str): Memory scope key being cleared.
+    """
     _cleared_at[scope] = time.monotonic()
 
 
 def cleared_since(scope: str, started_at: float) -> bool:
-    """Whether the scope's memory was cleared at or after `started_at` (time.monotonic)."""
+    """Returns whether `scope`'s memory was cleared at or after `started_at`.
+
+    Args:
+        scope (str): Memory scope key.
+        started_at (float): `time.monotonic()` timestamp to compare against.
+    """
     cleared = _cleared_at.get(scope)
     return cleared is not None and cleared >= started_at
 
@@ -303,11 +343,11 @@ def _bump_generation(scope: str) -> None:
 
 
 def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
-    """Returns one compartment's parseable facts; unreadable files are skipped.
+    """Returns one compartment's parseable facts, skipping unreadable files.
 
-    A file can vanish between the listing and the read (a concurrent delete, an offline
-    edit), and a malformed one is reported by `parse_fact_file`; either way the rest of
-    the compartment still reaches the reply.
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment name to read.
     """
     facts: list[MemoryFact] = []
     for path in _fact_paths(directory=compartment_dir(scope=scope, compartment=compartment)):
@@ -340,16 +380,17 @@ def read_memory_document(
     flavor: MemoryFlavor,
     max_chars: int = MEMORY_INJECTION_MAX_CHARS,
 ) -> str:
-    """Returns the injectable document for one scope read through `compartments`.
+    """Returns the injectable document for `scope` merged across `compartments`.
 
-    This is the read path's single entry point. Facts from every requested compartment are
-    merged and rendered as one document, competing for the size cap by recency inside each
-    section rather than by which compartment they came from, so a large shared tier cannot
-    silently starve a guild's own memory.
+    Facts from every requested compartment compete for `max_chars` by recency inside each
+    section rather than by compartment, and the rendered result is cached on `scope`'s write
+    generation.
 
-    Cached on the scope's write generation: a repeat read of an unchanged scope returns
-    without touching the filesystem, which is what keeps the reply path's repeated lookups
-    affordable when one fact is one file and the IO is synchronous.
+    Args:
+        scope (str): Memory scope key.
+        compartments (list[str]): Compartments readable in the current context.
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+        max_chars (int): Character budget before truncation.
     """
     key = (scope, tuple(compartments), flavor, max_chars)
     cached = _render_cache.get(key)
@@ -372,7 +413,12 @@ def read_memory_document(
 
 
 def write_fact(scope: str, fact: MemoryFact) -> None:
-    """Atomically writes one fact file into its compartment."""
+    """Atomically writes `fact` into its compartment directory and bumps the generation.
+
+    Args:
+        scope (str): Memory scope key.
+        fact (MemoryFact): Fact to write.
+    """
     directory = compartment_dir(scope=scope, compartment=fact.compartment)
     directory.mkdir(parents=True, exist_ok=True)
     _replace_file(path=directory / f"{fact.fact_id}.md", text=render_fact_file(fact=fact))
@@ -380,7 +426,16 @@ def write_fact(scope: str, fact: MemoryFact) -> None:
 
 
 def delete_fact(scope: str, compartment: str, fact_id: str) -> bool:
-    """Deletes one fact file, returning whether it existed."""
+    """Deletes one fact file and bumps the scope's generation when it existed.
+
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment containing the fact.
+        fact_id (str): Fact id (filename stem) to delete.
+
+    Returns:
+        True when the fact file existed and was unlinked.
+    """
     path = compartment_dir(scope=scope, compartment=compartment) / f"{fact_id}.md"
     try:
         path.unlink()
@@ -393,7 +448,7 @@ def delete_fact(scope: str, compartment: str, fact_id: str) -> bool:
 def _is_store_file(path: Path) -> bool:
     r"""Whether one entry of a compartment directory is a file the store itself wrote.
 
-    Matched by NAME — `<fact id>.md`, or the `.md.tmp` a crash between `write_fact`'s tmp
+    Matched by name — `<fact id>.md`, or the `.md.tmp` a crash between `write_fact`'s tmp
     write and its `os.replace` can strand. Every name the store mints is a `mint_fact_id`
     digest, so a `notes.md` an operator dropped in beside the facts fails the test and a
     prune cannot take it. `fullmatch`, not `match`: `$` also matches before a trailing
@@ -404,17 +459,14 @@ def _is_store_file(path: Path) -> bool:
 
 
 def unaccounted_files(scope: str, compartment: str) -> list[str]:
-    """Returns the names in a compartment directory that the store never wrote.
+    """Returns the entry names in `compartment` that the store itself never wrote.
 
-    Anything not named the way the store names a fact file arrived from outside — a
-    hand-dropped note, a backup copy, an editor's swap file — and `_fact_paths` globs
-    `*.md`, so no code path can see most of them today. That is what lets a rebuild
-    report a compartment replaced while such a file sits in it.
+    A rebuild replaces only files matching `_is_store_file` and leaves foreign entries in
+    place (`delete_memory_files` removes every `.md` on a clear instead).
 
-    Nothing here removes them, because a rebuild REPLACES a compartment and may only
-    take what the store itself put there; naming them is what makes the difference
-    visible instead of assumed. `delete_memory_files` is the opposite contract and takes
-    every `.md` in the tree, this one included.
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment name to inspect.
     """
     try:
         # Materialized inside the guard: `iterdir` is a generator, so a missing
@@ -439,28 +491,20 @@ class PrunedCompartment(BaseModel):
 
 
 def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCompartment:
-    """Reduces a compartment to `keep`, reporting what it left and what it destroyed unread.
+    """Reduces `compartment` to the fact ids in `keep` and removes empty directories.
 
-    The rebuild's replace pass runs through here rather than over the facts it read
-    back. `read_facts` skips a file `parse_fact_file` rejects — a hand edit, an
-    interrupted write, a stored `compartment` disagreeing with the directory holding it
-    — so a snapshot taken there leaves exactly those files standing through a rebuild
-    that reports the compartment replaced. Working off the listing makes "replaced" mean
-    the directory instead of its readable part, which is the only reading that survives
-    a path that already drops perfectly good facts by not re-emitting them.
+    Walks the directory listing rather than `read_facts` so unreadable `.md` fact files and
+    stranded `.md.tmp` files are removed alongside unkept facts, while foreign entries stay
+    untouched and are reported in `unaccounted`.
 
-    The `.md.tmp` leftovers go with them: they are the store's own, and nothing in THIS
-    process can be mid-write, since every writer holds the same scope lock. An out-of-process
-    writer is not covered, which is why the offline rebuild requires a stopped bot. An emptied
-    directory is then removed, so a compartment a rebuild emptied stops being one
-    `list_compartments` reports, and stops costing a consolidation call on every later
-    rebuild.
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment name to prune.
+        keep (set[str]): Fact ids to retain.
 
-    Which of them no reader could parse is answered by reading the compartment back HERE
-    rather than by the caller before it applied its batch: a rebuild that re-emits the
-    same summary mints the same id and OVERWRITES the broken file, which is a fact
-    regenerated and not a fact destroyed. A stranded `.md.tmp` is not counted either —
-    `_fact_paths` globs `*.md`, so no reader ever saw one to lose.
+    Returns:
+        The `PrunedCompartment` listing unaccounted entries left behind and unreadable fact
+        files removed.
     """
     directory = compartment_dir(scope=scope, compartment=compartment)
     removed = False
@@ -496,11 +540,10 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCom
 
 
 def read_owner(scope: str) -> MemoryOwner:
-    """Recovers the stored owner identity from any one of the scope's facts.
+    """Returns the stored `MemoryOwner` recovered from `scope`'s facts, or a fallback from its id.
 
-    Offline regeneration has no Discord context to rebuild the identity from, so it
-    preserves what the last online write stamped. A scope with no facts yet falls back
-    to the id in the scope key and an empty name, which the next online write replaces.
+    Args:
+        scope (str): Memory scope key.
     """
     owner_id = scope_owner_id(scope=scope)
     for compartment in list_compartments(scope=scope):
@@ -511,23 +554,20 @@ def read_owner(scope: str) -> MemoryOwner:
 
 
 def read_tone(scope: str) -> str:
-    """Returns the per-user tone-preference note, or "" when there is none.
+    """Returns the per-user tone-preference note for `scope`, or `""` when absent.
 
-    Read on every reply for the message author and injected as a low-authority
-    context block, so it is a plain short markdown note with no header to strip. It is
-    the one tier outside the compartment tree.
+    Args:
+        scope (str): Memory scope key.
     """
     return _read_text(path=_tone_path(scope=scope)).strip()
 
 
 def write_tone(scope: str, content: str) -> None:
-    """Atomically replaces the per-user tone-preference note.
+    """Atomically replaces `scope`'s tone-preference note, clamped to `TONE_FILE_MAX_BYTES`.
 
-    Shortness is enforced by the consolidation prompt, not a compaction pass; the
-    `TONE_FILE_MAX_BYTES` clamp is only a store-level backstop so a misbehaving
-    rewrite cannot grow the always-injected note unbounded. There is no backup
-    generation: the note is best-effort and the next consolidation repairs a bad
-    write.
+    Args:
+        scope (str): Memory scope key.
+        content (str): Full markdown tone note to write.
     """
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
     rendered = content.strip()
@@ -538,12 +578,12 @@ def write_tone(scope: str, content: str) -> None:
 
 
 def append_raw_entry(scope: str, entry_text: str) -> None:
-    """Appends one timestamped raw entry, archiving the oldest entries on overflow.
+    """Appends one timestamped raw entry to `scope`, archiving oldest entries on overflow.
 
-    Headers carry only the timestamp. Author identity must stay confined to the fact
-    files (raw entries flow verbatim into the detail file); an observation body may
-    carry the code-stamped conversation source (`- source: guild <id>` / `dm`) — that is
-    provenance of where a conversation happened, not identity.
+    Args:
+        scope (str): Memory scope key.
+        entry_text (str): Rendered observation or forget-request body (without timestamp
+            header).
     """
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
     entry = stamp_entry(body=entry_text)
@@ -568,13 +608,13 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
 
 
 def append_detail(scope: str, text: str) -> None:
-    """Appends consumed or evicted raw evidence to the cold-tier detail file.
+    """Appends consumed or evicted raw evidence to `scope`'s cold-tier detail file.
 
-    The detail file preserves raw entry content verbatim; owner identity stays confined
-    to the fact files. Append-mode IO keeps the common write O(1) in the file size; once
-    the file outgrows `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed away, which
-    is safe because content past the consolidation read window is unreachable by every
-    consumer anyway.
+    Trims the oldest entries once the file exceeds `DETAIL_FILE_MAX_BYTES`.
+
+    Args:
+        scope (str): Memory scope key.
+        text (str): Timestamped entry blocks to append.
     """
     block = text.strip()
     if not block:
@@ -613,12 +653,11 @@ def _trim_detail(path: Path) -> None:
 
 
 def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
-    """Passes `raw.md` and `detail.md` through `edit`, atomically replacing each one it changed.
+    """Passes `raw.md` and `detail.md` through `edit`, atomically replacing each file it changes.
 
-    The one change to either file besides an append, an eviction or the oldest-first trim: a
-    forget taking out the evidence of what it removed, the facts it deleted or the tone
-    observations it named (`deltas.drop_released_evidence` has why). A file `edit` hands back
-    unchanged is not rewritten.
+    Args:
+        scope (str): Memory scope key.
+        edit (Callable[[str], str]): Pure transformation over raw or detail file text.
     """
     for path in (_raw_path(scope=scope), _detail_path(scope=scope)):
         text = _read_text(path=path)
@@ -629,17 +668,15 @@ def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
 
 
 def read_detail_tail(scope: str, max_chars: int) -> str:
-    """Returns the newest detail-file window, aligned to a raw-entry header.
+    """Returns the newest `detail.md` window of at most `max_chars`, aligned to an entry header.
 
-    Only a bounded byte window is read from the end of the file so the call stays
-    O(window) however far the detail file has grown.
-    The window is aligned to the first raw-entry header inside the tail so a partial
-    entry never leads the result; when no header lands inside the window (e.g. one
-    giant entry) the raw tail is returned as a best effort.
+    Args:
+        scope (str): Memory scope key.
+        max_chars (int): Maximum characters to return from the tail of `detail.md`.
 
-    Raises `UnicodeDecodeError` on any byte the window cut cannot explain, as every other
-    evidence read does, so a file that is not UTF-8 fails its scope instead of being read
-    back as garbled evidence.
+    Raises:
+        UnicodeDecodeError: `detail.md` contains invalid UTF-8 bytes after the continuation
+            byte skip.
     """
     try:
         with _detail_path(scope=scope).open(mode="rb") as handle:
@@ -666,10 +703,10 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
 
 
 def read_evidence(scope: str) -> str:
-    """Returns the scope's evidence corpus, oldest first: the detail tail, then `raw.md`.
+    """Returns `scope`'s evidence corpus oldest first (`detail.md` tail followed by `raw.md`).
 
-    Detail entries are retired raw entries verbatim, under the same `## <ISO timestamp>`
-    headers, so the corpus reads as one raw batch. Empty when neither file holds anything.
+    Args:
+        scope (str): Memory scope key.
     """
     parts = (
         read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
@@ -679,55 +716,68 @@ def read_evidence(scope: str) -> str:
 
 
 def count_raw_entries(scope: str) -> int:
-    """Returns how many raw entries are waiting for consolidation."""
+    """Returns how many raw entries are waiting for consolidation in `scope`.
+
+    Args:
+        scope (str): Memory scope key.
+    """
     return len(split_raw_entries(text=_read_text(path=_raw_path(scope=scope))))
 
 
 def raw_file_bytes(scope: str) -> int:
-    """Returns the raw file size in bytes, with a missing file counting as zero."""
+    """Returns `scope`'s `raw.md` size in bytes, or `0` when missing.
+
+    Args:
+        scope (str): Memory scope key.
+    """
     return len(_read_text(path=_raw_path(scope=scope)).encode("utf-8"))
 
 
 def detail_file_bytes(scope: str) -> int:
-    """Returns the cold-tier detail file size in bytes, missing file counting as zero.
+    """Returns `scope`'s `detail.md` size in bytes via `stat`, or `0` when missing.
 
-    Uses ``stat`` rather than reading the whole file so an evidence-presence
-    check stays O(1) on a large detail file.
+    Args:
+        scope (str): Memory scope key.
     """
     path = _detail_path(scope=scope)
     return path.stat().st_size if path.is_file() else 0
 
 
 def read_raw_entries(scope: str) -> str:
-    """Returns the raw file text for consolidation input."""
+    """Returns `scope`'s `raw.md` text for consolidation input.
+
+    Args:
+        scope (str): Memory scope key.
+    """
     return _read_text(path=_raw_path(scope=scope)).strip()
 
 
 def clear_raw(scope: str) -> None:
-    """Deletes the raw file after a consolidation consumed it."""
+    """Deletes `scope`'s `raw.md` after consolidation consumed it.
+
+    Args:
+        scope (str): Memory scope key.
+    """
     _raw_path(scope=scope).unlink(missing_ok=True)
 
 
 def clear_tone(scope: str) -> None:
-    """Deletes the tone note.
+    """Deletes `scope`'s tone note after a full rebuild found no tone signal or a forget emptied it.
 
-    Only for a rebuild that read the whole evidence corpus and found no tone signal, or a
-    forget that took the note's last line: an incremental consolidation's empty tone output
-    merely means "no tone signal in this batch" and must never remove the note.
+    Args:
+        scope (str): Memory scope key.
     """
     _tone_path(scope=scope).unlink(missing_ok=True)
 
 
 def delete_memory_files(scope: str) -> bool:
-    """Deletes the scope's memory files without moving its clear boundary.
+    """Deletes `scope`'s memory files without moving its clear boundary.
 
-    Walks the compartment tree as well as the three single-file tiers, taking every
-    `.md` it finds — a foreign one included, because a clear is a wipe its owner asked
-    for and sparing a file that might carry their memory would be the wrong answer here
-    (`unaccounted_files` is the opposite contract) — plus the `.md.tmp` leftovers a crash
-    between a tmp write and its `os.replace` can strand. Anything with another suffix is
-    left alone. Empty directories are then removed bottom-up; a non-empty or missing one
-    is left for offline maintenance instead of failing the clear.
+    Removes `raw.md`, `detail.md`, `tone.md`, every `.md` and `.md.tmp` in the compartment
+    tree, and any empty directories left behind.
+
+    Args:
+        scope (str): Memory scope key.
 
     Returns:
         True when at least one memory file existed and was removed.

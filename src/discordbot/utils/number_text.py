@@ -6,7 +6,12 @@ _COMPACT_UNITS = ((1_0000_0000_0000, "兆"), (1_0000_0000, "億"), (1_0000, "萬
 
 
 def compact_amount(amount: int, signed: bool = False) -> str:
-    """Formats a large amount with Traditional Chinese scale units."""
+    """Returns `amount` formatted with Traditional Chinese scale units (`萬`, `億`, `兆`).
+
+    Args:
+        amount (int): Integer amount to format.
+        signed (bool): Whether to prefix positive amounts with `+`.
+    """
     abs_amount = abs(amount)
     sign = _number_sign(number=amount, signed=signed)
     for unit_index, (threshold, suffix) in enumerate(_COMPACT_UNITS):
@@ -24,7 +29,12 @@ def compact_amount(amount: int, signed: bool = False) -> str:
 
 
 def grouped_amount(amount: int, signed: bool = False) -> str:
-    """Formats an amount with comma grouping, with a leading `+` on a signed positive one."""
+    """Returns `amount` formatted with comma grouping, with a leading `+` when `signed` and positive.
+
+    Args:
+        amount (int): Integer amount to format.
+        signed (bool): Whether to prefix positive amounts with `+`.
+    """
     return f"{amount:+,}" if signed and amount != 0 else f"{amount:,}"
 
 

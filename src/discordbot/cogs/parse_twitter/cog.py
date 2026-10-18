@@ -153,6 +153,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the TwitterCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(TwitterCogs(bot), override=True)

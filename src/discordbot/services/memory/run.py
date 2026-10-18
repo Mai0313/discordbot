@@ -36,16 +36,20 @@ class ConsolidationRun(BaseModel):
 
     @property
     def flavor(self) -> MemoryFlavor:
-        """The scope's flavor, derived so it cannot disagree with `scope`."""
+        """Returns the scope's flavor, derived so it cannot disagree with `scope`."""
         return flavor_of(scope=self.scope)
 
 
 def start_run(
     scope: str, writer: MemoryWriterAI, identity: str, started_at: float
 ) -> ConsolidationRun:
-    """Builds a run's context from the identity line the pipeline threads around.
+    """Returns a `ConsolidationRun` built from `scope` and the rendered `identity` line.
 
-    A line that does not parse keeps the id the scope key carries (`parse_identity`).
+    Args:
+        scope (str): Memory scope the run writes into.
+        writer (MemoryWriterAI): Memory writing service running the run's LLM calls.
+        identity (str): Rendered owner identity line (`parse_identity`).
+        started_at (float): `time.monotonic()` timestamp for `cleared_since` checks.
     """
     return ConsolidationRun(
         scope=scope,

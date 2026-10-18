@@ -23,11 +23,7 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
 
 
 def _inline_expiry() -> datetime:
-    """Cache validity for a self-contained inlined part.
-
-    Inlined bytes never expire, but the cache key cannot see a Discord CDN re-host of the
-    same source, so the render is refreshed periodically as a cheap safety net.
-    """
+    """Returns the 12-hour cache expiry for an inlined attachment part."""
     return datetime.now(tz=UTC) + timedelta(hours=12)
 
 
@@ -52,12 +48,15 @@ class InlineRenderer(AttachmentRenderer):
     _unreadable: OrderedDict[int | str, None] = PrivateAttr(default_factory=OrderedDict)
 
     def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
-        """Refuses a font, an Android package or an oversized file unfetched, or an unreadable one.
+        """Returns whether `content_type`, `size`, and `cache_key` are eligible for inline rendering.
 
-        Those types name binary formats no UTF-8 decode can carry; any other type may hold text,
-        so only reading it decides. The size bound covers an image too, by its posted size: the
-        downscale may shrink a still, but a GIF, an animated image or one already in bounds
-        inlines at exactly that size, and telling them apart takes the download this avoids.
+        Refuses fonts, Android packages, files exceeding `MAX_INLINE_ATTACHMENT_BYTES`, and files
+        previously recorded in `_unreadable`.
+
+        Args:
+            content_type (str): Resolved lowercase MIME type of the source.
+            cache_key (int | str): Per-source identifier checked against `_unreadable`.
+            size (int | None): Byte size reported by Discord, or `None` when unknown.
         """
         if content_type.startswith("font/") or (
             content_type == "application/vnd.android.package-archive"
@@ -73,6 +72,13 @@ class InlineRenderer(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
+        """Returns `source` downscaled and inlined as a base64 `input_image` part, or `None`.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to inline.
+            cache_key (int | str): Per-source identifier for logging.
+            allow_dead_cache (bool): Ignored; inline renders do not use the dead-source cache.
+        """
         loaded = await self._load_source_bytes(
             cache_key=cache_key,
             filename=resolve_source_filename(source=source, url_fallback="image.png"),
@@ -91,6 +97,13 @@ class InlineRenderer(AttachmentRenderer):
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
+        """Returns `attachment` inlined as a PDF `input_file` or UTF-8 `input_text` part, or `None`.
+
+        Args:
+            attachment (Attachment): Discord file attachment to inline.
+            cache_key (int | str): Per-source identifier recorded in `_unreadable` if non-UTF-8.
+            allow_dead_cache (bool): Ignored; inline renders do not use the dead-source cache.
+        """
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -126,13 +139,7 @@ class InlineRenderer(AttachmentRenderer):
     def _inline_file_part(
         self, filename: str, data: bytes, mime_type: str, cache_key: int | str
     ) -> RenderedAttachment | None:
-        """Inlines a non-image file, or drops it.
-
-        PDFs inline as base64 `input_file` (the one document type OpenAI / Anthropic accept
-        inline); UTF-8-decodable files inline as `input_text` with a filename header; anything
-        else (non-text binaries the Gemini Files path would have uploaded) is dropped, and
-        remembered so `carries` refuses it from then on.
-        """
+        """Returns `data` as a base64 PDF `input_file` or UTF-8 `input_text` part, recording unreadable files."""
         if mime_type == "application/pdf":
             pdf_part = ResponseInputFileParam(
                 type="input_file",

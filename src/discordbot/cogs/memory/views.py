@@ -26,11 +26,14 @@ MEMORY_CLEAR_TITLE = "🧠 清除記憶"
 
 
 def compartment_label(compartment: str, bot: commands.Bot) -> str:
-    """Names a memory compartment for the owner's own `/memory show`.
+    """Returns the Traditional Chinese heading label for `compartment` in `/memory show`.
 
-    The guild name is resolved when the bot still shares that server, and falls back to
-    the id when it does not — a user can have memory from a server the bot has since
-    left, and hiding that would misrepresent what is stored.
+    Resolves the guild name when `bot` is still in that guild and falls back to the guild id
+    otherwise.
+
+    Args:
+        compartment (str): Compartment name (`'global'`, `'dm'`, or `'g/<guild_id>'`).
+        bot (commands.Bot): Discord bot instance used to resolve guild names.
     """
     if compartment == GLOBAL_COMPARTMENT:
         return "全部聊天都看得到"
@@ -48,14 +51,16 @@ MEMORY_PAGE_MAX_CHARS = 4_000
 
 
 def paginate_on_lines(text: str, limit: int) -> list[str]:
-    """Splits text into pages at line boundaries, never tearing a line.
+    """Returns `text` split into pages of at most `limit` characters at line boundaries.
 
-    A single line longer than the limit is hard-split as a fallback so every
-    page honors the limit.
+    Lines longer than `limit` are hard-split so every page fits within `limit`.
+
+    Args:
+        text (str): Text to paginate.
+        limit (int): Maximum characters per page.
 
     Raises:
-        ValueError: The limit is not positive (the hard-split fallback would
-            otherwise never shrink an oversized line).
+        ValueError: `limit` is not positive.
     """
     if limit <= 0:
         raise ValueError(f"limit must be positive, got {limit}")
@@ -81,7 +86,11 @@ def paginate_on_lines(text: str, limit: int) -> list[str]:
 
 
 def memory_footer_text(pending_count: int) -> str:
-    """Returns the footer line describing pending background observations."""
+    """Returns the footer line describing pending background observations.
+
+    Args:
+        pending_count (int): Number of raw entries awaiting consolidation.
+    """
     if pending_count:
         return f"另有 {pending_count} 筆新觀察待整理，會在背景慢慢併入"
     return "記憶會在你與我對話後於背景慢慢更新"
@@ -90,7 +99,15 @@ def memory_footer_text(pending_count: int) -> str:
 def build_memory_embed(
     page_text: str, page_index: int, page_count: int, footer_text: str, title: str
 ) -> Embed:
-    """Builds one memory embed page with the shared footer."""
+    """Returns one memory embed page with its page indicator and shared footer.
+
+    Args:
+        page_text (str): Page body markdown.
+        page_index (int): Zero-based index of the page.
+        page_count (int): Total number of pages.
+        footer_text (str): Shared footer text.
+        title (str): Embed title.
+    """
     embed = Embed(title=title, description=page_text, color=MEMORY_EMBED_COLOR)
     footer = footer_text
     if page_count > 1:
@@ -100,11 +117,10 @@ def build_memory_embed(
 
 
 def build_clear_confirm_embed() -> Embed:
-    """Builds the warning shown above the clear confirmation buttons.
+    """Returns the warning embed shown above the clear confirmation buttons.
 
-    Names every tier that goes, since the user only ever saw the consolidated
-    half through `/memory show` and would not otherwise know the observation
-    log and the tone note are part of the wipe.
+    Names every tier that goes, since `/memory show` displays only the consolidated tier and
+    the tone note.
     """
     return Embed(
         title=MEMORY_CLEAR_TITLE,
@@ -119,7 +135,11 @@ def build_clear_confirm_embed() -> Embed:
 
 
 def build_clear_result_embed(removed: bool) -> Embed:
-    """Builds the outcome embed for a completed clear."""
+    """Returns the outcome embed for a completed personal-memory clear.
+
+    Args:
+        removed (bool): Whether any stored memory or job row was removed.
+    """
     if removed:
         return Embed(
             title=MEMORY_CLEAR_TITLE,
@@ -134,12 +154,10 @@ def build_clear_result_embed(removed: bool) -> Embed:
 
 
 def build_clear_failed_embed() -> Embed:
-    """Builds the outcome embed for a clear that could not complete.
+    """Returns the outcome embed for a clear that could not complete.
 
-    Deliberately does not promise the memory is untouched: only the reply.db half
-    is guaranteed to have changed nothing, while a filesystem error can land after
-    some tiers are already gone. Pointing at a retry is the honest advice, since
-    the clear is idempotent and a second run finishes whatever the first left.
+    Points at a retry rather than claiming the memory is untouched, since a filesystem error
+    can occur after some tiers are already removed and a retry is idempotent.
     """
     return Embed(
         title=MEMORY_CLEAR_TITLE,
@@ -149,7 +167,7 @@ def build_clear_failed_embed() -> Embed:
 
 
 def build_clear_cancelled_embed() -> Embed:
-    """Builds the outcome embed for a cancelled clear."""
+    """Returns the outcome embed for a cancelled clear."""
     return Embed(
         title=MEMORY_CLEAR_TITLE,
         description="已取消，沒有清掉任何東西。",
@@ -200,11 +218,15 @@ class MemoryClearConfirmView(_OriginBoundView):
     ever calls `clear_scope_memory`.
 
     Attributes:
-        scope: The memory scope erased once the clear is confirmed.
+        scope (str): The memory scope erased once the clear is confirmed.
     """
 
     def __init__(self, scope: str) -> None:
-        """Initializes the confirmation prompt for one scope's pending clear."""
+        """Initializes the confirmation prompt for one scope's pending clear.
+
+        Args:
+            scope (str): Memory scope erased once the clear is confirmed.
+        """
         super().__init__(timeout=MEMORY_VIEW_TIMEOUT_SECONDS)
         self.scope = scope
 
@@ -212,7 +234,12 @@ class MemoryClearConfirmView(_OriginBoundView):
     async def confirm_clear(
         self, _button: Button["MemoryClearConfirmView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Erases the scope's memory and replaces the prompt with the outcome."""
+        """Erases the scope's memory and replaces the prompt with the outcome.
+
+        Args:
+            _button (Button["MemoryClearConfirmView"]): Pressed confirm button.
+            interaction (Interaction[commands.Bot]): Discord button interaction.
+        """
         if self.is_finished():
             # A second click lands while the first press is still on its way to
             # removing the buttons. Re-running the clear is harmless (it is
@@ -251,7 +278,12 @@ class MemoryClearConfirmView(_OriginBoundView):
     async def cancel_clear(
         self, _button: Button["MemoryClearConfirmView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Dismisses the prompt without touching any memory."""
+        """Dismisses the prompt without touching any memory.
+
+        Args:
+            _button (Button["MemoryClearConfirmView"]): Pressed cancel button.
+            interaction (Interaction[commands.Bot]): Discord button interaction.
+        """
         self.stop()
         await interaction.response.edit_message(embed=build_clear_cancelled_embed(), view=None)
 
@@ -260,14 +292,20 @@ class MemoryPagesView(_OriginBoundView):
     """Ephemeral pagination view for an oversized memory embed, personal or per-server.
 
     Attributes:
-        pages: Pre-split page texts, each within one embed description.
-        footer_text: Footer line shared by every page.
-        title: Embed title shared by every page.
-        page_index: The currently displayed page.
+        pages (list[str]): Pre-split page texts, each within one embed description.
+        footer_text (str): Footer line shared by every page.
+        title (str): Embed title shared by every page.
+        page_index (int): Zero-based index of the currently displayed page.
     """
 
     def __init__(self, pages: list[str], footer_text: str, title: str) -> None:
-        """Initializes the view on the first page."""
+        """Initializes the view on the first page.
+
+        Args:
+            pages (list[str]): Pre-split page texts.
+            footer_text (str): Footer line shared by every page.
+            title (str): Embed title shared by every page.
+        """
         super().__init__(timeout=MEMORY_VIEW_TIMEOUT_SECONDS)
         self.pages = pages
         self.footer_text = footer_text
@@ -296,7 +334,12 @@ class MemoryPagesView(_OriginBoundView):
     async def previous_page(
         self, _button: Button["MemoryPagesView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Shows the previous page in place."""
+        """Shows the previous page in place.
+
+        Args:
+            _button (Button["MemoryPagesView"]): Pressed previous-page button.
+            interaction (Interaction[commands.Bot]): Discord button interaction.
+        """
         self.page_index = max(self.page_index - 1, 0)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
@@ -306,7 +349,12 @@ class MemoryPagesView(_OriginBoundView):
     async def next_page(
         self, _button: Button["MemoryPagesView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Shows the next page in place."""
+        """Shows the next page in place.
+
+        Args:
+            _button (Button["MemoryPagesView"]): Pressed next-page button.
+            interaction (Interaction[commands.Bot]): Discord button interaction.
+        """
         self.page_index = min(self.page_index + 1, len(self.pages) - 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)

@@ -19,7 +19,7 @@ class ModelSettings(BaseModel):
         description="LiteLLM model string dispatched on the Responses API.",
         examples=["gemini-3.8-flash", "gemini-3.1-flash-image"],
     )
-    # Which efforts a model accepts is per-model and NOT derivable from its name, its family, or
+    # Which efforts a model accepts is per-model and not derivable from its name, its family, or
     # a sibling snapshot. The vocabulary itself differs by provider, so a guess is not even wrong
     # in a consistent direction: Gemini has `minimal` and no `xhigh`, OpenAI has `xhigh` and on
     # some models `none`, Anthropic has `max`. Look the model up in openrouter's list
@@ -45,36 +45,22 @@ class ModelSettings(BaseModel):
 
     @property
     def reasoning(self) -> Reasoning:
-        """Responses API reasoning options for this model.
-
-        Returns:
-            Reasoning options using this model's configured effort and an
-            automatic reasoning summary.
-        """
+        """Returns Responses API reasoning options with this model's effort and auto summary."""
         return Reasoning(effort=self.effort, summary="auto")
 
     @property
     def is_gemini(self) -> bool:
-        """Whether this is a Gemini model, which is read off its name alone.
-
-        Returns:
-            True when the name contains `gemini`.
-        """
+        """Returns whether `name` identifies a Gemini model (`"gemini"` in `name`)."""
         return "gemini" in self.name
 
     @property
     def tools(self) -> list[ToolParam]:
-        """Built-in tool payloads for this model's provider.
+        """Returns the built-in search and URL-grounding tool payloads for this model's provider.
 
         Code execution is intentionally omitted: Gemini and Claude validate every
         uploaded file part against code execution's narrow MIME allowlist and 400 the
-        whole request on video / audio / GIF-as-video attachments, so it cannot coexist
-        with the attachment ingestion path. Search / url grounding have no such limit.
-
-        Returns:
-            Gemini models receive googleSearch and urlContext tools. Claude models
-            receive web_search and web_fetch tools. Grok models receive web_search and
-            x_search. Every other model receives the OpenAI web_search tool.
+        whole request on video, audio, or GIF-as-video attachments, so it cannot coexist
+        with attachment ingestion.
         """
         if self.is_gemini:
             return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
@@ -97,117 +83,84 @@ class RuntimeModelCatalog(BaseModel):
     @computed_field
     @property
     def is_peak(self) -> bool:
-        """Whether runtime model selection is in the peak-hour window.
+        """Returns whether the current UTC time is inside the weekday peak-hour window (08:00-17:00).
 
         No tier reads this today. Kept on purpose: peak-hour high-demand refusals come and go,
         and this is what a tier branches on when they return.
-
-        Returns:
-            True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
         """
         now = datetime.now(tz=UTC)
         return now.weekday() < 5 and 8 <= now.hour < 17
 
     @property
     def image_model(self) -> ModelSettings:
-        """The model settings for image generation and editing.
-
-        Returns:
-            Model settings used with `images.generate` and `images.edit`.
-        """
+        """Returns model settings for `images.generate` and `images.edit`."""
         return ModelSettings(name="gemini-nano-banana-2.1")
 
     @property
     def video_model(self) -> ModelSettings:
-        """The model settings for video generation.
+        """Returns model settings for video generation and source-video editing (`task="edit"`).
 
-        Returns:
-            Model settings used with the native Gemini Interactions API (`interactions.create`,
-            a bare model name with no provider prefix, since the call goes direct to Google not
-            via the proxy). omni unifies text/image/reference/edit video generation, so the same
-            model backs plain generation and true source-video editing (`task="edit"`).
+        Dispatched on the native Gemini Interactions API (`interactions.create`) direct to
+        Google with a bare model name and no provider prefix.
         """
         return ModelSettings(name="gemini-omni-1.1-flash")
 
     @property
     def music_model(self) -> ModelSettings:
-        """The model settings for music generation.
-
-        Returns:
-            Model settings used with the native Gemini (Lyria) Interactions API (a bare model
-            name, no provider prefix, since the call goes direct to Google not via the proxy).
-        """
+        """Returns model settings for music generation on the native Lyria Interactions API."""
         return ModelSettings(name="lyria-3.5")
 
     @property
     def tts_model(self) -> ModelSettings:
-        """The model settings for spoken-reply text-to-speech.
+        """Returns model settings for spoken-reply synthesis on the `audio.speech` endpoint.
 
-        Returns:
-            Model settings whose name is dispatched on the `audio.speech` endpoint. Only
-            the reply's `<generate-voice>` segments are synthesized, concatenated into one
-            clip; the rest of the reply is never spoken. `effort` is unused for TTS.
+        Only the reply's `<generate-voice>` segments are synthesized into one clip;
+        `effort` is unused for TTS.
         """
         return ModelSettings(name="gemini-3.8-flash-tts")
 
     @property
     def antigravity_model(self) -> ModelSettings:
-        """The deep-research agent: a one-shot Antigravity managed agent.
+        """Returns model settings for the deep-research Antigravity managed agent.
 
-        The only research tier there is.
-
-        Returns:
-            The Antigravity managed-agent string dispatched on the Gemini Interactions API
-            (direct, not the proxy). `effort` / `tools` are unused on the agent path: the
-            agent runs its own internal tool loop.
+        Dispatched directly on the Gemini Interactions API; `effort` and `tools` are unused
+        because the agent runs its own internal tool loop.
         """
         return ModelSettings(name="antigravity-preview-09-2026")
 
     @property
     def antigravity_reasoning_model(self) -> ModelSettings:
-        """The model the deep-research agent reasons with.
+        """Returns the reasoning model settings passed as `agent_config.model` for deep research.
 
-        Returns:
-            The model string sent as the agent's `agent_config.model`. It must be one the
-            Antigravity agent accepts (Google's Antigravity agent docs, "Model selection"), and
-            `effort` / `tools` are unused: the agent config carries neither.
+        Must name a model accepted by the Antigravity agent; `effort` and `tools` are unused.
         """
         return ModelSettings(name="gemini-3.8-flash")
 
     @property
     def triage_model(self) -> ModelSettings:
-        """The model settings for filling a shape the caller has already fixed.
+        """Returns model settings for filling a fixed-schema triage output.
 
-        Every call here lands in a slot with no room in it and decides nothing about what to
-        write, which is both the seam against `fast_model` and why `minimal` is enough.
-
-        Returns:
-            Settings whose effort is this snapshot's own default. Confirm any repointed name
-            still lists that effort before carrying it across (see `ModelSettings.effort`).
+        Confirm any repointed snapshot supports `minimal` before carrying it across (see
+        `ModelSettings.effort`).
         """
         return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
     @property
     def fast_model(self) -> ModelSettings:
-        """The model settings for prose the model composes itself, short of the answer.
-
-        A call here decides what to say rather than how briefly to say it, which is the
-        thinking `triage_model` does without. Nothing it produces is the deliverable, which is
-        what keeps this tier below `slow_model`.
-        """
+        """Returns model settings for intermediate prose generation short of the final answer."""
         return ModelSettings(name="gemini-3.8-flash", effort="medium")
 
     @property
     def slow_model(self) -> ModelSettings:
-        """The model settings for full text replies and strategic reasoning.
+        """Returns model settings for full text replies and strategic reasoning.
 
-        The NAME is read as well as dispatched — the attachment modality gate, the choice of
-        attachment renderer and every link source's media ingest all branch on it — so
-        repointing this tier changes what reaches the model, not just how well it reasons.
+        Callers read `name` directly for provider and modality checks as well as dispatching
+        it, so repointing this tier changes what reaches the model, not just how well it
+        reasons.
         """
         # Pinned to a snapshot, never a `*-latest` alias: this tier's effort is the route's grade,
         # which the YouTube answer turn hands to `interactions.create` as a `thinking_level`, and
-        # a level the model does not list loses the whole reply there (#459) and errors the
+        # a level the model does not list loses the whole reply there and errors the
         # streaming answer through the proxy. Before repointing, check the new snapshot's set
         # (see `ModelSettings.effort`) covers every value `RouteClassification.effort` emits.
         # `gemini-4-argon` accepts low / medium / high, not `minimal` (Google's thinking page,
@@ -221,16 +174,11 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def memory_writer_model(self) -> ModelSettings:
-        """The model settings for everything deciding what reaches long-term memory.
+        """Returns model settings for background long-term memory evaluation and consolidation.
 
-        Returns:
-            Model settings for the background memory write calls. The note evaluator and the
-            consolidator share one tier because both are gates on the same side: the evaluator
-            is the last LLM check before an observation is staged, authoring its fields,
-            tightening `sharing` and `durability` (downgrade-only), deduping by
-            `normalized_key` and stripping personal-attack wording, and the consolidator turns
-            that staging into the fact files plus the tone note. A weaker model on either loses
-            memory or leaks it, rather than just failing to record it.
+        The note evaluator and the consolidator share one tier because both gate what is
+        staged and written to fact files and the tone note; a weaker model on either risks
+        losing or leaking memory.
         """
         return ModelSettings(name="gemini-4-argon", effort="high")
 
@@ -278,7 +226,7 @@ class RouteClassification(BaseModel):
 
 # The route's schema on a turn that offers optional recall candidates. No docstring on purpose:
 # under `text_format=` a class docstring is sent as the schema's description, and this shape was
-# measured without one (#725).
+# measured without one.
 class RecallRouteClassification(RouteClassification):
     recall_user_ids: list[str] = Field(
         default_factory=list,

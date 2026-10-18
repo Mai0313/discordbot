@@ -2,7 +2,7 @@
 
 `gen_reply` answers a message only when it is a DM or explicitly mentions the bot. An expansion
 cog uses the same test in reverse: a message the reply pipeline will answer is left alone, so a
-link in ONE message is either expanded into the channel or answered about, never both. Keeping it
+link in one message is either expanded into the channel or answered about, never both. Keeping it
 to one is what the rule is for — reading a post is the slow half, and on the path the reply takes
 handing the model a URL instead saves nothing, since the proxy fetches it and inlines it.
 
@@ -25,30 +25,24 @@ from nextcord import Message, ClientUser
 
 
 def bot_mention_pattern(bot_id: int) -> re.Pattern[str]:
-    """The pattern matching a mention of this bot in raw content, in both `<@id>` and `<@!id>`.
+    """Returns the compiled pattern matching `<@id>` and `<@!id>` mentions of `bot_id`.
 
     Args:
-        bot_id: The bot's own user id.
-
-    Returns:
-        The compiled pattern.
+        bot_id (int): The bot's own user id.
     """
     return re.compile(pattern=rf"<@!?{re.escape(pattern=str(bot_id))}>")
 
 
 def has_bot_mention(content: str, bot_user: ClientUser | None) -> bool:
-    """Whether the message body explicitly mentions the bot.
+    """Returns whether `content` explicitly mentions `bot_user`.
 
     Matches `<@id>` / `<@!id>` in the raw content rather than reading `message.mentions`: a reply
     notification adds the bot to `mentions`, so replying to one of the bot's own functional posts
     (an expansion card, a downloaded video) would otherwise read as a mention.
 
     Args:
-        content: The raw message content.
-        bot_user: The bot's own user, or None before the gateway connects.
-
-    Returns:
-        True when the content mentions the bot.
+        content (str): The raw message content.
+        bot_user (ClientUser | None): The bot's own user, or None before the gateway connects.
     """
     if bot_user is None:
         return False
@@ -56,16 +50,13 @@ def has_bot_mention(content: str, bot_user: ClientUser | None) -> bool:
 
 
 def is_addressed_to_bot(message: Message, bot_user: ClientUser | None) -> bool:
-    """Whether the reply pipeline will treat this message as directed at the bot.
+    """Returns whether the reply pipeline will treat `message` as directed at `bot_user`.
 
     A DM needs no mention (every DM reaches `gen_reply`), so it counts as addressed.
 
     Args:
-        message: The incoming message.
-        bot_user: The bot's own user, or None before the gateway connects.
-
-    Returns:
-        True for a DM, or for a guild message that mentions the bot.
+        message (Message): The incoming message.
+        bot_user (ClientUser | None): The bot's own user, or None before the gateway connects.
     """
     if message.guild is None:
         return True

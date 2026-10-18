@@ -1,33 +1,17 @@
-"""Inline reply markers: the answer model self-selects spoken segments, images, music, video, and what to remember.
+"""Inline reply markers for spoken segments, media generation, research, and memory notes.
 
-The answer model wraps the parts of its reply it wants read aloud in `<generate-voice>...
-</generate-voice>`: only those segments are synthesized (concatenated into a single voice clip),
-but they STAY in the visible reply (only the tags are stripped). It may also wrap short
-descriptions in `<generate-image>...</generate-image>` to have images generated and attached, one
-`<generate-music>...</generate-music>` description to have a music clip generated and attached, or
-one `<generate-video>...</generate-video>` description to have a short video generated and
-attached, or one `<deep-research>...</deep-research>` brief to launch a research thread; each such
-block (tags AND content) is REMOVED from the visible reply so the generation prompt never leaks
-into chat. `ResponseStreamer` extracts them at finalize time via `extract_inline_markers` and
-scrubs partial/complete tags from the live preview via `scrub_markers_for_preview`, so none flickers
-mid-stream. The asymmetry is deliberate: voice content is meant to stay visible, image / music /
-video content are meant to be pulled.
+The answer model wraps segments to read aloud in `<generate-voice>...</generate-voice>`: only
+those segments are synthesized into a single voice clip, and their inner text stays visible in
+the reply with only the tags stripped. By contrast, `<generate-image>`, `<generate-music>`,
+`<generate-video>`, `<deep-research>`, `<write-memory>`, `<forget-memory>`, and
+`<write-server-memory>` blocks are pulled in full (tags and content) so generation prompts,
+research briefs, and memory notes never appear in chat. Marker bodies carry no target scope:
+whose memory or server a note writes to is determined by the caller from the turn's message.
 
-The memory tags (`<write-memory>`, `<forget-memory>`, `<write-server-memory>`) are pulled the same
-way and carry one plain sentence each: what to remember about the person being replied to, what
-they no longer want remembered, or what to remember about the community. They are the answer
-model's half of the memory write path. Nothing here decides WHOSE memory is written or which
-compartment it lands in: the scope comes from the message's author and guild in `answer.py`, so a
-marker body can never name one.
-
-The tags are deliberately hyphenated (`generate-*`, like `<deep-research>`) so none collides with a
-real single-word HTML / SVG / SSML element — `<video>` is HTML5, `<image>` is SVG, `<voice>` is
-SSML — which would otherwise let a reply that merely SHOWS such example markup be mistaken for a
-generation request and stripped from the reply.
-
-Every tag's three patterns (the complete block, the bare tag, the unclosed trailing open) are
-derived from its name by `_Marker`, and every marker is declared through `_declare`, so a pass
-that has to reach them all cannot be left behind when one is added.
+Tags are hyphenated (`generate-*`, `<deep-research>`) so they never collide with single-word
+HTML, SVG, or SSML elements such as `<video>`, `<image>`, or `<voice>` in example markup.
+Every marker is registered through `_declare` so extraction, preview scrubbing, and tag-name
+exports cover the same set.
 """
 
 import re
@@ -36,27 +20,19 @@ from functools import cached_property
 
 from pydantic import Field, BaseModel
 
-# Hard cap on inline images per reply: a voice clip plus 9 images exactly fills Discord's
-# 10-attachment ceiling. The prompt tells the model this limit; extraction enforces it by
-# dropping any extra blocks so a confused model never blows past the attachment cap. A reply
-# may also carry one music clip and one video clip (each single per reply by design), so a rare
-# voice + music + video + 9 images would be 12 attachments; `MediaDeliveryPlanner.plan`'s
-# attachment-count clamp is the backstop, dropping the trailing overflow.
+# Hard cap on inline images per reply: a voice clip plus 9 images fills Discord's 10-attachment
+# ceiling; `MediaDeliveryPlanner.plan` clamps the rare reply that also adds music or video.
 MAX_INLINE_IMAGES = 9
 
-# Hard cap on memory notes of one kind per reply. Unlike the image cap this is not a Discord
-# limit but a sanity bound: a turn worth remembering produces one or two notes, and a model that
-# emits twenty has misread the instruction rather than found twenty durable facts. Extra blocks
-# are dropped, and the evaluator downstream still decides whether any of the kept ones survive.
+# Sanity cap on memory notes of one kind per reply before downstream review.
 MAX_MEMORY_NOTES = 5
 
 
 class _Marker(BaseModel):
-    """One marker tag plus the three patterns every marker is read through.
+    """One marker tag and its compiled regex patterns.
 
-    The block pattern is non-greedy and DOTALL so a multi-line body is captured whole, and every
-    pattern is IGNORECASE because a stray-cased tag still has to be caught — a defusing or
-    extraction pass stricter than the model's own output is no pass at all.
+    Block matching is non-greedy across newlines, and all patterns are case-insensitive so
+    stray-cased model output is still caught.
     """
 
     name: str = Field(
@@ -85,18 +61,13 @@ class _Marker(BaseModel):
 
     @cached_property
     def trailing(self) -> re.Pattern[str]:
-        """An unclosed open tag and everything after it.
-
-        The whole block is going to be pulled, so it is hidden the moment it starts streaming in,
-        which also tolerates a model that never closes it.
-        """
+        """An unclosed opening tag and everything after it, hidden once it starts streaming."""
         return re.compile(rf"<{self.name}>.*\Z", re.IGNORECASE | re.DOTALL)
 
     def pull(self, text: str) -> tuple[list[str], str]:
-        """Removes this marker's blocks from `text`, returning their bodies and what is left.
+        """Removes this marker's blocks from `text`, returning non-empty bodies and the remaining text.
 
-        Bodies come back in the order the model wrote them, with an unclosed trailing open taken
-        as one last body so its raw description never leaks. Empty bodies are dropped.
+        An unclosed trailing open tag is treated as a final block so its raw body never leaks.
         """
         bodies = [body for match in self.block.finditer(text) if (body := match.group(1).strip())]
         cleaned = self.block.sub("", text)
@@ -112,7 +83,6 @@ class _Marker(BaseModel):
         return self.trailing.sub("", self.block.sub("", text))
 
 
-# Every marker this module knows, in the order declared.
 _MARKERS: Final[list[_Marker]] = []
 
 
@@ -132,7 +102,6 @@ _WRITE_MEMORY = _declare(name="write-memory")
 _FORGET_MEMORY = _declare(name="forget-memory")
 _WRITE_SERVER_MEMORY = _declare(name="write-server-memory")
 
-# Every tag name, for a pass that has to neutralise them all.
 MARKER_TAG_NAMES: Final[tuple[str, ...]] = tuple(marker.name for marker in _MARKERS)
 
 # Tag literals are the single source of truth shared by the prompt instructions and this parser.
@@ -153,11 +122,9 @@ FORGET_MEMORY_CLOSE = _FORGET_MEMORY.close
 WRITE_SERVER_MEMORY_OPEN = _WRITE_SERVER_MEMORY.open
 WRITE_SERVER_MEMORY_CLOSE = _WRITE_SERVER_MEMORY.close
 
-# Every marker whose block is PULLED from the reply, in extraction order. Voice is not here: its
-# content stays visible and only the tags come off, which is the one asymmetry in this module.
+# Markers whose entire block is removed from the reply; voice keeps its inner text visible.
 _PULLED = tuple(marker for marker in _MARKERS if marker is not _VOICE)
 
-# Every tag, for the half-streamed-tail trim in a live preview.
 _ALL_TAGS = tuple(
     literal for marker in (*_PULLED, _VOICE) for literal in (marker.open, marker.close)
 )
@@ -222,25 +189,24 @@ class InlineMarkers(BaseModel):
 
     @property
     def media_requested(self) -> bool:
-        """Whether the reply asked for any spoken clip, image, song or video."""
+        """Returns whether the reply asked for any spoken clip, image, song, or video."""
         return bool(
             self.voice_requested or self.image_prompts or self.music_prompt or self.video_prompt
         )
 
 
 def extract_inline_markers(text: str) -> InlineMarkers:
-    """Splits a finished reply into visible text plus its voice / image / music / video requests.
+    """Returns `text` split into visible reply text and extracted inline marker payloads.
 
-    Image blocks (tags AND content) are removed entirely so the generation prompt never shows in
-    chat; every non-empty one is counted, and up to `MAX_INLINE_IMAGES` become image requests, in
-    order. A `<generate-music>` and a `<generate-video>` block are pulled the same way, but only
-    the first non-empty one of each is kept (one clip per reply by design), as is the first
-    `<deep-research>` brief. Voice tags are stripped but their inner content STAYS in the visible
-    reply, and every wrapped segment is concatenated as the spoken-clip input. An unclosed
-    trailing open (the model forgot to close it) is still pulled so its raw description never
-    leaks, and any stray unpaired tag is scrubbed. The three memory tags are pulled like image
-    blocks, each keeping up to `MAX_MEMORY_NOTES` notes in the order they were written — which is
-    the order the evaluator downstream reads them in.
+    Pulled blocks (`<generate-image>`, `<generate-music>`, `<generate-video>`, `<deep-research>`,
+    and the memory tags) are removed completely, including unclosed trailing opens. Image prompts
+    are capped at `MAX_INLINE_IMAGES`, memory notes at `MAX_MEMORY_NOTES` per kind, and music,
+    video, and research keep only their first non-empty block. `<generate-voice>` tags are
+    stripped while leaving their inner text in place, and only complete voice blocks are
+    concatenated into `voice_text`. Stray unpaired tags are scrubbed.
+
+    Args:
+        text (str): Raw reply text from the answer model.
     """
     cleaned = text
     pulled: dict[str, list[str]] = {}
@@ -253,9 +219,7 @@ def extract_inline_markers(text: str) -> InlineMarkers:
     voice_segments = [
         segment for match in _VOICE.block.finditer(cleaned) if (segment := match.group(1).strip())
     ]
-    # Strip the voice tags but keep their inner content in the visible reply.
     cleaned = _VOICE.block.sub(r"\1", cleaned)
-    # Scrub any stray unpaired tags the model may have left behind.
     for marker in (*_PULLED, _VOICE):
         cleaned = marker.tag.sub("", cleaned)
     # Only tidy the gap a removed block leaves behind when marker processing actually changed
@@ -280,18 +244,14 @@ def extract_inline_markers(text: str) -> InlineMarkers:
 
 
 def scrub_markers_for_preview(text: str) -> str:
-    """Hides complete or still-streaming markers from a live preview snapshot.
+    """Returns `text` with complete, unclosed, or partially streamed markers hidden for preview.
 
-    Complete image / music / video / research / memory blocks and their unclosed trailing opens
-    are removed whole (the block is going to be pulled from the reply, so it must never flash
-    in). Complete voice tags are stripped but their content stays visible. A trailing fragment
-    that is a prefix of any marker tag (`<generate-imag`, `</generate-voic`, ...) is trimmed so a
-    half-streamed tag never flickers.
+    Pulled blocks and their unclosed trailing opens are removed in `_PULLED` order to match
+    `extract_inline_markers`, `<generate-voice>` tags are stripped while keeping their inner text,
+    and any trailing prefix of a known marker tag is trimmed.
 
-    This walks `_PULLED`, the same order extraction uses, which is what makes the preview agree
-    with the reply: a marker open nested inside another marker's complete block (malformed
-    output) is hidden here exactly when extraction drops it, so the preview never flashes text
-    the finished reply then loses.
+    Args:
+        text (str): Accumulated streaming reply text.
     """
     cleaned = text
     for marker in _PULLED:

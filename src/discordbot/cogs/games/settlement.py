@@ -67,7 +67,7 @@ def _insurance_settlement(
 async def settle_blackjack_player(
     round_state: BlackjackRound, player: BlackjackPlayerHand
 ) -> BlackjackPlayerSettlement:
-    """Settles every sub-hand plus insurance side bet for one participant.
+    """Returns the aggregated settlement for `player` after writing every sub-hand and insurance.
 
     The aggregate casino-paid delta (per-hand deltas plus insurance) takes the
     VIP bonus once at the player level, never per hand. Five-card 21 adds a
@@ -76,17 +76,11 @@ async def settle_blackjack_player(
     dealer-paid win and the one on the five-card 21 bonus — a max, not a sum.
 
     Bets are not deducted when a round starts, so an unfinished in-memory round
-    vanishes on bot restart without touching balances. The VIP flag is
-    permanent, so reading it outside the settlement transaction is safe: a
-    freshly-bought VIP that races a settlement only misses the bonus on that one
-    in-flight round.
+    vanishes on bot restart without touching balances.
 
     Args:
-        round_state: Round providing the dealer cards and peek state.
-        player: Player to settle; its participant names the account written.
-
-    Returns:
-        Aggregated settlement covering every sub-hand and any insurance bet.
+        round_state (BlackjackRound): Round providing the dealer cards and peek state.
+        player (BlackjackPlayerHand): Player to settle; its participant names the account written.
     """
     hand_settlements = [
         _hand_settlement_from_state(hand=hand, dealer=round_state.dealer) for hand in player.hands

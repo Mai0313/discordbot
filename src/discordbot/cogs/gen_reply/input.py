@@ -103,18 +103,24 @@ class MessageInputBuilder(BaseModel):
     ] = PrivateAttr(default_factory=OrderedDict)
 
     async def get_user_prompt(self, content: str) -> str:
-        """Removes bot mention syntax from image/video generation prompts."""
+        """Returns `content` with bot mention syntax removed and surrounding whitespace stripped.
+
+        Args:
+            content (str): Raw message text.
+        """
         if self.bot.user:
             content = bot_mention_pattern(bot_id=self.bot.user.id).sub(repl="", string=content)
         return content.strip()
 
     @staticmethod
     def extract_embed_text(embeds: list[Embed]) -> str:
-        """Joins author / title / link / description / fields / footer text from embeds.
+        """Returns author, title, link, description, fields, and footer text joined from `embeds`.
 
-        The embed's own `url` is included so the answer model actually sees a link card's
-        target (e.g. a forwarded link with no caption) and the URL detectors stay aligned with
-        the rendered text instead of reacting to a link the model was never shown.
+        Includes each embed's `url` so the answer model and URL detectors see the same link
+        target.
+
+        Args:
+            embeds (list[Embed]): Discord embeds to extract text from.
         """
         embed_parts: list[str] = []
         for embed in embeds:
@@ -137,17 +143,13 @@ class MessageInputBuilder(BaseModel):
 
     @staticmethod
     def snapshot_text(snapshot: MessageSnapshot) -> str:
-        """The rendered text of one forwarded snapshot: its content, or its embeds as a fallback.
+        """Returns the rendered text of `snapshot`: its content (minus usage footer) or embed text.
 
-        This is the single source of truth for what the answer is shown from a snapshot, so the
-        URL detectors scan exactly this (an embed is rendered only when content is empty, so a
-        captioned link card's embed-only URL is neither rendered nor scanned).
+        Strips `USAGE_FOOTER_RE` directly because a forwarded bot reply carries no `author` on
+        its snapshot.
 
-        A forward of the bot's own reply carries no `author`, so the usage-footer strip
-        `get_cleaned_content` applies to the bot's own messages cannot fire here; the same regex
-        is applied directly so a forwarded reply never re-injects the `-# ... ⬆ ... ⬇ ...` footer
-        the model would otherwise learn to mimic. The pattern is bot-footer-shaped, so it is a
-        no-op on forwarded user text.
+        Args:
+            snapshot (MessageSnapshot): Forwarded message snapshot to render.
         """
         content_present = bool(snapshot.content.strip())
         text = USAGE_FOOTER_RE.sub("", snapshot.content).strip()
@@ -156,14 +158,7 @@ class MessageInputBuilder(BaseModel):
         return text
 
     def _forwardedsnapshot_text(self, message: Message) -> str:
-        """Renders a forwarded message's snapshots, each tagged `[forwarded message]`.
-
-        A Discord forward leaves `content`/`embeds`/`attachments` empty and puts the original
-        payload in `message.snapshots`; the tag tells the model the span is forwarded so it does
-        not credit the forwarder with the words. Empty for a normal message (no snapshots); a
-        media-only forward still emits the bare tag since its attachment rides separately via
-        `collect_attachment_sources`.
-        """
+        """Renders `message.snapshots` with each snapshot prefixed by `[forwarded message]`."""
         blocks: list[str] = []
         for snapshot in message.snapshots:
             text = self.snapshot_text(snapshot=snapshot)
@@ -173,12 +168,10 @@ class MessageInputBuilder(BaseModel):
         return "\n".join(blocks)
 
     def forwarded_request_text(self, message: Message) -> str:
-        """Concatenated raw forwarded text (no `[forwarded message]` tag) across snapshots.
+        """Returns the concatenated raw forwarded text across `message.snapshots` without tags.
 
-        Merged into the media prompt by the caller (after the forwarder's own comment, when
-        there is one), so a forwarded "draw a cat" reaches the IMAGE/VIDEO handler as its actual
-        request even when the `@bot` trigger comment left text of its own behind. Empty for a
-        normal message or a media-only forward.
+        Args:
+            message (Message): Message whose forwarded snapshots are read.
         """
         texts = [
             text
@@ -188,11 +181,13 @@ class MessageInputBuilder(BaseModel):
         return "\n".join(texts)
 
     async def get_cleaned_content(self, message: Message) -> str:
-        """Renders one message's text: its content, or an embed / system-content fallback.
+        """Returns `message`'s cleaned text, with embed/system fallbacks and forwarded snapshots.
 
-        The bot's own usage footer is stripped from its own messages so the model / token /
-        cost line does not ride back in as part of the answer. The sender prefix is added
-        later, by `_assemble_input_message`.
+        Strips the usage footer from the bot's own messages so model/token/cost lines are not
+        fed back into the conversation.
+
+        Args:
+            message (Message): Message whose text content is extracted.
         """
         content = message.content
         content_present = bool(content.strip())
@@ -210,13 +205,14 @@ class MessageInputBuilder(BaseModel):
         return content
 
     def collect_attachment_sources(self, message: Message) -> list[AttachmentSource]:
-        """Classifies every renderable attachment source on a message from metadata.
+        """Returns every renderable attachment source classified from `message` and its snapshots.
 
-        One metadata-only pass that does no network or upload work, so it is safe to call on the
-        route critical path. Embeds prefer Discord's `proxy_url` (media.discordapp.net) over the
-        origin URL, since sources like the Threads CDN expire and reject requests without
-        specific headers. A forwarded message's media is folded in from `message.snapshots` so a
-        forward is not blank.
+        Performs metadata-only classification with no network I/O, preferring embed `proxy_url`
+        over origin URLs.
+
+        Args:
+            message (Message): Message whose attachments, stickers, embeds, and snapshots are
+                inspected.
         """
         is_own_message = bool(self.bot.user and message.author.id == self.bot.user.id)
         sources = self._sources_from_parts(
@@ -302,15 +298,9 @@ class MessageInputBuilder(BaseModel):
     def _split_on_modality(
         self, sources: list[AttachmentSource], model_name: str
     ) -> tuple[list[AttachmentSource], list[tuple[AttachmentSource, str, bool]]]:
-        """Splits sources into what the named model accepts and the renderer carries, and the rest.
+        """Splits `sources` into accepted sources and rejected `(source, modality, carried)` tuples.
 
-        Takes the name rather than reading it, because `slow_model` rebuilds its settings on
-        every read and a tier that dispatches on the hour would hand the gate one model and the
-        log beside it another — recording a drop against a model that did not make it.
-
-        Returns:
-            The accepted sources, and each rejected one beside the modality it needed and whether
-            the renderer carries that one source.
+        Takes `model_name` explicitly so the gate and its caller log against the same snapshot.
         """
         modalities = (
             get_supported_modalities(model_name=model_name)
@@ -330,15 +320,10 @@ class MessageInputBuilder(BaseModel):
         return accepted, rejected
 
     def count_supported_sources(self, message: Message) -> int:
-        """How many of a message's attachments the answer model would actually be handed.
+        """Returns the number of attachment sources on `message` accepted by the slow model and renderer.
 
-        What the history media budget spends, rather than the raw source count: an archive or
-        an office document is dropped on every model, so counting it would take budget from an
-        older message whose images WOULD have been sent, and the turn could end up carrying no
-        media at all while the budget recorded itself full (#660).
-
-        Silent where `_supported_sources` logs, because the render reaches the same message and
-        the same sources a moment later and logs them there.
+        Args:
+            message (Message): Message whose supported attachment sources are counted.
         """
         sources = self.collect_attachment_sources(message=message)
         if not sources:
@@ -351,13 +336,7 @@ class MessageInputBuilder(BaseModel):
     def _supported_sources(
         self, sources: list[AttachmentSource], message_id: int
     ) -> list[AttachmentSource]:
-        """Drops sources whose required modality the slow model or the renderer cannot take.
-
-        Gating once on the shared source list keeps the text-only marker render and the
-        Files-API upload render in agreement: the route never marks an attachment the
-        answer would silently drop, and vice versa, except one only its bytes rule out, until a
-        render has read them (`InlineRenderer.carries`).
-        """
+        """Returns the subset of `sources` accepted by the slow model and renderer, logging skips."""
         if not sources:
             return []
         model_name = self.runtime_models.slow_model.name
@@ -377,15 +356,13 @@ class MessageInputBuilder(BaseModel):
         return accepted
 
     async def get_image_sources_with_mime(self, message: Message) -> list[LoadedMedia]:
-        """Returns downscaled (bytes, MIME) pairs of a message's image sources.
+        """Returns downscaled `(bytes, mime_type)` `LoadedMedia` items for `message`'s image sources.
 
-        Image editing feeds raw pixels to `images.edit`, so it loads bytes directly
-        rather than reusing the Files-API handles `get_attachment_parts` produces. Only
-        image sources are collected; non-image files are not editable as images. The
-        IMAGE/VIDEO routes run on the image/video model, so the slow model's modality gate
-        is not applied here. The MIME is kept because omni's `ImageContentParam` requires a real
-        one (an empty mime 400s "Unsupported MIME type: "); an image edit, which needs only the
-        pixels, drops it.
+        Loads raw pixels directly for image/video generation and editing without applying the
+        slow model's modality gate.
+
+        Args:
+            message (Message): Message whose image sources are downloaded and downscaled.
         """
         tasks: list[Coroutine[object, object, LoadedMedia]] = []
         for source in self.collect_attachment_sources(message=message):
@@ -405,7 +382,12 @@ class MessageInputBuilder(BaseModel):
     async def get_turn_image_sources(
         self, message: Message, replied_to: Message | None
     ) -> list[LoadedMedia]:
-        """Returns a turn's source images: the message's own, then the replied-to message's."""
+        """Returns a turn's source images: `message`'s own followed by `replied_to`'s.
+
+        Args:
+            message (Message): Current message being answered.
+            replied_to (Message | None): Referenced message being replied to, or None.
+        """
         messages = [message] if replied_to is None else [message, replied_to]
         groups = await asyncio.gather(
             *(self.get_image_sources_with_mime(message=source) for source in messages)
@@ -413,15 +395,13 @@ class MessageInputBuilder(BaseModel):
         return [loaded for group in groups for loaded in group]
 
     async def get_video_sources(self, message: Message) -> list[LoadedMedia]:
-        """Best-effort (bytes, MIME) of the FIRST raw video attachment, for omni editing.
+        """Returns a single-element list with the first readable video attachment on `message`, or `[]`.
 
-        omni edits a single clip (`task="edit"`) and the VIDEO route only ever uses one, so this
-        downloads at most the first usable video instead of every attachment — a message carrying
-        several large clips must not spike bandwidth / memory reading clips the edit discards.
-        Video links Discord unfurled into an embed thumbnail are already collected as image sources
-        by `collect_attachment_sources`, so only direct video attachments count; a clip that fails
-        to read is skipped and the next is tried. Returns a one-item list (or empty), keeping the
-        caller's flatten-and-take-first shape.
+        Downloads at most the first usable direct video attachment for video editing, skipping
+        failed reads and trying the next attachment.
+
+        Args:
+            message (Message): Message to inspect for direct video attachments.
         """
         for source in self.collect_attachment_sources(message=message):
             if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
@@ -441,17 +421,14 @@ class MessageInputBuilder(BaseModel):
 
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
-        """Maps a MIME type to the input modality the model must accept.
+        """Returns the input modality required by `content_type`, or `"unknown"` for unsupported binaries.
 
-        Documents the backend can read (PDF / text / code) fall through to
-        `image` as a proxy: LiteLLM only reports text/image/audio/video, and
-        image-capable models in practice also accept `input_file`. Known
-        binaries (archives, executables, octet-stream) and the Office /
-        OpenDocument formats the Gemini backend rejects at generation time
-        (`Unsupported MIME type`) are checked first and return `unknown`, so
-        they are dropped before reaching the API instead of 400-ing the reply. An empty type
-        (a blank or parameter-only one sent, or none sent and none guessable from the
-        filename) is `unknown` too, because every renderer drops an attachment it cannot type.
+        Maps supported documents and text to `"image"` (the LiteLLM proxy modality for
+        `input_file`), and maps empty types, archives, executables, and Office/OpenDocument
+        binaries to `"unknown"`.
+
+        Args:
+            content_type (str): Normalized MIME type of the attachment source.
         """
         unsupported_binary_mimes = frozenset({
             "application/octet-stream",
@@ -534,10 +511,12 @@ class MessageInputBuilder(BaseModel):
     async def get_attachment_parts(
         self, message: Message, sources: list[AttachmentSource], allow_dead_cache: bool = False
     ) -> list[RenderedPart]:
-        """Extracts attachment content parts from a message, with a per-message cache.
+        """Returns rendered attachment content parts for `message`, using the per-message cache when fresh.
 
-        `sources` are the message's collected sources after the modality gate. `allow_dead_cache`
-        is opt-in for history scrollback only (see `FileUploadRenderer._resolve_file_upload`).
+        Args:
+            message (Message): Message whose attachment sources are rendered.
+            sources (list[AttachmentSource]): Modality-filtered attachment sources for `message`.
+            allow_dead_cache (bool): Whether permanently dead CDN URLs may be skipped via cache.
         """
         if not sources:
             return []
@@ -626,19 +605,14 @@ class MessageInputBuilder(BaseModel):
     async def render_text_only(
         self, message: Message, sources: list[AttachmentSource]
     ) -> EasyInputMessageParam:
-        """Renders a message as cleaned text plus `[attachment: ...]` markers.
+        """Returns `message` rendered as cleaned text plus `[attachment: ...]` markers without uploading.
 
-        Pure metadata plus the already-cheap cleaned content; performs no upload, so the
-        route call never waits on the Files API. Mirrors
-        `process_single_message`'s role and prefix rules so the route sees the same shape
-        the answer will, minus the payload bytes.
+        Names stickers `[attachment: sticker]` rather than `[attachment: image]` so a
+        sticker-only reaction is distinguishable from a screenshot during routing.
 
-        A sticker is named rather than called an image: it renders through the image path like
-        any other, but the marker is all a text-only reader gets, and "image" makes a pure
-        reaction indistinguishable from a screenshot someone needs read, which costs a
-        sticker-only message its `low` effort grade. The route reads the same marker and does not
-        move on it: `route_prompt`'s IMAGE branch keys on "an image", yet an edit request over a
-        sticker routes to IMAGE under either spelling.
+        Args:
+            message (Message): Message to render.
+            sources (list[AttachmentSource]): Modality-filtered attachment sources for `message`.
         """
         content = await self.get_cleaned_content(message=message)
         markers: list[ResponseInputTextParam] = [
@@ -655,13 +629,13 @@ class MessageInputBuilder(BaseModel):
     async def process_single_message(
         self, message: Message, text_only: bool = False, allow_dead_cache: bool = False
     ) -> EasyInputMessageParam:
-        """Processes a single Discord message into a Responses API input message.
+        """Returns `message` rendered as a Responses API input message, degrading to empty text on error.
 
-        `text_only` renders the attachments as markers without uploading, for the route call
-        that must not wait on the Files API. `allow_dead_cache` is set only for history
-        scrollback, where an expired CDN source re-fails every turn; current/reference renders
-        leave it off so a transient failure on a just-posted attachment is retried on the next
-        reply. A text-only render fetches nothing, so it ignores the flag.
+        Args:
+            message (Message): Discord message to render.
+            text_only (bool): Whether to emit `[attachment: ...]` markers without uploading.
+            allow_dead_cache (bool): Whether permanently dead CDN URLs may be skipped via cache
+                (set on history scrollback only).
         """
         try:
             if text_only:

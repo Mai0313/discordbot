@@ -19,7 +19,11 @@ def database_now() -> datetime:
 
 
 def as_taipei(dt: datetime) -> datetime:
-    """Returns `dt` re-interpreted in Asia/Taipei (treating naive as Taipei)."""
+    """Returns `dt` re-interpreted in Asia/Taipei (treating naive as Taipei).
+
+    Args:
+        dt (datetime): Datetime to convert or attach `TAIWAN_TIMEZONE` to.
+    """
     if dt.tzinfo is None:
         return dt.replace(tzinfo=TAIWAN_TIMEZONE)
     return dt.astimezone(tz=TAIWAN_TIMEZONE)

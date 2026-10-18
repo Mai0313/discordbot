@@ -11,14 +11,18 @@ WagerMode = Literal["clamp", "exact"]
 def build_wager_participant(
     identity: GameParticipantIdentity, balance: int, wager: int, mode: WagerMode
 ) -> GameParticipant | None:
-    """Builds a participant for a table stake under the requested wager mode.
+    """Returns a seated participant for `wager` under `mode`, or None when ineligible.
 
-    `clamp` allows a lower-balance player to join by wagering their full balance.
-    `exact` requires the player to cover the full wager, which is used for antes.
+    `clamp` lets a lower-balance player join by wagering their full balance, capped at
+    `MAX_SINGLE_BET`; `exact` requires `balance >= wager`. Returns None when `wager` or
+    `balance` is non-positive, or when `exact` mode meets a balance below `wager`.
 
-    Returns:
-        The seated participant, or None when the wager or the balance is
-        non-positive, or when `exact` mode meets a balance below the wager.
+    Args:
+        identity (GameParticipantIdentity): Discord user identity and display metadata.
+        balance (int): Current wallet balance of the user.
+        wager (int): Requested stake or ante amount.
+        mode (WagerMode): `"clamp"` to cap at balance and `MAX_SINGLE_BET`, or `"exact"`
+            to require the full wager.
     """
     if wager <= 0 or balance <= 0:
         return None

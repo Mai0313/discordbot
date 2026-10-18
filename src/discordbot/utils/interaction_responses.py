@@ -27,7 +27,13 @@ class _MessageOwningView(Protocol):
 async def send_expiring_followup(
     interaction: Interaction[commands.Bot], embed: Embed, file: File | None = None
 ) -> None:
-    """Sends a public embed as an interaction followup and schedules its deletion."""
+    """Sends a public embed as an interaction followup and schedules its deletion.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Interaction to send the followup on.
+        embed (Embed): Public embed to send.
+        file (File | None): Optional attachment sent alongside `embed`.
+    """
     extra_files = [file] if file is not None else None
     spacer = embed_spacer_payload(
         embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
@@ -44,6 +50,10 @@ async def send_expiring_followup_after_private_defer(
 
     The first followup after that defer fills its placeholder and keeps the defer's flag, so the
     caller gets the embed there first and that copy is withdrawn once the public one is up.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Interaction that deferred ephemerally.
+        embed (Embed): Public embed to send.
     """
     await send_private_followup(interaction=interaction, embed=embed)
     await send_expiring_followup(interaction=interaction, embed=embed)
@@ -66,6 +76,11 @@ async def send_loan_request_followup(
 
     The message is also recorded at once, since its view dies with the process: a restart's
     sweep is then the only thing left that can take it down.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Interaction to send the followup on.
+        embed (Embed): Loan request embed.
+        view (View): Loan decision view whose `message` attribute receives the sent message.
     """
     message = await interaction.followup.send(
         embed=embed,
@@ -79,7 +94,12 @@ async def send_loan_request_followup(
 
 
 async def send_private_followup(interaction: Interaction[commands.Bot], embed: Embed) -> None:
-    """Sends a personal embed visible only to the caller."""
+    """Sends a personal embed visible only to the caller.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Interaction to send the followup on.
+        embed (Embed): Ephemeral embed to send.
+    """
     await interaction.followup.send(
         embed=embed,
         ephemeral=True,
@@ -88,7 +108,12 @@ async def send_private_followup(interaction: Interaction[commands.Bot], embed: E
 
 
 async def send_ephemeral_response(interaction: Interaction[commands.Bot], embed: Embed) -> None:
-    """Sends an ephemeral embed as the initial interaction response."""
+    """Sends an ephemeral embed as the initial interaction response.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Interaction to respond to.
+        embed (Embed): Ephemeral embed to send.
+    """
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,
@@ -99,9 +124,13 @@ async def send_ephemeral_response(interaction: Interaction[commands.Bot], embed:
 async def edit_response_embed(interaction: Interaction[commands.Bot], embed: Embed) -> None:
     """Edits the interaction's public message embed and clears its controls.
 
-    Edits the original rather than responding with one, because every caller has already
-    deferred: the write that decides this embed can outlive the three-second response window,
-    so the acknowledgement cannot wait for it.
+    Edits the original rather than responding with one: callers have already deferred before the
+    write that decides this embed.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Deferred interaction whose original message is
+            edited.
+        embed (Embed): Updated public embed.
     """
     await interaction.edit_original_message(
         embed=embed,
@@ -113,7 +142,13 @@ async def edit_response_embed(interaction: Interaction[commands.Bot], embed: Emb
 async def send_ephemeral_notice(
     interaction: Interaction[commands.Bot], content: str, log_message: str
 ) -> None:
-    """Sends an ephemeral interaction notice with response/followup fallback."""
+    """Sends an ephemeral interaction notice with response/followup fallback.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Interaction to notify.
+        content (str): Notice text shown to the caller.
+        log_message (str): Warning log message if Discord refuses the notice.
+    """
     try:
         if interaction.response.is_done():
             await interaction.followup.send(content=content, ephemeral=True)

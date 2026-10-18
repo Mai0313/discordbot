@@ -15,7 +15,7 @@ Three notes on what it deliberately does not paper over:
 - **Progress signals are dropped rather than replaced.** The pipeline's status chain and the
   per-marker "working on it" emoji are never attempted on the interaction path — which is right,
   because Discord shows its own thinking state while the response is deferred and the reply then
-  streams in place. Only the best-effort FAILURE hints (a dropped clip's ⏱️ / ⚠️) have nothing
+  streams in place. Only the best-effort failure hints (a dropped clip's ⏱️ / ⚠️) have nothing
   left to say them, which is what `hint` collects and the streamer writes onto the reply as one
   line.
 - **`send` and `send_unparented` are two methods, not one with a fallback.** A `nextcord.File` is
@@ -107,13 +107,14 @@ class TurnSurface(BaseModel):
     _hints: list[str] = PrivateAttr(default_factory=list)
 
     def answer_capacity(self, has_landed_reply: bool) -> int | None:
-        """How many messages one answer may occupy here, or None when nothing caps it.
+        """Returns how many messages one answer may occupy on this surface, or None when unbounded.
 
-        The follow-up POSTs Discord still allows, plus one for the message the answer is written
-        onto — the original response whether or not it has been spent, since editing it is free.
-        Asked as one question rather than answered by the caller adding its own message on:
-        a landed reply always means the original was spent, so counting both separately would
-        hand the answer one message more than it can have.
+        Counts the remaining interaction follow-up POSTs plus one for the original response when it
+        has not been consumed yet or when `has_landed_reply` is already occupying it.
+
+        Args:
+            has_landed_reply (bool): Whether the current answer has already created its parent
+                reply message.
         """
         if self.interaction is None:
             return None
@@ -123,22 +124,12 @@ class TurnSurface(BaseModel):
         return remaining
 
     def delivery_budget_seconds(self) -> float | None:
-        """How long this turn may still spend producing something, or None when nothing expires.
+        """Returns the seconds remaining to produce a deliverable before the surface expires, or None.
 
-        A gateway turn answers into a channel that is simply there, so it has no budget at all.
-        `/ask` writes everything through an interaction token, and once Discord invalidates that
-        the turn has no surface left at all: the deliverable 404s and so does the notice that
-        would have said why, which is the one failure on this route that ends in silence. So a
-        route slow enough to reach that asks first, and gets what the token has left less the
-        margin it needs to deliver and, failing that, to say what happened.
-
-        The window itself is nextcord's (`Interaction.expires_at`) and is deliberately not
-        restated here, so it stays right if Discord ever moves it. That property reads three
-        seconds until the response is deferred, which is not a trap but the truth about an
-        undeferred interaction; `/ask` defers before it builds this surface.
-
-        Returns:
-            Seconds of useful time left, never negative, or None where nothing is running out.
+        Gateway turns return None because channel sends do not expire. On `/ask`, returns the time
+        left until `interaction.expires_at` minus `INTERACTION_DELIVERY_MARGIN_SECONDS` (clamped to
+        `0.0`) so a slow turn times out while the interaction token can still deliver the result or
+        `WINDOW_EXPIRED_NOTICE`. Assumes the interaction has already been deferred.
         """
         if self.interaction is None:
             return None
@@ -147,7 +138,11 @@ class TurnSurface(BaseModel):
 
     @classmethod
     def for_message(cls, message: Message) -> "TurnSurface":
-        """The gateway surface: reply into the channel, read its history, react on the message."""
+        """Returns a gateway `TurnSurface` for `message`.
+
+        Args:
+            message (Message): Triggering gateway message.
+        """
         return cls(
             message=message,
             guild_id=message.guild.id if message.guild else None,
@@ -158,17 +153,17 @@ class TurnSurface(BaseModel):
     def for_interaction(
         cls, interaction: Interaction[commands.Bot], question: str
     ) -> "TurnSurface":
-        """The `/ask` surface: answer through the interaction, read the conversation store.
+        """Returns an `/ask` `TurnSurface` backed by `interaction` and a synthesized source message.
 
-        The message is synthesized here from the same interaction, so its author and channel are
-        what the conversation store is read and written under.
+        Only `InteractionContextType.bot_dm` counts as a 1:1 DM; `private_channel` also covers
+        group DMs and other users' DMs, which share the same `PartialMessageable` channel type.
 
-        `bot_dm` is the one interaction context that is a 1:1 DM with the bot; `private_channel`
-        covers both a group DM and a DM between two other people, neither of which is one, and
-        the channel object cannot tell them apart (it is a `PartialMessageable` for all three).
+        Args:
+            interaction (Interaction[commands.Bot]): Deferred `/ask` slash-command interaction.
+            question (str): User prompt text passed to `/ask`.
 
         Raises:
-            RuntimeError: The interaction names no channel or no user, which Discord never sends.
+            RuntimeError: `interaction` has no channel or no user.
         """
         return cls(
             message=build_ask_message(interaction=interaction, question=question),
@@ -185,10 +180,14 @@ class TurnSurface(BaseModel):
         files: list[File] | None = None,
         allowed_mentions: AllowedMentions | None = None,
     ) -> Message:
-        """Puts a new message on screen, parented to the source message where there is one.
+        """Returns the sent message, replying to `message` on the gateway or editing/following up on `/ask`.
 
-        Returns:
-            The message that landed, editable by every caller that keeps the handle.
+        Args:
+            content (str | None): Message text content.
+            embed (Embed | None): Single embed to attach.
+            file (File | None): Single file attachment.
+            files (list[File] | None): Multiple file attachments.
+            allowed_mentions (AllowedMentions | None): Mention policy for the send.
         """
         payload = _payload(
             content=content, embed=embed, file=file, files=files, allowed_mentions=allowed_mentions
@@ -209,13 +208,16 @@ class TurnSurface(BaseModel):
         files: list[File] | None = None,
         allowed_mentions: AllowedMentions | None = None,
     ) -> Message:
-        """Puts a message on screen without parenting it, for a source that was deleted.
+        """Returns a message sent to the channel without a reply reference when the source was deleted.
 
-        Identical to `send` on the interaction path, which has no parent to lose in the first
-        place; the caller reaches it only after `send` raised, and the retry is what matters.
+        On `/ask`, delegates to `send` since interaction responses carry no message reference.
 
-        Returns:
-            The message that landed.
+        Args:
+            content (str | None): Message text content.
+            embed (Embed | None): Single embed to attach.
+            file (File | None): Single file attachment.
+            files (list[File] | None): Multiple file attachments.
+            allowed_mentions (AllowedMentions | None): Mention policy for the send.
         """
         payload = _payload(
             content=content, embed=embed, file=file, files=files, allowed_mentions=allowed_mentions
@@ -227,15 +229,15 @@ class TurnSurface(BaseModel):
     async def follow_up(
         self, previous: Message, content: str, allowed_mentions: AllowedMentions | None = None
     ) -> Message:
-        """Continues past what one Discord message can hold.
+        """Returns the message sent as the next overflow chunk after `previous`.
 
-        `previous.reply` is what the gateway path wants and what the interaction path must never
-        do: a follow-up carries a `PartialMessageable` channel, so replying to it would send a
-        plain bot message into a channel the bot is not in, and every answer over the message
-        limit would lose its tail.
+        Replies to `previous` on the gateway path, and sends an interaction follow-up on `/ask`
+        where `previous.channel` is a `PartialMessageable` the bot cannot post into directly.
 
-        Returns:
-            The message carrying this chunk.
+        Args:
+            previous (Message): Preceding chunk's message.
+            content (str): Text content for this overflow chunk.
+            allowed_mentions (AllowedMentions | None): Mention policy for the send.
         """
         payload = _payload(
             content=content, embed=None, file=None, files=None, allowed_mentions=allowed_mentions
@@ -246,11 +248,13 @@ class TurnSurface(BaseModel):
         return await self.interaction.followup.send(**payload, wait=True)
 
     async def fetch_history(self, limit: int) -> list[Message]:
-        """The conversation before this turn, oldest first and at most `limit` messages.
+        """Returns up to `limit` conversation messages before this turn, oldest first.
 
-        The gateway path walks the channel. `/ask` cannot: the bot is not a member and holds no
-        `READ_MESSAGE_HISTORY`, so what it replays is the conversation it kept itself, one stored
-        turn rebuilding into the question and the answer that followed it.
+        Reads channel history on the gateway path, and reconstructs stored `/ask` turns for the
+        current `(channel_id, user_id)` pair on the interaction path.
+
+        Args:
+            limit (int): Maximum number of historical messages to return.
         """
         if self.interaction is None:
             # Newest first, then reversed here: nextcord's `oldest_first=True` reverses each
@@ -266,31 +270,35 @@ class TurnSurface(BaseModel):
         return rebuild_conversation(turns=turns, interaction=self.interaction)
 
     def status_chain(self, bot_user: ClientUser | None) -> ReactionStatusChain:
-        """The turn's status-reaction chain, inert on `/ask`, which has nothing to react to."""
+        """Returns the turn's status-reaction chain, disabled when running on `/ask`.
+
+        Args:
+            bot_user (ClientUser | None): The bot's own user for removing prior status reactions.
+        """
         return ReactionStatusChain(
             message=self.message, bot_user=bot_user, enabled=self.interaction is None
         )
 
     async def mark(self, emoji: str) -> None:
-        """Puts a status or provenance reaction on the source message, where there is one.
+        """Adds a status or provenance reaction `emoji` to `message` on the gateway path.
 
-        Refused rather than attempted on `/ask`: the synthesized message names nothing Discord
-        holds, so every add is a REST round trip that 404s and is then swallowed, and two of
-        these are awaited before the answer is even dispatched. What they carried is carried
-        there by the deferred response's own thinking state and by the reply streaming in place.
+        No-op on `/ask`, where the synthesized message does not exist on Discord.
+
+        Args:
+            emoji (str): Reaction emoji to add.
         """
         if self.interaction is not None:
             return
         await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
     async def hint(self, emoji: str) -> None:
-        """Records that something best-effort was dropped, so it is never silent.
+        """Records a best-effort dropped-media hint `emoji` as a reaction or queued `/ask` subtext.
 
-        On the gateway path this is the independent reaction it has always been. On `/ask` there
-        is nothing to react to, so the emoji is held for `take_hints` and the streamer writes it
-        onto the reply instead. This is the one signal that cannot simply be dropped the way
-        `mark` drops a progress marker: per the best-effort convention it is the ONLY trace a
-        dropped clip, image, song or video ever leaves.
+        Reacts on `message` on the gateway path, and queues `emoji` for `take_hints` on `/ask` so a
+        dropped clip, image, song, or video still leaves a visible trace on the reply.
+
+        Args:
+            emoji (str): Hint emoji to record.
         """
         if self.interaction is None:
             await update_reaction(message=self.message, bot_user=None, emoji=emoji)
@@ -299,20 +307,19 @@ class TurnSurface(BaseModel):
             self._hints.append(emoji)
 
     def take_hints(self) -> list[str]:
-        """Hands over the collected hints and clears them, so one line is written once."""
+        """Returns and clears the queued `/ask` failure-hint emojis."""
         hints = list(self._hints)
         self._hints.clear()
         return hints
 
     async def record_turn(self, answer: str) -> None:
-        """Appends this exchange to the conversation, so the next `/ask` has one to continue.
+        """Persists the question and `answer` to the `/ask` store, or no-ops on the gateway path.
 
-        A no-op on the gateway path, where Discord's own channel history is the record.
+        Best-effort: database errors are logged and swallowed so a completed reply never fails
+        after delivery.
 
-        Best-effort like everything else that runs after the answer is on screen: the reply is
-        delivered by the time this is called, so a busy database must cost the next turn its
-        context rather than posting `Something went wrong` under a complete answer and taking
-        the turn's memory notes down with it.
+        Args:
+            answer (str): Finalized reply text to store for future `/ask` turns.
         """
         if self.interaction is None:
             return

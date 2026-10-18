@@ -73,7 +73,7 @@ _database = SqliteBootstrap(metadata=Base.metadata)
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Opens an async session on the current games-history engine, its schema ensured."""
+    """Returns an async session context manager on the games-history engine with schema ensured."""
     return _database.open_session(engine=_engine)
 
 
@@ -129,7 +129,18 @@ async def record_blackjack_history(  # noqa: PLR0913 -- round persistence needs 
     dealer_cards: Sequence[Card],
     dealer_total: int,
 ) -> None:
-    """Persists one Blackjack round's per-player results in a single commit."""
+    """Persists one Blackjack round's per-player results in a single commit.
+
+    Args:
+        round_id (str): Unique identifier shared by all seats in this round.
+        channel_id (int): Discord channel ID where the table ran.
+        guild_id (int): Discord guild ID where the table ran, or 0 outside a guild.
+        message_id (int): Discord message ID of the table.
+        bot_user_id (int | None): Discord user ID of the bot player, if seated.
+        results (Sequence[BlackjackPlayerResult]): Settled results for each seated player.
+        dealer_cards (Sequence[Card]): Final dealer hand cards.
+        dealer_total (int): Final dealer hand total.
+    """
     if not results:
         return
     now = _database_now()
@@ -181,7 +192,12 @@ def _history_record(row: BlackjackRoundResult) -> BlackjackHistoryRecord:
 async def fetch_recent_blackjack_rounds(
     user_id: int, limit: int
 ) -> tuple[BlackjackHistoryRecord, ...]:
-    """Returns the most recent settled rounds for one player, newest first."""
+    """Returns the most recent settled rounds for one player, newest first.
+
+    Args:
+        user_id (int): Discord user ID to query.
+        limit (int): Maximum number of rounds to return.
+    """
     async with open_session() as session:
         result = await session.execute(
             statement=select(BlackjackRoundResult)

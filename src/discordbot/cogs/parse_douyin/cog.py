@@ -33,9 +33,7 @@ from discordbot.services.platforms.douyin import (
     douyin_fetch_semaphore,
 )
 
-# Douyin's own palette, so the expansion reads as a Douyin card at a glance. Deliberately NOT in
-# `typings/colors.py`: that palette is Discord's own semantic set (success / failure / info), and
-# a third party's brand red belongs to the one card that wears it.
+# Douyin's brand red; kept out of `typings/colors.py`, which holds Discord's semantic palette.
 _EMBED_COLOR = 0xFE2C55
 
 
@@ -59,8 +57,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
 
     Attributes:
         media_delivery: Planner deciding which files attach and which are hosted as a URL.
-        downloader_factory: Builds the per-invocation downloader, one per scratch directory; the
-            seam a test replaces to keep an expansion off the network.
+        downloader_factory: Per-invocation downloader constructor, one per scratch directory.
     """
 
     SOURCE = "douyin"
@@ -72,7 +69,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         """Initializes the DouyinCogs instance.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         super().__init__(bot=bot)
         self.media_delivery = build_media_delivery_planner()
@@ -80,38 +77,28 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
 
     @staticmethod
     def url_is_expandable(url: str) -> bool:
-        """Whether the matched URL names a post.
+        """Returns whether `url` names a Douyin post.
 
-        The pattern matches the host, not the path, so a profile or live-room link would
-        otherwise spend a rate-limited request to establish there is nothing to show.
+        `DOUYIN_URL_RE` matches the host rather than the path, so profile and live-room links are
+        filtered here before spending a rate-limited request.
 
         Args:
-            url: The URL the pattern matched.
-
-        Returns:
-            True when the URL names a post.
+            url (str): The URL matched by `URL_PATTERN`.
         """
         return is_douyin_post_url(url=url)
 
     async def read(
         self, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> DouyinPost:
-        """Parses the post and downloads its media into a scratch directory of its own.
+        """Returns the parsed post and its media downloaded into a scratch directory on `stack`.
 
-        The per-URL lock and the fetch semaphore (`services/platforms/douyin.py` has why) cover
-        only the Douyin-facing work, never the Discord upload that follows.
-
-        The post is parsed first because the card needs its caption and author, and the download
-        is handed it rather than parsing it again.
+        The per-URL lock and fetch semaphore (`services/platforms/douyin.py`) cover only the
+        Douyin-facing requests, never the Discord upload that follows.
 
         Args:
-            message: Unused; nothing here logs.
-            url: The post to read.
-            stack: Holds the scratch directory, and with it the downloaded files, until delivery
-                is done.
-
-        Returns:
-            The caption and the downloaded media.
+            message (Message): Unused; required by the `ExpansionCog` hook signature.
+            url (str): The post URL to read.
+            stack (contextlib.AsyncExitStack): Holds the scratch directory until delivery finishes.
         """
         del message
         download_dir = stack.enter_context(scratch_directory(prefix="parse-douyin-"))
@@ -130,15 +117,12 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
     async def build_delivery(
         self, message: Message, url: str, parsed: DouyinPost
     ) -> ExpansionDelivery | None:
-        """Plans the media and builds the card, refusing a post nothing can carry.
+        """Returns the expansion card and media files, or `None` when no media can be delivered.
 
         Args:
-            message: The message carrying the link.
-            url: The post that was read.
-            parsed: The caption and the downloaded media.
-
-        Returns:
-            The card, or None when the media can be neither attached nor hosted.
+            message (Message): The message carrying the link.
+            url (str): The post URL that was read.
+            parsed (DouyinPost): The post metadata and downloaded media.
         """
         delivery = await plan_douyin_delivery(
             planner=self.media_delivery,
@@ -184,6 +168,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the DouyinCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(DouyinCogs(bot), override=True)

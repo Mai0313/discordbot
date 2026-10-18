@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 dispatched_model: ContextVar[str | None] = ContextVar("gen_reply_dispatched_model", default=None)
 
 
-# The turn's UNFINISHED answer, so the pipeline's failure path can land its error on the reply
+# The turn's unfinished answer, so the pipeline's failure path can land its error on the reply
 # already on screen. It holds the streamer rather than the message because what the error path
 # needs is decided at failure time -- whether a reply exists at all (`withdraw_retry_notice` and a
 # mid-stream delete each drop it) and what it is showing. Published by `ResponseStreamer.consume`

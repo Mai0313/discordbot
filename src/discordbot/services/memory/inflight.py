@@ -1,7 +1,7 @@
 """When background memory work runs, and the reply.db bookkeeping around it.
 
 While a scope's update runs, later turns for that scope are held rather than dropped and
-replayed one at a time afterwards. Within ONE conversation source only the newest is kept, its
+replayed one at a time afterwards. Within one conversation source only the newest is kept, its
 history window already covering the earlier ones, and its memory notes merged in so nothing a
 marker wrote is lost, unless a clear has since erased it.
 
@@ -145,10 +145,14 @@ def memory_semaphore() -> asyncio.Semaphore:
 
 
 async def safe_db_write(coro: Awaitable[None], scope: str) -> None:
-    """Awaits a best-effort reply.db write for `scope`, swallowing any failure.
+    """Awaits a best-effort `reply.db` write for `scope`, swallowing any failure.
 
-    Persistence is an augmentation layer: a reply.db failure must never break the
+    Persistence is an augmentation layer: a `reply.db` failure must never break the
     in-memory fire-and-forget memory pipeline.
+
+    Args:
+        coro (Awaitable[None]): Database write coroutine to execute.
+        scope (str): Memory scope key for logging.
     """
     try:
         await coro
@@ -181,6 +185,14 @@ async def stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capt
     A row committed before a clear is scrubbed by that newer logical token. A row
     waiting while a clear is in progress sees its closing stamp before it can
     write, so it cannot leave a during-clear transcript for restart to resume.
+
+    Args:
+        scope (str): Memory scope key.
+        subject (str): Phase-1 directive naming the review target.
+        transcript (str): Rendered turn payload (transcript plus memory notes).
+        identity (str): Single-line owner identity stamped onto written facts.
+        token (int): Logical version token for ordering.
+        captured_at (float): `time.monotonic()` timestamp when the turn was captured.
     """
     async with staging_locks.hold(key=scope):
         if cleared_since(scope=scope, started_at=captured_at):
@@ -196,11 +208,11 @@ async def stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capt
 
 
 def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
-    """Schedules (or defers) one rendered-transcript update, backed by a reply.db row.
+    """Schedules (or defers) one rendered-transcript update, backed by a `reply.db` row.
 
     Args:
-        turn: The captured turn to review.
-        run: The turn body, carried through to the replay by the done-callback.
+        turn (MemoryTurn): Captured turn to review.
+        run (TurnRunner): Turn body, carried through to the replay by the done-callback.
     """
     # Stamped here, not inside the worker: a clear landing between this call and
     # the task actually starting must still abort the turn, and a worker that
@@ -255,11 +267,10 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
 
 
 def drop_pending_updates(scope: str) -> None:
-    """Drops every held turn for a scope and tells each one's reply nothing was recorded.
+    """Drops every held turn for `scope` and tells each one's reply nothing was recorded.
 
-    The clear's own step: dropping the retained transcripts now rather than waiting for the
-    in-flight task to finish and discard them means `_finish_memory_update` then finds no
-    pending turn and replays nothing.
+    Args:
+        scope (str): Memory scope key being cleared.
     """
     for dropped in (_pending_updates.pop(key=scope) or {}).values():
         _release_pending_report(pending=dropped)
@@ -268,14 +279,15 @@ def drop_pending_updates(scope: str) -> None:
 async def report_writes(
     report: MemoryWriteReport, summary: MemoryWriteSummary, scope: str
 ) -> None:
-    """Hands the caller what this turn recorded, never letting the report cost the write.
+    """Invokes `report` with `summary`, swallowing any Discord failure.
 
-    The write is already durable by the time this runs, so a Discord edit that fails, or a
-    reply that has since been deleted, must not surface as a memory failure.
+    An empty summary is reported like any other so a reply showing `正在整理記憶⋯` settles once
+    the turn completes.
 
-    An empty summary is reported like any other. It is the answer to a real question — the
-    turn is over and kept nothing — and the caller is holding a reply that says the work is
-    still going, so silence here reads as the work never having finished.
+    Args:
+        report (MemoryWriteReport): Callback reporting what the turn recorded.
+        summary (MemoryWriteSummary): Recorded memory write summary.
+        scope (str): Memory scope key for logging.
     """
     try:
         await report(summary)
@@ -293,16 +305,9 @@ async def report_writes(
 def _merged_payload(newer: str, older: str) -> str:
     """Carries a superseded turn's memory notes into the turn replacing it.
 
-    Only the newest skipped turn is replayed, and for a TRANSCRIPT that is right: its history
-    window already contains the earlier skipped turns, which is what makes one replay enough. A
-    marker note is not in that window. It exists only in the reply that emitted it, so letting
-    the newer payload simply overwrite the older one would drop it with nothing in the logs to
-    say a note had ever been written.
-
-    Merging is only ever within one conversation source; `_pending_updates` is keyed on the
-    subject for that reason, and this function never sees two sources. Each turn's notes stay a
-    round of their own, oldest first, since a newer turn's forget can name what an older one
-    asked to remember (`parse_turn_payload`).
+    The newer turn's transcript already covers earlier messages in the same source, while inline
+    marker notes exist only in the reply that emitted them and stay ordered by round so a newer
+    forget can reach an older remember.
     """
     transcript, rounds = parse_turn_payload(payload=newer)
     _, older_rounds = parse_turn_payload(payload=older)
@@ -314,21 +319,7 @@ def _merged_payload(newer: str, older: str) -> str:
 def _merged_report(
     newer: MemoryWriteReport | None, older: MemoryWriteReport | None, scope: str
 ) -> MemoryWriteReport | None:
-    """Answers both replies when one turn's notes are merged into another's.
-
-    The counterpart to `_merged_payload`, and needed for the same reason: the superseded turn's
-    notes ride on into the merged payload, so its reply is still waiting to be told what became
-    of them. Overwriting the report the way the transcript is overwritten would leave that reply
-    saying `正在整理記憶⋯` for good.
-
-    Both are handed the same summary, which is the only honest one available: the two turns'
-    notes were reviewed as one payload and there is nothing left that says which note came from
-    which reply.
-
-    Each is answered independently. A merge exists because the older reply is still standing
-    there promising work, and that reply is also the likelier of the two to have been deleted
-    under it, so a callback that raises must not take the other one's report with it.
-    """
+    """Returns a callback that reports the merged outcome to both replies independently."""
     if newer is None or older is None:
         return newer or older
 
@@ -343,15 +334,9 @@ def _merged_report(
 def _capped(rounds: tuple[NoteRound, ...]) -> tuple[NoteRound, ...]:
     """Drops exact repeats, keeps writing order, and caps what a merge can accumulate.
 
-    The per-reply cap the markers enforce does not survive a merge: each skipped turn stacks
-    onto the pending payload, so without a bound here a long stretch of skipped turns grows
-    the review request and the raw entry together. The OLDEST are dropped, since the newest
-    notes are the ones the user is still in the middle of.
-
-    A repeated note keeps its NEWEST occurrence: moved back to an older round, it would be
-    staged ahead of a forget the user wrote after the first time, and the repeat after it is
-    what the user meant last. A round left with no forget is then folded into the one before
-    it: staged in the same order, it costs one review instead of two.
+    Keeps the newest occurrence of any repeated note so it is not staged ahead of a forget
+    written after an earlier occurrence, drops the oldest notes past `MEMORY_MERGED_NOTES_MAX`,
+    and folds adjacent rounds when the earlier one has no forget.
     """
     seen: tuple[set[str], set[str]] = (set(), set())
     newest_first: list[NoteRound] = []

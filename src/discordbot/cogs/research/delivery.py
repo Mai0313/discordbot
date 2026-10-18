@@ -24,20 +24,23 @@ if TYPE_CHECKING:
 
 
 def owner_allowed_mentions(owner_id: int) -> AllowedMentions:
-    """Restricts a research message to pinging only its owner.
+    """Returns an `AllowedMentions` policy that permits pinging only `owner_id`.
 
-    The anchor carries the user's topic and the report text is agent-generated, so any
-    `@everyone` / role / other-user mention either contains must not resolve; only the
-    deliberate owner ping is allowed through.
+    Args:
+        owner_id (int): Discord user ID of the research requester.
     """
     return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
 
 def split_report(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
-    """Splits report markdown into <=limit chunks, preferring paragraph then line breaks.
+    """Returns `text` split into chunks of at most `limit` characters.
 
-    A hard cut at `limit` is the last resort, used only when a single paragraph or line
-    is longer than the limit, so normal reports keep their markdown structure intact.
+    Prefers paragraph breaks, then line breaks, falling back to a hard cut at `limit` only when a
+    single line exceeds `limit`.
+
+    Args:
+        text (str): Report markdown to split.
+        limit (int): Maximum characters per chunk.
     """
     chunks: list[str] = []
     remaining = text.strip()
@@ -56,17 +59,14 @@ def split_report(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
 
 
 def split_report_by_sections(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
-    """Splits a report into one chunk list per `---` section, packing each section under `limit`.
+    """Returns `text` split on blank-surrounded `---` thematic breaks and packed under `limit`.
 
-    The report body is model-generated cited markdown whose major sections are divided by
-    blank-surrounded thematic breaks (a line of `---`). Each section becomes its own Discord
-    message so the delivered layout mirrors the report's structure; the separator line itself is
-    dropped. A section still longer than `limit` is sub-packed by `split_report` (paragraph then
-    line boundaries, a hard cut only as a last resort), and empty sections yield nothing. A report
-    with no thematic break is a single section, so its output is byte-for-byte `split_report`'s
-    paragraph packing. A `---`-only line inside a fenced code block, a setext `## heading`
-    underline (no blank line above), and a table delimiter row (`| --- |`) are all left intact --
-    only a line of pure dashes with a blank line on both sides splits a section.
+    Drops the thematic-break lines themselves while leaving fenced code blocks, setext headings,
+    and table delimiter rows intact. Each section is sub-packed via `split_report`.
+
+    Args:
+        text (str): Report markdown to split.
+        limit (int): Maximum characters per chunk.
     """
     lines = text.split("\n")
     sections: list[str] = []
@@ -108,14 +108,19 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     footer: str,
     media_delivery: MediaDeliveryPlanner,
 ) -> None:
-    """Delivers the report into the thread.
+    """Delivers the completed research report into `thread`.
 
-    The opening status message ("Researching...") is edited into the first chunk so no message is
-    wasted; the remaining chunks follow as new messages; the LAST chunk carries the usage footer,
-    the owner ping, and the full report as a `research.md` attachment (plus any generated image).
-    A report file too big to upload is hosted on the external static server and linked on the last
-    chunk; when hosting is off or fails, it is left out and a warning names it.
-    Every write is best-effort, and every one may ping only the owner (`owner_allowed_mentions`).
+    Edits `status` into the first chunk and sends remaining chunks as new messages, attaching
+    `research.md` (and `research.png` when present), the owner ping, and `footer` on the final
+    message. Oversized files are hosted via `media_delivery` or omitted with a warning.
+
+    Args:
+        thread (Thread): Destination research thread.
+        status (Message | None): Opening status message to edit into the first chunk, if any.
+        owner_id (int): Discord user ID of the requester to ping on completion.
+        result (ResearchResult): Completed research result containing markdown and optional chart.
+        footer (str): Usage footer appended to the final message.
+        media_delivery (MediaDeliveryPlanner): Planner for attaching or hosting report files.
     """
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report_by_sections(text=report) or ["(empty report)"]

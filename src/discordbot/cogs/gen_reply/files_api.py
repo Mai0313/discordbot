@@ -1,23 +1,24 @@
 """Gemini Files API upload for media the bot fetched itself (linked posts, generated clips).
 
 The one supported way to let the answer model read a media file is to upload it here and
-reference the resulting full uri as an `input_file` `file_id`. Handing the model a remote
+reference the resulting full URI as an `input_file` `file_id`. Handing the model a remote
 http(s) URL instead looks equivalent but is not: the LiteLLM proxy rewrites any http-bearing
 `file_id` / `file_url` into base64 `inline_data`, so the media starts counting against the
 request body and a failed fetch is swallowed silently; and the native Interactions path,
-which has no proxy in the loop at all, only resolves Files API uris and YouTube links. The
-Files-API uri has a dedicated pass-through branch on both paths and is never re-fetched.
+which has no proxy in the loop at all, only resolves Files API URIs and YouTube links. The
+Files-API URI has a dedicated pass-through branch on both paths and is never re-fetched.
 
-The upload itself goes DIRECT to Google (never through the proxy) because only the direct
-client can poll a file to ACTIVE: the proxy's file resource reports a deprecated `uploaded`
-status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answer request.
+The upload itself goes direct to Google (never through the proxy) because only the direct
+client can poll a file to `FileState.ACTIVE`: the proxy's file resource reports a deprecated
+`uploaded` status, and referencing a not-yet-active file intermittently 400s the whole answer
+request.
 
 `upload_file` and `poll_while_processing` are the upload and the activation poll every direct
 upload is made of. They decide nothing: each raises the SDK's own error (the poll also a
 `TimeoutError` for a read past the bound its caller set), and what a missing resource name, a
-file still PROCESSING at the bound, or a failure costs is the caller's call.
+file still `FileState.PROCESSING` at the bound, or a failure costs is the caller's call.
 `upload_until_active` serves a caller with no later reference to re-poll from: it raises unless
-the file reaches ACTIVE, and that caller bounds the whole transfer and gives up.
+the file reaches `FileState.ACTIVE`, and that caller bounds the whole transfer and gives up.
 """
 
 import io
@@ -39,7 +40,7 @@ from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 FILES_API_MAX_BYTES = 2 * 1024**3
 
 # Caps concurrent `upload_as_input_file` transfers across all in-flight pipelines. Deliberately
-# NOT the attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can
+# not the attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can
 # hold its slot for minutes, which would starve the ordinary per-message attachment renders that
 # share that pool. Small on purpose — these uploads are large and few.
 INPUT_FILE_UPLOAD_CONCURRENCY = 2
@@ -52,11 +53,16 @@ input_file_upload_semaphore = LoopLocalSemaphore(
 async def upload_file(
     client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
 ) -> File:
-    """Starts one Files API upload and returns the file as the upload reported it.
+    """Returns the `File` resource reported by starting one Files API upload.
 
-    The file may still be PROCESSING, and its `name` / `uri` may be None: the SDK types both as
-    optional. A path is handed to the SDK untouched so it streams from disk; in-memory bytes get
-    the file-like wrapper the SDK's `str | os.PathLike | io.IOBase` signature requires.
+    The returned file may still be in `FileState.PROCESSING`, and `name` / `uri` are optional.
+    A `Path` streams from disk; `bytes` are wrapped in `io.BytesIO`.
+
+    Args:
+        client (genai.Client): Direct-to-Google Gemini client.
+        source (Path | bytes): File path or in-memory bytes to upload.
+        mime_type (str): MIME type sent in the upload config.
+        display_name (str): Display name sent in the upload config.
 
     Raises:
         Exception: Whatever the SDK or its transport raised, unchanged.
@@ -75,20 +81,18 @@ async def poll_while_processing(  # noqa: PLR0913 -- each bound is its caller's 
     timeout_seconds: float | None,
     read_timeout_seconds: float | None,
 ) -> File:
-    """Re-reads an uploaded file until it leaves PROCESSING, returning the last state seen.
+    """Returns `uploaded` once it leaves `FileState.PROCESSING` or `timeout_seconds` elapses.
 
-    The file comes back still PROCESSING only when `timeout_seconds`, counted from this call,
-    elapsed first; None polls for as long as the file processes, for a caller that bounds the
-    whole transfer itself. That bound is checked only between reads, so a caller that bounds
-    nothing around this call bounds each read too: a read that never returns outlasts it.
+    `timeout_seconds` is checked only between reads, so a caller without an outer timeout must
+    also bound each read via `read_timeout_seconds`.
 
     Args:
-        client: The client the file was uploaded with (a file is readable only by that key).
-        uploaded: The file as the upload returned it.
-        name: The file's resource name (`files/<id>`), which the poll reads it back by.
-        poll_interval_seconds: The wait between two reads.
-        timeout_seconds: How long to keep polling, or None for no bound here.
-        read_timeout_seconds: How long one read may take, or None for no bound here.
+        client (genai.Client): Client the file was uploaded with.
+        uploaded (File): File resource as returned by `upload_file`.
+        name (str): Resource name (`files/<id>`) used to re-read the file.
+        poll_interval_seconds (float): Seconds to sleep between polls.
+        timeout_seconds (float | None): Total polling budget in seconds, or None for no bound.
+        read_timeout_seconds (float | None): Per-read timeout in seconds, or None for no bound.
 
     Raises:
         TimeoutError: One read did not return within `read_timeout_seconds`.
@@ -107,15 +111,20 @@ async def poll_while_processing(  # noqa: PLR0913 -- each bound is its caller's 
 async def upload_until_active(
     client: genai.Client, source: Path | bytes, mime_type: str, display_name: str
 ) -> str:
-    """Uploads media and polls it out of PROCESSING, returning its ACTIVE uri.
+    """Returns the `FileState.ACTIVE` URI after uploading `source` and polling it out of `PROCESSING`.
 
-    Bounds nothing itself: the caller wraps it in the one timeout that covers the transfer as
-    well as the poll, since google-genai sets no transport timeout and an upload into a stalled
-    connection never returns.
+    Applies no timeout of its own; the caller wraps the call in a timeout covering both the
+    upload and the poll.
+
+    Args:
+        client (genai.Client): Direct-to-Google Gemini client.
+        source (Path | bytes): File path or in-memory bytes to upload.
+        mime_type (str): MIME type of the media.
+        display_name (str): Display name for the uploaded resource.
 
     Raises:
-        RuntimeError: The upload reported no resource name, or the file ended in a state other
-            than ACTIVE or without a uri.
+        RuntimeError: The upload reported no resource name, or ended outside `FileState.ACTIVE`
+            or without a URI.
         Exception: Whatever the SDK or its transport raised, unchanged.
     """
     uploaded = await upload_file(
@@ -144,39 +153,25 @@ async def upload_as_input_file(
     filename: str,
     timeout_seconds: float,
 ) -> ResponseInputFileParam | None:
-    """Uploads media and wraps its ACTIVE uri as an `input_file` part; None on any failure.
+    """Returns an `input_file` part referencing the uploaded `FileState.ACTIVE` URI, or None on failure.
 
-    Best-effort by design: every caller degrades rather than failing — the link builders to
-    their text-only block, the generated-clip path by skipping its persona reply — so a
-    failure here must not raise into the reply pipeline. The `file_api_enabled` kill-switch is
-    checked here, which makes this the switch's gate for any caller that does not check it
-    first; a switched-off upload takes the same path a failed one does. It saves no fetch: the
-    media is fetched before this is called, so only a caller that checks the switch itself
-    avoids that.
-
-    `source` accepts a path as well as bytes (mirroring `MediaItem`) because the SDK's
-    `files.upload` takes `str | os.PathLike | io.IOBase`: a clip already written to a temp
-    file is streamed from disk rather than read whole into memory.
+    Best-effort and gated on `LLMConfig.file_api_enabled`; returns None when disabled, timed
+    out, or failed so callers degrade without raising into the reply pipeline.
 
     Args:
-        client: A Gemini client built with the Files API key (direct, never the proxy).
-        source: The media bytes, or the path to the media file on disk.
-        mime_type: The media's real MIME type; the upload needs it, the part does not carry one.
-        filename: Must carry the real extension: it is cosmetic on the proxied Responses path
-            (the bridge drops it) but load-bearing on the native Interactions path, which
-            classifies a part as video / audio / image / document purely by that extension.
-        timeout_seconds: Bound on the whole transfer, not just the activation poll.
-
-    Returns:
-        The part referencing the full `https://.../files/<id>` uri, or None when the upload
-        failed or never became ACTIVE in time.
+        client (genai.Client): Direct-to-Google Gemini client.
+        source (Path | bytes): Media bytes or path on disk.
+        mime_type (str): Media MIME type passed to the upload.
+        filename (str): Filename with its real extension (used by the Interactions path to
+            classify the media kind).
+        timeout_seconds (float): Timeout in seconds covering both the upload and activation poll.
     """
     if not LLMConfig().file_api_enabled:
         logfire.info("files api upload skipped by kill-switch", name=filename)
         return None
     started = time.monotonic()
     try:
-        # The bound covers the transfer as well as the poll, and sits INSIDE the slot on
+        # The bound covers the transfer as well as the poll, and sits inside the slot on
         # purpose. google-genai disables the transport timeout by default (`timeout=None`), so
         # an upload into a black-holed connection never returns; bounding only the poll would
         # let two such uploads wedge both slots for the life of the process, after which every

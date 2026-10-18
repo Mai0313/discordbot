@@ -11,20 +11,17 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 async def update_reaction(
     message: Message, bot_user: ClientUser | None, emoji: str, previous: str | None = None
 ) -> str:
-    """Adds a status reaction to a message, replacing the bot's previous one.
+    """Returns `emoji` after adding it to `message` and removing `previous` if present.
 
     Both add and remove are best-effort; failures are suppressed so reaction
     bookkeeping never breaks the surrounding flow, and a refused add is logged
     with its ids.
 
     Args:
-        message: The message to react on.
-        bot_user: The bot's own user, used to scope the removal of `previous`.
-        emoji: The reaction to add.
-        previous: The bot's prior reaction to remove first, if any.
-
-    Returns:
-        The emoji that was added, so callers can track the current reaction.
+        message (Message): The message to react on.
+        bot_user (ClientUser | None): The bot's own user, used to scope the removal of `previous`.
+        emoji (str): The reaction to add.
+        previous (str | None): The bot's prior reaction to remove first, if any.
     """
     if previous and bot_user:
         with contextlib.suppress(Exception):
@@ -73,7 +70,11 @@ class ReactionStatusChain(BaseModel):
     _tail: asyncio.Task[str] | None = PrivateAttr(default=None)
 
     def advance(self, emoji: str) -> None:
-        """Schedules `emoji` to replace the previously scheduled status reaction."""
+        """Schedules `emoji` to replace the previously scheduled status reaction.
+
+        Args:
+            emoji (str): Next status reaction emoji to apply.
+        """
         if not self.enabled:
             return
         previous_task = self._tail

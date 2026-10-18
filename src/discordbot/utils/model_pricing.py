@@ -1,4 +1,4 @@
-"""LiteLLM model info lookup, replacing the runtime dependency on `litellm`.
+"""LiteLLM model pricing and input-modality lookup.
 
 Fetches the LiteLLM upstream price table
 (https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
@@ -169,13 +169,10 @@ def _write_mirror(payload: str) -> None:
 
 
 def _load_upstream() -> tuple[dict[str, ModelPriceEntry] | None, str]:
-    """Returns the upstream price table, and how upstream answered.
+    """Returns `(prices, "served")` from upstream, or `(None, reason)` when unusable.
 
     Only a payload that yielded at least one entry is mirrored, so neither an upstream
     shape change nor an empty answer can overwrite the last good table.
-
-    Returns:
-        The parsed table and `served`, or None and the reason upstream did not serve one.
     """
     payload = _fetch_table()
     if payload is None:
@@ -219,16 +216,13 @@ def _load_table() -> _LoadedTable:
 
 
 def load_model_info() -> dict[str, ModelPriceEntry]:
-    """Returns the validated LiteLLM model info table, held between refreshes.
+    """Returns the validated LiteLLM model info table (empty if none could be loaded).
 
     The first call takes the whole chain and holds whatever it got; every later one reads
     that back, so an outage costs one timeout for the life of the process rather than one
     per call. `refresh_model_info` replaces a held table upstream did not serve once
     upstream is reachable again, and one it did serve once a day, so neither a degrade nor
     a newly listed model waits for a restart.
-
-    Returns:
-        Model name to price entry, empty when no table could be loaded at all.
     """
     global _LOADED_TABLE  # noqa: PLW0603 -- the process-wide price table
 
@@ -249,7 +243,7 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
 def refresh_model_info() -> None:
     """Loads the price table, or re-checks upstream while what is held is missing or stale.
 
-    A caller outside this module runs this off the event loop, so no RETRY is ever paid on
+    A caller outside this module runs this off the event loop, so no retry is ever paid on
     a lookup's path. The first load still falls to whichever caller reaches it first, which
     is why `_write_mirror` needs a unique temp name. A table upstream did not serve is
     re-checked on every call, and one it did serve once it is `MODEL_INFO_MAX_AGE_HOURS`
@@ -297,16 +291,13 @@ def _price_entry(model_name: str) -> ModelPriceEntry | None:
 
 
 def get_token_rates(model_name: str) -> tuple[float, float] | None:
-    """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`.
+    """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`, or None if unknown.
 
     An unknown model has no rates rather than zero ones: a listed rate of zero is a free
     model, and folding the two together would price every unknown model as free.
 
     Args:
-        model_name: Model identifier to look up in the cached price table.
-
-    Returns:
-        Input and output token rates for the model, or None when the table has no entry for it.
+        model_name (str): Model identifier to look up in the cached price table.
     """
     info = _price_entry(model_name=model_name)
     if info is None:
@@ -315,20 +306,14 @@ def get_token_rates(model_name: str) -> tuple[float, float] | None:
 
 
 def get_supported_modalities(model_name: str) -> set[str]:
-    """Returns the input modalities accepted by `model_name`.
+    """Returns the input modality strings accepted by `model_name`.
 
-    Reads `supported_modalities` from the cached LiteLLM price table. The
-    field is unevenly populated upstream and a new model can be missing from
-    the table for days, so where the table does not say, a Gemini model
-    defaults to text, image, audio and video, which every Gemini answer
-    model accepts, and any other to `{"text", "image"}`, the safe baseline
-    that virtually every modern multimodal LLM accepts.
+    Reads `supported_modalities` from the cached LiteLLM price table. Where the table does
+    not say, a Gemini model defaults to `{"text", "image", "audio", "video"}` and any other
+    model defaults to `{"text", "image"}`.
 
     Args:
-        model_name: Model identifier to look up in the cached price table.
-
-    Returns:
-        Set of modality strings (e.g. `{"text", "image", "audio", "video"}`).
+        model_name (str): Model identifier to look up in the cached price table.
     """
     info = _price_entry(model_name=model_name)
     if info is not None and info.supported_modalities is not None:

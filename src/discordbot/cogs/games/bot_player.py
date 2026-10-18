@@ -20,19 +20,13 @@ from discordbot.cogs.games.blackjack import (
 from discordbot.cogs.games.blackjack_ev import recommend_action
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
-# play, both measured by offline simulation. The edge is large because the EV engine
-# plays the dealer hole card and this table's five-card rules are player-favorable;
-# re-measure offline if those rules change.
+# play; re-measure offline if the dealer or five-card rules change.
 BOT_TABLE_EDGE: Final[float] = 0.13
 BOT_TABLE_VARIANCE: Final[float] = 1.34
-# Half-Kelly keeps drawdown variance down; the hard fraction cap protects the
-# bankroll even if the measured edge drifts.
+# Half-Kelly keeps drawdown variance down; the hard fraction cap bounds risk per round.
 BOT_KELLY_FRACTION: Final[float] = 0.5
 BOT_MAX_BET_FRACTION: Final[float] = 0.10
-# Edge added per +1 Hi-Lo true count when the shoe persists across rounds, used for
-# count-based bet spreading. Measured by offline simulation against a persistent shoe,
-# and well above the standard Hi-Lo ~0.005 because this table's five-card rules amplify
-# a ten-rich shoe; re-measure offline if those rules change.
+# Edge added per +1 Hi-Lo true count on a persistent shoe; re-measure offline if rules change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
 
 
@@ -89,25 +83,14 @@ def _should_stand(cards: list[Card], hand_total: int, dealer_value: int) -> bool
 def kelly_bet(balance: int, table_minimum: int, edge: float = BOT_TABLE_EDGE) -> int:
     """Returns the fractional-Kelly wager from the per-round edge.
 
-    The growth-optimal stake is a fraction of the bankroll set by the edge. With
-    a fresh shoe the edge is the constant `BOT_TABLE_EDGE`; with a persistent shoe
-    it is `count_adjusted_edge(...)` so the bot spreads its bet by true count.
-
-    `BOT_MAX_BET_FRACTION` of the bankroll is a hard ceiling, not merely a cap on the
-    Kelly fraction: the owner-chosen table stake floors the bet only up to that ceiling,
-    so a large table stake cannot drag the bot past its risk limit. The bot still sits
-    at any table, but it never wagers more than that fraction of its balance in one
-    round. A non-positive edge falls back to that capped table floor instead of
-    refusing to play.
+    `BOT_MAX_BET_FRACTION` of `balance` is a hard ceiling, and `table_minimum`
+    floors the wager only up to that ceiling; a non-positive edge falls back to
+    that capped table floor, and a non-positive `balance` returns 1.
 
     Args:
-        balance: The bot's spendable balance.
-        table_minimum: The table stake the bot matches, up to the bankroll ceiling.
-        edge: Per-round expected value in base-bet units.
-
-    Returns:
-        A positive integer wager within `[1, BOT_MAX_BET_FRACTION * balance]`, never
-        above `balance`. A non-positive balance returns 1, the one case above `balance`.
+        balance (int): The bot's spendable balance.
+        table_minimum (int): The table stake the bot matches, up to the bankroll ceiling.
+        edge (float): Per-round expected value in base-bet units.
     """
     if balance <= 0:
         return 1
@@ -121,11 +104,10 @@ def kelly_bet(balance: int, table_minimum: int, edge: float = BOT_TABLE_EDGE) ->
 
 
 def count_adjusted_edge(true_count: float) -> float:
-    """Returns the per-round edge adjusted for the Hi-Lo true count.
+    """Returns the per-round edge adjusted for the Hi-Lo `true_count`.
 
-    A persistent shoe lets the bot read a true count before betting; a positive
-    count means the remaining shoe is rich in ten-value cards and aces, which lifts
-    the edge.
+    Args:
+        true_count (float): Hi-Lo true count of the remaining shoe.
     """
     return BOT_TABLE_EDGE + BOT_EDGE_PER_TRUE_COUNT * true_count
 
@@ -133,9 +115,13 @@ def count_adjusted_edge(true_count: float) -> float:
 def fallback_action(
     hand_cards: list[Card], dealer_up: Card | None, allowed_actions: tuple[BotAction, ...]
 ) -> BotAction:
-    """Classic up-card-only basic-strategy table, used when the EV engine is unavailable.
+    """Returns the up-card-only basic-strategy action from `allowed_actions`.
 
-    Only emits actions listed in `allowed_actions`; a "split" there means the hand is a pair.
+    Args:
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        dealer_up (Card | None): The dealer's visible up-card, if dealt.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand;
+            `"split"` is included only when `hand_cards` is a pair.
     """
     pair_split_dealers: dict[int, frozenset[int]] = {
         11: frozenset(range(2, 12)),
@@ -179,8 +165,15 @@ def choose_bot_action(
 ) -> BotAction:
     """Returns the action the bot plays on its active hand.
 
-    The EV engine's hole-aware recommendation, or the up-card-only basic-strategy table
-    only when the engine is unavailable.
+    Uses the hole-aware EV engine, falling back to `fallback_action` if the
+    engine raises.
+
+    Args:
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        dealer_cards (list[Card]): The dealer's cards (hole card first, then up-card).
+        shoe (list[Card]): Remaining undealt cards in the shoe.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+        bet (int): Active wager on the hand.
     """
     try:
         return recommend_action(
@@ -212,11 +205,13 @@ def bot_takes_insurance(shoe: list[Card], dealer_cards: list[Card]) -> bool:
     """Returns whether the bot buys insurance: only when the face-down cards make it +EV.
 
     Priced from the ten-value density of every card still face down at the table: the remaining
-    shoe plus the dealer's hole card (`dealer_cards[0]`, hole first as dealt). The action engine
-    plays the hole, but here it is only one card of that pool, which is the same whichever of
-    its cards lies in the hole, so the hole cannot reach the decision. Insurance pays +2x its
-    cost on a ten-value hole and loses the cost otherwise, EV = cost * (3p - 1), so it only
-    turns positive once that density clears one third.
+    shoe plus the dealer's hole card (`dealer_cards[0]`, hole first as dealt). Insurance pays 2:1,
+    so it turns +EV once that density exceeds one third; the hole card is pooled with `shoe` so
+    its identity never leaks into the insurance decision.
+
+    Args:
+        shoe (list[Card]): Remaining undealt cards in the shoe.
+        dealer_cards (list[Card]): Dealer cards in draw order (`dealer_cards[0]` is the hole card).
     """
     face_down = [*shoe, dealer_cards[0]]
     ten_count = sum(1 for card in face_down if card.rank in TEN_VALUE_RANKS)

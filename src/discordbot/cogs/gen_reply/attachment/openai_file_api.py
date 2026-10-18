@@ -38,7 +38,7 @@ class OpenAIFileUploader(FileUploadRenderer):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The OpenAI-compatible client used for Files API uploads."""
+        """Returns the OpenAI-compatible client used for Files API uploads."""
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     async def render_image(
@@ -47,6 +47,13 @@ class OpenAIFileUploader(FileUploadRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
+        """Returns `source` uploaded to the OpenAI Files API as an `input_image` part, or `None`.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
+            cache_key (int | str): Per-source identifier for dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
         source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,

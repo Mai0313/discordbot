@@ -61,13 +61,10 @@ class FetchedPage(BaseModel):
     )
 
     def landed_on(self, path_prefixes: tuple[str, ...]) -> bool:
-        """Whether the request ended on a path starting with one of `path_prefixes`.
+        """Returns whether `final_url`'s lower-cased path starts with one of `path_prefixes`.
 
         Args:
-            path_prefixes: Lower-case path prefixes, such as a platform's login pages.
-
-        Returns:
-            True when the final URL's lower-cased path starts with any of them.
+            path_prefixes (tuple[str, ...]): Lower-case path prefixes, such as a platform's login pages.
         """
         return urlparse(self.final_url).path.lower().startswith(path_prefixes)
 
@@ -76,9 +73,9 @@ def fetch_page(url: str, headers: dict[str, str], timeout: float) -> FetchedPage
     """Fetches one page, following redirects, and classifies a failed request.
 
     Args:
-        url: The page to fetch.
-        headers: The request headers the platform answers in full to.
-        timeout: Per-request timeout in seconds.
+        url (str): The page to fetch.
+        headers (dict[str, str]): The request headers the platform answers in full to.
+        timeout (float): Per-request timeout in seconds.
 
     Returns:
         The page and where the request ended.
@@ -98,17 +95,14 @@ def fetch_page(url: str, headers: dict[str, str], timeout: float) -> FetchedPage
 
 
 def json_payloads(html: str, platform: str) -> Iterator[Any]:
-    """Yields every embedded JSON block on the page, skipping the ones that do not parse.
+    """Yields each embedded JSON block's parsed value in page order, skipping unparsable blocks.
 
-    Skipping rather than failing is what keeps one truncated block, of the dozens a page
-    carries, from costing the post.
+    Skipping rather than failing keeps one truncated block, of the dozens a page carries, from
+    costing the post.
 
     Args:
-        html: The page.
-        platform: The platform's display name, for the log line a skipped block leaves.
-
-    Yields:
-        Each block's parsed JSON, in page order.
+        html (str): The page HTML.
+        platform (str): The platform's display name, for the debug log when a block is skipped.
     """
     for match in JSON_SCRIPT_RE.finditer(string=html):
         try:
@@ -121,7 +115,11 @@ def json_payloads(html: str, platform: str) -> Iterator[Any]:
 
 
 def walk(node: JsonValue) -> Iterator[dict[str, Any]]:
-    """Yields every dict in a parsed JSON tree, outermost first."""
+    """Yields every dict in `node`, outermost first.
+
+    Args:
+        node (JsonValue): Parsed JSON value to traverse.
+    """
     if isinstance(node, dict):
         yield node
         for value in node.values():
@@ -132,7 +130,12 @@ def walk(node: JsonValue) -> Iterator[dict[str, Any]]:
 
 
 def deep_get(node: JsonValue, *keys: str) -> JsonValue:
-    """Follows a chain of dict keys, returning None as soon as one is missing."""
+    """Returns the nested value reached by `keys`, or `None` as soon as a key is missing.
+
+    Args:
+        node (JsonValue): Root JSON value.
+        *keys (str): Sequence of dict keys to follow.
+    """
     for key in keys:
         if not isinstance(node, dict):
             return None
@@ -141,15 +144,22 @@ def deep_get(node: JsonValue, *keys: str) -> JsonValue:
 
 
 def str_of(value: JsonValue) -> str:
-    """A string field, or an empty one when the page served a null or another type."""
+    """Returns `value` when it is a `str`, or an empty string otherwise.
+
+    Args:
+        value (JsonValue): Raw JSON field value.
+    """
     return value if isinstance(value, str) else ""
 
 
 def count_of(value: JsonValue) -> int:
-    """Reads a count the page serves as a bare value, a `{"count": n}` wrapper, or "1,017".
+    """Returns an integer count from a bare int, a `{"count": n}` wrapper, or a formatted string.
 
-    An int rather than the page's own formatted string, so every platform's counters are the
-    same type and whoever renders them picks the formatting once. Zero for anything else.
+    Normalizes counters to `int` so callers pick the formatting once; returns `0` for any other
+    shape.
+
+    Args:
+        value (JsonValue): Raw counter value from the page.
     """
     if isinstance(value, dict):
         value = value.get("count")
@@ -164,5 +174,9 @@ def count_of(value: JsonValue) -> int:
 
 
 def time_of(value: JsonValue) -> datetime | None:
-    """A unix timestamp as an aware datetime, or None when the page omitted it."""
+    """Returns `value` as a UTC `datetime` when it is a positive Unix timestamp, or `None` otherwise.
+
+    Args:
+        value (JsonValue): Raw timestamp value from the page.
+    """
     return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None

@@ -1,27 +1,25 @@
 """Best-effort git history for the memory store.
 
-``data/memories`` is a local git repository (never pushed; the parent repo ignores
-``/data``), so a consolidation that goes wrong can be read back and compared. The bot
-never creates it: an operator runs ``git init`` once, and a missing repository disables
+`data/memories` is a local git repository (never pushed; the parent repo ignores
+`/data`), so a consolidation that goes wrong can be read back and compared. The bot
+never creates it: an operator runs `git init` once, and a missing repository disables
 this quietly rather than filling an ignored directory with one nobody asked for.
 
-Three properties are what make committing from inside a running bot safe:
+Three properties make committing from inside a running bot safe:
 
 * **One worker.** Every invocation goes through a single queue drained by one task, one
-  commit at a time. Memory writes run concurrently and ``git commit`` takes
-  ``.git/index.lock``, so unserialised commits would start failing exactly when the store is
-  busiest.
+  commit at a time. Memory writes run concurrently and `git commit` takes
+  `.git/index.lock`, so unserialized commits would fail when the store is busiest.
 * **Under the scope lock.** A delta batch is N renames, not one atomic replace, so a
   commit taken mid-batch would record a tree that never existed. The worker takes the
-  same ``scope_lock`` the writer used; it is background work, so waiting costs nothing.
+  same `scope_lock` the writer used; it is background work, so waiting costs nothing.
 * **Never load-bearing.** Every failure is swallowed and counted, and a run of them
   disables the service for the rest of the process. Nothing upstream branches on whether
   a commit happened.
 
-Note what this does NOT do: a ``/memory clear`` commits the deletion, but every earlier
-commit still holds the content, and ``gc`` only drops *unreachable* objects. Local
-history therefore outlives a clear. That is a deliberate, recorded decision on #408, not
-an oversight — the store is a private, unpushed, single-operator repository.
+A `/memory clear` commits the deletion, while every earlier commit still holds the prior
+content and `gc` drops only unreachable objects. Local history therefore outlives a clear by
+design: the store is a private, unpushed, single-operator repository.
 """
 
 import asyncio
@@ -48,8 +46,8 @@ class _GitRequest(BaseModel):
 class MemoryGitService(BaseModel):
     """Serialized, best-effort committer for the memory store.
 
-    Constructed with no worker at all: the queue and the task are bound to a loop by
-    `start`, which a cog's `on_ready` calls, so nothing here touches asyncio at import time.
+    Constructed with no worker: `start` binds the queue and task to the running event loop so
+    nothing touches asyncio at import time.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -89,7 +87,12 @@ class MemoryGitService(BaseModel):
             await worker
 
     def enqueue(self, scope: str, reason: str) -> None:
-        """Requests a commit of one scope. Never blocks, never raises, never awaits."""
+        """Queues a commit of `scope` without blocking, raising, or awaiting.
+
+        Args:
+            scope (str): Scope directory to stage, relative to the store root.
+            reason (str): Commit subject tag (for example, `'update'` or `'clear'`).
+        """
         queue = self._queue
         if queue is None or not self.enabled:
             return
@@ -143,12 +146,7 @@ class MemoryGitService(BaseModel):
         return bool(await self._git("status", "--porcelain", "--", scope))
 
     async def _git(self, *args: str) -> str:
-        """Runs one git command in the store, returning stdout.
-
-        Raises:
-            RuntimeError: The command exited non-zero. The caller turns every failure
-                into a counted warning, so the message only has to be readable.
-        """
+        """Runs one git command in the store and returns stdout, raising `RuntimeError` on non-zero exit."""
         root = memory_root()
         process = await asyncio.create_subprocess_exec(
             "git",

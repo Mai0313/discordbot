@@ -138,15 +138,12 @@ async def _list_pending_public_messages(
 async def track_public_message(
     message: Message, user_name: str | None = None
 ) -> PendingPublicMessage | None:
-    """Records a public response so a restart can delete it later.
+    """Returns the persisted cleanup record for `message`, or None when it has no usable ids.
 
     Args:
-        message: Discord message created for an expiring public response.
-        user_name: Optional Discord account name of the user who triggered the response.
-
-    Returns:
-        The persisted record, or `None` when the message object has no usable
-        `channel.id` / `id` pair.
+        message (Message): Discord message created for an expiring public response.
+        user_name (str | None): Optional Discord account name of the user who triggered the
+            response.
     """
     record = _message_record(message=message, user_name=user_name)
     if record is None:
@@ -167,7 +164,11 @@ async def track_public_message(
 
 
 async def forget_public_message(message_id: int) -> None:
-    """Deletes a public message cleanup record."""
+    """Deletes a public message cleanup record.
+
+    Args:
+        message_id (int): Discord message id of the cleanup record to remove.
+    """
     try:
         await _forget_public_message(message_id=message_id)
     # Stays broad for the same reason as tracking; the stale row self-heals on the next
@@ -187,7 +188,8 @@ async def list_pending_public_messages(
     """Returns the public messages still waiting for cleanup.
 
     Args:
-        tracked_before: Only rows recorded before this moment; every row when omitted.
+        tracked_before (datetime | None): Only rows recorded before this moment; every row when
+            omitted.
     """
     try:
         return await _list_pending_public_messages(tracked_before=tracked_before)
@@ -218,6 +220,11 @@ def report_press_failure(error: HTTPException, message: Message, action: str) ->
     life, which Discord answers in either form; the channel attempt tells those apart and
     reports. A 403 is a refusal whose code is the whole finding. Anything else keeps its
     traceback.
+
+    Args:
+        error (HTTPException): Exception raised when acting through the press's token.
+        message (Message): Target public message.
+        action (str): Verb naming the attempted action (`"edit"` or `"delete"`).
     """
     text = f"A press could not {action} a public message; trying the channel"
     message_id = getattr(message, "id", None)
@@ -244,6 +251,12 @@ async def edit_public_message(
     itself: a press answered with a private notice holds a token for that notice instead. A
     token that fails hands the edit to the channel too, since only the channel tells a message
     already gone from a token that cannot reach it.
+
+    Args:
+        message (Message): Public message to edit.
+        interaction (Interaction[commands.Bot] | None): Press acknowledged on `message`, or None
+            when only the channel is available.
+        payload (dict[str, Any]): Keyword arguments forwarded to the message edit call.
     """
     if interaction is not None and not interaction.is_expired():
         try:
@@ -280,17 +293,16 @@ async def delete_public_message(
     message_id: int | None = None,
     interaction: Interaction[commands.Bot] | None = None,
 ) -> bool:
-    """Deletes a public message and removes its persisted cleanup record.
+    """Returns whether `message` was deleted (or already gone) and its cleanup record removed.
+
+    False when Discord refused the delete, which keeps the record for the next process's startup
+    sweep.
 
     Args:
-        message: Discord message to delete.
-        message_id: Record key when the message object carries none.
-        interaction: A press on the message whose token, while it lives, deletes it in place of
-            the channel. Never persisted, so a restart's sweep has only the channel.
-
-    Returns:
-        True when the message is gone, an already-deleted one included; False when Discord
-        refused the delete, which keeps the record for the next process's startup sweep.
+        message (Message): Discord message to delete.
+        message_id (int | None): Record key when the message object carries none.
+        interaction (Interaction[commands.Bot] | None): Press on the message whose token, while
+            it lives, deletes it in place of the channel.
     """
     resolved_message_id = message_id if message_id is not None else getattr(message, "id", None)
     try:
@@ -324,9 +336,10 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
     """Deletes persisted public responses left by an earlier bot process.
 
     Args:
-        bot: The bot whose channels hold the messages.
-        tracked_before: When this process started. Interactions run before `on_ready` does, so
-            a row recorded since is a message this process still owns, a live view included.
+        bot (commands.Bot): The bot whose channels hold the messages.
+        tracked_before (datetime): When this process started. Interactions run before `on_ready`
+            does, so a row recorded since is a message this process still owns, a live view
+            included.
     """
     records = await list_pending_public_messages(tracked_before=tracked_before)
     deleted_count = 0
@@ -350,7 +363,7 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
             # the channel's overwrites are the server's to set, so the bot's own identity can
             # be shut out of a channel an interaction still reaches. The type and the two ids
             # are the whole story, while the traceback is sixteen identical lines per record
-            # per boot. Split from the branch below so a 5xx or a rate limit — which IS worth
+            # per boot. Split from the branch below so a 5xx or a rate limit — which is worth
             # a traceback — does not lose one by sharing this handler.
             logfire.warn(
                 "Stale public response sits in a channel the bot cannot read",
@@ -385,10 +398,12 @@ async def delete_public_message_after(
     """Deletes a public response after a delay.
 
     Args:
-        message: Discord message to delete.
-        delay: Seconds to wait before deletion.
-        user_name: Optional Discord account name of the user who triggered the response.
-        interaction: Optional press on the message to delete through (`delete_public_message`).
+        message (Message): Discord message to delete.
+        delay (float): Seconds to wait before deletion.
+        user_name (str | None): Optional Discord account name of the user who triggered the
+            response.
+        interaction (Interaction[commands.Bot] | None): Optional press on the message to delete
+            through (`delete_public_message`).
     """
     await track_public_message(message=message, user_name=user_name)
     await asyncio.sleep(delay=delay)
@@ -401,7 +416,16 @@ def schedule_public_message_delete(
     user_name: str | None = None,
     interaction: Interaction[commands.Bot] | None = None,
 ) -> None:
-    """Schedules delayed deletion for a public response, never blocking the command."""
+    """Schedules delayed deletion for a public response, never blocking the command.
+
+    Args:
+        message (Message): Discord message to delete.
+        delay (float): Seconds to wait before deletion.
+        user_name (str | None): Optional Discord account name of the user who triggered the
+            response.
+        interaction (Interaction[commands.Bot] | None): Optional press on the message to delete
+            through (`delete_public_message`).
+    """
     spawn_tracked(
         coro=delete_public_message_after(
             message=message, delay=delay, user_name=user_name, interaction=interaction

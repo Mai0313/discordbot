@@ -1,26 +1,22 @@
-"""Bilibili video URL detection shared by the gen_reply linked-video answer path."""
+"""Bilibili video URL pattern.
+
+Matches watchable video pages (`/video/BV.../` and `/video/av.../`) and `b23.tv` short links.
+Live rooms (`live.bilibili.com`), user spaces (`space.bilibili.com`), moments (`t.bilibili.com`),
+and `/bangumi/` pages do not match, so no separate post-URL filter is needed. Because a `b23.tv`
+short link can still redirect to a space or collection (which yt-dlp extracts as a playlist),
+callers reject playlist-shaped results whose resolved canonical URL falls outside `BILIBILI_URL_RE`
+while still accepting single `/video/` links that redirect server-side to `/bangumi/`.
+"""
 
 import re
 
 from discordbot.utils.urls import URL_START_ANCHOR
 
-# Single source of truth for detecting a Bilibili video URL in a message. gen_reply uses it to
-# decide whether to read the linked video into answer context (yt-dlp download, then a Gemini
-# Files API upload — unlike YouTube, Gemini cannot fetch a Bilibili page server-side).
-# Matches the watchable forms only: `/video/BV.../` and `/video/av.../` pages plus `b23.tv`
-# share short links. Live rooms (`live.bilibili.com`), user spaces (`space.bilibili.com`),
-# moments (`t.bilibili.com`) and `/bangumi/` pages never match, so no separate post-URL guard is
-# needed on top. A `b23.tv` short link CAN still resolve to one of those — and yt-dlp reads a space
-# or collection SUCCESSFULLY as a playlist rather than failing — so the context builder rejects a
-# playlist-shaped result whose resolved canonical URL falls outside this regex with its neutral
-# notice (playlist-shaped only: a single /video/ link Bilibili redirects to /bangumi/ server-side
-# is still the linked video).
-# Bilibili has no Douyin-grade WAF economics, so the one wasted probe is acceptable.
-# The host is anchored right after the scheme, so `bilibili.com.attacker.com/video/...` and
-# `evil.com/?x=bilibili.com/video/...` never match. A BV id is exactly `BV` plus 10 base-62
-# characters (the lookahead stops a longer token from matching truncated), an av id is digits,
-# and the optional query tail must end on `[A-Za-z0-9_-]` so a link written mid-sentence stops
-# cleanly at a non-ASCII terminator (e.g. zh/ja `...hEc8。`) instead of swallowing punctuation.
+# Host is anchored right after the scheme so lookalike domains (`bilibili.com.attacker.com`) and
+# query strings (`evil.com/?x=bilibili.com/video/...`) cannot match. A BV id is `BV` plus 10
+# base-62 characters (with a negative lookahead so longer tokens do not match truncated), an av id
+# is digits, and the optional query tail ends on `[A-Za-z0-9_-]` so a link written mid-sentence
+# stops before CJK or ASCII sentence punctuation.
 BILIBILI_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://"
     r"(?:"

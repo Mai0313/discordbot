@@ -38,23 +38,35 @@ VIP_WIN_MULTIPLIER_LABEL: Final[str] = f"{_VIP_WIN_MULTIPLIER_NUM / _VIP_WIN_MUL
 CENTRAL_BANK_CREDIT_MULTIPLIER: Final[int] = 2
 # The central bank's starting capital. The interest it keeps is added on top, and
 # the two together are what a server whose own members hold almost nothing can
-# still borrow against. A constant rather than a seeded ledger row, so the row only
-# ever holds earnings and a database created before this existed needs no fix-up.
+# still borrow against. A constant rather than a seeded ledger row, so the ledger
+# row holds only accrued interest.
 CENTRAL_BANK_BASE_CAPACITY: Final[int] = 5_000_000
 
 
 def clamp_loan_rate_bps(monthly_rate_bps: int) -> int:
-    """Clamps a monthly rate in basis points into the range a loan may carry."""
+    """Returns `monthly_rate_bps` clamped into the valid loan rate range.
+
+    Args:
+        monthly_rate_bps (int): Monthly interest rate in basis points.
+    """
     return max(MIN_LOAN_MONTHLY_RATE_BPS, min(MAX_LOAN_MONTHLY_RATE_BPS, monthly_rate_bps))
 
 
 def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
-    """Converts a user-facing monthly percent into basis points."""
+    """Returns a user-facing monthly percentage converted and clamped to basis points.
+
+    Args:
+        monthly_rate_percent (float): Monthly interest rate as a percentage.
+    """
     return clamp_loan_rate_bps(monthly_rate_bps=round(monthly_rate_percent * 100))
 
 
 def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
-    """Converts stored monthly basis points into a display percent."""
+    """Returns stored monthly basis points converted to a display percentage.
+
+    Args:
+        monthly_rate_bps (int): Monthly interest rate in basis points.
+    """
     return monthly_rate_bps / 100
 
 
@@ -62,6 +74,11 @@ def simple_interest(principal: int, monthly_rate_bps: int, days: int) -> int:
     """Returns the simple interest `principal` earns over `days` at a monthly rate in bps.
 
     A month is 30 days, and the result rounds down.
+
+    Args:
+        principal (int): Loan principal amount.
+        monthly_rate_bps (int): Monthly interest rate in basis points.
+        days (int): Elapsed days to accrue interest over.
     """
     return principal * monthly_rate_bps * days // (10_000 * 30)
 
@@ -71,6 +88,11 @@ def clamped_balance(balance: int, delta: int, allow_negative: bool) -> int:
 
     Unless `allow_negative`, a debit stops at zero and leaves a balance already at or below
     zero alone; a credit always applies in full.
+
+    Args:
+        balance (int): Current account balance before the change.
+        delta (int): Signed balance change to apply.
+        allow_negative (bool): Whether a debit may push the balance below zero.
     """
     if allow_negative or delta >= 0:
         return balance + delta
@@ -78,17 +100,14 @@ def clamped_balance(balance: int, delta: int, allow_negative: bool) -> int:
 
 
 def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
-    """Applies the VIP payout multiplier on a winning player delta.
+    """Returns the post-bonus player delta after applying the VIP payout multiplier.
 
     The bonus only fires on positive deltas (wins). Pushes and losses pass
     through unchanged so VIP never softens a loss.
 
     Args:
-        delta: Pre-bonus player delta for the round.
-        is_vip: VIP status of the account at settlement time.
-
-    Returns:
-        Post-bonus player delta.
+        delta (int): Pre-bonus player delta for the round.
+        is_vip (bool): VIP status of the account at settlement time.
     """
     if not is_vip or delta <= 0:
         return delta
@@ -110,12 +129,9 @@ def central_bank_credit_ceiling(balance: int, total_debt: int) -> int:
     then take turns borrowing against each other without limit.
 
     Args:
-        balance: Current wallet balance.
-        total_debt: Outstanding principal plus accrued interest the borrower owes
+        balance (int): Current wallet balance.
+        total_debt (int): Outstanding principal plus accrued interest the borrower owes
             across every active contract, whoever lent it.
-
-    Returns:
-        The remaining ceiling, never negative.
     """
     return max((balance - total_debt) * CENTRAL_BANK_CREDIT_MULTIPLIER - total_debt, 0)
 
