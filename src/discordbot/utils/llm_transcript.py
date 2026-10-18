@@ -21,7 +21,7 @@ from discordbot.utils.model_pricing import get_token_rates
 # memory owners, so the whole footer is stripped as one unit. The optional leading
 # `\n-# ✏️ ...` / `\n-# 🩹 ...` lines are the memory note `set_memory_note` puts directly
 # above the footer, its marks spelled as in `cogs/gen_reply/status_marks.py`: a later turn
-# re-reads the reply off Discord, and a forget note quotes what the user asked to drop (#865).
+# re-reads the reply off Discord, and a forget note quotes what the user asked to drop.
 # The first may also open the message: Discord trims leading whitespace, so a reply with no
 # prose starts on its note.
 USAGE_FOOTER_RE = re.compile(
@@ -44,21 +44,16 @@ FORWARDED_MESSAGE_MARKER = "[forwarded message]"
 def render_usage_footer(
     model_name: str, label: str, input_tokens: int, output_tokens: int
 ) -> tuple[str, float | None]:
-    """Renders the usage footer's model, token-count and cost line.
+    """Returns the usage footer line and its USD cost (or None when `model_name` has no rate).
 
     Its `⬆` / `⬇` icons are what `USAGE_FOOTER_RE` anchors on. The cost is left off when the
     price table has no entry for `model_name`, since `$0.00000000` would read as a price.
 
     Args:
-        model_name: The model the tokens are priced as. Kept apart from `label` because a name
-            the price table does not know shows no cost, so pricing a label that carries
-            anything beyond the bare name (a reasoning effort) would drop the cost.
-        label: What the line shows as the model.
-        input_tokens: Input tokens the request reported.
-        output_tokens: Output tokens the request reported.
-
-    Returns:
-        The line, and the cost in dollars it shows, or None when it shows none.
+        model_name (str): Model identifier used to look up token rates.
+        label (str): Display model label shown in the footer line.
+        input_tokens (int): Input tokens the request reported.
+        output_tokens (int): Output tokens the request reported.
     """
     line = f"-# {label} · ⬆ {input_tokens:,} ⬇ {output_tokens:,}"
     rates = get_token_rates(model_name=model_name)
@@ -70,16 +65,24 @@ def render_usage_footer(
 
 
 def sanitize_identity(value: str) -> str:
-    """Neutralizes authorship-prefix lookalikes in user-controlled identity fields."""
+    """Returns `value` with authorship-prefix lookalikes (`[id:`) neutralized.
+
+    Args:
+        value (str): User-controlled identity string to sanitize.
+    """
     return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
 
 
 def render_author_identity(display_name: str, username: str, user_id: int) -> str:
-    """Renders the single-line author identity stamped into memory files.
+    """Returns the single-line author identity stamped into memory files.
 
-    Whitespace runs (including any newline that slips past Discord's name
-    rules) collapse to single spaces so the identity can never break the
-    one-line header formats the memory store relies on.
+    Whitespace runs collapse to single spaces so the identity never breaks the one-line header
+    format the memory store relies on.
+
+    Args:
+        display_name (str): User's display name or server nickname.
+        username (str): User's Discord account handle.
+        user_id (int): User's Discord numeric id.
     """
     safe_display = " ".join(sanitize_identity(value=display_name).split())
     safe_username = " ".join(sanitize_identity(value=username).split())
@@ -87,11 +90,14 @@ def render_author_identity(display_name: str, username: str, user_id: int) -> st
 
 
 def render_server_identity(server_name: str, server_id: int) -> str:
-    """Renders the single-line server identity stamped into per-server memory files.
+    """Returns the single-line server identity stamped into per-server memory files.
 
-    Mirrors `render_author_identity`: the guild name is user-controlled, so it
-    is sanitized against `[id:` lookalikes and collapsed to one line before the
-    `[id: <server_id>]` suffix the memory store's identity regex expects.
+    Sanitizes `server_name` against `[id:` lookalikes and collapses whitespace to one line before
+    the `[id: <server_id>]` suffix.
+
+    Args:
+        server_name (str): Guild display name.
+        server_id (int): Guild Discord numeric id.
     """
     safe_name = " ".join(sanitize_identity(value=server_name).split())
     return f"{safe_name} [id: {server_id}]"

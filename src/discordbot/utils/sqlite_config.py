@@ -33,8 +33,8 @@ def configure_sqlite_connection(
     write. A tolerant `busy_timeout` gives writers time to wait under contention.
 
     Args:
-        dbapi_connection: The freshly opened DBAPI connection.
-        enable_foreign_keys: Whether to turn on `PRAGMA foreign_keys` for the connection.
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+        enable_foreign_keys (bool): Whether to turn on `PRAGMA foreign_keys` for the connection.
     """
     with contextlib.closing(dbapi_connection.cursor()) as cursor:
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -50,14 +50,18 @@ class SqliteSchemaHook(Protocol):
     """Extra bootstrap a database runs inside its own `create_all` transaction."""
 
     def __call__(self, conn: AsyncConnection) -> Awaitable[None]:
-        """Runs the extra bootstrap against the open connection."""
+        """Runs the extra bootstrap against the open connection.
+
+        Args:
+            conn (AsyncConnection): Open connection inside the `create_all` transaction.
+        """
         ...
 
 
 class SqliteBootstrap(BaseModel):
     """The hooks, lazy schema and session factory one async SQLite database needs.
 
-    What it deliberately does NOT hold is the engine. That stays a module-level `_engine`
+    What it deliberately does not hold is the engine. That stays a module-level `_engine`
     binding per module, because a `cached_property` engine would leak the pool, the dialect
     and the inspector cache, and because tests monkeypatch it by that name. So every method
     here takes the caller's current engine instead, which is what makes a swapped `_engine`
@@ -113,7 +117,7 @@ class SqliteBootstrap(BaseModel):
         `MethodType` to `(id(fn.__func__), id(fn.__self__))` instead.
 
         Args:
-            engine: The async engine whose sync engine receives the listeners.
+            engine (AsyncEngine): The async engine whose sync engine receives the listeners.
         """
         listeners = (("connect", self._on_connect), ("checkout", self._on_checkout))
         for identifier, listener in listeners:
@@ -124,7 +128,7 @@ class SqliteBootstrap(BaseModel):
         """Creates this database's tables once per engine, hooks installed first.
 
         Args:
-            engine: The module's current engine.
+            engine (AsyncEngine): The module's current engine.
         """
         self.install_hooks(engine=engine)
         if self._ready_for is engine:
@@ -140,15 +144,12 @@ class SqliteBootstrap(BaseModel):
 
     @contextlib.asynccontextmanager
     async def open_session(self, engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
-        """Opens an async session on the module's current engine, its schema ensured first.
+        """Yields an `AsyncSession` bound to `engine` after ensuring its schema.
 
         A module opens every session here, so no caller can reach a table before it exists.
 
         Args:
-            engine: The module's current engine.
-
-        Yields:
-            An `AsyncSession` bound to it, closed on exit.
+            engine (AsyncEngine): The module's current engine.
         """
         await self.ensure_schema(engine=engine)
         async with AsyncSession(bind=engine, expire_on_commit=False) as session:

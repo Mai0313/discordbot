@@ -73,9 +73,7 @@ class UsageRecord(BaseModel):
         examples=["memory server show", "QA"],
     )
     user_id: int = Field(..., description="Discord user ID that used the feature.")
-    # Defaulted rather than required, for the records written before this field existed:
-    # a month file is append-only and never rewritten, so a reader has to expect both
-    # shapes forever.
+    # Defaulted rather than required so older monthly JSONL rows without this field still parse.
     user_name: str = Field(
         default="",
         description="The user's Discord username as it read at write time; a label, not a key.",
@@ -124,6 +122,14 @@ class UsageRecorder(BaseModel):
 
         Recording must never cost the thing it records, so a failure to write is logged
         and swallowed rather than raised into the command or the reply pipeline.
+
+        Args:
+            kind (UsageKind): Whether this was a slash command or an AI reply.
+            name (str): Full command path or reply route name.
+            user_id (int): Discord user id that used the feature.
+            user_name (str): Discord username snapshot at write time.
+            guild_id (int | None): Discord guild id, or None in a DM.
+            channel_id (int | None): Discord channel id, when there is one.
         """
         if not self.config.enabled:
             return

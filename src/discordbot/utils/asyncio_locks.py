@@ -78,19 +78,37 @@ class LoopLocalRegistry[K, V](BaseModel):
         return self._items
 
     def setdefault(self, key: K, default: V) -> V:
-        """Returns the value for `key`, inserting `default` when absent."""
+        """Returns the value for `key`, inserting `default` when absent.
+
+        Args:
+            key (K): Entry key to look up.
+            default (V): Value inserted and returned when `key` is absent.
+        """
         return self._bind().setdefault(key, default)
 
     def get(self, key: K) -> V | None:
-        """Returns the value for `key`, or None when absent."""
+        """Returns the value for `key`, or None when absent.
+
+        Args:
+            key (K): Entry key to look up.
+        """
         return self._bind().get(key)
 
     def set(self, key: K, value: V) -> None:
-        """Stores `value` under `key`."""
+        """Stores `value` under `key`.
+
+        Args:
+            key (K): Entry key to store under.
+            value (V): Value to store.
+        """
         self._bind()[key] = value
 
     def pop(self, key: K) -> V | None:
-        """Removes and returns `key`'s value, or None when absent."""
+        """Returns and removes `key`'s value, or None when absent.
+
+        Args:
+            key (K): Entry key to remove.
+        """
         return self._bind().pop(key, None)
 
 
@@ -115,7 +133,11 @@ class KeyedLockManager[K](BaseModel):
 
     @asynccontextmanager
     async def hold(self, key: K) -> AsyncGenerator[None]:
-        """Holds the per-key lock for the duration of the context, refcounting the key."""
+        """Holds the per-key lock for the duration of the context, refcounting the key.
+
+        Args:
+            key (K): Key whose lock to acquire.
+        """
         self._bind()
         lock = self._locks.setdefault(key, asyncio.Lock())
         self._refcounts[key] = self._refcounts.get(key, 0) + 1
@@ -141,9 +163,10 @@ def spawn_tracked(
     which `./data/logs` never sees.
 
     Args:
-        coro: The work to run.
-        tasks: The owner's set of running tasks; the task leaves it when done.
-        name: The task's name, which the failure log carries.
+        coro (Coroutine[Any, Any, None]): The work to run.
+        tasks (set[asyncio.Task[None]]): The owner's set of running tasks; the task leaves it
+            when done.
+        name (str): The task's name, which the failure log carries.
     """
     task = asyncio.create_task(coro=coro, name=name)
     tasks.add(task)

@@ -48,11 +48,8 @@ class DownloadedPost(Protocol):
 class DouyinDelivery(BaseModel):
     """A planned Douyin send: what goes out, and the size a refusal has to be able to quote.
 
-    `total_mb` rides along rather than being re-read off the download, because reading it is
-    order-sensitive: `DouyinDownload.total_bytes` stats the files, and a successful host moves
-    them out of the temp dir, so the read has to happen BEFORE the plan.
-    Carrying the number here is what stops a later caller re-deriving it from a deleted path —
-    on exactly the oversize path that most needs it.
+    `DouyinDownload.total_bytes` stats the files on disk, and a successful host moves them out of
+    the temp dir, so `total_mb` is read before planning rather than re-derived afterward.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -66,10 +63,15 @@ class DouyinDelivery(BaseModel):
 async def plan_douyin_delivery(
     planner: MediaDeliveryPlanner, result: DownloadedPost, upload_limit: int
 ) -> DouyinDelivery:
-    """Decides how one downloaded Douyin post reaches Discord.
+    """Returns the delivery plan for one downloaded Douyin post.
 
     Several files ride one send and Discord measures the whole multipart body, so a gallery
     holds back the envelope margin; a single-file send keeps it at 0.
+
+    Args:
+        planner (MediaDeliveryPlanner): Planner that partitions items into attach, host, or drop.
+        result (DownloadedPost): Finished Douyin download.
+        upload_limit (int): Destination's attachment size ceiling in bytes.
     """
     items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
     total_mb = result.total_bytes / 1024 / 1024
@@ -84,19 +86,17 @@ async def plan_douyin_delivery(
 def douyin_delivery_lines(
     result: DownloadedPost, plan: MediaPlan, hosting_available: bool, url: str, dropped_event: str
 ) -> list[str]:
-    """The subtext lines stating what a Douyin send left out, plus any hosted URLs.
+    """Returns the subtext lines stating what a Douyin send left out, plus any hosted URLs.
 
-    Anything left out is said explicitly rather than silently dropped, so a user seeing a
-    partial gallery knows it is partial. The two causes are reported separately because they are
-    not the same problem: the attachment cap is a Discord limit nothing can change, while a
-    dropped item means delivery itself failed.
+    Omitted gallery images and failed deliveries are reported separately. Hosted URLs come last
+    and unwrapped so they stay clickable and, under ~100 MiB, render Discord's inline player.
 
-    `dropped_event` is the caller's own log message rather than a shared one. The event name is
-    the only field in `data/logs` that says which path dropped the media, so a shared one would
-    cost that.
-
-    Hosted URLs come last and unwrapped: they must stay clickable and, under ~100 MiB, render
-    Discord's inline player.
+    Args:
+        result (DownloadedPost): Finished Douyin download.
+        plan (MediaPlan): Planned delivery outcome for the downloaded files.
+        hosting_available (bool): Whether external media hosting is active, recorded on drop logs.
+        url (str): Source post URL for drop logs.
+        dropped_event (str): Caller-specific log event name when items are dropped.
     """
     lines: list[str] = []
     if result.omitted_images:

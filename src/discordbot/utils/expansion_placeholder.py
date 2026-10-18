@@ -6,7 +6,7 @@ exactly the reader it was posted for — someone tagged in it has to work out wh
 came from. So the cog replies with one line the moment it starts and edits that same message into
 the finished expansion: the card sits under the link whatever happened in between.
 
-A failure leaves NOTHING behind. `discard` removes the placeholder, and the reaction on the source
+A failure leaves nothing behind. `discard` removes the placeholder, and the reaction on the source
 message is the whole report.
 
 The one failure that rule cannot cover is a restart, which kills the expansion mid-read with the
@@ -41,7 +41,7 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 
 # The whole reaction vocabulary an auto-expansion answers with, shared so one symbol means one
-# thing whichever platform was linked. Nothing else reaches the channel, so the reaction IS the
+# thing whichever platform was linked. Nothing else reaches the channel, so the reaction is the
 # report and a reader who learns it once reads every expansion. What separates them is what the
 # reader should do next:
 #
@@ -78,16 +78,17 @@ class PendingExpansionRow(Base):
     """A placeholder that is posted but not yet delivered onto or discarded.
 
     Attributes:
-        message_id: The placeholder's own Discord id, which is also the row key: one
+        message_id (Mapped[int]): The placeholder's own Discord id, which is also the row key: one
             placeholder is one expansion, and the cog reaches the row through it.
-        channel_id: The channel both messages live in, so the resume can fetch them.
-        source_message_id: The message carrying the link, which `_expand` reacts on.
-        source: Which cog owns the row, keyed as in `typings/emojis.py::LINK_SOURCE_EMOJIS`,
-            so each cog sweeps its own rows and never resumes another's.
-        url: The URL the listener matched, stored rather than re-derived so an edited or
-            unreadable source message cannot change what the resumed expansion reads.
-        created_at: Write timestamp; the sweep runs oldest first and only rows from before its
-            process started.
+        channel_id (Mapped[int]): The channel both messages live in, so the resume can fetch them.
+        source_message_id (Mapped[int]): The message carrying the link, which `_expand` reacts on.
+        source (Mapped[str]): Which cog owns the row, keyed as in
+            `typings/emojis.py::LINK_SOURCE_EMOJIS`, so each cog sweeps its own rows and never
+            resumes another's.
+        url (Mapped[str]): The URL the listener matched, stored rather than re-derived so an
+            edited or unreadable source message cannot change what the resumed expansion reads.
+        created_at (Mapped[datetime]): Write timestamp; the sweep runs oldest first and only rows
+            from before its process started.
     """
 
     __tablename__ = "pending_expansion"
@@ -123,7 +124,11 @@ class MessageFetcher(Protocol):
     """
 
     async def fetch_message(self, id: int, /) -> Message:  # noqa: A002 -- nextcord's own name
-        """Reads one message back off the channel."""
+        """Returns one message read back off the channel.
+
+        Args:
+            id (int): Discord message id to fetch.
+        """
         ...
 
 
@@ -133,7 +138,14 @@ class ExpansionRetry(Protocol):
     async def __call__(
         self, message: Message, url: str, current_emoji: str, placeholder: "ExpansionPlaceholder"
     ) -> None:
-        """Runs the expansion and reports its own failures; never raises for a bad post."""
+        """Runs the expansion and reports its own failures; never raises for a bad post.
+
+        Args:
+            message (Message): The message carrying the link.
+            url (str): The post to expand.
+            current_emoji (str): The mark already on the message, which each outcome replaces.
+            placeholder (ExpansionPlaceholder): The reply slot to deliver onto.
+        """
         ...
 
 
@@ -143,12 +155,7 @@ _database = SqliteBootstrap(metadata=Base.metadata)
 async def _record_pending(
     placeholder: Message, source_message: Message, source: str, url: str
 ) -> None:
-    """Persists a posted placeholder so a restart can find it again.
-
-    Best effort: the durable half is what makes a restart recoverable, and losing it costs
-    exactly the stale placeholder this feature exists to remove — which is where the whole
-    expansion stood before it, so a failing write must never take the expansion with it.
-    """
+    """Persists a posted placeholder so a restart can find it again, best-effort."""
     try:
         async with _database.open_session(engine=_engine) as session, session.begin():
             session.add(
@@ -248,10 +255,10 @@ class ExpansionPlaceholder(BaseModel):
         restart sweep something to find.
 
         Args:
-            embeds: The finished expansion.
-            content: The text under the expansion, or None for an expansion that is embeds
-                and attachments alone.
-            files: Media attaching natively beside the embeds.
+            embeds (list[Embed]): The finished expansion.
+            content (str | None): The text under the expansion, or None for an expansion that is
+                embeds and attachments alone.
+            files (list[File] | None): Media attaching natively beside the embeds.
         """
         await self.message.edit(
             content=content or "",
@@ -293,23 +300,18 @@ class ExpansionPlaceholder(BaseModel):
 async def send_expansion_placeholder(
     message: Message, text: str, source: str, url: str
 ) -> ExpansionPlaceholder | None:
-    """Claims the reply slot under `message` with a line saying the expansion is coming.
+    """Returns a posted placeholder replying to `message`, or None when the channel refused it.
 
     A refusal here is the whole expansion's answer as well: a channel that will not take this
     one line will not take the card either, and learning it now costs no fetch. Both refusals
-    are ordinary rather than defects, which is why they are classified here instead of
-    reaching the listener's last-resort handler, where a misconfigured channel would log an
-    error per pasted link.
+    are ordinary rather than defects, so they are classified here instead of reaching the
+    listener's last-resort handler.
 
     Args:
-        message: The message carrying the link, which the placeholder replies to.
-        text: The line to show until the expansion replaces it.
-        source: The owning cog's key, as in `typings/emojis.py::LINK_SOURCE_EMOJIS`.
-        url: The URL being expanded, kept so a restart can run the same expansion again.
-
-    Returns:
-        The placeholder to deliver onto or discard, or None when the channel refused it and
-        the caller should mark the expansion failed without reading anything.
+        message (Message): The message carrying the link, which the placeholder replies to.
+        text (str): The line to show until the expansion replaces it.
+        source (str): The owning cog's key, as in `typings/emojis.py::LINK_SOURCE_EMOJIS`.
+        url (str): The URL being expanded, kept so a restart can run the same expansion again.
     """
     try:
         placeholder = await message.reply(
@@ -408,11 +410,11 @@ async def resume_expansion_placeholders(
     the request volume a WAF bans on.
 
     Args:
-        bot: The bot, used to resolve the channel both messages live in.
-        source: The cog's key, so it sweeps its own rows and never another cog's.
-        expand: The cog's `_expand`.
-        created_before: When this process started. Listeners run before `on_ready` does, so a
-            row recorded since is an expansion this process is still running.
+        bot (commands.Bot): The bot, used to resolve the channel both messages live in.
+        source (str): The cog's key, so it sweeps its own rows and never another cog's.
+        expand (ExpansionRetry): The cog's `_expand`.
+        created_before (datetime): When this process started. Listeners run before `on_ready`
+            does, so a row recorded since is an expansion this process is still running.
     """
     try:
         records = await _load_pending(source=source, created_before=created_before)

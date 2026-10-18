@@ -51,15 +51,7 @@ _RETRYABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
 
 
 def _provider_message(payload: object) -> str | None:
-    """Read the provider's own message out of one decoded error body.
-
-    Args:
-        payload: A decoded JSON error body, either the whole document or the `error`
-            object an SDK already unwrapped out of it.
-
-    Returns:
-        The provider message, or None when `payload` carries none.
-    """
+    """Returns the provider's own message from a decoded JSON error body, or None if absent."""
     if not isinstance(payload, dict):
         return None
     error = payload.get("error")
@@ -74,30 +66,14 @@ def _provider_message(payload: object) -> str | None:
 
 
 def extract_friendly_error(exc: BaseException) -> str:
-    """Surface the innermost provider error message from an SDK-wrapped APIError.
+    """Returns the innermost provider error message from `exc`, or `str(exc)` if none parses.
 
-    Three shapes reach here. A refusal the provider answered as a plain 400 keeps its
-    body on the exception, but both SDKs render it into their `__str__` as a Python
-    dict repr (`Error code: 400 - {'error': ...}`), which is why the decoded body is
-    read off the exception instead of parsed back out of that text. A LiteLLM-wrapped
-    one nests further: OpenAI's streaming layer constructs
-    `APIError(message=error["message"], ...)` from the upstream SSE event, and that
-    `message` is the wrapped exception chain. Which of the two remaining shapes it takes
-    records WHEN the request broke rather than what broke: a stream that never opened
-    carries the provider body along unparsed as a `b'...'` Python literal, while one that
-    broke after opening was parsed by LiteLLM and flattened into text, so the wrapper
-    chain is peeled off the front first and every embedded bytes literal is walked and
-    parsed as JSON after. Fall back to `str(exc)` when nothing parses, so we never lose
-    the original signal, and keep the chain rather than nothing at all when peeling it
-    leaves an empty message behind.
+    Reads the decoded body off the exception first, peels any LiteLLM wrapper prefix chain, and
+    then parses any embedded `b'...'` JSON bytes literal.
 
     Args:
-        exc: The exception carrying a decoded error body, or whose string form may
-            contain a wrapper chain or embedded provider JSON.
-
-    Returns:
-        The provider message from the decoded body, from an embedded JSON bytes literal
-        or from behind the wrapper chain, or `str(exc)` if none can be extracted.
+        exc (BaseException): Exception carrying a decoded error body, wrapper chain, or embedded
+            provider JSON.
     """
     raw = str(exc)
     for attribute in _DECODED_BODY_ATTRIBUTES:
@@ -122,24 +98,14 @@ def extract_friendly_error(exc: BaseException) -> str:
 
 
 def llm_status_code(exc: BaseException) -> int | None:
-    """The HTTP status a failed LLM call carried, or None when it carries none.
+    """Returns the HTTP status code carried by `exc`, or None when it carries none.
 
-    Three shapes, read in order. An `openai` failure the SDK typed, like a `google-genai`
-    Interactions one, keeps the status on `status_code`. A `google.genai.errors` one keeps
-    it on `code` as an int, which is why that attribute is read before the body rather than
-    after: `openai` also has a `code`, but its own is the body's semantic string
-    (`rate_limit_exceeded`), so the int test is what tells the two apart. And the one this
-    project actually has to classify has neither, because LiteLLM reports a mid-stream
-    provider failure as an SSE error frame holding `ProxyException.to_dict()` and `openai`'s
-    streaming layer turns that into a bare `APIError` whose only trace of the status is
-    `code` inside the decoded body it attaches. That one is a decimal STRING, since
-    `ProxyException` stringifies it to match the OpenAI error schema.
+    Reads `status_code` (`openai` and `google-genai` Interactions), then an integer `code`
+    (`google.genai.errors`), and finally a numeric or digit-string `code` inside the decoded
+    `body` dict (LiteLLM mid-stream SSE errors).
 
     Args:
-        exc: The exception a failed LLM call raised.
-
-    Returns:
-        The status, or None when the exception carries none of the three.
+        exc (BaseException): Exception raised by a failed LLM call.
     """
     if isinstance(status := getattr(exc, "status_code", None), int):
         return status
@@ -155,28 +121,15 @@ def llm_status_code(exc: BaseException) -> int | None:
 
 
 def is_retryable_llm_error(exc: BaseException) -> bool:
-    """Whether re-sending the same request could plausibly succeed.
+    """Returns whether re-sending the failed LLM request could plausibly succeed.
 
-    True for a transport failure (`openai`'s and the Interactions surface's
-    `APIConnectionError`, each with its `APITimeoutError` subclass) and for a status the
-    provider guides call transient. An
-    unclassifiable failure is NOT retried: a status that cannot be read is as likely to be a
-    refusal of the request itself as an outage, and re-sending a refusal only makes the user
-    wait for it repeatedly.
-
-    Only an LLM SDK's own exception is even considered: `openai`'s, and both of
-    `google-genai`'s, whose Interactions surface raises a hierarchy of its own. That gate is
-    load-bearing rather than tidiness: `llm_status_code` reads a plain int `code`, and a
-    `nextcord.HTTPException` carries one too -- the Discord JSON error code, where 50035
-    (Invalid Form Body, what an oversized write raises) would read as a 5xx, so one reaching
-    the retry would re-run the whole answer to fail the same way. A Discord write failing is not a reason to ask
-    the model again.
+    True only for an LLM SDK's own `APIConnectionError` (including timeouts) or an LLM SDK
+    exception carrying a 5xx or retryable 4xx status (`408`, `409`, `429`). Non-LLM exceptions
+    such as `nextcord.HTTPException` (whose `.code` is a Discord JSON error code like `50035`)
+    and unclassifiable statuses return False.
 
     Args:
-        exc: The exception a failed LLM call raised.
-
-    Returns:
-        Whether the caller should try again.
+        exc (BaseException): Exception raised by a failed LLM call.
     """
     if not isinstance(exc, (APIError, GenAIAPIError, InteractionsAPIError)):
         return False

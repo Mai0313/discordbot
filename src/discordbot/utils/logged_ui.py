@@ -30,7 +30,13 @@ class LoggedView(View):
     async def on_error(
         self, error: Exception, item: Item[Self], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Logs a control's failure instead of letting nextcord only print it to stderr."""
+        """Logs a control's failure instead of letting nextcord only print it to stderr.
+
+        Args:
+            error (Exception): Exception raised by the control or `interaction_check`.
+            item (Item[Self]): Control that raised `error`.
+            interaction (Interaction[commands.Bot]): Interaction that triggered the control.
+        """
         logfire.error(
             self.interaction_failure_log,
             view=type(self).__name__,
@@ -70,7 +76,12 @@ class LoggedModal(Modal):
     """A modal whose failing submit is logged."""
 
     async def on_error(self, error: Exception, interaction: Interaction[commands.Bot]) -> None:
-        """Logs a submit's failure instead of letting nextcord only print it to stderr."""
+        """Logs a submit's failure instead of letting nextcord only print it to stderr.
+
+        Args:
+            error (Exception): Exception raised by `callback`.
+            interaction (Interaction[commands.Bot]): Interaction that submitted the modal.
+        """
         logfire.error(
             "Modal submit failed",
             modal=type(self).__name__,

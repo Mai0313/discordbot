@@ -23,10 +23,13 @@ DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 
 
 def utf16_length(value: str) -> int:
-    """Counts UTF-16 code units, the conservative reading of Discord's "characters".
+    """Returns the UTF-16 code-unit length of `value`.
 
     Discord's docs never define which unit its embed limits count, so an emoji is priced at the
     two units it costs on the wire rather than the one `len` sees.
+
+    Args:
+        value (str): Text to measure.
     """
     return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
 
@@ -35,8 +38,13 @@ def clip_to_utf16_limit(text: str, limit: int, notice: str) -> str:
     """Returns `text` within `limit` UTF-16 units, ending in `notice` when it had to cut.
 
     The cut is marked so a truncated post never reads as a whole one. A limit with no room for
-    the notice yields the notice alone: the alternative is the negative slice a plain
-    `text[: limit - len(notice)]` takes, which silently returns MORE than was asked for.
+    the notice yields the notice alone: a plain `text[: limit - len(notice)]` takes a negative
+    slice and silently returns more than was asked for.
+
+    Args:
+        text (str): Text to clip.
+        limit (int): Maximum UTF-16 code-unit length.
+        notice (str): Suffix appended when `text` exceeds `limit`.
     """
     if utf16_length(value=text) <= limit:
         return text
@@ -53,7 +61,11 @@ def clip_to_utf16_limit(text: str, limit: int, notice: str) -> str:
 
 
 def embed_text_length(embed: Embed) -> int:
-    """Counts every text-bearing embed field against Discord's message-wide limit."""
+    """Returns the total UTF-16 code-unit length of all text-bearing fields in `embed`.
+
+    Args:
+        embed (Embed): Embed to measure against Discord's message-wide limit.
+    """
     payload: EmbedData = embed.to_dict()
     text_parts = [
         value for value in (payload.get("title"), payload.get("description")) if value is not None
@@ -74,7 +86,7 @@ def embed_spacer_url() -> str:
 
 
 def build_embed_spacer_file() -> File:
-    """Builds a fresh transparent PNG upload for one Discord send or edit."""
+    """Returns a fresh transparent PNG upload for one Discord send or edit."""
     return File(
         fp=BytesIO(initial_bytes=_transparent_png_bytes()), filename=DEFAULT_EMBED_SPACER_FILENAME
     )
@@ -103,7 +115,11 @@ def _target_allows_file_uploads(target: object | None) -> bool:
 
 
 def apply_embed_spacer_image(embeds: list[Embed]) -> list[Embed]:
-    """Sets a transparent spacer only on embeds without an image of their own."""
+    """Returns `embeds` after setting a transparent spacer on each embed without an image of its own.
+
+    Args:
+        embeds (list[Embed]): Embeds to update in place.
+    """
     spacer_url = embed_spacer_url()
     for embed in embeds:
         if not _embed_has_real_image(embed=embed, spacer_url=spacer_url):
@@ -133,6 +149,13 @@ def embed_spacer_payload(
     instead of re-uploading it. Re-uploading the same spacer on every edit trips
     Discord's per-message edit attachment upload limit (error code 400009) for
     rapidly edited messages.
+
+    Args:
+        embeds (list[Embed]): Embeds being sent or edited.
+        is_edit (bool): Whether the payload is for an edit rather than an initial send.
+        target (object | None): Message or interaction used to inspect existing attachments and
+            upload permissions.
+        extra_files (list[File] | None): Additional files to send alongside the spacer.
     """
     spacer_url = embed_spacer_url()
     files: list[File] = list(extra_files or [])
@@ -160,7 +183,7 @@ def embed_spacer_payload(
 
 @cache
 def _transparent_png_bytes() -> bytes:
-    # The width every spaced embed renders at, one transparent pixel tall so it shows nothing.
+    """Returns a 640x1 transparent PNG so spaced embeds render at a uniform width."""
     image = Image.new(mode="RGBA", size=(640, 1), color=(0, 0, 0, 0))
     buffer = BytesIO()
     image.save(fp=buffer, format="PNG", optimize=True)

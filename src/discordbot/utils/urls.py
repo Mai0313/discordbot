@@ -20,8 +20,8 @@ from collections.abc import Sequence
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
-# Markdown wrap links in; it deliberately does NOT stop at CJK, so Chinese written straight
-# after a link is carried into the match. Where a link ENDS is what a site-specific pattern is
+# Markdown wrap links in; it deliberately does not stop at CJK, so Chinese written straight
+# after a link is carried into the match. Where a link ends is what a site-specific pattern is
 # the right tool for; where it starts is `URL_START_ANCHOR`'s job just above.
 URL_RE = re.compile(rf"(?i){URL_START_ANCHOR}https?://[^\s<>]+")
 
@@ -34,17 +34,23 @@ def normalized_url(url: str) -> str:
     """Returns `url` in a form `urlparse` can read a host out of.
 
     A user-pasted URL may carry no scheme (`v.douyin.com/xxx`, `www.bilibili.com/video/...`),
-    which urlparse reads as a path with no hostname at all; the `//` prefix makes the host
+    which `urlparse` reads as a path with no hostname at all; the `//` prefix makes the host
     parse either way.
+
+    Args:
+        url (str): User-pasted URL string, with or without a scheme.
     """
     return url if "://" in url else f"//{url}"
 
 
 def normalized_host(url: str) -> str:
-    """Returns a URL's lower-cased hostname, or an empty string when there is none to read.
+    """Returns `url`'s lower-cased hostname, or an empty string when there is none to read.
 
     Accepts a scheme-less paste (see `normalized_url`). Never raises: this runs on raw user
     input in routing checks that sit ahead of any error handling.
+
+    Args:
+        url (str): User-pasted URL string.
     """
     try:
         return (urlparse(normalized_url(url=url)).hostname or "").lower()
@@ -54,18 +60,13 @@ def normalized_host(url: str) -> str:
 
 
 def host_matches_domain(host: str, domain: str) -> bool:
-    """Reports whether `host` is `domain` itself or a subdomain of it.
+    """Returns whether `host` is `domain` itself or a subdomain of it.
 
-    Whole labels only. This is the rule that keeps a lookalike host out — `douyin.com.attacker.com`
-    is not douyin.com and `evil.com/?x=bilibili.com` has no bilibili host at all — so it must stay
-    exactly this strict, and it lives here so every site checks it the same way.
+    Whole labels only; do not loosen.
 
     Args:
-        host: A hostname, already lower-cased (see `normalized_host`).
-        domain: The lower-cased domain to match against.
-
-    Returns:
-        True when the host is the domain or sits under it.
+        host (str): A hostname, already lower-cased (see `normalized_host`).
+        domain (str): The lower-cased domain to match against.
     """
     return host == domain or host.endswith(f".{domain}")
 
@@ -73,20 +74,14 @@ def host_matches_domain(host: str, domain: str) -> bool:
 def extract_first_url(text: str, patterns: Sequence[re.Pattern[str]] = ()) -> str:
     """Returns the first URL in `text`, or the stripped text when there is none.
 
-    `patterns` are tried in order before the generic one. A site-specific pattern knows where
-    its own links end (Douyin's survives being butted against Chinese text, which the generic
-    whitespace rule cannot), so it wins where it matches.
-
-    Falling back to the raw text rather than an empty string is deliberate: a bare URL, or
-    something this cannot parse, is passed through untouched and fails downstream rather than
-    here.
+    `patterns` are tried in order before the generic one. Falling back to the raw text rather
+    than an empty string passes a bare URL or unparsable input through untouched so it fails
+    downstream rather than here.
 
     Args:
-        text: The text a user supplied, which may be a bare URL or a blob containing one.
-        patterns: Site-specific URL patterns to prefer over the generic match.
-
-    Returns:
-        The extracted URL, or the input stripped of surrounding whitespace.
+        text (str): The text a user supplied, which may be a bare URL or a blob containing one.
+        patterns (Sequence[re.Pattern[str]]): Site-specific URL patterns to prefer over the
+            generic match.
     """
     for pattern in patterns:
         match = pattern.search(string=text)

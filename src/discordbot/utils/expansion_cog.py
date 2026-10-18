@@ -151,22 +151,23 @@ class ConversationReader[ConversationT](Protocol):
     """A platform reader that fetches and parses a post in one blocking call."""
 
     def parse_metadata(self, url: str) -> ConversationT:
-        """Reads the post at `url`."""
+        """Returns the parsed conversation at `url`.
+
+        Args:
+            url (str): Post URL to fetch and parse.
+        """
         ...
 
 
 def with_gallery(card: Embed, images: list[str]) -> list[Embed]:
-    """Shows the first image on `card` and each further one on a bare embed after it.
+    """Returns `card` with its first image attached, followed by a bare embed per extra image.
 
-    The further embeds reuse the card's URL, which is what makes Discord merge them into one
-    gallery under the card rather than stacking separate cards.
+    The further embeds reuse the card's URL, which makes Discord merge them into one gallery
+    under the card rather than stacking separate cards.
 
     Args:
-        card: The post's own embed.
-        images: The images to show, empty for none.
-
-    Returns:
-        The card followed by its gallery.
+        card (Embed): The post's own embed.
+        images (list[str]): Image URLs to show, empty for none.
     """
     if images:
         card.set_image(url=images[0])
@@ -187,25 +188,21 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
     suffix: str,
     reserve: int,
 ) -> list[Embed]:
-    """Builds the linked post's own embed plus one bare embed per further image.
+    """Returns the linked post's own embed followed by one bare embed per further image.
 
     A long body is cut rather than split across a second embed: the whole card is one post, and
     a reader who wants the tail has the link.
 
     Args:
-        post: The linked post.
-        color: The platform's own colour for the post's rail.
-        author: The author line, empty for none.
-        footer: The counter line.
-        images: The images to show, the first on the post's own embed.
-        suffix: Text appended after the body. Its length is reserved BEFORE the body is cut
-            rather than appended after, or a body already at the ceiling carries it past and
-            Discord rejects the send.
-        reserve: What the body gives up of the message-wide ceiling so the secondary cards
-            under it always fit, 0 when there are none.
-
-    Returns:
-        The post's embed followed by its gallery.
+        post (CardPost): The linked post.
+        color (int): The platform's own colour for the post's rail.
+        author (str): The author line, empty for none.
+        footer (str): The counter line.
+        images (list[str]): The images to show, the first on the post's own embed.
+        suffix (str): Text appended after the body, reserved before clipping so a body at the
+            ceiling never overflows.
+        reserve (int): UTF-16 units reserved from the message-wide ceiling for secondary cards,
+            0 when there are none.
     """
     limit = min(
         DISCORD_EMBED_DESCRIPTION_LIMIT - utf16_length(value=suffix),
@@ -227,41 +224,36 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
 
 
 def context_card_budget(card: Embed) -> int:
-    """What the message-wide ceiling leaves the secondary cards once the post's embed is spent.
+    """Returns the UTF-16 units left under the message-wide ceiling for secondary cards.
 
-    Budgeted rather than clipping each card on its own, since cards clipped independently can
-    sum past the ceiling and Discord rejects the WHOLE send, losing the expansion rather than
-    trimming it.
+    Budgeted across all secondary cards rather than clipping each card independently, so their
+    sum never exceeds Discord's message-wide embed limit.
 
     Args:
-        card: The linked post's own embed.
-
-    Returns:
-        The UTF-16 units left for every secondary card together.
+        card (Embed): The linked post's own embed.
     """
     return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
 
 
 def omitted_images_note(count: int) -> str:
-    """The footer note counting a post's images the card leaves out."""
+    """Returns the footer note counting a post's images the card leaves out.
+
+    Args:
+        count (int): Number of omitted images.
+    """
     return f"🖼️ 另有 {count} 張"
 
 
 def expansion_failure_emoji(error: Exception) -> str:
-    """Picks the mark a failed read earns, the same way for every platform.
+    """Returns the outcome reaction emoji for a failed read.
 
-    Read off the exception's CLASS rather than its message: a platform refusing the request or a
-    transport that never answered or dropped part-way through the body is the retryable mark,
-    since the link is fine and works later; anything else `LinkReadError` covers means the
-    platform answered and there is no post in it; and an error from outside that tree is the
-    bot's own. `utils/link_errors.py` owns which fetch failures are classified at all and why a
-    403 deliberately is not.
+    Selected from `error`'s class rather than its message: a retryable fetch failure or timeout
+    earns `EXPANSION_RETRY_LATER_EMOJI`, any other `LinkReadError` earns
+    `EXPANSION_UNREADABLE_EMOJI`, and anything outside that hierarchy earns
+    `EXPANSION_FAILED_EMOJI`.
 
     Args:
-        error: What the read raised.
-
-    Returns:
-        One of the `EXPANSION_*_EMOJI` outcome marks.
+        error (Exception): Exception raised by the read.
     """
     if isinstance(error, LinkRetryableError | TimeoutError):
         return EXPANSION_RETRY_LATER_EMOJI
@@ -273,26 +265,16 @@ def expansion_failure_emoji(error: Exception) -> str:
 def report_expansion_read_failure(
     error: Exception, platform: str, url: str, message_id: int
 ) -> None:
-    """Logs a failed read at the severity `.github/CONTRIBUTING.md#logging` gives its outcome.
+    """Logs a failed read at the severity matching its outcome.
 
-    The ladder is keyed on how tolerable the failure is, not on how deep it happened, so the
-    levels line up with the marks `expansion_failure_emoji` picks rather than with any one
-    platform's habits: a post the platform says is gone is a routine user-driven outcome, a read
-    the platform explains any other way is degraded but handled, and an error from outside that
-    tree broke a user-visible deliverable — a `TimeoutError` excepted, which rides `warn` for the
-    same reason it rides the retryable mark: it says the read was too slow, never that the bot is
-    wrong.
-
-    The `info` branch deliberately carries no exception and does carry `reason`: a traceback for
-    a deleted post is noise, while the platform's own words for WHY it refused exist in no other
-    line, and a deleted post logged at `warn` with a traceback is what makes a real regression
-    unfindable.
+    `LinkUnavailableError` logs at `info` with `reason` and no traceback; other `LinkReadError`s
+    and `TimeoutError` log at `warn`; unexpected exceptions log at `error`.
 
     Args:
-        error: What the read raised.
-        platform: The platform's display name, for the log message.
-        url: The post being expanded.
-        message_id: The source message carrying the link.
+        error (Exception): Exception raised by the read.
+        platform (str): The platform's display name, for the log message.
+        url (str): The post being expanded.
+        message_id (int): The source message carrying the link.
     """
     if isinstance(error, LinkUnavailableError):
         logfire.info(
@@ -316,18 +298,17 @@ def report_expansion_read_failure(
 def report_expansion_delivery_failure(
     error: Exception, platform: str, url: str, message_id: int, channel_id: int
 ) -> None:
-    """Logs a failed delivery at the severity it deserves, the same way for every platform.
+    """Logs a failed delivery at the severity matching its outcome.
 
-    Only the placeholder's own disappearance is routine. On an edit 50035 is a rejected body
-    rather than a message that went away, so it is a defect here and
-    `utils/discord_errors.py::is_reply_target_gone` must not be used.
+    Only the placeholder's own disappearance is routine. On an edit, error code 50035 is a
+    rejected body rather than a missing message, so `is_reply_target_gone` is not used here.
 
     Args:
-        error: What the delivery raised.
-        platform: The platform's display name, for the log message.
-        url: The post being expanded.
-        message_id: The source message carrying the link.
-        channel_id: The channel it was posted in.
+        error (Exception): Exception raised by the delivery.
+        platform (str): The platform's display name, for the log message.
+        url (str): The post being expanded.
+        message_id (int): The source message carrying the link.
+        channel_id (int): The channel it was posted in.
     """
     if isinstance(error, NotFound):
         logfire.info(
@@ -338,7 +319,7 @@ def report_expansion_delivery_failure(
         )
     elif isinstance(error, Forbidden):
         # No traceback, whose stack is the same on every refusal; the code says which refusal it
-        # was, since not every one here is a missing permission (#719).
+        # was, since not every one here is a missing permission.
         logfire.warn(
             f"Missing permission to post the {platform} expansion",
             url=url,
@@ -380,7 +361,7 @@ class ExpansionCog[ParsedT](commands.Cog):
     overrides `url_is_expandable` when its pattern matches more than posts.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
     """
 
     SOURCE: ClassVar[LinkSourceName]
@@ -400,7 +381,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         """Initializes the cog.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self._resume_started = False
@@ -410,38 +391,30 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     @staticmethod
     def url_is_expandable(url: str) -> bool:
-        """Whether a matched URL is worth reading.
+        """Returns whether a matched URL names a post worth reading.
 
         Overridden by a cog whose pattern anchors on the host, where a profile or home page
-        matches but is not a post: reading one spends a request to find out there is nothing
-        there, and paints a failure on a link that was never wrong.
+        matches but is not a post.
 
         Args:
-            url: The URL the pattern matched.
-
-        Returns:
-            True when the URL names a post.
+            url (str): The URL the pattern matched.
         """
         del url
         return True
 
     async def read(self, message: Message, url: str, stack: contextlib.AsyncExitStack) -> ParsedT:
-        """Reads the post, under this platform's own wall-clock bound.
+        """Returns the parsed post read from `url` under this platform's wall-clock bound.
 
         Raises rather than reporting: the caller turns the exception into the reaction and the
-        log line its class earns, so every platform answers a refusal the same way.
-
-        Anything that must outlive the read and be cleaned up after delivery goes on `stack` —
-        the scratch directory a download writes into. It unwinds once the card is on screen.
+        log line its class earns. Anything that must outlive the read and be cleaned up after
+        delivery goes on `stack`, which unwinds once the card is on screen.
 
         Args:
-            message: The message carrying the link, so a log line here can be joined to the
-                expansion it came from.
-            url: The post to read.
-            stack: Where to register whatever the delivery still needs.
-
-        Returns:
-            The platform's own parsed model.
+            message (Message): The message carrying the link, so a log line here can be joined to
+                the expansion it came from.
+            url (str): The post to read.
+            stack (contextlib.AsyncExitStack): Where to register whatever the delivery still
+                needs.
 
         Raises:
             NotImplementedError: Always; a cog overrides this.
@@ -451,19 +424,16 @@ class ExpansionCog[ParsedT](commands.Cog):
     async def build_delivery(
         self, message: Message, url: str, parsed: ParsedT
     ) -> ExpansionDelivery | None:
-        """Turns a parsed post into the card, or refuses it.
+        """Returns the finished card for `parsed`, or None when there is nothing showable.
 
         None means the platform answered and there is nothing showable — a deleted or private
         post, or one past a limit no retry gets under. It earns the unreadable mark rather than
         the cross, so a cog returning None logs its own reason first.
 
         Args:
-            message: The message carrying the link.
-            url: The post that was read.
-            parsed: What `read` returned.
-
-        Returns:
-            The card, or None when there is nothing to show.
+            message (Message): The message carrying the link.
+            url (str): The post that was read.
+            parsed (ParsedT): What `read` returned.
 
         Raises:
             NotImplementedError: Always; a cog overrides this.
@@ -487,8 +457,8 @@ class ExpansionCog[ParsedT](commands.Cog):
         """Paints the failure cross, naming the platform when nothing else on the message does.
 
         `current_emoji` is None only when claiming the reply slot failed, before either mark
-        went on. The cross alone cannot say WHICH link died, and on a message carrying two that
-        is the whole of what someone needs, so the platform marker goes on first.
+        went on. The cross alone cannot say which link died, so the platform marker goes on
+        first.
         """
         if current_emoji is None:
             await update_reaction(
@@ -511,7 +481,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         everyone.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
         if message.author.bot:
             return
@@ -549,7 +519,7 @@ class ExpansionCog[ParsedT](commands.Cog):
                 # is never started.
                 await self._mark_failed(message=message, current_emoji=current_emoji)
                 return
-            # The platform marker, then the working ring under it. Both go on AFTER the reply
+            # The platform marker, then the working ring under it. Both go on after the reply
             # slot is claimed: they share one per-channel rate-limit bucket that a message send
             # does not, so claiming first is what stops the card queueing behind them.
             await update_reaction(
@@ -586,12 +556,6 @@ class ExpansionCog[ParsedT](commands.Cog):
 
         The signature is the one `resume_expansion_placeholders` calls with, so a resumed
         expansion runs exactly what the listener runs.
-
-        Args:
-            message: The message carrying the link.
-            url: The post to expand.
-            current_emoji: The mark already on the message, which each outcome replaces.
-            placeholder: The reply slot to deliver onto.
         """
         async with contextlib.AsyncExitStack() as stack:
             try:
@@ -651,9 +615,7 @@ class ExpansionCog[ParsedT](commands.Cog):
             try:
                 await message.edit(suppress=True)
                 preview_hidden = True
-            # Deleting the link while the post was being read is a withdrawal: before the
-            # placeholder existed the late reply was simply refused, and this keeps that, since
-            # a reply outlives the message it answers.
+            # Deleting the link while the post was being read withdraws the request.
             except NotFound:
                 logfire.info(
                     f"{self.PLATFORM} expansion target is gone",
@@ -754,15 +716,12 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     async def read(
         self, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> ConversationT:
-        """Reads the post under `READ_TIMEOUT_SECONDS`, off the event loop since it blocks.
+        """Returns the parsed conversation read under `READ_TIMEOUT_SECONDS` off the event loop.
 
         Args:
-            message: Unused; nothing here logs.
-            url: The post to read.
-            stack: Unused; nothing here outlives the read.
-
-        Returns:
-            The parsed conversation.
+            message (Message): Unused; nothing here logs.
+            url (str): The post to read.
+            stack (contextlib.AsyncExitStack): Unused; nothing here outlives the read.
         """
         del message, stack
         downloader = self.downloader_factory()
@@ -772,18 +731,15 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     async def build_delivery(
         self, message: Message, url: str, parsed: ConversationT
     ) -> ExpansionDelivery | None:
-        """Builds the card, refusing a post with nothing showable in it.
+        """Returns the finished card for `parsed`, or None when the post is not readable.
 
         A post that comes back unreadable is a deleted, private, protected or login-walled one:
         an ordinary outcome for a link someone pasted rather than a defect.
 
         Args:
-            message: The message carrying the link.
-            url: The post that was read.
-            parsed: The parsed conversation.
-
-        Returns:
-            The card, or None when there is nothing to show.
+            message (Message): The message carrying the link.
+            url (str): The post that was read.
+            parsed (ConversationT): The parsed conversation.
         """
         target = parsed.target
         if target is None or not target.is_readable:
@@ -825,12 +781,11 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         return embeds
 
     def _comment_embed(self, comment: PostT, post_url: str, budget: int) -> Embed:
-        """The card for the one comment the URL singled out.
+        """Returns the card for the one comment the URL singled out.
 
-        Grey rather than the post's colour, and headed by a line saying what it is: without both,
-        a second card under the post reads as a second post rather than as a reply to this one.
-        Its URL is the comment's own, which is what keeps it OUT of the image gallery, since
-        Discord merges embeds sharing a URL.
+        Grey rather than the post's colour, and headed by a line saying what it is. Its URL is
+        the comment's own, which keeps it out of the image gallery since Discord merges embeds
+        sharing a URL.
         """
         header = f"{_COMMENT_HEADER}\n\n"
         # Beside a short post the message-wide budget exceeds what one description may carry.
@@ -864,18 +819,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
 
     @staticmethod
     def _omitted_media_notes(post: CardPost, shown_images: int) -> list[str]:
-        """The footer notes for what the card leaves out of a post's media.
-
-        Images past the ones shown are counted, and so is every video but the first, since only
-        the first gets a link.
-
-        Args:
-            post: The linked post.
-            shown_images: How many of its images the card shows.
-
-        Returns:
-            One note per kind left out, empty when nothing was.
-        """
+        """Returns the footer notes for images past `shown_images` and videos past the first."""
         notes: list[str] = []
         remaining_images = len(post.image_urls) - shown_images
         if remaining_images > 0:

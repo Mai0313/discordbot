@@ -12,21 +12,23 @@ class AvatarUser(Protocol):
     # Read-only properties: nextcord's User/Member expose these as properties,
     # which cannot satisfy a mutable protocol attribute.
     @property
-    def id(self) -> int: ...
+    def id(self) -> int:
+        """Returns the user's Discord id."""
+        ...
 
     @property
-    def display_avatar(self) -> Asset: ...
+    def display_avatar(self) -> Asset:
+        """Returns the user's display avatar asset."""
+        ...
 
 
 async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
-    """Returns a guild-scoped avatar URL when Discord exposes one.
+    """Returns the member's guild avatar URL when available, else the global display avatar URL.
 
     Args:
-        user: Discord user or member whose avatar should be stored.
-        guild: Guild context used to resolve a member when only a global user is available.
-
-    Returns:
-        The member's guild avatar URL when available, otherwise the user's global display avatar.
+        user (AvatarUser): Discord user or member whose avatar should be stored.
+        guild (Guild | None): Guild context used to resolve a member when only a global user is
+            available.
     """
     member: Member | None = None
     if isinstance(user, Member):

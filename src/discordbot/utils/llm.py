@@ -5,7 +5,7 @@ handling so a caller only maps a None result to its own fallback. Client constru
 its call site: this is the call surface, not a client factory.
 
 `timeout_seconds` is optional because most callers should not set one: it is for a caller with
-a deadline of its OWN, not a guard against a hung provider. The client already bounds itself
+a deadline of its own, not a guard against a hung provider. The client already bounds itself
 (`typings/timeouts.py` carries the measured figures), so a wrapper on background work would
 restate that bound for nothing.
 """
@@ -22,13 +22,14 @@ from discordbot.typings.models import ModelSettings
 
 
 def output_text_or_empty(responses: Response) -> str:
-    """Aggregates the response's text, tolerating output_text parts whose `text` is None.
+    """Returns the concatenated `output_text` from `responses`, tolerating `text=None` parts.
 
-    The SDK's `Response.output_text` does a bare `"".join(...)` over every output_text part's
-    text; a single part with `text=None` — a Gemini-via-proxy quirk seen on some grounded /
-    refused turns — makes that join raise `TypeError`, defeating the usual
-    `(responses.output_text or "")` guard. This mirrors the SDK aggregation but keeps only the
-    non-empty text parts, so a stray None yields "" instead of raising.
+    The SDK's `Response.output_text` does a bare `"".join(...)` over every `output_text` part's
+    text; a part with `text=None` makes that join raise `TypeError`. This keeps only non-empty
+    text parts so a stray None yields `""` instead of raising.
+
+    Args:
+        responses (Response): Responses API result to read text from.
     """
     texts = [
         content.text
@@ -49,15 +50,19 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     text_format: type[StructuredT],
     timeout_seconds: float | None = None,
 ) -> StructuredT | None:
-    """Runs one best-effort structured Responses.parse call, returning None on any failure.
+    """Returns the parsed `StructuredT` from one best-effort `responses.parse` call, or None on failure.
 
-    Owns the shared proxy call surface, the timeout, and the failure handling so each caller
-    only maps None to its own fallback: a timeout, an empty output or a payload that does
-    not match `text_format` (both surface as `ValidationError`), a refusal (which simply
-    leaves `output_parsed` None), an incomplete (truncated) response, or any other error
-    all degrade to None.
+    A timeout, an empty output or off-schema payload (`ValidationError`), a refusal
+    (`output_parsed` is None), an incomplete response, or any other error all degrade to None.
 
-    `timeout_seconds` is the optional caller-side deadline the module docstring describes.
+    Args:
+        client (AsyncOpenAI): OpenAI client pointed at the LiteLLM proxy.
+        model (ModelSettings): Model name and reasoning configuration.
+        instructions (str): System instructions for the request.
+        user_text (str): User message content.
+        end_user_id (str): End-user identifier sent in `x-litellm-end-user-id`.
+        text_format (type[StructuredT]): Pydantic model class to parse the output into.
+        timeout_seconds (float | None): Optional caller-side wall-clock deadline in seconds.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):
@@ -117,12 +122,15 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
     end_user_id: str,
     timeout_seconds: float | None = None,
 ) -> str | None:
-    """Runs one best-effort text Responses.create call, returning None on any failure.
+    """Returns the trimmed output text from one best-effort `responses.create` call, or None on failure.
 
-    Mirrors `parse_responses_or_none` for the non-structured callers: owns the shared proxy
-    call surface, the timeout, and the failure handling, and returns the trimmed output text
-    (or None on timeout / any error) so each caller maps None to its own fallback line.
-    `timeout_seconds` carries the same meaning it does there.
+    Args:
+        client (AsyncOpenAI): OpenAI client pointed at the LiteLLM proxy.
+        model (ModelSettings): Model name and reasoning configuration.
+        instructions (str): System instructions for the request.
+        user_text (str): User message content.
+        end_user_id (str): End-user identifier sent in `x-litellm-end-user-id`.
+        timeout_seconds (float | None): Optional caller-side wall-clock deadline in seconds.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):

@@ -7,13 +7,10 @@ caller applies its own range rules on top.
 
 
 def parse_decimal_amount(raw: str | None) -> int | None:
-    """Parses decimal text with optional comma separators into an int.
+    """Returns the non-negative int parsed from comma-separated decimal text, or None if invalid.
 
     Args:
-        raw: The user-entered amount text, possibly None or empty.
-
-    Returns:
-        The parsed non-negative integer, or None for empty or non-decimal text.
+        raw (str | None): User-entered amount text.
     """
     normalized = (raw or "").replace(",", "").strip()
     if not normalized.isdecimal():
