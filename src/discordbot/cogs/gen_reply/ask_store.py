@@ -48,18 +48,16 @@ class AskTurnRow(Base):
     """One `/ask` exchange: what was asked, and what the bot answered.
 
     Attributes:
-        id: Surrogate key; the insertion order this conversation is replayed in.
-        channel_id: The channel the command was invoked in.
-        user_id: The person who invoked it, so one channel's conversations stay separate.
-        message_id: The interaction's own snowflake, reused as the rebuilt message's id so its
-            `created_at` is the real time the question was asked.
-        question: The `question` option, verbatim.
-        answer: The reply as it was finalized, with the memory note and the dropped-media hint
-            already stripped but the usage footer still on the end. That footer is what a real
-            bot message in a channel carries too, and `get_cleaned_content` takes it off at
-            render time for the bot's own messages, so it is stored verbatim rather than trimmed
-            here twice.
-        created_at: Write timestamp.
+        id (Mapped[int]): Surrogate key; the insertion order this conversation is replayed in.
+        channel_id (Mapped[int]): The channel the command was invoked in.
+        user_id (Mapped[int]): The person who invoked it, keeping conversations in one channel separate.
+        message_id (Mapped[int]): The interaction's own snowflake, reused as the rebuilt message's id
+            so its `created_at` reflects when the question was asked.
+        question (Mapped[str]): The `question` option, verbatim.
+        answer (Mapped[str]): The finalized reply with the memory note and dropped-media hint
+            stripped and the usage footer intact (`get_cleaned_content` strips the footer at
+            render time).
+        created_at (Mapped[datetime]): Write timestamp.
     """
 
     __tablename__ = "ask_turn"
@@ -89,24 +87,17 @@ _database = SqliteBootstrap(metadata=Base.metadata)
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Opens an async session on the current reply.db engine, the `ask_turn` table ensured."""
+    """Returns an async session context manager on `reply.db` with the `ask_turn` table ensured."""
     return _database.open_session(engine=_engine)
 
 
 async def load_ask_turns(channel_id: int, user_id: int, limit: int) -> list[AskTurn]:
-    """Reads the newest `limit` turns of one conversation, returned oldest-first.
-
-    Oldest-first because that is the order `ReplyContextBuilder.fetch_history` returns channel
-    history in, and everything downstream of it — the budget trim, the renders, the role
-    pairing — reads that order.
+    """Returns the newest `limit` turns of one conversation, ordered oldest-first.
 
     Args:
-        channel_id: The channel the command was invoked in.
-        user_id: The person whose conversation this is.
-        limit: How many turns to read at most.
-
-    Returns:
-        The stored turns, oldest first.
+        channel_id (int): The channel the command was invoked in.
+        user_id (int): The person whose conversation this is.
+        limit (int): Maximum number of turns to read.
     """
     async with open_session() as session:
         result = await session.execute(
@@ -126,14 +117,14 @@ async def load_ask_turns(channel_id: int, user_id: int, limit: int) -> list[AskT
 async def record_ask_turn(
     channel_id: int, user_id: int, message_id: int, question: str, answer: str
 ) -> None:
-    """Appends one finished exchange and prunes that conversation to its retention bound.
+    """Appends one finished exchange and prunes that conversation to `ASK_TURN_RETENTION`.
 
     Args:
-        channel_id: The channel the command was invoked in.
-        user_id: The person whose conversation this is.
-        message_id: The interaction snowflake the question was asked on.
-        question: The `question` option, verbatim.
-        answer: The finalized reply text.
+        channel_id (int): The channel the command was invoked in.
+        user_id (int): The person whose conversation this is.
+        message_id (int): The interaction snowflake the question was asked on.
+        question (str): The `question` option, verbatim.
+        answer (str): The finalized reply text.
     """
     async with open_session() as session, session.begin():
         session.add(

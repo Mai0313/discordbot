@@ -1,11 +1,11 @@
 """The reply context: what one turn hands the answer model, and how it is built.
 
 `ReplyContext` is the value; `ReplyContextBuilder` is the single speculative build that produces
-it while the route call is still in flight. Every route consumes it, the IMAGE / VIDEO routes
-once their media is on screen. Everything the builder does only READS — channel history and
-memory files — so a turn that fails before consuming it can discard it safely. Whose memory the
-turn may carry is settled before the route call (`plan_recall`), since that call is what picks
-the optional members.
+it while the route call is still in flight. Every route consumes it, the `IMAGE` / `VIDEO` routes
+once their media is on screen. Everything the builder does only reads channel history and memory
+files, so a turn that fails before consuming it can discard it safely. Whose memory the turn may
+carry is settled before the route call (`plan_recall`), since that call picks the optional
+members.
 """
 
 import time
@@ -107,20 +107,17 @@ class ReplyContext(BaseModel):
 
     @property
     def message_list(self) -> list[EasyInputMessageParam]:
-        """History, reference, and current blocks in transcript order."""
+        """Returns history, reference, and current blocks in transcript order."""
         return [*self.hist_messages, *self.reference_messages, *self.current_message]
 
     def answer_input(self, config: LLMConfig) -> ResponseInputParam:
-        """The QA answer's input, in the order the answer model reads it.
+        """Returns the QA answer's input in the order the answer model reads it.
 
-        The current message stays LAST so the model answers it. Memory rides early as
-        low-authority background; the reference message then sits just above the current
-        message so the reply pair (reference -> current) stays adjacent and reads as the primary
-        context rather than getting buried up near history. The linked posts ride just before the
-        current message, each block led by its own separator; they are empty unless the route
-        selected a source and `link_url_for_source` found its link. The feature reference leads:
-        it is the one block that is byte-identical on every reply of a deployment, so the front is
-        where it costs the least against a prefix cache.
+        Places the byte-static capability reference first for prefix caching, followed by
+        history, memory blocks, the reference message, linked posts, and the current message last.
+
+        Args:
+            config (LLMConfig): Deployment switches passed to `render_capabilities_block`.
         """
         memory = (self.server_memory_block, self.memory_block, self.tone_block)
         return [
@@ -133,12 +130,7 @@ class ReplyContext(BaseModel):
         ]
 
     def persona_input(self) -> ResponseInputParam:
-        """The media persona reply's input, in the QA answer's order.
-
-        It leaves out the feature reference, the server memory block and the linked posts; the
-        user memory is only the selected one (already compartment-scoped by
-        `recall_user_memories`), and the tone note is the author's.
-        """
+        """Returns the media persona reply's input, omitting capabilities, server memory, and link blocks."""
         memory = (self.memory_block, self.tone_block)
         return [
             *self.hist_messages,
@@ -179,16 +171,12 @@ class RecallPlan(BaseModel):
 
 
 def trim_history_to_budget(messages: list[Message]) -> list[Message]:
-    """Keeps the newest history messages that fit `HISTORY_CHAR_BUDGET`, cut on a boundary.
+    """Returns the newest history messages that fit `HISTORY_CHAR_BUDGET`, cut on a message boundary.
 
-    `ReplyContextBuilder.fetch_history` returns oldest-first, so this walks from the end and
-    reverses back: what survives is the conversation closest to the question being answered, and
-    the oldest context is what gets dropped. Cutting between messages rather than mid-text is the
-    point — half a sentence with no author and no end reads as corrupted context rather than as
-    less of it.
+    Always keeps the newest message even when it alone exceeds `HISTORY_CHAR_BUDGET`.
 
-    The newest message is always kept even when it alone exceeds the budget, so a single long
-    post can never reduce history to nothing.
+    Args:
+        messages (list[Message]): Candidate history messages ordered oldest-first.
     """
     kept: list[Message] = []
     spent = 0
@@ -204,30 +192,16 @@ def trim_history_to_budget(messages: list[Message]) -> list[Message]:
 def history_media_over_budget(
     builder: MessageInputBuilder, hist_messages: list[Message]
 ) -> dict[int, int]:
-    """History message ids to how many attachments each renders as markers, newest kept first.
+    """Returns a mapping of over-budget history message ids to their supported attachment counts.
 
-    The count rides along because it is what tells an operator the cap did anything: `media_parts`
-    on the dispatch record stops at the cap by construction, so only the number held back says
-    whether this turn was trimmed by one file or by thirty.
+    Walks newest-first against `MAX_HISTORY_MEDIA_PARTS` using `count_supported_sources`. The
+    newest attachment-bearing message is exempt, and once one older message overflows, it and
+    every earlier message are marked to render as text-only markers so kept media forms an
+    unbroken suffix.
 
-    Walks from the newest message back, the same direction and for the same reason as
-    `trim_history_to_budget`: what keeps its real files is the conversation closest to the
-    question being asked. Once one message is refused every older one is too, so the files the
-    model gets are always an unbroken run ending at the present. Letting a later small message
-    slip into the leftover budget would put an older attachment on screen while a newer one
-    showed only a marker, which reads as the pipeline losing files at random.
-
-    Counting is off `count_supported_sources`, so a source the modality gate is going to drop
-    spends nothing. Counting the raw list instead took that budget from an older message whose
-    images WOULD have been sent, and since the newest message is exempt, ten office documents
-    on it could record the budget full while the turn carried no media at all (#660).
-
-    The newest message carrying attachments is exempt, so a single post of many images is
-    never reduced to nothing but markers while the budget sits unspent. That makes the cap a
-    soft one on exactly that message: a source is not only an upload, it is also every sticker
-    and every embed image and thumbnail, snapshots included, so one post of ten files carrying
-    a few unfurled link cards can exempt well past `MAX_HISTORY_MEDIA_PARTS`. Everything older
-    than it is still bounded.
+    Args:
+        builder (MessageInputBuilder): Input builder used to count supported attachment sources.
+        hist_messages (list[Message]): History messages ordered oldest-first.
     """
     over: dict[int, int] = {}
     spent = 0
@@ -253,17 +227,13 @@ def history_media_over_budget(
 
 
 def history_payload_overflow(rendered: list[EasyInputMessageParam]) -> int:
-    """How many of the oldest rendered history messages fall back to markers, newest kept first.
+    """Returns the count of oldest rendered history messages that overflow `MAX_HISTORY_INLINE_BYTES`.
 
-    Counts the bytes each attachment-bearing message's parts put in the request, against
-    `MAX_HISTORY_INLINE_BYTES`. Read off the render because only it knows them: the downscale
-    re-encodes an image, and a sticker or an embed image reports no size at all. An uploaded file
-    renders to a short handle, so this binds only where the bytes themselves ride.
+    Walks newest-first without exempting the newest message, returning `index + 1` at the first
+    message that pushes cumulative inline bytes past `MAX_HISTORY_INLINE_BYTES`.
 
-    The count takes the message that overflows and every older one, so what keeps its files is the
-    unbroken run ending at the present that `history_media_over_budget` keeps. Unlike there, the
-    newest message is not exempt: a post too large on its own would fail every reply until it left
-    the window.
+    Args:
+        rendered (list[EasyInputMessageParam]): Rendered history messages ordered oldest-first.
     """
     spent = 0
     for index in range(len(rendered) - 1, -1, -1):
@@ -282,11 +252,10 @@ def history_payload_overflow(rendered: list[EasyInputMessageParam]) -> int:
 
 
 def reference_header(ref: Message) -> EasyInputMessageParam:
-    """Builds the system separator that precedes the message being replied to.
+    """Returns the system separator block that precedes the message being replied to.
 
-    Exactly one of these is ever rendered, so it is always the primary context and says so
-    plainly. The attachment sentence is the load-bearing half: a Current Message that points at
-    something without naming it is pointing here, this message's files included.
+    Args:
+        ref (Message): The referenced message being replied to.
     """
     return system_block(
         text=(
@@ -301,10 +270,11 @@ def reference_header(ref: Message) -> EasyInputMessageParam:
 
 
 def current_header(message: Message, has_reference: bool) -> EasyInputMessageParam:
-    """Builds the system separator that precedes the current message.
+    """Returns the system separator block that precedes the current message.
 
-    When the message is a reply, the header points back to the Reference Message block
-    (rendered just above) so the model reads the reply pair as one unit.
+    Args:
+        message (Message): The current message being answered.
+        has_reference (bool): Whether a Reference Message block is rendered above it.
     """
     reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
     return system_block(
@@ -339,31 +309,25 @@ class ReplyContextBuilder(BaseModel):
 
     @property
     def message(self) -> Message:
-        """The message being answered, read off the surface that carries it."""
+        """Returns the message being answered, read off `self.surface`."""
         return self.surface.message
 
     async def fetch_history(self, limit: int) -> list[Message]:
-        """Fetches up to `limit` history messages once, trimmed to the char budget.
+        """Returns up to `limit` history messages from `self.surface`, trimmed to `HISTORY_CHAR_BUDGET`.
 
-        Returned raw for the answer's uploaded render. Where they come from is the surface's
-        question: a channel walk on the gateway path, and the
-        conversation store on the `/ask` one, which is the only history a user-installed app
-        has (it is not a member of the channel and holds no `READ_MESSAGE_HISTORY`).
+        Args:
+            limit (int): Maximum number of history messages to request from the surface.
         """
         return trim_history_to_budget(messages=await self.surface.fetch_history(limit=limit))
 
     async def render_history(self, hist_messages: list[Message]) -> list[EasyInputMessageParam]:
-        """Renders fetched history with its uploaded attachment parts, for the answer.
+        """Returns rendered history blocks with uploaded attachment parts, capped by the media budgets.
 
-        History is the only render that opts into the dead-source skip:
-        an expired CDN attachment here re-fails every turn (current / reference do not; see
-        FileUploadRenderer._resolve_file_upload).
+        Opts into `allow_dead_cache=True` and degrades messages past `MAX_HISTORY_MEDIA_PARTS` or
+        `MAX_HISTORY_INLINE_BYTES` to `text_only=True` markers.
 
-        The full render is additionally capped at `MAX_HISTORY_MEDIA_PARTS` uploaded files: a
-        message past the cap takes the text-only render, which is exactly the marker form the
-        route already reads, so the degradation needs no second render path of its own. A message
-        past `MAX_HISTORY_INLINE_BYTES` takes it too, only once rendered, since its bytes are not
-        known before (`history_payload_overflow`).
+        Args:
+            hist_messages (list[Message]): Trimmed history messages ordered oldest-first.
         """
         if not hist_messages:
             return []
@@ -395,7 +359,7 @@ class ReplyContextBuilder(BaseModel):
             payload_capped_messages=len(payload_capped),
             message_id=self.message.id,
         )
-        # Names the block and stops there. Wording that invites the model to answer FROM the
+        # Names the block and stops there. Wording that invites the model to answer from the
         # history competes with the Reference Message's own claim to be the primary context and
         # loses the reply's subject to whatever in the window reads as the most answerable thing.
         # Where the subject may come from is a behaviour rule, so it lives in `REPLY_PROMPT` at
@@ -408,10 +372,10 @@ class ReplyContextBuilder(BaseModel):
     async def render_reference_message(
         self, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
-        """Renders the message being replied to, or nothing when this is not a reply.
+        """Returns the rendered reference-message header and body, or an empty list when not a reply.
 
-        `text_only` emits attachment markers instead of uploaded file parts, for the
-        route call that must not wait on the Files API.
+        Args:
+            text_only (bool): Whether to emit attachment markers instead of uploading files.
         """
         replied_to = replied_to_message(message=self.message)
         if replied_to is None:
@@ -423,7 +387,11 @@ class ReplyContextBuilder(BaseModel):
         return [reference_header(ref=replied_to), processed]
 
     async def render_current_message(self, text_only: bool = False) -> list[EasyInputMessageParam]:
-        """Processes the current message that needs to be answered."""
+        """Returns the rendered current-message header and body.
+
+        Args:
+            text_only (bool): Whether to emit attachment markers instead of uploading files.
+        """
         has_reference = replied_to_message(message=self.message) is not None
         messages: list[EasyInputMessageParam] = [
             current_header(message=self.message, has_reference=has_reference)
@@ -436,12 +404,10 @@ class ReplyContextBuilder(BaseModel):
         return messages
 
     async def render_parts(self, text_only: bool = False) -> MessageParts:
-        """Renders the message being replied to and the current message together.
+        """Returns the rendered `(reference_messages, current_message)` pair.
 
-        With `text_only` they render as attachment markers (no upload) for the route call;
-        otherwise this is the answer-path render (uploads + activation poll to ACTIVE)
-        that runs in the background so only the answer awaits the Files API. The render-timing log
-        fires only for the upload-bearing render, the latency-critical one.
+        Args:
+            text_only (bool): Whether to render attachment markers (`True`) or upload files (`False`).
         """
         started = time.monotonic()
         reference_messages, current_message = await asyncio.gather(
@@ -459,18 +425,13 @@ class ReplyContextBuilder(BaseModel):
         return reference_messages, current_message
 
     def read_server_memory(self) -> str:
-        """Reads the current guild's raw server memory, or "" when there is none.
+        """Returns the current guild's raw server memory, or `""` when there is none.
 
-        Unlike user memory there is exactly one server memory per guild, so it needs no
-        selection or allowlist: it is read directly with zero extra LLM latency. Returns "" for
-        a DM (no guild) or an empty memory. Read once per reply and shared by the route call,
-        whose recall picks its nickname table maps, and the answer.
-
-        A `/ask` turn always takes the "" branch, since its synthesized message carries no
-        guild — deliberately, because the write side is gated on a public channel this route can
-        never satisfy and a memory nothing writes back to is one the bot slowly goes stale on.
-        What goes with it is the `## 成員稱呼` table, so the alias widening and the optional
-        third-party candidates below have nothing to work from either, exactly as in a DM today.
+        Reads `self.message.guild` directly, so a `/ask` turn (whose synthesized message carries
+        no `guild`) always takes the `""` branch: the write side is gated on a public channel
+        that `/ask` can never verify, and a server memory that is never written back to would go
+        stale. `## 成員稱呼` alias widening and optional third-party candidates stay off with it,
+        matching DM behavior.
         """
         if self.message.guild is None:
             return ""
@@ -527,11 +488,10 @@ class ReplyContextBuilder(BaseModel):
         return memories, optional_allowed, len(deterministic_allowed)
 
     def plan_recall(self) -> RecallPlan:
-        """Settles whose memory this turn may carry, before the route call that picks from it.
+        """Returns the `RecallPlan` for this turn before the route call selects optional members.
 
-        File reads only (the server memory and the deterministic participants' memory), so the
-        route never waits on the history fetch. Optional candidates are offered only when the
-        deterministic participants leave a slot, so a pick can never displace one of them.
+        Performs local file reads only so routing never waits on the history fetch, and offers
+        optional candidates only when deterministic participants leave remaining slots.
         """
         server_memory = self.read_server_memory()
         # Where this reply is happening, for compartment scoping of every user-memory read.
@@ -610,14 +570,18 @@ class ReplyContextBuilder(BaseModel):
         recall: RecallPlan,
         recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
-        """Builds history, shared parts, server memory, and the memory the turn carries.
+        """Returns the assembled `ReplyContext` from history, rendered parts, and resolved memory.
 
-        Runs speculatively as its own task concurrent with routing: everything here only reads
-        (channel history, memory files), so a turn that fails before consuming it can discard it
-        safely. `parts_task` carries the answer-path reference/current renders (uploaded files).
-        `recall_picks` is the route's optional recall picks, which the pipeline resolves as soon
-        as the route returns; it is awaited only after the history and uploads, which almost
-        always outlast the route.
+        Runs speculatively alongside routing using read-only history and memory lookups, awaiting
+        `recall_picks` after history rendering and `parts_task` complete.
+
+        Args:
+            history_limit (int): Maximum number of channel history messages to fetch.
+            parts_task (asyncio.Task[MessageParts]): Task rendering the reference and current
+                messages with uploaded attachment parts.
+            recall (RecallPlan): Pre-route deterministic memories and optional candidate pool.
+            recall_picks (asyncio.Future[list[str]]): Future resolved with the router's optional
+                user-id picks.
         """
         build_started = time.monotonic()
 

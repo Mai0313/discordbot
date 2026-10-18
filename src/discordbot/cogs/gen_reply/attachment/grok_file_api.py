@@ -79,17 +79,9 @@ class GrokFileUploader(FileUploadRenderer):
 
     @cached_property
     def xai_client(self) -> AsyncClient:
-        """The xAI SDK client for direct Files API uploads, built lazily.
+        """Returns the direct xAI SDK client for Files API uploads, built lazily on first use.
 
-        Reaches xAI's own host rather than the proxy base url, since LiteLLM refuses to route a
-        file upload to xai. Built in this module, which the bot never imports while `select.py`
-        keeps the renderer disabled, so `xai-sdk` stays out of the live request path. Unlike the
-        Anthropic uploader's client, an empty key fails here rather than at the request: the
-        constructor raises `ValueError`, so `_upload_file` resolves the client before the upload
-        call to keep a missing key from being logged as an upload failure.
-
-        Returns:
-            An xAI client reused across uploads.
+        Raises `ValueError` on construction when `xai_api_key` is empty.
         """
         return AsyncClient(api_key=self.config.xai_api_key)
 
@@ -99,7 +91,13 @@ class GrokFileUploader(FileUploadRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
-        """Renders an image inline, since xAI resolves no file id for image input."""
+        """Returns `source` rendered inline via `image_renderer`, since xAI takes no image file ID.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to render.
+            cache_key (int | str): Per-source identifier.
+            allow_dead_cache (bool): Passed through to `image_renderer`.
+        """
         return await self.image_renderer.render_image(
             source=source, cache_key=cache_key, allow_dead_cache=allow_dead_cache
         )

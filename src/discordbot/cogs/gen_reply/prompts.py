@@ -131,7 +131,7 @@ MUSIC_INSTRUCTION = f"""
 """
 
 # Appended to the QA system prompt only while the video generator is active.
-# NOTE: the "one video per reply" cap is a deliberate throttle stated as a plain capability limit,
+# The "one video per reply" cap is a deliberate throttle stated as a plain capability limit,
 # never as a cost warning: telling the model a clip is expensive makes it over-refuse, so the cap
 # alone does the throttling while the model still reaches for video when it genuinely helps.
 VIDEO_INSTRUCTION = f"""
@@ -164,14 +164,11 @@ def _spoken_list(items: list[str], serial_comma: bool) -> str:
 
 
 def route_prompt(inline_image_enabled: bool) -> str:
-    """The route call's instructions, which say QA draws inline only while it can.
+    """Returns the route call's instructions, advertising inline QA image generation when enabled.
 
     Args:
         inline_image_enabled (bool): Whether the QA answer is offered the inline image marker
             (`LLMConfig.inline_image_enabled`).
-
-    Returns:
-        str: The instructions for the route call.
     """
     inline_image_note = (
         "The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.\n\n"
@@ -244,12 +241,9 @@ Also fill in the `recall_user_ids` field: decide whether the latest user message
 * List an id only when the latest message actually refers to an eligible member and their prior memory would help answer it. An empty list is the normal case.
 """
 
-# Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as
-# ONE self-contained text-to-image prompt WITHOUT inventing unrequested subjects / scene / style
-# (its job is clarifying what, grounding named entities, not art-directing; it carries NO default
-# aesthetic, so an unspecified style stays open and the model decides). Run by
-# `PromptGenerator.refine` with grounding tools; not used by the inline `<generate-image>` marker
-# (the answer model already authors that description).
+# Director instructions for the IMAGE route (and edit): restate a thin user request as one
+# self-contained text-to-image prompt without inventing unrequested subjects, scenes, or styles,
+# and with no default aesthetic. Used by `PromptGenerator.refine`, not `<generate-image>`.
 IMAGE_PROMPT = """
 You are an expert image prompt engineer working behind a Discord bot. A user asked the bot to create or edit an image. Your job is NOT to draw anything and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-image model will render directly. You are a faithful translator, not an art director: you clarify WHAT to render, you do not invent HOW it looks.
 
@@ -277,12 +271,9 @@ If a reference image is attached, the user wants it edited: describe the desired
 Output ONLY the final image prompt text. Nothing else.
 """
 
-# Director instructions for the VIDEO route: the image prompt's video twin, faithful about WHAT is
-# in the clip but allowed restrained, fitting cinematography (single continuous shot, gentle camera,
-# suitable light/mood) per omni's prompt guide. Like `IMAGE_PROMPT` it carries NO default aesthetic
-# (the visual style is left entirely to the model); what it adds on top is the spoken-language order
-# for any dialogue (Chinese first, Japanese second, English only on explicit request). Run by
-# `PromptGenerator.refine` with grounding tools; the edit path skips the director entirely.
+# Director instructions for the VIDEO route: faithful about what is in the clip while allowing
+# restrained cinematography per omni's prompt guide, with no default aesthetic and a spoken-language
+# preference order for dialogue. Used by `PromptGenerator.refine` on non-edit video requests.
 VIDEO_PROMPT = """
 You are an expert video prompt engineer working behind a Discord bot. A user asked the bot to create a short video. Your job is NOT to make the video and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-video model will render directly. You are faithful about WHAT is in the clip: you never invent subjects, characters, props, settings, actions, events, on-screen text, or audio the user did not state. You MAY add restrained, fitting cinematography (a single continuous shot, a gentle camera move, and lighting / mood that simply suit the stated subject), because this downstream model renders its best results with a little scene, camera, and lighting direction — but keep it minimal and never let it smuggle in content or a storyline.
 

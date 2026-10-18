@@ -1,10 +1,9 @@
 """The answer turn: the request one reply streams from, and the memory it schedules after.
 
-Two surfaces share this module because they are the same act — a model streaming prose onto a
-Discord message through `ResponseStreamer`. `stream_answer` is the QA reply, the one turn that
-carries the capability reference, the inline markers and the memory write path; the media
-persona reply is the short line the IMAGE / VIDEO routes stream onto the picture they just
-handed over, which schedules no memory and owns no status surface of its own.
+`stream_answer` streams the QA reply, carrying the capability reference, inline markers, and
+memory write scheduling. `stream_media_persona_reply` streams the short persona follow-up onto
+media delivered by the `IMAGE` and `VIDEO` routes, without scheduling memory or owning a status
+surface.
 """
 
 from typing import Literal, cast
@@ -62,29 +61,24 @@ from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
 def build_runtime_instructions(system_prompt: str, message: Message, guild_id: int | None) -> str:
-    """Appends per-request conversation-location and time context to the model instructions.
+    """Returns `system_prompt` with per-request conversation-location and time context appended.
 
-    Both go after the instructions, the time last, so every request opens on the same text and a
-    provider's prefix cache can reuse it: a per-second timestamp at the front changed the first
-    tokens of every request.
+    Both blocks sit at the end (time last) so the static prefix remains cacheable, and
+    `guild_id` comes from `TurnSurface` rather than `message.guild` (which is None on `/ask`).
 
-    The location line names the current guild (or DM) with developer authority so the
-    model can reason about where it is speaking; the memory rules lean on it as the
-    anchor for never attributing a remembered fact to another server.
-
-    `guild_id` is handed in rather than read off the message because the synthesized `/ask`
-    message carries no guild even in a server, and a guild conversation would then tell the
-    model at developer authority that it is in a DM. `TurnSurface` is what knows better.
+    Args:
+        system_prompt (str): Base developer instructions for the turn.
+        message (Message): Source message whose creation timestamp anchors the request time.
+        guild_id (int | None): Guild id from the turn surface, or None in a direct message.
     """
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
     request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
         message_created_at_asia_taipei=message_created_at_asia_taipei.isoformat(timespec="seconds")
     ).strip()
     if guild_id is not None:
-        # Deliberately id-only: the guild NAME is owner-controlled text and this block
+        # Deliberately id-only: the guild name is owner-controlled text and this block
         # rides the developer-authority `instructions` parameter, so embedding it would
-        # hand a server owner an instruction-injection surface. The id anchors the
-        # location just as well and cannot carry instructions.
+        # hand a server owner an instruction-injection surface.
         conversation_location = f"a Discord server (guild id {guild_id})"
     else:
         conversation_location = "a Discord direct message (DM)"
@@ -95,11 +89,10 @@ def build_runtime_instructions(system_prompt: str, message: Message, guild_id: i
 
 
 def count_media_parts(answer_input: ResponseInputParam) -> int:
-    """Counts the media parts riding in an assembled answer request.
+    """Returns the number of `input_file` and `input_image` parts in `answer_input`.
 
-    An `input_file` (a Files API handle) or an `input_image` (inline base64) is the only shape a
-    picture, clip or document reaches the model in, so this one number answers whether an
-    attachment survived collection, the modality gate, the upload and the render.
+    Args:
+        answer_input (ResponseInputParam): Assembled input items for the answer request.
     """
     total = 0
     for item in answer_input:
@@ -113,22 +106,13 @@ def count_media_parts(answer_input: ResponseInputParam) -> int:
 def memory_report_for(
     streamer: ResponseStreamer,
 ) -> Callable[[MemoryWriteSummary], Awaitable[None]]:
-    """Builds the callback that tells the user what this turn's memory work recorded.
+    """Returns the callback that updates `streamer`'s memory note after review completes.
 
-    Closes over the streamer rather than reaching for it later: by the time memory lands the
-    reply path has returned, and the streamer is the only thing that knows where the answer
-    ended up and where its usage footer sits.
+    `source_only` observations are counted rather than quoted in the channel, and an empty
+    summary still replaces the pending `正在整理記憶⋯` placeholder.
 
-    The wording is deliberately "took this down" rather than "remembered": the observations
-    are staged evidence at this point, and the merge that turns them into stored facts can
-    still fold or drop any of them. Showing the content is the point of the line — it is what
-    lets someone correct a memory the bot got wrong, on the spot — so a `source_only`
-    observation, which is exactly the kind that should not be repeated in a channel long after
-    the exchange scrolls past, is counted instead of quoted.
-
-    Every branch produces a line, the empty summary included. The streamer put `正在整理記憶⋯`
-    on the reply the moment it landed, so saying nothing here would leave that promise standing
-    over a turn that has finished and recorded nothing.
+    Args:
+        streamer (ResponseStreamer): Streamer that owns the reply message and footer.
     """
 
     async def report(summary: MemoryWriteSummary) -> None:
@@ -173,7 +157,7 @@ class AnswerTurn(BaseModel):
 
     @property
     def message(self) -> Message:
-        """The message being answered, read off the surface that carries it."""
+        """Returns the message being answered, read off `self.surface`."""
         return self.surface.message
 
     async def stream_media_persona_reply(
@@ -184,17 +168,19 @@ class AnswerTurn(BaseModel):
         focus_part: ResponseInputFileParam | ResponseInputImageParam,
         media_noun: str,
     ) -> None:
-        """Best-effort: streams a persona reply onto an already-delivered generated image/video.
+        """Streams a best-effort persona follow-up onto an already-delivered image or video.
 
-        `reply` is the delivered media message (native attachment) or None when the media was
-        hosted as a separate URL; the persona-base message is built from it INSIDE the protected
-        flow (`persona_base_reply`), so a base-creation or streaming failure is swallowed here
-        instead of surfacing to the outer error path, and a fresh hosted-case base that never
-        received content is deleted (never an orphan). Builds the answer-path input, appends the
-        just-made media as the focus, and streams onto the base (its content edits keep an
-        attached media), seeding the memory credits so the footer names whose memory the reply
-        read. Consumes the speculative `context_task` (awaited here so its build overlaps
-        generation); any failure leaves the delivered media untouched.
+        Awaits `context_task`, appends `focus_part` as the focus, and edits `reply` (or a fresh
+        reply when the media was hosted as a separate URL). Swallows any error and deletes an
+        unstarted hosted-case base message so no empty ping is orphaned.
+
+        Args:
+            reply (Message | None): Delivered attachment message, or None when hosted as a URL.
+            context_task (asyncio.Task[ReplyContext]): Speculative context build task.
+            system_prompt (str): Persona instructions for the media route.
+            focus_part (ResponseInputFileParam | ResponseInputImageParam): Uploaded or inline
+                part representing the generated media.
+            media_noun (str): Media label (`"image"` or `"video"`) for the prompt and span.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
@@ -280,12 +266,10 @@ class AnswerTurn(BaseModel):
                     await base.delete()
 
     async def persona_base_reply(self, reply: Message | None) -> Message:
-        """The message the persona stream edits: the delivered media message, or a fresh reply.
+        """Returns `reply` when present, or sends a fresh non-pinging reply for a hosted media URL.
 
-        When the media rode as a native attachment, that same message is reused (its content edits
-        keep the attachment). When the media was hosted as a separate URL (`reply is None`), a fresh
-        non-pinging reply is created here, lazily, only when the persona reply actually proceeds —
-        so the hosted-URL message keeps the sole author ping and no empty message is ever orphaned.
+        Args:
+            reply (Message | None): Delivered media attachment message, or None when hosted.
         """
         if reply is not None:
             return reply
@@ -299,11 +283,15 @@ class AnswerTurn(BaseModel):
         media: MediaItem | None = None,
         allowed_mentions: AllowedMentions | None = None,
     ) -> Message:
-        """Replies to the source message, sending unparented if it was deleted meanwhile.
+        """Returns a reply to the source message, or an unparented message if it was deleted.
 
-        What the media routes send has already been paid for, so a source deleted while it was
-        generating costs the parent, not the delivery. Each attempt builds its own `File` from
-        `media`, since a sent one has already been read. Other HTTP errors still propagate.
+        Args:
+            content (str): Message text to send.
+            media (MediaItem | None): Optional attachment item, converted to a fresh `File` per attempt.
+            allowed_mentions (AllowedMentions | None): Mention policy for the sent message.
+
+        Raises:
+            HTTPException: Sending failed for a reason other than a deleted reply target.
         """
         try:
             return await self.surface.send(
@@ -332,18 +320,18 @@ class AnswerTurn(BaseModel):
         allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
-        """Streams the QA answer from a pre-built reply context, then schedules memory updates.
+        """Streams the QA answer from `context`, launches any research brief, and schedules memory updates.
 
-        Both the per-user and the per-server update are scheduled here; the per-server one
-        carries its own guild / public-channel guards. The answer leads with the feature
-        reference that replaced `/help`, and each inline marker (a spoken clip, an image, a
-        music clip, a video clip) is offered whenever its own switch allows it. Both are QA
-        only: the media persona reply is not fielding a question about the bot, and it is built
-        with none of the generators, so a marker in one is stripped and produces nothing.
-        `allow_research` offers the `<deep-research>` marker where a research thread can be
-        opened. `yt_url`, set only when the router asked to watch a linked YouTube video, swaps
-        the answer turn onto the Gemini Interactions API (which can ingest the video) while
-        reusing the same streamer / footer / memory path.
+        Offers each inline media or `<deep-research>` marker only when its generator and config
+        switch are active, and swaps the answer request onto the Gemini Interactions API when
+        `yt_url` is set and the Gemini video gates pass.
+
+        Args:
+            system_prompt (str): Base QA system prompt before marker instructions are applied.
+            context (ReplyContext): Pre-built conversation, link, and memory context.
+            effort (Literal["low", "high"]): Reasoning effort selected by the router.
+            allow_research (bool): Whether the channel supports opening a deep-research thread.
+            yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
         """
         toolkit = self.toolkit
         voice_generator = toolkit.voice_generator if self.config.inline_voice_enabled else None
@@ -401,7 +389,7 @@ class AnswerTurn(BaseModel):
             # Persistent marker (added directly, not via the status chain) so it stays after the
             # chain's final reaction to show the reply was grounded in the watched video. The bot's
             # own application emoji `youtube`, usable as a reaction in any guild the bot is in.
-            # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
+            # Added before the streamer is built: its `created_at` is what the answer latency is
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
             await self.surface.mark(emoji=YOUTUBE_EMOJI)
@@ -498,15 +486,10 @@ class AnswerTurn(BaseModel):
     def _schedule_memory_updates(
         self, context: ReplyContext, full_reply: str, streamer: ResponseStreamer
     ) -> None:
-        """Schedules the per-author and per-server memory reviews this turn's markers asked for.
+        """Schedules the per-author and per-server memory reviews from this turn's markers.
 
-        Whose memory a note lands in is decided HERE, from the message, and the marker body
-        never gets a say: the author for the two personal tags and the guild for the server
-        one. That is what keeps the compartment boundary structural while the answer model is
-        the one proposing what to write.
-
-        Both calls are unconditional; `schedule_memory_update` itself is what turns a turn that
-        marked nothing into a no-op, so the gating that matters stays in one place.
+        Target scopes come from the message and surface rather than marker text, keeping the
+        compartment boundary structural.
         """
         message = self.message
         memory_message_list = target_centered_memory_messages(

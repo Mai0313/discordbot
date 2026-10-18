@@ -30,10 +30,10 @@ if TYPE_CHECKING:
 
 
 def _base_payload(message_id: int, channel_id: int, content: str) -> dict[str, Any]:
-    """The minimum `Message.__init__` reads, with every optional key left out.
+    """Returns the minimal payload dict `Message.__init__` reads, with optional keys omitted.
 
-    `timestamp` is absent because nextcord never reads it: `Message.created_at` is
-    `snowflake_time(self.id)`, which is why the ids below have to be real snowflakes.
+    `Message.created_at` derives from `snowflake_time(self.id)`, so `message_id` must be a real
+    snowflake.
     """
     return {
         "id": str(message_id),
@@ -59,12 +59,13 @@ def _build(
 
 
 def interaction_channel(interaction: Interaction[commands.Bot]) -> PartialMessageable:
-    """The channel a `/ask` turn happens in, as the partial nextcord could resolve.
+    """Returns the `PartialMessageable` channel for a `/ask` turn.
 
-    Always partial on the routes this command exists for: a guild the bot is not in resolves no
-    channel, and Discord sends no data to complete a DM one. A guild channel the bot CAN see
-    resolves to the real object, which is a `Messageable` all the same, so it is narrowed here
-    rather than special-cased.
+    Args:
+        interaction (Interaction[commands.Bot]): Invocation whose channel is resolved.
+
+    Raises:
+        RuntimeError: The interaction names no channel.
     """
     channel = interaction.channel
     if isinstance(channel, PartialMessageable):
@@ -75,11 +76,13 @@ def interaction_channel(interaction: Interaction[commands.Bot]) -> PartialMessag
 
 
 def resolved_attachment_payloads(interaction: Interaction[commands.Bot]) -> list[dict[str, Any]]:
-    """The raw payloads of the attachment options this invocation carried, if any.
+    """Returns the raw attachment payloads carried by `interaction.data`, if any.
 
-    Read back out of `interaction.data` rather than off the `nextcord.Attachment` the option
-    binding produced, because `Message.__init__` builds its own `Attachment` objects from the
-    payload and there is no round trip from one to the other.
+    Read from `interaction.data` rather than the bound `nextcord.Attachment` because
+    `Message.__init__` constructs its own `Attachment` instances from raw payloads.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Invocation to inspect for resolved attachments.
     """
     data = interaction.data or {}
     resolved = cast("dict[str, Any]", data.get("resolved") or {})
@@ -88,21 +91,17 @@ def resolved_attachment_payloads(interaction: Interaction[commands.Bot]) -> list
 
 
 def build_ask_message(interaction: Interaction[commands.Bot], question: str) -> Message:
-    """Builds the message the pipeline answers, from one `/ask` invocation.
+    """Returns the synthesized `Message` the pipeline answers for one `/ask` invocation.
 
-    The id is the interaction's own snowflake, so `Message.created_at` is the real moment the
-    command was run: it feeds `REQUEST_TIME_CONTEXT_PROMPT`, and it is the `message_id` every
-    record of this turn is correlated by.
+    Reuses the interaction's snowflake as `message.id` so `Message.created_at` reflects when the
+    command ran and anchors every log record for the turn.
 
     Args:
-        interaction: The invocation being answered.
-        question: The `question` option, verbatim.
-
-    Returns:
-        A message carrying the question, its attachment, and the invoking user as its author.
+        interaction (Interaction[commands.Bot]): The invocation being answered.
+        question (str): The `question` option, verbatim.
 
     Raises:
-        RuntimeError: The interaction names no channel or no user, which Discord never sends.
+        RuntimeError: The interaction names no channel or no user.
     """
     channel = interaction_channel(interaction=interaction)
     user = interaction.user
@@ -124,33 +123,19 @@ def build_ask_message(interaction: Interaction[commands.Bot], question: str) -> 
 def rebuild_conversation(
     turns: list[AskTurn], interaction: Interaction[commands.Bot]
 ) -> list[Message]:
-    """Rebuilds stored `/ask` turns as the history messages the renders expect, oldest first.
+    """Returns stored `/ask` turns rebuilt as transcript `Message` objects, oldest first.
 
-    Each turn becomes two messages, because that is what the answer model has to see: the
-    question authored by the user, and the reply authored by the bot. The bot's own id is what
-    makes the second one work — `MessageInputBuilder._assemble_input_message` decides `role` by
-    comparing the author against `bot.user`, so a turn rebuilt under any other author would reach
-    the model as one more user line with a `Bot (bot) [id: ...]:` prefix, which is exactly the
-    shape that render exists to avoid.
-
-    The reply's id is the question's plus one. Nothing resolves either against Discord, and the
-    two only ever separate one log line and one attachment-cache key from another; taking the
-    next value keeps the reply inside the same millisecond, so its `created_at` still reads as
-    the moment it was written.
-
-    Stored turns carry no attachments, so this history is text throughout and the media budget
-    has nothing to cap. What someone attached to an earlier `/ask` is gone by the next one.
+    Each turn expands into a user question message and a bot answer message (with id
+    `question.id + 1` and the bot's user id so input rendering assigns `role="assistant"`).
+    Stored turns carry text only, without attachments.
 
     Args:
-        turns: The stored exchanges, oldest first.
-        interaction: The current invocation, for the asker's own author object, the bot's own
-            user and the channel.
-
-    Returns:
-        The rebuilt messages in transcript order.
+        turns (list[AskTurn]): The stored exchanges, oldest first.
+        interaction (Interaction[commands.Bot]): Current invocation supplying the user, bot user,
+            and channel.
 
     Raises:
-        RuntimeError: The interaction names no channel, which Discord never sends.
+        RuntimeError: The interaction names no channel.
     """
     channel = interaction_channel(interaction=interaction)
     user = interaction.user

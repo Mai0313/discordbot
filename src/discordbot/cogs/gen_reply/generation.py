@@ -58,23 +58,15 @@ TTS_SPEED = 1.5
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
 VOICE_REPLY_FILENAME = "reply.wav"
 
-# Filename a generated image is attached under, by the IMAGE route and by a QA reply's
-# `<generate-image>` alike, so the bot's own generated images render the same in history. A reply
-# carrying several falls back to `generated_<n>.png`, since Discord collides on duplicate names.
+# Default filename for a generated image; multiple images fall back to `generated_<n>.png`.
 INLINE_IMAGE_FILENAME = "generated.png"
 
-# Filename a generated video is attached under, by the VIDEO route and by a QA reply's
-# `<generate-video>` alike (one clip per reply, so no numbering); MP4 is what the omni renderer
-# returns and what Discord inline-plays.
+# Filename for a generated video attachment; omni returns MP4, which Discord inline-plays.
 INLINE_VIDEO_FILENAME = "generated.mp4"
 
-# Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
-# Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
-# (docs: "generates lyrics in the language of your prompt"), so the language is defaulted here too,
-# not just the genre. The QA `<generate-music>` marker prompt already steers the answer model to default to
-# this style/language and write it into the description, so this is a backstop that still honors a
-# description asking for a different genre or language. A 2026-06 Interactions spike produced
-# Japanese vocals with this Japanese steer, but the load-bearing path stays the prompt-side default.
+# Fixed musical-style directive sent as the Lyria `system_instruction` (in English per Lyria's
+# prompt surface), defaulting both genre and vocal language to Japanese anime / J-pop unless the
+# description asks for a different genre, style, lyric language, or instrumental.
 MUSIC_STYLE_DIRECTIVE = (
     "Compose in a Japanese anime / J-pop style with Japanese-language vocals by default; if the "
     "description clearly asks for a different genre, style, or lyric language, or for an "
@@ -83,7 +75,11 @@ MUSIC_STYLE_DIRECTIVE = (
 
 
 def music_filename(mime_type: str | None) -> str:
-    """The Discord attachment filename for a generated music clip, by its audio mime type."""
+    """Returns the Discord attachment filename for a generated music clip from `mime_type`.
+
+    Args:
+        mime_type (str | None): Audio MIME type reported by the model, or None.
+    """
     # Discord's inline audio player keys off the extension, and `AudioContent.mime_type` can be a
     # non-obvious value (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would
     # yield an unplayable name; anything unmapped falls back to `.mp3`.
@@ -119,16 +115,24 @@ _COLLAPSE_SPACES_RE = re.compile(r"[ \t]{2,}")
 class MentionNameResolver(Protocol):
     """Resolves a Discord snowflake (member/role/channel) to a name for the spoken reply."""
 
-    def __call__(self, target_id: int) -> str | None: ...
+    def __call__(self, target_id: int) -> str | None:
+        """Returns the spoken name for `target_id`, or None when unresolved.
+
+        Args:
+            target_id (int): Discord snowflake id to resolve.
+        """
+        ...
 
 
 def speechify_discord_markup(text: str, resolve_name: MentionNameResolver) -> str:
-    """Rewrites Discord markup into plain spoken text before TTS synthesis.
+    """Returns `text` with Discord markup rewritten into plain spoken text for TTS synthesis.
 
-    A mention becomes the resolved member/role/channel name (or is dropped when it cannot be
-    resolved), custom emoji and timestamp tags are dropped, and a slash-command reference keeps
-    only its command words. Only the spoken-clip input is cleaned, so the model's `<@id>`-style
-    markup is never read aloud as a raw snowflake while the visible reply stays untouched.
+    Replaces mentions with `resolve_name` (or drops unresolved ones), strips custom emoji and
+    timestamp tags, and keeps only the command words of slash-command references.
+
+    Args:
+        text (str): Reply text that may contain Discord markup.
+        resolve_name (MentionNameResolver): Resolver for member, role, and channel ids.
     """
 
     def _named(match: re.Match[str]) -> str:
@@ -149,7 +153,7 @@ VoiceOutcome = Literal["ok", "empty", "timeout", "error"]
 class VoiceClip(BaseModel):
     """Result of one synthesis attempt: the audio (when produced) plus why it ended.
 
-    A failed attempt carries `audio=None` and a non-OK `outcome`; the caller always degrades
+    A failed attempt carries `audio=None` and a non-`"ok"` `outcome`; the caller always degrades
     to a plain text reply and uses `outcome` to decide its best-effort failure hint.
     """
 
@@ -162,12 +166,7 @@ class VoiceClip(BaseModel):
 
 
 class ImageGenerator(BaseModel):
-    """Image render through the LiteLLM proxy, in a raising and a best-effort form.
-
-    Holds the shared client and the image model. `render` is the raising primitive (edits when
-    source bytes are present, else generates); `generate` is the best-effort inline wrapper that
-    returns None on any failure or timeout, mirroring how `VoiceGenerator` is gated.
-    """
+    """Image renderer through the LiteLLM proxy, in raising (`render`) and best-effort (`generate`) forms."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -181,12 +180,18 @@ class ImageGenerator(BaseModel):
     async def render(
         self, prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
     ) -> bytes:
-        """Renders one image to PNG bytes, editing source bytes when present, else generating fresh.
+        """Returns PNG bytes rendered from `prompt`, editing `image_bytes_list` when provided.
 
-        Retries once on an empty payload (a transient hiccup occasionally returns no image) before
-        raising, so a flaky empty result does not surface as a user-facing error; a genuine safety
-        block returns empty on both attempts and still raises so callers can degrade. The image
-        model is dispatched on the proxy with the same parameters for the edit and generate paths.
+        Retries once on an empty response payload before raising `ValueError`.
+
+        Args:
+            prompt (str): Generation or editing prompt.
+            end_user_id (str): Discord username sent as the LiteLLM end-user header.
+            image_bytes_list (list[bytes] | None): Source image bytes to edit, or None to
+                generate a fresh image.
+
+        Raises:
+            ValueError: Both attempts returned no image data.
         """
 
         async def _dispatch() -> str | None:
@@ -228,13 +233,12 @@ class ImageGenerator(BaseModel):
     async def generate(
         self, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
     ) -> bytes | None:
-        """Renders one image from the description; None on any failure or timeout.
+        """Returns PNG bytes rendered from `user_prompt`, or None on any failure or timeout.
 
-        Best-effort wrapper around `render` for the QA-route `<generate-image>` marker, inside a generous
-        timeout, returning None to disable the inline path for a reply rather than raising into the
-        streamer's path. When `image_bytes_list` is supplied (the user uploaded image(s) the answer
-        model is illustrating), it rides through to `render` as edit source pixels, so an inline
-        `<generate-image>` over an attached photo edits it instead of generating a fresh one.
+        Args:
+            user_prompt (str): Image description or edit instructions.
+            end_user_id (str): Discord username sent as the LiteLLM end-user header.
+            image_bytes_list (list[bytes] | None): Optional source image bytes to edit in place.
         """
         started = time.monotonic()
         try:
@@ -264,21 +268,7 @@ class ImageGenerator(BaseModel):
 
 
 class PromptGenerator(BaseModel):
-    """Prompt director for the router IMAGE and VIDEO routes, running on the LiteLLM proxy.
-
-    Holds the shared proxy client and the director model; each `refine` call is gated per-route
-    by the caller's own flag (`IMAGE_REFINE_PROMPT_ENABLED` / `VIDEO_REFINE_PROMPT_ENABLED`).
-    `refine` expands a thin user request ("draw the heroine of some anime") into one rich,
-    self-contained generation prompt, looking subjects up first with the grounding tools, so the
-    downstream image/video model renders a far stronger result than from the raw request. Any
-    already-loaded source bytes ride along as input images so an edit prompt is grounded in the
-    actual picture without a re-download.
-
-    Best-effort by construction: a disabled flag, an empty draft, a timeout, or ANY error all
-    fall back to the raw `user_prompt`, so a director failure never aborts generation and callers
-    can treat `refine` as a pure prompt-in / prompt-out step. The QA-route inline `<generate-image>` marker
-    does NOT use this: that description is already authored by the answer model with grounding.
-    """
+    """Prompt director that expands a user request into a grounded generation prompt on the proxy."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -297,13 +287,14 @@ class PromptGenerator(BaseModel):
         enabled: bool,
         image_bytes_list: list[bytes] | None = None,
     ) -> str:
-        """Expands a thin IMAGE/VIDEO request into a rich, self-contained generation prompt.
+        """Returns a refined generation prompt, falling back to `user_prompt` when disabled or on failure.
 
-        Runs `prompt_model` with the grounding tools so a vague request is looked up and resolved
-        before the image/video model renders it. With `enabled=False` the director is skipped and
-        the raw `user_prompt` is returned; an empty draft, a timeout, or any error fall back the
-        same way, so an exception never escapes here. The caller passes its own per-route flag
-        (`image_refine_prompt_enabled` / `video_refine_prompt_enabled`).
+        Args:
+            user_prompt (str): Raw user generation request.
+            instructions (str): Developer instructions for the refinement pass.
+            end_user_id (str): Discord username sent as the LiteLLM end-user header.
+            enabled (bool): Whether prompt refinement is enabled for this call.
+            image_bytes_list (list[bytes] | None): Optional source images passed as visual context.
         """
         if not enabled:
             return user_prompt
@@ -356,19 +347,11 @@ class PromptGenerator(BaseModel):
 
 
 class VoiceGenerator(BaseModel):
-    """Best-effort text-to-speech for spoken replies through the LiteLLM proxy.
+    """Best-effort text-to-speech renderer through the LiteLLM proxy.
 
-    Kept on the proxy on purpose: TTS has many interchangeable providers, so the one-SDK proxy
-    path stays the most portable, unlike the omni video and Lyria music renders, which can only
-    go direct. `generate` renders one reply with the fixed `TTS_*` voice config to a `VoiceClip`
-    carrying the WAV bytes (when produced) plus an outcome (OK / EMPTY / TIMEOUT / ERROR), so
-    the caller both degrades to a text reply and can hint why the clip is missing (a timeout
-    vs. any other provider error, e.g. a policy refusal).
-
-    The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it fixes the voice age/gender and lets
-    the tone follow the reply's own wording), prepended to the input text because the proxy's
-    `instructions` parameter is silently ignored for this TTS model. `response_format` is
-    intentionally not sent (the proxy 500s on it); the model returns WAV, hence `reply.wav`.
+    Prepends `TTS_STYLE_DIRECTIVE` to the input text because the proxy ignores `instructions`
+    for this TTS model, and omits `response_format` because the proxy 500s on it (the model
+    returns WAV by default).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -381,7 +364,12 @@ class VoiceGenerator(BaseModel):
     model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
 
     async def generate(self, text: str, end_user_id: str) -> VoiceClip:
-        """Renders reply text to a VoiceClip, reporting why it ended for best-effort hinting."""
+        """Returns a `VoiceClip` synthesized from `text`, capturing any timeout or error in `outcome`.
+
+        Args:
+            text (str): Spoken text to synthesize.
+            end_user_id (str): Discord username sent as the LiteLLM end-user header.
+        """
         spoken = text.strip()
         if not spoken:
             logfire.info(
@@ -481,16 +469,7 @@ class _InteractionResult(Protocol):
 
 
 class VideoGenerator(BaseModel):
-    """Native Gemini (omni) video render behind the VIDEO route and the QA-route `<generate-video>` marker.
-
-    Holds the direct-to-Google client and the video model. `render` (raising) backs the VIDEO
-    route, where video is always the primary deliverable; `generate` is its best-effort twin
-    (None on any failure) for the inline `<generate-video>` marker, mirroring `ImageGenerator`'s render /
-    generate split so a slow or refused inline clip never blocks anything but its own reply. Runs
-    on the Gemini Interactions API (`interactions.create`), which unifies text / reference-image /
-    source-video generation on one model, so the same call backs plain generation and true
-    source-video editing (`task="edit"`).
-    """
+    """Native Gemini (omni) video renderer on the Interactions API, in raising and best-effort forms."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -508,19 +487,19 @@ class VideoGenerator(BaseModel):
         reference_image_sources: list[LoadedMedia],
         source_video: LoadedMedia | None = None,
     ) -> bytes:
-        """Renders one video to MP4 bytes via the native Gemini (omni) Interactions API; raises.
+        """Returns MP4 bytes rendered via the native Gemini (omni) Interactions API.
 
-        The single downstream video render, so the VIDEO route shares one implementation and a
-        future provider swap changes one place. Goes DIRECT to Google (the Interactions API is
-        Gemini-only). A `source_video` is uploaded to the Files API and edited in place with an
-        explicit `task="edit"`; otherwise the task is omitted and omni infers image_to_video /
-        reference_to_video / text_to_video from the prompt plus any input images (up to
-        `MAX_VIDEO_REFERENCE_IMAGES`). 16:9 is sent only for pure text; `delivery="uri"` so the
-        clip comes back as a Files URI (no base64 bloat) and is downloaded with a bounded retry
-        (`_download_output_video`). Duration is left to omni's default. Raises `RuntimeError`
-        when the interaction is not `completed` or carries no video, folding in `status` +
-        `output_text` (omni signals a soft refusal / incomplete / budget_exceeded that way; the
-        `Interaction` has no `error` / `rai_*` field).
+        Uploads `source_video` to the Files API for `task="edit"` when present; otherwise lets
+        omni infer the task from `prompt` and up to `MAX_VIDEO_REFERENCE_IMAGES` reference
+        images, requesting `delivery="uri"` and downloading the resulting clip.
+
+        Args:
+            prompt (str): Video generation or editing prompt.
+            reference_image_sources (list[LoadedMedia]): Reference images with MIME types.
+            source_video (LoadedMedia | None): Source video clip to edit, or None.
+
+        Raises:
+            RuntimeError: The source video upload, generation, or output download failed.
         """
         text = prompt or "Generate a video from the message content."
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
@@ -545,7 +524,7 @@ class VideoGenerator(BaseModel):
             task_label = "edit"
         elif reference_image_sources:
             content = [TextContentParam(type="text", text=text)]
-            # Each image MUST carry its real mime type: omni rejects an image content block with
+            # Each image must carry its real mime type: omni rejects an image content block with
             # an empty mime ("Unsupported MIME type: ").
             content.extend(
                 ImageContentParam(
@@ -598,14 +577,11 @@ class VideoGenerator(BaseModel):
     async def generate(
         self, user_prompt: str, reference_image_sources: list[LoadedMedia] | None = None
     ) -> bytes | None:
-        """Renders one inline `<generate-video>` clip to MP4 bytes; None on any failure or timeout.
+        """Returns MP4 bytes rendered from `user_prompt`, or None on any failure or timeout.
 
-        Best-effort twin of `render` for the QA-route `<generate-video>` marker: it returns None (disabling
-        the inline video for this reply) instead of raising into the streamer's single media-attach
-        gather, so a slow / refused clip never aborts the ready voice / music / images alongside it.
-        When the user attached image(s) they ride along as `(bytes, mime)` pairs and omni infers the
-        task (image_to_video / reference_to_video); otherwise it is plain text. `render` already
-        bounds itself with `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
+        Args:
+            user_prompt (str): Video description.
+            reference_image_sources (list[LoadedMedia] | None): Optional reference images.
         """
         started = time.monotonic()
         try:
@@ -631,15 +607,7 @@ class VideoGenerator(BaseModel):
         return video
 
     async def _download_output_video(self, uri: str) -> bytes:
-        """Downloads a URI-delivered clip, retrying while its Files entry finalizes; raises past the bound.
-
-        With `delivery="uri"` the interaction reports `completed` while `files.get` can still show
-        PROCESSING for a moment (observed even when the download already succeeds), so rather than
-        poll the lagging state we retry the download itself — it returns the whole clip as soon as
-        the file is servable and adds no wait when the first attempt already works. Bounded by
-        `FILES_READY_TIMEOUT_SECONDS` so a stuck file hard-fails diagnosably instead of hanging,
-        since video is the primary deliverable.
-        """
+        """Downloads a URI-delivered clip within `FILES_READY_TIMEOUT_SECONDS`, retrying while it finalizes."""
         attempt = 0
         failure: Exception | None = None
         try:
@@ -667,15 +635,9 @@ class VideoGenerator(BaseModel):
             raise failure from None
 
     async def _upload_source_video(self, source_video: LoadedMedia) -> str:
-        """Uploads a source clip to the Files API and returns its ACTIVE uri; raises on failure.
+        """Uploads `source_video` to the Files API and returns its `FileState.ACTIVE` URI.
 
-        The edit path feeds the actual clip (not a poster frame), so the video IS the primary
-        deliverable and a failed upload must hard-fail with a diagnosable error rather than pass a
-        None uri into `VideoContentParam`. The bound is generous (`FILES_READY_TIMEOUT_SECONDS`)
-        because a raw clip is far larger than an image and can sit in PROCESSING longer than the
-        reply-upload's window, and it covers the transfer as well as the poll, since
-        google-genai sets no transport timeout and an upload into a stalled connection never
-        returns.
+        Bounds both the upload and activation poll with `FILES_READY_TIMEOUT_SECONDS`.
         """
         try:
             async with asyncio.timeout(delay=FILES_READY_TIMEOUT_SECONDS):
@@ -699,13 +661,7 @@ class MusicClip(BaseModel):
 
 
 class MusicGenerator(BaseModel):
-    """Native-Lyria music render behind the QA-route `<generate-music>` marker.
-
-    Holds the direct-to-Google client and the music model. Best-effort only (`generate`, None on
-    any failure), mirroring `ImageGenerator.generate`: music is inline-only, so a slow or refused
-    render never blocks anything but its own reply. Goes DIRECT to Google via the Gemini
-    Interactions API (the music model is dispatched there, not via the proxy).
-    """
+    """Best-effort native Lyria music renderer on the Gemini Interactions API."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -717,13 +673,10 @@ class MusicGenerator(BaseModel):
     )
 
     async def generate(self, user_prompt: str) -> MusicClip | None:
-        """Renders one music clip from the description; None on any failure or timeout.
+        """Returns a `MusicClip` rendered from `user_prompt`, or None on any failure or timeout.
 
-        Best-effort wrapper for the QA-route `<generate-music>` marker: one non-streaming Interactions
-        call inside a generous timeout, returning None to disable the inline path for this reply
-        rather than raising into the streamer. The fixed anime/J-pop style rides in
-        `system_instruction`; the description is passed as the plain-string `input`. The returned
-        audio mime type is carried back so the caller can pick a Discord-playable extension.
+        Args:
+            user_prompt (str): Music description passed as the plain-string `input`.
         """
         started = time.monotonic()
         # Output extraction and base64 decode stay inside the guard: an unexpected audio shape

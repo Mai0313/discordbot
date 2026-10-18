@@ -34,13 +34,9 @@ DROPPED_HINT_EMOJI: Final[str] = "⚠️"
 # reply read as the same event rather than two unrelated hints.
 RETRY_HINT_EMOJI: Final[str] = "🔁"
 
-# One symbol per memory action, because all three notes stack in the same corner of the same
-# reply: with one shared symbol a reader cannot tell "I read this person's memory" from "I wrote
-# this down about you" without parsing the whole sentence, and can mistake the read credit for
-# something the bot just recorded. Each note also opens on its VERB for the same reason. Plain
-# unicode rather than app emoji because uploading one is not something the bot can do; swapping
-# in a custom `<:name:id>` later is a change to these three lines, and to
-# `utils/llm_transcript.py::USAGE_FOOTER_RE`, which spells the write and forget marks too.
+# Distinct symbols for memory read, write, and forget so stacked notes at the bottom of a reply
+# are immediately distinguishable; `utils/llm_transcript.py::USAGE_FOOTER_RE` matches the write
+# and forget marks as well.
 MEMORY_READ_EMOJI: Final[str] = "📖"
 MEMORY_WRITE_EMOJI: Final[str] = "✏️"
 MEMORY_FORGET_EMOJI: Final[str] = "🩹"

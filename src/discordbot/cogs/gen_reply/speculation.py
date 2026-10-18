@@ -26,13 +26,14 @@ def _report_discarded_failure(exc: Exception, label: str, message_id: int) -> No
 async def discard_task[TaskResultT](
     task: asyncio.Task[TaskResultT], label: str, message_id: int
 ) -> None:
-    """Cancels and drains a speculative task so its exception is retrieved.
+    """Cancels and drains a speculative task, logging any non-cancellation failure under `label`.
 
-    The except is deliberately broad: this drains unrelated subsystems, so anything they can
-    raise must be swallowed here rather than surfacing on a route that already decided it does
-    not need the result. `label` names which one failed, since the tasks are otherwise
-    indistinguishable at this point. A link-context build is drained by
-    `drain_deadline_bound_task` instead, which must not steal its own deadline's cancellation.
+    Link-context tasks that own an internal deadline use `drain_deadline_bound_task` instead.
+
+    Args:
+        task (asyncio.Task[TaskResultT]): Speculative task to cancel and await.
+        label (str): Subsystem name for failure logs.
+        message_id (int): Triggering Discord message id for log correlation.
     """
     task.cancel()
     try:
@@ -46,7 +47,17 @@ async def discard_task[TaskResultT](
 async def await_deadline_bound_task[DeadlineT](
     task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
 ) -> DeadlineT:
-    """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
+    """Returns the result of `task`, draining it cleanly if the caller is cancelled first.
+
+    Shields `task` so an outer cancellation before `deadline` cancels and drains `task` via
+    `drain_deadline_bound_task` without interrupting its post-deadline cleanup.
+
+    Args:
+        task (asyncio.Task[DeadlineT]): Deadline-bound task to await.
+        deadline (float): Monotonic event-loop deadline owned by `task`.
+        label (str): Source name for failure logs if drained.
+        message_id (int): Triggering Discord message id for log correlation.
+    """
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -59,7 +70,14 @@ async def await_deadline_bound_task[DeadlineT](
 async def drain_deadline_bound_task[DeadlineT](
     task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int
 ) -> None:
-    """Cancels before a task's deadline or preserves its in-progress deadline cleanup."""
+    """Cancels `task` if `deadline` has not passed, then waits for its cleanup to finish.
+
+    Args:
+        task (asyncio.Task[DeadlineT]): Deadline-bound task to drain.
+        deadline (float): Monotonic event-loop deadline owned by `task`.
+        label (str): Source name for failure logs.
+        message_id (int): Triggering Discord message id for log correlation.
+    """
     if not task.done() and asyncio.get_running_loop().time() < deadline:
         task.cancel()
     while not task.done():
@@ -81,7 +99,14 @@ async def drain_deadline_bound_task[DeadlineT](
 async def discard_link_tasks[DeadlineT](
     link_tasks: dict[str, asyncio.Task[DeadlineT]], deadline: float, message_id: int
 ) -> None:
-    """Drains link builds without stealing cancellation from their shared deadline."""
+    """Drains all remaining `link_tasks` against `deadline` and clears the mapping.
+
+    Args:
+        link_tasks (dict[str, asyncio.Task[DeadlineT]]): Active link-context tasks keyed by source
+            name.
+        deadline (float): Shared monotonic event-loop deadline for the link builds.
+        message_id (int): Triggering Discord message id for log correlation.
+    """
     for name, task in link_tasks.items():
         await drain_deadline_bound_task(
             task=task, deadline=deadline, label=name, message_id=message_id
@@ -92,11 +117,14 @@ async def discard_link_tasks[DeadlineT](
 async def run_until_deadline[DeadlineT](
     awaitable: Awaitable[DeadlineT], deadline: float
 ) -> DeadlineT:
-    """Runs a cancellation-propagating builder until its fixed event-loop deadline.
+    """Returns the result of `awaitable` bounded by the remaining time until `deadline`.
 
-    Registered builders all propagate `CancelledError`, so `wait_for` alone owns the boundary.
-    A clock check after this await would reject a pre-deadline result when a busy event loop only
-    resumes this wrapper after the deadline.
+    Relies on `asyncio.wait_for` alone rather than a post-await clock check so a result completed
+    before `deadline` is not rejected if a busy event loop resumes this coroutine late.
+
+    Args:
+        awaitable (Awaitable[DeadlineT]): Cancellation-propagating coroutine or future to run.
+        deadline (float): Monotonic event-loop deadline (`loop.time()`).
     """
     event_loop = asyncio.get_running_loop()
     remaining_seconds = max(0.0, deadline - event_loop.time())

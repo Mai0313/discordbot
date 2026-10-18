@@ -87,7 +87,7 @@ class ReplyPipeline(BaseModel):
 
     @property
     def message(self) -> Message:
-        """The message being answered, read off the surface that carries it."""
+        """Returns the message being answered."""
         return self.surface.message
 
     def _answer_turn(self) -> AnswerTurn:
@@ -228,14 +228,10 @@ class ReplyPipeline(BaseModel):
         # message (never the model) so the answer turn ingests the exact link posted.
         yt_url = find_youtube_url(message=message) if route.watch_video else None
         if route.watch_video and yt_url is None:
-            # The router judged the user is asking about a video, but the URL scan
-            # found none where it is allowed to look, so the answer is written
-            # without watching anything and nothing else records that.
             logfire.info(
                 "gen_reply watch_video requested but no YouTube URL was found",
                 message_id=message.id,
             )
-        # Total time from pipeline start to answer dispatch.
         logfire.info(
             "gen_reply pre-answer latency",
             elapsed_seconds=time.monotonic() - pipeline_started,

@@ -1,10 +1,7 @@
-"""The one triage call that decides how one message is answered.
+"""Single-call triage for route selection, reasoning effort, and optional memory recall.
 
-`classify` is on the critical path — every dispatch waits on it — so it reads the text-only
-renders, never an upload, and never the channel history. Besides the route it grades the answer
-effort and, on a turn that offers optional recall candidates, names the ones the latest message
-refers to; one call does all three because the separate calls cost as much and the separate
-selector picked someone on most turns where nobody was named (#725).
+`RouteClassifier.classify` runs on the critical path before any handler dispatches, so it reads
+text-only message renders without waiting on attachment uploads or channel history.
 """
 
 import time
@@ -52,18 +49,22 @@ class RouteClassifier(BaseModel):
         recall_candidates: dict[int, RecallCandidate],
         server_memory_block: EasyInputMessageParam | None,
     ) -> RouteClassification:
-        """Classifies the message into a reply mode using pre-built context parts.
+        """Returns the route, effort, link-read flags, and optional recall picks for one message.
 
-        The handler choice, the two content-read decisions that ride with it (`watch_video`,
-        `link_context_sources`) and the answer effort all come from this one call. The reference
-        + current parts arrive already text-only (attachment markers, no file ids), so the route
-        classifies on the text without reading or waiting on uploads.
+        Reads text-only message parts without waiting on attachment uploads. When
+        `recall_candidates` is non-empty, widens the schema to `RecallRouteClassification` and
+        includes `server_memory_block` plus the candidate block so the call also picks obliquely
+        referenced user ids.
 
-        With `recall_candidates` the same call also names which of them the latest message
-        refers to, and only then does it read the server memory (whose nickname table maps an
-        alias to an id) and the candidate block, kept last so it is read right before deciding.
-        The picks are ids only; `ReplyContextBuilder.build` resolves them against the same
-        allowlist.
+        Args:
+            reference_messages (list[EasyInputMessageParam]): Text-only render of the replied-to
+                message, if any.
+            current_message (list[EasyInputMessageParam]): Text-only render of the triggering
+                message.
+            recall_candidates (dict[int, RecallCandidate]): Optional oblique-reference candidates
+                keyed by Discord user id.
+            server_memory_block (EasyInputMessageParam | None): Server memory context block
+                carrying the `## 成員稱呼` table, or None.
         """
         message_list = [*reference_messages, *current_message]
         instructions = route_prompt(inline_image_enabled=self.inline_image_enabled)
@@ -113,9 +114,8 @@ class RouteClassifier(BaseModel):
             )
             route = RouteClassification(decision="QA")
         except APIError as exc:
-            # The proxy gives the triage model no fallback, so a transient provider failure
-            # would otherwise cost the whole reply (#742). A refusal still raises: it is a
-            # defect, and degrading every turn to QA would hide it.
+            # The proxy configures no fallback for the triage tier, so retryable provider errors
+            # degrade to QA while non-retryable errors still raise.
             if not is_retryable_llm_error(exc=exc):
                 raise
             logfire.warn(

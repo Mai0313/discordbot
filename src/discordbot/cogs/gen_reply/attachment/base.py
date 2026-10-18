@@ -44,11 +44,10 @@ media_semaphore = LoopLocalSemaphore(capacity_provider=lambda: MEDIA_CONCURRENCY
 
 
 def loggable_cache_key(cache_key: int | str) -> int | str:
-    """A log-safe form of an attachment cache key.
+    """Returns `cache_key` with any URL query string stripped so signed CDN tokens are not logged.
 
-    Attachment / sticker keys are ids (safe to log). An embed-image key is its source URL,
-    which can carry a signed CDN token in the query string; drop the query so a log keeps a
-    stable, correlatable identifier without leaking the token.
+    Args:
+        cache_key (int | str): Attachment/sticker ID or embed-image source URL.
     """
     if isinstance(cache_key, str):
         return cache_key.split("?", 1)[0]
@@ -83,12 +82,15 @@ class AttachmentRenderer(BaseModel):
     _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
 
     def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
-        """Whether this renderer can hand the answer this one source, as far as it knows unfetched.
+        """Returns whether this renderer can carry the unfetched source.
 
-        The per-source check beside `dropped_modalities`, which the gate applies apart. The gate
-        refuses a source this denies, so the route marker, the history media budget and the render
-        cache leave it out just as the answer does. `size` is what Discord reports for an
-        attachment, None for a source that reports none.
+        Checked alongside `dropped_modalities` before downloading so the route marker, history
+        media budget, and render cache skip sources the answer cannot use.
+
+        Args:
+            content_type (str): Resolved lowercase MIME type of the source.
+            cache_key (int | str): Per-source identifier.
+            size (int | None): Byte size reported by Discord, or `None` when unknown.
         """
         del content_type, cache_key, size
         return True
@@ -99,21 +101,29 @@ class AttachmentRenderer(BaseModel):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> RenderedAttachment | None:
-        """Renders an image source (attachment, sticker, or URL) to a content part."""
+        """Returns an image source rendered to a Responses API content part, or `None` if dropped.
+
+        Args:
+            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to render.
+            cache_key (int | str): Per-source identifier for upload and dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
         raise NotImplementedError
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
-        """Renders a non-image file attachment to a content part."""
+        """Returns a non-image attachment rendered to a Responses API content part, or `None`.
+
+        Args:
+            attachment (Attachment): Discord file attachment to render.
+            cache_key (int | str): Per-source identifier for upload and dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
         raise NotImplementedError
 
     def _is_known_dead(self, cache_key: int | str) -> bool:
-        """Whether a source's fetch failed recently enough to skip re-fetching it.
-
-        Past DEAD_SOURCE_TTL the marker is dropped so the source is retried once, letting a
-        transient blip self-heal while an expired CDN url stays cheap.
-        """
+        """Returns whether `cache_key` failed a fetch within `DEAD_SOURCE_TTL`, evicting expired entries."""
         dead_at = self._dead_sources.get(cache_key)
         if dead_at is None:
             return False
@@ -137,20 +147,10 @@ class AttachmentRenderer(BaseModel):
         load_data: "FileBytesLoader",
         allow_dead_cache: bool,
     ) -> LoadedMedia | None:
-        """Fetches one source's bytes and mime type, or None when the fetch failed.
+        """Fetches one source's bytes and MIME type, or returns `None` on failure.
 
-        An uploading renderer calls it INSIDE the media slot: the fetch is half of what that slot
-        bounds, and holding the slot across the download and the upload alike is what stops
-        concurrent pipelines buffering dozens of files while they queue for an upload.
-
-        The except is broad because `load_data` is caller-supplied and spans a CDN fetch plus a
-        PIL decode; any failure must degrade to dropping this one attachment rather than blanking
-        the message it belongs to. A history render (`allow_dead_cache`) additionally marks the
-        source dead, so an expired CDN url is not re-fetched on every later reply.
-
-        The await happens INSIDE that guard rather than at the caller, so a loader that fails is
-        this one attachment's problem: `input.py` gathers the renders without `return_exceptions`,
-        so an escaping error would lose the whole message's attachments rather than this one.
+        Swallows loader errors so one broken attachment does not fail sibling renders gathered
+        without `return_exceptions`, and marks `cache_key` dead when `allow_dead_cache` is true.
         """
         try:
             loaded = await load_data()
@@ -182,6 +182,13 @@ class FileUploadRenderer(AttachmentRenderer):
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> RenderedAttachment | None:
+        """Returns `attachment` uploaded to the provider's Files API as an `input_file` part, or `None`.
+
+        Args:
+            attachment (Attachment): Discord file attachment to upload.
+            cache_key (int | str): Per-source identifier for upload and dead-source caching.
+            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
+        """
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(

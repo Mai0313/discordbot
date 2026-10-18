@@ -20,24 +20,18 @@ def build_attachment_handler(
 ) -> AttachmentRenderer:
     """Returns the attachment renderer matching the answer (slow) model's provider.
 
-    Only Gemini resolves an uploaded Files-API URI; OpenAI / Anthropic answer models reject
-    it (the proxy mistranslates it), so they inline instead. The OpenAI, Anthropic and Grok
+    Only Gemini resolves an uploaded Files-API URI; OpenAI and Anthropic answer models reject
+    it (the proxy mistranslates it), so they inline instead. The OpenAI, Anthropic, and Grok
     Files-API uploaders are scaffolded behind the commented branches below until their
-    reference path is verified. This is the single place that maps an answer model to its
-    attachment handling, so adding a provider changes only here.
+    reference path is verified.
 
-    `gemini_client` hands back the deployment's own direct client, so the one credential a
-    deployment answers on is the one it uploads with: an uploaded file is readable only by the
-    project that uploaded it, so an uploader holding a different key from the deployment behind
-    the answer model fails the whole request. None is the no-key case, where nothing can upload,
-    so a Gemini answer model inlines like any other rather than downloading each attachment only
-    to drop it.
+    `file_api_enabled` overrides the provider branch: when disabled, or when `gemini_client`
+    returns `None`, every provider falls back to `InlineRenderer`.
 
-    `file_api_enabled` overrides the provider branch entirely: a provider whose Files API is
-    refusing to resolve references costs the WHOLE reply, since the answer carries the failing
-    part, so the switch trades video / audio ingestion (which `InlineRenderer` drops) for
-    replies that still land. Flipping it takes a restart, like every other setting here:
-    `.env` is read at import and the one production caller is a `cached_property`.
+    Args:
+        model (ModelSettings): Selected answer model settings.
+        gemini_client (Callable[[], genai.Client | None]): Provider for the deployment's direct
+            Gemini client, or `None` when no Gemini key is configured.
     """
     if not LLMConfig().file_api_enabled:
         return InlineRenderer()

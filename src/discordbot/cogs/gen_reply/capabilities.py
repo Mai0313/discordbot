@@ -1,22 +1,8 @@
 """The bot's own feature reference, injected into the QA answer turn.
 
-`capabilities.md` replaces the former `/help` command: one English document the answer model
-translates at runtime, instead of three hand-maintained locales, so "what can you do" is
-answered in conversation rather than by a slash command. It ships inside the package (hatch
-includes every file under `src/discordbot`) and is read once at import.
-
-The document describes a deployment with every switch on and a Gemini key. Rendering it cuts or
-rewords each passage promising a feature this deployment has switched off, the rule a disabled
-inline marker's instruction already follows, so each passage named here has to stay word for
-word what the document says.
-
-`tests/guards/test_capabilities.py` keeps it exhaustive in both directions: the same AST scan that
-used to guard the help content asserts every runnable slash command still appears here, and
-every command named here still resolves to a runnable one. The second guard reads a mention
-off a code span of its own, so write a command that way or it is rejected as unreadable.
-Neither reaches an inline marker, which is asked for in plain language and so has nothing to
-match on; `markers.py`'s tag set is pinned there instead, and changing it fails until this
-document says what the bot can now do, or stops claiming what it no longer can.
+`capabilities.md` ships inside the package and is read once at import as an English document the
+answer model translates at runtime. Rendering cuts or rewords each passage promising a feature
+this deployment has switched off, so each passage named here must match the document verbatim.
 """
 
 from pathlib import Path
@@ -41,18 +27,13 @@ _MEDIA_LIST = (
 
 
 def render_capabilities_block(config: LLMConfig) -> EasyInputMessageParam:
-    """Renders the feature reference as the bot's own note about itself.
+    """Returns the feature reference rendered as an `assistant` message for `config`.
 
-    Rendered as `role=assistant` for the same reason the memory blocks are: it is reference
-    material, not a rule, so a feature description can never outrank the developer prompt or
-    the user's current message. With every switch on and a key nothing is replaced, so the
-    block keeps the bytes it has always had.
+    Rendered as `role="assistant"` so feature descriptions remain reference material below
+    developer instructions and the user's current message.
 
     Args:
         config (LLMConfig): The deployment's switches, which decide what the reference may promise.
-
-    Returns:
-        EasyInputMessageParam: The reference as an assistant note.
     """
     media = (
         ("speak a line aloud", config.inline_voice_enabled),

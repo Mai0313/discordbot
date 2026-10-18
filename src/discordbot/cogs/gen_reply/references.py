@@ -1,10 +1,7 @@
-"""What one triggering message points at: the message it replies to, and the links it carries.
+"""One-hop reply resolution and URL extraction over model-visible message text.
 
-Every reader here works off the text a message actually RENDERS to the model, never off raw
-nextcord fields, so a URL scanner can never fire on a link the answer model was not shown.
-`replied_to_message` is the single place the one-hop reference is resolved, which is what keeps
-the route, the media handlers and the streamer agreeing on what "the message being replied to"
-means.
+Every scanner here reads the text a message renders to the model rather than raw nextcord
+fields, so URL detection never triggers on a link the answer model cannot see.
 """
 
 import re
@@ -18,15 +15,13 @@ from discordbot.cogs.gen_reply.link_sources import LinkUrlFilter, LinkContextSou
 
 
 def replied_to_message(message: Message) -> Message | None:
-    """The message this one replies to, or None when it is not a reply.
+    """Returns the message `message` directly replies to, or None when it is not a reply.
 
-    One hop is everything Discord hands over. nextcord fills `MessageReference.resolved` in
-    exactly one place, from the `referenced_message` key of the payload it is building, and
-    never from the message cache; Discord does not nest that key, so a referenced message's own
-    `.reference.resolved` is always `None`. Reaching a grandparent needs an explicit
-    `fetch_message` per ancestor, which #593 decided against: an ancestor is another message in
-    this same channel, so the history every reply already carries holds it, and a second
-    Reference Message block would dilute the one below that says it is the primary context.
+    Resolves one hop from `message.reference.resolved`. Discord does not nest `referenced_message`
+    payloads, and older ancestors in the same channel are already covered by channel history.
+
+    Args:
+        message (Message): Triggering Discord message.
     """
     if message.reference is None:
         return None
@@ -35,23 +30,20 @@ def replied_to_message(message: Message) -> Message | None:
 
 
 def message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]:
-    """The text spans a message actually renders to the model, for URL detection.
+    """Returns the text spans `message` renders to the model, for URL scanning.
 
-    Mirrors `get_cleaned_content` / `snapshot_text`: content takes precedence and an embed is
-    rendered (and thus scanned) only when its content is empty. So a URL scanner never fires on a
-    link the answer model was not shown, e.g. a captioned forwarded link card whose URL lives only
-    in the embed. A forward puts its payload in `message.snapshots`, scanned via `snapshot_text`.
+    Matches `MessageInputBuilder`: `content` takes precedence, embeds are included only when
+    `content` is empty, and forwarded messages contribute `snapshot_text` from `message.snapshots`.
 
-    `strip_usage_footer` removes the bot-authored footer from every span when a caller scans the
-    message being replied to. The triggering message keeps its complete author-controlled text.
+    Args:
+        message (Message): Discord message to extract rendered text spans from.
+        strip_usage_footer (bool): Whether to strip the bot's usage footer from each span.
     """
     content = message.content or ""
     content_present = bool(content.strip())
-    # Stripped here and again at the end, and the order is load-bearing rather than redundant:
-    # `USAGE_FOOTER_RE` is anchored on the blank line before the footer, so a `.strip()` first
-    # destroys that anchor and the whole footer survives — memory labels, and any URL inside
-    # them, included. Whether content is PRESENT is read off the raw text above for the same
-    # reason: a message that is only a footer has content, it just renders empty.
+    # Strip before `.strip()` and again on snapshot spans: `USAGE_FOOTER_RE` anchors on the leading
+    # blank line, which `.strip()` would remove on a footer-only message. `content_present` is read
+    # before stripping so a footer-only message still counts as having content and skips embeds.
     if strip_usage_footer:
         content = USAGE_FOOTER_RE.sub("", content)
     content = content.strip()
@@ -66,18 +58,13 @@ def message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]:
 
 
 def authored_link_texts(message: Message) -> list[str]:
-    """The text spans a message's author actually wrote, for scanning a message replied to.
+    """Returns the human-authored text spans of `message` with usage footers stripped.
 
-    Narrower than `message_link_texts` by exactly one thing: an embed card never counts,
-    neither the message's own nor a forwarded snapshot's. One hop out an embed is a card the
-    author did not write, and the bot's own Threads expansion is the common one:
-    `parse_threads._build_embeds` emits one permalink per post in the reply chain, ROOT first,
-    so a scan keyed on it would read the thread's top post rather than the one the human
-    linked — and it disappears entirely when an oversize video pushes hosted URLs into
-    `content`. A link a person typed always lives in `content` (or in the content of what they
-    forwarded), so nothing human-written is lost. The bot's own replies pass through here too,
-    so every span gets the `get_cleaned_content` / `snapshot_text` usage-footer strip: the
-    footer carries the memory labels, which are display names their owners choose.
+    Excludes embeds on both `message` and `message.snapshots` so scanning a replied-to message
+    reads only links in `content` and never a link from an expansion card's embed chain.
+
+    Args:
+        message (Message): Replied-to Discord message to scan.
     """
     spans = [message.content or "", *(snapshot.content for snapshot in message.snapshots)]
     return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
@@ -99,19 +86,15 @@ def _first_url_match(
 
 
 def link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
-    """The URL one link source should read: the current message's, else the replied-to one's.
+    """Returns the first readable URL for `source` in `message` or its replied-to message.
 
-    The current message always wins. A source that opts into `search_replied_to_message` then
-    falls back to the message being replied to, the same one hop `find_youtube_url` takes, so
-    "@bot 這篇底下在吵什麼" sent as a reply to someone else's link still reads the post; one
-    that does not opt in never looks past the triggering message. That parent is scanned with
-    `authored_link_texts`, which is what keeps the bot's own expansion from triggering a read
-    of the wrong post.
+    Scans `message` via `message_link_texts` first; when `source.search_replied_to_message` is
+    enabled, falls back to scanning `replied_to_message(message)` via `authored_link_texts`.
+    Matches rejected by `source.url_filter` are skipped.
 
-    A source's `url_filter` rejects a matched link it cannot read (e.g. a Douyin profile or
-    live room, whose regex matches the host, not the path), which would only spend a
-    rate-limited request to say so. A rejected link is skipped as if it were not there, so it
-    neither hides a readable link after it nor stops the fallback to the replied-to message.
+    Args:
+        source (LinkContextSource): Link-context source definition with pattern and filter rules.
+        message (Message): Triggering Discord message.
     """
     match = _first_url_match(
         pattern=source.url_pattern,
@@ -140,13 +123,13 @@ def _youtube_url_in_message(message: Message, strip_usage_footer: bool) -> str |
 
 
 def find_youtube_url(message: Message) -> str | None:
-    """Finds a YouTube URL in the current message or the message it replies to.
+    """Returns the first YouTube URL in `message` or the message it replies to, or None.
 
-    A reply to a message that merely links a video would otherwise be missed, so the parent is
-    searched too and "summarize this" on a replied-to video still watches it. The current
-    message wins. Unlike `link_url_for_source`, this keeps scanning the parent's embeds: a
-    YouTube link card is the link itself, not a rendering of some other post the way a Threads
-    expansion is.
+    Scans embeds on the replied-to message as well as `content`, since a YouTube embed card
+    points to the video itself rather than an expansion chain.
+
+    Args:
+        message (Message): Triggering Discord message.
     """
     found = _youtube_url_in_message(message=message, strip_usage_footer=False)
     if found is not None:

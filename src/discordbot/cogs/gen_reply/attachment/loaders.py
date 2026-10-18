@@ -13,13 +13,13 @@ from discordbot.typings.media import LoadedMedia
 
 
 async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedia:
-    """Fetches and downscales an image source to upload-ready bytes and MIME type.
+    """Returns downscaled, upload-ready bytes and MIME type for `source`.
 
-    URL sources fetch over the network and attachments decode/re-encode, so the blocking work
-    runs off the event loop. Raises on any fetch/decode failure.
+    Runs network fetches for URL sources and PIL decode/re-encode off the event loop without
+    bounding concurrency.
 
-    This bounds nothing itself, so a caller that fans out over many sources bounds its own
-    concurrency or does not.
+    Args:
+        source (Attachment | StickerItem | str): Image attachment, sticker, or URL to load.
     """
     if isinstance(source, str):
         return await asyncio.to_thread(get_image_data, image_file=source)
@@ -37,11 +37,11 @@ async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedi
 
 
 def resolve_source_filename(source: Attachment | StickerItem | str, url_fallback: str) -> str:
-    """Returns the upload filename for an image source (attachment, sticker, or URL).
+    """Returns the upload filename for an image attachment, sticker (`<name>.png`), or URL.
 
-    A URL or embed image has no filename, so `url_fallback` (an image-extensioned name) is
-    used; a downstream filename-only classifier then reads it as an image, not a document.
-    An attachment keeps its real filename; a sticker synthesizes `<name>.png`.
+    Args:
+        source (Attachment | StickerItem | str): Image attachment, sticker, or URL.
+        url_fallback (str): Filename to use when `source` is a URL or lacks a filename.
     """
     if isinstance(source, str):
         return url_fallback
@@ -49,17 +49,21 @@ def resolve_source_filename(source: Attachment | StickerItem | str, url_fallback
 
 
 def attachment_mime(attachment: Attachment) -> str:
-    """Returns the bare, lowercase MIME type of a file attachment.
+    """Returns the bare, lowercase MIME type of `attachment`, or `""` when unknown.
 
-    Empty when the sent type is blank or parameter-only, or when none is sent and the filename
-    is unguessable.
+    Args:
+        attachment (Attachment): Discord file attachment to inspect.
     """
     content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
     return content_type.split(";")[0].strip().lower()
 
 
 async def load_attachment_bytes(attachment: Attachment) -> LoadedMedia:
-    """Reads a file attachment's bytes alongside its resolved MIME type."""
+    """Returns `attachment`'s raw bytes and resolved MIME type.
+
+    Args:
+        attachment (Attachment): Discord file attachment to read.
+    """
     return LoadedMedia(
         data=await attachment.read(), mime_type=attachment_mime(attachment=attachment)
     )
