@@ -40,40 +40,37 @@ Ask it to animate that same picture and it returns a short video.
 
 ```mermaid
 flowchart TD
-    U(["@mention · DM · /ask"]) --> UP & RT
+    U(["@mention · DM · /ask"]) --> UP & RT & CX
 
     UP["Upload attachments"]
     RT["Route + effort + recall"]
-    CX["History · memory · tone"]
+    CX["Channel history · tone"]
 
     RT --> R{"Route"}
-    UP & RT --> CX --> YT & QS & I2 & V2
 
-    R -->|QA| L{"Linked Threads, Facebook, Instagram,<br/>Twitter, Douyin or Bilibili post"}
-    L -->|"the user is asking about it"| LF["Fetch the post, upload its media"]
-    L -->|"incidental link"| LS["Nothing fetched"]
-    LF & LS --> Y{"Linked YouTube video"}
-    Y -->|"the user is asking about it"| YT["Interactions stream:<br/>Gemini watches the video"]
-    Y -->|"otherwise"| QS["Responses stream"]
-    YT & QS --> Q2["Inline markers:<br/>voice · image · music · video<br/>deep research · memory"]
+    R -->|QA| LF["Fetch the linked posts<br/>the user is asking about"]
+    LF --> Y{"Asking about a<br/>linked YouTube video?"}
+    Y -->|yes| YT["Interactions stream:<br/>Gemini watches the video"]
+    Y -->|no| QS["Responses stream"]
+    YT & QS --> Q2["Inline markers:<br/>voice · image · music<br/>video · research · memory"]
 
-    R -->|IMAGE| I1["Refine the prompt, render or edit the image"]
-    I1 --> I2["Send it, then reply in character"]
-    R -->|VIDEO| V1["Render or edit the clip"]
-    V1 --> V2["Send it, watch it, then reply"]
+    R -->|IMAGE| I1["Refine the prompt,<br/>render or edit the image"]
+    I1 --> I2["Send it,<br/>then reply in character"]
+    R -->|VIDEO| V1["Refine the prompt,<br/>unless editing a clip"]
+    V1 --> V2["Render or edit the clip"]
+    V2 --> V3["Send it, watch it, then reply"]
 
-    Q2 --> OUT(["Reply on screen"])
-    I2 --> OUT
-    V2 --> OUT
+    Q2 & I2 & V3 --> OUT(["Reply on screen"])
     Q2 -.->|"memory marker"| MM["Background: memory review"]
+    Q2 -.->|"research marker"| DR["Deep research thread"]
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
-    class RT,QS,I1,I2,MM proxy
-    class UP,LF,YT,V1 direct
+    class RT,QS,I1,I2,V1,V3,MM proxy
+    class UP,LF,YT,V2,DR direct
 ```
 
-Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly.
+Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly. Attachment uploads and channel history start alongside the route call and are waited on only when the reply is written.
 
 ## Features
 

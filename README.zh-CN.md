@@ -40,40 +40,37 @@
 
 ```mermaid
 flowchart TD
-    U(["标记机器人 · DM · /ask"]) --> UP & RT
+    U(["标记机器人 · DM · /ask"]) --> UP & RT & CX
 
     UP["上传附件"]
     RT["路由 + 思考强度 + 记忆挑选"]
-    CX["历史 · 记忆 · 语气"]
+    CX["频道历史 · 语气"]
 
     RT --> R{"分派路线"}
-    UP & RT --> CX --> YT & QS & I2 & V2
 
-    R -->|QA| L{"贴上的 Threads、Facebook、Instagram、<br/>Twitter、抖音或 Bilibili 帖子"}
-    L -->|"用户在问它的内容"| LF["抓那条帖子，上传它的媒体"]
-    L -->|"只是顺手贴的链接"| LS["完全不抓"]
-    LF & LS --> Y{"贴上的 YouTube 视频"}
-    Y -->|"用户在问它的内容"| YT["Interactions 流式：<br/>Gemini 自己看视频"]
-    Y -->|"其他情况"| QS["Responses 流式"]
-    YT & QS --> Q2["内嵌标记：<br/>语音 · 图片 · 音乐 · 视频<br/>深度研究 · 记忆"]
+    R -->|QA| LF["抓用户在问的链接帖子"]
+    LF --> Y{"在问贴上的 YouTube 视频？"}
+    Y -->|是| YT["Interactions 流式：<br/>Gemini 自己看视频"]
+    Y -->|否| QS["Responses 流式"]
+    YT & QS --> Q2["内嵌标记：<br/>语音 · 图片 · 音乐<br/>视频 · 研究 · 记忆"]
 
-    R -->|IMAGE| I1["扩写提示词，生成或编辑图片"]
-    I1 --> I2["先发出，再以自己的语气回复"]
-    R -->|VIDEO| V1["生成或编辑视频"]
-    V1 --> V2["先发出，看过再回复"]
+    R -->|IMAGE| I1["扩写提示词，<br/>生成或编辑图片"]
+    I1 --> I2["先发出，<br/>再以自己的语气回复"]
+    R -->|VIDEO| V1["扩写提示词，<br/>编辑视频时跳过"]
+    V1 --> V2["生成或编辑视频"]
+    V2 --> V3["先发出，看过再回复"]
 
-    Q2 --> OUT(["回复上屏"])
-    I2 --> OUT
-    V2 --> OUT
+    Q2 & I2 & V3 --> OUT(["回复上屏"])
     Q2 -.->|"记忆标记"| MM["后台：整理记忆"]
+    Q2 -.->|"研究标记"| DR["深度研究讨论串"]
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
-    class RT,QS,I1,I2,MM proxy
-    class UP,LF,YT,V1 direct
+    class RT,QS,I1,I2,V1,V3,MM proxy
+    class UP,LF,YT,V2,DR direct
 ```
 
-蓝色的步骤走 OpenAI-compatible proxy，橙色的直接调用 Google。
+蓝色的步骤走 OpenAI-compatible proxy，橙色的直接调用 Google。附件上传和频道历史与路由同时开跑，等到写回复时才等它们。
 
 ## 功能
 

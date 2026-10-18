@@ -40,40 +40,37 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會用你發問的
 
 ```mermaid
 flowchart TD
-    U(["tag bot · DM · /ask"]) --> UP & RT
+    U(["tag bot · DM · /ask"]) --> UP & RT & CX
 
     UP["上傳附件"]
     RT["路由 + 思考強度 + 記憶挑選"]
-    CX["歷史 · 記憶 · 語氣"]
+    CX["頻道歷史 · 語氣"]
 
     RT --> R{"分派路線"}
-    UP & RT --> CX --> YT & QS & I2 & V2
 
-    R -->|QA| L{"貼上的 Threads、Facebook、Instagram、<br/>Twitter、抖音或 Bilibili 貼文"}
-    L -->|"使用者在問它的內容"| LF["抓那則貼文，上傳它的媒體"]
-    L -->|"只是順手貼的連結"| LS["完全不抓"]
-    LF & LS --> Y{"貼上的 YouTube 影片"}
-    Y -->|"使用者在問它的內容"| YT["Interactions 串流：<br/>Gemini 自己看影片"]
-    Y -->|"其他情況"| QS["Responses 串流"]
-    YT & QS --> Q2["內嵌標記：<br/>語音 · 圖片 · 音樂 · 影片<br/>深度研究 · 記憶"]
+    R -->|QA| LF["抓使用者在問的連結貼文"]
+    LF --> Y{"在問貼上的 YouTube 影片？"}
+    Y -->|是| YT["Interactions 串流：<br/>Gemini 自己看影片"]
+    Y -->|否| QS["Responses 串流"]
+    YT & QS --> Q2["內嵌標記：<br/>語音 · 圖片 · 音樂<br/>影片 · 研究 · 記憶"]
 
-    R -->|IMAGE| I1["擴寫提示詞，生成或編輯圖片"]
-    I1 --> I2["先送出，再以自己的語氣回覆"]
-    R -->|VIDEO| V1["生成或編輯影片"]
-    V1 --> V2["先送出，看過再回覆"]
+    R -->|IMAGE| I1["擴寫提示詞，<br/>生成或編輯圖片"]
+    I1 --> I2["先送出，<br/>再以自己的語氣回覆"]
+    R -->|VIDEO| V1["擴寫提示詞，<br/>編輯影片時跳過"]
+    V1 --> V2["生成或編輯影片"]
+    V2 --> V3["先送出，看過再回覆"]
 
-    Q2 --> OUT(["回覆上畫面"])
-    I2 --> OUT
-    V2 --> OUT
+    Q2 & I2 & V3 --> OUT(["回覆上畫面"])
     Q2 -.->|"記憶標記"| MM["背景：整理記憶"]
+    Q2 -.->|"研究標記"| DR["深度研究討論串"]
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
-    class RT,QS,I1,I2,MM proxy
-    class UP,LF,YT,V1 direct
+    class RT,QS,I1,I2,V1,V3,MM proxy
+    class UP,LF,YT,V2,DR direct
 ```
 
-藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google。
+藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google。附件上傳和頻道歷史跟路由同時開跑，等到寫回覆時才等它們。
 
 ## 功能
 
