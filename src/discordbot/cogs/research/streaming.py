@@ -1,17 +1,9 @@
 """Live reasoning preview for a running deep-research interaction.
 
-Paints the agent's thought-summary text onto the research thread's opening status
-message while the run is in flight, mirroring the QA reply streamer's cadence-editor
-UX (`gen_reply/streaming.py`): a snapshot editor task edits the message on a fixed
-interval with a windowed tail of `-#` reasoning lines under a `Researching...` header,
-so the user watches the agent think.
-
-Purpose-built and self-contained on purpose: it never touches the SDK, the interaction
-id, the reconnect loop, or the final result (those live in `agent.py::_StreamDriver`);
-it only consumes the already-opened Interactions SSE stream and renders reasoning. The
-report itself is delivered separately by `delivery.py` after the run settles, so this
-only ever shows thinking. It deliberately does NOT reuse `ResponseStreamer` (tightly
-coupled to the QA reply) nor extract a shared base from it.
+Edits the research thread's opening status message on a fixed interval with a windowed tail of
+`-#` thought-summary lines under a `Researching...` header. Consumes an already-opened
+Interactions SSE stream without managing the SDK client, interaction ID, reconnect loop, or
+final report delivery (`agent.py` and `delivery.py`). Does not reuse `ResponseStreamer`.
 """
 
 import time
@@ -37,11 +29,9 @@ RESEARCHING_PREFIX = "-# Researching..."
 class ResearchProgressStreamer(BaseModel):
     """Renders a running research interaction's reasoning onto its status message.
 
-    The driver in `agent.py` opens the SSE stream (and handles the id, reconnects, and
-    the terminal result); this consumes that stream via `stream(events=...)`, accumulates
-    the thought-summary deltas, and a cadence editor task edits the status message with a
-    windowed `-#` preview. Everything else in the stream (report text, images, tool steps)
-    is ignored here because the finished report is delivered by `delivery.py`.
+    Accumulates `thought_summary` deltas from `stream(events=...)` while a background cadence
+    task edits `status` with a windowed `-#` preview, ignoring report text, images, and tool
+    steps.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -72,13 +62,7 @@ class ResearchProgressStreamer(BaseModel):
     _preview_error_logged: bool = PrivateAttr(default=False)
 
     def _feed(self, event: "InteractionSSEEvent") -> None:
-        """Accumulates one event's thought-summary text; ignores every other event/delta.
-
-        Branch on `event.event_type` (then `delta.type`) directly so the discriminated unions
-        narrow for the checker, exactly like `adapt_interactions_stream`. Only a `step.delta` carrying a
-        `thought_summary` contributes to the live view; unknown deltas/events are skipped per the
-        API's forward-compatibility guidance.
-        """
+        """Appends `thought_summary` delta text from `event` and starts the editor if needed."""
         if event.event_type != "step.delta":
             return
         delta = event.delta
@@ -90,12 +74,7 @@ class ResearchProgressStreamer(BaseModel):
             self._ensure_editor_started()
 
     def _render_preview(self) -> str:
-        """Builds the header plus the newest `-#` reasoning lines that fit one Discord message.
-
-        The header carries an elapsed timer so the message reads as alive even before the first
-        thought. Reasoning is agent text that may quote a mention, so it is `escape_mentions`-wrapped
-        (a second guard on top of the edit's `AllowedMentions.none()`): the thinking must never ping.
-        """
+        """Returns the elapsed-time header and the newest `-#` reasoning lines that fit one message."""
         elapsed = int(time.monotonic() - self.started_at)
         mins, secs = divmod(elapsed, 60)
         header = f"{RESEARCHING_PREFIX} ({self.label}, {mins}m{secs:02d}s)"
@@ -194,11 +173,10 @@ class ResearchProgressStreamer(BaseModel):
         self._editor_task = None
 
     async def stream(self, events: AsyncIterator["InteractionSSEEvent"]) -> None:
-        """Paints reasoning onto the status message until the event stream ends.
+        """Paints reasoning onto `status` until `events` ends, stopping the editor in `finally`.
 
-        Starts the editor up front so the elapsed timer ticks from t=0 even before the first
-        thought, then feeds every event; the editor is always stopped in `finally` so any
-        in-flight edit lands before the caller delivers the report on the same message.
+        Args:
+            events (AsyncIterator[InteractionSSEEvent]): Stream of interaction SSE events.
         """
         self._ensure_editor_started()
         try:

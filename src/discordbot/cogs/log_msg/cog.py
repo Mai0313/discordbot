@@ -41,18 +41,16 @@ _CREATE_MESSAGES_INDEX_SQL: Final[tuple[str, ...]] = (
     "ON messages(channel_id, created_at)",
     "CREATE INDEX IF NOT EXISTS ix_messages_author_id_created_at "
     "ON messages(author_id, created_at)",
-    # Partial unique index gives the UPSERT below a conflict target while
-    # leaving legacy NULL-id rows untouched.
+    # Partial unique index gives the upsert below a conflict target while
+    # leaving `NULL`-id rows untouched.
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_discord_message_id "
     "ON messages(discord_message_id) WHERE discord_message_id IS NOT NULL",
 )
 
-# UPSERT: streaming bot replies edit themselves several times after the initial
-# `reply()`, so each `on_message_edit` re-fires this INSERT with the same
-# `discord_message_id`. The conflict on the partial unique index turns the
-# repeat write into an UPDATE so messages.db converges to the final on-Discord
-# state. `created_at` is intentionally NOT touched — the original send-time stays
-# pinned even as content / attachments mutate.
+# Streaming bot replies edit themselves after the initial send, so each `on_message_edit`
+# re-fires this `INSERT` with the same `discord_message_id`. The conflict on the partial
+# unique index updates content, attachments, and stickers in place while keeping the
+# original `created_at`.
 _INSERT_MESSAGE_SQL: Final[str] = """
 INSERT INTO messages
     (
@@ -88,13 +86,10 @@ ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO UPDATE 
 
 
 async def _create_messages_table(conn: AsyncConnection) -> None:
-    """Creates the messages table and its indexes, each only where it does not exist yet.
+    """Creates the `messages` table and its indexes if they do not exist.
 
-    A fresh file gets the columns and indexes the deployed `messages.db` has; an existing table
-    is never altered. Raw DDL rather than a declared model: `create_all` never alters one either,
-    the deployed file is in the gigabyte range with legacy NULL-id rows, and the DDL a model
-    compiles to differs from this text, so a model would be a second definition of the table
-    that nothing checks against the first.
+    Uses raw DDL rather than a declarative model so the schema definition stays in one place
+    and existing tables with `NULL`-id rows are never altered.
     """
     await conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
     for statement in _CREATE_MESSAGES_INDEX_SQL:
@@ -106,11 +101,7 @@ _database = SqliteBootstrap(metadata=MetaData(), after_create=_create_messages_t
 
 
 async def _write_row(row: dict[str, str]) -> None:
-    """Inserts one row, or folds a repeat of the same Discord message into its row.
-
-    Args:
-        row: Mapping matching the schema declared in `_CREATE_MESSAGES_TABLE_SQL`.
-    """
+    """Upserts one message row matching `_CREATE_MESSAGES_TABLE_SQL`."""
     async with _database.open_session(engine=_engine) as session, session.begin():
         await session.execute(statement=text(text=_INSERT_MESSAGE_SQL), params=row)
 
@@ -123,35 +114,23 @@ class MessageLogger(BaseModel):
 
     @staticmethod
     def sanitize_text(s: str) -> str:
-        """Sanitizes text by removing null bytes.
+        """Returns `s` with null bytes removed.
 
         Args:
-            s: The string to sanitize.
-
-        Returns:
-            The sanitized string.
+            s (str): Text to sanitize.
         """
         return s.replace("\x00", "")
 
     @property
     def source_type(self) -> str:
-        """The storage source type for this message.
-
-        Returns:
-            `"dm"` for direct messages, otherwise `"guild"`.
-        """
+        """Returns `"dm"` for direct messages, or `"guild"` otherwise."""
         if isinstance(self.message.channel, DMChannel):
             return "dm"
         return "guild"
 
     @property
     def channel_name_or_author_name(self) -> str:
-        """The channel name or DM author label for this message.
-
-        Returns:
-            A label containing the DM author display name and ID for direct
-            messages, otherwise the channel name and ID.
-        """
+        """Returns the DM author label (`DM_<name>_<id>`) or channel label (`channel_<name>_<id>`)."""
         if isinstance(self.message.channel, DMChannel):
             author_name = self.message.author.display_name
             return f"DM_{author_name}_{self.message.author.id}"
@@ -161,22 +140,13 @@ class MessageLogger(BaseModel):
 
     @property
     def channel_id_or_author_id(self) -> str:
-        """The channel ID or DM author ID for this message.
-
-        Returns:
-            The author ID for direct messages, otherwise the channel ID.
-        """
+        """Returns the author ID for direct messages, or the channel ID otherwise."""
         if isinstance(self.message.channel, DMChannel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
     async def log(self) -> None:
-        """Persists the message row.
-
-        Author filtering (human or this bot's own reply) lives in
-        `LogMessageCog` so this method stays generic and is safe to call from
-        anywhere that already knows the message is loggable.
-        """
+        """Persists the message row without filtering by author."""
         try:
             attachment_paths = [attachment.url for attachment in self.message.attachments]
             sticker_paths = [sticker.url for sticker in self.message.stickers]
@@ -210,35 +180,30 @@ class LogMessageCog(commands.Cog):
     """Logs Discord messages and their later edits.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initializes the LogMessageCog instance.
+        """Initializes the cog.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self._tasks: set[asyncio.Task[None]] = set()
 
     def _should_log(self, message: Message) -> bool:
-        """Returns True for human messages or this bot's own replies.
-
-        Third-party bots (e.g. other Discord apps sharing the guild) are
-        deliberately skipped so messages.db tracks only the conversation
-        participants this bot actually engages with — its users and itself.
-        """
+        """Returns whether `message` is from a human or from this bot itself."""
         if not message.author.bot:
             return True
         return bool(self.bot.user and message.author.id == self.bot.user.id)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Listens for messages and logs them asynchronously.
+        """Logs eligible new messages in the background.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
         if not self._should_log(message=message):
             return
@@ -250,16 +215,9 @@ class LogMessageCog(commands.Cog):
     async def on_message_edit(self, _before: Message, after: Message) -> None:
         """Re-logs message edits so streaming bot replies converge to their final state.
 
-        `on_message` only fires on the initial send, so a reply that streams
-        its content in by editing itself would otherwise be logged as whatever
-        it happened to hold first. Every subsequent edit fires here, and the
-        UPSERT on `discord_message_id` collapses them into a single row whose
-        content matches what is actually on Discord.
-
         Args:
-            _before: The pre-edit message snapshot (unused; only `after.id`
-                matters for the UPSERT key).
-            after: The current message state.
+            _before (Message): Pre-edit message snapshot (unused).
+            after (Message): Updated message state to upsert by `discord_message_id`.
         """
         if not self._should_log(message=after):
             return
@@ -269,9 +227,9 @@ class LogMessageCog(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the LogMessageCog to the bot.
+    """Adds `LogMessageCog` to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(LogMessageCog(bot), override=True)

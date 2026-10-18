@@ -1,26 +1,15 @@
 """Direct Gemini Interactions call layer for the deep-research cog.
 
-The one research agent (`RuntimeModelCatalog.antigravity_model`) runs through an injected
-`genai.Client` that talks DIRECT to Google (`gemini_api_key`, no proxy): a managed agent rides the
-native Interactions API, which this project always calls direct rather than through the LiteLLM
-proxy's interactions transform. The create uses `background=True` + `store=True` + `stream=True`,
-so the agent's reasoning streams live to the thread (`_StreamDriver` + `ResearchProgressStreamer`)
-while it works.
+Runs `RuntimeModelCatalog.antigravity_model` through an injected `genai.Client` directly against
+Google (`gemini_api_key`, no proxy) with `background=True`, `store=True`, and `stream=True`.
 
-Both call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + terminal extract):
-- `stream_antigravity`: streams the one-shot agent in a remote sandbox environment.
-- `resume_research_stream`: re-attaches a live stream to an already-running interaction (restart resume).
-
-Robustness: the SDK can close a long-lived streaming request mid-run while the agent keeps
-working server-side, so `_StreamDriver` re-attaches via `interactions.get(stream=True,
-last_event_id=...)`. The final result is ALWAYS read through `_poll_until_terminal` (a terminal
-non-stream `interactions.get(id)` with retry on a transient error): the streamed deltas are the
-live view only, `interaction.completed` carries no report body on purpose, and the poll both
-settles a run whose stream died and waits out any brief `in_progress` visibility lag, then
-`_to_result` maps it. There is no wall-clock timeout anywhere here, so what escapes is either the
-SDK error from a create, or from a poll the API refused or that never recovered, or a
-`RuntimeError` when the stream ended before any interaction id existed; the cog maps both to a
-friendly message.
+Both `stream_antigravity` (fresh run in a remote sandbox) and `resume_research_stream` (restart
+re-attachment) share `_StreamDriver` and `_drive`. When the SDK closes a long-lived SSE request
+mid-run, `_StreamDriver` re-attaches via `interactions.get(stream=True, last_event_id=...)`.
+The final result is always read through `_poll_until_terminal` (`interactions.get(id)` with
+transient-error retries) rather than from the stream, since `interaction.completed` carries no
+report body and the poll also settles runs whose stream died or lags in `in_progress`. Neither
+streaming nor polling imposes a wall-clock timeout.
 """
 
 import base64
@@ -51,19 +40,17 @@ if TYPE_CHECKING:
 
 # Built-in tools enabled for every research run: web grounding + URL reading. Passed explicitly
 # (not left to the agent default) so search/url grounding is guaranteed. Code execution is left
-# OFF on purpose: the agent's bash/python tool calls were leaking into `output_text` as raw
-# `call:default_api:bash{command:...}` text and corrupting the report.
+# off on purpose: the agent's bash/python tool calls leak into `output_text` as raw
+# `call:default_api:bash{command:...}` text and corrupt the report.
 RESEARCH_TOOLS = [
     URLContext(type="url_context"),
     GoogleSearch(search_types=["web_search"], type="google_search"),
 ]
 
-# The agent family's own config block: `model` picks which model does the agent's reasoning, and
-# `max_total_tokens` (a best-effort budget that ends the run `incomplete`) stays at its default. It
-# is the `...Param` TypedDict rather than the `AntigravityAgentConfig` model because that union is
-# what `interactions.create` declares. Do not read the config back off the interaction to check it
-# took: a create carrying the bare discriminator answered 200 and still reported `agent_config=None`
-# on a later get (measured 2026-09-21), as did one carrying a config for a different agent family.
+# The agent family's own config block: `model` picks the reasoning model, while
+# `max_total_tokens` stays at its default. Uses the `...Param` TypedDict that
+# `interactions.create` declares. Do not read `agent_config` back off the interaction to verify
+# it took: `interactions.get` can report `agent_config=None` even after a 200 create.
 RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(
     type="antigravity", model=RuntimeModelCatalog().antigravity_reasoning_model.name
 )
@@ -75,8 +62,7 @@ RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 class _InteractionUsage(Protocol):
     """Structural view of the token counts a terminal interaction reports.
 
-    Both are Optional on the SDK model and absent on an interaction that never billed, so a
-    None is read as zero rather than as a missing field.
+    Both fields are optional on the SDK model and absent when an interaction never billed.
     """
 
     @property
@@ -132,17 +118,12 @@ class ResearchResult(BaseModel):
 
     @property
     def ok(self) -> bool:
-        """Whether the research finished cleanly."""
+        """Returns whether the research finished with status `"completed"`."""
         return self.status == "completed"
 
 
 def _extract_image(interaction: _ResearchInteraction) -> bytes | None:
-    """Returns the first generated image (decoded) from an interaction's model_output steps.
-
-    A step that fails to decode is reported rather than swallowed: it is the one path that loses
-    a generated chart from an otherwise complete report, and the report itself carries no trace
-    of the missing figure.
-    """
+    """Returns the first decoded image from `interaction`'s `model_output` steps, if any."""
     for step in interaction.steps or []:
         if getattr(step, "type", None) != "model_output":
             continue
@@ -179,13 +160,10 @@ def _to_result(interaction: _ResearchInteraction) -> ResearchResult:
 
 
 async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _ResearchInteraction:
-    """Polls `interactions.get` until the status leaves `in_progress`.
+    """Polls `interactions.get` without a wall-clock timeout until status leaves `in_progress`.
 
-    No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
-    transient get() error mid-research is retried so one 504 does not kill a long run; it gives
-    up only after `max_consecutive_errors` consecutive failures (re-raising the last error). Any
-    other error, such as the API refusing the request itself, is re-raised at once, since asking
-    again cannot change the answer.
+    Retries transient errors up to `max_consecutive_errors` consecutive times and re-raises
+    non-retryable errors immediately.
     """
     max_consecutive_errors = 30
     consecutive_errors = 0
@@ -217,13 +195,12 @@ async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _Re
 
 # The SDK can close a create/get(stream=True) SSE request mid-run (each request is bounded) while
 # the agent keeps working server-side; `_StreamDriver` re-attaches via get(stream=True). This caps
-# CONSECUTIVE re-attaches that make no progress so a truly dead stream gives up (mirrors
-# `_poll_until_terminal`'s error cap), while a healthy long run that just needs periodic re-attach
-# never trips.
+# consecutive re-attaches that make no progress so a dead stream gives up, while a healthy long
+# run that needs periodic re-attach never trips.
 MAX_STREAM_RECONNECTS = 20
 
 # Called with the interaction id the moment `interaction.created` arrives (the stream's first event),
-# so the cog persists the id BEFORE the minutes-long run.
+# so the cog persists the id before the minutes-long run.
 type CreatedCallback = Callable[[str], Awaitable[None]]
 
 
@@ -233,12 +210,7 @@ async def _noop_created(_interaction_id: str) -> None:
 
 
 def _is_terminal_event(event: "InteractionSSEEvent") -> bool:
-    """Whether an SSE event marks the interaction as settled (so the driver stops re-attaching).
-
-    `interaction.completed` and `error` are terminal; a `status_update` is terminal once it leaves
-    the two non-final states. Any other status (`failed` / `cancelled` / `budget_exceeded` /
-    `incomplete`) is a real terminal outcome the terminal `get(id)` then maps to a friendly result.
-    """
+    """Returns whether `event` marks the interaction as settled."""
     if event.event_type in ("interaction.completed", "error"):
         return True
     if event.event_type == "interaction.status_update":
@@ -247,12 +219,11 @@ def _is_terminal_event(event: "InteractionSSEEvent") -> bool:
 
 
 class _StreamDriver(BaseModel):
-    """Drives one research interaction's SSE stream with reconnect + id capture.
+    """Drives one research interaction's SSE stream with reconnect and id capture.
 
-    Yields every event to the `ResearchProgressStreamer` (for the live view) while capturing the
-    interaction id on `interaction.created` (persisted via `on_created` before the long wait) and
-    the resume token on every event. When the SDK closes the long-lived request without a terminal
-    event, it re-attaches via `get(stream=True, last_event_id=...)` so the run continues seamlessly.
+    Captures the interaction id on `interaction.created` via `on_created` and the resume token on
+    every event, re-attaching via `get(stream=True, last_event_id=...)` when the SDK closes the
+    request before a terminal event.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -342,16 +313,10 @@ async def _drive(
     open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
     on_created: "CreatedCallback",
 ) -> _ResearchInteraction:
-    """Runs the streamer over the driver's events, then returns the authoritative terminal interaction.
+    """Streams events through `streamer`, then polls for the authoritative terminal interaction.
 
-    The streamed deltas are the live view only; the result is ALWAYS read through
-    `_poll_until_terminal` (a terminal non-stream `get(id)`) because `interaction.completed` carries
-    an empty payload on purpose. Routing the terminal read through the poll (not a single `get`)
-    gives it the poll's retry on a transient error and waits out any brief `in_progress` visibility
-    lag, so a completed run is never misread as failed; it also transparently finishes a run whose
-    stream died mid-way (the interaction lives server-side via `store=True`). A streaming failure
-    BEFORE any id (the create itself failed) re-raises so the cog hits its normal failure path;
-    once an id exists, streaming errors are swallowed and the poll settles the run.
+    Re-raises stream errors that happen before `interaction.created` assigns an id; once an id
+    exists, stream errors are logged and `_poll_until_terminal` settles the run.
     """
     try:
         await streamer.stream(
@@ -377,7 +342,16 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
     streamer: "ResearchProgressStreamer",
     on_created: "CreatedCallback",
 ) -> ResearchResult:
-    """Streams the Antigravity research (reasoning live); returns the terminal result."""
+    """Returns the terminal `ResearchResult` after streaming an Antigravity research run.
+
+    Args:
+        client (genai.Client): Direct-to-Google Gemini client.
+        agent (str): Managed-agent identifier to invoke.
+        brief (str): User research brief passed as interaction input.
+        system_instruction (str): System instruction for the research agent.
+        streamer (ResearchProgressStreamer): Live progress streamer for reasoning deltas.
+        on_created (CreatedCallback): Callback invoked with the interaction ID on creation.
+    """
     environment = EnvironmentParam(
         type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
     )
@@ -407,7 +381,13 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
 async def resume_research_stream(
     client: genai.Client, interaction_id: str, streamer: "ResearchProgressStreamer"
 ) -> ResearchResult:
-    """Re-attaches a live stream to an already-running research (restart resume); returns the result."""
+    """Returns the terminal `ResearchResult` after re-attaching to a running interaction.
+
+    Args:
+        client (genai.Client): Direct-to-Google Gemini client.
+        interaction_id (str): ID of the running interaction to resume.
+        streamer (ResearchProgressStreamer): Live progress streamer for reasoning deltas.
+    """
     driver = _StreamDriver(client=client, interaction_id=interaction_id)
 
     async def _open() -> "AsyncIterator[InteractionSSEEvent]":

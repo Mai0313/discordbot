@@ -1,10 +1,8 @@
-"""Periodically reaps hosted media so the serve dir stays bounded by size and age.
+"""Periodic size, age, and temp-file sweep for hosted media in the serve directory.
 
-The size cap is enforced eagerly at publish, so this sweep is its backstop rather than the
-enforcement point; it also applies the age cap and clears crash-left temp files, on a timer whose
-first iteration fires at startup, and self-disables when `cleanup_enabled` is false. The sweep
-only ever deletes the bot's own content-addressed files (see `MediaHostingService`), never a
-foreign file parked in the serve dir.
+Acts as a backstop behind publish-time size enforcement, applies the age cap, and removes
+leftover temp files. Runs on a fixed timer starting at startup when `cleanup_enabled` is true,
+and deletes only the bot's own content-addressed files (`MediaHostingService`).
 """
 
 import time
@@ -24,14 +22,15 @@ class MediaCleanupCogs(commands.Cog):
     """Runs the hosted-media size/age/temp sweep on a timer whose first run is at startup.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
+        media_hosting (MediaHostingService): Service that performs the maintenance sweep.
     """
 
     def __init__(self, bot: commands.Bot):
         """Initializes the cog with its own media-hosting service.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.media_hosting = MediaHostingService(config=MediaHostingConfig())
@@ -39,11 +38,7 @@ class MediaCleanupCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Starts the cleanup loop, whose first iteration is the startup sweep, once.
-
-        `on_ready` fires on every reconnect, so `_started` guards a single start. When cleanup is
-        disabled the loop never starts and nothing in the serve dir is touched.
-        """
+        """Starts the cleanup loop once on the first `on_ready` event if cleanup is enabled."""
         if self._started:
             return
         self._started = True
@@ -57,7 +52,7 @@ class MediaCleanupCogs(commands.Cog):
 
     @tasks.loop(hours=MEDIA_CLEANUP_INTERVAL_HOURS)
     async def cleanup_loop(self) -> None:
-        """The periodic backstop sweep."""
+        """Runs the periodic maintenance sweep."""
         await self._sweep()
 
     async def _sweep(self) -> None:
@@ -81,9 +76,9 @@ class MediaCleanupCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the MediaCleanupCogs to the bot.
+    """Adds `MediaCleanupCogs` to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(MediaCleanupCogs(bot), override=True)

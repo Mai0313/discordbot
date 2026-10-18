@@ -51,18 +51,14 @@ _DOWNLOAD_FAILED = "-# 檔案無法下載"
 
 
 def douyin_failure_message(error: Exception) -> str:
-    """Maps a Douyin failure to the message a user should see.
+    """Returns the user-facing status line for a Douyin download failure.
 
-    A bot wall, a missing post, a request that never got through and a stall are kept apart on
-    purpose. Reporting any of them as a deleted post is the single worst outcome this feature
-    can produce: it sends someone off to re-check a link that is perfectly fine. Only
-    `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording,
-    and only `DouyinBlockedError` earns the one that says Douyin is refusing requests: a
-    stalled CDN read is retryable too, but blaming a wall sends someone off to wait out
-    something that was never there.
+    Distinguishes deleted/private posts (`DouyinUnavailableError`), anti-bot blocks
+    (`DouyinBlockedError`), transfer failures (`DouyinTransferError`), and timeouts
+    (`TimeoutError`) so transient network or CDN errors are not misreported as deleted posts.
 
-    `DouyinTooLargeError` has no branch of its own: this command arms no `max_bytes`, so nothing
-    it runs can raise it.
+    Args:
+        error (Exception): Exception raised during Douyin download.
     """
     if isinstance(error, DouyinUnavailableError):
         return "-# 這則貼文已被刪除或設為私人"
@@ -76,7 +72,7 @@ def douyin_failure_message(error: Exception) -> str:
 
 
 def _file_header(file_size_mb: float, url: str) -> str:
-    """The size and source lines a delivered file leads with."""
+    """Returns the file-size and source-URL header lines for a delivered download."""
     return f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
 
 
@@ -84,15 +80,16 @@ class VideoCogs(commands.Cog):
     """Downloads videos from slash command requests.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
-        media_delivery: Planner deciding which files attach and which are hosted as a URL.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
+        media_delivery (MediaDeliveryPlanner): Planner deciding which files attach and which are
+            hosted as a URL.
     """
 
     def __init__(self, bot: commands.Bot):
-        """Initializes the VideoCogs instance.
+        """Initializes the cog.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.media_delivery = build_media_delivery_planner()
@@ -131,12 +128,12 @@ class VideoCogs(commands.Cog):
             choices=QUALITY_CHOICES,
         ),
     ) -> None:
-        """Downloads a video from various platforms and sends it back.
+        """Downloads a video or Douyin gallery from `url` and sends it back.
 
         Args:
-            interaction: The interaction that triggered the command.
-            url: The URL of the video to download.
-            quality: The desired video quality.
+            interaction (Interaction[commands.Bot]): The interaction that triggered the command.
+            url (str): Video URL or share text containing one.
+            quality (VideoQuality): Desired video quality preset.
         """
         await interaction.response.defer()
         await interaction.edit_original_message(content="-# 正在下載影片...")
@@ -199,14 +196,7 @@ class VideoCogs(commands.Cog):
         result: DownloadResult,
         upload_limit: int,
     ) -> None:
-        """Attaches, hosts or refuses one finished yt-dlp download.
-
-        Args:
-            interaction: The interaction the command is holding open.
-            url: The source URL, appended only when the file is attached natively.
-            result: The finished download, inside the caller's scratch directory.
-            upload_limit: The destination's attachment ceiling.
-        """
+        """Attaches, hosts, or refuses a finished yt-dlp download."""
         file_size_mb = result.filename.stat().st_size / 1024 / 1024
         item = MediaItem(source=result.filename, filename=result.filename.name)
         plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
@@ -235,17 +225,7 @@ class VideoCogs(commands.Cog):
         quality: VideoQuality,
         upload_limit: int,
     ) -> None:
-        """Downloads a Douyin video or photo post and sends it back.
-
-        Kept separate from the yt-dlp branch because a Douyin post can be a gallery, which needs
-        several attachments on one message rather than the single file the yt-dlp path delivers.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            url: The Douyin URL.
-            quality: The desired video quality; ignored for a photo post.
-            upload_limit: The destination's attachment ceiling.
-        """
+        """Downloads a Douyin video or photo gallery and delivers it to `interaction`."""
         with scratch_directory(prefix="download-video-douyin-") as download_dir:
             downloader = DouyinDownloader(output_folder=download_dir)
             try:
@@ -325,18 +305,7 @@ class VideoCogs(commands.Cog):
         result: DouyinDownload,
         url: str,
     ) -> None:
-        """Edits the placeholder into the final Douyin response.
-
-        The size and source lines lead because this is the command surface: someone who asked for
-        a file wants to know how big it is and where it came from. Everything after them is the
-        shared omitted / dropped / hosted accounting.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            delivery: The attach-vs-host outcome plus the size read before planning.
-            result: The downloaded post, carrying the pre-cap image count.
-            url: The source Douyin URL.
-        """
+        """Edits the deferred placeholder into the final Douyin response with size and source lines."""
         plan = delivery.plan
         lines = [_file_header(file_size_mb=delivery.total_mb, url=url)]
         lines.extend(
@@ -363,11 +332,7 @@ class VideoCogs(commands.Cog):
         )
 
     async def _edit_quietly(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Edits the deferred message, swallowing a failure to edit it.
-
-        Broad on purpose: this is the last-resort reporter every failure path in the cog uses, so
-        it must never raise a second exception on top of the one being reported.
-        """
+        """Edits the deferred message best-effort without raising on failure."""
         try:
             await interaction.edit_original_message(content=content)
         except Exception as error:
@@ -407,13 +372,7 @@ class VideoCogs(commands.Cog):
     async def _deliver_url(
         self, interaction: Interaction[commands.Bot], file_size_mb: float, public_url: str
     ) -> None:
-        """Edits the placeholder into a hosted-URL response for a file too big to upload.
-
-        The hosted URL is the only link in the message so Discord renders the inline video player
-        (a second URL such as the source link, even wrapped in `<>`, stops Discord from rendering
-        the inline player, so the source is intentionally omitted here). Under ~100 MiB Discord
-        inline-plays the link; above it the link is browser-playable.
-        """
+        """Edits the placeholder into a hosted-URL response without a source link so Discord embeds the player."""
         body = f"-# 檔案大小: {file_size_mb:.1f}MB (過大，改用連結)\n{public_url}"
         await interaction.edit_original_message(
             content=body, allowed_mentions=AllowedMentions.none()
@@ -421,9 +380,9 @@ class VideoCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the VideoCogs to the bot.
+    """Adds `VideoCogs` to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(VideoCogs(bot), override=True)

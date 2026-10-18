@@ -14,23 +14,23 @@ class TemplateCogs(commands.Cog):
     """Provides simple message reactions and the ping slash command.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
     """
 
     def __init__(self, bot: commands.Bot):
-        """Initializes the TemplateCogs instance.
+        """Initializes the cog.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Listens for messages and handles specific triggers.
+        """Adds trigger reactions to matching non-bot messages.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
         if message.author.bot:
             return
@@ -63,10 +63,10 @@ class TemplateCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def ping(self, interaction: Interaction[commands.Bot]) -> None:
-        """Checks the bot's response time.
+        """Replies with the bot's gateway latency.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The interaction that triggered the command.
         """
         await interaction.response.defer()
         bot_latency = round(self.bot.latency * 1000, 2)
@@ -87,9 +87,9 @@ class TemplateCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the TemplateCogs to the bot.
+    """Adds `TemplateCogs` to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(TemplateCogs(bot), override=True)
