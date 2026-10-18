@@ -27,11 +27,11 @@ rather than here, because the backend already owns that deadline. Measured in th
 env: `openai` 3.16.2 defaults to `Timeout(connect=5.0, read=600, write=600, pool=600)` with
 `max_retries=2`, and nothing here passes `max_retries`, so an `AsyncOpenAI` call bounds itself
 at roughly half an hour rather than at 600s. That is a real ceiling but a loose one, which is
-why the test for deleting such a wrapper is whether anything is WAITING, not whether the
+why the test for deleting such a wrapper is whether anything is waiting, not whether the
 numbers match: on background work nobody waits for, half an hour is a liveness backstop doing
 its job, and a tighter wrapper would only be restating it for free.
 
-The LLM bounds that DO appear below are the ones that survive that test. `google-genai` 2.24.0
+The LLM bounds that do appear below are the ones that survive that test. `google-genai` 2.24.0
 defaults to `timeout=None`, so on a direct-to-Google path the wrapper is the only bound there
 is; everything else here is a product deadline that happens to sit on an LLM call -- a number
 chosen because something downstream must not wait, not because the provider might hang.
@@ -83,10 +83,10 @@ LINK_MEDIA_TIMEOUT_SECONDS: Final[float] = (
 # a second; a worker that outlives this window is stalled on the network, not downloading.
 DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 
-# How long a Discord attachment's Files API upload is given to reach ACTIVE. Past it the
+# How long a Discord attachment's Files API upload is given to reach `ACTIVE`. Past it the
 # upload becomes a `PendingUpload` the caller caches and re-polls on the next reference, so
 # this reply answers without that attachment rather than waiting for it. Short because the
-# poll overlaps the route call: a small file is ACTIVE instantly and
+# poll overlaps the route call: a small file is `ACTIVE` instantly and
 # only a large one spends any of that window.
 ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 15.0
 
@@ -117,24 +117,25 @@ FILES_API_READ_TIMEOUT_SECONDS: Final[float] = 10.0
 GROK_FILE_UPLOAD_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # Bound on the whole Files API upload of a generated clip the persona reply then watches:
-# `upload_as_input_file` covers the transfer as well as the ACTIVE poll under this one timeout,
+# `upload_as_input_file` covers the transfer as well as the `ACTIVE` poll under this one timeout,
 # started once an upload slot is free. Generous relative to an image because video sits in
-# PROCESSING longer, but far under the link-media bound: the clip was just produced here, so it
+# `PROCESSING` longer, but far under the link-media bound: the clip was just produced here, so it
 # is small and known-good.
 GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 60.0
 
 # --------------------------------------------------------------------------------------
 # Generated media
 #
-# The VIDEO route's real worst case is a sum of these two: VIDEO_RENDER bounds the omni call
-# ALONE, and the source upload and the URI download each take FILES_READY on top of it, so an
-# edit can legitimately run to VIDEO_RENDER + 2 * FILES_READY before anything is wrong.
+# The VIDEO route's real worst case is a sum of these two: `VIDEO_RENDER_TIMEOUT_SECONDS`
+# bounds the omni call alone, and the source upload and the URI download each take
+# `FILES_READY_TIMEOUT_SECONDS` on top of it, so an edit can legitimately run to
+# `VIDEO_RENDER_TIMEOUT_SECONDS + 2 * FILES_READY_TIMEOUT_SECONDS` before anything is wrong.
 # --------------------------------------------------------------------------------------
 
 # Bound for waiting on a Files API entry to become usable: the source video uploaded for an omni
-# edit (its transfer and the poll to ACTIVE) and the URI-delivered generated clip (download
+# edit (its transfer and the poll to `ACTIVE`) and the URI-delivered generated clip (download
 # retried until it lands).
-# Generous because a large clip can sit in PROCESSING a while; the render hard-fails past it, since
+# Generous because a large clip can sit in `PROCESSING` a while; the render hard-fails past it, since
 # video is the primary deliverable.
 FILES_READY_TIMEOUT_SECONDS: Final[float] = 180.0
 
@@ -161,7 +162,7 @@ INLINE_IMAGE_TIMEOUT_SECONDS: Final[float] = 300.0
 # spoken-length cap: the answer model decides how much to say.
 VOICE_TIMEOUT_SECONDS: Final[float] = 300.0
 
-# Bound for the prompt-refinement call: it sits SERIALLY before the image/video render on the
+# Bound for the prompt-refinement call: it sits serially before the image/video render on the
 # IMAGE/VIDEO critical path, so a hung director must not keep the route waiting forever. On
 # timeout the refine falls back to the raw user prompt like any other failure.
 PROMPT_REFINE_TIMEOUT_SECONDS: Final[float] = 120.0
@@ -182,7 +183,7 @@ THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
 # Background LLM work
 # --------------------------------------------------------------------------------------
 
-# Ceiling on a whole consolidation fan-out, which is a LOOP of one call per compartment plus
+# Ceiling on a whole consolidation fan-out, which is a loop of one call per compartment plus
 # the disk work between them -- a shape no per-request backend deadline can bound. Kept because
 # its expiry is what releases the scope lock and the global-concurrency permit: past it, that
 # user or server would never get another memory update. It is a liveness backstop, not a latency
@@ -199,7 +200,7 @@ MEMORY_CONSOLIDATE_TIMEOUT_SECONDS: Final[float] = 600.0
 # minutes. A timeout is reported as a plain failure, never as a missing post.
 DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 
-# The same bound for the Threads expansion, and deliberately NOT the same number: that cog
+# The same bound for the Threads expansion, and deliberately not the same number: that cog
 # holds no shared fetch slot, so this caps the listener rather than a queue behind it, and one
 # expansion walks a whole conversation and downloads the target's video where a Douyin expansion
 # reads one post. Derived from what the reply pipeline already allows the very same walk rather
@@ -207,7 +208,7 @@ DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = LINK_CONTEXT_GRACE_SECONDS
 
 # The same bound for the Facebook expansion, and a third of the Threads one because the work is
-# a third of it: ONE page fetch, then parsing, with no conversation walk and no download at all
+# a third of it: one page fetch, then parsing, with no conversation walk and no download at all
 # (the images stay URLs Discord fetches itself). What it really guards is the parse, since the
 # page is ~950KB of JSON that a pathological payload could make slow to walk.
 FACEBOOK_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
@@ -265,9 +266,9 @@ FACEBOOK_PAGE_TIMEOUT_SECONDS: Final[int] = 20
 INSTAGRAM_PAGE_TIMEOUT_SECONDS: Final[int] = 20
 
 # Bound on the one syndication request a Twitter post costs. Shorter than the other two because
-# what comes back is a few KB of JSON rather than most of a megabyte of HTML: measured over 908
-# distinct posts at 8 concurrent, every response landed inside 1.5s, so 10 is already an order of
-# magnitude of headroom and a request past it has stalled rather than being slow.
+# what comes back is a few KB of JSON rather than most of a megabyte of HTML: a healthy response
+# lands inside 1.5s, so 10s is already an order of magnitude of headroom and a request past it
+# has stalled rather than being slow.
 TWITTER_PAGE_TIMEOUT_SECONDS: Final[int] = 10
 
 # 10s caps the history-render I/O tail: a URL taking longer is almost always a dead/slow CDN
@@ -277,7 +278,7 @@ IMAGE_FETCH_TIMEOUT_SECONDS: Final[int] = 10
 
 # Short because the price table is never on a critical path: the fetch falls back to the on-disk
 # mirror and `price_table_task` re-fetches later. It bites only on a cold start with no mirror,
-# where it costs every footer its cost AND, on a non-Gemini answer model, a modality baseline
+# where it costs every footer its cost and, on a non-Gemini answer model, a modality baseline
 # that drops audio and video.
 PRICE_TABLE_FETCH_TIMEOUT_SECONDS: Final[int] = 5
 
@@ -285,15 +286,14 @@ PRICE_TABLE_FETCH_TIMEOUT_SECONDS: Final[int] = 5
 DOUYIN_METADATA_TIMEOUT_SECONDS: Final[int] = 15
 
 # Separate from the metadata bound because this one bounds the gap between chunks of a video that
-# can run to tens of megabytes. The metadata timeout is not merely judged too tight for that — it
-# was observed aborting an otherwise healthy transfer, which is why collapsing the two back into
-# one is a step that has already been taken and paid for.
+# can run to tens of megabytes. The 15s metadata timeout aborts healthy multi-megabyte video
+# transfers, so do not collapse the two bounds into one.
 DOUYIN_DOWNLOAD_TIMEOUT_SECONDS: Final[int] = 60
 
 # Attempts made per Douyin media download before giving up. Multiplies the bound above.
 DOUYIN_DOWNLOAD_MAX_RETRIES: Final[int] = 3
 
-# Per-socket bound inside yt-dlp. It is NOT a ceiling on a download: it applies per socket, and
+# Per-socket bound inside yt-dlp. It is not a ceiling on a download: it applies per socket, and
 # every one of the retry counts below multiplies it, which is why the callers carry their own
 # outer deadline.
 YTDLP_SOCKET_TIMEOUT_SECONDS: Final[int] = 30
@@ -313,13 +313,13 @@ GAME_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 # What a `/ask` turn keeps back from the media it is generating, so whatever it produces still has
 # somewhere to land. Discord invalidates an interaction token 15 minutes after the command was
-# invoked and EVERY message such a turn writes goes through it, the deferred "thinking" state
+# invoked and every message such a turn writes goes through it, the deferred "thinking" state
 # included, so a render that finishes late costs the whole turn: the clip 404s, and so does the
 # notice that would have explained it, leaving a thinking state that never resolves. This module
 # owns the margin rather than the window, which is Discord's own and is read off nextcord's
 # `Interaction.expires_at` rather than restated here, so the one number to change is what we hold
 # in reserve. Sized for the largest attachment Discord accepts plus the error embed behind it, and
-# deliberately NOT for the best-effort persona reply after that: its own Files upload can spend
+# deliberately not for the best-effort persona reply after that: its own Files upload can spend
 # this whole margin, which is why a clip delivered on the last of the budget is handed over
 # without the bot saying a word about it, the convention a media persona failure already follows.
 INTERACTION_DELIVERY_MARGIN_SECONDS: Final[float] = 60.0

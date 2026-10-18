@@ -29,7 +29,7 @@ class Card(BaseModel):
     suit: str = Field(..., description="One of the four unicode suit glyphs.")
 
     def __str__(self) -> str:
-        """Human-readable label like `A♠`."""
+        """Returns the human-readable card label, such as `A♠`."""
         return f"{self.rank}{self.suit}"
 
 
