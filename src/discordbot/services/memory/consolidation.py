@@ -76,15 +76,13 @@ _consecutive_rejections: dict[tuple[str, str], int] = {}
 
 
 def needs_consolidation(scope: str) -> bool:
-    """Public sync pre-check for the boot sweep so it only spawns over-threshold scopes.
+    """Returns whether `scope`'s raw backlog is over threshold without taking the scope lock.
 
-    A cheap file read (no lock), used to avoid queuing a per-scope task on the
-    global semaphore just to discover it is under threshold; `consolidate_if_needed`
-    re-checks under the lock, which stays the authority.
+    `consolidate_if_needed` re-checks under the lock, which stays the authority. An unreadable
+    or undecodable `raw.md` answers False and logs a warning so a boot sweep continues past it.
 
-    A `raw.md` that cannot be read or decoded answers False rather than raising: the sweep
-    walks every scope through here, so the raise would stop it before the scopes after this
-    one, and this one cannot consolidate until the file is repaired anyway.
+    Args:
+        scope (str): Memory scope to check.
     """
     try:
         return _should_consolidate(scope=scope)
@@ -98,12 +96,15 @@ def needs_consolidation(scope: str) -> bool:
 
 
 async def consolidate_if_needed(scope: str, writer: MemoryWriterAI, identity: str) -> None:
-    """Consolidates a scope whose raw backlog is over threshold; best-effort, self-logging.
+    """Consolidates a scope whose raw backlog is over threshold; best-effort and self-logging.
 
-    The boot-sweep entry point: `consolidate_after_turn` assumes the scope lock and a
-    semaphore permit are held, so this takes both around it, and the threshold is re-checked
-    under the lock. It swallows its own errors (a background digest must never surface), so
-    the caller just spawns it.
+    Takes the scope lock and a semaphore permit around `consolidate_after_turn`, re-checking
+    the threshold under the lock, and swallows its own errors.
+
+    Args:
+        scope (str): Memory scope to consolidate.
+        writer (MemoryWriterAI): Memory writing service running the consolidation calls.
+        identity (str): Rendered owner identity stamped onto written facts.
     """
     try:
         async with scope_lock(scope=scope), memory_semaphore():
@@ -126,15 +127,18 @@ async def consolidate_if_needed(scope: str, writer: MemoryWriterAI, identity: st
 async def consolidate_after_turn(
     scope: str, forced: bool, started_at: float, writer: MemoryWriterAI, identity: str
 ) -> None:
-    """Consolidates the scope when its backlog warrants it, as of `started_at`.
+    """Consolidates `scope` when its backlog warrants it, as of `started_at`.
 
-    The caller already holds the scope lock and a semaphore permit, so this takes neither and
-    folds the threshold check in under them rather than leaving it to be read on the caller's
-    side.
+    Caller must hold the scope lock and a semaphore permit. The cooldown is stamped at attempt
+    time so a failed call waits out the same cooldown as a successful one.
 
-    `forced` says the batch carries a forget request; `_should_consolidate` owns what that
-    skips. The cooldown is stamped at attempt time, not success time, so a failed call waits
-    out the same cooldown as a successful one wherever `_should_consolidate` applies it.
+    Args:
+        scope (str): Memory scope to consolidate.
+        forced (bool): Whether the batch carries a forget request and bypasses threshold and
+            cooldown checks.
+        started_at (float): `time.monotonic()` timestamp for `cleared_since` checks.
+        writer (MemoryWriterAI): Memory writing service running the consolidation calls.
+        identity (str): Rendered owner identity stamped onto written facts.
     """
     if not _should_consolidate(scope=scope, forced=forced):
         return
@@ -145,12 +149,10 @@ async def consolidate_after_turn(
 
 
 def _should_consolidate(scope: str, forced: bool = False) -> bool:
-    """Whether the raw backlog warrants a consolidation right now.
+    """Returns whether the raw backlog warrants a consolidation right now.
 
-    `forced` is a batch carrying a forget request. It skips BOTH gates below rather than just
-    the cooldown: the entry count is checked first and a lone forget is one entry, so bypassing
-    the cooldown alone would still leave the user waiting for their next message before the bot
-    stopped repeating what they asked it to drop.
+    `forced` (a batch carrying a forget request) skips both the entry-count threshold and the
+    cooldown so a single-entry forget runs immediately.
     """
     if forced:
         return True
@@ -178,7 +180,7 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
     which is what makes the boundary structural; the tone note, the one tier that is
     genuinely cross-compartment, is written afterwards by its own call.
 
-    The whole fan-out sits inside the caller's scope lock and semaphore permit under ONE
+    The whole fan-out sits inside the caller's scope lock and semaphore permit under a single
     timeout, and compartments run sequentially, so neither the worst-case lock hold nor the
     per-scope proxy load scales with the compartment count.
 
@@ -255,13 +257,7 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
 async def _consolidate_observations(
     run: ConsolidationRun, raw_text: str, may_compact: bool
 ) -> bool:
-    """Runs the observation fan-out over one slice of the raw batch.
-
-    Returns False when the caller must keep the raw batch for a retry: a partially applied
-    fan-out is fine to replay, an unread bucket is not. A slice with no observation in it
-    costs nothing, not even the detail read. `may_compact` False keeps every call from
-    compacting, however large its compartment.
-    """
+    """Runs the observation fan-out over one slice of the raw batch, returning whether it applied."""
     buckets = partition_raw_entries(raw_text=raw_text, flavor=run.flavor)
     if not buckets:
         return True
@@ -308,16 +304,17 @@ async def _consolidate_observations(
 async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
     """Runs one deletion-only pass per compartment the forget requests in `forgets` can reach.
 
-    Returns False when the caller must keep the raw batch for a retry, on the same terms as
-    the observation fan-out: an unread bucket is not safe to retire.
+    Each applied call removes the released evidence keys from `raw.md` and `detail.md`
+    immediately so a retry after a later compartment fails does not leave orphaned evidence
+    behind. Any caller holding either file's text from before this pass must read it again.
 
-    Every call here is `deletes_only`; `partition_forget_requests` decides which compartments
-    each request is copied into, and owns why a forget is partitioned on its own rather than
-    folded into the observation buckets. Each applied call then takes the evidence of the facts
-    it deleted out of `raw.md` and `detail.md` at once, not after the whole pass: a retry finds
-    those facts already gone and releases nothing, so evidence left behind by a later call
-    failing would stay for good. A caller holding either file's text from before this pass must
-    read it again.
+    Args:
+        run (ConsolidationRun): Active consolidation or rebuild run context.
+        forgets (str): Raw forget-request entries for this segment.
+
+    Returns:
+        True when every compartment's forget pass applied; False when the caller must keep the
+        raw batch for a retry.
     """
     buckets = partition_forget_requests(
         raw_text=forgets, compartments=tuple(list_compartments(scope=run.scope))
@@ -350,12 +347,7 @@ async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
 
 
 class CompartmentInput(BaseModel):
-    """The per-compartment half of a consolidation request, before the store is read.
-
-    Split out so a caller can build what differs per compartment without
-    `compartment_request` growing a parameter per block. A field may be empty: not every
-    caller has every part to offer.
-    """
+    """Per-compartment evidence and reference inputs for a consolidation request."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -477,11 +469,14 @@ def compartment_request(
     parts: CompartmentInput,
     compact: bool,
 ) -> ConsolidationRequest:
-    """Builds one compartment's consolidation request, filling in what never varies.
+    """Returns one compartment's consolidation request with flavor sections and compartment note.
 
-    The compartment note and the flavor's legal sections never vary with the batch, so they
-    are derived here once and a caller supplies only the blocks it has. `emit_tone` is false
-    because the tone note is its own call, never a field on a compartment's request.
+    Args:
+        run (ConsolidationRun): Active consolidation or rebuild run context.
+        compartment (str): Compartment being written.
+        existing_facts (str): Rendered existing facts in `compartment`.
+        parts (CompartmentInput): Per-compartment raw entries, detail tail, and global reference.
+        compact (bool): Whether this pass should compact the compartment.
     """
     return ConsolidationRequest(
         compartment_note=_compartment_note(compartment=compartment, flavor=run.flavor),
@@ -499,11 +494,13 @@ def compartment_request(
 
 
 def global_first(compartments: set[str]) -> list[str]:
-    """Orders one run's compartments with `global` leading and the rest by name.
+    """Returns `compartments` ordered with `global` first and the rest sorted by name.
 
-    `global` leads because every later compartment is handed its facts as read-only
-    reference, so it must be up to date before they run. Only the ordering is shared; which
-    compartments go in is the caller's own question.
+    `global` leads so its updated facts can be passed as read-only reference to every later
+    compartment in the same run.
+
+    Args:
+        compartments (set[str]): Compartment names to order.
     """
     ordered = [GLOBAL_COMPARTMENT] if GLOBAL_COMPARTMENT in compartments else []
     ordered.extend(sorted(compartments - {GLOBAL_COMPARTMENT}))
@@ -528,12 +525,14 @@ def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
 
 
 def report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
-    """Logs when a scope's injectable document approaches or passes the hard cap.
+    """Logs when a scope's injectable document approaches or exceeds the hard cap.
 
-    A post-write backstop, not a budget: the read path already stops rendering at the
-    cap, so this exists to tell the operator that the prompt-side sizing stopped
-    working. Nothing is deleted here, which is what keeps the cap from fighting the
-    next consolidation over facts it would immediately write back.
+    Nothing is deleted on disk so the size check never fights the next consolidation over facts
+    it would immediately write back.
+
+    Args:
+        scope (str): Memory scope to measure.
+        flavor (MemoryFlavor): Scope flavor used to render the document.
     """
     compartments = list_compartments(scope=scope)
     if not compartments:

@@ -1,4 +1,4 @@
-"""Catching a server's memory up on a channel the bot was not addressed in (#1080).
+"""Catching a server's memory up on a channel the bot was not addressed in.
 
 Every other server-memory write starts from a marker the answer model wrote while it was part of
 the conversation. `/memory server catchup` has no such model, so `MemoryWriterAI.propose_server_notes`
@@ -26,18 +26,30 @@ _last_catchup: dict[str, float] = {}
 
 
 def catchup_on_cooldown(scope: str) -> bool:
-    """Whether a catchup in this scope started too recently for another one."""
+    """Returns whether a catchup in `scope` started too recently for another one.
+
+    Args:
+        scope (str): Server memory scope to check.
+    """
     last = _last_catchup.get(scope)
     return last is not None and time.monotonic() - last < MEMORY_CATCHUP_COOLDOWN_SECONDS
 
 
 def start_catchup_cooldown(scope: str) -> None:
-    """Starts the scope's cooldown; called right after the check, with no await in between."""
+    """Starts the scope's cooldown; called right after the check, with no await in between.
+
+    Args:
+        scope (str): Server memory scope starting a catchup.
+    """
     _last_catchup[scope] = time.monotonic()
 
 
 def release_catchup_cooldown(scope: str) -> None:
-    """Gives the cooldown back when the catchup never started, such as an empty channel."""
+    """Gives the cooldown back when the catchup never started, such as an empty channel.
+
+    Args:
+        scope (str): Server memory scope releasing its cooldown.
+    """
     _last_catchup.pop(scope, None)
 
 
@@ -46,9 +58,17 @@ async def review_catchup_notes(
 ) -> tuple[MemoryObservation, ...] | None:
     """Proposes notes from `transcript`, reviews them, and stages what survives.
 
-    Returns the staged observations, empty when nothing was worth keeping, or None when either
-    model call failed. Consolidation is left to the caller, so the result can be reported
-    before it runs.
+    Consolidation is left to the caller so the result can be reported before it runs.
+
+    Args:
+        scope (str): Server memory scope to stage observations into.
+        subject (str): Phase-1 target directive for the server.
+        transcript (str): Rendered channel transcript to review.
+        writer (MemoryWriterAI): Memory writing service running the proposal and review.
+
+    Returns:
+        Staged observations (empty when nothing was worth keeping), or None when either model
+        call failed.
     """
     started_at = time.monotonic()
     notes = await writer.propose_server_notes(subject=subject, transcript=transcript)

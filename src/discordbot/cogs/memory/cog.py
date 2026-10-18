@@ -93,16 +93,16 @@ class MemoryCogs(commands.Cog):
     """Provides the long-term memory viewing, regeneration, and clearing commands.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
-        config: The LLM client configuration used for memory regeneration.
-        runtime_models: Catalog providing the memory model settings.
+        bot (commands.Bot): The Discord bot instance that owns this cog.
+        config (LLMConfig): The LLM client configuration used for memory regeneration.
+        runtime_models (RuntimeModelCatalog): Catalog providing the memory model settings.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initializes the memory cog.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.config = LLMConfig()
@@ -110,20 +110,12 @@ class MemoryCogs(commands.Cog):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client instance.
-
-        Returns:
-            A configured AsyncOpenAI client reused across regeneration requests.
-        """
+        """Returns the cached `AsyncOpenAI` client reused across memory requests."""
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     @cached_property
     def memory_writer(self) -> MemoryWriterAI:
-        """The cached memory writing service used for regeneration.
-
-        Returns:
-            A writer bound to this cog's client and the memory model.
-        """
+        """Returns the cached `MemoryWriterAI` bound to this cog's client and memory model."""
         return MemoryWriterAI(client=self.client, model=self.runtime_models.memory_writer_model)
 
     @nextcord.slash_command(
@@ -139,7 +131,11 @@ class MemoryCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def memory(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for memory management."""
+        """Slash command group for memory management.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
 
     @memory.subcommand(
         name="show",
@@ -151,7 +147,11 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_show(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the caller's consolidated memory, paginated."""
+        """Shows the caller's consolidated memory, paginated.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
         if interaction.user is None:
             return
         scope = user_scope(user_id=interaction.user.id)
@@ -177,7 +177,11 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_server(self, interaction: Interaction[commands.Bot]) -> None:
-        """Subcommand group for per-server memory viewing."""
+        """Subcommand group for per-server memory viewing and catchup.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
 
     @memory_server.subcommand(
         name="show",
@@ -189,7 +193,11 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_server_show(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the bot's consolidated memory of the current server, paginated."""
+        """Shows the bot's consolidated memory of the current server, paginated.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
         if interaction.guild is None:
             # Server memory is shown only where the bot is a member. A user install also runs this
             # in servers the bot was never added to, which carry a guild id but resolve no guild.
@@ -226,14 +234,8 @@ class MemoryCogs(commands.Cog):
     ) -> None:
         """Shows a scope's stored memory, or a friendly placeholder when empty.
 
-        `tone_text` is the per-user tone note (empty for the per-server view); when
-        present it leads the display as its own section, and it counts as content so
-        a user with only a tone note still sees it instead of the empty placeholder.
-
-        The caller's own memory is shown compartment by compartment, each under a
-        heading naming who can see it: the directory a fact lives in IS the privacy
-        boundary, so showing it costs nothing and tells the owner exactly where each
-        thing they told the bot can come back up.
+        `tone_text` leads the display as its own section when present, and user memory is shown
+        compartment by compartment under a heading naming who can read it.
         """
         pending_count = count_raw_entries(scope=scope)
         sections: list[str] = []
@@ -310,10 +312,12 @@ class MemoryCogs(commands.Cog):
     async def memory_server_catchup(self, interaction: Interaction[commands.Bot]) -> None:
         """Reads the channel since the last catchup and folds it into the server's memory.
 
-        Every refusal reaches only the caller. A run posts a public start message, then
-        replaces it with a public result, which is also where the next run in that channel
-        stops reading. A missing proxy key is left to fail like any other slash command error:
-        the writer is built before anything is posted, so no start message is left behind.
+        Every refusal is ephemeral. A run posts a public start message and replaces it with a
+        public result whose title links to the newest message read, marking where the next catchup
+        in that channel stops reading.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
         """
         guild = interaction.guild
         if guild is None:
@@ -479,7 +483,11 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_regenerate(self, interaction: Interaction[commands.Bot]) -> None:
-        """Schedules a background rebuild of the caller's memory from evidence alone."""
+        """Schedules a background rebuild of the caller's memory from evidence alone.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
         if interaction.user is None:
             return
         scope = user_scope(user_id=interaction.user.id)
@@ -548,7 +556,11 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_clear(self, interaction: Interaction[commands.Bot]) -> None:
-        """Asks for confirmation before erasing the caller's own memory."""
+        """Asks for confirmation before erasing the caller's own memory.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Discord command interaction.
+        """
         if interaction.user is None:
             return
         # The wipe is irreversible and covers tiers `/memory show` never displays,
@@ -625,10 +637,9 @@ async def _read_since_checkpoint(
 
 
 def _catchup_boundary(message: Message, bot: commands.Bot) -> int | None:
-    """The id of the newest message a finished catchup read, when `message` is its result.
+    """Returns the newest message id a finished catchup read when `message` is its result, or None.
 
-    A result's title links to that message. One without a usable link stops reading at the
-    result itself, which is the older behaviour's boundary rather than a guess.
+    Falls back to `message.id` when the result embed carries no jump URL.
     """
     if bot.user is None or message.author.id != bot.user.id:
         return None
@@ -721,6 +732,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the MemoryCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(MemoryCogs(bot), override=True)

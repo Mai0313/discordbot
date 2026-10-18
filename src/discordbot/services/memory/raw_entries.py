@@ -27,12 +27,12 @@ _GUILD_SOURCE_RE = re.compile(r"^guild (?P<guild_id>\d+)$")
 def render_memory_observations(
     observations: tuple[MemoryObservation, ...], source: str | None
 ) -> str:
-    """Renders structured observations as timestamp-entry body markdown.
+    """Returns structured observations rendered as timestamp-entry body markdown.
 
-    `source` names the conversation the observations came from (`guild <id>` /
-    `dm`), stamped deterministically here — never LLM-echoed — so consolidation
-    can scope each bullet. None is the server flavor, whose subject carries no
-    source line; it renders neither the source nor the sharing field.
+    Args:
+        observations (tuple[MemoryObservation, ...]): Validated observations to render.
+        source (str | None): Conversation source (`'guild <id>'` or `'dm'`) stamped on user
+            observations, or None for server memory.
     """
     blocks: list[str] = []
     for observation in observations:
@@ -56,16 +56,14 @@ def render_memory_observations(
 
 
 def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
-    """Renders `<forget-memory>` notes as raw entries consolidation can act on.
+    """Returns `<forget-memory>` notes rendered as raw entries under `### forget_request`.
 
-    A forget is deliberately NOT a `MemoryObservation`. It is not something to store, so it needs
-    no category, durability, sharing or dedupe key, and running it through the gates that decide
-    whether a fact is worth keeping would only find reasons to drop it. Its own
-    `### forget_request` header — deliberately not a `MemoryCategory` — is what keeps it
-    invisible to every reader that walks observation fields.
+    A forget is not a `MemoryObservation`, so its header stays outside `MemoryCategory` and
+    invisible to readers that walk observation fields.
 
-    `source` is stamped for the record rather than for routing: routing a forget by its source
-    would leave it unable to reach a fact stored anywhere else.
+    Args:
+        notes (tuple[str, ...]): Raw `<forget-memory>` note strings.
+        source (str | None): Conversation source (`'guild <id>'` or `'dm'`), or None.
     """
     blocks = [
         "\n".join([
@@ -80,18 +78,21 @@ def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
 
 
 def stamp_entry(body: str) -> str:
-    """Returns `body` as one new entry, headed by the current time.
+    """Returns `body` headed by the current UTC timestamp at microsecond precision.
 
-    Microseconds, so the stamp orders entries the way they were written: a forget is set
-    against everything stamped before it, and a deferred turn can land in the same second as
-    the one it follows.
+    Args:
+        body (str): Rendered entry body.
     """
     timestamp = datetime.now(UTC).isoformat(timespec="microseconds")
     return f"## {timestamp}\n{body.strip()}"
 
 
 def split_raw_entries(text: str) -> list[str]:
-    """Splits raw file text into stripped per-entry blocks including headers."""
+    """Returns `text` split into stripped per-entry blocks including their `## <timestamp>` headers.
+
+    Args:
+        text (str): Raw or detail file text.
+    """
     starts = [match.start() for match in RAW_ENTRY_HEADER_RE.finditer(text)]
     if not starts:
         return []
@@ -101,12 +102,17 @@ def split_raw_entries(text: str) -> list[str]:
 
 
 def iter_observations(text: str) -> list[tuple[str, str]]:
-    """Splits a raw or detail file into `(entry timestamp, observation block)` pairs."""
+    """Returns `text` split into `(entry_timestamp, observation_block)` pairs.
+
+    Args:
+        text (str): Raw or detail file text.
+    """
     pairs: list[tuple[str, str]] = []
     timestamp = ""
     current: list[str] = []
 
     def flush() -> None:
+        """Flushes the current accumulated lines into `pairs`."""
         block = "\n".join(current).strip()
         if block:
             pairs.append((timestamp, block))
@@ -126,18 +132,30 @@ def iter_observations(text: str) -> list[tuple[str, str]]:
 
 
 def observation_category(block: str) -> str | None:
-    """Returns the category in one block's `### <category>` header, or None without one."""
+    """Returns the category in `block`'s `### <category>` header, or None without one.
+
+    Args:
+        block (str): Single observation or forget-request block.
+    """
     header = _OBSERVATION_HEADER_RE.match(block)
     return header.group("category") if header is not None else None
 
 
 def is_forget_request(block: str) -> bool:
-    """Whether one raw block is a forget request rather than an observation."""
+    """Returns whether `block` is a forget request rather than an observation.
+
+    Args:
+        block (str): Single raw entry block.
+    """
     return observation_category(block=block) == FORGET_REQUEST_CATEGORY
 
 
 def fields_of(block: str) -> dict[str, str]:
-    """Extracts one observation block's `- name: value` fields."""
+    """Returns `block`'s `- name: value` lines as a mapping.
+
+    Args:
+        block (str): Single observation or forget-request block.
+    """
     fields: dict[str, str] = {}
     for line in block.splitlines():
         match = _FIELD_RE.match(line)
@@ -147,21 +165,32 @@ def fields_of(block: str) -> dict[str, str]:
 
 
 def source_guild_id(source: str) -> int | None:
-    """Returns the guild a `source` field names, or None for `dm` or any other value."""
+    """Returns the guild id named by a `'guild <id>'` source string, or None otherwise.
+
+    Args:
+        source (str): Stamped conversation source value.
+    """
     match = _GUILD_SOURCE_RE.match(source)
     return int(match.group("guild_id")) if match is not None else None
 
 
 def newest_stamp(text: str) -> str:
-    """Returns the latest entry stamp in a raw or detail text, or "" when it has none."""
+    """Returns the latest entry timestamp in `text`, or `""` when it has none.
+
+    Args:
+        text (str): Raw or detail file text.
+    """
     return max((timestamp for timestamp, _ in iter_observations(text=text)), default="")
 
 
 def render_entries(blocks: list[tuple[str, str]]) -> str:
-    """Re-renders bucketed observation blocks under their original entry headers.
+    """Returns bucketed `(timestamp, block)` pairs rendered with blank lines after entry headers.
 
-    This is the form a consolidation prompt reads, with a blank line after each header;
-    `render_file_entries` writes the on-disk form without one.
+    This is the form a consolidation prompt reads; `render_file_entries` writes the on-disk
+    form without a blank line after each header.
+
+    Args:
+        blocks (list[tuple[str, str]]): `(timestamp, block)` pairs to render.
     """
     rendered: list[str] = []
     previous = ""
@@ -174,7 +203,11 @@ def render_entries(blocks: list[tuple[str, str]]) -> str:
 
 
 def render_file_entries(pairs: list[tuple[str, str]]) -> str:
-    """Renders observation blocks the way `raw.md` and `detail.md` hold them on disk."""
+    """Returns `(timestamp, block)` pairs rendered in the on-disk `raw.md` / `detail.md` layout.
+
+    Args:
+        pairs (list[tuple[str, str]]): `(timestamp, block)` pairs to render.
+    """
     entries: list[str] = []
     for timestamp, group in groupby(pairs, key=lambda pair: pair[0]):
         body = "\n\n".join(block for _, block in group)

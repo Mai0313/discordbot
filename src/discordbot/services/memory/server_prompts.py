@@ -1,14 +1,13 @@
 """Prompts for the bot's per-server (community) long-term memory.
 
-These mirror the per-user prompts in ``prompts.py`` but reframe the target from
-one individual to the server / community as a whole. The structured schema,
-validation gates, redaction, and the delta protocol ``apply_deltas`` enforces are
+These mirror the per-user prompts in `prompts.py`, reframing the target from
+one individual to the server and community as a whole. The structured schema,
+validation gates, redaction, and the delta protocol `apply_deltas` enforces are
 shared unchanged; only the framing and the consolidated section headings differ.
-The compaction block is reused from the per-user prompts because it is flavor
-agnostic.
+The compaction block is reused from the per-user prompts.
 
 There is no server-side forget: `<forget-memory>` is a per-user marker, so the
-consolidation prompt below never learns to read a forget request.
+consolidation prompt below never reads a forget request.
 """
 
 SERVER_PHASE1_EVALUATOR_PROMPT = """

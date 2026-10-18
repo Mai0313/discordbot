@@ -1,13 +1,13 @@
 """Serialization and rendering for one-fact-per-file memory.
 
-A fact file is a ``---`` fenced header of single-line ``key: value`` pairs followed by
+A fact file is a `---` fenced header of single-line `key: value` pairs followed by
 the body. The header is deliberately not YAML: every value is a plain scalar, so a
 hand-rolled reader needs no dependency and cannot be talked into constructing objects.
 Values are written with their whitespace collapsed, so the reader never has to handle
 continuations.
 
 Rendering turns a compartment's files back into a Traditional Chinese document. That
-rendered shape is a CONTRACT rather than presentation: the ``## 成員稱呼`` table is parsed
+rendered shape is a contract rather than presentation: the `## 成員稱呼` table is parsed
 back out of it (`parse_member_alias_table`), and the reply prompts are told to read it.
 Section keys are ASCII so the structured LLM schema stays English; the headings below are
 the only place the two vocabularies meet.
@@ -37,7 +37,7 @@ _HEADER_LINE_RE = re.compile(r"^(?P<key>[a-z_]+):[ ]?(?P<value>.*)$")
 # carry a path separator, a dot, or anything else the filesystem reads structurally.
 FACT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 # An `[id: N]` token anywhere in a fact body. Alias rows get theirs appended from the
-# code-stamped `subject_id`, and `parse_member_alias_table` takes the FIRST match on a line,
+# code-stamped `subject_id`, and `parse_member_alias_table` takes the first match on a line,
 # so a body that carries its own would silently win — and that body is distilled from
 # messages anyone in the server can write.
 _ID_TOKEN_RE = re.compile(pattern=r"\[id:\s*(?P<user_id>\d+)\]")
@@ -77,32 +77,42 @@ TRUNCATION_NOTICE = "（記憶已達可注入上限，較舊的內容未列出�
 
 
 def section_headings(flavor: MemoryFlavor) -> tuple[tuple[MemorySection, str], ...]:
-    """Returns the flavor's sections in document order, paired with their headings."""
+    """Returns the flavor's sections in document order, paired with their headings.
+
+    Args:
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+    """
     return _USER_SECTION_HEADINGS if flavor == "user" else _SERVER_SECTION_HEADINGS
 
 
 def sections_for_flavor(flavor: MemoryFlavor) -> frozenset[MemorySection]:
-    """Returns the sections a delta may name for this flavor."""
+    """Returns the sections a delta may name for `flavor`.
+
+    Args:
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+    """
     return frozenset(section for section, _ in section_headings(flavor=flavor))
 
 
 def node_type_for(section: MemorySection) -> MemoryNodeType:
-    """Derives the stored node type from the section so the two cannot drift."""
+    """Returns the stored node type for `section` so the two cannot drift.
+
+    Args:
+        section (MemorySection): Fact section name.
+    """
     return "member_alias" if section == "member_alias" else "memory"
 
 
 def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str:
-    """Renders an alias row's body from the parts a consolidation delta carries.
+    """Returns an alias row's body rendered from `display_name` and `aliases`, or `""` when empty.
 
-    Code owns this row's body so the table stays a name-to-id mapping and nothing else. Asked
-    for it as a format, the model writes a sentence — it is the one rigid shape among sections
-    of prose — and a sentence carries everything else it had to say about the member in with it.
-    The fields are stamped the way `subject_id` already is, rather than typed.
+    Code owns this row's body so the table stays a single-line name-to-id mapping and nothing
+    else. An empty return drops the delta; a missing `display_name` is allowed since the mapping
+    depends on the alias and id.
 
-    Every value is collapsed to one line because the rendered table is read back line by
-    line. An empty return means there is no alias to record, which is what drops the
-    delta; a missing display name is not fatal, since the mapping the table exists for is
-    the alias and the id.
+    Args:
+        display_name (str): Member's current display name.
+        aliases (tuple[str, ...]): Colloquial aliases the community calls that member.
     """
     collapsed = (_one_line(text=alias) for alias in aliases)
     unique = list(dict.fromkeys(alias for alias in collapsed if alias))
@@ -112,10 +122,14 @@ def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str
 
 
 def parse_identity(identity: str, fallback_owner_id: int) -> MemoryOwner:
-    """Splits a rendered identity line into the owner fields stamped onto a fact.
+    """Returns the `MemoryOwner` parsed from a rendered identity line.
 
-    A line that does not parse keeps the id the scope key already carries and takes the
-    whole line, collapsed, as the name.
+    A line that does not match `<name> [id: <N>]` uses `fallback_owner_id` and takes the
+    collapsed line as `owner_name`.
+
+    Args:
+        identity (str): Rendered identity line.
+        fallback_owner_id (int): Owner id from the scope key used when `identity` carries none.
     """
     match = _IDENTITY_RE.match(identity.strip())
     if match is None:
@@ -126,29 +140,37 @@ def parse_identity(identity: str, fallback_owner_id: int) -> MemoryOwner:
 
 
 def render_owner_identity(owner: MemoryOwner) -> str:
-    """Renders a stored owner back into the identity line the pipeline threads around.
+    """Returns `owner` rendered into the `<name> [id: <N>]` identity line.
 
-    The inverse of `parse_identity`, for the offline and restart paths that have a
-    stored scope but no Discord context to rebuild the label from.
+    The inverse of `parse_identity` for offline and restart paths that have no Discord context.
+
+    Args:
+        owner (MemoryOwner): Stored owner identity.
     """
     return f"{owner.owner_name} [id: {owner.owner_id}]".strip()
 
 
 def mint_fact_id(compartment: str, summary: str) -> str:
-    """Mints the code-owned id for a new fact.
+    """Returns the code-owned hex fact id minted from `compartment` and `summary`.
 
-    Derived from the compartment plus the summary rather than chosen by the model: the
-    id is the filename, so letting conversation content reach it would put path
-    traversal one prompt injection away. Including the compartment also means the same
-    sentence distilled in two compartments gets two ids, so a cross-compartment
-    collision cannot happen and the reader never has to arbitrate one.
+    Because the fact id is the filename stem, deriving it here from a hash prevents prompt
+    injection from reaching filesystem paths, and including `compartment` avoids
+    cross-compartment id collisions.
+
+    Args:
+        compartment (str): Compartment the fact belongs to.
+        summary (str): Fact summary line.
     """
     digest = hashlib.sha256(f"{compartment}\0{' '.join(summary.split())}".encode())
     return digest.hexdigest()[:16]
 
 
 def render_fact_file(fact: MemoryFact) -> str:
-    """Renders one fact as its on-disk file."""
+    """Returns `fact` serialized as its on-disk file content.
+
+    Args:
+        fact (MemoryFact): Fact to serialize.
+    """
     header = {
         "id": fact.fact_id,
         "summary": _one_line(text=fact.summary),
@@ -174,14 +196,18 @@ def render_fact_file(fact: MemoryFact) -> str:
 
 
 def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> MemoryFact | None:
-    """Parses one fact file, or returns None when it is unusable.
+    """Returns the `MemoryFact` parsed from `text`, or None when unusable.
 
-    `compartment` is the directory the file was found in and is authoritative: a stored
-    `compartment` that disagrees means the tree was edited outside the store, and there is no
-    safe way to guess which side is right. Returning None keeps the fact out of every reply
-    rather than guessing the permissive answer. That mismatch is logged at error and a header
-    whose values do not validate at warn, both naming `scope` and `filename`; a file with no
-    readable header is skipped silently.
+    `compartment` (the directory the file was found in) is authoritative: a stored header
+    `compartment` that disagrees is logged at error and skipped so an out-of-band edit never
+    widens a fact's visibility. Malformed headers are logged at warn; missing front matter is
+    skipped silently.
+
+    Args:
+        text (str): Raw file content.
+        compartment (str): Compartment directory the file was read from.
+        scope (str): Memory scope key for logging.
+        filename (str): Fact filename for logging.
     """
     header, body = _split_front_matter(text=text)
     if header is None:
@@ -227,13 +253,15 @@ def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> M
 
 
 def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_chars: int) -> str:
-    """Renders a compartment set as the Traditional Chinese document the prompts expect.
+    """Returns `facts` rendered as the Traditional Chinese document the prompts expect.
 
-    Sections come out in the flavor's fixed order and facts within a section newest
-    first, so a document trimmed at `max_chars` loses the stalest content rather than
-    an arbitrary tail. Truncation only ever affects this rendering; nothing is deleted
-    from disk, which is what stops the size cap fighting the next consolidation over
-    facts it would immediately write back.
+    Sections render in `flavor`'s fixed order and facts within each section newest first, so
+    truncating at `max_chars` drops the oldest content without deleting anything on disk.
+
+    Args:
+        facts (list[MemoryFact]): Facts to render.
+        flavor (MemoryFlavor): Scope flavor (`'user'` or `'server'`).
+        max_chars (int): Character budget before truncation.
     """
     by_section: dict[MemorySection, list[MemoryFact]] = {}
     for fact in facts:
@@ -294,11 +322,13 @@ def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
 
 
 def parse_member_alias_table(memory: str) -> dict[int, str]:
-    """Reads the `## 成員稱呼` table back out of a rendered server memory document.
+    """Returns the `## 成員稱呼` table from a rendered server memory document as `{user_id: label}`.
 
-    Maps each row's `[id: USER_ID]` to the row minus its id token and bullet, unescaped: a
-    caller putting a label where a mention could fire escapes it there. The first row naming
-    an id wins, and a document without the section yields an empty map.
+    Maps each row's `[id: USER_ID]` to the row minus its id token and bullet, unescaped. The
+    first row naming an id wins, and a document without the section yields an empty dict.
+
+    Args:
+        memory (str): Rendered server memory document.
     """
     section = _MEMBER_ALIAS_SECTION_RE.search(string=memory)
     if section is None:

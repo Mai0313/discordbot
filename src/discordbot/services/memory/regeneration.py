@@ -7,7 +7,7 @@ whatever the rebuild did not re-emit is deleted. Only it and a forget pass may l
 compartment at once, because replacing the whole set is what it is for.
 
 It runs either inside the bot under the scope lock, or offline in a second process — where
-it is NOT equivalent, since its closing `clear_raw` unlinks whatever `raw.md` gained while
+it is not equivalent, since its closing `clear_raw` unlinks whatever `raw.md` gained while
 it worked.
 """
 
@@ -83,17 +83,20 @@ class RegenerationReport(BaseModel):
 
 
 def regeneration_has_evidence(scope: str) -> bool:
-    """Whether any cold-tier evidence exists for a from-scratch rebuild.
+    """Returns whether any cold-tier or raw evidence exists for a from-scratch rebuild.
 
-    Mirrors the evidence guard inside `regenerate_scope_memory` cheaply (no full
-    window read), so the command can surface "no observations yet" up front
-    instead of scheduling a background rebuild that would silently do nothing.
+    Args:
+        scope (str): Memory scope key to check.
     """
     return bool(read_raw_entries(scope=scope)) or detail_file_bytes(scope=scope) > 0
 
 
 def regeneration_on_cooldown(scope: str) -> bool:
-    """Whether a recent regeneration attempt blocks another one right now."""
+    """Returns whether a recent regeneration attempt in `scope` blocks another one right now.
+
+    Args:
+        scope (str): Memory scope key to check.
+    """
     last_attempt = _last_regeneration.get(scope)
     if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
         # A clear since the last attempt wiped the memory that cooldown
@@ -103,11 +106,16 @@ def regeneration_on_cooldown(scope: str) -> bool:
 
 
 def schedule_memory_regeneration(scope: str, writer: MemoryWriterAI, identity: str) -> bool:
-    """Starts a background rebuild of the scope's memory without blocking the command.
+    """Starts a background rebuild of `scope`'s memory without blocking the command.
 
-    Returns False when a rebuild is already in flight for this scope (so the
-    caller can report "still rebuilding" instead of double-scheduling the
-    rebuild); True when a fresh background task was started.
+    Args:
+        scope (str): Memory scope key to rebuild.
+        writer (MemoryWriterAI): Memory writing service running the rebuild calls.
+        identity (str): Single-line owner identity stamped onto written facts.
+
+    Returns:
+        True when a fresh background task was started; False when a rebuild is already in
+        flight for `scope`.
     """
     running = _regeneration_tasks.get(key=scope)
     if running is not None and not running.done():
@@ -148,22 +156,23 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
 async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report per way a rebuild stops short, a clear and a failed forget replay included
     scope: str, writer: MemoryWriterAI, identity: str
 ) -> RegenerationReport:
-    """Rebuilds every compartment from cold-tier evidence alone.
+    """Rebuilds every compartment of `scope` from cold-tier evidence alone.
 
-    The existing facts are deliberately NOT fed to the model: the rebuild distills the
-    detail tail window plus any unconsumed raw entries from scratch, e.g. to redo an
-    unsatisfying consolidation with another model, and facts it did not re-emit are then
-    deleted. The corpus is taken one forget at a time in recorded order, as consolidation takes
-    a batch: what came before a forget is rebuilt, the forget replayed, and what came after
-    merged into the facts this run rebuilt, so a restatement survives the forget it followed.
+    Existing facts are not shown to the model: the rebuild distills the detail tail window
+    plus any unconsumed raw entries from scratch, one forget segment at a time in recorded
+    order so what came before a forget is rebuilt, the forget replayed, and what came after
+    merged into the rebuilt facts. A run that stops before its last forget replay applies
+    restores every compartment it replaced; the raw batch is retired only when every
+    compartment and the tone note finish rebuilding.
 
-    A run that stops before its last forget replay has applied puts every compartment it replaced
-    back to the facts it held, unless the process dies without unwinding: until the replay, a
-    replaced compartment can hold a fact a forget had already removed. The raw batch is
-    retired only when every compartment and the tone note rebuilt. The report carries what
-    the run removed unread whichever way it ended, since putting a compartment back restores
-    only what could be read, so a rebuild that gave up on its third compartment still
-    accounts for what the first two destroyed.
+    Args:
+        scope (str): Memory scope key to rebuild.
+        writer (MemoryWriterAI): Memory writing service running the rebuild calls.
+        identity (str): Single-line owner identity stamped onto written facts.
+
+    Returns:
+        The `RegenerationReport` summarizing how the rebuild ended and how many unreadable
+        fact files were removed.
     """
     started_at = time.monotonic()
     unreadable_removed = 0
@@ -333,29 +342,14 @@ def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[Memory
 
 
 async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
-    """Re-runs one segment's forget requests against the facts rebuilt from what came before.
+    """Re-runs one segment's forget requests against the facts and tone evidence rebuilt before it.
 
-    A rebuild derives facts from evidence rather than from the current facts, and the
-    observation a forget was aimed at can still be sitting in `detail.md` verbatim: the forget
-    pass takes out only the evidence of a fact it actually deleted, so a forget that found
-    nothing to delete left it there. So the rebuild re-creates exactly what the user asked to
-    have removed, and without this `/memory regenerate` would quietly undo those forgets. The
-    replay then takes that evidence out as the incremental pass does, so the next rebuild no
-    longer sees it.
-
-    The tone evidence gets the same replay, since a tone preference is never a fact and the tone
-    rebuild reads whatever evidence is left: a forget whose tone pass failed, its batch kept in
-    `raw.md`, or missed a line would otherwise come back from it (#971). Only the evidence, as
-    the note is about to be rewritten from it (`forget_tone` has why).
-
-    Replaying the requests afterwards fixes that without weakening anything: each runs as its
-    own `deletes_only` call, or for the tone evidence one answering line numbers only, so the
-    forget's own sentence still cannot be written anywhere. Feeding a forget INTO the rebuild
-    instead would hand a possibly-private sentence to a call whose whole job is creating facts.
-
-    Returns False when a replay call failed. The caller then puts the replaced compartments
-    back rather than keep them: a fact the replay did not reach can be one the user asked to
-    forget, and nothing but a later rebuild that completes would remove it.
+    A rebuild derives facts from `detail.md` and `raw.md` rather than from current facts, so an
+    observation whose earlier forget found nothing to delete can still sit in `detail.md` and
+    be re-created by the rebuild. Replaying the forget requests in their own `deletes_only` and
+    `forget_tone(evidence_only=True)` calls deletes those recreated facts and their evidence
+    without feeding the forget's own sentence to a fact-creating call. Returns False when a
+    replay call fails so the caller restores the replaced compartments.
     """
     return await apply_forget_buckets(run=run, forgets=forgets) and await forget_tone(
         run=run, forgets=forgets, evidence_only=True
@@ -381,13 +375,9 @@ def _replace_compartment(
 ) -> int:
     """Replaces a compartment's contents with a from-scratch rebuild's facts.
 
-    Applies the batch first and prunes afterwards, so a fact the rebuild kept is never
-    momentarily absent. What survives is decided by the ids the batch actually WROTE, not
-    by what is left on disk: a rebuild says "this fact is gone" by simply not mentioning
-    it, so comparing against the post-apply state would only re-delete what the batch
-    already deleted and leave every stale fact standing.
-
-    The mass-delete guard is off here: replacing the entire set is what this path is for.
+    Applies the batch first with `allow_mass_delete=True` and prunes afterwards to the ids the
+    batch actually wrote, so a fact the rebuild kept is never momentarily absent and any fact
+    not re-emitted is removed.
     """
     outcome = apply_deltas(
         scope=run.scope,
@@ -403,18 +393,7 @@ def _replace_compartment(
 
 
 def _prune_rebuilt_compartment(scope: str, compartment: str, keep: set[str]) -> int:
-    """Reduces a rebuilt compartment to `keep`, reporting what it left and what it took.
-
-    The prune reads the directory rather than the facts read back from it, so a file no
-    reader can parse cannot outlive a rebuild that reports the compartment replaced
-    (`prune_compartment` carries the why). What it could not account for is reported
-    here instead, since the store never removes a file it did not write.
-
-    What it DID remove unread is reported and returned. Renaming a section or a durability
-    value makes every fact carrying the old one unparsable, so the next rebuild of a scope
-    drops all of them in one pass; a run that says only what it spared reads as one that
-    destroyed nothing.
-    """
+    """Reduces a rebuilt compartment to `keep`, logging and returning unreadable files removed."""
     pruned = prune_compartment(scope=scope, compartment=compartment, keep=keep)
     if pruned.unaccounted:
         logfire.warn(

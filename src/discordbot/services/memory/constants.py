@@ -2,7 +2,7 @@
 
 What lives here bounds the memory pipeline's own work — how often a consolidation runs, how
 much of it the process does at once, how much a stored observation may hold, how large a file
-or a cache may grow. A bound on what a model REQUEST may carry is a different question and
+or a cache may grow. A bound on what a model request may carry is a different question and
 lives with the other request budgets.
 """
 
@@ -41,8 +41,8 @@ MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 300.0
 # delays the automatic consolidation or the other way round.
 MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 
-# Minimum gap between `/memory server catchup` runs in one server. The owner chose to align it with
-# the regeneration cooldown above (#1080), so it follows that value rather than restating it.
+# Minimum gap between `/memory server catchup` runs in one server, aligned with the regeneration
+# cooldown above so it follows that value rather than restating it.
 MEMORY_CATCHUP_COOLDOWN_SECONDS = MEMORY_REGENERATION_COOLDOWN_SECONDS
 
 # Process-wide cap on concurrent background memory updates. The constraint is proxy contention
@@ -59,8 +59,8 @@ MEMORY_GLOBAL_CONCURRENCY = 24
 COMPACTION_TRIGGER_CHARS = 30_000
 COMPACTION_TARGET_CHARS = 15_000
 
-# Staleness window for mutable (`durability="stable"`) facts, measured RELATIVE to the newest
-# mutable activity IN THE SAME COMPARTMENT rather than to `today`. The sweep drops a mutable fact
+# Staleness window for mutable (`durability="stable"`) facts, measured relative to the newest
+# mutable activity in the same compartment rather than to `today`. The sweep drops a mutable fact
 # whose `last_confirmed` is more than this far behind the freshest one, so a busy guild pushes its
 # own stale traits out while a quiet compartment ages nothing. Anchoring on the whole scope instead
 # would let one active guild age out the memory of a guild the user simply visits less often.
@@ -98,16 +98,16 @@ TONE_FILE_MAX_BYTES = 4_096
 # Hard cap for the cold-tier detail file, and the size a trim brings it back to. Content past the
 # window consolidation reads is unreachable by every consumer, so trimming the oldest costs
 # nothing functionally and keeps disk bounded; the gap between the two amortizes the O(file)
-# rewrite to roughly once per megabyte of new evidence. The cap MUST stay above that window —
+# rewrite to roughly once per megabyte of new evidence. The cap must stay above that window —
 # `MEMORY_DETAIL_CONTEXT_MAX_CHARS` at 4 bytes a character — or a trim cuts into content
-# something still reads, which `tests/guards/test_context_budgets.py` holds it to.
+# something still reads.
 DETAIL_FILE_MAX_BYTES = 4_194_304
 DETAIL_FILE_TRIM_TARGET_BYTES = 3_145_728
 
 # There is deliberately no per-call bound here. Nobody waits on a background memory update and
 # the client bounds every request it makes, so a tighter wrapper would only restate that ceiling
 # — and a tighter one buys nothing when the failure it guards against ends in a retryable no-op
-# either way. What does need its own bound is the consolidation fan-out, which is a LOOP over
+# either way. What does need its own bound is the consolidation fan-out, which is a loop over
 # compartments and so is bounded by nothing upstream; that one is
 # `MEMORY_CONSOLIDATE_TIMEOUT_SECONDS`, with the bot's other deadlines, and it is also what caps
 # a single stuck compartment.
