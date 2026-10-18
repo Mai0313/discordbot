@@ -13,33 +13,33 @@ def _number_text(amount: int, signed: bool, compact: bool) -> str:
 
 
 def currency_text(amount: int, signed: bool = False, compact: bool = False) -> str:
-    """Formats an economy amount with the shared currency name.
+    """Returns an economy amount formatted with the shared currency name.
 
     Args:
-        amount: Economy amount to display.
-        signed: Whether positive non-zero amounts should include a leading `+`.
-        compact: Whether large amounts should use Traditional Chinese scale units.
-
-    Returns:
-        A display string with the numeric amount and currency name.
+        amount (int): Economy amount to display.
+        signed (bool): Whether positive non-zero amounts include a leading `+`.
+        compact (bool): Whether large amounts use Traditional Chinese scale units.
     """
     return f"{_number_text(amount=amount, signed=signed, compact=compact)} {CURRENCY_NAME}"
 
 
 def amount_code(amount: int, signed: bool = False, compact: bool = False) -> str:
-    """Formats a numeric amount as inline-code text.
+    """Returns a numeric amount formatted as Markdown inline code.
 
     Args:
-        amount: Economy amount to display.
-        signed: Whether positive non-zero amounts should include a leading `+`.
-        compact: Whether large amounts should use Traditional Chinese scale units.
-
-    Returns:
-        A Markdown inline-code numeric amount.
+        amount (int): Economy amount to display.
+        signed (bool): Whether positive non-zero amounts include a leading `+`.
+        compact (bool): Whether large amounts use Traditional Chinese scale units.
     """
     return f"`{_number_text(amount=amount, signed=signed, compact=compact)}`"
 
 
 def bold_currency(amount: int, signed: bool = False, compact: bool = False) -> str:
-    """Formats a currency amount with bold Markdown emphasis."""
+    """Returns a currency amount with bold Markdown emphasis.
+
+    Args:
+        amount (int): Economy amount to display.
+        signed (bool): Whether positive non-zero amounts include a leading `+`.
+        compact (bool): Whether large amounts use Traditional Chinese scale units.
+    """
     return f"**{currency_text(amount=amount, signed=signed, compact=compact)}**"

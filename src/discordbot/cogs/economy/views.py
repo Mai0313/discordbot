@@ -42,6 +42,9 @@ def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
     nor a cached guild — which matters because a user-installed invocation in a
     server the bot was never added to has no cached guild at all. Outside a guild
     it is empty, which is what refuses a DM.
+
+    Args:
+        interaction (Interaction[commands.Bot]): Discord interaction to inspect.
     """
     return interaction.permissions.administrator
 
@@ -73,7 +76,12 @@ class LoanDecisionViewBase(LoggedView):
     APPROVER_IS_GUILD_ADMIN: ClassVar[bool]
 
     def __init__(self, proposal_id: int, creator_id: int) -> None:
-        """Initializes a decision view for one proposal."""
+        """Initializes a decision view for one proposal.
+
+        Args:
+            proposal_id (int): Database ID of the pending loan proposal.
+            creator_id (int): Discord user ID of the borrower who created the request.
+        """
         super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
         self.proposal_id = proposal_id
         self.creator_id = creator_id
@@ -308,7 +316,13 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
     def __init__(
         self, proposal_id: int, creator_id: int, allow_self_approval: bool = False
     ) -> None:
-        """Initializes a decision view for one proposal."""
+        """Initializes a decision view for one proposal.
+
+        Args:
+            proposal_id (int): Database ID of the pending loan proposal.
+            creator_id (int): Discord user ID of the borrower who created the request.
+            allow_self_approval (bool): Whether the borrower may approve their own request.
+        """
         super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.allow_self_approval = allow_self_approval
 
@@ -344,7 +358,12 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Approves the central-bank request when clicked by a server administrator."""
+        """Approves the central-bank request when clicked by a server administrator.
+
+        Args:
+            _button (Button["CentralBankLoanDecisionView"]): Clicked approve button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
         await self._handle_approve(
             interaction=interaction,
             guild_id=interaction.guild_id,
@@ -359,7 +378,12 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Rejects the central-bank request when clicked by a server administrator."""
+        """Rejects the central-bank request when clicked by a server administrator.
+
+        Args:
+            _button (Button["CentralBankLoanDecisionView"]): Clicked reject button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
         await self._handle_reject(interaction=interaction)
 
     @nextcord.ui.button(
@@ -374,7 +398,12 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Cancels the central-bank request when clicked by its creator."""
+        """Cancels the central-bank request when clicked by its creator.
+
+        Args:
+            _button (Button["CentralBankLoanDecisionView"]): Clicked cancel button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
         await self._handle_cancel(interaction=interaction)
 
 
@@ -392,7 +421,13 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     APPROVER_IS_GUILD_ADMIN = False
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
-        """Initializes a decision view for one personal credit proposal."""
+        """Initializes a decision view for one personal credit proposal.
+
+        Args:
+            proposal_id (int): Database ID of the pending loan proposal.
+            lender_id (int): Discord user ID of the target lender.
+            creator_id (int): Discord user ID of the borrower who created the request.
+        """
         super().__init__(proposal_id=proposal_id, creator_id=creator_id)
         self.lender_id = lender_id
 
@@ -426,7 +461,12 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def approve(
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Approves the personal credit request when clicked by the lender."""
+        """Approves the personal credit request when clicked by the lender.
+
+        Args:
+            _button (Button["CreditLoanDecisionView"]): Clicked approve button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
         await self._handle_approve(interaction=interaction)
 
     @nextcord.ui.button(
@@ -435,7 +475,12 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def reject(
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Rejects the personal credit request when clicked by the lender."""
+        """Rejects the personal credit request when clicked by the lender.
+
+        Args:
+            _button (Button["CreditLoanDecisionView"]): Clicked reject button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
         await self._handle_reject(interaction=interaction)
 
     @nextcord.ui.button(
@@ -444,5 +489,10 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def cancel(
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Cancels the personal credit request when clicked by its creator."""
+        """Cancels the personal credit request when clicked by its creator.
+
+        Args:
+            _button (Button["CreditLoanDecisionView"]): Clicked cancel button.
+            interaction (Interaction[commands.Bot]): Component interaction from the click.
+        """
         await self._handle_cancel(interaction=interaction)

@@ -115,7 +115,11 @@ class EconomyCogs(commands.Cog):
     """Point balance, leaderboard, loan, VIP, and economy-admin commands."""
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialises the cog with environment-backed economy settings."""
+        """Initialises the cog with environment-backed economy settings.
+
+        Args:
+            bot (commands.Bot): Bot instance registering the cog.
+        """
         self.bot = bot
         self.economy_config = EconomyConfig()
 
@@ -139,7 +143,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def admin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for economy admin operations."""
+        """Slash command group for economy admin operations.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
 
     @admin.subcommand(
         name="refund_tax",
@@ -175,7 +183,13 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Credits points to a member through a manual balance adjustment."""
+        """Credits points to a member through a manual balance adjustment.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Member or bot to credit.
+            amount (str): Decimal amount text to credit.
+        """
         parsed_amount = await _amount_or_refuse(
             interaction=interaction, raw_amount=amount, title="退稅失敗"
         )
@@ -219,7 +233,13 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Debits points from a member through a manual balance adjustment."""
+        """Debits points from a member through a manual balance adjustment.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Member or bot to debit.
+            amount (str): Decimal amount text to debit.
+        """
         parsed_amount = await _amount_or_refuse(
             interaction=interaction, raw_amount=amount, title="收稅失敗"
         )
@@ -298,7 +318,12 @@ class EconomyCogs(commands.Cog):
             default=None,
         ),
     ) -> None:
-        """Replies with a member's balance, loans, and VIP status."""
+        """Replies with a member's balance, loans, and VIP status.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member | None): Member to inspect, or None for the caller.
+        """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
@@ -329,7 +354,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top point holders."""
+        """Replies with the top point holders.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         await interaction.response.defer()
         rows = await top_n(limit=LEADERBOARD_SIZE)
         if not rows:
@@ -360,7 +389,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top gross casino losses for the current day."""
+        """Replies with the top gross casino losses for the current day.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         await interaction.response.defer()
         rows = await top_losers(limit=LEADERBOARD_SIZE)
         if not rows:
@@ -415,7 +448,13 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Transfers points from the caller to `member`."""
+        """Transfers points from the caller to `member`.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Member or bot receiving the transfer.
+            amount (str): Decimal amount text to transfer.
+        """
         parsed_amount = await _amount_or_refuse(
             interaction=interaction, raw_amount=amount, title="轉帳失敗"
         )
@@ -494,7 +533,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def casino(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the casino system's accumulated P&L."""
+        """Shows the casino system's accumulated P&L.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         await interaction.response.defer()
         snapshot = await get_casino_ledger()
         embed = build_casino_embed(snapshot=snapshot)
@@ -513,7 +556,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def pocat(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the bot player's `user_wallet` balance and gross flows."""
+        """Shows the bot player's `user_wallet` balance and gross flows.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         await interaction.response.defer()
         if self.bot.user is None:
             await send_expiring_followup(
@@ -554,7 +601,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def credit(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for personal credit operations."""
+        """Slash command group for personal credit operations.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
 
     @credit.subcommand(
         name="borrow",
@@ -603,7 +654,14 @@ class EconomyCogs(commands.Cog):
             max_value=100,
         ),
     ) -> None:
-        """Creates a personal loan request for the target lender."""
+        """Creates a personal loan request for the target lender.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Member requested to lend.
+            amount (str): Decimal principal amount text.
+            monthly_rate_percent (float): Monthly simple-interest rate percentage.
+        """
         parsed_amount = await _amount_or_refuse(
             interaction=interaction, raw_amount=amount, title="借款失敗"
         )
@@ -701,7 +759,13 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Pays down active personal loans owed to `member`."""
+        """Pays down active personal loans owed to `member`.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Lender to repay.
+            amount (str): Maximum decimal amount text to apply.
+        """
         if interaction.user is None:
             return
         parsed_amount = await _amount_or_refuse(
@@ -784,7 +848,13 @@ class EconomyCogs(commands.Cog):
             default="",
         ),
     ) -> None:
-        """Forcibly collects a personal loan from a borrower."""
+        """Forcibly collects a personal loan from a borrower.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Borrower to collect from.
+            amount (str): Maximum decimal amount text to collect, or blank/0 for all owed.
+        """
         if interaction.user is None:
             return
         collect_amount = await _amount_or_refuse(
@@ -835,7 +905,11 @@ class EconomyCogs(commands.Cog):
         },
     )
     async def credit_status(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the active personal credit contracts the caller borrowed or lent on."""
+        """Shows the active personal credit contracts the caller borrowed or lent on.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
@@ -860,7 +934,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def central_bank(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for central bank operations."""
+        """Slash command group for central bank operations.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
 
     @central_bank.subcommand(
         name="borrow",
@@ -899,7 +977,13 @@ class EconomyCogs(commands.Cog):
             max_value=100,
         ),
     ) -> None:
-        """Creates a central bank loan request."""
+        """Creates a central bank loan request.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            amount (str): Decimal principal amount text.
+            monthly_rate_percent (float): Monthly simple-interest rate percentage.
+        """
         parsed_amount = await _amount_or_refuse(
             interaction=interaction, raw_amount=amount, title="央行借款失敗"
         )
@@ -980,7 +1064,12 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Repays central-bank debt."""
+        """Repays central-bank debt.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            amount (str): Maximum decimal amount text to apply.
+        """
         if interaction.user is None:
             return
         parsed_amount = await _amount_or_refuse(
@@ -1056,7 +1145,13 @@ class EconomyCogs(commands.Cog):
             default="",
         ),
     ) -> None:
-        """Central-bank forced collection."""
+        """Forcibly collects central-bank debt from a borrower in this server.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+            member (Member): Borrower to collect from.
+            amount (str): Maximum decimal amount text to collect, or blank/0 for all owed.
+        """
         if interaction.user is None:
             return
         collect_amount = await _amount_or_refuse(
@@ -1115,7 +1210,11 @@ class EconomyCogs(commands.Cog):
         },
     )
     async def central_bank_status(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows this server's central bank lending capacity."""
+        """Shows this server's central bank lending capacity.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         if interaction.guild_id is None:
             await send_ephemeral_response(
                 interaction=interaction,
@@ -1149,7 +1248,11 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def vip_command(self, interaction: Interaction[commands.Bot]) -> None:
-        """Buys the permanent VIP perk for a one-time fixed cost."""
+        """Buys the permanent VIP perk for a one-time fixed cost.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Slash command interaction.
+        """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
@@ -1184,5 +1287,9 @@ class EconomyCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the EconomyCogs to the bot."""
+    """Adds `EconomyCogs` to the bot.
+
+    Args:
+        bot (commands.Bot): Bot instance registering the cog.
+    """
     bot.add_cog(EconomyCogs(bot), override=True)
