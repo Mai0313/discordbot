@@ -1,6 +1,6 @@
 """Shared primitive for pulling a file down over HTTP.
 
-`stream_to_file` writes one remote file and leaves the failure POLICY to its caller, since what
+`stream_to_file` writes one remote file and leaves the failure policy to its caller, since what
 a failed transfer means (worth retrying, or worth reporting) differs per source.
 """
 
@@ -18,14 +18,7 @@ class DownloadTooLargeError(RuntimeError):
 
 
 def _reject_oversize_header(response: requests.Response, url: str, max_bytes: int | None) -> None:
-    """Refuses an oversize transfer from its `Content-Length`, before a byte is written.
-
-    Closing the response here is the whole point of the guard: the body is never read, so no
-    file is opened and nothing lands on disk.
-
-    Raises:
-        DownloadTooLargeError: If the declared length exceeds `max_bytes`.
-    """
+    """Refuses an oversize transfer from its `Content-Length`, closing `response` before reading."""
     if max_bytes is None:
         return
     declared = response.headers.get("Content-Length")
@@ -40,37 +33,32 @@ def _reject_oversize_header(response: requests.Response, url: str, max_bytes: in
 def stream_to_file(
     url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int | None = None
 ) -> Path:
-    """Streams a remote file into `filepath`, refusing anything past `max_bytes`.
+    """Streams `url` into `filepath` and returns `filepath`, refusing anything past `max_bytes`.
 
-    Deliberately does NOT create the parent directory: whoever hands one over makes it once, up
+    Deliberately does not create the parent directory: whoever hands one over makes it once, up
     front. A caller that gives up mid-download cannot stop the worker thread (`asyncio.to_thread`
     abandons it), so it removes the scratch dir instead: a file not yet opened fails its open, and
     the one being written stops at its next chunk. A `mkdir` here would undo that between two
     files and quietly rebuild a directory nobody will clean up.
 
     `max_bytes` is a fail-fast guard, not a policy: it exists so a caller whose downstream would
-    reject the file anyway (the Files API caps a single upload at 2 GB) finds out from the
-    `Content-Length` in a couple of seconds instead of spending its whole time budget fetching
-    bytes nobody can use. The streamed re-check backs it up, since `Content-Length` can be absent
-    or wrong.
+    reject the file anyway finds out from `Content-Length` in a couple of seconds instead of
+    spending its whole time budget fetching bytes nobody can use. The streamed re-check backs it
+    up when `Content-Length` is absent or wrong.
 
     A partial file is removed on any failure, since leaving it would let a later `stat()` report
     a truncated download as a finished one.
 
     Args:
-        url: The media URL.
-        filepath: Where to write the file; its parent directory must already exist.
-        headers: Request headers the source expects.
-        timeout: Per-read timeout in seconds.
-        max_bytes: Refuse media larger than this; None accepts any size.
-
-    Returns:
-        The path written, which is `filepath`.
+        url (str): The media URL.
+        filepath (Path): Where to write the file; its parent directory must already exist.
+        headers (dict[str, str]): Request headers the source expects.
+        timeout (float): Per-read timeout in seconds.
+        max_bytes (int | None): Refuse media larger than this; `None` accepts any size.
 
     Raises:
         DownloadTooLargeError: If the media exceeds `max_bytes`.
-        requests.RequestException: If the transfer fails; whether that is worth retrying is the
-            caller's call.
+        requests.RequestException: If the transfer fails.
         OSError: If the file cannot be written, `FileNotFoundError` for a removed directory
             included.
     """

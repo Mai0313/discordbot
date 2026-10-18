@@ -115,12 +115,7 @@ class VideoDownloader(PlatformDownloader):
         return url
 
     def _convert_facebook_url(self, url: str) -> str:
-        """Converts Facebook watch URL to reel URL format.
-
-        Example:
-            https://www.facebook.com/watch?v=828357636228730
-            -> https://www.facebook.com/reel/828357636228730
-        """
+        """Returns `url` rewritten from `facebook.com/watch?v=<id>` or `/share/...` to `/reel/<id>` when applicable."""
         parsed = urlparse(url=url)
 
         if not host_matches_domain(host=normalized_host(url=url), domain="facebook.com"):
@@ -132,7 +127,6 @@ class VideoDownloader(PlatformDownloader):
                 return self._convert_facebook_url(url=resolved_url)
             return url
 
-        # Check if it's a Facebook watch URL
         if parsed.path == "/watch":
             query_params = parse_qs(qs=parsed.query)
             video_id = query_params.get("v", [None])[0]
@@ -143,14 +137,11 @@ class VideoDownloader(PlatformDownloader):
         return url
 
     def get_params(self, quality: VideoQuality, url: str) -> dict[str, Any]:
-        """Returns the yt-dlp configuration parameters.
+        """Returns the yt-dlp configuration parameters for `quality` and `url`.
 
         Args:
-            quality: The requested quality preset.
-            url: The URL to be read, which decides site-specific headers (e.g., bilibili).
-
-        Returns:
-            A dictionary of yt-dlp parameters.
+            quality (VideoQuality): The requested quality preset.
+            url (str): The URL to be read, which decides site-specific headers (e.g., bilibili).
         """
         output_path = Path(self.output_folder)
 
@@ -187,22 +178,19 @@ class VideoDownloader(PlatformDownloader):
     def download(
         self, url: str, quality: VideoQuality = "best", stop_signal: threading.Event | None = None
     ) -> DownloadResult:
-        """Downloads a video from the given URL.
+        """Downloads a video from `url` and returns its local file path.
 
         Args:
-            url: The URL of the video to download.
-            quality: The requested quality preset.
-            stop_signal: Optional event a caller sets to abort the download. This method
-                blocks its thread, so asyncio cancellation cannot stop it; the signal is
-                checked at every yt-dlp progress tick and aborts with DownloadStoppedError.
-
-        Returns:
-            The downloaded file.
+            url (str): The URL of the video to download.
+            quality (VideoQuality): The requested quality preset.
+            stop_signal (threading.Event | None): Optional event a caller sets to abort the
+                download. This method blocks its thread, so asyncio cancellation cannot stop it;
+                the signal is checked at every yt-dlp progress tick and aborts with
+                `DownloadStoppedError`.
 
         Raises:
             RuntimeError: When yt-dlp returns no metadata for the URL.
         """
-        # Convert Facebook watch URLs to reel format
         url = self._convert_facebook_url(url=url)
 
         params = self.get_params(quality=quality, url=url)
@@ -227,7 +215,7 @@ class VideoDownloader(PlatformDownloader):
         stays on and nothing asks for the info dict to be dumped to stdout.
 
         Args:
-            url: The URL of the video to inspect.
+            url (str): The URL of the video to inspect.
 
         Returns:
             The parsed metadata; absent string fields fall back to empty, duration to 0.0.
@@ -238,7 +226,7 @@ class VideoDownloader(PlatformDownloader):
         url = self._convert_facebook_url(url=url)
         params = self.get_params(quality="best", url=url)
         # `extract_flat` keeps a playlist-shaped page (a channel, a user space, a collection)
-        # to ONE request instead of resolving every entry over the network in a probe that is
+        # to one request instead of resolving every entry over the network in a probe that is
         # supposed to take seconds.
         params.update({"simulate": True, "skip_download": True, "extract_flat": "in_playlist"})
         with YoutubeDL(params=params) as ydl:
@@ -289,9 +277,9 @@ async def download_with_stop_signal(
     worker has really stopped, so its removal never races a live writer.
 
     Args:
-        downloader: The downloader to run, already pointed at its scratch directory.
-        url: The URL to download.
-        quality: The requested quality preset.
+        downloader (VideoDownloader): The downloader to run, already pointed at its scratch directory.
+        url (str): The URL to download.
+        quality (VideoQuality): The requested quality preset.
 
     Returns:
         The finished download.

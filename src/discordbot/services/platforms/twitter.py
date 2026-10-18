@@ -30,7 +30,7 @@ further is one request per hop, which this module deliberately does not spend: `
 `parent` is absent, the parent is unreadable — 10 of 10 sampled were deleted, protected or
 suspended — so neither key is mirrored: a chain of one is the whole answer either way.
 
-A long post is TRUNCATED at roughly 275 characters, with the remainder behind an opaque
+A long post is truncated at roughly 275 characters, with the remainder behind an opaque
 `note_tweet.id` the endpoint will not resolve. Nothing in the text marks the cut, which is why
 `TwitterOutput.is_truncated` exists: a caller that cannot see the cut presents a fragment as the
 whole post. **That flag is only meaningful on the post asked for.** `note_tweet` is served in the
@@ -66,7 +66,7 @@ from discordbot.services.platforms.base import (
 # rather than being retired, and the mobile hosts are what a phone's share sheet copies.
 # `/i/web/status/<id>` is the form a link with no handle takes.
 #
-# The username segment is matched but never trusted: x.com serves the same post under ANY handle,
+# The username segment is matched but never trusted: x.com serves the same post under any handle,
 # including one that does not exist (measured — it 307s to the real author's URL), so only the id
 # is load-bearing and every URL this module republishes is built by `post_url` from the author the
 # payload names. That also drops the `?s=46&t=<token>` tail, which is minted per share and names
@@ -96,7 +96,7 @@ _SYNDICATION_URL = "https://cdn.syndication.twimg.com/tweet-result"
 _CANONICAL_TWITTER_ORIGIN = "https://x.com"
 
 # The endpoint rejects a request with no User-Agent (HTTP 400, empty body) and answers `{}` to one
-# with no token. The token's VALUE is never checked — every non-empty string tested returned the
+# with no token. The token's value is never checked — every non-empty string tested returned the
 # same 920-byte payload — so this is a required-but-unvalidated parameter rather than a credential,
 # and nothing here is authenticating as anyone.
 _REQUEST_HEADERS = {
@@ -108,7 +108,7 @@ _REQUEST_HEADERS = {
 }
 _REQUEST_TOKEN = "a"  # noqa: S105 — a parameter the endpoint requires and never reads, not a secret
 
-# Twitter's own image CDN serves `medium` from a bare URL while the payload reports the ORIGINAL's
+# Twitter's own image CDN serves `medium` from a bare URL while the payload reports the original's
 # dimensions beside it, so a caller that trusts the JSON and takes the bare URL gets a 900x1200
 # image labelled 3024x4032. Measured: bare 57,759 bytes / 900x1200, `?name=orig` 978,797 bytes /
 # 3024x4032. Where the original is smaller than the `large` bound the two are byte-identical, so
@@ -121,13 +121,7 @@ _MAX_MEDIA_ITEMS = 4
 
 
 def _time_of(value: str) -> datetime | None:
-    """The ISO-8601 Zulu timestamp as an aware datetime, or None when it is absent or malformed.
-
-    Parsed rather than trusted: the field is a string in the payload and every other reader here
-    goes through a pydantic mirror, but a date is the one value a mirror cannot validate into the
-    shape a caller wants without also deciding what a bad one costs. A bad one costs the timestamp
-    and nothing else.
-    """
+    """Returns the ISO-8601 Zulu timestamp as a UTC `datetime`, or `None` when absent or malformed."""
     if not value:
         return None
     try:
@@ -144,27 +138,21 @@ class TwitterURL(BaseModel):
     @computed_field
     @cached_property
     def status_id(self) -> str:
-        """The numeric post id the URL names, or an empty string when it names none.
+        """Returns the numeric post id the URL names, or an empty string when it names none.
 
         Read off the path rather than the last segment, so a `/photo/1` suffix does not become the
         id. This is the whole of what identifies a post: the handle in front of it is decorative.
-
-        Returns:
-            The status id, or an empty string when the URL is not a post URL.
         """
         match = _STATUS_PATH_RE.search(string=urlparse(self.raw_url).path)
         return match.group("id") if match else ""
 
 
 def post_url(handle: str, status_id: str) -> str:
-    """The canonical URL for a post, built from the author the payload named.
+    """Returns the canonical URL for a post, built from the author the payload named.
 
     Args:
-        handle: The author's screen name, without the leading `@`.
-        status_id: The post's numeric id.
-
-    Returns:
-        The canonical post URL.
+        handle (str): The author's screen name, without the leading `@`.
+        status_id (str): The post's numeric id.
     """
     return f"{_CANONICAL_TWITTER_ORIGIN}/{handle or 'i'}/status/{status_id}"
 
@@ -172,7 +160,7 @@ def post_url(handle: str, status_id: str) -> str:
 class TwitterOutput(PlatformOutput):
     """One post, the single shape a conversation is built from.
 
-    The nine shared fields and `is_readable` come from `PlatformOutput`; what is declared here is
+    The shared fields and `is_readable` come from `PlatformOutput`; what is declared here is
     Twitter's own reality. One inherited field means something narrower: `comment_count` is the
     size of the thread under the post rather than its direct replies, that being the only reply
     figure the endpoint reports for the post asked for.
@@ -202,7 +190,7 @@ class TwitterOutput(PlatformOutput):
 class TwitterConversation(PlatformConversation[TwitterOutput]):
     """A parsed Twitter post, and the post it replies to when there is a readable one.
 
-    The three fields and the four accessors come from `PlatformConversation`. Two of them carry a
+    The shared fields and accessors come from `PlatformConversation`. Two of them carry a
     Twitter-specific truth.
 
     `chain` is `[parent, target]` when the post replies to a readable one and `[target]` otherwise.
@@ -217,10 +205,10 @@ class TwitterConversation(PlatformConversation[TwitterOutput]):
 
     @property
     def parent(self) -> TwitterOutput | None:
-        """The post the target replies to, or None when it replies to nothing readable.
+        """Returns the post the target replies to (`chain[0]`), or `None` when it replies to nothing readable.
 
-        The chain's earlier entry. Only ever one: the endpoint embeds a single ancestor and
-        walking further costs a request per hop.
+        Only ever one ancestor is present: the endpoint embeds a single parent and walking further
+        costs a request per hop.
         """
         return self.chain[0] if len(self.chain) > 1 else None
 
@@ -246,7 +234,7 @@ class _VideoVariant(_TwitterPayload):
     """One rendition of a video.
 
     Read off `mediaDetails[].video_info.variants` rather than the top-level `video.variants`: the
-    two describe the same renditions under DIFFERENT key names (`content_type`/`url` here,
+    two describe the same renditions under different key names (`content_type`/`url` here,
     `type`/`src` there) and only this one carries `bitrate`, which is the whole basis for picking
     a rendition.
 
@@ -315,7 +303,7 @@ class _Tweet(_TwitterPayload):
     created_at: str = Field(default="", description="ISO-8601 Zulu publication time")
     favorite_count: int = Field(default=0, description="Likes")
     conversation_count: int = Field(default=0, description="Size of the thread under the post")
-    # The endpoint reports the reply figure under two names depending on the post's POSITION: the
+    # The endpoint reports the reply figure under two names depending on the post's position: the
     # post asked for carries `conversation_count` and never `reply_count`, while an embedded parent
     # or quoted post carries `reply_count` and never `conversation_count`. Reading only the first
     # renders every quoted post as having no replies.
@@ -340,10 +328,9 @@ class _Tweet(_TwitterPayload):
 class _TombstoneText(_TwitterPayload):
     """The innermost block, where the wording finally sits.
 
-    One level deeper than the key name suggests: `tombstone.text` is an OBJECT carrying `entities`,
-    `rtl` and a `text` of its OWN, not the string. Mirroring it one level short fails validation on
-    every real refusal while the rare wordless one passes, since there is then nothing to validate
-    — which is exactly how it looks when only the empty case was tried.
+    One level deeper than the key name suggests: `tombstone.text` is an object carrying `entities`,
+    `rtl` and a `text` of its own, not the string. Mirroring it one level short fails validation on
+    every real refusal while the rare wordless one passes, since there is then nothing to validate.
     """
 
     text: str = Field(
@@ -369,7 +356,7 @@ class _Tombstone(_TwitterPayload):
 
     @property
     def reason(self) -> str:
-        """The refusal wording, or an empty string when the payload carried none."""
+        """Returns the refusal wording, or an empty string when the payload carried none."""
         if self.tombstone is None or self.tombstone.text is None:
             return ""
         return self.tombstone.text.text
@@ -389,18 +376,13 @@ class _TweetResult(_TwitterPayload):
 
 
 def _body_text(tweet: _Tweet) -> str:
-    """The post body: the trailing media link removed, and every other link expanded.
+    """Returns the post body with the trailing media link removed and external `t.co` links expanded.
 
-    Two index bases live in one payload and mixing them corrupts any post containing an emoji.
-    `display_text_range` is UTF-16 CODE UNITS (measured: 31 of 31 discriminating samples), while
-    `entities.*.indices` are CODEPOINTS (36 of 36). Python strings are indexed by codepoint, so
+    Two index bases live in one payload and mixing them corrupts any post containing an emoji:
+    `display_text_range` is UTF-16 code units (measured: 31 of 31 discriminating samples), while
+    `entities.*.indices` are codepoints (36 of 36). Python strings are indexed by codepoint, so
     slicing by `display_text_range` directly leaks the first characters of the trailing `t.co`
-    into the body — `'...en htt'` on a real post. Encoding to UTF-16 first is what makes the two
-    agree.
-
-    The trailing link that range excludes is the post's OWN media link, which points at the post
-    we are already rendering. Every other link stays and is expanded from its `t.co` form, since
-    the body is what the model reads and a `t.co` tells it nothing.
+    into the body; encoding to UTF-16 first aligns the range before expanding `entities.urls`.
     """
     text = tweet.text
     if len(tweet.display_text_range) == 2:
@@ -414,14 +396,10 @@ def _body_text(tweet: _Tweet) -> str:
 
 
 def _media_urls(tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
-    """Splits the attachments into images, playable videos and their poster frames.
+    """Returns `(image_urls, video_urls, video_poster_urls)` from `tweet.mediaDetails` in post order.
 
-    Walks `mediaDetails` rather than `photos` / `video`, which lose a mixed post's order. An
-    animated GIF is a video here, as Twitter models it: it is served as an mp4 with a single
-    bitrate-0 rendition.
-
-    Returns:
-        `(image_urls, video_urls, video_poster_urls)`, each in post order.
+    Walks `mediaDetails` rather than `photos` / `video`, which lose a mixed post's order; animated
+    GIFs are treated as videos (served as MP4 with a single bitrate-0 rendition).
     """
     images: list[str] = []
     videos: list[str] = []
@@ -483,13 +461,7 @@ class TwitterDownloader(PlatformDownloader):
     """
 
     def _fetch_tweet(self, status_id: str) -> dict[str, Any]:
-        """Fetches one post's payload.
-
-        Raises:
-            LinkReadError: Classified from the HTTP failure where the status says unambiguously
-                what happened; a bare `RuntimeError` otherwise. A 404 here means no such post.
-            RuntimeError: If the body is not the JSON object the endpoint documents.
-        """
+        """Returns the syndication JSON payload for `status_id`."""
         try:
             response = requests.get(
                 _SYNDICATION_URL,
@@ -504,7 +476,7 @@ class TwitterDownloader(PlatformDownloader):
             ) from error
         # Decoded outside the clause above rather than inside it: `requests.JSONDecodeError`
         # subclasses `RequestException`, so a body that is not JSON would otherwise be classified
-        # as a failed FETCH and reported as one, of a request that landed fine.
+        # as a failed fetch and reported as one, of a request that landed fine.
         try:
             payload = response.json()
         except ValueError as error:
@@ -523,7 +495,7 @@ class TwitterDownloader(PlatformDownloader):
         raising, and the caller marks it unreadable.
 
         Args:
-            url: The post URL, in any of the forms `TWITTER_URL_RE` matches.
+            url (str): The post URL, in any of the forms `TWITTER_URL_RE` matches.
 
         Returns:
             The parsed conversation; empty when there is no readable post.

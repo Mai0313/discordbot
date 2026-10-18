@@ -7,7 +7,7 @@ builder never starts) with a marker in `LINK_SOURCE_EMOJIS`, and a line in `rout
 when the router should select it; the pipeline loops stay untouched.
 
 Each entry is a thin adapter over its builder function rather than the function itself: an
-adapter body resolves the builder name from THIS module's globals at call time, so a test
+adapter body resolves the builder name from this module's globals at call time, so a test
 monkeypatching `discordbot.cogs.gen_reply.link_sources.registry.build_*_context_messages` still
 intercepts the call.
 """
@@ -152,11 +152,10 @@ async def _build_instagram_link_context(
 
 
 def _needs_files_api(config: LLMConfig) -> bool:
-    """A source with no kill-switch of its own: the Files API and its key are the whole gate.
+    """Returns whether the Gemini Files API is enabled and configured with an API key.
 
-    `file_api_enabled` belongs here rather than only at the upload, because the media is fetched
-    and downscaled before the upload it could no longer feed, so gating at the upload alone would
-    still spend that work on the reply's critical path.
+    Checked before media download and downscaling so disabled Files API turns skip the fetch
+    as well as the upload.
     """
     return config.file_api_enabled and config.gemini_key_configured
 

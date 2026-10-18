@@ -34,26 +34,18 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
 
     @staticmethod
     def url_is_expandable(url: str) -> bool:
-        """Whether the matched URL names a post.
+        """Returns whether `url` names a Facebook post.
 
-        The pattern matches the host, not the path, so a profile or group home page would
-        otherwise earn a failure reaction on a link that was never a post.
+        `FACEBOOK_URL_RE` matches the host rather than the path, so profile and group home pages
+        are filtered here before the read.
 
         Args:
-            url: The URL the pattern matched.
-
-        Returns:
-            True when the URL names a post.
+            url (str): The URL matched by `URL_PATTERN`.
         """
         return is_facebook_post_url(url=url)
 
     def _footer_text(self, post: FacebookOutput, shown_images: int) -> str:
-        """The counter line: where the post lives, how it did, and what was left out.
-
-        The group name leads because it is the part a reader cannot get from the post itself, and
-        it is simply absent for a page or profile post rather than being replaced by a
-        placeholder, which is what keeps the line from having a hole in it.
-        """
+        """Returns the footer line with the group name, positive engagement counts, and omitted-media notes."""
         parts = [post.group_name] if post.group_name else []
         if post.like_count > 0:
             parts.append(f"👍 {post.like_count:,}")
@@ -65,10 +57,7 @@ class FacebookCogs(ConversationExpansionCog[FacebookOutput, FacebookConversation
         return " · ".join(parts)
 
     def _comment_url(self, post_url: str, comment: FacebookOutput) -> str:
-        """The post's URL naming the comment, joined with `&` when it already carries a query.
-
-        `permalink.php` links always do.
-        """
+        """Returns `post_url` with `comment_id` appended (`permalink.php` links already carry a query)."""
         joiner = "&" if "?" in post_url else "?"
         return f"{post_url}{joiner}comment_id={comment.comment_id}"
 
@@ -77,6 +66,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the FacebookCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(FacebookCogs(bot), override=True)

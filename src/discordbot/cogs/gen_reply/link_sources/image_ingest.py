@@ -36,25 +36,22 @@ async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wor
     deadline: float,
     timeout_fields: dict[str, Any] | None = None,
 ) -> ResultT:
-    """Runs a source's media step under its own bound, degrading rather than raising.
+    """Runs a source's media step under `deadline`, returning `degraded` on timeout or error.
 
-    Bounded here rather than left to the caller's grace so a slow fetch still produces the honest
-    text-only block instead of being cancelled with nothing to inject. The bound is fixed against
-    the build's deadline rather than counted from this step's start, because the read before it
-    has already spent an unknown part of the same grace.
+    Stops `LINK_MEDIA_DEGRADE_MARGIN_SECONDS` short of `deadline` so a slow media fetch still
+    returns the text-only block instead of cancelling the whole context build.
 
     Args:
-        step: The fetch-and-upload work, not yet awaited.
-        subject: What the log lines call the step, e.g. "Douyin media".
-        fallback: What the log lines say the answer falls back to, e.g. "the caption".
-        degraded: What comes back instead when the step has no time, times out or fails.
-        url: The post the media belongs to, so a warning can be joined to it.
-        deadline: Event-loop time the pipeline cancels the whole build at; the step gives up
-            `LINK_MEDIA_DEGRADE_MARGIN_SECONDS` before it, and never starts past that point.
-        timeout_fields: Extra fields for the warning a timeout logs.
+        step (Coroutine[Any, Any, ResultT]): Unawaited fetch-and-upload coroutine.
+        subject (str): Label for log messages, such as `"Douyin media"`.
+        fallback (str): Fallback description for log messages, such as `"the caption"`.
+        degraded (ResultT): Value returned when no time remains or `step` times out or raises.
+        url (str): Post URL associated with the media step.
+        deadline (float): Event-loop timestamp at which the pipeline cancels the whole build.
+        timeout_fields (dict[str, Any] | None): Extra structured fields attached to timeout logs.
 
     Returns:
-        The step's own result, or `degraded`.
+        The awaited result of `step`, or `degraded`.
     """
     media_deadline = deadline - LINK_MEDIA_DEGRADE_MARGIN_SECONDS
     budget_seconds = media_deadline - asyncio.get_running_loop().time()
@@ -96,18 +93,15 @@ async def bounded_media_step[ResultT](  # noqa: PLR0913 -- the step, its log wor
 async def upload_image(
     image_url: str, filename: str, gemini_client: genai.Client
 ) -> ResponseInputFileParam | None:
-    """Fetches, downscales and uploads one image, raising whatever the fetch or upload raised.
+    """Returns one fetched, downscaled, and uploaded image part, or `None` when skipped.
 
-    `load_image_bytes` downscales to the provider's effective resolution, which matters because
-    these are full-resolution originals. What one lost image costs is the caller's call.
+    Downscales full-resolution originals via `load_image_bytes` before uploading; fetch and
+    upload exceptions propagate to the caller.
 
     Args:
-        image_url: The image to fetch.
-        filename: The name the upload carries.
-        gemini_client: Direct-to-Google client the upload goes through.
-
-    Returns:
-        The uploaded part, or None when the upload produced none.
+        image_url (str): URL of the image to fetch.
+        filename (str): Filename attached to the uploaded part.
+        gemini_client (genai.Client): Direct-to-Google client used for the upload.
     """
     loaded = await load_image_bytes(source=image_url)
     return await upload_as_input_file(
@@ -157,20 +151,18 @@ async def upload_post_images(  # noqa: PLR0913 -- the post, its images and cap, 
     gemini_client: genai.Client,
     deadline: float,
 ) -> list[ResponseInputFileParam]:
-    """Uploads up to `cap` of a post's images, degrading to none rather than raising.
+    """Returns up to `cap` uploaded image parts for a post, degrading to `[]` on failure.
+
+    Callers must count the returned parts rather than assuming `cap` succeeded so the rendered
+    block never claims images that failed to upload.
 
     Args:
-        platform: The platform's display name, for the log lines.
-        post_url: The post the images came from, so a warning can be joined to it.
-        image_urls: Every image the post carries, in page order.
-        cap: How many of them one reply may pay a fetch and an upload for.
-        gemini_client: Direct-to-Google client the upload goes through.
-        deadline: Event-loop time the pipeline cancels the whole build at.
-
-    Returns:
-        The parts that made it, which the caller must COUNT rather than assume: a block saying
-        the post carries three images beside a separator saying they are attached below is how a
-        model ends up describing pictures it was never given.
+        platform (str): Display name of the platform for log messages.
+        post_url (str): Post URL the images belong to.
+        image_urls (list[str]): Image URLs carried by the post, in page order.
+        cap (int): Maximum number of images to fetch and upload.
+        gemini_client (genai.Client): Direct-to-Google client used for the upload.
+        deadline (float): Event-loop timestamp at which the pipeline cancels the build.
     """
     return await bounded_media_step(
         step=_upload_each(
@@ -188,19 +180,15 @@ async def upload_post_images(  # noqa: PLR0913 -- the post, its images and cap, 
 
 
 def image_count_line(carried: int, attached: int, urls: Sequence[str] = ()) -> str:
-    """Says how many of a post's images the model was actually handed.
+    """Returns the rendered line stating how many of a post's `carried` images are `attached`.
 
-    The two numbers differ whenever the cap binds or an upload fails, which is routine, and the
-    separator above the block already promises that images are attached below. Naming only the
-    count the post carries turns that into a claim about pictures the model never received.
+    Separates `carried` from `attached` so a capped carousel or failed upload never leaves the
+    block claiming unseen images are attached below.
 
     Args:
-        carried: How many images the post has.
-        attached: How many of them rode into the block.
-        urls: The post's image URLs, listed when none of them rode in; empty lists none.
-
-    Returns:
-        One line for the rendered post text.
+        carried (int): Total images the post carries.
+        attached (int): Number of images actually attached to the input block.
+        urls (Sequence[str]): Image URLs to list when `attached` is zero.
     """
     if attached:
         return f"The post carries {carried} image(s), {attached} of them attached below."

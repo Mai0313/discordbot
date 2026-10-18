@@ -34,25 +34,18 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
 
     @staticmethod
     def url_is_expandable(url: str) -> bool:
-        """Whether the matched URL names a post.
+        """Returns whether `url` names an Instagram post.
 
-        The pattern matches the host, not the path, so a profile or the home page would otherwise
-        earn a failure reaction on a link that was never a post.
+        `INSTAGRAM_URL_RE` matches the host rather than the path, so profile and home-page links
+        are filtered here before the read.
 
         Args:
-            url: The URL the pattern matched.
-
-        Returns:
-            True when the URL names a post.
+            url (str): The URL matched by `URL_PATTERN`.
         """
         return is_instagram_post_url(url=url)
 
     def _author_label(self, post: InstagramOutput) -> str:
-        """The author line: the display name when the page carried one, always with the handle.
-
-        Whichever half the page served is used on its own rather than dropping the line, since an
-        author line missing entirely reads as an anonymous post.
-        """
+        """Returns the author display string, falling back to whichever of full name or handle the page served."""
         if post.author_full_name and post.author_name:
             return f"{post.author_full_name} (@{post.author_name})"
         if post.author_name:
@@ -64,21 +57,17 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         return f"@{comment.author_name}" if comment.author_name else ""
 
     def _video_link(self, post: InstagramOutput) -> str:
-        """The POST rather than `video_urls[0]`, which is Instagram's own signed CDN URL.
+        """Returns `post.url` rather than `video_urls[0]`, which is Instagram's signed CDN URL.
 
-        That URL expires within days and the embed does not, so the link in it has to outlive
-        the fetch.
+        The signed CDN URL expires within days while the embed persists, so the card's link must
+        outlive the fetch.
         """
         return post.url
 
     def _footer_text(self, post: InstagramOutput, shown_images: int) -> str:
-        """The counter line, plus what the image cap and the single video hint left behind.
+        """Returns the footer line with positive engagement counts and omitted-media notes.
 
-        The videos are counted separately from the images because a mixed carousel is ordinary
-        here and only its first video gets a link: counting images alone would report a
-        five-image, five-video post as having one picture left over and stay silent about four
-        clips. A count is shown only when it is positive, since Instagram serves `-1` rather than
-        a number for a post whose author hid its likes.
+        Instagram serves `-1` when an author hides likes, so only positive counts are shown.
         """
         parts: list[str] = []
         if post.like_count > 0:
@@ -101,6 +90,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the InstagramCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(InstagramCogs(bot), override=True)
