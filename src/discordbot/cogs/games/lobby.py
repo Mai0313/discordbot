@@ -35,7 +35,11 @@ class PrepareParticipant(Protocol):
     """
 
     async def __call__(self, interaction: Interaction[commands.Bot]) -> GameParticipant | None:
-        """Returns a prepared participant or sends the interaction error."""
+        """Returns a prepared participant, or sends the interaction error and returns None.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Join button interaction.
+        """
 
 
 class RefreshParticipants(Protocol):
@@ -46,7 +50,11 @@ class RefreshParticipants(Protocol):
     """
 
     async def __call__(self, participants: list[GameParticipant]) -> RefreshParticipantsResult:
-        """Returns refreshed participants and display names removed from the table."""
+        """Returns refreshed participants and display names removed from the table.
+
+        Args:
+            participants (list[GameParticipant]): Queued lobby participants to re-check.
+        """
 
 
 class BaseGameLobbyView(GameView):
@@ -67,7 +75,17 @@ class BaseGameLobbyView(GameView):
         timeout: int,
         extra_initial_participants: Iterable[GameParticipant] | None = None,
     ) -> None:
-        """Initializes shared lobby state and registers the owner."""
+        """Initializes shared lobby state and registers the owner.
+
+        Args:
+            owner (GameParticipant): Table owner who opened the lobby.
+            rng (Random): Random source passed to the started round.
+            prepare_participant (PrepareParticipant): Validator for users pressing Join.
+            refresh_participants (RefreshParticipants): Balance re-checker run at Start.
+            timeout (int): Seconds before an unstarted lobby times out.
+            extra_initial_participants (Iterable[GameParticipant] | None): Additional
+                participants pre-seated at lobby creation (such as the bot player).
+        """
         super().__init__(timeout=timeout)
         self.owner = owner
         self.rng = rng
@@ -137,7 +155,12 @@ class BaseGameLobbyView(GameView):
     async def join(
         self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Adds the interacting user to the lobby."""
+        """Adds the interacting user to the lobby.
+
+        Args:
+            _button (Button[BaseGameLobbyView]): Clicked Join button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         if interaction.user is None:
             return
         async with self._lock:
@@ -164,7 +187,12 @@ class BaseGameLobbyView(GameView):
     async def leave(
         self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Removes the interacting user from the lobby."""
+        """Removes the interacting user from the lobby.
+
+        Args:
+            _button (Button[BaseGameLobbyView]): Clicked Leave button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         if interaction.user is None:
             return
         async with self._lock:
@@ -187,7 +215,12 @@ class BaseGameLobbyView(GameView):
     async def start(
         self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Starts the game if the lobby owner pressed the button."""
+        """Starts the game if the lobby owner pressed the button.
+
+        Args:
+            _button (Button[BaseGameLobbyView]): Clicked Start button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         if interaction.user is None:
             return
         if interaction.user.id != self.owner.user_id:
@@ -319,11 +352,11 @@ class BaseGameLobbyView(GameView):
             raise
 
     def holds_seats(self) -> bool:
-        """A lobby's seats always count: it holds them only while its start press runs."""
+        """Returns True; a lobby holds seats only while its start press runs."""
         return True
 
     def _human_ids(self) -> list[int]:
-        """The participants' user ids, the bot player's excepted."""
+        """Returns the participants' user IDs, excluding the bot player."""
         return [
             participant.user_id
             for participant in self.participants
@@ -331,12 +364,9 @@ class BaseGameLobbyView(GameView):
         ]
 
     def _seat_participants(self, claimed: list[int]) -> list[GameParticipant]:
-        """Seats every human player no other started round seats, and returns those it does.
+        """Seats every human player not seated elsewhere and returns those who are.
 
-        Runs under the lobby lock before any balance is read, so a round elsewhere that still
-        seats a player has not let go of them yet, and one that has already wrote its
-        settlement. Each seat claimed goes into `claimed`, which the press gives back when it
-        ends; a table that starts takes them over first.
+        Caller must hold `self._lock`. Appends each newly claimed user ID to `claimed`.
         """
         elsewhere = [
             participant
@@ -356,7 +386,11 @@ class BaseGameLobbyView(GameView):
         release_seats(user_ids=user_ids, holder=self)
 
     def lobby_embed(self, status: str | None = None) -> Embed:
-        """Builds the lobby embed for a concrete game type."""
+        """Returns the lobby embed for a concrete game type.
+
+        Args:
+            status (str | None): Optional status line placed in the embed description.
+        """
         raise NotImplementedError
 
     async def _start_game(self, interaction: Interaction[commands.Bot]) -> bool:
@@ -380,7 +414,18 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         timeout: int,
         initial_jackpot_generation: int | None = None,
     ) -> None:
-        """Initializes jackpot lobby state with the live pool snapshot."""
+        """Initializes jackpot lobby state with the live pool snapshot.
+
+        Args:
+            owner (GameParticipant): Table owner who opened the lobby.
+            rng (Random): Random source passed to the started round.
+            prepare_participant (PrepareParticipant): Validator for users pressing Join.
+            refresh_participants (RefreshParticipants): Balance re-checker run at Start.
+            initial_jackpot (int): Jackpot pool balance when the lobby opened.
+            timeout (int): Seconds before an unstarted lobby times out.
+            initial_jackpot_generation (int | None): Optimistic-concurrency generation
+                of the jackpot row when the lobby opened.
+        """
         super().__init__(
             owner=owner,
             rng=rng,
@@ -433,11 +478,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         return True
 
     async def _settle_pregame_antes(self) -> JackpotSettlementBatchResult:
-        """Charges each participant `ante` into the jackpot pool.
-
-        Applies all participant antes in one DB transaction so the lobby cannot
-        partially charge a table.
-        """
+        """Charges each participant `ante` into the jackpot pool in a single DB transaction."""
         settlements: list[JackpotSettlementRequest] = []
         for participant in self.participants:
             settlements.append(

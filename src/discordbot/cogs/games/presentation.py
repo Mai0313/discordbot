@@ -29,7 +29,11 @@ NATURAL_RESULT_EMOJI = "✨"
 
 
 def delta_color(delta: int) -> int:
-    """Returns the win, lose or push color for a signed point change."""
+    """Returns the win, lose, or push color for a signed point change.
+
+    Args:
+        delta (int): Signed point change.
+    """
     if delta > 0:
         return WIN_COLOR
     if delta < 0:
@@ -38,18 +42,10 @@ def delta_color(delta: int) -> int:
 
 
 def card_line(cards_text: str) -> str:
-    """Renders a hand string as an H1 line with doubled inter-card spacing.
-
-    Single-space `A♠ K♥` becomes `# A♠  K♥` so each card breathes a bit
-    more inside the heading. Empty strings are left alone so callers can
-    short-circuit without producing a stray `#`.
+    """Returns `cards_text` as an H1 line with doubled inter-card spacing, or `""` when empty.
 
     Args:
-        cards_text: Pre-rendered hand string (e.g. `"A♠ K♥"` or
-            `"🂠 K♥"`).
-
-    Returns:
-        Markdown-ready H1 line for an embed description.
+        cards_text (str): Pre-rendered hand string (e.g. `"A♠ K♥"` or `"🂠 K♥"`).
     """
     if not cards_text:
         return ""
@@ -58,14 +54,11 @@ def card_line(cards_text: str) -> str:
 
 
 def render_hand(cards: list[Card], hide_first: bool = False) -> str:
-    """Formats a hand for display.
+    """Returns a space-separated display string for `cards`.
 
     Args:
-        cards: Cards to render.
-        hide_first: Whether to replace the first card with a hidden-card marker.
-
-    Returns:
-        A space-separated display string for the hand.
+        cards (list[Card]): Cards to render.
+        hide_first (bool): Whether to replace the first card with a hidden-card marker.
     """
     if hide_first and cards:
         rest = " ".join(str(card) for card in cards[1:])
@@ -74,23 +67,24 @@ def render_hand(cards: list[Card], hide_first: bool = False) -> str:
 
 
 def metadata_line(text: str) -> str:
-    """Formats a `-#` small text metadata line."""
+    """Returns `text` formatted as a `-#` small-text metadata line.
+
+    Args:
+        text (str): Metadata text to wrap.
+    """
     return f"-# {text}"
 
 
 def lobby_participant_line(
     index: int, display_name: str, bet: int | None = None, is_allin: bool = False
 ) -> str:
-    """Renders one lobby participant row with optional bet metadata.
+    """Returns one Markdown lobby roster line with optional bet metadata.
 
     Args:
-        index: 1-based position in the join order.
-        display_name: Player display name.
-        bet: Optional bet amount to append as inline code.
-        is_allin: Whether to mark the row with an `all-in` suffix.
-
-    Returns:
-        A single Markdown line for the lobby roster.
+        index (int): 1-based position in the join order.
+        display_name (str): Player display name.
+        bet (int | None): Optional bet amount to append as inline code.
+        is_allin (bool): Whether to mark the row with an `all-in` suffix.
     """
     bet_suffix = ""
     if bet is not None:
@@ -102,18 +96,14 @@ def lobby_participant_line(
 def settlement_metadata(
     delta: int, new_balance: int, is_allin: bool, vip_bonus: int = 0, five_card_bonus: int = 0
 ) -> str:
-    """Renders the small-text settlement metadata line.
+    """Returns the `-#` small-text settlement metadata line.
 
     Args:
-        delta: Player net point change for the round.
-        new_balance: Player balance after settlement.
-        is_allin: Whether the wager consumed the full balance.
-        vip_bonus: Extra points added by the VIP payout bonus.
-        five_card_bonus: System-funded bonus from five-card 21.
-
-    Returns:
-        `-# 本局 +X · 餘額 Y` style metadata, with an `all-in` segment inserted
-        before the balance when the round was all-in.
+        delta (int): Player net point change for the round.
+        new_balance (int): Player balance after settlement.
+        is_allin (bool): Whether the wager consumed the full balance.
+        vip_bonus (int): Extra points added by the VIP payout bonus.
+        five_card_bonus (int): System-funded bonus from five-card 21.
     """
     segments = [f"本局 {amount_code(amount=delta, signed=True, compact=True)}"]
     if vip_bonus > 0:
@@ -129,15 +119,12 @@ def settlement_metadata(
 
 
 def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:  # noqa: PLR0911 -- one branch per SettleOutcome label keeps the mapping obvious
-    """Formats the H2 result line for one player at Blackjack settlement.
+    """Returns the Markdown H2 result line for one sub-hand at Blackjack settlement.
 
     Args:
-        outcome: Player-facing Blackjack outcome label.
-        player_total: Final player hand total.
-        dealer_total: Final dealer hand total.
-
-    Returns:
-        Markdown H2 line such as `## 🎉 你贏了 · 20 > 19`.
+        outcome (SettleOutcome): Player-facing Blackjack outcome label.
+        player_total (int): Final player hand total.
+        dealer_total (int): Final dealer hand total.
     """
     if outcome == "blackjack":
         return f"## {NATURAL_RESULT_EMOJI} Blackjack · {player_total}"
@@ -161,15 +148,12 @@ def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total:
 def blackjack_player_early_finish_note(
     player: BlackjackPlayerHand, dealer: list[Card], peeked_blackjack: bool
 ) -> str | None:
-    """Returns a short explanation for round paths that skipped player actions.
+    """Returns a short explanation for round paths that skipped player actions, or None.
 
     Args:
-        player: Player to inspect.
-        dealer: Dealer cards at settlement time.
-        peeked_blackjack: Whether the dealer revealed a Blackjack via peek.
-
-    Returns:
-        The explanation text, or `None` when no early-finish path applies.
+        player (BlackjackPlayerHand): Player to inspect.
+        dealer (list[Card]): Dealer cards at settlement time.
+        peeked_blackjack (bool): Whether the dealer revealed a Blackjack via peek.
     """
     if not player.hands:
         return None

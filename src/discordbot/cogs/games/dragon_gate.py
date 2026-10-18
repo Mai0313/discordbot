@@ -56,7 +56,11 @@ class DragonGateParticipantUnknownError(DragonGateError):
 
 
 def card_value(card: Card) -> int:
-    """Returns the 射龍門 point value for a card, with Ace low."""
+    """Returns the 射龍門 point value for `card` (Ace is 1, King is 13).
+
+    Args:
+        card (Card): Card to evaluate.
+    """
     if card.rank == "A":
         return 1
     if card.rank == "J":
@@ -69,7 +73,11 @@ def card_value(card: Card) -> int:
 
 
 def has_open_gate(pillars: list[Card]) -> bool:
-    """Returns whether the pillars produce a playable gate."""
+    """Returns whether `pillars` form a playable gate (a pair or a non-adjacent span).
+
+    Args:
+        pillars (list[Card]): Two pillar cards to check.
+    """
     values = sorted(card_value(card=card) for card in pillars)
     return values[0] == values[1] or values[1] - values[0] > 1
 
@@ -211,7 +219,11 @@ class DragonGateRound(BaseModel):
     def from_participants(
         cls, rng: Random, participants: list[GameParticipant]
     ) -> "DragonGateRound":
-        """Builds a 射龍門 round from lobby participants and deals the first gate.
+        """Returns a 射龍門 round initialized from `participants` with the first gate dealt.
+
+        Args:
+            rng (Random): Random source used for card draws.
+            participants (list[GameParticipant]): Seated players in rotation order.
 
         Raises:
             ValueError: `participants` is empty.
@@ -227,21 +239,34 @@ class DragonGateRound(BaseModel):
         return round_state
 
     def current_min_bet(self, jackpot: int) -> int:
-        """Returns the minimum legal bet given the live jackpot snapshot."""
+        """Returns the minimum legal bet given `jackpot`.
+
+        Args:
+            jackpot (int): Live jackpot balance.
+        """
         if jackpot <= 0:
             return 0
         return min(MIN_BET, jackpot)
 
     def current_max_bet(self, jackpot: int) -> int:
-        """Returns the maximum legal bet given the live jackpot snapshot.
+        """Returns the maximum legal bet given `jackpot`, capped at `MAX_SINGLE_BET`.
 
-        Capped by `MAX_SINGLE_BET` so a large pool cannot fund an unbounded
-        single wager.
+        Args:
+            jackpot (int): Live jackpot balance.
         """
         return min(max(jackpot, 0), MAX_SINGLE_BET)
 
     def choose_pair_direction(self, user_id: int, direction: DragonGateDirection) -> None:
-        """Stores the active player's high/low choice for a same-point gate."""
+        """Stores the active player's high/low choice for a same-point gate.
+
+        Args:
+            user_id (int): Discord user ID that must match the active player.
+            direction (DragonGateDirection): Selected guess (`"higher"` or `"lower"`).
+
+        Raises:
+            DragonGateError: The table is finished, it is not this user's turn, or
+                the gate does not offer `direction`.
+        """
         active_turn = self._require_active_turn(user_id=user_id)
         if direction not in active_turn.pair_directions:
             raise DragonGatePairChoiceUnavailableError("This gate does not offer that direction")
@@ -256,20 +281,15 @@ class DragonGateRound(BaseModel):
         )
 
     def resolve_bet(self, user_id: int, amount: int, jackpot: int) -> DragonGateTurnResult:
-        """Resolves the active player's bet by drawing the third card, booking nothing.
+        """Returns the resolved turn result by drawing the third card without booking it.
 
-        The table moves only when the caller hands the result to `record_result`, so a bet whose
-        settlement never lands leaves the round as it was.
+        The table advances only when the caller hands the result to `record_result`, so a bet
+        whose settlement never lands leaves the round as it was.
 
         Args:
-            user_id: Discord user ID that must match the active player.
-            amount: Bet amount, constrained to the `current_min_bet` /
-                `current_max_bet` range for the supplied jackpot.
-            jackpot: Live jackpot balance used to bound the legal bet
-                range; tracked outside this module.
-
-        Returns:
-            The resolved turn result.
+            user_id (int): Discord user ID that must match the active player.
+            amount (int): Bet amount within `[current_min_bet, current_max_bet]`.
+            jackpot (int): Live jackpot balance used to bound the legal bet range.
 
         Raises:
             DragonGateError: The table is finished, it is not this user's
@@ -301,19 +321,30 @@ class DragonGateRound(BaseModel):
     def record_result(self, result: DragonGateTurnResult) -> None:
         """Books a settled bet into its player's running delta and deals the next turn.
 
-        Call it only once the result's settlement has landed, carrying the delta that settlement
+        Call only once the result's settlement has landed, carrying the delta that settlement
         applied.
+
+        Args:
+            result (DragonGateTurnResult): Settled turn result to record.
         """
         self.player_deltas[result.participant.user_id] += result.delta
         self.last_result = result
         self._advance_to_next_active_turn()
 
     def player_delta(self, user_id: int) -> int:
-        """Returns a player's cumulative net delta for the table."""
+        """Returns a player's cumulative net delta for the table.
+
+        Args:
+            user_id (int): Discord user ID to look up.
+        """
         return self.player_deltas.get(user_id, 0)
 
     def is_active(self, user_id: int) -> bool:
-        """Returns whether the given user is still seated and not withdrawn."""
+        """Returns whether `user_id` is still seated and not withdrawn.
+
+        Args:
+            user_id (int): Discord user ID to check.
+        """
         return (
             any(participant.user_id == user_id for participant in self.participants)
             and user_id not in self.withdrawn_user_ids
@@ -328,16 +359,13 @@ class DragonGateRound(BaseModel):
         ]
 
     def withdraw(self, user_id: int) -> int:
-        """Removes a player from the rotation and returns their running delta.
+        """Returns the leaver's running delta and removes them from the rotation.
 
         A caller that claws back "逆贏不拿" writes it before calling this, so a
         clawback that never lands leaves the player seated.
 
         Args:
-            user_id: Discord user ID of the leaver.
-
-        Returns:
-            The leaver's running delta at the moment of withdrawal.
+            user_id (int): Discord user ID of the leaver.
 
         Raises:
             DragonGateParticipantUnknownError: `user_id` is not seated

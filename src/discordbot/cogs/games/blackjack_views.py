@@ -162,12 +162,7 @@ def _insurance_phase_status(player: BlackjackPlayerHand) -> str:
 
 
 def _insurance_refusal_notice(error: ValueError) -> str:
-    """Returns what to tell a seat whose insurance the round would not take.
-
-    Read off the exception's class, never its message: the message is English, the class is what
-    the rules layer decided, and only one of these three is worth acting on. Sending the seat to
-    refresh a table that will never offer it insurance is the worst of the three to get wrong.
-    """
+    """Returns the player-facing notice for an insurance error, dispatched by exception type."""
     if isinstance(error, InsuranceBetTooSmallError):
         return "你的下注太小，一半不到 1 點，這局沒有保險可買"
     if isinstance(error, InsuranceBeyondBalanceError):
@@ -199,7 +194,15 @@ def build_blackjack_lobby_embed(
     max_players: int,
     status: str | None = None,
 ) -> Embed:
-    """Builds the lobby embed shown before a Blackjack table starts."""
+    """Returns the lobby embed shown before a Blackjack table starts.
+
+    Args:
+        owner (GameParticipant): Table owner who opened the lobby.
+        participants (list[GameParticipant]): Seated participants in join order.
+        requested_bet (int): Table base stake displayed in the footer.
+        max_players (int): Maximum seats allowed at the table.
+        status (str | None): Optional status line placed in the embed description.
+    """
     embed = Embed(title="♠️ 二十一點 · 開桌準備", color=PUSH_COLOR)
     if status:
         embed.description = status
@@ -235,13 +238,7 @@ def _player_seat_color(
 
 
 def _dealer_settlement_color(results: list[BlackjackPlayerResult]) -> int:
-    """Picks the dealer seat color from how the casino fared this round.
-
-    The dealer is one-vs-many: lose to a single player and the casino owes a
-    payout, so we surface red as soon as any player has a positive delta. All
-    losses (no player won anything) means the casino held the line; all
-    pushes means a neutral round.
-    """
+    """Picks the dealer seat color: red if any player won, green if any lost, else push."""
     any_player_won = any(result.settlement.delta > 0 for result in results)
     if any_player_won:
         return LOSE_COLOR
@@ -258,9 +255,15 @@ def build_dealer_seat_embed(
     is_settled: bool = False,
     results: list[BlackjackPlayerResult] | None = None,
 ) -> Embed:
-    """Builds the dealer seat embed shown alongside player seats.
+    """Returns the dealer seat embed shown alongside player seats.
 
-    `dealer_steps` populates the rule-driven action log once dealer play starts.
+    Args:
+        round_state (BlackjackRound): Current Blackjack round state.
+        hide_hole (bool): Whether to mask the dealer's hole card.
+        dealer_steps (list[BlackjackDealerStep] | None): Rule-driven dealer draw steps, if played.
+        is_settled (bool): Whether the round has settled.
+        results (list[BlackjackPlayerResult] | None): Settled player results used to color the
+            dealer embed once `is_settled` is True.
     """
     description_parts: list[str] = [
         _format_dealer_block(round_state=round_state, hide_hole=hide_hole)
@@ -325,7 +328,16 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
     settlement: BlackjackPlayerSettlement | None = None,
     dealer_total: int = 0,
 ) -> Embed:
-    """Builds one player's seat embed. Same shape for human and bot players."""
+    """Returns one player's seat embed (human or bot).
+
+    Args:
+        player (BlackjackPlayerHand): Seated player and their sub-hands.
+        round_state (BlackjackRound): Current Blackjack round state.
+        active_hand_index (int | None): Index of the player's active sub-hand, or None.
+        insurance_status (str | None): Optional insurance status text to display.
+        settlement (BlackjackPlayerSettlement | None): Settled result for the seat, if settled.
+        dealer_total (int): Final dealer total used in settled outcome titles.
+    """
     is_active = active_hand_index is not None
     insurance_phase = round_state.phase == "insurance"
     color = _player_seat_color(
@@ -391,7 +403,12 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
 def build_in_progress_embeds(
     round_state: BlackjackRound, force_show_hole: bool = False
 ) -> list[Embed]:
-    """Builds dealer + per-player seat embeds for the in-progress table."""
+    """Returns the dealer and per-player seat embeds for an in-progress table.
+
+    Args:
+        round_state (BlackjackRound): Current Blackjack round state.
+        force_show_hole (bool): Whether to reveal the dealer's hole card before settlement.
+    """
     embeds: list[Embed] = [
         build_dealer_seat_embed(
             round_state=round_state, hide_hole=not force_show_hole, is_settled=False
@@ -426,7 +443,14 @@ def build_final_embeds(
     results: list[BlackjackPlayerResult],
     dealer_steps: list[BlackjackDealerStep] | None = None,
 ) -> list[Embed]:
-    """Builds dealer + per-player seat embeds for the settled table."""
+    """Returns the dealer and per-player seat embeds for a settled table.
+
+    Args:
+        round_state (BlackjackRound): Settled Blackjack round state.
+        results (list[BlackjackPlayerResult]): Settled results for each player whose
+            settlement succeeded.
+        dealer_steps (list[BlackjackDealerStep] | None): Rule-driven dealer draw steps, if played.
+    """
     dealer_total = round_state.dealer_total()
     embeds: list[Embed] = [
         build_dealer_seat_embed(
@@ -475,7 +499,20 @@ class BlackjackLobbyView(BaseGameLobbyView):
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
     ) -> None:
-        """Initializes a Blackjack lobby with its table wager."""
+        """Initializes a Blackjack lobby with its table wager.
+
+        Args:
+            owner (GameParticipant): Table owner who opened the lobby.
+            requested_bet (int): Base table wager.
+            rng (Random): Random source used for card draws and shuffles.
+            prepare_participant (PrepareParticipant): Validator for users pressing Join.
+            refresh_participants (RefreshParticipants): Balance re-checker run at Start.
+            bot_user_id (int | None): Discord user ID of the bot player, if seated.
+            extra_initial_participants (list[GameParticipant] | None): Additional
+                participants pre-seated at lobby creation.
+            shoe_store (BlackjackShoeStore | None): Per-channel persistent shoe store.
+            channel_id (int): Discord channel ID owning the persistent shoe.
+        """
         super().__init__(
             owner=owner,
             rng=rng,
@@ -490,7 +527,11 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self._channel_id = channel_id
 
     def lobby_embed(self, status: str | None = None) -> Embed:
-        """Builds the Blackjack lobby embed from current participants."""
+        """Returns the Blackjack lobby embed from current participants.
+
+        Args:
+            status (str | None): Optional status line placed in the embed description.
+        """
         return build_blackjack_lobby_embed(
             owner=self.owner,
             participants=self.participants,
@@ -577,7 +618,17 @@ class BlackjackView(GameView):
         guild_id: int = 0,
         shoe_generation: int = 0,
     ) -> None:
-        """Initializes the active Blackjack table view."""
+        """Initializes the active Blackjack table view.
+
+        Args:
+            round_state (BlackjackRound): Active Blackjack round state.
+            owner (GameParticipant): Table owner who opened the lobby.
+            bot_user_id (int | None): Discord user ID of the bot player, if seated.
+            shoe_store (BlackjackShoeStore | None): Per-channel persistent shoe store.
+            channel_id (int): Discord channel ID where the table is running.
+            guild_id (int): Discord guild ID where the table is running, or 0 outside a guild.
+            shoe_generation (int): Generation token issued by `shoe_store.take_shoe`.
+        """
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
         self.round_state = round_state
         self.owner = owner
@@ -609,11 +660,15 @@ class BlackjackView(GameView):
         self.sync_buttons()
 
     def holds_seats(self) -> bool:
-        """A table holds its players' seats until its settlements have been written."""
+        """Returns whether the table still holds its players' seats."""
         return not self._seats_released
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
-        """Restricts buttons to the active player (or any undecided insurance player)."""
+        """Returns whether `interaction` came from the active player or an undecided insurance seat.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Component press interaction.
+        """
         if self._settled:
             await self._send_notice(interaction=interaction, content="這局已經結束, 等下一局吧")
             return False
@@ -648,12 +703,7 @@ class BlackjackView(GameView):
     async def _run_player_action(
         self, interaction: Interaction[commands.Bot], apply: Callable[..., object]
     ) -> None:
-        """Runs one active-player action under the round lock, then refreshes the table.
-
-        `apply` is the `BlackjackRound` method the pressed button performs; the defer,
-        the lock, the stale-action rejection and the re-render around it are the same
-        for every action button.
-        """
+        """Runs one active-player action under `self._round_lock`, then refreshes the table."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
             return
@@ -691,7 +741,12 @@ class BlackjackView(GameView):
     async def hit(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Handles the active player's Hit button."""
+        """Handles the active player's Hit button.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Hit button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_player_action(interaction=interaction, apply=self.round_state.hit)
 
     @nextcord.ui.button(
@@ -700,7 +755,12 @@ class BlackjackView(GameView):
     async def stand(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Handles the active player's Stand button."""
+        """Handles the active player's Stand button.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Stand button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_player_action(interaction=interaction, apply=self.round_state.stand)
 
     @nextcord.ui.button(
@@ -709,7 +769,12 @@ class BlackjackView(GameView):
     async def double(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Doubles the active hand's bet and finishes it after one draw."""
+        """Doubles the active hand's bet and finishes it after one draw.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Double button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_player_action(interaction=interaction, apply=self.round_state.double_down)
 
     @nextcord.ui.button(
@@ -718,7 +783,12 @@ class BlackjackView(GameView):
     async def split(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Splits the active pair into two sibling sub-hands."""
+        """Splits the active pair into two sibling sub-hands.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Split button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_player_action(interaction=interaction, apply=self.round_state.split)
 
     @nextcord.ui.button(
@@ -727,7 +797,12 @@ class BlackjackView(GameView):
     async def surrender(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Surrenders the active hand for a half-bet refund."""
+        """Surrenders the active hand for a half-bet refund.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Surrender button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_player_action(interaction=interaction, apply=self.round_state.surrender)
 
     async def _run_insurance_action(
@@ -735,12 +810,7 @@ class BlackjackView(GameView):
         interaction: Interaction[commands.Bot],
         decide: Callable[..., Coroutine[Any, Any, bool]],
     ) -> None:
-        """Runs one insurance decision under the round lock, then refreshes the table.
-
-        `decide` applies the pressed button's choice and returns False when the round
-        refused it, having already reported that; the defer, the lock, the stale-round
-        guards and the re-render around it are the same for both insurance buttons.
-        """
+        """Runs one insurance decision under `self._round_lock`, then refreshes the table."""
         await interaction.response.defer()
         if interaction.message is None:
             return
@@ -799,7 +869,12 @@ class BlackjackView(GameView):
     async def insure_yes(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Takes insurance for the calling player."""
+        """Takes insurance for the calling player.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Take Insurance button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_insurance_action(
             interaction=interaction, decide=self._take_insurance_locked
         )
@@ -810,7 +885,12 @@ class BlackjackView(GameView):
     async def insure_no(
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Declines insurance for the calling player."""
+        """Declines insurance for the calling player.
+
+        Args:
+            _button (Button[BlackjackView]): Clicked Decline Insurance button.
+            interaction (Interaction[commands.Bot]): Button press interaction.
+        """
         await self._run_insurance_action(
             interaction=interaction, decide=self._decline_insurance_locked
         )
@@ -818,25 +898,32 @@ class BlackjackView(GameView):
     async def finalize(
         self, message: Message, interaction: Interaction[commands.Bot] | None
     ) -> None:
-        """Settles every player at most once."""
+        """Settles every player at most once and publishes the final table.
+
+        Args:
+            message (Message): Public table message.
+            interaction (Interaction[commands.Bot] | None): Press whose token drives the
+                final edits and deletion while alive.
+        """
         async with self._round_lock:
             await self._finalize_locked(message=message, interaction=interaction)
 
     async def maybe_play_bot_turn(
         self, message: Message, interaction: Interaction[commands.Bot]
     ) -> None:
-        """Public entry point that drives the bot's turn(s) under the round lock."""
+        """Drives the bot's consecutive turns under the round lock.
+
+        Args:
+            message (Message): Public table message.
+            interaction (Interaction[commands.Bot]): Press whose token drives the table edits.
+        """
         async with self._round_lock:
             await self._maybe_play_bot_turn_locked(message=message, interaction=interaction)
 
     async def _maybe_play_bot_turn_locked(
         self, message: Message, interaction: Interaction[commands.Bot]
     ) -> None:
-        """Plays consecutive bot moves until the bot no longer owns the next table decision.
-
-        The bot moves inside the human press that handed it the turn, so its edits go through
-        that press too.
-        """
+        """Plays consecutive bot moves until the bot no longer owns the next table decision."""
         if self.bot_user_id is None:
             return
         bot_user_id = self.bot_user_id

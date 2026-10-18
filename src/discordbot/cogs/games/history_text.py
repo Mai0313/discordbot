@@ -1,11 +1,8 @@
 """Markdown text formatter for the `/games blackjack_history` query.
 
-Renders a player's recent Blackjack rounds as a monospace code-block table
-inside an embed description instead of a PNG, so the command stays cheap (no
-Pillow render, no file attachment) and the result is publicly shareable.
-Discord markdown has no real tables, so columns are aligned with space padding
-inside a ``` fenced block. A code block cannot carry color, so each round's
-outcome is conveyed by a short ASCII tag plus the signed P&L.
+Renders a player's recent Blackjack rounds as a space-padded monospace
+code-block table inside an embed description, using a short ASCII outcome tag
+plus signed P&L per row.
 """
 
 from typing import Final
@@ -125,11 +122,15 @@ def _render_block(rows: Sequence[_Row]) -> str:
 def build_blackjack_history_embed(
     player_name: str, records: Sequence[BlackjackHistoryRecord]
 ) -> Embed:
-    """Builds the public embed for a player's recent Blackjack rounds.
+    """Returns the public embed for a player's recent Blackjack rounds.
 
     The summary line counts every record passed in, while the table below it
     drops the oldest rows until the block fits `_DESCRIPTION_BUDGET` and states
     how many it dropped, so the two can legitimately disagree on round count.
+
+    Args:
+        player_name (str): Display name of the inspected player.
+        records (Sequence[BlackjackHistoryRecord]): Recent round records, newest first.
     """
     title = f"🃏 {player_name} 的二十一點紀錄"
     if not records:
