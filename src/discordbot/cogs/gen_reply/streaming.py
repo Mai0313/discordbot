@@ -69,8 +69,8 @@ from discordbot.cogs.gen_reply.status_marks import (
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 
 # Flat spacing between answer-stream attempts so a provider 5xx burst is outlasted rather than
-# immediately hit again. `wait_random` is added separately so tests that zero the fixed interval
-# still exercise jitter unless they zero both.
+# immediately hit again. `wait_random` is added beside `wait_fixed` to keep concurrent replies
+# from retrying in lockstep without relying on a library-default jitter parameter.
 ANSWER_RETRY_INTERVAL_SECONDS = 5.0
 ANSWER_RETRY_JITTER_SECONDS = 1.0
 
