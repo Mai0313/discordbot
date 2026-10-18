@@ -20,7 +20,7 @@
 
 </div>
 
-一个自托管 Discord 机器人，提供 AI 聊天、图片与视频生成、Threads、Facebook、Instagram、Twitter 与抖音链接展开、视频下载、虚拟欢乐豆与赌场小游戏。它基于 nextcord 运行，用本地 SQLite 保存 runtime data，并连接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
+一个自托管 Discord 机器人，提供 AI 聊天、图片与视频生成、Threads、Facebook、Instagram、Twitter 与抖音链接展开、视频下载、虚拟欢乐豆与赌场小游戏。
 
 ## 功能展示
 
@@ -74,18 +74,18 @@ flowchart TD
 
 ## 功能
 
-- **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、用提示或附加图片生成短视频、编辑引用的视频、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（仅自己可见，且按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用），可用 `/memory show`、`/memory regenerate` 与 `/memory clear` 管理。你也可以直接叫它记住某件事，或告诉它记错了，回复下方会有一行小字说明它记下了什么。
-- **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain，引用别人或自己先前的贴文时也会一起带出被引用的那篇；改成 tag 机器人并附上链接，或是回复别人贴链接的消息时 tag 机器人，它会改为连底下的留言一起读过再回答。
+- **AI 聊天**：在服务器标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、开口念出一段话、创作并录制短歌、生成或编辑图片、用提示或附加图片生成短视频、编辑引用的视频、以接续回复消息延续长回复，并搜索网络。它还会在后台慢慢积累对你个人偏好与服务器社群的长期记忆（按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用）。你也可以直接叫它记住某件事，或告诉它记错了，回复下方会有一行小字说明它记下了什么。
+- **Threads 解析**：贴上 Threads.net 或 Threads.com 链接，机器人会展开贴文、媒体与回复串，引用别人或自己先前的贴文时也会一起带出被引用的那篇；改成 tag 机器人并附上链接，或是回复别人贴链接的消息时 tag 机器人，它会改为连底下的留言一起读过再回答。
 - **Facebook 解析**：贴上公开的 Facebook 帖子链接，机器人会把帖子、图片与互动数字展开到频道；链接若带 `comment_id`，底下会再显示那一则评论。改成 tag 机器人并附上链接，或在带链接的消息下 tag 它回复，它会读帖子加上页面预先加载的那几则评论再回答。只读得到公开帖子，视频帖子会以链接呈现而不是文件。
 - **Instagram 解析**：贴上公开的 Instagram 帖子链接，机器人会把帖子文字、轮播图片与互动数字展开到频道；链接若指向某一则评论，底下会再显示那一则。改成 tag 机器人并附上链接，或在带链接的消息下 tag 它回复，它会读帖子加上底下的评论再回答。只读得到公开账号，Reel 会以链接呈现而不是看过视频。
-- **Twitter 解析**：贴上 x.com 链接，机器人会把帖子、图片、它回复的那一条和它引用的那一条一起展开到频道；视频只放缩略图和链接。改成 tag 机器人并附上链接，它会读过帖子再回答。有两样东西永远拿不到：底下的回复（Twitter 只给一个数字，一条都不给），以及长帖子的全文（只拿得到开头）。
+- **Twitter 解析**：贴上 x.com 链接，机器人会把帖子、图片、它回复的那一条和它引用的那一条一起展开到频道；视频只放缩略图和链接。改成 tag 机器人并附上链接，它会读过帖子再回答。底下的回复与长帖子的后半段都无法获取。
 - **抖音解析**：贴上抖音链接，机器人会直接把视频（或图文贴文的图片）传到频道；改成 tag 机器人并附上链接，它会改为看过视频再回答。
 - **不展开链接**：把链接包在剧透标记（`||链接||`）或尖括号（`<链接>`）里，上面这些解析都不会展开它。
 - **Bilibili 问答**：tag 机器人并附上 B 站视频链接，它会看过视频再回答。单独贴链接不会自动展开；`/download_video` 仍可下载文件。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
-- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 由赌场系统发牌 (H17)，bot 本身只要钱包大于零就会以玩家身份入桌，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
-- **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么。
+- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` 牌桌。Blackjack 由赌场系统发牌 (H17)，bot 本身只要钱包大于零就会以玩家身份入桌，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
+- **本地化指令**：斜线指令支持英文、繁体中文、日文，AI 回复也会跟随用户语言。
 
 ## 指令
 
@@ -109,20 +109,20 @@ flowchart TD
 | `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                                |
 | `/central_bank status\|borrow\|call\|repay` | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                          |
 | `/give <member> <amount>`                   | 转账虚拟欢乐豆给其他成员或 bot。                                                              |
-| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。                |
-| `/games blackjack <bet>`                    | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                       |
-| `/games dragon_gate`                        | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                                |
+| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号权限，不是 Discord 身份组。                 |
+| `/games blackjack <bet>`                    | 开一个多人 Blackjack 牌桌；`bet` 可输入含逗号的数字，`0` 代表全下。                           |
+| `/games dragon_gate`                        | 开一个由共享奖池支撑的多人射龙门桌。                                                          |
 | `/games blackjack_history [member] [count]` | 显示某位玩家最近的 Blackjack 牌局：手牌、下注与结果（默认 10 局，最多 50 局）。               |
-| `/casino`                                   | 显示赌场系统累积 P&L (跨服务器)。                                                             |
+| `/casino`                                   | 显示赌场系统的累积损益。                                                                      |
 | `/pocat`                                    | 显示 bot 玩家自己的钱包：余额与累计流水。                                                     |
 | `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。        |
 | `/memory server show`                       | 私密查看机器人对这个服务器社群的记忆；只能在机器人所在的服务器使用。                          |
 | `/memory server catchup`                    | 把这个频道上次整理后的聊天整理进服务器社群记忆，结果公开贴出；每个服务器 10 分钟一次。        |
-| `/ping`                                     | 检查 bot latency。                                                                            |
+| `/ping`                                     | 检查机器人响应延迟。                                                                          |
 
 ## 开发
 
-Contributor setup、code conventions、tests 与 release notes 请见 [CONTRIBUTING.md](./.github/CONTRIBUTING.md)。
+开发环境设置、代码规范、测试与发布流程请见 [CONTRIBUTING.md](./.github/CONTRIBUTING.md)。
 
 [文档](https://mai0313.github.io/discordbot/) | [报告问题](https://github.com/Mai0313/discordbot/issues) | [讨论](https://github.com/Mai0313/discordbot/discussions)
 

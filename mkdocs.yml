@@ -35,6 +35,7 @@ nav:
                   - interactions: Reference/discordbot/cogs/games/interactions.md
                   - lobby: Reference/discordbot/cogs/games/lobby.md
                   - presentation: Reference/discordbot/cogs/games/presentation.md
+                  - seats: Reference/discordbot/cogs/games/seats.md
                   - settlement: Reference/discordbot/cogs/games/settlement.md
                   - shoe: Reference/discordbot/cogs/games/shoe.md
                   - wagers: Reference/discordbot/cogs/games/wagers.md
@@ -114,8 +115,10 @@ nav:
           - services:
               - economy:
                   - database: Reference/discordbot/services/economy/database.md
+                  - holds: Reference/discordbot/services/economy/holds.md
                   - presentation: Reference/discordbot/services/economy/presentation.md
               - memory:
+                  - catchup: Reference/discordbot/services/memory/catchup.md
                   - consolidation: Reference/discordbot/services/memory/consolidation.md
                   - constants: Reference/discordbot/services/memory/constants.md
                   - database: Reference/discordbot/services/memory/database.md
@@ -125,6 +128,7 @@ nav:
                   - inflight: Reference/discordbot/services/memory/inflight.md
                   - pipeline: Reference/discordbot/services/memory/pipeline.md
                   - prompts: Reference/discordbot/services/memory/prompts.md
+                  - raw_entries: Reference/discordbot/services/memory/raw_entries.md
                   - regeneration: Reference/discordbot/services/memory/regeneration.md
                   - run: Reference/discordbot/services/memory/run.md
                   - server_prompts: Reference/discordbot/services/memory/server_prompts.md
@@ -162,6 +166,7 @@ nav:
               - amount_parsing: Reference/discordbot/utils/amount_parsing.md
               - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
               - avatars: Reference/discordbot/utils/avatars.md
+              - channel_visibility: Reference/discordbot/utils/channel_visibility.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - discord_errors: Reference/discordbot/utils/discord_errors.md
               - douyin_delivery: Reference/discordbot/utils/douyin_delivery.md
@@ -173,6 +178,7 @@ nav:
               - llm: Reference/discordbot/utils/llm.md
               - llm_errors: Reference/discordbot/utils/llm_errors.md
               - llm_transcript: Reference/discordbot/utils/llm_transcript.md
+              - logged_ui: Reference/discordbot/utils/logged_ui.md
               - media_delivery: Reference/discordbot/utils/media_delivery.md
               - mentions: Reference/discordbot/utils/mentions.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
