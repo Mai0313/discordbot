@@ -8,10 +8,11 @@ request body and a failed fetch is swallowed silently; and the native Interactio
 which has no proxy in the loop at all, only resolves Files API URIs and YouTube links. The
 Files-API URI has a dedicated pass-through branch on both paths and is never re-fetched.
 
-The upload itself goes direct to Google (never through the proxy) because only the direct
-client can poll a file to `FileState.ACTIVE`: the proxy's file resource reports a deprecated
-`uploaded` status, and referencing a not-yet-active file intermittently 400s the whole answer
-request.
+The upload itself goes direct to Google (never through the proxy) because its URI must also
+reach paths with no proxy in the loop (the Interactions answer turn, `VideoGenerator`'s source
+clip), and a proxy upload hands the URI back only inside LiteLLM's own encoded file id. Every
+upload is polled to `FileState.ACTIVE` before it is referenced: referencing a not-yet-active
+file intermittently 400s the whole answer request.
 
 `upload_file` and `poll_while_processing` are the upload and the activation poll every direct
 upload is made of. They decide nothing: each raises the SDK's own error (the poll also a

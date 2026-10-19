@@ -1,10 +1,10 @@
 """Gemini Files API attachment renderer: activation bound and pending re-poll cache.
 
-Uploads attachment bytes directly through the Gemini SDK (`files_api.py`) so each file can be
-polled to an `ACTIVE` state before it is referenced; the LiteLLM proxy's file resource reports
-only a deprecated `uploaded` status, which causes immediate references to fail with a 400 when
-still `PROCESSING`. The answer request references the full `https://.../files/<id>` URI so the
-proxy resolves it to a `fileData.fileUri` part rather than failing MIME lookup on a bare
+Uploads attachment bytes directly through the Gemini SDK (`files_api.py` has why) and polls each
+file to an `ACTIVE` state before it is referenced, since a reference to a file still
+`PROCESSING` can fail the request with a 400. The answer request references the full
+`https://.../files/<id>` URI so the proxy resolves it to a `fileData.fileUri` part rather than
+failing MIME lookup on a bare
 `files/<id>` resource name, and reuses the handle until the provider-reported `expiration_time`
 (~48h). Files still `PROCESSING` when the activation bound elapses are cached per source to be
 re-polled on later turns instead of re-uploaded.
