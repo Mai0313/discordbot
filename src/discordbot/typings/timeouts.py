@@ -208,21 +208,26 @@ DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = LINK_CONTEXT_GRACE_SECONDS
 
 # The same bound for the Facebook expansion, and a third of the Threads one because the work is
-# a third of it: one page fetch, then parsing, with no conversation walk and no download at all
-# (the images stay URLs Discord fetches itself). What it really guards is the parse, since the
-# page is ~950KB of JSON that a pathological payload could make slow to walk.
+# a third of it: one page fetch, then parsing, with no conversation walk. The card's images are
+# downloaded after it, under `CARD_IMAGE_FETCH_TIMEOUT_SECONDS`. What it really guards is the
+# parse, since the page is ~950KB of JSON that a pathological payload could make slow to walk.
 FACEBOOK_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
 
 # The same bound for the Instagram expansion, and the same number for the same reason: one page
-# fetch and a parse, with nothing downloaded. Its page is smaller than Facebook's (~800KB against
-# ~950KB) but carries the whole comment list, so the walk is the part worth guarding.
+# fetch and a parse. Its page is smaller than Facebook's (~800KB against ~950KB) but carries the
+# whole comment list, so the walk is the part worth guarding.
 INSTAGRAM_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
 
 # The same bound for the Twitter expansion, kept at the same number so the three expansions that
-# download nothing answer a stalled platform identically. Twitter is the fastest of them by a wide
+# only read a page answer a stalled platform identically. Twitter is the fastest of them by a wide
 # margin — one JSON request of a few KB rather than a ~950KB page to walk — so this is headroom
 # rather than a budget, and shortening it would only turn a slow minute into a failed one.
 TWITTER_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
+
+# Bound on downloading one expansion card image, after the read. The images download together, so
+# this is roughly what they add to the card; one that runs past it keeps its link, which is all
+# the card had before the upload.
+CARD_IMAGE_FETCH_TIMEOUT_SECONDS: Final[float] = 10.0
 
 # Bound on `/download_video`'s whole download step, both the yt-dlp and the Douyin branch.
 # Wider than an auto-expansion because the user asked for this file by name and may be after a

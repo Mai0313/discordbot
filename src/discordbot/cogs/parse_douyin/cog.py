@@ -152,7 +152,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         return ExpansionDelivery(
             content="\n".join(lines) if lines else None,
             embeds=[self._build_embed(post=parsed.metadata, url=url)],
-            files=[item.to_file() for item in plan.native],
+            media=plan.native,
         )
 
     @staticmethod

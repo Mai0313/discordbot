@@ -19,12 +19,12 @@ from it.
 Unimplemented methods raise `NotImplementedError` rather than using `abc.ABC`.
 
 A second download/parse method is deliberately not declared here because the return types and
-options differ across platforms. Many platforms write nothing to disk, handing image URLs to
-Discord to fetch itself. Those that do write have incompatible signatures: a walk that downloads
-as it goes returns its conversation with each file on the post that owns it, while a plain fetch
-returns a model naming its files and takes platform-specific options (quality preset, image cap,
-pre-parsed metadata, stop signal) alongside `url`. Accordingly, `parse` returns a parsed
-conversation and `download` returns files.
+options differ across platforms. Many platforms write nothing to disk, handing back image URLs
+for whoever shows the post to fetch. Those that do write have incompatible signatures: a walk that
+downloads as it goes returns its conversation with each file on the post that owns it, while a
+plain fetch returns a model naming its files and takes platform-specific options (quality preset,
+image cap, pre-parsed metadata, stop signal) alongside `url`. Accordingly, `parse` returns a
+parsed conversation and `download` returns files.
 
 A platform whose result is a single piece of media returns a `<Platform>Metadata` instead of a
 `<Platform>Conversation` and subclasses neither conversation model.

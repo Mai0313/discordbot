@@ -25,6 +25,7 @@ from itertools import count
 from collections.abc import Iterator
 
 import pytest
+import requests
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -238,6 +239,21 @@ def expansion_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         target="discordbot.utils.expansion_placeholder._engine",
         db_path=tmp_path / "expansion_reply.db",
     )
+
+
+@pytest.fixture(autouse=True)
+def card_images_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fails every expansion card image download, so a card keeps linking its images.
+
+    Autouse because every expansion downloads its card's images before delivery, which would
+    otherwise reach past loopback; a test about the upload stubs `fetch_card_image` itself.
+    """
+
+    def unreachable(url: str) -> object:
+        """Refuses the download as an unreachable CDN does."""
+        raise requests.ConnectionError(f"card image downloads are refused in tests: {url}")
+
+    monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_image", unreachable)
 
 
 @pytest.fixture(autouse=True)

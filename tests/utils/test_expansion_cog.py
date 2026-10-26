@@ -6,18 +6,21 @@ decide is tested here once per cog; each cog's own file keeps its hooks: the foo
 line, and where its links point.
 """
 
+from types import SimpleNamespace
 from typing import Any
 from datetime import UTC, datetime
 from collections.abc import Callable
 
 import pytest
 from nextcord import Embed
+import requests
 
 from discordbot.utils.expansion_cog import (
     VIDEO_HINT,
     TRUNCATION_NOTICE,
     POST_CARD_MAX_IMAGES,
     ConversationExpansionCog,
+    fetch_card_image,
     omitted_images_note,
 )
 from discordbot.utils.discord_embeds import utf16_length, embed_text_length
@@ -34,7 +37,9 @@ from tests.helpers.link_sources import (
     facebook_post,
     instagram_post,
     expansion_embeds,
+    serve_card_images,
 )
+from tests.helpers.discord_mocks import DiscordPayload, expansion_payload
 
 type _CogType = type[ConversationExpansionCog[Any, Any]]
 type _PostFactory = Callable[..., PlatformConversation[Any]]
@@ -241,3 +246,91 @@ async def test_a_named_comment_takes_its_room_from_the_post(
     assert utf16_length(value=beside_comment[0].description or "") < utf16_length(
         value=alone[0].description or ""
     )
+
+
+def _uploads(payload: DiscordPayload) -> dict[str, bytes]:
+    """The files a delivered card attached, by name."""
+    return {str(file.filename): file.fp.read() for file in payload.get("files", [])}
+
+
+@every_card
+async def test_card_images_are_uploaded_rather_than_linked(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discord fetches a linked image once, at send, and keeps a failed fetch as an empty image.
+
+    So each embed names an upload carrying its own image's bytes, and the gallery still shares
+    the post's URL.
+    """
+    serve_card_images(monkeypatch=monkeypatch)
+    images = [f"https://cdn.test/{n}.jpg" for n in range(3)]
+    outcome = post(image_urls=images)
+    assert outcome.target is not None
+
+    message, _ = await expand(cog_type=cog_type, outcome=outcome)
+
+    payload = expansion_payload(message=message)
+    uploads = _uploads(payload=payload)
+    shown = [embed.image.url or "" for embed in payload["embeds"]]
+    assert all(url.startswith("attachment://") for url in shown)
+    assert [uploads[url.removeprefix("attachment://")].rstrip(b"\0") for url in shown] == [
+        image.encode() for image in images
+    ]
+    assert all(embed.url == outcome.target.url for embed in payload["embeds"])
+
+
+@every_card
+async def test_an_image_that_fails_to_download_keeps_its_link(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One image the CDN refuses costs the card that upload only, never the card."""
+    images = [f"https://cdn.test/{n}.jpg" for n in range(3)]
+    serve_card_images(monkeypatch=monkeypatch, refused=frozenset({images[1]}))
+
+    embeds = await _expand(cog_type=cog_type, outcome=post(image_urls=images))
+
+    shown = [embed.image.url or "" for embed in embeds]
+    assert shown[1] == images[1]
+    assert all(url.startswith("attachment://") for url in (shown[0], shown[2]))
+
+
+@every_card
+async def test_a_channel_refusing_attachments_keeps_every_link(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """There a card carrying files is refused whole, so nothing is downloaded for it."""
+    asked = serve_card_images(monkeypatch=monkeypatch)
+    monkeypatch.setattr(
+        "discordbot.utils.expansion_cog.target_allows_file_uploads", lambda target: False
+    )
+    images = [f"https://cdn.test/{n}.jpg" for n in range(3)]
+
+    embeds = await _expand(cog_type=cog_type, outcome=post(image_urls=images))
+
+    assert [embed.image.url for embed in embeds] == images
+    assert asked == []
+
+
+@pytest.mark.parametrize(
+    argnames=("status", "content_type"),
+    argvalues=[(200, "text/html; charset=utf-8"), (403, "image/jpeg")],
+    ids=["not-an-image", "refused"],
+)
+def test_a_card_image_download_refuses_what_is_not_a_served_image(
+    monkeypatch: pytest.MonkeyPatch, status: int, content_type: str
+) -> None:
+    """An error page is never uploaded under an image's name; the card keeps the link instead."""
+    response = SimpleNamespace(
+        status_code=status, headers={"Content-Type": content_type}, content=b"<html></html>"
+    )
+
+    def raise_for_status() -> None:
+        """Raises as `requests` does on an error status."""
+        if status >= 400:
+            raise requests.HTTPError(f"{status}")
+
+    response.raise_for_status = raise_for_status
+    monkeypatch.setattr(requests, "get", lambda url, timeout: response)
+
+    with pytest.raises((requests.HTTPError, ValueError)):
+        fetch_card_image(url="https://cdn.test/0.jpg")

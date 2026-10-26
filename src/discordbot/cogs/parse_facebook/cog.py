@@ -1,6 +1,6 @@
 """Expands a public Facebook post URL into Discord embeds.
 
-Nothing is downloaded. Images ride into the embeds as URLs for Discord to fetch itself, so this
+Nothing is downloaded here: the card names its images by URL, and the shell uploads them, so this
 cog needs no scratch directory, no media-delivery planner and no size ceiling.
 
 `utils/expansion_cog.py` owns everything around the card and the card's shape: one post, its

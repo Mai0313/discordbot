@@ -1,9 +1,10 @@
 """The shell around an auto-expansion, so a platform module contributes only its card.
 
 Expanding a pasted link is one feature: claim a reply slot under the link, mark the message,
-read the post, edit the card onto the slot, mark the outcome. None of that differs per platform,
-and a difference that turns up there is a defect rather than a choice. So it lives here once, and
-a cog supplies the platform: where its URLs are, how to read one, and what the card looks like.
+read the post, upload the card's images, edit the card onto the slot, mark the outcome. None of
+that differs per platform, and a difference that turns up there is a defect rather than a choice.
+So it lives here once, and a cog supplies the platform: where its URLs are, how to read one, and
+what the card looks like.
 
 `utils/expansion_placeholder.py` owns the other half of this contract, the parts a resumed
 expansion needs as much as a fresh one does. This module is the cog side.
@@ -24,25 +25,44 @@ import re
 from typing import Any, ClassVar, Protocol
 import asyncio
 from datetime import datetime
+from mimetypes import guess_extension
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 
 import logfire
-from nextcord import File, Color, Embed, Message, NotFound, Forbidden
+from nextcord import Color, Embed, Message, NotFound, Forbidden
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+import requests
 from nextcord.ext import commands
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
-from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
+from discordbot.typings.timeouts import CARD_IMAGE_FETCH_TIMEOUT_SECONDS
+from discordbot.utils.link_errors import (
+    LinkReadError,
+    LinkRetryableError,
+    LinkUnavailableError,
+    is_retryable_fetch_failure,
+)
 from discordbot.utils.discord_embeds import (
+    DISCORD_ATTACHMENT_LIMIT,
     DISCORD_EMBED_TOTAL_LIMIT,
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     utf16_length,
     embed_text_length,
     clip_to_utf16_limit,
+    target_allows_file_uploads,
+)
+from discordbot.utils.media_delivery import (
+    MEDIA_ENVELOPE_MARGIN,
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
 )
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
@@ -114,7 +134,7 @@ class CardPost(Protocol):
 
     @property
     def image_urls(self) -> list[str]:
-        """Still images, as URLs Discord fetches itself."""
+        """Still images, as URLs the card downloads and uploads."""
         ...
 
     @property
@@ -235,6 +255,52 @@ def context_card_budget(card: Embed) -> int:
     return DISCORD_EMBED_TOTAL_LIMIT - embed_text_length(embed=card) - _CONTEXT_CARD_SLACK
 
 
+def fetch_card_image(url: str) -> LoadedMedia:
+    """Returns the image at `url` as served, for a card to upload rather than link.
+
+    Args:
+        url (str): The image URL the card would otherwise link.
+
+    Raises:
+        requests.RequestException: The fetch failed or answered an error status.
+        ValueError: What came back is not an image.
+    """
+    response = requests.get(url=url, timeout=CARD_IMAGE_FETCH_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    mime_type = response.headers.get("Content-Type", "").partition(";")[0].strip()
+    if not mime_type.startswith("image/"):
+        raise ValueError(f"{url} served {mime_type or 'no type'}, not an image")
+    return LoadedMedia(data=response.content, mime_type=mime_type)
+
+
+async def _download_card_image(image_url: str, url: str, message_id: int) -> LoadedMedia | None:
+    """Returns one card image's bytes, or None when the card keeps linking it."""
+    try:
+        # `requests` bounds each socket operation, not the whole transfer.
+        async with asyncio.timeout(delay=CARD_IMAGE_FETCH_TIMEOUT_SECONDS):
+            return await asyncio.to_thread(fetch_card_image, url=image_url)
+    except requests.RequestException as error:
+        logfire.warn(
+            "Could not download a card image; it stays linked",
+            url=url,
+            message_id=message_id,
+            image_url=image_url,
+            retryable=is_retryable_fetch_failure(error=error),
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
+    except (TimeoutError, ValueError) as error:
+        logfire.warn(
+            "Could not download a card image; it stays linked",
+            url=url,
+            message_id=message_id,
+            image_url=image_url,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
+    return None
+
+
 def omitted_images_note(count: int) -> str:
     """Returns the footer note counting a post's images the card leaves out.
 
@@ -349,8 +415,11 @@ class ExpansionDelivery(BaseModel):
         description="Text under the card, or None when the card is embeds and attachments alone.",
     )
     embeds: list[SkipValidation[Embed]] = Field(..., description="The finished card.")
-    files: list[SkipValidation[File]] = Field(
-        default_factory=list, description="Media attaching natively beside the card."
+    media: list[MediaItem] = Field(
+        default_factory=list,
+        description=(
+            "Media attaching natively beside the card, sized so its images can be fitted after it."
+        ),
     )
 
 
@@ -384,6 +453,12 @@ class ExpansionCog[ParsedT](commands.Cog):
             bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
+        # Host-free on purpose: an image left without room keeps the link it already has.
+        self.card_image_planner = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(
+                config=MediaHostingConfig.model_validate(obj={"MEDIA_HOSTING_ENABLED": False})
+            )
+        )
         self._resume_started = False
         # Taken at load, before the gateway connects, as `DiscordBot._started_at` is: the restart
         # sweep must not re-run an expansion this process starts ahead of `on_ready`.
@@ -585,12 +660,74 @@ class ExpansionCog[ParsedT](commands.Cog):
                 )
                 return
 
+            await self._attach_card_images(message=message, url=url, delivery=delivery)
             await self._deliver(
                 message=message,
                 url=url,
                 delivery=delivery,
                 current_emoji=current_emoji,
                 placeholder=placeholder,
+            )
+
+    async def _attach_card_images(
+        self, message: Message, url: str, delivery: ExpansionDelivery
+    ) -> None:
+        """Swaps the card's linked images for uploaded copies, as far as the message has room.
+
+        Discord fetches a linked embed image once, as the card is sent, and keeps a failed fetch
+        as an empty image it never retries; on Instagram's CDN that emptied about a third of the
+        cards (#1122). An image that fails to download, that the room left beside the card's own
+        media cannot carry, or in a channel refusing attachments keeps its link.
+        """
+        # Walked from the last embed: a Threads card puts the linked post and the post it quotes
+        # after the chain above them, so when the attachment cap binds, a far ancestor's image is
+        # the one left linked. No other card carries enough images for the cap to bind.
+        image_urls = list(
+            dict.fromkeys(
+                embed.image.url
+                for embed in reversed(delivery.embeds)
+                if embed.image.url and embed.image.url.startswith(("https://", "http://"))
+            )
+        )
+        if not image_urls or not target_allows_file_uploads(target=message):
+            return
+
+        tasks: list[Coroutine[Any, Any, LoadedMedia | None]] = []
+        for image_url in image_urls:
+            tasks.append(_download_card_image(image_url=image_url, url=url, message_id=message.id))
+        downloaded = await asyncio.gather(*tasks)
+        items = {
+            image_url: MediaItem(
+                source=image.data,
+                filename=f"card_image_{index}{guess_extension(image.mime_type) or '.jpg'}",
+            )
+            for index, (image_url, image) in enumerate(zip(image_urls, downloaded, strict=True))
+            if image is not None
+        }
+        plan = await self.card_image_planner.plan(
+            items=list(items.values()),
+            upload_limit=upload_limit_for(guild=message.guild)
+            - sum(item.size for item in delivery.media),
+            envelope_margin=MEDIA_ENVELOPE_MARGIN,
+            attachment_limit=DISCORD_ATTACHMENT_LIMIT - len(delivery.media),
+        )
+        attached = {id(item) for item in plan.native}
+        uploaded = {
+            image_url: f"attachment://{item.filename}"
+            for image_url, item in items.items()
+            if id(item) in attached
+        }
+        for embed in delivery.embeds:
+            attachment = uploaded.get(embed.image.url or "")
+            if attachment is not None:
+                embed.set_image(url=attachment)
+        delivery.media.extend(plan.native)
+        if len(uploaded) < len(items):
+            logfire.info(
+                "Card images past the message's upload room stay linked",
+                url=url,
+                message_id=message.id,
+                linked=len(items) - len(uploaded),
             )
 
     async def _deliver(
@@ -645,7 +782,9 @@ class ExpansionCog[ParsedT](commands.Cog):
                 )
 
             await placeholder.deliver(
-                content=delivery.content, embeds=delivery.embeds, files=delivery.files
+                content=delivery.content,
+                embeds=delivery.embeds,
+                files=[item.to_file() for item in delivery.media],
             )
         except Exception as error:
             report_expansion_delivery_failure(
