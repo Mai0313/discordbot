@@ -209,9 +209,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
         lines.extend(plan.hosted_urls)
         return ExpansionDelivery(
-            content="\n".join(lines) if lines else None,
-            embeds=embeds,
-            files=[item.to_file() for item in plan.native],
+            content="\n".join(lines) if lines else None, embeds=embeds, media=plan.native
         )
 
     @staticmethod

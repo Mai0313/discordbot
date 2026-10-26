@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 
 import pytest
 from nextcord import Embed
+import requests
 from nextcord.ext import commands
 
 from discordbot.utils import scratch_dir
@@ -256,6 +257,30 @@ class ThreadsDownloaderStub:
         return ThreadsConversation(
             chain=self.results, reply_branches=[[comment]] if self.results else []
         )
+
+
+def serve_card_images(
+    monkeypatch: pytest.MonkeyPatch, refused: frozenset[str] = frozenset(), size: int = 40
+) -> list[str]:
+    """Serves every expansion card image as `size` bytes of PNG but the `refused` URLs.
+
+    The bytes are the URL itself, padded or cut to `size`, so a test can tell which upload an
+    embed ended up naming.
+
+    Returns:
+        Every URL the expansion asked for, in order.
+    """
+    asked: list[str] = []
+
+    def fetch(url: str) -> LoadedMedia:
+        """Answers one download the way a CDN serving `url` would, or refuses it."""
+        asked.append(url)
+        if url in refused:
+            raise requests.ConnectionError(f"refused: {url}")
+        return LoadedMedia(data=url.encode().ljust(size, b"\0")[:size], mime_type="image/png")
+
+    monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_image", fetch)
+    return asked
 
 
 def hosting_off_planner() -> MediaDeliveryPlanner:

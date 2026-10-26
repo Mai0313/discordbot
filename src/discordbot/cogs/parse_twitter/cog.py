@@ -4,8 +4,8 @@ Discord renders nothing useful for an x.com link on its own — the page it fetc
 empty SPA shell `services/platforms/twitter.py` documents — so a pasted link sits in the channel
 as a bare URL. This turns it into the post.
 
-Nothing is downloaded: the stills and a video's poster frame ride to Discord as URLs for it to
-fetch itself, and the clip is a link. That is a choice rather than a limit — Twitter's mp4 is
+Nothing is downloaded here: the card names the stills and a video's poster frame by URL for the
+shell to upload, and the clip is a link. That is a choice rather than a limit — Twitter's mp4 is
 directly fetchable — so a deployment that wants the file has `/download_video`.
 
 `utils/expansion_cog.py` owns everything around the card and the post's own embed. What is here

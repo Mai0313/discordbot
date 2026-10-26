@@ -33,6 +33,7 @@ from tests.helpers.link_sources import (
     stub_bot,
     guild_message,
     hosting_planner,
+    serve_card_images,
 )
 from tests.helpers.discord_mocks import (
     FakeInteraction,
@@ -676,3 +677,67 @@ async def test_threads_cog_sends_no_author_icon_for_an_author_without_a_picture(
         "https://example.test/avatar.png",
         None,
     ]
+
+
+async def test_threads_card_images_take_only_the_room_the_video_leaves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The images are fitted after the target's clip, so they never cost the card its video.
+
+    Fitted against the whole ceiling instead, both would ride beside the clip and the combined
+    body would overshoot what Discord accepts.
+    """
+    serve_card_images(monkeypatch=monkeypatch, size=40)
+    cog = _cog()
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(data=b"0" * 100)
+    images = ["https://example.test/1.png", "https://example.test/2.png"]
+    # Room for the clip, the 1 MiB envelope margin and one 40-byte image, but not two.
+    message = guild_message(content=_URL, filesize_limit=1024 * 1024 + 100 + 60)
+    _wire_threads(
+        cog=cog,
+        downloader=ThreadsDownloaderStub(
+            results=[_thread_output(video_paths=[video_file], image_urls=images)]
+        ),
+    )
+
+    await cog.on_message(message=as_message(fake=message))
+
+    delivered = expansion_payload(message=message)
+    assert "clip.mp4" in [file.filename for file in delivered["files"]]
+    shown = [embed.image.url for embed in delivered["embeds"] if embed.image.url]
+    assert sorted(url.startswith("attachment://") for url in shown) == [False, True]
+
+
+async def test_threads_card_past_the_attachment_cap_leaves_the_root_linked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the clip taking one of Discord's ten attachments, the image left linked is the root's.
+
+    The card lists the chain root first, so fitting images in that order would leave the linked
+    post's own image as the one Discord may fail to fetch.
+    """
+    serve_card_images(monkeypatch=monkeypatch)
+    cog = _cog()
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(data=b"0" * 100)
+    chain = [
+        _thread_output(text=f"post {index}", image_urls=[f"https://example.test/{index}.png"])
+        for index in range(9)
+    ]
+    chain.append(
+        _thread_output(
+            text="the linked post",
+            image_urls=["https://example.test/target.png"],
+            video_paths=[video_file],
+        )
+    )
+    message = guild_message(content=_URL)
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=chain))
+
+    await cog.on_message(message=as_message(fake=message))
+
+    embeds = expansion_payload(message=message)["embeds"]
+    assert len(embeds) == 10
+    assert embeds[0].image.url == "https://example.test/0.png"
+    assert all((embed.image.url or "").startswith("attachment://") for embed in embeds[1:])

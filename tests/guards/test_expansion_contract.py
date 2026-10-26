@@ -726,6 +726,16 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
     assert recorded["message_id"] == 7
 
 
+def _preview_warns(
+    warns: list[tuple[str, dict[str, object]]],
+) -> list[tuple[str, dict[str, object]]]:
+    """The warnings about hiding or restoring the link's preview, without the card images' own.
+
+    The suite refuses every card image download, which warns once per image the card shows.
+    """
+    return [warn for warn in warns if "source message embed" in warn[0]]
+
+
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
 async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     cog: type[ExpansionCog[Any]], monkeypatch: pytest.MonkeyPatch
@@ -742,7 +752,7 @@ async def test_a_guild_that_refuses_the_preview_suppress_still_gets_the_card(
     await staged.cog.on_message(message=as_message(fake=staged.message))
 
     assert staged.message.reactions[-1] == EXPANSION_DONE_EMOJI
-    ((_message, fields),) = warns
+    ((_message, fields),) = _preview_warns(warns=warns)
     assert (fields["message_id"], fields["guild_id"]) == (1, 100)
     assert "_exc_info" not in fields
 
@@ -811,7 +821,7 @@ async def test_a_refused_preview_restore_names_its_ids_and_the_cross_still_lands
     assert staged.message.reactions[-1] == EXPANSION_FAILED_EMOJI
     assert placeholder_withdrawn(message=staged.message)
     # The hide went through here, so the one refusal on record is the restore's.
-    ((_message, fields),) = warns
+    ((_message, fields),) = _preview_warns(warns=warns)
     assert (fields["message_id"], fields["guild_id"]) == (1, 100)
     assert "_exc_info" not in fields
 
@@ -830,7 +840,7 @@ async def test_a_guild_that_refused_the_hide_is_not_asked_to_undo_it(
 
     assert staged.message.reactions[-1] == EXPANSION_FAILED_EMOJI
     # The refused hide is the one warning; asking for the restore would draw the same refusal.
-    assert len(warns) == 1
+    assert len(_preview_warns(warns=warns)) == 1
 
 
 @pytest.mark.parametrize(
