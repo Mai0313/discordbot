@@ -18,6 +18,7 @@ from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 
 from tests.helpers.casting import as_bot, as_message, step_dicts
+from tests.helpers.gen_reply import FakeGeminiFiles
 from tests.helpers.reply_fakes import (
     FakeAuthor,
     FakeClient,
@@ -30,6 +31,7 @@ from tests.helpers.reply_fakes import (
     _cog,
     _png_bytes,
     _image_post,
+    _fake_uploader,
     _media_builder,
     _context_builder,
 )
@@ -596,6 +598,65 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
 
     text_markers, full_files = _attachment_slots(text_only=text_only, full=full)
     assert text_markers == full_files == 1
+
+
+class _RefusingFiles(FakeGeminiFiles):
+    """Fake Files resource that refuses one file's upload, as a dead API key refuses every one."""
+
+    def __init__(self, refused: str) -> None:
+        """Initializes the fake with the display name whose upload raises."""
+        super().__init__()
+        self.refused = refused
+
+    async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
+        """Raises for the refused display name and uploads anything else."""
+        if config["display_name"] == self.refused:
+            raise RuntimeError("401 UNAUTHENTICATED")
+        return await super().upload(file=file, config=config)
+
+
+class _UnreadableAttachment(FakeAttachment):
+    """An attachment whose download fails, as an unreachable CDN URL does."""
+
+    async def read(self) -> bytes:
+        """Raises instead of returning the attachment's bytes."""
+        raise OSError("connection reset")
+
+
+@pytest.mark.parametrize("failure", ["download", "upload"])
+async def test_a_failed_attachment_reaches_the_model_as_a_notice(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """An attachment that fails to download or upload is named in its place, not dropped.
+
+    Dropped outright, an attachment-only message reaches the answer as an author header and
+    nothing else, and the model tells the sender their message was blank.
+    """
+    _pin_gemini_slow_model(monkeypatch=monkeypatch)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    builder = _media_builder()
+    # Each case breaks one step only, so neither passes on the other's failure.
+    refused = "photo.png" if failure == "upload" else ""
+    builder.attachment_handler = _fake_uploader(files=_RefusingFiles(refused=refused))
+    failing = _UnreadableAttachment if failure == "download" else FakeAttachment
+    message = FakeMessage(content="", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        failing(
+            filename="photo.png", content_type="image/png", payload=_png_bytes(), attachment_id=1
+        ),
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=_png_bytes(), attachment_id=2
+        ),
+    ]
+
+    rendered = await builder.process_single_message(message=as_message(fake=message))
+
+    parts = step_dicts(steps=rendered["content"])[1:]
+    assert [part["type"] for part in parts] == ["input_text", "input_file"]
+    assert parts[0]["text"].startswith("[attachment: image")
+    assert "fail" in parts[0]["text"]
 
 
 @pytest.mark.parametrize(
