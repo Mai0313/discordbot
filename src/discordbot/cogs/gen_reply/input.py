@@ -76,6 +76,11 @@ class AttachmentSource(BaseModel):
         ),
     )
 
+    @property
+    def marker_kind(self) -> str:
+        """The name an `[attachment: ...]` marker gives this source: a sticker as such, else its kind."""
+        return "sticker" if self.is_sticker else self.kind
+
 
 class MessageInputBuilder(BaseModel):
     """Converts Discord messages into Responses API input parts."""
@@ -513,6 +518,8 @@ class MessageInputBuilder(BaseModel):
     ) -> list[RenderedPart]:
         """Returns rendered attachment content parts for `message`, using the per-message cache when fresh.
 
+        A source that failed to download or upload keeps its slot as a text notice saying so.
+
         Args:
             message (Message): Message whose attachment sources are rendered.
             sources (list[AttachmentSource]): Modality-filtered attachment sources for `message`.
@@ -560,7 +567,17 @@ class MessageInputBuilder(BaseModel):
             self._attachment_cache[cache_key] = (expires_at, [part.copy() for part in resolved])
             if len(self._attachment_cache) > 128:
                 self._attachment_cache.popitem(last=False)
-        return resolved
+        # Dropping a failed source outright leaves an attachment-only message reading as blank,
+        # and the model then tells the sender nothing was posted.
+        return [
+            item.part
+            if item is not None
+            else ResponseInputTextParam(
+                text=f"[attachment: {source.marker_kind} (failed to load; content unavailable)]",
+                type="input_text",
+            )
+            for source, item in zip(sources, rendered, strict=True)
+        ]
 
     def _assemble_input_message(
         self,
@@ -616,10 +633,7 @@ class MessageInputBuilder(BaseModel):
         """
         content = await self.get_cleaned_content(message=message)
         markers: list[ResponseInputTextParam] = [
-            ResponseInputTextParam(
-                text=f"[attachment: {'sticker' if source.is_sticker else source.kind}]",
-                type="input_text",
-            )
+            ResponseInputTextParam(text=f"[attachment: {source.marker_kind}]", type="input_text")
             for source in sources
         ]
         return self._assemble_input_message(
