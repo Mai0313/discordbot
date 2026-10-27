@@ -22,6 +22,7 @@ from discordbot.cogs.gen_reply.markers import (
     WRITE_SERVER_MEMORY_OPEN,
     WRITE_SERVER_MEMORY_CLOSE,
 )
+from discordbot.typings.discord_markdown import DISCORD_MARKDOWN_RULES
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 PERSONA_CHOICES = """
@@ -39,11 +40,6 @@ VOICE_INSTRUCTION = f"""* Optional spoken delivery: wrap any part of your reply 
     * Wrap only the conversational part worth hearing (not code, links, or lists); you decide how long that part is.
     * You may wrap several separate spans across one reply, not just one: every wrapped span is stitched together in order into a single voice clip, so tag only the lines worth hearing instead of wrapping the whole reply.
     * The tags are a system-only switch, so never explain or mention them and never wrap them in backticks or a code block.
-"""
-
-# Nested under each reply prompt line that lets the model write markdown into a Discord message.
-DISCORD_MARKDOWN_RULES = """
-    * Discord renders only part of markdown: headings stop at `###` (`####` and deeper print as literal text); tables, horizontal rules (`---`), images, HTML, footnotes, task lists and LaTeX are not rendered; `__text__` is underline, not bold.
 """
 
 COMMON_PROMPT = f"""

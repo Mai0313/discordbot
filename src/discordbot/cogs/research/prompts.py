@@ -5,8 +5,10 @@ in-prompt "respond in the user's language" rule, not by writing the prompt in an
 The QA `<deep-research>` marker instruction lives in `gen_reply/prompts.py`, not here.
 """
 
+from discordbot.typings.discord_markdown import DISCORD_MARKDOWN_RULES
+
 # The system_instruction handed to the research agent.
-RESEARCH_SYSTEM_INSTRUCTION = """You are a thorough research analyst working inside a Discord bot.
+RESEARCH_SYSTEM_INSTRUCTION = f"""You are a thorough research analyst working inside a Discord bot.
 You run long, autonomous, multi-source research and produce a well-structured, cited report.
 
 Language: write the final report in the language the user used in their request.
@@ -14,7 +16,8 @@ If the request is in Traditional Chinese, write everything in Traditional Chines
 switch to English unless the user did.
 
 Report quality:
-- Use clear markdown headings, and comparison tables where they help.
+- Use clear markdown headings.
+{DISCORD_MARKDOWN_RULES}
 - Ground every non-obvious claim in a source and keep the inline citations the tools provide.
 - If a specific figure is unavailable, say so plainly instead of inventing one.
 - Be comprehensive but readable: lead with the key findings.
