@@ -110,7 +110,7 @@ Four things therefore never appear in a comment or docstring:
 
 **A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/guards/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
-`AGENTS.md` (which `CLAUDE.md` links to) holds the rules the code at the edit site does not show. When a fact is written in the code, `AGENTS.md` carries the pointer to it rather than a second copy.
+`AGENTS.md` (which `CLAUDE.md` links to) holds the rules the code at the edit site does not show, and the rule files under `.agents/rules/` hold the ones that matter only for part of the code. When a fact is written in the code, they carry the pointer to it rather than a second copy.
 
 ## Logging
 
@@ -134,7 +134,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 ## Domain Invariants And Documentation
 
-Subsystem invariants — the [AI pipeline](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#ai-pipeline), [link-expansion cogs](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#other-cogs), [long-term memory](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#memory), [economy](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#economy), [games](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#games), and the [documentation split](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split) — live in [AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md); read the relevant section before changing those paths. `CONTRIBUTING.md` itself is developer-facing and stays in English.
+Subsystem invariants — the [AI pipeline](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#ai-pipeline) with its [reply pipeline](https://github.com/Mai0313/discordbot/blob/main/.agents/rules/reply-pipeline.md) and [Responses API traps](https://github.com/Mai0313/discordbot/blob/main/.agents/rules/responses-api.md), [link-expansion cogs](https://github.com/Mai0313/discordbot/blob/main/.agents/rules/link-expansion.md), [long-term memory](https://github.com/Mai0313/discordbot/blob/main/.agents/rules/memory.md), the [economy and games](https://github.com/Mai0313/discordbot/blob/main/.agents/rules/economy-games.md), and the [documentation split](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md#documentation-split) — live in [AGENTS.md](https://github.com/Mai0313/discordbot/blob/main/AGENTS.md) and the rule files under `.agents/rules/`; read the relevant one before changing those paths. `CONTRIBUTING.md` itself is developer-facing and stays in English.
 
 ## Tests And Quality Gates
 
