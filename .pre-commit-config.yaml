@@ -117,7 +117,7 @@ repos:
   #       entry: bash -c 'if command -v code2flow >/dev/null 2>&1; then code2flow **/**/*.py -o ./.github/code2flow/flow.png; else echo "code2flow not installed, skipping"; fi'
 
   - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.0.91
+    rev: v0.0.92
     hooks:
       - id: ty
         # ty checks the whole repo (src, tests, scripts), so its environment
