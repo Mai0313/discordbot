@@ -42,8 +42,9 @@ VOICE_INSTRUCTION = f"""* Optional spoken delivery: wrap any part of your reply 
 """
 
 # Nested under each reply prompt line that lets the model write markdown into a Discord message.
-DISCORD_MARKDOWN_RULES = """\
-    * Discord renders only part of markdown: headings stop at `###` (`####` and deeper print as literal text); tables, horizontal rules (`---`), images, HTML, footnotes, task lists and LaTeX are not rendered; `__text__` is underline, not bold."""
+DISCORD_MARKDOWN_RULES = """
+    * Discord renders only part of markdown: headings stop at `###` (`####` and deeper print as literal text); tables, horizontal rules (`---`), images, HTML, footnotes, task lists and LaTeX are not rendered; `__text__` is underline, not bold.
+"""
 
 COMMON_PROMPT = f"""
 * Treat `虛擬歡樂豆` as real money worth the same as USD.
