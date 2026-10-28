@@ -77,6 +77,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Pass `ReplyToolkit` (`gen_reply/toolkit.py`) explicitly, never through a `ContextVar`**, so a missed hand-off is a `ty` error.
 - **Do not reintroduce per-key dispatch** (#582, removed in #620). A peak-hour 503 is upstream model capacity, not a per-project limit (#583: split evenly across keys, zero 429s), while per-key dispatch doubled Files uploads.
 - **Author runtime prompts in English** (prompts, tool descriptions, `TTS_STYLE_DIRECTIVE`). Chinese stays only as quoted data (a token the context carries, such as `## 成員稱呼`, or a sample of what users type or a note should say), the 轉帳 caution in `COMMON_PROMPT` and the bot's name 破貓.
+- **A runtime prompt whose output is posted to Discord as markdown embeds `typings/discord_markdown.py::DISCORD_MARKDOWN_RULES`**; output that stays model input (a memory note) or plain text (a thread title) does not.
 - **IMAGE and VIDEO carry no default aesthetic; never reintroduce a code-side static style suffix**, which cannot honor "unless the user specified".
 - **Name a Responses API call's result `responses` and its stream items `response`.**
 - **Answer proxy-behavior questions from LiteLLM's source in the running container, not its docs, which lag it.** Use `docker exec litellm-litellm-1 python -c "import importlib.metadata as m; print(m.version('litellm'))"` and `/app/.venv/lib/python3.13/site-packages/litellm`, or shallow-clone upstream into a scratch dir for a version the container lacks.
