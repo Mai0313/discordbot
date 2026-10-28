@@ -334,7 +334,7 @@ class ResponseStreamer(BaseModel):
     # reported any. The distinction is the point: only the Responses bridge reports grounding,
     # and only as `url_citation` annotations, so a zero written for the Interactions path (or for
     # a stream that ended without `response.completed`) would read as a genuinely ungrounded
-    # answer. See the grounding note in CLAUDE.md's Responses API Gotchas.
+    # answer. See the grounding note in `.agents/rules/responses-api.md`.
     _url_citations: int | None = PrivateAttr(default=None)
 
     @staticmethod
