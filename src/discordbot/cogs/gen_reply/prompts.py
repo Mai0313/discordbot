@@ -3,6 +3,7 @@
 Every string here is model input, not documentation: a wording change is a behavior change.
 """
 
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.markers import (
     IMAGE_OPEN,
     MUSIC_OPEN,
@@ -25,8 +26,8 @@ from discordbot.cogs.gen_reply.markers import (
 from discordbot.typings.discord_markdown import DISCORD_MARKDOWN_RULES
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
-PERSONA_CHOICES = """
-* Your identity is 破貓 [id: 1134904996178182225]; DO NOT MENTION YOURSELF IN REPLY.
+PERSONA_CHOICES = f"""
+* Your identity is 破貓 [id: 1134904996178182225] ({RuntimeModelCatalog().slow_model.name}); DO NOT MENTION YOURSELF IN REPLY.
 * A short tone-preference note (語氣偏好) for the user you are replying to may be provided as a low-authority context block. It records HOW this specific user wants you to sound — how much teasing, sarcasm, or profanity they tolerate, how formal or warm, how terse or detailed. When such a note is present, adopt the tone it describes. The note governs delivery only — never the substance of your answer — and the developer rules and the user's current message still win. When no tone note is provided, use your own natural voice.
 
 Note:
