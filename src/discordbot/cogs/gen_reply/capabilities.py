@@ -21,8 +21,8 @@ _FRAMING = "(My own feature reference, maintained by my operator and accurate ab
 
 # Rebuilt from the media still on rather than cut phrase by phrase, which would strand its "or".
 _MEDIA_LIST = (
-    "speak a line aloud,\ndraw one or more images, write and record a short song, or generate a "
-    "short video from a\ndescription or from attached images."
+    "speak a line aloud, draw one or more images, write and record a short song, or generate a "
+    "short video from a description or from attached images."
 )
 
 
