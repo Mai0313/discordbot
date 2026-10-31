@@ -24,6 +24,7 @@ from discordbot.utils.expansion_cog import (
     ExpansionCog,
     ExpansionDelivery,
     with_gallery,
+    omitted_posts_note,
     omitted_images_note,
 )
 from discordbot.utils.discord_embeds import (
@@ -95,7 +96,7 @@ def _remainder_notes(omitted_posts: int, omitted_images: int) -> list[str]:
     if omitted_images > 0:
         notes.append(omitted_images_note(count=omitted_images))
     if omitted_posts > 0:
-        notes.append(f"📝 另有 {omitted_posts} 篇未展開")
+        notes.append(omitted_posts_note(count=omitted_posts))
     return notes
 
 

@@ -7,10 +7,10 @@ reader sees when the post cannot be read.
 
 import re
 
-from discordbot.utils.expansion_cog import TRUNCATION_NOTICE
+from discordbot.utils.expansion_cog import TRUNCATION_NOTICE, omitted_posts_note
 from discordbot.utils.discord_embeds import utf16_length
-from discordbot.cogs.parse_twitter.cog import _TRUNCATED_NOTICE, TwitterCogs
-from discordbot.services.platforms.twitter import TwitterConversation
+from discordbot.cogs.parse_twitter.cog import _PARENT_HEADER, _TRUNCATED_NOTICE, TwitterCogs
+from discordbot.services.platforms.twitter import TwitterOutput, TwitterConversation
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 
 from tests.helpers.link_sources import (
@@ -34,13 +34,8 @@ async def test_a_pasted_link_is_expanded_into_a_card() -> None:
     assert EXPANSION_DONE_EMOJI in message.reactions
 
 
-async def test_the_footer_carries_the_counters_and_says_the_replies_are_gone() -> None:
-    """The reply figure is the only number the endpoint gives for a thread it will not show.
-
-    So the number cannot stand alone: `💬 540` under a card with no replies in it reads as an
-    expansion that declined to show what it had, rather than as a platform that served none. At
-    zero there is nothing to explain, so the same footer carries nothing beside its counters.
-    """
+async def test_the_footer_carries_the_counters_and_nothing_about_the_replies() -> None:
+    """The card shows no replies on Threads either, so the count stands alone as it does there."""
     message, _ = await expand(cog_type=TwitterCogs, outcome=twitter_post(image_urls=[]))
     footer = expansion_embeds(message=message)[0].footer.text
     quiet, _ = await expand(
@@ -51,8 +46,7 @@ async def test_the_footer_carries_the_counters_and_says_the_replies_are_gone() -
     assert footer is not None
     assert "125" in footer
     assert "540" in footer
-    # The caveat is whatever the 540 footer says beyond its numbers.
-    assert footer.replace("540", "0") != quiet_footer
+    assert footer.replace("540", "0") == quiet_footer
 
 
 async def test_a_video_post_shows_its_poster_and_a_link() -> None:
@@ -138,6 +132,104 @@ async def test_the_post_it_replies_to_gets_its_own_card_before_it() -> None:
     assert "Feel good." in embeds[0].description
     assert embeds[0].url == "https://x.com/Dbacks/status/1"
     assert embeds[0].colour != embeds[1].colour
+
+
+def _ancestor(index: int, **overrides: object) -> TwitterOutput:
+    """A post above the linked one, with its own URL so it stays out of the gallery."""
+    fields: dict[str, object] = {
+        "text": f"ancestor {index}",
+        "url": f"https://x.com/a/status/{index}",
+        "image_urls": [],
+    }
+    fields.update(overrides)
+    return twitter_output(**fields)
+
+
+async def test_the_whole_thread_reads_oldest_first_and_only_the_parent_is_headed() -> None:
+    """The card shows the thread the way `parse_threads` does, root at the top."""
+    chain = [_ancestor(index=index) for index in range(3)]
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=TwitterConversation(chain=[*chain, twitter_output(image_urls=[])]),
+    )
+    embeds = expansion_embeds(message=message)
+
+    assert [embed.url for embed in embeds[:3]] == [post.url for post in chain]
+    assert [_PARENT_HEADER in (embed.description or "") for embed in embeds] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+
+
+async def test_a_post_above_carries_its_first_picture_or_its_clip() -> None:
+    """A reply on Twitter is often a picture and little else, so a text-only card would be empty."""
+    still = _ancestor(index=1, image_urls=["https://pbs.twimg.com/media/a.jpg", "https://b"])
+    clip = _ancestor(
+        index=2,
+        video_urls=["https://video.twimg.com/c.mp4"],
+        video_poster_urls=["https://pbs.twimg.com/thumb.jpg"],
+    )
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=TwitterConversation(chain=[still, clip, twitter_output(image_urls=[])]),
+    )
+    embeds = expansion_embeds(message=message)
+
+    assert embeds[0].image.url == "https://pbs.twimg.com/media/a.jpg"
+    assert embeds[1].image.url == "https://pbs.twimg.com/thumb.jpg"
+    assert "https://video.twimg.com/c.mp4" in (embeds[1].description or "")
+
+
+async def test_a_thread_past_ten_embeds_keeps_its_nearest_posts() -> None:
+    """The post's four images and its quote come first; the farthest ancestors are counted."""
+    chain = [_ancestor(index=index) for index in range(8)]
+    quoted = twitter_output(text="quoted", url="https://x.com/q/status/9", image_urls=[])
+    images = [f"https://pbs.twimg.com/media/{index}.jpg" for index in range(4)]
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=TwitterConversation(
+            chain=[*chain, twitter_output(image_urls=images, quoted=quoted)]
+        ),
+    )
+    embeds = expansion_embeds(message=message)
+    target = next(embed for embed in embeds if embed.url == TWITTER_URL and embed.footer.text)
+
+    assert len(embeds) == 10
+    assert [embed.url for embed in embeds[:5]] == [post.url for post in chain[3:]]
+    assert omitted_posts_note(count=3) in (target.footer.text or "")
+
+
+async def test_a_deep_thread_of_long_posts_fits_one_message() -> None:
+    """Nine long ancestors with clips beside a long post: Discord rejects the whole send past 6000."""
+    chain = [
+        _ancestor(
+            index=index,
+            text="p" * 3000,
+            video_urls=[f"https://video.twimg.com/{index}/" + "v" * 60 + ".mp4"],
+        )
+        for index in range(9)
+    ]
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=TwitterConversation(
+            chain=[*chain, twitter_output(text="t" * 5000, image_urls=[])]
+        ),
+    )
+    embeds = expansion_embeds(message=message)
+    spent = sum(
+        utf16_length(value=text)
+        for embed in embeds
+        for text in (embed.description, embed.footer.text, embed.author.name)
+        if isinstance(text, str)
+    )
+
+    assert len(embeds) == 10
+    assert spent <= 6000
+    assert all(utf16_length(value=embed.description or "") <= 4096 for embed in embeds)
+    # Nine cards' reserve would exceed the whole message; the linked post must keep its words.
+    assert (embeds[-1].description or "").startswith("t" * 1000)
 
 
 async def test_a_quoted_post_gets_a_card_outside_the_gallery() -> None:
