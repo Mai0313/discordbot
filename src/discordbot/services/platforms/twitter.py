@@ -56,6 +56,7 @@ from typing import Any
 from datetime import UTC, datetime
 from functools import cached_property
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 
 import logfire
 from pydantic import Field, BaseModel, ValidationError, computed_field
@@ -679,11 +680,18 @@ class TwitterDownloader(PlatformDownloader):
         `replies` is not only direct replies: a reply to one of them follows the reply it answers
         (6 of 40 on one sample, three deep), so the branches are grouped by `replying_to`.
         """
+        # On a thread of its own so the bound is on the whole request: `requests` bounds each
+        # socket read, so a response trickling in under that could hold the read past its
+        # caller's deadline and cost the post with it. One still running past the bound is left
+        # to finish unread.
+        pool = ThreadPoolExecutor(max_workers=1)
+        fetch = pool.submit(self._fetch_conversation, status_id=status_id)
+        pool.shutdown(wait=False)
         # Broad on purpose: this read only adds to a post syndication already served, so nothing
         # it raises may cost that post.
         try:
             conversation = _FxThreadPage.model_validate(
-                self._fetch_conversation(status_id=status_id)
+                fetch.result(timeout=FXTWITTER_CONVERSATION_TIMEOUT_SECONDS)
             )
             if conversation.code != 200:
                 raise RuntimeError(f"FxTwitter answered code {conversation.code}")
