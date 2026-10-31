@@ -208,6 +208,12 @@ MAX_TWITTER_POSTS: Final[int] = MAX_THREADS_POSTS
 # measured 33 to 46 direct replies (2026-10-31), so this does bind, keeping the most-liked.
 MAX_TWITTER_REPLIES: Final[int] = MAX_THREADS_REPLIES
 
+# Cap on one reply's text below a Twitter post. FxTwitter serves a long post whole (432 characters
+# of one syndication cuts at ~275, 2026-10-31), so one essay-length reply would otherwise outweigh
+# the post and every other reply in the block. The longest of 145 sampled replies ran 928
+# characters, so this binds only on an essay, and the render says how much it cut.
+MAX_TWITTER_REPLY_CHARS: Final[int] = 2000
+
 # Cap on the comments injected below an Instagram post. Higher than Facebook's because the page
 # carries the whole list rather than a preload, so this is what keeps a viral post's discussion
 # from crowding out the rest of the request.

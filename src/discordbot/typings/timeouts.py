@@ -220,7 +220,8 @@ INSTAGRAM_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
 
 # The same bound for the Twitter expansion, kept at the same number so the three expansions that
 # only read a page answer a stalled platform identically. Twitter is the fastest of them by a wide
-# margin — two JSON requests, bounded below at 10s and 15s, rather than a ~950KB page to walk — so
+# margin — at most two JSON requests, the second stopped at 15s whatever it is doing, rather than
+# a ~950KB page to walk — so
 # this is headroom rather than a budget, and shortening it would only turn a slow minute into a
 # failed one.
 TWITTER_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
@@ -277,9 +278,11 @@ INSTAGRAM_PAGE_TIMEOUT_SECONDS: Final[int] = 20
 # has stalled rather than being slow.
 TWITTER_PAGE_TIMEOUT_SECONDS: Final[int] = 10
 
-# Bound on the FxTwitter conversation request that follows it. Longer than the syndication one
-# because the body is ~80KB of thread and replies and a healthy response took ~1.5s (2026-10-31);
-# past it the read gives up and the post keeps what syndication served.
+# Bound on the FxTwitter conversation request that follows it, on the whole request rather than
+# each socket read: past it the reader stops waiting and the post keeps what syndication served,
+# so a slow or trickling response costs the thread and the replies, never the post. Longer than
+# the syndication one because the body is ~80KB of thread and replies and a healthy response took
+# ~1.5s (2026-10-31).
 FXTWITTER_CONVERSATION_TIMEOUT_SECONDS: Final[int] = 15
 
 # 10s caps the history-render I/O tail: a URL taking longer is almost always a dead/slow CDN
