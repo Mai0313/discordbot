@@ -198,7 +198,7 @@ async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPa
     assert len(interactions.calls) == 1
     assert interactions.calls[0].generation_config["thinking_level"] == "low"
     last_step_parts = interactions.calls[0].input[-1]["content"]
-    assert {"type": "video", "uri": url} in last_step_parts
+    assert {"type": "video", "uri": url, "processing": "agentic"} in last_step_parts
     # The video turn is told the request's time and place, exactly as a Responses one is.
     _assert_runtime_time_context(
         instructions=interactions.calls[0].system_instruction, system_prompt="SYS"
