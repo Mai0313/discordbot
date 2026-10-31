@@ -12,9 +12,10 @@ most-liked direct replies and can fail outright while the post itself reads fine
 post's own count, and when none arrived it says what they say is unknown: a model handed `540
 replies` and no lines will otherwise answer "what are people saying" from the post alone.
 
-**A long post arrives truncated.** Past roughly 275 characters Twitter cuts the body and puts the
-rest behind an id it will not resolve, marking the cut in no way whatsoever. So the render says
-where the text stops, or the model summarises a fragment as the whole post.
+**A long post can arrive truncated.** FxTwitter serves it whole, but when that read fails the
+official endpoint's copy is all there is, cut past roughly 275 characters with the cut marked in
+no way whatsoever. So the render says where the text stops, or the model summarises a fragment as
+the whole post.
 
 There is also no video to watch, exactly as on Facebook and Instagram: the clip is fetchable, but
 this source deliberately does not ingest one — the post rides as text, its stills, and a link.

@@ -39,7 +39,7 @@ async def test_a_pasted_link_is_expanded_into_a_card() -> None:
 
 
 def test_the_cards_reader_skips_the_replies() -> None:
-    """The card shows none, and without them a thread's first post never waits on FxTwitter."""
+    """The card shows none, and without them a short first post never waits on FxTwitter."""
     reader = TwitterCogs(bot=stub_bot()).downloader_factory()
 
     assert isinstance(reader, TwitterDownloader)
