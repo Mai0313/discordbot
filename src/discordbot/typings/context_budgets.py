@@ -199,6 +199,15 @@ MAX_INSTAGRAM_INGEST_IMAGES: Final[int] = 8
 # all, matching Facebook and Instagram — the clip rides as a link the model is told it did not watch.
 MAX_TWITTER_INGEST_IMAGES: Final[int] = 4
 
+# Cap on posts rendered from a Twitter thread, the linked post included, set to the Threads one for
+# the same reason: FxTwitter walks to the root, so a reply deep in a long argument would otherwise
+# render every post above it. The nearest ancestors are the ones kept.
+MAX_TWITTER_POSTS: Final[int] = MAX_THREADS_POSTS
+
+# Cap on the replies rendered below a Twitter post, set to the Threads one. FxTwitter's first page
+# measured 33 to 46 direct replies (2026-10-31), so this does bind, keeping the most-liked.
+MAX_TWITTER_REPLIES: Final[int] = MAX_THREADS_REPLIES
+
 # Cap on the comments injected below an Instagram post. Higher than Facebook's because the page
 # carries the whole list rather than a preload, so this is what keeps a viral post's discussion
 # from crowding out the rest of the request.

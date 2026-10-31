@@ -310,6 +310,15 @@ def omitted_images_note(count: int) -> str:
     return f"🖼️ 另有 {count} 張"
 
 
+def omitted_posts_note(count: int) -> str:
+    """Returns the footer note counting the posts above the linked one that the card leaves out.
+
+    Args:
+        count (int): Number of omitted posts.
+    """
+    return f"📝 另有 {count} 篇未展開"
+
+
 def expansion_failure_emoji(error: Exception) -> str:
     """Returns the outcome reaction emoji for a failed read.
 
@@ -679,9 +688,9 @@ class ExpansionCog[ParsedT](commands.Cog):
         cards (#1122). An image that fails to download, that the room left beside the card's own
         media cannot carry, or in a channel refusing attachments keeps its link.
         """
-        # Walked from the last embed: a Threads card puts the linked post and the post it quotes
-        # after the chain above them, so when the attachment cap binds, a far ancestor's image is
-        # the one left linked. No other card carries enough images for the cap to bind.
+        # Walked from the last embed: a Threads or Twitter card puts the linked post and the post
+        # it quotes after the chain above them, so when the attachment cap or the upload room
+        # binds, a far ancestor's image is the one left linked.
         image_urls = list(
             dict.fromkeys(
                 embed.image.url

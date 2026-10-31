@@ -13,7 +13,10 @@ from datetime import UTC, datetime
 import pytest
 import requests
 
-from discordbot.typings.timeouts import TWITTER_PAGE_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    TWITTER_PAGE_TIMEOUT_SECONDS,
+    FXTWITTER_CONVERSATION_TIMEOUT_SECONDS,
+)
 from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
 from discordbot.services.platforms import twitter as twitter_module
 from discordbot.services.platforms.twitter import (
@@ -110,23 +113,81 @@ def _tombstone(
     }
 
 
-def _downloader(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> TwitterDownloader:
-    """A downloader whose one request answers with `payload`."""
+def _fx_status(
+    status_id: str,
+    text: str = "a post",
+    screen_name: str = "someone",
+    replying_to: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One FxTwitter post, under the payload's own key names, as `/2/conversation` serves it."""
+    payload: dict[str, Any] = {
+        "type": "status",
+        "id": status_id,
+        "text": text,
+        "raw_text": {"text": text, "display_text_range": [0, len(text)]},
+        "author": {"screen_name": screen_name, "avatar_url": "https://pbs.twimg.com/a.jpg"},
+        "likes": 3,
+        "replies": 1,
+        "created_timestamp": 1793334838,
+        "media": {},
+        "replying_to": {"screen_name": "x", "status": replying_to} if replying_to else None,
+    }
+    payload.update(extra or {})
+    return payload
+
+
+def _fx_page(
+    thread: list[dict[str, Any]] | None = None, replies: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """A `/2/conversation` response; by default the post alone, with no replies."""
+    return {
+        "code": 200,
+        "status": _fx_status(status_id=_STATUS_ID),
+        "thread": thread if thread is not None else [_fx_status(status_id=_STATUS_ID)],
+        "replies": replies or [],
+    }
+
+
+def _downloader(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any],
+    conversation: dict[str, Any] | Exception | None = None,
+) -> TwitterDownloader:
+    """A downloader whose syndication request answers `payload` and FxTwitter one `conversation`.
+
+    `conversation` is an FxTwitter page, an exception that request raises, or None for the post
+    alone with no replies.
+    """
     downloader = TwitterDownloader()
 
     def fake_fetch(self: TwitterDownloader, status_id: str) -> dict[str, Any]:
         del self, status_id
         return payload
 
+    def fake_conversation(self: TwitterDownloader, status_id: str) -> dict[str, Any]:
+        del self, status_id
+        if isinstance(conversation, Exception):
+            raise conversation
+        return conversation if conversation is not None else _fx_page()
+
     monkeypatch.setattr(target=TwitterDownloader, name="_fetch_tweet", value=fake_fetch)
+    monkeypatch.setattr(
+        target=TwitterDownloader, name="_fetch_conversation", value=fake_conversation
+    )
     return downloader
 
 
 def _parse(
-    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any], url: str = _URL
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any],
+    url: str = _URL,
+    conversation: dict[str, Any] | Exception | None = None,
 ) -> TwitterConversation:
-    """Parses one payload into a conversation."""
-    return _downloader(monkeypatch, payload=payload).parse_metadata(url=url)
+    """Parses one payload, and the FxTwitter page beside it, into a conversation."""
+    return _downloader(monkeypatch, payload=payload, conversation=conversation).parse_metadata(
+        url=url
+    )
 
 
 @pytest.mark.parametrize(
@@ -330,14 +391,140 @@ def test_a_link_in_the_body_is_expanded_out_of_its_t_co_form(
     assert target.text == "Read this https://example.com/article now"
 
 
-def test_a_reply_carries_the_post_above_it_as_the_chain(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ancestor arrives inside the same response, so one costs nothing and two cost a request."""
-    conversation = _parse(monkeypatch, payload=_tweet(extra={"parent": _tweet(text="Feel good.")}))
+@pytest.mark.parametrize(
+    "conversation",
+    [None, LinkRetryableError("throttled"), {"code": 500}],
+    ids=["no thread", "failed read", "refused read"],
+)
+def test_without_an_fxtwitter_thread_the_embedded_parent_is_the_chain(
+    monkeypatch: pytest.MonkeyPatch, conversation: dict[str, Any] | Exception | None
+) -> None:
+    """Syndication's one free parent is what a failed or empty FxTwitter read leaves standing."""
+    parsed = _parse(
+        monkeypatch,
+        payload=_tweet(extra={"parent": _tweet(text="Feel good.")}),
+        conversation=conversation,
+    )
 
-    assert len(conversation.chain) == 2
-    assert conversation.chain[0].text == "Feel good."
-    assert conversation.target is not None
-    assert conversation.target.text == "Play good."
+    assert [post.text for post in parsed.chain] == ["Feel good.", "Play good."]
+    assert parsed.reply_branches == []
+
+
+def test_the_thread_is_walked_by_reply_ids_not_page_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FxTwitter served one real thread as parent, root, post; the chain must read root first."""
+    thread = [
+        _fx_status(status_id="2", text="parent", replying_to="1"),
+        _fx_status(status_id="1", text="root"),
+        _fx_status(status_id=_STATUS_ID, text="post", replying_to="2"),
+        _fx_status(status_id="9", text="a stranger's post in no chain"),
+    ]
+
+    parsed = _parse(monkeypatch, payload=_tweet(), conversation=_fx_page(thread=thread))
+
+    assert [post.text for post in parsed.chain] == ["root", "parent", "Play good."]
+    assert parsed.parent is not None
+    assert parsed.parent.text == "parent"
+
+
+def test_the_walk_stops_at_a_post_the_thread_does_not_serve_as_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deleted ancestor is a tombstone in the spec; it ends the chain rather than blanking a card."""
+    thread = [
+        _fx_status(status_id="3", text="grandparent"),
+        {"type": "tombstone", "id": "2", "reason": "deleted"},
+        _fx_status(status_id=_STATUS_ID, replying_to="2"),
+    ]
+
+    parsed = _parse(monkeypatch, payload=_tweet(), conversation=_fx_page(thread=thread))
+
+    assert [post.text for post in parsed.chain] == ["Play good."]
+
+
+def test_an_ancestor_loses_its_leading_mentions_by_codepoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FxTwitter's range counts codepoints: `😬` is `[25, 26]`, where UTF-16 would say `[25, 27]`."""
+    text = "@HuaweiMate6 @cz_binance 😬"
+    parent = _fx_status(
+        status_id="2",
+        text=text,
+        extra={"raw_text": {"text": text, "display_text_range": [25, 26]}},
+    )
+    thread = [parent, _fx_status(status_id=_STATUS_ID, replying_to="2")]
+
+    parsed = _parse(monkeypatch, payload=_tweet(), conversation=_fx_page(thread=thread))
+
+    assert parsed.chain[0].text == "😬"
+
+
+def test_an_ancestor_carries_its_media_and_author(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A still keeps its original-size URL, and a clip its mp4 and poster frame."""
+    media = {
+        "all": [
+            {"type": "photo", "url": "https://pbs.twimg.com/media/A.jpg?name=orig"},
+            {
+                "type": "video",
+                "url": "https://video.twimg.com/v.mp4",
+                "thumbnail_url": "https://pbs.twimg.com/thumb.jpg",
+            },
+        ]
+    }
+    parent = _fx_status(status_id="2", screen_name="cz_binance", extra={"media": media})
+    thread = [parent, _fx_status(status_id=_STATUS_ID, replying_to="2")]
+
+    ancestor = _parse(monkeypatch, payload=_tweet(), conversation=_fx_page(thread=thread)).chain[0]
+
+    assert ancestor.image_urls == ["https://pbs.twimg.com/media/A.jpg?name=orig"]
+    assert ancestor.video_urls == ["https://video.twimg.com/v.mp4"]
+    assert ancestor.video_poster_urls == ["https://pbs.twimg.com/thumb.jpg"]
+    assert ancestor.url == "https://x.com/cz_binance/status/2"
+    assert ancestor.taken_at == datetime(2026, 10, 30, 4, 33, 58, tzinfo=UTC)
+
+
+def test_replies_sit_behind_the_reply_they_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`replies` mixes in replies to replies, each right after the one it answers."""
+    replies = [
+        _fx_status(status_id="11", text="first", replying_to=_STATUS_ID),
+        _fx_status(status_id="12", text="answer to first", replying_to="11"),
+        _fx_status(status_id="13", text="second", replying_to=_STATUS_ID),
+    ]
+
+    parsed = _parse(monkeypatch, payload=_tweet(), conversation=_fx_page(replies=replies))
+
+    assert [[reply.text for reply in branch] for branch in parsed.reply_branches] == [
+        ["first", "answer to first"],
+        ["second"],
+    ]
+
+
+def test_a_malformed_reply_costs_only_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The payload is not ours: one bad item must not take the thread and every reply with it."""
+    replies = [
+        _fx_status(status_id="11", text="fine", replying_to=_STATUS_ID),
+        _fx_status(status_id="12", replying_to=_STATUS_ID, extra={"likes": "lots"}),
+        _fx_status(status_id="13", replying_to=_STATUS_ID, extra={"author": {"avatar_url": None}}),
+    ]
+
+    parsed = _parse(monkeypatch, payload=_tweet(), conversation=_fx_page(replies=replies))
+
+    assert [branch[0].text for branch in parsed.reply_branches] == ["fine", "a post"]
+
+
+def test_a_refused_post_costs_no_fxtwitter_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FxTwitter only adds to a post syndication served, so a tombstone spends nothing on it."""
+    downloader = _downloader(monkeypatch, payload=_tombstone())
+    asked: list[str] = []
+
+    def record(self: TwitterDownloader, status_id: str) -> dict[str, Any]:
+        del self
+        asked.append(status_id)
+        return _fx_page()
+
+    monkeypatch.setattr(target=TwitterDownloader, name="_fetch_conversation", value=record)
+
+    assert downloader.parse_metadata(url=_URL).target is None
+    assert asked == []
 
 
 def test_an_embedded_post_reports_its_replies_under_the_other_name(
@@ -511,6 +698,26 @@ def test_the_request_carries_what_the_endpoint_refuses_to_answer_without(
     assert calls[0]["params"]["token"]
     assert calls[0]["headers"]["User-Agent"]
     assert calls[0]["timeout"] == TWITTER_PAGE_TIMEOUT_SECONDS
+
+
+def test_the_fxtwitter_request_names_the_post_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second request is FxTwitter's conversation page for the same id, under its own bound."""
+    calls: list[dict[str, Any]] = []
+
+    def fake_get(url: str, **kwargs: object) -> _FakeResponse:
+        calls.append({"url": url, **kwargs})
+        return _FakeResponse(payload=_fx_page() if "fxtwitter" in url else _tweet())
+
+    monkeypatch.setattr(target=twitter_module.requests, name="get", value=fake_get)
+
+    TwitterDownloader().parse_metadata(url=f"{_URL}?s=46&t=f4h6W3bSqlanXhWACchAYQ")
+
+    assert calls[1]["url"] == f"https://api.fxtwitter.com/2/conversation/{_STATUS_ID}"
+    assert "params" not in calls[1]
+    assert calls[1]["headers"]["User-Agent"]
+    assert calls[1]["timeout"] == FXTWITTER_CONVERSATION_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize(
