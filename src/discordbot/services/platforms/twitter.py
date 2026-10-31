@@ -37,9 +37,11 @@ ordinary whole post reaches it too, and X weighs a CJK character as two (twitter
 config), so no one length marks the cut across scripts.
 
 **FxTwitter's `/2/conversation/<id>` fills all three, and only ever adds to the syndication read.**
-Measured 2026-10-31: no key, documented (docs.fxembed.com, with an OpenAPI spec), ~1.5s and ~80KB.
-`thread` is every ancestor plus the post itself, in no reliable order (one sample came back
-parent, root, post), so the chain is walked by `replying_to` ids rather than read in order;
+Measured 2026-10-31: no key, documented (docs.fxembed.com; the OpenAPI spec is served at
+https://api.fxtwitter.com/2/openapi.json ), ~1.5s and ~80KB. `thread` is every ancestor plus the
+post itself, in no reliable order (one sample came back parent, root, post), so the chain is
+walked by `replying_to` ids rather than read in order, and read there rather than off the
+top-level `status`, which carries no `replying_to`;
 `replies` is the first page of direct replies, most-liked first, an author's own continuation
 among them; and every post there is whole, a long one flagged `is_note_tweet` and the post it
 quotes included (2,329 characters of a quote syndication cut at 277). Only the text of a long one
@@ -519,7 +521,9 @@ class _FxStatus(_FxPayload):
         default="", description="`status`; the spec also allows `tombstone` and `substatus`"
     )
     id: str = Field(default="", description="The post's numeric id")
-    text: str = Field(default="", description="Body, links expanded, leading mentions kept")
+    text: str = Field(
+        default="", description="Body, links expanded; leading mentions kept unless it is long"
+    )
     raw_text: _FxRawText | None = Field(default=None, description="Carries the display range")
     author: _FxAuthor | None = Field(default=None, description="Author")
     likes: int = Field(default=0, description="Likes")
