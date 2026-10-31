@@ -44,7 +44,7 @@ paths:
 
 ### Routes
 
-- **YouTube is watched only on the native Interactions API, by `RouteClassification.watch_video` swapping the one answer turn's backend, never by a second pass** (`gen_reply/interactions.py` has why; `AnswerTurn.stream_answer` holds the gates and logs which one refused).
+- **YouTube is watched only on the native Interactions API, by `RouteClassification.watch_video` swapping the one answer turn's backend, never by a second pass** (`gen_reply/interactions.py` has why; `AnswerTurn.stream_answer` holds the gates and logs which one refused). Its video part always asks for `processing="agentic"`, so a model repointed into `slow_model` needs agentic video support on its own model page, not the video-understanding page's table, which lags it (2026-10-31: argon was missing from the table, though its own page lists support).
 - **Deep research (`cogs/research/`) goes direct to Google** because, spike-verified, the proxy's interactions transform is not a pass-through (it dropped `agent_config`); Antigravity `background=True` works despite the docs.
 - **Do not reintroduce a deep-research tier or a button under the report** (#447).
 - **A research report follows the request's language; its status words stay English.**
