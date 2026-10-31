@@ -17,7 +17,7 @@ back as HTTP 200 carrying a well-formed `TweetTombstone`, while an id that never
 404 with HTML. Reading either off the status gets it backwards. The refusal's own text is localized
 by `lang`, so `_Tombstone` reads it for the log and nothing ever matches on its wording.
 
-Two things syndication cannot do, so a second request goes to FxTwitter for them:
+Three things syndication cannot do, so a second request goes to FxTwitter for them:
 
 Replies are unreachable there. The payload carries `conversation_count` and no reply content, and
 13 parameter variants (`replies`, `conversation`, `cursor`, `expansions`, ...) returned
@@ -27,28 +27,33 @@ The post being replied to arrives embedded exactly one level deep. Where the pay
 `in_reply_to_status_id_str` is set and `parent` is absent, the parent is unreadable — 10 of 10
 sampled were deleted, protected or suspended.
 
-**FxTwitter's `/2/conversation/<id>` fills both, and only ever adds to the syndication read.**
+A long post is truncated at roughly 275 characters, with the remainder behind an opaque
+`note_tweet.id` the endpoint will not resolve. Nothing in the text marks the cut. `note_tweet` is
+served in the target position alone — an embedded parent or quote carries the identically cut
+`text`, `display_text_range` and `entities` with the key simply absent (measured on both copies of
+post 1724892505647296620) — so only the post asked for can say it was cut. Deriving it from the
+body's length instead is not sound: the ceiling sits under the classic 280-character limit, so an
+ordinary whole post reaches it too, and X weighs a CJK character as two (twitter-text's v3
+config), so no one length marks the cut across scripts.
+
+**FxTwitter's `/2/conversation/<id>` fills all three, and only ever adds to the syndication read.**
 Measured 2026-10-31: no key, documented (docs.fxembed.com, with an OpenAPI spec), ~1.5s and ~80KB.
 `thread` is every ancestor plus the post itself, in no reliable order (one sample came back
 parent, root, post), so the chain is walked by `replying_to` ids rather than read in order;
 `replies` is the first page of direct replies, most-liked first, an author's own continuation
-among them. It is a third party reading X with accounts of its own, so it can stop working
-without notice: any failure there is logged and the conversation keeps what syndication served —
-the post, its quote and its one embedded parent — with no replies. Its `display_text_range` counts
-codepoints, not the UTF-16 units syndication's does (`😬` is `[25, 26]`), and only its start is
-read, to drop the leading reply mentions.
+among them; and every post there is whole, a long one flagged `is_note_tweet` and the post it
+quotes included (2,329 characters of a quote syndication cut at 277). Only the text of a long one
+is taken from it for the post asked for and its quote: its counters mean something else there. It is a third party reading X with
+accounts of its own, so it can stop working without notice: any failure there is logged and the
+conversation keeps what syndication served — the post, its quote and its one embedded parent,
+cut — with no replies. Its `display_text_range` counts codepoints, not the UTF-16 units
+syndication's does (`😬` is `[25, 26]`), and only its start is read, to drop the leading reply
+mentions.
 
-One more thing syndication cannot do, which the callers have to state rather than hide:
-
-A long post is truncated at roughly 275 characters, with the remainder behind an opaque
-`note_tweet.id` the endpoint will not resolve. Nothing in the text marks the cut, which is why
-`TwitterOutput.is_truncated` exists: a caller that cannot see the cut presents a fragment as the
-whole post. **That flag is only meaningful on the post asked for.** `note_tweet` is served in the
-target position alone — an embedded parent or quote carries the identically cut `text`,
-`display_text_range` and `entities` with the key simply absent (measured on both copies of post
-1724892505647296620) — so an embedded post reports `is_truncated=False` whether or not it was
-cut. Deriving it from the body's length instead is not sound: the ceiling sits under the classic
-280-character limit, so an ordinary whole post reaches it too.
+That failure is why `TwitterOutput.is_truncated` exists: a caller that cannot see the cut
+presents a fragment as the whole post. **That flag is only meaningful on the post asked for**, the
+only one syndication marks, so an embedded parent or quote reports `is_truncated=False` whether
+or not it was cut.
 """
 
 import re
@@ -198,7 +203,7 @@ class TwitterOutput(PlatformOutput):
     )
     is_truncated: bool = Field(
         default=False,
-        description="Whether Twitter cut the body and will not serve the rest; only the post asked for can report it, see the module docstring",
+        description="Whether the body is cut and FxTwitter could not serve the rest; only the post asked for can report it, see the module docstring",
         examples=[False],
     )
 
@@ -524,6 +529,10 @@ class _FxStatus(_FxPayload):
     )
     media: _FxMediaBlock | None = Field(default=None, description="Attachments")
     replying_to: _FxReplyingTo | None = Field(default=None, description="The post replied to")
+    is_note_tweet: bool = Field(default=False, description="Whether this is a long post, whole")
+    quote: dict[str, Any] | None = Field(
+        default=None, description="The post this one quotes, raw so a malformed one costs itself"
+    )
 
 
 class _FxThreadPage(_FxPayload):
@@ -564,19 +573,24 @@ def _fx_statuses(items: list[dict[str, Any]] | None) -> list[_FxStatus]:
     return statuses
 
 
-def _fx_output(status: _FxStatus) -> TwitterOutput:
-    """Turns one FxTwitter post into the shared output shape.
+def _fx_text(status: _FxStatus) -> str:
+    """Returns one FxTwitter post's body, past its leading reply mentions.
 
     Only the range's start is read: it sits past the leading mentions, which are identical in
     `text` and `raw_text.text`, while the end counts `raw_text.text`'s `t.co` links and would cut
     the expanded `text` short.
     """
-    author = status.author or _FxAuthor()
     start = (
         status.raw_text.display_text_range[0]
         if status.raw_text and status.raw_text.display_text_range
         else 0
     )
+    return status.text[start:].strip()
+
+
+def _fx_output(status: _FxStatus) -> TwitterOutput:
+    """Turns one FxTwitter post into the shared output shape."""
+    author = status.author or _FxAuthor()
     images: list[str] = []
     videos: list[str] = []
     posters: list[str] = []
@@ -590,7 +604,7 @@ def _fx_output(status: _FxStatus) -> TwitterOutput:
         if media.thumbnail_url:
             posters.append(media.thumbnail_url)
     return TwitterOutput(
-        text=status.text[start:].strip(),
+        text=_fx_text(status=status),
         url=post_url(handle=author.screen_name, status_id=status.id),
         author_name=author.screen_name,
         author_icon_url=author.avatar_url or "",
@@ -621,6 +635,24 @@ def _fx_ancestors(thread: list[_FxStatus], status_id: str) -> list[TwitterOutput
     return ancestors[::-1]
 
 
+def _with_whole_text(post: TwitterOutput, whole: _FxStatus | None) -> TwitterOutput:
+    """Returns `post` with the text syndication cut taken from `whole`, FxTwitter's copy of it.
+
+    Syndication cuts a long post and marks it only on the post asked for, while the post it quotes
+    is cut unmarked. So each takes FxTwitter's text exactly when FxTwitter flags it a long one,
+    which also leaves a fragment flagged as one if FxTwitter served it short.
+    """
+    if whole is None:
+        return post
+    update: dict[str, Any] = {}
+    if whole.is_note_tweet:
+        update.update(text=_fx_text(status=whole), is_truncated=False)
+    quotes = _fx_statuses(items=[whole.quote]) if whole.quote else []
+    if post.quoted is not None and quotes and quotes[0].is_note_tweet:
+        update["quoted"] = post.quoted.model_copy(update={"text": _fx_text(status=quotes[0])})
+    return post.model_copy(update=update)
+
+
 class TwitterDownloader(PlatformDownloader):
     """Reads a Twitter post through the public syndication endpoint.
 
@@ -631,7 +663,7 @@ class TwitterDownloader(PlatformDownloader):
 
     read_replies: bool = Field(
         default=True,
-        description="Whether the replies are read; without them FxTwitter is asked only for a post replying to a readable one",
+        description="Whether the replies are read; without them FxTwitter is asked only for a reply, a quote or a long post",
     )
 
     def _fetch_tweet(self, status_id: str) -> dict[str, Any]:
@@ -680,11 +712,12 @@ class TwitterDownloader(PlatformDownloader):
 
     def _read_conversation(
         self, status_id: str
-    ) -> tuple[list[TwitterOutput], list[list[TwitterOutput]]]:
-        """Returns `(ancestors, reply_branches)` from FxTwitter, both empty when it could not be read.
+    ) -> tuple[list[_FxStatus], list[list[TwitterOutput]]]:
+        """Returns `(thread, reply_branches)` from FxTwitter, both empty when it could not be read.
 
-        `replies` is not only direct replies: a reply to one of them follows the reply it answers
-        (6 of 40 on one sample, three deep), so the branches are grouped by `replying_to`.
+        `thread` is its live posts, the one asked for among them. `replies` is not only direct
+        replies: a reply to one of them follows the reply it answers (6 of 40 on one sample, three
+        deep), so the branches are grouped by `replying_to`.
         """
         # On a thread of its own so the bound is on the whole request: `requests` bounds each
         # socket read, so a response trickling in under that could hold the read past its
@@ -711,7 +744,7 @@ class TwitterDownloader(PlatformDownloader):
             return [], []
         replies = {status.id: status for status in _fx_statuses(conversation.replies)}
         return (
-            _fx_ancestors(thread=_fx_statuses(conversation.thread), status_id=status_id),
+            _fx_statuses(conversation.thread),
             thread_branches(
                 comments={
                     reply_id: _fx_output(status=reply) for reply_id, reply in replies.items()
@@ -732,7 +765,8 @@ class TwitterDownloader(PlatformDownloader):
         existed or could not be one. An empty conversation is the ordinary outcome for a pasted
         link rather than an error, so it comes back rather than raising, and the caller marks it
         unreadable. FxTwitter is asked only once syndication has served the post and, when the
-        replies are not wanted, only for a reply.
+        replies are not wanted, only for what syndication serves cut: a reply, a quote or a long
+        post.
 
         Args:
             url (str): The post URL, in any of the forms `TWITTER_URL_RE` matches.
@@ -761,19 +795,22 @@ class TwitterDownloader(PlatformDownloader):
             return TwitterConversation()
 
         tweet = _Tweet.model_validate(payload)
-        # Without the replies, FxTwitter's ~1.5s buys only the thread above, which a post with no
-        # readable parent does not have. Syndication's parent does not stand in for it even when
-        # it starts the thread: it carries the post's own ~275-character cut, unmarked.
+        post = _build_output(tweet=tweet)
+        # Without the replies, FxTwitter's ~1.5s buys only the whole text of what syndication
+        # serves cut at ~275 characters: the post itself, and the parent and quote, whose
+        # embedded copies are cut unmarked even when they start the thread.
         ancestors: list[TwitterOutput] = []
         reply_branches: list[list[TwitterOutput]] = []
-        if self.read_replies or tweet.parent:
-            ancestors, branches = self._read_conversation(status_id=status_id)
+        if self.read_replies or tweet.parent or tweet.quoted_tweet or post.is_truncated:
+            thread, branches = self._read_conversation(status_id=status_id)
+            ancestors = _fx_ancestors(thread=thread, status_id=status_id)
             reply_branches = branches if self.read_replies else []
+            post = _with_whole_text(
+                post=post, whole=next((item for item in thread if item.id == status_id), None)
+            )
         if not ancestors and tweet.parent:
             ancestors = [_build_output(tweet=tweet.parent)]
-        return TwitterConversation(
-            chain=[*ancestors, _build_output(tweet=tweet)], reply_branches=reply_branches
-        )
+        return TwitterConversation(chain=[*ancestors, post], reply_branches=reply_branches)
 
 
 if __name__ == "__main__":

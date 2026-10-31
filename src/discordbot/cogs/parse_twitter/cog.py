@@ -10,9 +10,9 @@ directly fetchable — so a deployment that wants the file has `/download_video`
 
 `utils/expansion_cog.py` owns everything around the card and the post's own embed. What is here
 is the rest of the card — every post above it in the thread, as `parse_threads` shows one, and the
-post it quotes — and one thing it has to say out loud because the platform will not: a post past
-roughly 275 characters is served truncated with no marker of any kind. The replies are
-`gen_reply`'s to read, as on Threads, so the card's reader skips them.
+post it quotes — and one thing it has to say out loud because the platform will not: a long post
+FxTwitter could not serve whole arrives cut at roughly 275 characters with no marker of any kind.
+The replies are `gen_reply`'s to read, as on Threads, so the card's reader skips them.
 """
 
 from functools import partial
@@ -45,9 +45,9 @@ from discordbot.services.platforms.twitter import (
     TwitterConversation,
 )
 
-# What the post gives up per context card so they always fit beside it, up to a ceiling that
-# leaves the post four times the ~275 characters syndication ever serves of it: a thread of nine
-# cards would otherwise reserve more than the whole message may carry.
+# What the post gives up per context card so they always fit beside it, up to a ceiling that still
+# leaves the post 1,200 characters: a thread of nine cards would otherwise reserve more than the
+# whole message may carry.
 _CONTEXT_RESERVE = 1200
 _CONTEXT_RESERVE_CAP = DISCORD_EMBED_TOTAL_LIMIT - 1200
 
@@ -71,8 +71,8 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
     # which platform a card came from at a glance, and black does not: it reads as a hairline on
     # Discord's light theme and vanishes into the dark one.
     EMBED_COLOR = 0x1DA1F2
-    # Skipping the replies spares a thread's first post the FxTwitter request. `staticmethod`
-    # because a `partial` on a class turns into a method from Python 3.14 on.
+    # Skipping the replies spares a short first post that quotes nothing the FxTwitter request.
+    # `staticmethod` because a `partial` on a class turns into a method from Python 3.14 on.
     downloader_factory = staticmethod(partial(TwitterDownloader, read_replies=False))
 
     def _author_label(self, post: TwitterOutput) -> str:

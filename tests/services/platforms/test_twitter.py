@@ -528,23 +528,44 @@ def test_a_refused_post_costs_no_fxtwitter_request(monkeypatch: pytest.MonkeyPat
     assert asked == []
 
 
-def test_without_the_replies_a_threads_first_post_costs_no_fxtwitter_request(
+@pytest.mark.parametrize(
+    ("extra", "asks", "text", "quote"),
+    [
+        (None, False, "Play good.", None),
+        ({"note_tweet": {"id": "Tm90ZVR3ZWV0UmVzdWx0czox"}}, True, "whole", None),
+        ({"quoted_tweet": _tweet(text="quoted")}, True, "Play good.", "quoted whole"),
+    ],
+    ids=["short", "long", "quoting"],
+)
+def test_without_the_replies_a_first_post_asks_fxtwitter_only_for_what_was_cut(
     monkeypatch: pytest.MonkeyPatch,
+    extra: dict[str, Any] | None,
+    asks: bool,
+    text: str,
+    quote: str | None,
 ) -> None:
-    """The card shows no replies, and a post with nothing above it has nothing else to ask for."""
-    _downloader(monkeypatch, payload=_tweet())
+    """The card shows no replies, so a short post quoting nothing has nothing else to ask for.
+
+    What it does ask for has to land on the card, or the card pays for the request and still
+    shows the cut.
+    """
+    _downloader(monkeypatch, payload=_tweet(extra=extra))
     asked: list[str] = []
 
     def record(self: TwitterDownloader, status_id: str) -> dict[str, Any]:
         del self
         asked.append(status_id)
-        return _fx_page()
+        quoted = _fx_status(status_id="77", text="quoted whole", extra={"is_note_tweet": True})
+        whole = {"is_note_tweet": "note_tweet" in (extra or {}), "quote": quoted}
+        return _fx_page(thread=[_fx_status(status_id=status_id, text="whole", extra=whole)])
 
     monkeypatch.setattr(target=TwitterDownloader, name="_fetch_conversation", value=record)
-    parsed = TwitterDownloader(read_replies=False).parse_metadata(url=_URL)
+    target = TwitterDownloader(read_replies=False).parse_metadata(url=_URL).target
 
-    assert asked == []
-    assert [post.text for post in parsed.chain] == ["Play good."]
+    assert asked == ([_STATUS_ID] if asks else [])
+    assert target is not None
+    assert target.text == text
+    assert (target.quoted.text if target.quoted else None) == quote
 
 
 def test_without_the_replies_a_reply_still_reads_its_parent_whole(
@@ -643,18 +664,95 @@ def test_a_quoted_post_is_carried_one_level_and_no_deeper(monkeypatch: pytest.Mo
     assert target.quoted.quoted is None
 
 
-def test_a_truncated_post_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_truncated_post_says_so_when_fxtwitter_cannot_serve_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The body is cut at ~275 characters and the rest sits behind an id the endpoint will not
     resolve. Nothing in the text marks it, so a card that does not say so passes a fragment off
     as the post.
     """
     conversation = _parse(
-        monkeypatch, payload=_tweet(extra={"note_tweet": {"id": "Tm90ZVR3ZWV0UmVzdWx0czox"}})
+        monkeypatch,
+        payload=_tweet(extra={"note_tweet": {"id": "Tm90ZVR3ZWV0UmVzdWx0czox"}}),
+        conversation=LinkRetryableError("throttled"),
     )
     target = conversation.target
 
     assert target is not None
     assert target.is_truncated
+
+
+@pytest.mark.parametrize(
+    ("is_note_tweet", "expected"),
+    [(True, "Play good, and the rest."), (False, "Play good.")],
+    ids=["served long", "served short"],
+)
+def test_a_long_post_reads_whole_from_fxtwitter(
+    monkeypatch: pytest.MonkeyPatch, is_note_tweet: bool, expected: str
+) -> None:
+    """FxTwitter served 432 characters of a post syndication cut at 277 and marked.
+
+    Only its text is taken, and only when FxTwitter says it served the long one, so a fragment is
+    never cleared as whole. Its thread comes in no reliable order, so the post above it leads.
+    """
+    thread = [
+        _fx_status(status_id="1", text="the post above"),
+        _fx_status(
+            status_id=_STATUS_ID,
+            text="Play good, and the rest.",
+            replying_to="1",
+            extra={"is_note_tweet": is_note_tweet},
+        ),
+    ]
+    conversation = _parse(
+        monkeypatch,
+        payload=_tweet(extra={"note_tweet": {"id": "Tm90ZVR3ZWV0UmVzdWx0czox"}}),
+        conversation=_fx_page(thread=thread),
+    )
+    target = conversation.target
+
+    assert target is not None
+    assert target.text == expected
+    assert target.is_truncated is not is_note_tweet
+    assert target.like_count == 125
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        (
+            _fx_status(status_id="77", text="quoted, and more", extra={"is_note_tweet": True}),
+            "quoted, and more",
+        ),
+        (_fx_status(status_id="77", text="quoted, short"), "quoted"),
+        ({"type": "tombstone", "id": "77"}, "quoted"),
+        (_fx_status(status_id="77", extra={"likes": "lots", "is_note_tweet": True}), "quoted"),
+    ],
+    ids=["served long", "served short", "served as a tombstone", "malformed"],
+)
+def test_a_quoted_post_takes_its_text_from_fxtwitter_when_it_is_long(
+    monkeypatch: pytest.MonkeyPatch, quote: dict[str, Any], expected: str
+) -> None:
+    """Syndication cuts a long quote as it cuts the post, unmarked, so FxTwitter's copy wins then.
+
+    A quote FxTwitter cannot serve costs only itself, never the post carrying it or the thread
+    above, and the post's own text stays syndication's, since nothing says it was cut.
+    """
+    thread = [
+        _fx_status(status_id="1", text="the post above"),
+        _fx_status(status_id=_STATUS_ID, replying_to="1", extra={"quote": quote}),
+    ]
+    conversation = _parse(
+        monkeypatch,
+        payload=_tweet(extra={"quoted_tweet": _tweet(text="quoted")}),
+        conversation=_fx_page(thread=thread),
+    )
+    target = conversation.target
+
+    assert [post.text for post in conversation.chain] == ["the post above", "Play good."]
+    assert target is not None
+    assert target.quoted is not None
+    assert target.quoted.text == expected
 
 
 def test_an_ordinary_post_is_not_marked_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
