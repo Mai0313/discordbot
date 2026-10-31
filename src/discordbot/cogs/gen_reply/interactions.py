@@ -154,7 +154,9 @@ def to_interactions_input(answer_input: ResponseInputParam, youtube_url: str) ->
             entries[-1][1].extend(parts)
         else:
             entries.append((out_role, parts))
-    video_part = VideoContentParam(type="video", uri=youtube_url)
+    # Agentic lets the model load only the segments or transcript a question needs instead of
+    # every frame at 1 FPS; `slow_model`'s model page lists it as supported (read 2026-10-31).
+    video_part = VideoContentParam(type="video", uri=youtube_url, processing="agentic")
     if entries and entries[-1][0] == "user":
         entries[-1][1].append(video_part)
     else:

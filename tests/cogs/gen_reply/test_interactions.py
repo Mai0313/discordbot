@@ -53,7 +53,11 @@ def test_to_interactions_input_maps_roles_and_appends_video() -> None:
     assert steps[1]["content"][0]["text"] == "hi there"
     last_parts = steps[-1]["content"]
     assert last_parts[0] == {"type": "text", "text": "what happens here"}
-    assert last_parts[-1] == {"type": "video", "uri": "https://youtu.be/abcdefghijk"}
+    assert last_parts[-1] == {
+        "type": "video",
+        "uri": "https://youtu.be/abcdefghijk",
+        "processing": "agentic",
+    }
 
 
 def test_to_interactions_input_maps_media_parts_by_kind() -> None:
@@ -122,7 +126,11 @@ def test_to_interactions_input_sends_inlined_bytes_as_data_not_as_a_uri() -> Non
     assert parts[0] == {"type": "image", "data": "iVBORw0KGgo=", "mime_type": "image/png"}
     assert parts[1] == {"type": "document", "data": "JVBERi0xLjQK", "mime_type": "application/pdf"}
     # The YouTube video itself is still a real URI and must not be inlined.
-    assert parts[-1] == {"type": "video", "uri": "https://youtu.be/abcdefghijk"}
+    assert parts[-1] == {
+        "type": "video",
+        "uri": "https://youtu.be/abcdefghijk",
+        "processing": "agentic",
+    }
 
 
 def _inlined_image_parts(reference: str) -> list[dict[str, object]]:
@@ -169,7 +177,9 @@ def test_to_interactions_input_never_demotes_an_unusable_data_uri_to_a_uri(
 
     assert all(part.get("uri") != reference for part in parts), f"{why} was sent as a uri"
     # Only the YouTube video is left, so the part was dropped rather than mangled.
-    assert parts == [{"type": "video", "uri": "https://youtu.be/abcdefghijk"}]
+    assert parts == [
+        {"type": "video", "uri": "https://youtu.be/abcdefghijk", "processing": "agentic"}
+    ]
 
 
 def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
@@ -179,7 +189,9 @@ def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
     )
     assert len(steps) == 1
     assert steps[0]["type"] == "user_input"
-    assert steps[0]["content"] == [{"type": "video", "uri": "https://youtu.be/abcdefghijk"}]
+    assert steps[0]["content"] == [
+        {"type": "video", "uri": "https://youtu.be/abcdefghijk", "processing": "agentic"}
+    ]
 
 
 def _ns(event: object) -> SimpleNamespace:
