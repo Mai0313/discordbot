@@ -401,7 +401,7 @@ _LINK_CASES: dict[str, _LinkCase] = {
         builder="build_twitter_context_messages",
         non_post_url="https://x.com/Dbacks",
         emoji=TWITTER_EMOJI,
-        reads_replied_to=False,
+        reads_replied_to=True,
         media_switch="file_api_enabled",
     ),
     "douyin": _LinkCase(
@@ -681,10 +681,9 @@ async def test_on_message_reads_a_replied_to_link_only_for_a_discussion_source(
     """Mentioning the bot in a reply to someone else's link reads it only where that adds news.
 
     A discussion source reads the comments its expansion never shows, so a reply asking about
-    them has nothing else to answer from, the way a replied-to YouTube link is watched. A clip,
-    or a Twitter post whose endpoint serves no replies, would only be read a second time, and
-    stays on the current message; Douyin and Bilibili are rate-limit sensitive besides, so a
-    passing mention one hop away is not worth their fetch.
+    them has nothing else to answer from, the way a replied-to YouTube link is watched. A clip
+    would only be read a second time, and stays on the current message; Douyin and Bilibili are
+    rate-limit sensitive besides, so a passing mention one hop away is not worth their fetch.
     """
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])

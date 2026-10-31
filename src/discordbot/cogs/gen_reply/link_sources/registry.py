@@ -222,10 +222,9 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # Path-anchored on `/status/<digits>`, so no `url_filter` is needed: a profile or the
         # home page never matches in the first place.
         url_pattern=TWITTER_URL_RE,
-        # Deliberately leaves `search_replied_to_message` off. A post source sets it when what it
-        # fetches includes the comments its own expansion does not show, so a mention on someone
-        # else's link has something new to answer from. Twitter's endpoint serves no replies at
-        # all, so a second read of the same link would find exactly what the first did.
+        # Reads a link the user only replied to: what it reads includes the replies, which the
+        # `parse_twitter` expansion deliberately does not show.
+        search_replied_to_message=True,
         build=_build_twitter_link_context,
         timeout_notice=TWITTER_TIMEOUT_NOTICE,
         media_ingest_allowed=_needs_files_api,

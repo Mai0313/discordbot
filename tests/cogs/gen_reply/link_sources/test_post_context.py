@@ -398,14 +398,13 @@ def test_a_replied_to_link_source_never_says_where_its_link_sat(source: LinkCont
 async def test_a_replied_to_link_post_never_says_where_its_link_sat(
     monkeypatch: pytest.MonkeyPatch, source: _PostSource
 ) -> None:
-    """The rendered post names the link too: in its header, and on the comment it points at."""
-    assert source.comment is not None
-    comment = source.comment(comment_id="111", text="the linked one", author_name="a")
-    serve_conversation(
-        monkeypatch,
-        downloader=source.downloader,
-        post=source.post(comments=[comment], selected_comment_id="111"),
-    )
+    """The rendered post names the link too: in its header, and on any comment it points at."""
+    if source.comment is None:
+        post = source.post()
+    else:
+        comment = source.comment(comment_id="111", text="the linked one", author_name="a")
+        post = source.post(comments=[comment], selected_comment_id="111")
+    serve_conversation(monkeypatch, downloader=source.downloader, post=post)
 
     blocks = await _build(source=source)
 
