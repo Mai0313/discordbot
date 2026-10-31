@@ -2,7 +2,11 @@
 
 import pytest
 
-from discordbot.typings.context_budgets import MAX_TWITTER_POSTS, MAX_TWITTER_REPLIES
+from discordbot.typings.context_budgets import (
+    MAX_TWITTER_POSTS,
+    MAX_TWITTER_REPLIES,
+    MAX_TWITTER_REPLY_CHARS,
+)
 from discordbot.services.platforms.twitter import TwitterDownloader, TwitterConversation
 from discordbot.cogs.gen_reply.link_sources.twitter import build_twitter_context_messages
 from discordbot.cogs.gen_reply.link_sources.image_ingest import image_count_line
@@ -117,6 +121,22 @@ async def test_the_replies_stop_at_their_cap_without_splitting_an_answer_from_it
     assert "direct at the cap" in body
     assert "nested at the cap" not in body
     assert "past it" not in body
+
+
+async def test_an_essay_length_reply_is_cut_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One long reply must not outweigh the rest, and the model must not take the cut for its end."""
+    conversation = TwitterConversation(
+        chain=[twitter_output(image_urls=[])],
+        reply_branches=[
+            [twitter_output(text="x" * (MAX_TWITTER_REPLY_CHARS + 1234), image_urls=[])]
+        ],
+    )
+
+    body = await _body_of(monkeypatch, conversation=conversation)
+
+    assert "x" * MAX_TWITTER_REPLY_CHARS in body
+    assert "x" * (MAX_TWITTER_REPLY_CHARS + 1) not in body
+    assert "goes on for 1,234 more characters, not shown" in body
 
 
 async def test_a_long_thread_keeps_its_nearest_posts(monkeypatch: pytest.MonkeyPatch) -> None:

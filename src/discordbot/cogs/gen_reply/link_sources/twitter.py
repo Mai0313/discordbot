@@ -32,6 +32,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.context_budgets import (
     MAX_TWITTER_POSTS,
     MAX_TWITTER_REPLIES,
+    MAX_TWITTER_REPLY_CHARS,
     MAX_TWITTER_INGEST_IMAGES,
 )
 from discordbot.services.platforms.twitter import (
@@ -174,7 +175,12 @@ def _render_reply(reply: TwitterOutput, target_author: str, is_direct: bool) -> 
         f"(❤️ {reply.like_count:,})"
     ]
     if reply.text:
-        lines.append(defuse_markers(text=reply.text))
+        lines.append(defuse_markers(text=reply.text[:MAX_TWITTER_REPLY_CHARS]))
+    if len(reply.text) > MAX_TWITTER_REPLY_CHARS:
+        lines.append(
+            f"(The reply goes on for {len(reply.text) - MAX_TWITTER_REPLY_CHARS:,} more "
+            "characters, not shown.)"
+        )
     media = [
         f"{len(urls)} {noun}"
         for urls, noun in ((reply.image_urls, "image(s)"), (reply.video_urls, "video(s)"))
