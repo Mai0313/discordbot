@@ -214,7 +214,8 @@ class TwitterConversation(PlatformConversation[TwitterOutput]):
     mean the thread starts there.
 
     `reply_branches` holds one branch per direct reply on FxTwitter's first page, most-liked first,
-    each followed by whatever replies to it that page carried, and nothing when the read failed.
+    each followed by whatever replies to it that page carried, and nothing when the read failed or
+    the reader was built not to read them.
 
     `selected_comment_id` is always empty: a reply has a post URL of its own, so a link to one
     makes it the target.
@@ -623,10 +624,15 @@ def _fx_ancestors(thread: list[_FxStatus], status_id: str) -> list[TwitterOutput
 class TwitterDownloader(PlatformDownloader):
     """Reads a Twitter post through the public syndication endpoint.
 
-    Holds no state and writes nothing to disk, so one instance serves every caller. There is
-    deliberately no `parse`: nothing here downloads media, and every image, poster and clip comes
-    back as a URL.
+    Holds one setting and writes nothing to disk, so one instance serves every caller that wants
+    the same thing. There is deliberately no `parse`: nothing here downloads media, and every
+    image, poster and clip comes back as a URL.
     """
+
+    read_replies: bool = Field(
+        default=True,
+        description="Whether the replies are read; without them FxTwitter is asked only for a post replying to a readable one",
+    )
 
     def _fetch_tweet(self, status_id: str) -> dict[str, Any]:
         """Returns the syndication JSON payload for `status_id`."""
@@ -725,7 +731,8 @@ class TwitterDownloader(PlatformDownloader):
         could not be read at all — a deleted, protected or suspended post, or an id that never
         existed or could not be one. An empty conversation is the ordinary outcome for a pasted
         link rather than an error, so it comes back rather than raising, and the caller marks it
-        unreadable. FxTwitter is asked only once syndication has served the post.
+        unreadable. FxTwitter is asked only once syndication has served the post and, when the
+        replies are not wanted, only for a reply.
 
         Args:
             url (str): The post URL, in any of the forms `TWITTER_URL_RE` matches.
@@ -754,7 +761,14 @@ class TwitterDownloader(PlatformDownloader):
             return TwitterConversation()
 
         tweet = _Tweet.model_validate(payload)
-        ancestors, reply_branches = self._read_conversation(status_id=status_id)
+        # Without the replies, FxTwitter's ~1.5s buys only the thread above, which a post with no
+        # readable parent does not have. Syndication's parent does not stand in for it even when
+        # it starts the thread: it carries the post's own ~275-character cut, unmarked.
+        ancestors: list[TwitterOutput] = []
+        reply_branches: list[list[TwitterOutput]] = []
+        if self.read_replies or tweet.parent:
+            ancestors, branches = self._read_conversation(status_id=status_id)
+            reply_branches = branches if self.read_replies else []
         if not ancestors and tweet.parent:
             ancestors = [_build_output(tweet=tweet.parent)]
         return TwitterConversation(

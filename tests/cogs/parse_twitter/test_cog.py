@@ -10,7 +10,11 @@ import re
 from discordbot.utils.expansion_cog import TRUNCATION_NOTICE, omitted_posts_note
 from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_twitter.cog import _PARENT_HEADER, _TRUNCATED_NOTICE, TwitterCogs
-from discordbot.services.platforms.twitter import TwitterOutput, TwitterConversation
+from discordbot.services.platforms.twitter import (
+    TwitterOutput,
+    TwitterDownloader,
+    TwitterConversation,
+)
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 
 from tests.helpers.link_sources import (
@@ -32,6 +36,14 @@ async def test_a_pasted_link_is_expanded_into_a_card() -> None:
     assert "post body" in embeds[0].description
     assert "Dbacks" in (embeds[0].author.name or "")
     assert EXPANSION_DONE_EMOJI in message.reactions
+
+
+def test_the_cards_reader_skips_the_replies() -> None:
+    """The card shows none, and without them a thread's first post never waits on FxTwitter."""
+    reader = TwitterCogs(bot=stub_bot()).downloader_factory()
+
+    assert isinstance(reader, TwitterDownloader)
+    assert reader.read_replies is False
 
 
 async def test_the_footer_carries_the_counters_and_nothing_about_the_replies() -> None:

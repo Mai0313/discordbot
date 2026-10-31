@@ -11,9 +11,11 @@ directly fetchable — so a deployment that wants the file has `/download_video`
 `utils/expansion_cog.py` owns everything around the card and the post's own embed. What is here
 is the rest of the card — every post above it in the thread, as `parse_threads` shows one, and the
 post it quotes — and one thing it has to say out loud because the platform will not: a post past
-roughly 275 characters is served truncated with no marker of any kind. The replies the reader
-also carries are `gen_reply`'s to read, as on Threads.
+roughly 275 characters is served truncated with no marker of any kind. The replies are
+`gen_reply`'s to read, as on Threads, so the card's reader skips them.
 """
+
+from functools import partial
 
 from nextcord import Embed, Colour
 from nextcord.ext import commands
@@ -69,7 +71,9 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
     # which platform a card came from at a glance, and black does not: it reads as a hairline on
     # Discord's light theme and vanishes into the dark one.
     EMBED_COLOR = 0x1DA1F2
-    downloader_factory = TwitterDownloader
+    # Skipping the replies spares a thread's first post the FxTwitter request. `staticmethod`
+    # because a `partial` on a class turns into a method from Python 3.14 on.
+    downloader_factory = staticmethod(partial(TwitterDownloader, read_replies=False))
 
     def _author_label(self, post: TwitterOutput) -> str:
         """The handle, which is the only name a post carries here."""

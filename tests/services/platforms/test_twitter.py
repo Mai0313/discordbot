@@ -528,6 +528,52 @@ def test_a_refused_post_costs_no_fxtwitter_request(monkeypatch: pytest.MonkeyPat
     assert asked == []
 
 
+def test_without_the_replies_a_threads_first_post_costs_no_fxtwitter_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The card shows no replies, and a post with nothing above it has nothing else to ask for."""
+    _downloader(monkeypatch, payload=_tweet())
+    asked: list[str] = []
+
+    def record(self: TwitterDownloader, status_id: str) -> dict[str, Any]:
+        del self
+        asked.append(status_id)
+        return _fx_page()
+
+    monkeypatch.setattr(target=TwitterDownloader, name="_fetch_conversation", value=record)
+    parsed = TwitterDownloader(read_replies=False).parse_metadata(url=_URL)
+
+    assert asked == []
+    assert [post.text for post in parsed.chain] == ["Play good."]
+
+
+def test_without_the_replies_a_reply_still_reads_its_parent_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Syndication's parent carries the same unmarked ~275-character cut, even atop the thread.
+
+    So a reply asks FxTwitter for the thread above, and keeps none of the replies it also serves.
+    """
+    thread = [
+        _fx_status(status_id="1", text="Feel good, and the rest syndication cut."),
+        _fx_status(status_id=_STATUS_ID, replying_to="1"),
+    ]
+    replies = [_fx_status(status_id="11", replying_to=_STATUS_ID)]
+    _downloader(
+        monkeypatch,
+        payload=_tweet(extra={"parent": _tweet(text="Feel good,")}),
+        conversation=_fx_page(thread=thread, replies=replies),
+    )
+
+    parsed = TwitterDownloader(read_replies=False).parse_metadata(url=_URL)
+
+    assert [post.text for post in parsed.chain] == [
+        "Feel good, and the rest syndication cut.",
+        "Play good.",
+    ]
+    assert parsed.reply_branches == []
+
+
 def test_a_conversation_read_past_its_bound_keeps_the_syndication_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
