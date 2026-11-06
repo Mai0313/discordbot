@@ -9,7 +9,7 @@ from collections.abc import Callable, Awaitable
 
 import pytest
 from sqlalchemy import text, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei, database_now
 from discordbot.typings.economy import (
@@ -29,9 +29,7 @@ from discordbot.services.economy.database import (
     UserWallet,
     JackpotPool,
     UserAccount,
-    CasinoLedger,
     CasinoAccount,
-    CentralBankLedger,
     top_n,
     buy_vip,
     get_vip,
@@ -53,7 +51,6 @@ from discordbot.services.economy.database import (
     _commit_balance_write,
     credit_with_repayment,
     call_central_bank_loans,
-    get_central_bank_status,
     apply_jackpot_settlement,
     repay_central_bank_loans,
     apply_blackjack_settlement,
@@ -304,8 +301,8 @@ def test_every_test_gets_its_own_ledger(tmp_path: Path) -> None:
     assert economy_database._engine.url.database == str(tmp_path / "economy.db")
 
 
-async def test_ensure_schema_bootstraps_current_databases() -> None:
-    """A clean startup's first session creates only the current economy tables."""
+async def test_the_migrated_schema_holds_only_the_current_tables() -> None:
+    """A database migrated to head holds the current economy tables and their seed rows."""
     (
         economy_tables,
         wallet_indexes,
@@ -315,6 +312,7 @@ async def test_ensure_schema_bootstraps_current_databases() -> None:
     ) = await _economy_schema_details()
     jackpot_row, jackpot_column_types = await _jackpot_schema_details()
     assert economy_tables == {
+        "alembic_version",
         "user_account",
         "user_wallet",
         "guild_participant",
@@ -1404,43 +1402,3 @@ async def test_get_jackpot_pool_replenishes_drained_seed_pool() -> None:
     assert await get_jackpot_pool(game_id="dragon_gate") == seed
     snapshot = await get_jackpot_snapshot(game_id="dragon_gate")
     assert snapshot.generation == 1
-
-
-async def test_ensure_schema_rerun_keeps_every_seeded_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A restart keeps the jackpot pool and both ledgers where play left them.
-
-    Each row is moved off its seed first, since a bootstrap that reset them would otherwise
-    look exactly like one that left them alone.
-    """
-    db_path = tmp_path / "seed-economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-    async with open_session() as session:
-        await session.execute(
-            statement=update(JackpotPool)
-            .where(JackpotPool.game_id == "dragon_gate")
-            .values(pool_balance=1_234, generation=3)
-        )
-        await session.execute(
-            statement=update(CasinoLedger).values(balance=-55, total_earned=5, total_spent=60)
-        )
-        await session.execute(
-            statement=update(CentralBankLedger).values(balance=77, total_earned=77)
-        )
-        await session.commit()
-    await engine.dispose()
-
-    # A second engine on the same file is what makes the bootstrap run again (readiness is
-    # tracked by engine identity), and it is also what a restart looks like.
-    restarted = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.services.economy.database._engine", restarted)
-
-    jackpot = await get_jackpot_snapshot(game_id="dragon_gate")
-    ledger = await get_casino_ledger()
-    central_bank = await get_central_bank_status(guild_id=1)
-    assert (jackpot.balance, jackpot.generation) == (1_234, 3)
-    assert (ledger.balance, ledger.total_earned, ledger.total_spent) == (-55, 5, 60)
-    assert central_bank.ledger_balance == 77
-    await restarted.dispose()

@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 import logfire
 from nextcord import Message, NotFound, Forbidden, Interaction, HTTPException
 from pydantic import Field, BaseModel
-from sqlalchemy import MetaData, text
+from sqlalchemy import Text, Table, Column, Integer, MetaData, text
 from nextcord.abc import Messageable
 from nextcord.ext import commands
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.sqlite_config import SqliteBootstrap
@@ -19,16 +19,19 @@ PUBLIC_MESSAGE_TTL_SECONDS = 180
 # The scheduled deletions still waiting out their TTL.
 _delete_tasks: set[asyncio.Task[None]] = set()
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
-_CREATE_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
-CREATE TABLE IF NOT EXISTS pending_game_message (
-    message_id INTEGER PRIMARY KEY,
-    channel_id INTEGER NOT NULL,
-    guild_name TEXT,
-    channel_name TEXT,
-    user_name TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+metadata = MetaData()
+Table(
+    "pending_game_message",
+    metadata,
+    # Nullable only to match the deployed DDL, which never said NOT NULL: an INTEGER PRIMARY KEY
+    # is SQLite's rowid, which is never NULL.
+    Column("message_id", Integer, primary_key=True, nullable=True),
+    Column("channel_id", Integer, nullable=False),
+    Column("guild_name", Text),
+    Column("channel_name", Text),
+    Column("user_name", Text),
+    Column("created_at", Text, nullable=False, server_default=text(text="CURRENT_TIMESTAMP")),
 )
-"""
 _UPSERT_PENDING_PUBLIC_MESSAGE_SQL: Final[str] = """
 INSERT INTO pending_game_message (message_id, channel_id, guild_name, channel_name, user_name)
 VALUES (:message_id, :channel_id, :guild_name, :channel_name, :user_name)
@@ -59,19 +62,7 @@ class PendingPublicMessage(BaseModel):
     user_name: str | None = Field(default=None, description="Triggering user, for cleanup logs.")
 
 
-async def _create_pending_table(conn: AsyncConnection) -> None:
-    """Creates the cleanup table where it does not exist yet.
-
-    A fresh file gets the columns the deployed `games.db` table has; an existing table is never
-    altered. Raw DDL rather than a declared model: `create_all` never alters one either, and the
-    DDL a model compiles to differs from this text, so a model would be a second definition of
-    the table that nothing checks against the first.
-    """
-    await conn.execute(statement=text(text=_CREATE_PENDING_PUBLIC_MESSAGES_SQL))
-
-
-# No declared tables: the one table comes from `_create_pending_table`.
-_database = SqliteBootstrap(metadata=MetaData(), after_create=_create_pending_table)
+_database = SqliteBootstrap()
 
 
 def _message_record(message: Message, user_name: str | None = None) -> PendingPublicMessage | None:

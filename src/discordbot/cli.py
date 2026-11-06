@@ -9,11 +9,13 @@ import logging
 from pathlib import Path
 import platform
 
+from alembic import command
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
 from nextcord import Game, Intents, Message, Interaction, HTTPException
 from nextcord.ext import tasks, commands
+from alembic.config import Config
 from nextcord.errors import ApplicationError
 
 from discordbot import setup_logging
@@ -55,8 +57,16 @@ class DiscordBot(commands.Bot):
         state_logger = logging.getLogger("nextcord.state")
         state_logger.setLevel(logging.WARNING)
         state_logger.addHandler(LogfireLoggingHandler())
+        alembic_logger = logging.getLogger("alembic")
+        alembic_logger.setLevel(logging.INFO)
+        alembic_logger.addHandler(LogfireLoggingHandler())
         Path("./data/database").mkdir(parents=True, exist_ok=True)
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
+        # `messages.db` is left to the log_msg cog's setup: too large to migrate at startup.
+        for database in ("economy", "games", "reply"):
+            command.upgrade(
+                config=Config(file_="alembic.ini", ini_section=database), revision="head"
+            )
         # Cogs are loaded synchronously so application_commands is populated
         # before the gateway connects. Each cog's setup() must also be sync:
         # nextcord hands an async setup to asyncio.create_task(), which raises

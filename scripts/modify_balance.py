@@ -14,8 +14,10 @@ from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
+from alembic import command
 from pydantic import Field, BaseModel, ConfigDict
 from rich.console import Console
+from alembic.config import Config
 
 from discordbot.typings.economy import clamped_balance
 from discordbot.services.economy.database import top_n, get_account, adjust_balance
@@ -255,8 +257,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
     # data/ is gitignored and may not exist on a fresh checkout seeded before the
-    # bot's first run, so create it here like cli.py does before any DB write.
+    # bot's first run, so create and migrate it here like cli.py does before any DB write.
     Path("./data/database").mkdir(parents=True, exist_ok=True)
+    command.upgrade(config=Config(file_="alembic.ini", ini_section="economy"), revision="head")
     asyncio.run(main=_async_main(argv=argv))
 
 

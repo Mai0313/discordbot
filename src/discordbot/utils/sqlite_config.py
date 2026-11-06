@@ -4,20 +4,19 @@ Every SQLite engine in the project configures its connections here: the same WAL
 synchronous / busy_timeout PRAGMA trade-off, plus the integer-aware UDFs `StoredInteger`
 needs.
 
-`SqliteBootstrap` owns the layer above that: the connect and checkout listeners, the lazy
-schema creation and the session factory.
+`SqliteBootstrap` owns the layer above that: the connect and checkout listeners and the session
+factory. The schema itself comes only from the Alembic migrations under `migrations/`.
 """
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 import contextlib
-from collections.abc import Awaitable, AsyncGenerator
+from collections.abc import AsyncGenerator
 
-from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
-from sqlalchemy import MetaData, event
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncConnection
+from pydantic import Field, BaseModel
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from discordbot.typings.timeouts import SQLITE_BUSY_TIMEOUT_SECONDS
-from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.stored_integer import configure_sqlite_stored_integer_functions
 
 
@@ -45,21 +44,8 @@ def configure_sqlite_connection(
     configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
 
 
-@runtime_checkable
-class SqliteSchemaHook(Protocol):
-    """Extra bootstrap a database runs inside its own `create_all` transaction."""
-
-    def __call__(self, conn: AsyncConnection) -> Awaitable[None]:
-        """Runs the extra bootstrap against the open connection.
-
-        Args:
-            conn (AsyncConnection): Open connection inside the `create_all` transaction.
-        """
-        ...
-
-
 class SqliteBootstrap(BaseModel):
-    """The hooks, lazy schema and session factory one async SQLite database needs.
+    """The hooks and session factory one async SQLite database needs.
 
     What it deliberately does not hold is the engine. That stays a module-level `_engine`
     binding per module, because a `cached_property` engine would leak the pool, the dialect
@@ -68,25 +54,9 @@ class SqliteBootstrap(BaseModel):
     take effect on the very next call rather than on the next process.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    metadata: MetaData = Field(
-        ..., description="The module's declarative metadata, created once per engine."
-    )
     enable_foreign_keys: bool = Field(
         default=False, description="Whether new connections turn on `PRAGMA foreign_keys`."
     )
-    after_create: SqliteSchemaHook | None = Field(
-        default=None,
-        description="Extra bootstrap run inside the same transaction as `create_all`.",
-    )
-
-    # The engine identity rather than a bool, so pointing `_engine` at another file (a test
-    # using a temp path) forces another schema check on its own.
-    _ready_for: AsyncEngine | None = PrivateAttr(default=None)
-    # SQLAlchemy's SQLite `create_all(checkfirst=True)` still has a check-then-create race
-    # under concurrent first use, so schema creation is serialized per event loop.
-    _schema_lock: LoopLocalLock = PrivateAttr(default_factory=LoopLocalLock)
 
     def _on_connect(self, dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
         """Configures a newly opened SQLite connection."""
@@ -124,33 +94,13 @@ class SqliteBootstrap(BaseModel):
             if not event.contains(target=engine.sync_engine, identifier=identifier, fn=listener):
                 event.listen(target=engine.sync_engine, identifier=identifier, fn=listener)
 
-    async def ensure_schema(self, engine: AsyncEngine) -> None:
-        """Creates this database's tables once per engine, hooks installed first.
+    @contextlib.asynccontextmanager
+    async def open_session(self, engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+        """Yields an `AsyncSession` bound to `engine`, its connection hooks installed first.
 
         Args:
             engine (AsyncEngine): The module's current engine.
         """
         self.install_hooks(engine=engine)
-        if self._ready_for is engine:
-            return
-        async with self._schema_lock.get():
-            if self._ready_for is engine:
-                return
-            async with engine.begin() as conn:
-                await conn.run_sync(self.metadata.create_all)
-                if self.after_create is not None:
-                    await self.after_create(conn=conn)
-            self._ready_for = engine
-
-    @contextlib.asynccontextmanager
-    async def open_session(self, engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
-        """Yields an `AsyncSession` bound to `engine` after ensuring its schema.
-
-        A module opens every session here, so no caller can reach a table before it exists.
-
-        Args:
-            engine (AsyncEngine): The module's current engine.
-        """
-        await self.ensure_schema(engine=engine)
         async with AsyncSession(bind=engine, expire_on_commit=False) as session:
             yield session

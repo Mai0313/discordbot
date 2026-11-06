@@ -2,12 +2,16 @@
 
 from typing import TYPE_CHECKING, Final
 
+from alembic import command
 import logfire
 from nextcord import Message, DMChannel
 from pydantic import Field, BaseModel, ConfigDict
-from sqlalchemy import MetaData, text
+from sqlalchemy import Text, Index, Table, Column, Integer, MetaData, text, create_engine
 from nextcord.ext import commands
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection, create_async_engine
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.migration import MigrationContext
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.sqlite_config import SqliteBootstrap
@@ -19,32 +23,35 @@ if TYPE_CHECKING:
 # connection pool, dialect cache and inspector cache once per Discord message.
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/messages.db")
 
-_CREATE_MESSAGES_TABLE_SQL: Final[str] = """
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    discord_message_id TEXT,
-    source_type TEXT NOT NULL,
-    author TEXT,
-    author_id TEXT,
-    content TEXT,
-    created_at TEXT,
-    channel_name TEXT,
-    channel_id TEXT,
-    attachments TEXT,
-    stickers TEXT
-)
-"""
-
-_CREATE_MESSAGES_INDEX_SQL: Final[tuple[str, ...]] = (
-    "CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages(created_at)",
-    "CREATE INDEX IF NOT EXISTS ix_messages_channel_id_created_at "
-    "ON messages(channel_id, created_at)",
-    "CREATE INDEX IF NOT EXISTS ix_messages_author_id_created_at "
-    "ON messages(author_id, created_at)",
+metadata = MetaData()
+Table(
+    "messages",
+    metadata,
+    # Nullable only to match the deployed DDL, which never said NOT NULL: an INTEGER PRIMARY KEY
+    # is SQLite's rowid, which is never NULL.
+    Column("id", Integer, primary_key=True, nullable=True),
+    Column("discord_message_id", Text),
+    Column("source_type", Text, nullable=False),
+    Column("author", Text),
+    Column("author_id", Text),
+    Column("content", Text),
+    Column("created_at", Text),
+    Column("channel_name", Text),
+    Column("channel_id", Text),
+    Column("attachments", Text),
+    Column("stickers", Text),
+    Index("ix_messages_created_at", "created_at"),
+    Index("ix_messages_channel_id_created_at", "channel_id", "created_at"),
+    Index("ix_messages_author_id_created_at", "author_id", "created_at"),
     # Partial unique index gives the upsert below a conflict target while
     # leaving `NULL`-id rows untouched.
-    "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_discord_message_id "
-    "ON messages(discord_message_id) WHERE discord_message_id IS NOT NULL",
+    Index(
+        "ix_messages_discord_message_id",
+        "discord_message_id",
+        unique=True,
+        sqlite_where=text(text="discord_message_id IS NOT NULL"),
+    ),
+    sqlite_autoincrement=True,
 )
 
 # Streaming bot replies edit themselves after the initial send, so each `on_message_edit`
@@ -85,23 +92,11 @@ ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO UPDATE 
 """
 
 
-async def _create_messages_table(conn: AsyncConnection) -> None:
-    """Creates the `messages` table and its indexes if they do not exist.
-
-    Uses raw DDL rather than a declarative model so the schema definition stays in one place
-    and existing tables with `NULL`-id rows are never altered.
-    """
-    await conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
-    for statement in _CREATE_MESSAGES_INDEX_SQL:
-        await conn.execute(statement=text(text=statement))
-
-
-# No declared tables: the one table and its indexes come from `_create_messages_table`.
-_database = SqliteBootstrap(metadata=MetaData(), after_create=_create_messages_table)
+_database = SqliteBootstrap()
 
 
 async def _write_row(row: dict[str, str]) -> None:
-    """Upserts one message row matching `_CREATE_MESSAGES_TABLE_SQL`."""
+    """Upserts one message row into `messages`."""
     async with _database.open_session(engine=_engine) as session, session.begin():
         await session.execute(statement=text(text=_INSERT_MESSAGE_SQL), params=row)
 
@@ -227,9 +222,30 @@ class LogMessageCog(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds `LogMessageCog` to the bot.
+    """Adds `LogMessageCog` to the bot once `messages.db` is at its newest migration.
+
+    `messages.db` is too large to migrate at startup, so startup only creates it when it is new.
+    An existing file behind its migrations leaves message logging off until they run offline
+    (`.github/CONTRIBUTING.md#releases`), while every other feature runs as usual.
 
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
+    url = _engine.url.set(drivername="sqlite")
+    config = Config(file_="alembic.ini", ini_section="messages")
+    config.set_main_option(name="sqlalchemy.url", value=url.render_as_string(hide_password=False))
+    engine = create_engine(url=url)
+    with engine.connect() as conn:
+        current = MigrationContext.configure(connection=conn).get_current_revision()
+    engine.dispose()
+    head = ScriptDirectory.from_config(config=config).get_current_head()
+    if current is None:
+        command.upgrade(config=config, revision="head")
+    elif current != head:
+        logfire.error(
+            "messages.db is behind its migrations, so message logging is off until they run offline",
+            current=current,
+            head=head,
+        )
+        return
     bot.add_cog(LogMessageCog(bot), override=True)

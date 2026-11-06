@@ -6,10 +6,6 @@ A user-installed app receives no gateway message events and cannot read channel 
 channel that were addressed to it, so a channel-wide key would feed one person the text of
 another's turns that they never saw.
 
-The table is new rather than an extra column anywhere, which is what makes it safe on a deployed
-bot: `SqliteBootstrap.ensure_schema` is one `create_all`, which creates but never alters, so this
-touches no existing table and the repo's lack of a migration mechanism does not bite.
-
 This module owns its own `Base` on the shared `reply.db`. It avoids
 `from __future__ import annotations`: SQLAlchemy resolves the `Mapped[datetime]` column when the
 class is built, and under postponed evaluation ruff's TC rules move the annotation-only
@@ -83,11 +79,11 @@ class AskTurn(BaseModel):
     answer: str = Field(..., description="What the bot replied.")
 
 
-_database = SqliteBootstrap(metadata=Base.metadata)
+_database = SqliteBootstrap()
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `reply.db` with the `ask_turn` table ensured."""
+    """Returns an async session context manager on `reply.db`."""
     return _database.open_session(engine=_engine)
 
 

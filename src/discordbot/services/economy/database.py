@@ -47,7 +47,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.sql.dml import ReturningInsert
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.utils.timezone import as_taipei as _as_taipei
@@ -475,53 +475,8 @@ def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 
     )
 
 
-async def _seed_singleton_rows(conn: AsyncConnection) -> None:
-    """Seeds the jackpot pools and the two ledgers, inside `create_all`'s transaction.
-
-    All of them are singleton rows the rest of this module assumes exist, so they are
-    written in the same transaction that creates the tables rather than in one of their
-    own. Every insert ignores a conflict, which is what makes a repeat bootstrap on the
-    same file a no-op instead of a reset — including on a database that predates one of
-    these tables, where `create_all` adds the table and this seeds it on the same boot.
-    """
-    for seed_game_id, seed_amount in _JACKPOT_SEEDS.items():
-        await conn.execute(
-            statement=insert(JackpotPool)
-            .values(
-                game_id=seed_game_id,
-                pool_balance=seed_amount,
-                total_contributed=0,
-                total_claimed=0,
-                seeded_amount=seed_amount,
-                generation=0,
-                updated_at=_database_now(),
-            )
-            .on_conflict_do_nothing(index_elements=["game_id"])
-        )
-    await conn.execute(
-        statement=insert(CasinoLedger)
-        .values(
-            ledger_id=CASINO_LEDGER_ID,
-            balance=0,
-            total_earned=0,
-            total_spent=0,
-            updated_at=_database_now(),
-        )
-        .on_conflict_do_nothing(index_elements=["ledger_id"])
-    )
-    await conn.execute(
-        statement=insert(CentralBankLedger)
-        .values(
-            ledger_id=CENTRAL_BANK_LEDGER_ID, balance=0, total_earned=0, updated_at=_database_now()
-        )
-        .on_conflict_do_nothing(index_elements=["ledger_id"])
-    )
-
-
 # Foreign keys are enabled defensively for any future FK constraint.
-_database = SqliteBootstrap(
-    metadata=Base.metadata, enable_foreign_keys=True, after_create=_seed_singleton_rows
-)
+_database = SqliteBootstrap(enable_foreign_keys=True)
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:

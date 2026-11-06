@@ -7,6 +7,8 @@ refuses every connection past loopback for the whole run (`_refuse_remote`).
 
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
 `tmp_path` SQLite file for one test, all through `_isolate_engine`, and every one is autouse.
+That file starts as a copy of `migrated_databases`, so every test runs on the schema the
+migrations build, exactly as a deployment does.
 `memory_isolated_dir` is the one a test requests, and it covers more than a directory: the
 store dir, the `memory_job` engine, the process-local caches, counters and task registries the
 store and pipeline hold, and the git committer. The autouse fixtures are the other half of that
@@ -18,6 +20,7 @@ asked for them; the memory store stays live for a test that does not request
 import os
 import sys
 from time import monotonic
+import shutil
 from typing import Any
 from pathlib import Path
 import ipaddress
@@ -25,10 +28,13 @@ from itertools import count
 from collections.abc import Iterator
 
 import pytest
+from alembic import command
 import requests
+from sqlalchemy import event
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from tests.helpers.migrations import migration_config
 from tests.helpers.source_tree import env_example_names
 
 # `discordbot` loads `.env` when it is imported. Settings match a name in any case, and the
@@ -97,19 +103,44 @@ def network_unreachable() -> Iterator[None]:
     assert not _remote_attempts, f"reached past loopback: {_remote_attempts}"
 
 
-def _isolate_engine(monkeypatch: pytest.MonkeyPatch, target: str, db_path: Path) -> None:
-    """Points one module's `_engine` at a throwaway SQLite file for the test.
+@pytest.fixture(scope="session")
+def migrated_databases(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """Each database upgraded to its newest migration once per worker, keyed by its section."""
+    root = tmp_path_factory.mktemp(basename="migrated")
+    templates: dict[str, Path] = {}
+    for database in ("economy", "games", "reply", "messages"):
+        templates[database] = root / f"{database}.db"
+        command.upgrade(
+            config=migration_config(database=database, db_path=templates[database]),
+            revision="head",
+        )
+    return templates
 
-    NullPool closes each connection on return, so there is no pool to dispose and every fixture
-    built on this stays sync. The schema bootstraps on the module's first session, because
-    readiness is keyed on the engine and this one is new.
+
+def _isolate_engine(
+    monkeypatch: pytest.MonkeyPatch, target: str, db_path: Path, template: Path
+) -> None:
+    """Points one module's `_engine` at a throwaway copy of a migrated database for the test.
+
+    The copy is made on the engine's first connection, so a test that never touches the database
+    finds its `tmp_path` as empty as it left it. NullPool closes each connection on return, so
+    there is no pool to dispose and every fixture built on this stays sync.
     """
+
+    def copy_template(*_connect_args: object) -> None:
+        """Lays down the migrated database before the first connection opens it."""
+        if not db_path.exists():
+            shutil.copyfile(src=template, dst=db_path)
+
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}", poolclass=NullPool)
+    event.listen(target=engine.sync_engine, identifier="do_connect", fn=copy_template)
     monkeypatch.setattr(target, engine)
 
 
 @pytest.fixture(autouse=True)
-def economy_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def economy_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the economy ledger at a throwaway `economy.db`.
 
     Autouse because the module engine is the deployed ledger, and a test that forgets the
@@ -123,13 +154,16 @@ def economy_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         monkeypatch=monkeypatch,
         target="discordbot.services.economy.database._engine",
         db_path=tmp_path / "economy.db",
+        template=migrated_databases["economy"],
     )
     monkeypatch.setattr("discordbot.services.economy.database._top_n_cache", {})
     monkeypatch.setattr("discordbot.services.economy.database._top_losers_cache", {})
 
 
 @pytest.fixture(autouse=True)
-def research_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def research_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the research session table at a throwaway `reply.db`.
 
     Autouse for the reason `expansion_store_isolated` is: a test that launches a run without the
@@ -140,11 +174,14 @@ def research_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         monkeypatch=monkeypatch,
         target="discordbot.cogs.research.database._engine",
         db_path=tmp_path / "reply.db",
+        template=migrated_databases["reply"],
     )
 
 
 @pytest.fixture(autouse=True)
-def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def ask_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the `/ask` conversation table at a throwaway `reply.db`.
 
     Autouse for the reason `expansion_store_isolated` is: every `/ask` turn records itself and a
@@ -155,11 +192,14 @@ def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch=monkeypatch,
         target="discordbot.cogs.gen_reply.ask_store._engine",
         db_path=tmp_path / "reply.db",
+        template=migrated_databases["reply"],
     )
 
 
 @pytest.fixture(autouse=True)
-def messages_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def messages_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the message log at a throwaway `messages.db`.
 
     Autouse for the reason `expansion_store_isolated` is: the log writes in a background task
@@ -170,11 +210,14 @@ def messages_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         monkeypatch=monkeypatch,
         target="discordbot.cogs.log_msg.cog._engine",
         db_path=tmp_path / "messages.db",
+        template=migrated_databases["messages"],
     )
 
 
 @pytest.fixture
-def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def memory_isolated_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> Path:
     """Per-test memory dir + isolated memory_job DB with reset process-local state."""
     memories_dir = tmp_path / "memories"
     monkeypatch.setattr("discordbot.services.memory.store._MEMORY_DIR", memories_dir)
@@ -201,6 +244,7 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
         monkeypatch=monkeypatch,
         target="discordbot.services.memory.database._engine",
         db_path=tmp_path / "memory_reply.db",
+        template=migrated_databases["reply"],
     )
     monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
     monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
@@ -226,7 +270,9 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 
 @pytest.fixture(autouse=True)
-def expansion_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def expansion_store_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the pending-expansion table at a throwaway `reply.db`.
 
     Autouse for the reason `usage_log_isolated_dir` is: every expansion cog records its
@@ -238,6 +284,7 @@ def expansion_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch=monkeypatch,
         target="discordbot.utils.expansion_placeholder._engine",
         db_path=tmp_path / "expansion_reply.db",
+        template=migrated_databases["reply"],
     )
 
 
@@ -257,7 +304,9 @@ def card_images_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def cleanup_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def cleanup_store_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the pending public-message cleanup table at a throwaway `games.db`.
 
     Autouse for the reason `expansion_store_isolated` is: every expiring public message is
@@ -269,11 +318,14 @@ def cleanup_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         monkeypatch=monkeypatch,
         target="discordbot.utils.message_cleanup._engine",
         db_path=tmp_path / "game_cleanup.db",
+        template=migrated_databases["games"],
     )
 
 
 @pytest.fixture(autouse=True)
-def games_history_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def games_history_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
     """Points the Blackjack round history at a throwaway `games.db`.
 
     Autouse for the reason `expansion_store_isolated` is: every settled round records its
@@ -284,6 +336,7 @@ def games_history_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         monkeypatch=monkeypatch,
         target="discordbot.cogs.games.database._engine",
         db_path=tmp_path / "games_history.db",
+        template=migrated_databases["games"],
     )
 
 

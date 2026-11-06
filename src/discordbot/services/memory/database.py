@@ -14,8 +14,7 @@ erased transcript after it commits.
 
 `reply.db` is shared with tables owned elsewhere, so this module keeps its own
 `Base`, its own bootstrap and a module-level `AsyncEngine` singleton (a per-instance
-`cached_property` engine would leak the pool / dialect cache): separate metadata is what
-stops one of them creating or marking the other's table. No `from __future__ import
+`cached_property` engine would leak the pool / dialect cache). No `from __future__ import
 annotations` — SQLAlchemy resolves the `Mapped[datetime]` columns when the class is built,
 and under postponed evaluation ruff's TC rules move the annotation-only `datetime` import
 under `TYPE_CHECKING`, where the mapper cannot resolve it and the module fails to import.
@@ -134,11 +133,11 @@ class MemoryJob(BaseModel):
     last_error: str | None = Field(..., description="Bounded failure blurb when failed.")
 
 
-_database = SqliteBootstrap(metadata=Base.metadata)
+_database = SqliteBootstrap()
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `reply.db` with this module's tables ensured."""
+    """Returns an async session context manager on `reply.db`."""
     return _database.open_session(engine=_engine)
 
 
