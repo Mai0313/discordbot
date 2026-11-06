@@ -126,10 +126,6 @@ class UserAccount(Base):
         updated_at (Mapped[datetime]): Taiwan-local timestamp of the last write.
         is_vip (Mapped[bool]): Permanent VIP flag toggled by a successful `/vip` purchase.
         is_admin (Mapped[bool]): Whether the user can run Discord-side economy admin commands.
-        is_central_banker (Mapped[bool]): Dead. Central-bank approval belongs to a Discord
-            server administrator, read off the interaction. The column stays
-            because `SqliteBootstrap.ensure_schema` is one `create_all`, which never
-            alters an existing table, so dropping it would break a deployed database.
         hide_from_leaderboard (Mapped[bool]): Whether the account is omitted from public balance
             and daily casino loss leaderboards.
     """
@@ -143,9 +139,6 @@ class UserAccount(Base):
     )
     is_vip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_central_banker: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="0", nullable=False
-    )
     hide_from_leaderboard: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
     )
@@ -155,12 +148,6 @@ class UserWallet(Base):
     """Spendable balance and lifetime gross totals for a Discord user."""
 
     __tablename__ = "user_wallet"
-    __table_args__ = (
-        # No query filters on the balance alone — any that mentions it pins the primary
-        # key as well — and the ranking sort is a computed integer-aware expression this
-        # cannot satisfy either. It stays because the schema is never altered in place.
-        Index("ix_user_wallet_balance", "balance"),
-    )
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
@@ -267,10 +254,6 @@ class LoanProposal(Base):
     monthly_rate_bps: Mapped[int] = mapped_column(
         Integer, default=DEFAULT_LOAN_MONTHLY_RATE_BPS, nullable=False
     )
-    # Always zero: nothing escrows a proposal. The column stays because
-    # `SqliteBootstrap.ensure_schema` is one `create_all`, which never alters an existing
-    # table, so dropping it would break a deployed database.
-    escrow_amount: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
@@ -507,7 +490,6 @@ async def _upsert_user_metadata_in_session(
         updated_at=now,
         is_vip=False,
         is_admin=False,
-        is_central_banker=False,
         hide_from_leaderboard=False,
     )
     set_: dict[str, Any] = {"updated_at": now}
@@ -1595,7 +1577,6 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
                     updated_at=now,
                     is_vip=False,
                     is_admin=True,
-                    is_central_banker=False,
                 )
                 .on_conflict_do_update(index_elements=["user_id"], set_=values)
                 .returning(UserAccount.user_id)

@@ -46,10 +46,6 @@ _CONTEXT_DECLARATIONS = {
 _ACCOUNT_FLAG_GATES: dict[str, tuple[str, tuple[str, ...]] | None] = {
     "is_vip": None,
     "is_admin": ("economy admins only", ("/admin refund_tax", "/admin collect_tax")),
-    # Dead since central-bank approval moved to Discord's own administrator permission. The
-    # column cannot be dropped from a deployed database, so the key stays and maps to nothing;
-    # what the command now owes its reader is pinned in `_PERMISSION_GATED_COMMANDS`.
-    "is_central_banker": None,
     "hide_from_leaderboard": None,
 }
 # Commands gated on a Discord permission read inside the callback rather than on an account

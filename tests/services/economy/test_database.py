@@ -119,11 +119,7 @@ async def _indexed_columns(session: AsyncSession, table: str) -> set[tuple[str, 
 
 
 async def _economy_schema_details() -> tuple[
-    set[str],
-    set[tuple[str, ...]],
-    set[tuple[str, ...]],
-    dict[str, set[str]],
-    dict[str, dict[str, str]],
+    set[str], set[tuple[str, ...]], dict[str, set[str]], dict[str, dict[str, str]]
 ]:
     """Reads current economy schema metadata."""
     async with open_session() as session:
@@ -133,7 +129,6 @@ async def _economy_schema_details() -> tuple[
             )
         )
         economy_tables = {row[0] for row in result.all()}
-        wallet_indexes = await _indexed_columns(session=session, table="user_wallet")
         casino_indexes = await _indexed_columns(session=session, table="casino_account")
         column_queries = {
             "user_account": "PRAGMA table_info(user_account)",
@@ -152,7 +147,7 @@ async def _economy_schema_details() -> tuple[
             table_info = result.all()
             table_columns[table_name] = {row[1] for row in table_info}
             table_column_types[table_name] = {row[1]: row[2] for row in table_info}
-    return (economy_tables, wallet_indexes, casino_indexes, table_columns, table_column_types)
+    return (economy_tables, casino_indexes, table_columns, table_column_types)
 
 
 async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dict[str, str]]:
@@ -305,7 +300,6 @@ async def test_the_migrated_schema_holds_only_the_current_tables() -> None:
     """A database migrated to head holds the current economy tables and their seed rows."""
     (
         economy_tables,
-        wallet_indexes,
         casino_indexes,
         table_columns,
         table_column_types,
@@ -324,7 +318,7 @@ async def test_the_migrated_schema_holds_only_the_current_tables() -> None:
         "central_bank_ledger",
     }
     assert table_columns["guild_participant"] == {"guild_id", "user_id", "updated_at"}
-    assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
+    assert {"user_id", "name", "is_admin"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
         "user_wallet"
     ]
@@ -336,8 +330,7 @@ async def test_the_migrated_schema_holds_only_the_current_tables() -> None:
     _assert_money_columns_are_text(
         table_column_types=table_column_types | {"jackpot_pool": jackpot_column_types}
     )
-    # The boards sort and filter on these, whatever the indexes are called.
-    assert ("balance",) in wallet_indexes
+    # The board sorts and filters on these, whatever the index is called.
     assert ("day_started_at", "daily_loss") in casino_indexes
     seed = economy_database._JACKPOT_SEEDS["dragon_gate"]
     assert jackpot_row == (seed, 0, 0, seed, 0)
