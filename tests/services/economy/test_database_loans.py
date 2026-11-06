@@ -131,7 +131,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
         proposal_result = await session.execute(
             statement=text(
                 text="""
-                SELECT amount, typeof(amount), escrow_amount, typeof(escrow_amount)
+                SELECT amount, typeof(amount)
                   FROM loan_proposal
                  WHERE id = :proposal_id
                 """
@@ -152,7 +152,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
         )
 
     prepaid_interest = large_amount * 300 * MIN_INTEREST_DAYS // (10_000 * 30)
-    assert proposal_result.one() == (str(large_amount), "text", "0", "text")
+    assert proposal_result.one() == (str(large_amount), "text")
     assert contract_result.one() == (
         str(large_amount),
         "text",

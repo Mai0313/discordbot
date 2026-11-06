@@ -86,7 +86,7 @@ def setup(bot: commands.Bot) -> None:
 - Build the `tasks` list for a `gather` over a variable number of awaitables with a `for` loop, not a comprehension.
 - Avoid intermediate one-level aliases when directly using the original object is clearer.
 - Prefer a constant with one caller inside that function, unless anything else references it, it is user-visible config, or it belongs in `typings/timeouts.py` or `typings/context_budgets.py`.
-- No compatibility wrappers, re-exports at an old import path, migration code, or read-path tolerance for an old data layout: repoint every caller, and clean changed data once, offline.
+- No compatibility wrappers, re-exports at an old import path, or read-path tolerance for an old data layout: repoint every caller, change a database through an Alembic migration, and clean other changed data once, offline.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.
 
 ## Comments
@@ -106,7 +106,7 @@ Four things therefore never appear in a comment or docstring:
 
 **Dropping a count is not the same as writing a universal.** "Douyin and Bilibili check this, Threads does not" becomes "every source that has a gate checks this" and is now false, because the one source that does not is a source with a gate. Name the exception: an outlier a reader has to know about is a fact, not a roster, and it is the half worth keeping when the list goes.
 
-**None of this deletes the only copy of a reason.** Where the shortest true form of a reason is a piece of history, a measured figure or a name from another file, keep it and compress it. A warning, a "do not", and a "re-measure before changing this" are reasons rather than narration: the comment saying a column cannot be dropped on a deployed database is the only thing stopping someone dropping it.
+**None of this deletes the only copy of a reason.** Where the shortest true form of a reason is a piece of history, a measured figure or a name from another file, keep it and compress it. A warning, a "do not", and a "re-measure before changing this" are reasons rather than narration: the comment saying `messages.db` is too large to migrate at startup is the only thing stopping someone adding it to the startup loop.
 
 **A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/guards/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
@@ -177,6 +177,15 @@ docker compose pull bot && docker compose up -d bot
 ```
 
 The image's `org.opencontainers.image.revision` label names the commit it was built from, so `docker inspect` on the running container shows what is deployed.
+
+Startup applies new migrations to every database except `messages.db`, which it only creates. When a merge adds a `messages.db` revision, the bot keeps running with message logging off until it is applied by hand. Stop the bot, back up the file (the backup reads through the WAL, so nothing committed is lost), and run the revision from the new image; batch mode rebuilds the table, so it needs free disk about the size of the file:
+
+```bash
+docker compose stop bot
+sqlite3 data/database/messages.db ".backup data/messages.db.bak"
+docker compose run --rm bot /app/.venv/bin/alembic -n messages upgrade head
+docker compose up -d bot
+```
 
 ## License
 

@@ -1,11 +1,20 @@
 """Tests for the canonical message logging path."""
 
+from types import SimpleNamespace
 from typing import Any
 import asyncio
+from pathlib import Path
+import sqlite3
 
+import pytest
 from sqlalchemy import text
+from nextcord.ext import commands
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs.log_msg import cog as log_msg
+
+from tests.helpers.casting import as_bot
+from tests.helpers.logfire_capture import capture_logs
 
 _SAMPLE_ROW: dict[str, str] = {
     "discord_message_id": "1001",
@@ -28,8 +37,8 @@ async def _query(sql: str) -> list[tuple[Any, ...]]:
         return [tuple(row) for row in result.all()]
 
 
-async def test_write_row_creates_table_and_inserts() -> None:
-    """First write creates the canonical messages table, then inserts the row."""
+async def test_write_row_inserts_into_the_one_messages_table() -> None:
+    """A write lands in the canonical `messages` table, never a per-channel one."""
     await log_msg._write_row(row=_SAMPLE_ROW)
 
     rows = await _query(
@@ -93,7 +102,7 @@ async def test_write_row_stores_different_sources_in_one_table() -> None:
 
 
 async def test_write_row_concurrent_inserts_all_land() -> None:
-    """Verifies that concurrent writes, the first one's schema bootstrap included, all land."""
+    """Verifies that concurrent writes all land."""
     rows = [
         {**_SAMPLE_ROW, "discord_message_id": f"{2000 + i}", "content": f"msg-{i}"}
         for i in range(20)
@@ -101,3 +110,43 @@ async def test_write_row_concurrent_inserts_all_land() -> None:
     await asyncio.gather(*[log_msg._write_row(row=row) for row in rows])
 
     assert await _query(sql='SELECT COUNT(*) FROM "messages"') == [(20,)]
+
+
+def _setup_cogs() -> list[commands.Cog]:
+    """Runs the cog's `setup` and returns the cogs it added."""
+    added: list[commands.Cog] = []
+    bot = SimpleNamespace(add_cog=lambda cog, override: added.append(cog))
+    log_msg.setup(bot=as_bot(fake=bot))
+    return added
+
+
+def test_setup_creates_a_new_messages_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file that does not exist yet is migrated at startup, since an empty table costs nothing."""
+    db_path = tmp_path / "new-messages.db"
+    monkeypatch.setattr(
+        target=log_msg,
+        name="_engine",
+        value=create_async_engine(url=f"sqlite+aiosqlite:///{db_path}"),
+    )
+
+    added = _setup_cogs()
+
+    assert [type(cog) for cog in added] == [log_msg.LogMessageCog]
+    with sqlite3.connect(database=db_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+    assert {"messages", "alembic_version"} <= tables
+
+
+async def test_setup_leaves_logging_off_while_messages_db_is_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An existing file behind its migrations keeps the cog out and says so, never migrating."""
+    async with log_msg._engine.begin() as conn:
+        await conn.execute(statement=text(text="UPDATE alembic_version SET version_num = 'older'"))
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+
+    added = _setup_cogs()
+
+    assert added == []
+    assert [fields["current"] for _, fields in errors] == ["older"]
+    assert await _query(sql="SELECT version_num FROM alembic_version") == [("older",)]

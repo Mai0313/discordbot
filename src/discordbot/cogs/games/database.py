@@ -69,11 +69,11 @@ class BlackjackRoundResult(Base):
     )
 
 
-_database = SqliteBootstrap(metadata=Base.metadata)
+_database = SqliteBootstrap()
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on the games-history engine with schema ensured."""
+    """Returns an async session context manager on the games-history engine."""
     return _database.open_session(engine=_engine)
 
 

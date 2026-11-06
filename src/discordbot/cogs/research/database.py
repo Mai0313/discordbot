@@ -52,7 +52,7 @@ class ResearchSessionRow(Base):
         source_message_id (Mapped[int]): The message the thread was anchored to.
         agent (Mapped[str]): The Gemini agent string running this session.
         interaction_id (Mapped[str | None]): Running interaction ID, or `None` before creation.
-        brief (Mapped[str]): Research brief; kept `NOT NULL` for existing `reply.db` tables.
+        brief (Mapped[str]): Research brief.
         phase (Mapped[str]): Lifecycle phase (`ResearchPhase`).
         created_at (Mapped[datetime]): First-write timestamp.
         updated_at (Mapped[datetime]): Latest-write timestamp.
@@ -86,11 +86,11 @@ class PersistentResearchSession(BaseModel):
     )
 
 
-_database = SqliteBootstrap(metadata=Base.metadata)
+_database = SqliteBootstrap()
 
 
 def open_session() -> AbstractAsyncContextManager[AsyncSession]:
-    """Returns an async session context manager on `_engine` with the `research` table ensured."""
+    """Returns an async session context manager on `_engine`."""
     return _database.open_session(engine=_engine)
 
 

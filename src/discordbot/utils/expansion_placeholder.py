@@ -16,10 +16,6 @@ delivered onto or discarded, and `resume_expansion_placeholders` runs the interr
 again on `on_ready`. What it runs is the cog's own `_expand` with the arguments the listener
 passes, so a resumed expansion succeeds or fails exactly as a fresh one does — and a failed one
 ends in the same `discard`, which turns the stale placeholder back into nothing.
-
-The rows live in a table of their own rather than a column on an existing one, which is what makes
-it safe on a deployed bot: `SqliteBootstrap.ensure_schema` is one `create_all`, which creates but
-never alters, and this repo has no migration mechanism.
 """
 
 from typing import Final, Protocol, runtime_checkable
@@ -67,11 +63,7 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/databas
 
 
 class Base(DeclarativeBase):
-    """Base class for the pending-expansion model, with metadata of its own.
-
-    `reply.db` carries tables owned elsewhere, and separate metadata is what stops one
-    module's `create_all` creating or marking another's table.
-    """
+    """Base class for the pending-expansion model, with metadata of its own."""
 
 
 class PendingExpansionRow(Base):
@@ -149,7 +141,7 @@ class ExpansionRetry(Protocol):
         ...
 
 
-_database = SqliteBootstrap(metadata=Base.metadata)
+_database = SqliteBootstrap()
 
 
 async def _record_pending(
