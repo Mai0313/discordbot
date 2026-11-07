@@ -26,13 +26,13 @@ uvx pre-commit run ty -a         # type check alone; `uvx ty check` rejects --al
 
 Config comes from `.env` (see `.env.example`); only `DISCORD_BOT_TOKEN` is required to boot. OpenAI clients are lazy `cached_property`s, so an empty `OPENAI_API_KEY` fails at first use (a turn, or a non-empty memory resume in `on_ready`), not at boot.
 
-Debug from `./data/logs`, which holds logfire output only: a `print()`, a stdlib logger with no logfire handler and whatever nextcord prints to `sys.stderr` never land there. What Discord itself holds (which commands are registered, what a message or embed stored) shows in no log: query its REST API from inside `discordbot-bot-1` with the container's own `DISCORD_BOT_TOKEN`, so the token never reaches a command line. Deploying is in `.github/CONTRIBUTING.md#releases`.
+Debug from `./data/logs`, which holds logfire output only: a `print()`, a stdlib logger with no logfire handler and whatever nextcord prints to `sys.stderr` never land there. The owner is Discord user `mai9999` (id `1010833712956592200`): match either to pick out his turns in `data/logs`, `data/usage` and `data/memories`. What Discord itself holds (which commands are registered, what a message or embed stored) shows in no log: query its REST API from inside `discordbot-bot-1` with the container's own `DISCORD_BOT_TOKEN`, so the token never reaches a command line. Deploying is in `.github/CONTRIBUTING.md#releases`.
 
 Reuse `tests/conftest.py` and the fakes in `tests/helpers/` before writing a new fake. Unit tests inject fake LLM clients and memory writers and need no API credentials; the Tests workflow intentionally provides none.
 
 The suite reads no `.env`, starts with every variable `.env.example` names cleared, and fails a test that reaches past loopback (`tests/conftest.py`), so a local run is CI's credential-less run; a test that needs a setting sets it with `monkeypatch.setenv`. That guard sees only Python's `socket` module, so a client that connects in C (grpc) needs a network namespace to catch (`bwrap --unshare-net --dev-bind / / uv run pytest`; plain `unshare -n` needs root). A run that stalls near the end is usually pytest-xdist deadlocking (#672): rerun with `-n0`, which has never hung on its own, so a hang there is real. A fake can go green without reaching the branch under test (`MemoryWriterAI.evaluate` returns before any model call on empty notes; a reply's overflow chunks hang off the previous chunk's `replies`, not the message's), so mutate the guarded line once before trusting a new test.
 
-`main` requires no status check, so GitHub refuses auto-merge and lets a merge through mid-CI: wait for every check yourself. The release binaries crash at startup and the release workflow stays as the template ships it (#960, closed as not planned): do not raise it.
+`main` requires no status check, so GitHub refuses auto-merge and lets a merge through mid-CI: wait for every check yourself. After merging a fix, offer to redeploy rather than deploying unasked or leaving it unmentioned; a request to redeploy covers merging on green CI, waiting for the publish run, the deploy, and checking the running image's revision against the merge commit. The release binaries crash at startup and the release workflow stays as the template ships it (#960, closed as not planned): do not raise it.
 
 ## Runtime Shape
 
@@ -58,6 +58,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Never hardcode a Discord attachment-size ceiling; read it through `utils/media_delivery.py::upload_limit_for(guild=...)`, also passing `interaction=` when the media goes out through one**.
 - **Decide attach vs host vs drop only in `MediaDeliveryPlanner.plan`; keep the Discord send and the degradation policy at each site**. Pass `envelope_margin=MEDIA_ENVELOPE_MARGIN` for a combined attach or one riding with embeds, and keep every new site host-free under `MEDIA_HOSTING_ENABLED=false` (module docstring).
 - **A Discord forward has empty `content` / `embeds` / `attachments`; its payload is in `message.snapshots`** (`gen_reply/input.py`).
+- **`channel.history(before=..., oldest_first=True)` reverses each 100-message page on its own**, so past one page the order scrambles: fetch newest first and reverse the list yourself (`gen_reply/surface.py::TurnSurface.fetch_history`).
 - **Only `InteractionContextType.bot_dm` is a direct message**: `private_channel` also covers group DMs and other people's DMs, and a DM reading hands recall a `dm_partner_id` that opens every compartment the owner has.
 - **A slash command's first followup after a defer keeps the defer's flag**, so a public settlement after an ephemeral defer goes through `utils/interaction_responses.py::send_expiring_followup_after_private_defer`.
 
@@ -83,7 +84,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Name a Responses API call's result `responses` and its stream items `response`.**
 - **Answer proxy-behavior questions from LiteLLM's source in the running container, not its docs, which lag it.** Use `docker exec litellm-litellm-1 python -c "import importlib.metadata as m; print(m.version('litellm'))"` and `/app/.venv/lib/python3.13/site-packages/litellm`, or shallow-clone upstream into a scratch dir for a version the container lacks.
 - **A `Vertex_ai_betaException` in a proxy error is the Gemini Developer API**: every Gemini conversational alias is a `gemini/...` deployment, whose route reuses LiteLLM's Vertex transformation. Read the model group a LiteLLM error names before blaming a tier for it.
-- **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn on an error** (`streaming.py::stream_answer_with_retry` has why).
+- **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn on an error** (`streaming.py::stream_answer_with_retry` has why). The owner keeps that retry beside the proxy's fallbacks although it rarely fires: do not propose removing it.
 - **Read retryability structurally, never off the message, through `utils/llm_errors.py::llm_status_code` / `is_retryable_llm_error`**.
 - **A kill-switch is an `*_enabled` field on `LLMConfig` (`typings/llm.py`) whose description states its own off-behaviour**.
 - **Pricing comes from `utils/model_pricing.py`'s cached LiteLLM table; never hardcode rates.**
