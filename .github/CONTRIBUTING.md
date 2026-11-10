@@ -110,7 +110,7 @@ Four things therefore never appear in a comment or docstring:
 
 **A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/guards/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
-`AGENTS.md` (which `CLAUDE.md` links to) holds the rules the code at the edit site does not show, and the rule files under `.agents/rules/` hold the ones that matter only for part of the code. When a fact is written in the code, they carry the pointer to it rather than a second copy.
+`AGENTS.md` holds the rules the code at the edit site does not show, and the rule files under `.agents/rules/` hold the ones that matter only for part of the code. When a fact is written in the code, they carry the pointer to it rather than a second copy.
 
 ## Logging
 
