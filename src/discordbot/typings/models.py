@@ -148,7 +148,7 @@ class RuntimeModelCatalog(BaseModel):
     @property
     def fast_model(self) -> ModelSettings:
         """Returns model settings for intermediate prose generation short of the final answer."""
-        return ModelSettings(name="gemini-4-argon", effort="low")
+        return ModelSettings(name="gemini-4-carbon", effort="low")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -163,14 +163,14 @@ class RuntimeModelCatalog(BaseModel):
         # a level the model does not list loses the whole reply there and errors the
         # streaming answer through the proxy. Before repointing, check the new snapshot's set
         # (see `ModelSettings.effort`) covers every value `RouteClassification.effort` emits.
-        # `gemini-4-argon` accepts low / medium / high, not `minimal` (Google's thinking page,
-        # read 2026-10-14; openrouter does not list it).
+        # `gemini-4-carbon` accepts low / medium / high, not `minimal` (openrouter and Google's
+        # thinking page, read 2026-11-11).
         #
         # Without an entry in LiteLLM's price table a reply's footer shows no cost, and a
         # non-Gemini name falls back to the `{"text", "image"}` modality gate: an audio or video
         # attachment then never reaches the route or the answer model, so a clip posted with one
         # line of text is answered as if the line were the whole message.
-        return ModelSettings(name="gemini-4-argon", effort="high")
+        return ModelSettings(name="gemini-4-carbon", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:
@@ -180,7 +180,7 @@ class RuntimeModelCatalog(BaseModel):
         staged and written to fact files and the tone note; a weaker model on either risks
         losing or leaking memory.
         """
-        return ModelSettings(name="gemini-4-argon", effort="high")
+        return ModelSettings(name="gemini-4-carbon", effort="high")
 
 
 class RouteClassification(BaseModel):

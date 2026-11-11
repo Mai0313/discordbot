@@ -64,8 +64,8 @@ def get_trading_decision(ticker: str, trade_date: str, results_dir: str) -> str:
     config = DEFAULT_CONFIG.copy()
     config.update({
         "llm_provider": "google",
-        "deep_think_llm": "gemini-4-argon",
-        "quick_think_llm": "gemini-4-argon",
+        "deep_think_llm": "gemini-4-carbon",
+        "quick_think_llm": "gemini-4-carbon",
         "deep_think_provider": None,
         "quick_think_provider": None,
         "backend_url": None,
