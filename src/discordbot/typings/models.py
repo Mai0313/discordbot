@@ -103,7 +103,7 @@ class RuntimeModelCatalog(BaseModel):
         Dispatched on the native Gemini Interactions API (`interactions.create`) direct to
         Google with a bare model name and no provider prefix.
         """
-        return ModelSettings(name="gemini-omni-1.1-flash")
+        return ModelSettings(name="gemini-omni-1.2-flash")
 
     @property
     def music_model(self) -> ModelSettings:
