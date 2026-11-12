@@ -34,7 +34,7 @@ Paste a link behind spoiler bars (`||link||`) or in angle brackets (`<link>`) wi
 - `/memory regenerate` — rebuild my memory of you from scratch, in the background
 - `/memory clear` — erase everything I remember about you
 - `/memory server show` — what I remember about this server's community; only works inside a server I am a member of
-- `/memory server catchup` — I read what members said in this channel since my last catchup (up to 100 messages, bots skipped) and note what is worth remembering about the community, even though nobody was talking to me; anyone can run it, once every 10 minutes per server, only in a channel everyone in the server can see, and my result stays in the channel because the next catchup there starts reading after it
+- `/memory server catchup` — I read what members said in this channel since my last catchup (up to 50 messages, bots skipped) and note what is worth remembering about the community, even though nobody was talking to me; anyone can run it, once every 10 minutes per server, only in a channel everyone in the server can see, and my result stays in the channel because the next catchup there starts reading after it
 
 ## Research
 
