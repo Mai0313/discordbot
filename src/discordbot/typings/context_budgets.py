@@ -47,11 +47,11 @@ from typing import Final
 # chatty channel or lets a channel of long posts blow up the input. Ordinary chat reaches this
 # axis first while `HISTORY_CHAR_BUDGET` bounds long posts; anything older than the active
 # conversation belongs to long-term memory.
-HISTORY_MESSAGE_LIMIT: Final[int] = 100
+HISTORY_MESSAGE_LIMIT: Final[int] = 50
 
 # Paired with the message limit, this binds only once messages average over 40 characters, so
 # what it bounds is a channel of long posts.
-HISTORY_CHAR_BUDGET: Final[int] = 8000
+HISTORY_CHAR_BUDGET: Final[int] = 4000
 
 # What a history message costs beyond its own text: the rendered form carries an author header,
 # and an attachment-only message has empty `content` but still renders a marker standing in for
@@ -65,7 +65,7 @@ HISTORY_PER_MESSAGE_OVERHEAD: Final[int] = 40
 # degrade to `[attachment: ...]` markers so the model still knows a file was posted, and the
 # answer avoids waiting on heavy history uploads that share `MEDIA_CONCURRENCY` slots across
 # replies in flight.
-MAX_HISTORY_MEDIA_PARTS: Final[int] = 10
+MAX_HISTORY_MEDIA_PARTS: Final[int] = 5
 
 # --------------------------------------------------------------------------------------
 # Attachment bytes inlined into one reply
@@ -77,19 +77,20 @@ MAX_HISTORY_MEDIA_PARTS: Final[int] = 10
 # --------------------------------------------------------------------------------------
 
 # Largest attachment inlined at all, checked against the size Discord reports before downloading.
-# Matches Discord's non-Nitro upload limit, and encodes to ~28 MB of base64: small enough to fit
-# inside `MAX_HISTORY_INLINE_BYTES` and to stay under the ~77 MB request ceiling even when
-# rendered twice (in history and again as the replied-to reference message).
+# Matches Discord's non-Nitro upload limit, and encodes to ~28 MB of base64: small enough to stay
+# under the ~77 MB request ceiling even when rendered twice (in history and again as the
+# replied-to reference message). It no longer fits `MAX_HISTORY_INLINE_BYTES`, so a file this
+# large degrades to a marker in history.
 MAX_INLINE_ATTACHMENT_BYTES: Final[int] = 20 * 1024 * 1024
 
 # What the history window's attachments may put in the request, counted in the bytes they render
 # to, newest kept first. Past it older posts degrade to the `[attachment: ...]` markers the
 # media-part cap above uses. Without it, files that fit one at a time add up past the ceiling and
-# every later reply resends them until they leave the window. Room for most of the ten parts the
+# every later reply resends them until they leave the window. Room for most of the five parts the
 # cap above admits when they are downscaled photos (~3-5 MB of base64 each), with one file at
 # `MAX_INLINE_ATTACHMENT_BYTES` of the turn's own beside it still under 77 MB. The current and
 # replied-to messages render whole on top, so more than that one file there can still pass it.
-MAX_HISTORY_INLINE_BYTES: Final[int] = 48_000_000
+MAX_HISTORY_INLINE_BYTES: Final[int] = 24_000_000
 
 # --------------------------------------------------------------------------------------
 # Memory read into a request
