@@ -148,7 +148,7 @@ class RuntimeModelCatalog(BaseModel):
     @property
     def fast_model(self) -> ModelSettings:
         """Returns model settings for intermediate prose generation short of the final answer."""
-        return ModelSettings(name="gemini-4-carbon", effort="low")
+        return ModelSettings(name="gemini-4-hydrogen", effort="low")
 
     @property
     def slow_model(self) -> ModelSettings:
