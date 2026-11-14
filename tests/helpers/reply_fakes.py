@@ -890,7 +890,10 @@ def _stream_events() -> AsyncIterator[ResponseStreamEvent]:
                 response=SimpleNamespace(
                     model=TEST_LLM_MODEL,
                     usage=SimpleNamespace(
-                        input_tokens=12, output_tokens=34, output_tokens_details=None
+                        input_tokens=12,
+                        output_tokens=34,
+                        output_tokens_details=None,
+                        input_tokens_details=None,
                     ),
                     output=[],
                 ),
@@ -919,7 +922,9 @@ def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
         type="response.completed",
         response=SimpleNamespace(
             model=TEST_LLM_MODEL,
-            usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+            usage=SimpleNamespace(
+                input_tokens=input_tokens, output_tokens=output_tokens, input_tokens_details=None
+            ),
             output=[],
         ),
     )

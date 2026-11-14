@@ -453,6 +453,7 @@ class AnswerTurn(BaseModel):
                         system_instruction=instructions,
                         steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
                         effort=slow_model.effort,
+                        tool_use=streamer.tool_use,
                     )
                 return await self.toolkit.openai_client.responses.create(
                     model=slow_model.name,

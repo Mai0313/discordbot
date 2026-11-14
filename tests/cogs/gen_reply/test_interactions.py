@@ -11,7 +11,7 @@ from google.genai import types
 from google.genai.errors import APIError
 
 from discordbot.utils.llm_errors import extract_friendly_error, is_retryable_llm_error
-from discordbot.cogs.gen_reply.streaming import stream_answer_with_retry
+from discordbot.cogs.gen_reply.streaming import AnswerToolUse, stream_answer_with_retry
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     adapt_interactions_stream,
@@ -312,6 +312,94 @@ _ANSWER_STREAM = _sse(
 )
 
 
+async def _tool_use_of(status: str) -> AnswerToolUse:
+    """Streams a YouTube answer that searched, read URLs and cited, ending as `status`.
+
+    Each call's arguments arrive the ways the SDK types allow: on its start, its delta, or both.
+    """
+    stream = _sse(
+        events=[
+            _INTERACTION_CREATED,
+            {
+                "event_type": "step.start",
+                "index": 0,
+                "step": {
+                    "type": "google_search_call",
+                    "id": "s1",
+                    "arguments": {"queries": ["a", "b"]},
+                },
+            },
+            {
+                "event_type": "step.delta",
+                "index": 0,
+                "delta": {"type": "google_search_call", "arguments": {"queries": ["b", "c"]}},
+            },
+            {
+                "event_type": "step.delta",
+                "index": 1,
+                "delta": {
+                    "type": "url_context_call",
+                    "arguments": {"urls": ["https://a.test/x", "https://b.test/y"]},
+                },
+            },
+            {"event_type": "step.delta", "index": 2, "delta": {"type": "text", "text": "answer"}},
+            {
+                "event_type": "step.delta",
+                "index": 2,
+                "delta": {
+                    "type": "text_annotation_delta",
+                    "annotations": [
+                        {"type": "url_citation", "url": "https://a.test/x", "title": "A"},
+                        {"type": "file_citation", "document_uri": "files/f"},
+                        {"type": "url_citation", "url": "https://a.test/z", "title": "Z"},
+                    ],
+                },
+            },
+            {
+                "event_type": "interaction.completed",
+                "interaction": {"id": "i1", "model": "gemini-3.1-pro-preview", "status": status},
+            },
+        ]
+    )
+    client = genai.Client(
+        api_key="test",
+        http_options=types.HttpOptions(
+            httpx_async_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    handler=lambda request: httpx.Response(
+                        status_code=200,
+                        headers={"content-type": "text/event-stream"},
+                        content=stream,
+                    )
+                )
+            )
+        ),
+    )
+    tool_use = AnswerToolUse()
+    async for _ in create_interactions_answer_stream(
+        client=client,
+        model="gemini-3.1-pro-preview",
+        system_instruction="",
+        steps=[],
+        effort="high",
+        tool_use=tool_use,
+    ):
+        pass
+    return tool_use
+
+
+async def test_a_completed_youtube_answer_records_its_tool_use() -> None:
+    """Distinct queries and fetched URLs are counted once however their calls arrive."""
+    assert await _tool_use_of(status="completed") == AnswerToolUse(
+        web_search_queries=3, url_fetches=2, url_citations=2, cited_domains=["a.test"]
+    )
+
+
+async def test_an_unfinished_youtube_answer_reports_no_tool_use() -> None:
+    """An interaction that ends short of completed reports nothing, as the Responses path does."""
+    assert await _tool_use_of(status="incomplete") == AnswerToolUse()
+
+
 def _http_status(status: int) -> "Callable[[httpx.Request], httpx.Response]":
     """A failure the API answers with `status`."""
 
@@ -402,6 +490,7 @@ class _YouTubeAnswerTurn:
             system_instruction="",
             steps=[],
             effort="high",
+            tool_use=AnswerToolUse(),
         )
 
     async def answer(self, streamer: "ResponseStreamer | None" = None) -> str:
