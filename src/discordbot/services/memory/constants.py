@@ -70,7 +70,9 @@ STABLE_FRESHNESS_WINDOW_DAYS = 45
 # Lifetime of every fact the sweep neither exempts nor displaces as `stable` (a `recent`,
 # `volatile` or `session` one, or anything in the `recent` section), measured against `today`. A
 # code sweep rather than a prompt rule, because `last_confirmed` is code-stamped and a
-# deterministic date beats a rule a rewrite has to re-apply correctly every pass.
+# deterministic date beats a rule a rewrite has to re-apply correctly every pass. The sweep only
+# runs when a scope consolidates, so the reader leaves such a fact out by the same date test
+# meanwhile (`facts.py::is_past_recent_ttl`).
 RECENT_CONTEXT_TTL_DAYS = 30
 
 # Bound on the rendered-document cache. One live entry per (scope, reading context) is the working

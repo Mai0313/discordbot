@@ -21,7 +21,7 @@ from discordbot.typings.memory import MemoryFlavor
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.services.memory.tone import forget_tone, update_tone_note
-from discordbot.services.memory.facts import sections_for_flavor
+from discordbot.services.memory.facts import today_utc, sections_for_flavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -41,7 +41,6 @@ from discordbot.services.memory.store import (
 )
 from discordbot.services.memory.deltas import (
     DeltaOutcome,
-    today_utc,
     apply_deltas,
     forget_segments,
     reconfirm_facts,

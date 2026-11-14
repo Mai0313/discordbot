@@ -3,6 +3,7 @@
 import re
 from types import SimpleNamespace
 from pathlib import Path
+from datetime import timedelta
 from collections.abc import Callable
 
 import pytest
@@ -43,7 +44,9 @@ from discordbot.services.memory.store import (
     delete_memory_files,
     read_memory_document,
 )
+from discordbot.services.memory.constants import RECENT_CONTEXT_TTL_DAYS
 
+from tests.helpers.memory import STAMPED_AT
 from tests.helpers.user_memory import (
     _BIG5,
     _OWNER,
@@ -402,6 +405,46 @@ def test_reads_are_cached_until_a_write_lands() -> None:
     )
     write_fact(scope=scope, fact=_fact(fact_id="b" * 16, text="第三版"))
     assert "第二版" in read_memory_document(
+        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
+    )
+
+
+def test_a_fact_past_its_date_ttl_is_left_out_of_the_read_but_kept_on_disk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scope nobody consolidates must not serve what the sweep would already have deleted."""
+    scope = user_scope(user_id=111)
+    write_fact(
+        scope=scope,
+        fact=_fact(fact_id="a" * 16, section="recent", durability="recent", text="正在搬家"),
+    )
+    write_fact(scope=scope, fact=_fact(fact_id="b" * 16, section="preference", text="喜歡簡短"))
+    write_fact(
+        scope=scope,
+        fact=_fact(fact_id="c" * 16, section="permanent", durability="permanent", text="母語中文"),
+    )
+    expired_day = STAMPED_AT + timedelta(days=RECENT_CONTEXT_TTL_DAYS + 1)
+    monkeypatch.setattr("discordbot.services.memory.store.today_utc", lambda: expired_day)
+    document = read_memory_document(scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user")
+    assert "正在搬家" not in document
+    assert "喜歡簡短" in document, "a stable fact ages by displacement, never by the date"
+    assert "母語中文" in document
+    assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 3
+
+
+def test_a_cached_read_expires_a_fact_when_the_day_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No write lands at midnight, so the cache has to notice the day itself."""
+    scope = user_scope(user_id=111)
+    write_fact(scope=scope, fact=_fact(section="recent", durability="recent", text="正在搬家"))
+    last_day = STAMPED_AT + timedelta(days=RECENT_CONTEXT_TTL_DAYS)
+    monkeypatch.setattr("discordbot.services.memory.store.today_utc", lambda: last_day)
+    assert "正在搬家" in read_memory_document(
+        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
+    )
+    monkeypatch.setattr(
+        "discordbot.services.memory.store.today_utc", lambda: last_day + timedelta(days=1)
+    )
+    assert "正在搬家" not in read_memory_document(
         scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
     )
 
