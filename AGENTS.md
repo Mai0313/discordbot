@@ -85,7 +85,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Name a Responses API call's result `responses` and its stream items `response`.**
 - **Answer proxy-behavior questions from LiteLLM's source in the running container, not its docs, which lag it.** Use `docker exec litellm-litellm-1 python -c "import importlib.metadata as m; print(m.version('litellm'))"` and `/app/.venv/lib/python3.13/site-packages/litellm`, or shallow-clone upstream into a scratch dir for a version the container lacks.
 - **A `Vertex_ai_betaException` in a proxy error is the Gemini Developer API**: every Gemini conversational alias is a `gemini/...` deployment, whose route reuses LiteLLM's Vertex transformation. Read the model group a LiteLLM error names before blaming a tier for it.
-- **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn on an error** (`streaming.py::stream_answer_with_retry` has why). The owner keeps that retry beside the proxy's fallbacks although it rarely fires: do not propose removing it.
+- **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn, on an error or on a stream that ends without completing** (`streaming.py::stream_answer_with_retry` has why). The owner keeps that retry beside the proxy's fallbacks: do not propose removing it.
 - **Read retryability structurally, never off the message, through `utils/llm_errors.py::llm_status_code` / `is_retryable_llm_error`**.
 - **A kill-switch is an `*_enabled` field on `LLMConfig` (`typings/llm.py`) whose description states its own off-behaviour**.
 - **Pricing comes from `utils/model_pricing.py`'s cached LiteLLM table; never hardcode rates.**
