@@ -133,6 +133,7 @@ def interactions_turn_events() -> list[SimpleNamespace]:
             event_type="interaction.completed",
             interaction=SimpleNamespace(
                 model="gemini-3.1-pro-preview",
+                status="completed",
                 usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
             ),
         ),
