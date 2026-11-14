@@ -15,7 +15,7 @@ the only place the two vocabularies meet.
 
 import re
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import logfire
 
@@ -26,6 +26,7 @@ from discordbot.typings.memory import (
     MemorySection,
     MemoryNodeType,
 )
+from discordbot.services.memory.constants import RECENT_CONTEXT_TTL_DAYS
 
 _FENCE = "---"
 # The rendered `<name> [id: <N>]` identity line. It crosses the review job's round-trip
@@ -374,3 +375,30 @@ def _one_line(text: str) -> str:
 def utc_now() -> datetime:
     """Returns the timestamp used for every code-stamped fact date."""
     return datetime.now(UTC).replace(microsecond=0)
+
+
+def today_utc() -> datetime:
+    """Returns the current UTC day boundary the freshness rules compare against."""
+    return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def is_past_recent_ttl(fact: MemoryFact, today: datetime) -> bool:
+    """Whether `fact` expires by its own date and that date has passed.
+
+    This is the class `deltas.py::sweep_stale_facts` deletes `RECENT_CONTEXT_TTL_DAYS` after
+    `last_confirmed`: everything except the facts that never age (a `permanent` durability or
+    section, a `member_alias` row) and the `stable` facts outside `recent`, which age by
+    displacement within their compartment instead.
+
+    Args:
+        fact (MemoryFact): Stored fact to classify.
+        today (datetime): UTC day boundary to compare against.
+    """
+    if (
+        fact.durability == "permanent"
+        or fact.section == "permanent"
+        or fact.node_type == "member_alias"
+        or (fact.durability == "stable" and fact.section != "recent")
+    ):
+        return False
+    return today - fact.last_confirmed > timedelta(days=RECENT_CONTEXT_TTL_DAYS)

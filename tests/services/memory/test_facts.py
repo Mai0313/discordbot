@@ -104,8 +104,12 @@ def test_unparseable_identity_falls_back_to_the_scope_id() -> None:
     assert owner.owner_id == 111
 
 
-def test_rendered_document_groups_by_section_and_dates_recent() -> None:
+def test_rendered_document_groups_by_section_and_dates_recent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The rendered shape is the one the reply prompts have always been handed."""
+    # Read on the day the facts were stamped, so the recent one is still within its TTL.
+    monkeypatch.setattr("discordbot.services.memory.store.today_utc", lambda: STAMPED_AT)
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact(fact_id="a" * 16, section="profile", text="愛玩遊戲的人"))
     write_fact(scope=scope, fact=_fact(fact_id="b" * 16, section="preference", text="喜歡簡短"))
@@ -177,8 +181,12 @@ def test_an_alias_row_cannot_be_given_someone_elses_id(text: str) -> None:
     assert allowlist_ids_from_server_memory(memory=document) == {777: "小明(社群暱稱:明哥)"}
 
 
-def test_rendered_server_document_feeds_the_allowlist_its_member_ids() -> None:
+def test_rendered_server_document_feeds_the_allowlist_its_member_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The `## 成員稱呼` table is parsed back out of the render, so it has to stay readable."""
+    # Read on the stamping day, so the recent fact quoting an id lookalike is still rendered.
+    monkeypatch.setattr("discordbot.services.memory.store.today_utc", lambda: STAMPED_AT)
     write_fact(
         scope=SERVER_SCOPE,
         fact=_alias_fact(fact_id="a" * 16, text="小李(社群暱稱:李董)", subject_id=4242),
@@ -198,6 +206,7 @@ def test_rendered_server_document_feeds_the_allowlist_its_member_ids() -> None:
         ),
     )
     document = _server_document()
+    assert "[id: 1]" in document
     # Only that section widens the allowlist, so an id-lookalike quoted into another
     # section is not a member the bot may be asked about.
     assert allowlist_ids_from_server_memory(memory=document) == {

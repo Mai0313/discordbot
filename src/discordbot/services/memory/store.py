@@ -21,7 +21,8 @@ IO is synchronous, which one fact per file would otherwise make untenable on the
 path: `read_memory_document` is cached under a per-scope generation counter that
 every fact write bumps, so a repeat read costs no syscalls at all. The counter is exact
 because every write in this process goes through here; editing the tree from outside
-while the bot runs is not supported.
+while the bot runs is not supported. The read also leaves out facts past their date TTL,
+whose only time input is the UTC day, so the cache is stamped with that day as well.
 """
 
 import os
@@ -29,6 +30,7 @@ import re
 import time
 import asyncio
 from pathlib import Path
+from datetime import datetime
 import contextlib
 from collections.abc import Callable
 
@@ -39,8 +41,10 @@ from discordbot.typings.memory import MemoryFact, MemoryOwner, MemoryFlavor
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
+    today_utc,
     parse_fact_file,
     render_fact_file,
+    is_past_recent_ttl,
     render_memory_document,
 )
 from discordbot.typings.context_budgets import (
@@ -83,7 +87,9 @@ _cleared_at: dict[str, float] = {}
 # (plain dicts, no asyncio primitive). All three are process-global and describe one store
 # root, so relocating that root has to reset them.
 _write_generation: dict[str, int] = {}
-_render_cache: dict[tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[int, str]] = {}
+_render_cache: dict[
+    tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[tuple[int, datetime], str]
+] = {}
 
 
 def user_scope(user_id: int) -> str:
@@ -384,7 +390,8 @@ def read_memory_document(
 
     Facts from every requested compartment compete for `max_chars` by recency inside each
     section rather than by compartment, and the rendered result is cached on `scope`'s write
-    generation.
+    generation and the UTC day. A fact past its date TTL (`is_past_recent_ttl`) is left out
+    but stays on disk.
 
     Args:
         scope (str): Memory scope key.
@@ -394,13 +401,16 @@ def read_memory_document(
     """
     key = (scope, tuple(compartments), flavor, max_chars)
     cached = _render_cache.get(key)
-    generation = _write_generation.get(scope, 0)
-    if cached is not None and cached[0] == generation:
+    stamp = (_write_generation.get(scope, 0), today_utc())
+    if cached is not None and cached[0] == stamp:
         return cached[1]
     facts = [
         fact
         for compartment in compartments
         for fact in read_facts(scope=scope, compartment=compartment)
+        # Expiry is a date, so a scope nobody consolidates must not keep serving what the
+        # sweep would already have deleted; the sweep still owns the deletion.
+        if not is_past_recent_ttl(fact=fact, today=stamp[1])
     ]
     document = render_memory_document(facts=facts, flavor=flavor, max_chars=max_chars)
     if len(_render_cache) >= RENDER_CACHE_MAX_ENTRIES:
@@ -408,7 +418,7 @@ def read_memory_document(
         # working set is one entry per (scope, reading context), so the bound is only
         # here to stop a long-lived process accumulating stale keys forever.
         _render_cache.clear()
-    _render_cache[key] = (generation, document)
+    _render_cache[key] = (stamp, document)
     return document
 
 

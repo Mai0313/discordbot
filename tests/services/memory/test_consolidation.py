@@ -74,7 +74,7 @@ from tests.helpers.user_memory import (
 async def test_a_forget_only_call_is_never_told_to_compact() -> None:
     """Compaction asks a `deletes_only` call for a rewrite `apply_deltas` then throws away.
 
-    The trigger reads the compartment's own rendered facts, and a forget is copied into every
+    The trigger reads the compartment's own fact text, and a forget is copied into every
     compartment its speaker can read from — so on a large one the forget call was handed the
     block telling it to merge and condense, and every non-delete it produced was dropped with
     a logged warning apiece. The observation pass over that same compartment still compacts,
@@ -474,7 +474,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
 async def test_pipeline_compaction_triggers_past_compartment_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Compaction is decided per compartment, off the rendered size of its own facts."""
+    """Compaction is decided per compartment, off the text of its own facts."""
     _consolidate_at(monkeypatch=monkeypatch, entries=1)
     monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
@@ -505,6 +505,60 @@ async def test_pipeline_small_compartment_skips_compaction(
     await _wait_for_inflight()
     # order-contract: the compartment's call follows the note review and precedes the tone call.
     assert PHASE2_COMPACTION_BLOCK not in fake_client.responses.parse_instructions[1]
+
+
+async def test_headers_alone_never_trigger_compaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server's alias rows render long headers over short bodies; only the bodies count."""
+    _consolidate_at(monkeypatch=monkeypatch, entries=1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(text="短", keys=tuple(f"preference.key_{n}" for n in range(20))),
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
+    _schedule(writer=writer)
+    await _wait_for_inflight()
+    # order-contract: the compartment's call follows the note review and precedes the tone call.
+    assert len(fake_client.responses.parse_bodies[1]) > 100, "the rendered facts pass the trigger"
+    assert PHASE2_COMPACTION_BLOCK not in fake_client.responses.parse_instructions[1]
+
+
+async def test_a_fact_past_its_date_ttl_is_neither_shown_nor_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shown, a fact the sweep is about to delete could trigger compaction or be merged back."""
+    _consolidate_at(monkeypatch=monkeypatch, entries=1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
+    write_fact(
+        scope=USER_SCOPE, fact=_stored_fact(section="recent", durability="recent", text="舊" * 200)
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _answers(review=_draft("訊號"), facts=_consolidated())
+    _schedule(writer=writer)
+    await _wait_for_inflight()
+    # order-contract: the compartment's call follows the note review and precedes the tone call.
+    assert "舊" not in fake_client.responses.parse_bodies[1]
+    assert PHASE2_COMPACTION_BLOCK not in fake_client.responses.parse_instructions[1]
+
+
+async def test_a_forget_is_still_shown_a_fact_past_its_date_ttl() -> None:
+    """Only the forget's delete releases a fact's evidence; the sweep that would remove it does not."""
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(
+            fact_id="e" * 16, section="recent", durability="recent", text="使用者正在搬家"
+        ),
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _answers()
+    _schedule(writer=writer, forget_notes=("使用者已經搬完家了",))
+    await _wait_for_inflight()
+    forget_calls = [
+        body for body in fake_client.responses.parse_bodies if "forget_request" in body
+    ]
+    assert forget_calls, "the forget reached consolidation"
+    assert all("e" * 16 in body for body in forget_calls)
 
 
 def _stage_mixed_raw_batch() -> None:

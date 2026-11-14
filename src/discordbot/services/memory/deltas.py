@@ -21,7 +21,7 @@ main jobs:
   the memory of one the user visits less often.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -32,6 +32,7 @@ from discordbot.services.memory.facts import (
     utc_now,
     mint_fact_id,
     node_type_for,
+    is_past_recent_ttl,
     sections_for_flavor,
     render_member_alias_text,
 )
@@ -45,7 +46,6 @@ from discordbot.services.memory.store import (
 )
 from discordbot.services.memory.writer import MemoryFactDelta
 from discordbot.services.memory.constants import (
-    RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
@@ -249,7 +249,10 @@ def render_existing_facts(facts: list[MemoryFact]) -> str:
     """
     blocks: list[str] = []
     for fact in sorted(facts, key=lambda item: (item.section, item.fact_id)):
-        header = f"[{fact.fact_id}] section={fact.section} durability={fact.durability}"
+        header = (
+            f"[{fact.fact_id}] section={fact.section} durability={fact.durability} "
+            f"last_confirmed={fact.last_confirmed.date().isoformat()}"
+        )
         keys = ",".join(fact.keys)
         lines = [header, f"summary: {fact.summary}"]
         if keys:
@@ -502,7 +505,9 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
                 days=STABLE_FRESHNESS_WINDOW_DAYS
             )
         else:
-            expired = today - fact.last_confirmed > timedelta(days=RECENT_CONTEXT_TTL_DAYS)
+            # The same test the reader applies, so a fact hidden from replies is exactly one
+            # this sweep would delete.
+            expired = is_past_recent_ttl(fact=fact, today=today)
         if expired and delete_fact(scope=scope, compartment=compartment, fact_id=fact.fact_id):
             removed += 1
     return removed
@@ -525,8 +530,3 @@ def _compartment_for_block(block: str) -> str:
     # in `global` would publish exactly what the flag asked to confine, so it goes to
     # the owner's own DMs — visible to them alone.
     return DM_COMPARTMENT
-
-
-def today_utc() -> datetime:
-    """Returns the current UTC day boundary used by the freshness sweep."""
-    return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)

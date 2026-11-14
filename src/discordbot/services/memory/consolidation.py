@@ -17,11 +17,11 @@ from functools import partial
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryFlavor
+from discordbot.typings.memory import MemoryFact, MemoryFlavor
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.services.memory.tone import forget_tone, update_tone_note
-from discordbot.services.memory.facts import sections_for_flavor
+from discordbot.services.memory.facts import today_utc, is_past_recent_ttl, sections_for_flavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
@@ -41,7 +41,6 @@ from discordbot.services.memory.store import (
 )
 from discordbot.services.memory.deltas import (
     DeltaOutcome,
-    today_utc,
     apply_deltas,
     forget_segments,
     reconfirm_facts,
@@ -278,7 +277,7 @@ async def _consolidate_observations(
             # cross-server evidence there was no global call to take it from, and
             # a guild compartment still must not restate what is already shared.
             global_reference = render_existing_facts(
-                facts=read_facts(scope=run.scope, compartment=GLOBAL_COMPARTMENT)
+                facts=_live_facts(scope=run.scope, compartment=GLOBAL_COMPARTMENT)
             )
         if cleared_since(scope=run.scope, started_at=run.started_at):
             return False
@@ -296,7 +295,7 @@ async def _consolidate_observations(
             return False
         if compartment == GLOBAL_COMPARTMENT:
             global_reference = render_existing_facts(
-                facts=read_facts(scope=run.scope, compartment=compartment)
+                facts=_live_facts(scope=run.scope, compartment=compartment)
             )
     return True
 
@@ -369,20 +368,28 @@ async def _consolidate_compartment(
     what makes "a guild-locked observation cannot reach `global/`" structural rather than a
     rule the prompt asks the model to follow.
     """
-    existing = read_facts(scope=run.scope, compartment=compartment)
-    rendered = render_existing_facts(facts=existing)
+    # A forget call is shown every fact: its delete is what releases the evidence by key, and
+    # the sweep that would remove an expired fact releases none.
+    existing = (
+        read_facts(scope=run.scope, compartment=compartment)
+        if deletes_only
+        else _live_facts(scope=run.scope, compartment=compartment)
+    )
+    # Measured on the bodies, which are what a reply reads and what the target counts; the
+    # rendered headers would let a server's alias rows trigger it with little text behind them.
+    stored_chars = sum(len(fact.text) for fact in existing)
+    # Never on a forget-only call, however large the compartment is: compaction asks the model
+    # to merge and condense, and `apply_deltas` then drops every non-delete it produced with a
+    # warning apiece. The block would only buy a rewrite nobody can apply.
+    compact = may_compact and not deletes_only and stored_chars > COMPACTION_TRIGGER_CHARS
     result = await run.writer.consolidate(
         flavor=run.flavor,
         request=compartment_request(
             run=run,
             compartment=compartment,
-            existing_facts=rendered,
+            existing_facts=render_existing_facts(facts=existing),
             parts=request_parts,
-            # Never on a forget-only call, however large the compartment is: compaction
-            # asks the model to merge and condense, and `apply_deltas` then drops every
-            # non-delete it produced with a warning apiece. The block would only buy a
-            # rewrite nobody can apply.
-            compact=may_compact and not deletes_only and len(rendered) > COMPACTION_TRIGGER_CHARS,
+            compact=compact,
         ),
     )
     if result is None:
@@ -391,6 +398,7 @@ async def _consolidate_compartment(
             scope=run.scope,
             compartment=compartment,
             raw_entries=count_raw_entries(scope=run.scope),
+            compacted=compact,
         )
         return None
     if cleared_since(scope=run.scope, started_at=run.started_at):
@@ -433,8 +441,24 @@ async def _consolidate_compartment(
         dropped=outcome.dropped,
         reconfirmed=reconfirmed,
         swept=swept,
+        compacted=compact,
+        stored_chars=stored_chars,
     )
     return outcome
+
+
+def _live_facts(scope: str, compartment: str) -> list[MemoryFact]:
+    """Returns the compartment's facts a reply can still read, the ones a writing pass is shown.
+
+    One past its date TTL is swept after the call; shown first, it would count toward the
+    compaction trigger and could be merged back to life, since a rewrite re-stamps its date.
+    """
+    today = today_utc()
+    return [
+        fact
+        for fact in read_facts(scope=scope, compartment=compartment)
+        if not is_past_recent_ttl(fact=fact, today=today)
+    ]
 
 
 def _record_rejection(scope: str, compartment: str, outcome: DeltaOutcome, stored: int) -> None:
