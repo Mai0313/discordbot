@@ -3,6 +3,7 @@
 What one pipeline writes and another reads back lives here rather than in either one: the
 sanitizer that keeps a name from forging the author-identity prefix the reply and memory
 prompts trust as authorship (the prefix itself is spelled where each transcript is built), the
+fence defusing that keeps typed text from passing as one of the reply pipeline's markers, the
 one-line identities memory files are stamped with, the forwarded-content marker, and the usage
 footer the bot appends to its own replies and strips again before reading them back.
 """
@@ -64,13 +65,28 @@ def render_usage_footer(
     return f"{line} · ${cost:.8f}", cost
 
 
+def defuse_separator_fences(text: str) -> str:
+    """Returns `text` with every run of exactly four `=` (the full-width sign included) cut to `==`.
+
+    The reply pipeline's markers (the history, Reference Message, Current Message and linked-post
+    labels) are fenced with `====` and ride in the same role as what people write, so the fence is
+    what keeps a typed lookalike from passing as one. The full-width sign is one keystroke away on
+    a Chinese input method. Longer runs are left alone: they are not the fence, and code carries
+    them (a merge-conflict divider, a heading underline).
+
+    Args:
+        text (str): Text a person or a linked post wrote.
+    """
+    return re.sub(pattern=r"(?<![=\uff1d])[=\uff1d]{4}(?![=\uff1d])", repl="==", string=text)
+
+
 def sanitize_identity(value: str) -> str:
-    """Returns `value` with authorship-prefix lookalikes (`[id:`) neutralized.
+    """Returns `value` with authorship-prefix lookalikes (`[id:`) and marker fences neutralized.
 
     Args:
         value (str): User-controlled identity string to sanitize.
     """
-    return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
+    return defuse_separator_fences(text=_ID_PREFIX_LOOKALIKE_RE.sub("[id-", value))
 
 
 def render_author_identity(display_name: str, username: str, user_id: int) -> str:

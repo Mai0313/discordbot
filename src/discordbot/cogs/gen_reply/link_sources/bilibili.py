@@ -42,7 +42,7 @@ from discordbot.services.platforms.ytdlp import (
 )
 from discordbot.cogs.gen_reply.link_sources import (
     AI_INGEST_QUALITY,
-    system_block,
+    marker_block,
     link_context_blocks,
 )
 from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
@@ -176,7 +176,7 @@ async def build_bilibili_context_messages(
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Bilibili video URL.
 
-    Returns `[separator, user-content]` for a readable video, or a single system notice block
+    Returns `[separator, user-content]` for a readable video, or a single notice marker block
     when metadata cannot be read. Never raises.
 
     Args:
@@ -205,7 +205,7 @@ async def build_bilibili_context_messages(
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            return [system_block(text=BILIBILI_UNREADABLE_NOTICE)]
+            return [marker_block(text=BILIBILI_UNREADABLE_NOTICE)]
 
         # A b23.tv short link can resolve to a page that is not a single video (a user
         # space, a collection, a season): yt-dlp reads those as playlists, so the metadata
@@ -223,7 +223,7 @@ async def build_bilibili_context_messages(
                 url=url,
                 resolved_url=metadata.webpage_url,
             )
-            return [system_block(text=BILIBILI_UNREADABLE_NOTICE)]
+            return [marker_block(text=BILIBILI_UNREADABLE_NOTICE)]
 
         text = _render_video_text(metadata=metadata, url=url)
         media_parts: list[ResponseInputFileParam] = []

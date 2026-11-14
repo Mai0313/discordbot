@@ -102,9 +102,9 @@ _BLOCK_HEADS: dict[str, tuple[str, str]] = {
     "server_memory": ("assistant", _SERVER_HEADER),
     "memory": ("assistant", _PARTICIPANT_HEADER),
     "tone": ("assistant", _TONE_HEADER),
-    "reference": ("system", _REFERENCE_HEAD),
-    "current": ("system", _CURRENT_HEAD),
-    "callable": ("system", _CALLABLE_HEADER),
+    "reference": ("user", _REFERENCE_HEAD),
+    "current": ("user", _CURRENT_HEAD),
+    "callable": ("user", _CALLABLE_HEADER),
 }
 
 
@@ -112,7 +112,7 @@ class LinkSourceBlocks(BaseModel):
     """The top-level texts one link source injects into the answer input."""
 
     separators: tuple[str, ...] = Field(
-        ..., description="System separators a fetched post's own block follows."
+        ..., description="Markers a fetched post's own block follows."
     )
     notices: tuple[str, ...] = Field(
         ..., description="Notices a failed or timed-out read injects instead of the post."
@@ -219,14 +219,14 @@ def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
 def extract_link_context_block(request: ResponseInputParam | str, source: str) -> str | None:
     """Returns the text of the block following `source`'s separator, or None if absent.
 
-    The builder emits a ``role="system"`` separator immediately followed by the
+    The builder emits a ``role="user"`` marker immediately followed by the
     ``role="user"`` message carrying the post's text and media; this anchors on the
     separator's header line and returns that next block's text.
     """
     separators = {_head(text=text) for text in LINK_SOURCE_BLOCKS[source].separators}
     items = list(iter_text_blocks(request=request))
     for index, (role, text) in enumerate(items):
-        if role == "system" and _head(text=text) in separators:
+        if role == "user" and _head(text=text) in separators:
             return items[index + 1][1] if index + 1 < len(items) else ""
     return None
 
@@ -242,7 +242,7 @@ def has_timeout_notice(request: ResponseInputParam | str, source: str) -> bool:
     """Whether the input carries `source`'s notice that its build outran the grace."""
     head = _head(text=LINK_SOURCE_BLOCKS[source].timeout_notice)
     return any(
-        role == "system" and _head(text=text) == head
+        role == "user" and _head(text=text) == head
         for role, text in iter_text_blocks(request=request)
     )
 
@@ -257,7 +257,7 @@ def block_index(request: ResponseInputParam | str, kind: str) -> int:
         AssertionError: No block of that kind is in the input.
     """
     if kind in LINK_SOURCE_BLOCKS:
-        role = "system"
+        role = "user"
         heads = tuple(_head(text=text) for text in LINK_SOURCE_BLOCKS[kind].separators)
     else:
         role, head = _BLOCK_HEADS[kind]

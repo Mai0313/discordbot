@@ -409,7 +409,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
         hist_messages=raw_history
     )
     assert len(rendered) == 3
-    assert rendered[0]["role"] == "system"
+    assert rendered[0]["role"] == "user"
     assert [m.content for m in raw_history] == ["hello", "bot answer"]
 
     parent = FakeMessage(content="parent", author=FakeAuthor(user_id=4))
@@ -424,7 +424,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     # always None and only a fake can offer a second link at all. This assertion is what makes a
     # walk that follows one fail here.
     assert len(reference) == 2
-    assert reference[0]["role"] == "system"
+    assert reference[0]["role"] == "user"
     assert "grandparent" not in str(reference[1]["content"])
     assert (
         len(

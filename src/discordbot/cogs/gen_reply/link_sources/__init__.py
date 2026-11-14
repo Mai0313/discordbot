@@ -39,6 +39,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.emojis import LinkSourceName
 from discordbot.utils.link_errors import LinkUnavailableError
+from discordbot.utils.llm_transcript import defuse_separator_fences
 from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
 from discordbot.services.platforms.base import (
     PlatformOutput,
@@ -56,14 +57,19 @@ from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_imag
 AI_INGEST_QUALITY: VideoQuality = "low"
 
 
-def system_block(text: str) -> EasyInputMessageParam:
-    """Returns `text` wrapped as a low-authority `role="system"` input block.
+def marker_block(text: str) -> EasyInputMessageParam:
+    """Returns `text` wrapped as a `role="user"` input block marking where a part of the input starts.
+
+    Not `role="system"`: the proxy's Gemini transform lifts every system item out of the
+    conversation into `system_instruction`, and a marker means nothing away from where it sits.
+    What tells a marker from what people wrote is its `====` fence, which
+    `defuse_separator_fences` keeps out of every message and post.
 
     Args:
         text (str): Separator or notice text to wrap.
     """
     return EasyInputMessageParam(
-        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
+        role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
 
 
@@ -76,21 +82,24 @@ def link_context_blocks(
     claims to see media that was not attached.
 
     Args:
-        separator (str): System-block preamble stating what is attached below.
+        separator (str): Marker stating what is attached below.
         text (str): Rendered post text.
         media_parts (Sequence[ResponseInputFileParam]): Uploaded media parts to attach.
     """
     return [
-        system_block(text=separator),
+        marker_block(text=separator),
         EasyInputMessageParam(
             role="user",
-            content=[ResponseInputTextParam(text=text, type="input_text"), *media_parts],
+            content=[
+                ResponseInputTextParam(text=defuse_separator_fences(text=text), type="input_text"),
+                *media_parts,
+            ],
         ),
     ]
 
 
 class PostSeparators(BaseModel):
-    """System-block openers and closing trailer around a readable post.
+    """Opening markers and closing trailer around a readable post.
 
     Whether `attached` or `text_only` opens the block depends on whether media parts actually
     arrived, not on whether the post carries media.
@@ -119,7 +128,8 @@ def post_context_blocks(
     """Returns the answer-model input blocks for a readable post.
 
     `separators.trailer` is placed after `media_parts` rather than at the end of `text` so any
-    instruction-shaped text inside an attached image stays inside the quoted-data fence.
+    instruction-shaped text inside an attached image stays inside the quoted-data fence. It is
+    joined after the post's text is defused, so its own fence stands.
 
     Args:
         text (str): The rendered post text.
@@ -128,9 +138,10 @@ def post_context_blocks(
             when `media_parts` is empty.
         separators (PostSeparators): The source's opener and trailer strings.
     """
+    text = defuse_separator_fences(text=text)
     if media_parts:
         return [
-            system_block(text=separators.attached),
+            marker_block(text=separators.attached),
             EasyInputMessageParam(
                 role="user",
                 content=[
@@ -141,7 +152,15 @@ def post_context_blocks(
             ),
         ]
     opener = separators.text_only if post_carries_media else separators.attached
-    return link_context_blocks(separator=opener, text=f"{text}\n\n{separators.trailer}")
+    return [
+        marker_block(text=opener),
+        EasyInputMessageParam(
+            role="user",
+            content=[
+                ResponseInputTextParam(text=f"{text}\n\n{separators.trailer}", type="input_text")
+            ],
+        ),
+    ]
 
 
 class PostReader[ConversationT](Protocol):
@@ -228,7 +247,7 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a post URL, uploading up to `image_cap` images.
 
-    Returns `[separator, user-content]` for a readable post, or a single system notice block when
+    Returns `[separator, user-content]` for a readable post, or a single notice marker when
     the post cannot be read. Never raises.
 
     Args:
@@ -238,7 +257,7 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
             downloader.
         render (PostRenderer[OutputT, ConversationT]): Renders the post and conversation text
             given the count of attached images.
-        separators (PostSeparators): System-block openers and closing trailer for the platform.
+        separators (PostSeparators): Opening markers and closing trailer for the platform.
         unavailable_notice (str): Notice returned when the platform reports the post is gone or
             private.
         unreadable_notice (str): Notice returned when the read fails without proving the post is
@@ -262,9 +281,9 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
             unreadable_notice=unreadable_notice,
         )
         if isinstance(conversation, str):
-            return [system_block(text=conversation)]
+            return [marker_block(text=conversation)]
         if conversation.target is None:
-            return [system_block(text=unavailable_notice)]
+            return [marker_block(text=unavailable_notice)]
 
         target = conversation.target
         media_parts: list[ResponseInputFileParam] = []
@@ -405,5 +424,5 @@ class LinkContextSource(BaseModel):
     )
 
     def timeout_blocks(self) -> list[EasyInputMessageParam]:
-        """Returns `self.timeout_notice` wrapped as a single system block."""
-        return [system_block(text=self.timeout_notice)]
+        """Returns `self.timeout_notice` wrapped as a single marker block."""
+        return [marker_block(text=self.timeout_notice)]
