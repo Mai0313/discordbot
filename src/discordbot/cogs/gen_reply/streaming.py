@@ -181,6 +181,28 @@ def _cut_cleanly(text: str, budget: int, earliest: int) -> tuple[str, str]:
     return f"{head}\n{_CODE_FENCE}", reopened
 
 
+class IncompleteAnswerError(Exception):
+    """An answer stream that ended without completing; its message is what the user reads.
+
+    Args:
+        reason (str): Why it ended: the backend's own reason (`content_filter`,
+            `max_output_tokens`) or Interactions status, `incomplete` when it gave none, and
+            `no_terminal_event` for a stream that just stopped.
+    """
+
+    def __init__(self, reason: str) -> None:
+        if reason == "content_filter":
+            notice = "The provider's content filter stopped this answer before it finished."
+        elif reason == "max_output_tokens":
+            notice = "This answer used up its whole output budget before it finished."
+        else:
+            notice = f"The answer stream ended before the answer finished ({reason})."
+        super().__init__(notice)
+        self.reason = reason
+        # The same request would spend the same budget the same way again.
+        self.retryable = reason != "max_output_tokens"
+
+
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
 
@@ -631,11 +653,12 @@ class ResponseStreamer(BaseModel):
         self.reply = None
 
     async def land_failure(self, embed: Embed) -> bool:
-        """Returns whether `embed` was edited onto the in-progress `reply` message.
+        """Returns whether `embed` was landed under the partial answer on the in-progress `reply`.
 
-        Preserves any partial answer text while clearing a reasoning-only preview with `content=""`
-        (never `None`, which nextcord omits from multipart edits carrying the embed spacer file).
-        Returns False when no `reply` exists or Discord rejects the edit so the caller can send a
+        Preserves any partial answer text, continuing what one message cannot hold as follow-ups
+        with `embed` on the last, while clearing a reasoning-only preview with `content=""` (never
+        `None`, which nextcord omits from multipart edits carrying the embed spacer file).
+        Returns False when no `reply` exists or Discord rejects a write so the caller can send a
         fresh failure message.
 
         Args:
@@ -643,11 +666,24 @@ class ResponseStreamer(BaseModel):
         """
         if self.reply is None:
             return False
+        content, chunks = self._split_reply_for_discord(
+            content=scrub_markers_for_preview(text=self.stored_content)
+            if self.content_started
+            else "",
+            footer="",
+            max_messages=self.surface.answer_capacity(has_landed_reply=True),
+        )
         try:
-            await self.reply.edit(
-                content=self._render_preview() if self.content_started else "",
+            target = self.reply
+            if chunks:
+                await target.edit(content=content)
+                for chunk in chunks:
+                    target = await self.surface.follow_up(previous=target, content=chunk)
+                content = chunks[-1]
+            await target.edit(
+                content=content,
                 embed=embed,
-                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.reply),
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=target),
             )
         except NotFound:
             # Someone removed the half-written reply while the answer was failing: a routine
@@ -671,12 +707,13 @@ class ResponseStreamer(BaseModel):
             return False
         return True
 
-    async def _consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> None:
-        """Streams the reply, accumulating text and usage onto the instance.
+    async def _consume(self, responses: AsyncIterator[ResponseStreamEvent]) -> str | None:
+        """Returns why the stream ended short of `response.completed`, or None if it reached it.
 
-        Only accumulates state; the snapshot editor task renders it to Discord, so this
-        loop never blocks on a Discord edit between deltas.
+        Only accumulates text and usage onto the instance; the snapshot editor task renders it to
+        Discord, so this loop never blocks on a Discord edit between deltas.
         """
+        incomplete: str | None = "no_terminal_event"
         # Discriminate on the `type` literal, never isinstance against the SDK event classes:
         # the YouTube path's `adapt_interactions_stream` yields duck-typed namespaces that carry
         # only the field names read here, so an isinstance check would silently drop its events.
@@ -687,6 +724,7 @@ class ResponseStreamer(BaseModel):
                 # clean `completed` event.
                 self.model_name = response.response.model
             elif response.type == "response.completed":
+                incomplete = None
                 self.model_name = response.response.model
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
@@ -698,10 +736,21 @@ class ResponseStreamer(BaseModel):
                     self._url_citations = (self._url_citations or 0) + _count_url_citations(
                         output=response.response.output
                     )
+            elif response.type == "response.incomplete":
+                self.model_name = response.response.model
+                # Billed like any other attempt, so it counts toward the footer a retry ends on.
+                if response.response.usage:
+                    self.input_tokens += response.response.usage.input_tokens
+                    self.output_tokens += response.response.usage.output_tokens
+                details = response.response.incomplete_details
+                incomplete = (
+                    details.reason if details is not None and details.reason else "incomplete"
+                )
             elif response.type == "response.reasoning_summary_text.delta":
                 self._on_reasoning_delta(delta=response.delta)
             elif response.type == "response.output_text.delta":
                 self._on_content_delta(delta=response.delta)
+        return incomplete
 
     async def finalize_reply(self) -> str:
         """Returns the finalized reply text after extracting inline markers, writing the footer, and attaching media."""
@@ -1274,17 +1323,32 @@ class ResponseStreamer(BaseModel):
         Args:
             responses (AsyncIterator[ResponseStreamEvent]): Stream of Responses API events for one
                 attempt.
+
+        Raises:
+            IncompleteAnswerError: The stream ended without `response.completed`.
         """
         if self.carries_turn_notices:
             current_answer_streamer.set(self)
         try:
-            await self._consume(responses=responses)
+            incomplete = await self._consume(responses=responses)
         finally:
             # Stamped here rather than at finalize, which runs after the inline media is
             # generated: a `<generate-video>` render can take minutes and would otherwise be
             # reported as answer latency.
             self._answer_seconds = time.monotonic() - self.created_at
             await self._stop_editor()
+        if incomplete is not None:
+            logfire.warn(
+                "gen_reply answer stream incomplete",
+                message_id=self.message.id,
+                model=self.model_name,
+                backend=self.backend,
+                reason=incomplete,
+                attempt=self.attempts,
+                reply_chars=len(self.stored_content),
+                reasoning_chars=len(self.reasoning_content),
+            )
+            raise IncompleteAnswerError(reason=incomplete)
 
 
 # Opens one answer stream. A factory rather than the stream itself, because the request has to
@@ -1303,7 +1367,10 @@ async def stream_answer_with_retry(
     locally), whereas a streaming answer turn can fail across all proxy fallback hops or run
     direct to Google on the Interactions API with no proxy behind it. Re-issuing is safe because
     an answer turn is a pure read with no side effects before the stream completes, and stays on
-    the same client and model so uploaded Files API URIs remain valid.
+    the same client and model so uploaded Files API URIs remain valid. A stream that ends without
+    completing is re-issued too, since what stops one is most often the provider's content
+    filter, which a fresh sample usually gets past; one that spent its whole output budget is not,
+    since the same request would spend it again.
 
     Between attempts, `reset_for_retry` clears partial text and revives the preview editor, and
     `announce_retry` updates the surface when `streamer.carries_turn_notices` is True. When
@@ -1320,8 +1387,15 @@ async def stream_answer_with_retry(
 
     Raises:
         TimeoutError: The `/ask` delivery window expired, carrying `WINDOW_EXPIRED_NOTICE`.
+        IncompleteAnswerError: The last attempt ended without completing, or ran out of output
+            budget.
         Exception: The last attempt's unwrapped provider failure after all attempts are spent.
     """
+
+    def _worth_another_attempt(failure: BaseException) -> bool:
+        if isinstance(failure, IncompleteAnswerError):
+            return failure.retryable
+        return is_retryable_llm_error(exc=failure)
 
     async def _before_retry(retry_state: RetryCallState) -> None:
         failure = retry_state.outcome.exception() if retry_state.outcome else None
@@ -1341,7 +1415,7 @@ async def stream_answer_with_retry(
         await streamer.consume(responses=await open_stream())
 
     retrying = AsyncRetrying(
-        retry=retry_if_exception(is_retryable_llm_error),
+        retry=retry_if_exception(_worth_another_attempt),
         wait=wait_fixed(wait=ANSWER_RETRY_INTERVAL_SECONDS)
         + wait_random(min=0, max=ANSWER_RETRY_JITTER_SECONDS),
         stop=stop_after_attempt(ANSWER_STREAM_MAX_ATTEMPTS),

@@ -20,6 +20,8 @@ from discordbot.cogs.gen_reply.interactions import (
 
 from tests.helpers.casting import step_dicts, as_interaction_event_stream
 from tests.helpers.gen_reply import event_stream, interactions_turn_events
+from tests.helpers.reply_fakes import FakeMessage, _streamer
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, AsyncIterator
@@ -402,10 +404,13 @@ class _YouTubeAnswerTurn:
             effort="high",
         )
 
-    async def answer(self) -> str:
-        """Runs the turn through the answer retry and returns the reply text."""
+    async def answer(self, streamer: "ResponseStreamer | None" = None) -> str:
+        """Runs the turn through the answer retry and returns the reply text.
+
+        The text is joined by a bare `_TextStreamer` unless `streamer` is given.
+        """
         return await stream_answer_with_retry(
-            streamer=cast("ResponseStreamer", _TextStreamer()),
+            streamer=streamer or cast("ResponseStreamer", _TextStreamer()),
             open_stream=self._open_stream,
             message_id=1,
         )
@@ -440,6 +445,55 @@ async def test_a_transient_interactions_failure_reopens_the_youtube_answer(
 
     assert await turn.answer() == "the answer"
     assert turn.opened == 2
+
+
+_ANSWER_START: list[dict[str, object]] = [
+    _INTERACTION_CREATED,
+    {"event_type": "step.delta", "index": 0, "delta": {"type": "text", "text": "half"}},
+]
+
+_CUT_SHORT = {
+    "failed": _sse(
+        events=[
+            *_ANSWER_START,
+            {
+                "event_type": "interaction.completed",
+                "interaction": {"id": "i1", "model": "gemini-3.1-pro-preview", "status": "failed"},
+            },
+        ]
+    ),
+    "no_terminal_event": _sse(events=_ANSWER_START),
+}
+
+
+@pytest.mark.usefixtures("sleepless_answer_retry")
+@pytest.mark.parametrize("reason", ["failed", "no_terminal_event"])
+async def test_an_interactions_answer_that_ends_short_is_asked_again(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """A YouTube answer cut short is re-issued as a Responses one is, its status logged as why.
+
+    The Interactions payload carries no finish reason, so the status the interaction ended in is
+    the only reason there is to log.
+    """
+    logged = capture_logs(monkeypatch=monkeypatch, level="warn")
+    turn = _YouTubeAnswerTurn(
+        first_attempt=lambda request: httpx.Response(
+            status_code=200,
+            headers={"content-type": "text/event-stream"},
+            content=_CUT_SHORT[reason],
+        )
+    )
+
+    reply = await turn.answer(streamer=_streamer(message=FakeMessage(), backend="interactions"))
+
+    assert turn.opened == 2
+    assert reply.startswith("the answer")
+    assert [
+        (fields["backend"], fields["reason"])
+        for text, fields in logged
+        if text == "gen_reply answer stream incomplete"
+    ] == [("interactions", reason)]
 
 
 @pytest.mark.usefixtures("sleepless_answer_retry")

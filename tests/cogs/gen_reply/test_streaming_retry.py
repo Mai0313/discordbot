@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, cast
 import asyncio
 
 # openai 3.x builds its exceptions on httpx2, so a request or response handed to one has to
 # come from there. google-genai is still on httpx 0.x, and both live in the environment.
 import httpx2
-from openai import APIError, BadRequestError
+from openai import APIError, AsyncOpenAI, BadRequestError
 import pytest
 from nextcord import Embed
 
@@ -16,11 +17,16 @@ from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.cogs.gen_reply.surface import WINDOW_EXPIRED_NOTICE
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
-from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
+from discordbot.cogs.gen_reply.streaming import (
+    ResponseStreamer,
+    IncompleteAnswerError,
+    stream_answer_with_retry,
+)
 from discordbot.cogs.gen_reply.status_marks import RETRY_HINT_EMOJI
 
 from tests.helpers.casting import as_message, make_not_found
 from tests.helpers.reply_fakes import (
+    TEST_LLM_MODEL,
     FakeReply,
     FakeAuthor,
     FakeMessage,
@@ -30,12 +36,14 @@ from tests.helpers.reply_fakes import (
     _stream_events,
     _completed_event,
     _expiring_surface,
+    _incomplete_event,
     _no_retry_backoff,
     _stream_events_from,
     _mid_stream_unavailable,
     _stream_events_then_raise,
 )
 from tests.helpers.link_sources import hosting_off_planner
+from tests.helpers.logfire_capture import capture_logs
 
 if TYPE_CHECKING:
     from types import SimpleNamespace
@@ -396,6 +404,29 @@ async def test_a_failure_over_a_thinking_preview_clears_it() -> None:
     assert reply.embed is not None
 
 
+async def test_a_failure_keeps_a_partial_answer_longer_than_one_message() -> None:
+    """Text past one message continues in follow-ups, with the error under the last of them.
+
+    The preview only ever showed one message's worth, so landing just that would drop the rest of
+    what the model wrote without a word.
+    """
+    message = FakeMessage()
+    reply = FakeReply()
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
+    partial = " ".join(["word"] * 1000)
+    streamer.stored_content = partial
+    streamer.content_started = True
+
+    assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is True
+
+    chain = [reply]
+    while chain[-1].replies:
+        chain.append(chain[-1].replies[0])
+    assert len(chain) > 1
+    assert "".join(sent.content or "" for sent in chain) == partial
+    assert [sent.embed is not None for sent in chain] == [False] * (len(chain) - 1) + [True]
+
+
 async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_message() -> None:
     """Discord turning the edit down must not cost the user the error entirely."""
     message = FakeMessage()
@@ -432,3 +463,192 @@ async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None
 
     assert published == [streamer]
     assert streaming_module.current_answer_streamer.get() is None
+
+
+def _proxy_sse(events: list[dict[str, object]]) -> bytes:
+    """Frames Responses events the way the proxy streams them, one `data:` line each."""
+    return b"".join(f"data: {json.dumps(obj=event)}\n\n".encode() for event in events)
+
+
+def _proxy_response(status: str, usage: dict[str, int], **fields: object) -> dict[str, object]:
+    """The `response` object a proxy terminal event carries, cut to what the stream reads."""
+    return {
+        "id": "resp_1",
+        "object": "response",
+        "model": TEST_LLM_MODEL,
+        "status": status,
+        "output": [],
+        "usage": usage,
+        **fields,
+    }
+
+
+async def test_a_filtered_answer_is_asked_again_and_both_attempts_are_billed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The proxy ends a filtered answer with `response.incomplete`, which is re-issued, not posted.
+
+    Driven through the real `openai` client over the proxy's framing, since what has to hold is
+    that the SDK hands this event over at all and where the reason sits on it. The filtered
+    attempt was billed, so its tokens stay in the footer the retry ends on.
+    """
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    attempts = [
+        _proxy_sse(
+            events=[
+                {"type": "response.output_text.delta", "delta": "half a sentence"},
+                {
+                    "type": "response.incomplete",
+                    "response": _proxy_response(
+                        status="incomplete",
+                        usage={"input_tokens": 100, "output_tokens": 55},
+                        incomplete_details={"reason": "content_filter"},
+                    ),
+                },
+            ]
+        ),
+        _proxy_sse(
+            events=[
+                {"type": "response.output_text.delta", "delta": "the whole answer"},
+                {
+                    "type": "response.completed",
+                    "response": _proxy_response(
+                        status="completed", usage={"input_tokens": 120, "output_tokens": 30}
+                    ),
+                },
+            ]
+        ),
+    ]
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://proxy.test/v1",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(
+            transport=httpx2.MockTransport(
+                handler=lambda request: httpx2.Response(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream"},
+                    content=attempts.pop(0),
+                )
+            )
+        ),
+    )
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        return await client.responses.create(model=TEST_LLM_MODEL, input="hi", stream=True)
+
+    reply = await stream_answer_with_retry(
+        streamer=streamer, open_stream=open_stream, message_id=message.id
+    )
+
+    assert attempts == []
+    assert reply.startswith("the whole answer")
+    assert "half a sentence" not in reply
+    assert (streamer.input_tokens, streamer.output_tokens) == (220, 85)
+
+
+async def test_an_answer_that_spent_its_output_budget_is_not_asked_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same request would think the same minutes away again, so the first attempt is the last.
+
+    Its one log record is what the rate of cut-off answers is read back from in `data/logs`.
+    """
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    logged = capture_logs(monkeypatch=monkeypatch, level="warn")
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return _stream_events_from(
+            events=[_text_event(delta="half"), _incomplete_event(reason="max_output_tokens")]
+        )
+
+    with pytest.raises(IncompleteAnswerError, match="output budget"):
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == 1
+    assert [fields for text, fields in logged if text == "gen_reply answer stream incomplete"] == [
+        {
+            "message_id": message.id,
+            "model": TEST_LLM_MODEL,
+            "backend": "responses",
+            "reason": "max_output_tokens",
+            "attempt": 1,
+            "reply_chars": len("half"),
+            "reasoning_chars": 0,
+        }
+    ]
+
+
+async def test_a_stream_that_just_stops_is_asked_again_until_the_attempts_run_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream with no terminal event at all is no answer either, and nothing says why."""
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return _stream_events_from(events=[_text_event(delta="cut")])
+
+    with pytest.raises(IncompleteAnswerError) as raised:
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
+    assert raised.value.reason == "no_terminal_event"
+
+
+async def test_a_cut_off_answer_says_why_under_the_text_it_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filtered on every attempt, the reply keeps its half-sentence with the reason under it.
+
+    What this replaced was the half-sentence over a usage footer, which reads as an answer that
+    simply stopped.
+    """
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage(content="<@999> explain", author=FakeAuthor(user_id=1))
+    reply = FakeReply()
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        # Paced so the preview editor writes the half-sentence before each attempt ends.
+        return _paced_stream_events(
+            events=[
+                _text_event(delta="half a sentence"),
+                _incomplete_event(reason="content_filter"),
+            ],
+            pause=0.05,
+        )
+
+    async def cut_off_answer(self: object, **kwargs: object) -> None:
+        """Streams a half-sentence onto a reply already on screen, filtered on every attempt."""
+        del kwargs
+        streamer = _streamer(
+            message=message, reply=as_message(fake=reply), preview_interval_seconds=0.01
+        )
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    monkeypatch.setattr(ReplyPipeline, "run", cut_off_answer)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.replies == []
+    assert reply.content == "half a sentence"
+    assert reply.embed is not None
+    assert reply.embed.footer.text == "IncompleteAnswerError"
+    assert "content filter" in (reply.embed.description or "")

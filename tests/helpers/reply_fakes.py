@@ -925,6 +925,18 @@ def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
     )
 
 
+def _incomplete_event(reason: str) -> SimpleNamespace:
+    """Builds a fake response.incomplete event, as the proxy ends an answer cut off for `reason`."""
+    return SimpleNamespace(
+        type="response.incomplete",
+        response=SimpleNamespace(
+            model=TEST_LLM_MODEL,
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+            incomplete_details=SimpleNamespace(reason=reason),
+        ),
+    )
+
+
 def _default_turn_events() -> list[SimpleNamespace]:
     """A minimal single-turn stream: one text delta and a completed event."""
     return [_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=1)]

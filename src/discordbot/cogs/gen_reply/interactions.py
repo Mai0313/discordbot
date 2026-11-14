@@ -176,8 +176,9 @@ async def adapt_interactions_stream(
     """Yields `ResponseStreamEvent`-shaped namespaces adapted from `stream` for `ResponseStreamer._consume`.
 
     Remaps text and reasoning deltas, emits token usage once on `interaction.completed` so
-    `ResponseStreamer._consume`'s `+=` accumulation never double-counts, and converts an `"error"`
-    event into `APIError`.
+    `ResponseStreamer._consume`'s `+=` accumulation never double-counts, turns an
+    `interaction.completed` whose status is not `completed` into `response.incomplete`, and
+    converts an `"error"` event into `APIError`.
 
     Args:
         stream ("AsyncIterator[InteractionSSEEvent]"): Raw Gemini Interactions SSE stream.
@@ -230,10 +231,13 @@ async def adapt_interactions_stream(
                 if usage is not None
                 else None
             )
+            # This payload carries no finish reason, so a status short of `completed` stands in
+            # for one, and an answer that spent its output budget reads like a filtered one.
+            completed = event.interaction.status == "completed"
             yield cast(
                 "ResponseStreamEvent",
                 SimpleNamespace(
-                    type="response.completed",
+                    type="response.completed" if completed else "response.incomplete",
                     response=SimpleNamespace(
                         model=(event.interaction.model or model_name),
                         usage=usage_ns,
@@ -241,6 +245,9 @@ async def adapt_interactions_stream(
                         # event cannot carry, and the streamer logs "not reported" rather than a
                         # zero that would read as an ungrounded answer.
                         output=None,
+                        incomplete_details=None
+                        if completed
+                        else SimpleNamespace(reason=event.interaction.status),
                     ),
                 ),
             )

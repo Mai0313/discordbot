@@ -14,6 +14,8 @@ I can also produce media as part of a reply when the moment calls for it: speak 
 
 I slowly learn each person's preferences and how they like me to sound, and I may lean on that in a reply. When I do, a 📖 note under my reply says whose memory I read. I decide what is worth keeping while I answer, so you can also just tell me to remember something, or tell me something I remember is wrong and should go; when I take a note, my reply says 正在整理記憶⋯ while I work on it, and that turns into a ✏️ line for what I took down or a 🩹 line for what I dropped. Something I judged too personal to repeat in the channel is counted there rather than quoted. If only part of a note is wrong, I drop the whole note, and what in it was still true can come back only if it comes up again. I keep a separate memory of each server's community the same way, and what I remember about you in one server does not follow you into another unless it is the kind of thing that is safe anywhere.
 
+An answer can stop partway, most often because the provider's content filter cut it off. When that happens I try again on my own, and a 🔁 on your message shows I did. If it still does not finish, or if it stopped because it ran out of room to think, my reply keeps whatever I managed to write and says why it stopped.
+
 ### Links I open on my own
 
 - **YouTube**: mention me with a YouTube link, or mention me in a reply to a message carrying one, and I watch the video before answering.

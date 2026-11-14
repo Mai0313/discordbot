@@ -14,6 +14,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
@@ -25,7 +26,7 @@ from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.services.memory.writer import RawMemoryDraft
 from discordbot.services.memory.prompts import PHASE1_EVALUATOR_PROMPT
-from discordbot.cogs.gen_reply.streaming import ResponseStreamer
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, IncompleteAnswerError
 from discordbot.cogs.gen_reply.generation import ImageGenerator, VoiceGenerator
 from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
 from discordbot.services.memory.server_prompts import SERVER_PHASE1_EVALUATOR_PROMPT
@@ -39,8 +40,10 @@ from tests.helpers.reply_fakes import (
     _cog,
     _answer,
     _recorded,
+    _text_event,
     _config_stub,
     _run_pipeline,
+    _incomplete_event,
     _install_streamer,
     _no_retry_backoff,
     _stream_events_from,
@@ -311,6 +314,35 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
     assert _recorded(cog).responses.create_streams.count(True) == 2
     assert message.replies
     assert (message.replies[0].content or "").startswith("done")
+
+
+async def test_a_cut_off_answer_acts_on_none_of_its_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A note or a picture asked for in an answer that never finished is not the answer's word.
+
+    Every attempt is filtered after the markers have streamed, so all that keeps them from
+    running is the turn failing before the reply is finalized.
+    """
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    cog = _cog()
+    cog.config = _config_stub(inline_image_enabled=True)
+    scheduled: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer.schedule_memory_update",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+    partial = "<write-memory>likes cats</write-memory><generate-image>a cat</generate-image>half"
+    _recorded(cog).responses.stream_queue = [
+        [_text_event(delta=partial), _incomplete_event(reason="content_filter")]
+        for _ in range(ANSWER_STREAM_MAX_ATTEMPTS)
+    ]
+
+    with pytest.raises(IncompleteAnswerError):
+        await _run_pipeline(cog=cog, message=FakeMessage(content="<@999> hi"))
+
+    assert scheduled == []
+    assert _recorded(cog).images.generate_calls == 0
 
 
 async def test_memory_markers_route_by_the_message_not_by_the_note(
