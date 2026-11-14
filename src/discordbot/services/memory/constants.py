@@ -51,13 +51,17 @@ MEMORY_CATCHUP_COOLDOWN_SECONDS = MEMORY_REGENERATION_COOLDOWN_SECONDS
 # reply latency.
 MEMORY_GLOBAL_CONCURRENCY = 24
 
-# Past the trigger, measured on the compartment's own rendered facts, consolidation is told to
-# spend the pass compacting toward the target. Compaction folds overlapping facts together and
-# condenses low-signal ones rather than summarizing the set: a well-supported durable fact is
-# merged or tightened, never dropped outright, and what goes first is the unsupported, weak, stale
-# and one-off. Fine-grained evidence survives in the detail file regardless.
-COMPACTION_TRIGGER_CHARS = 30_000
-COMPACTION_TARGET_CHARS = 15_000
+# Past the trigger, measured on the compartment's fact bodies (the text a reply reads, not the
+# headers consolidation is shown), consolidation is told to spend the pass compacting toward the
+# target. Compaction folds overlapping facts together and condenses older ones hardest, by how
+# long since each was last confirmed, rather than summarizing the set: a well-supported durable
+# fact is merged or tightened, never dropped outright, and what goes first is the unsupported,
+# weak, stale and one-off. Fine-grained evidence survives in the detail file regardless. Set where
+# the store's heaviest compartments actually are (2026-11: four of 398 past the trigger, the
+# largest 16k, the median scope under 200 characters in all); the gap between the two is what
+# keeps a compacted compartment from re-triggering on its next batch.
+COMPACTION_TRIGGER_CHARS = 8_000
+COMPACTION_TARGET_CHARS = 5_000
 
 # Staleness window for mutable (`durability="stable"`) facts, measured relative to the newest
 # mutable activity in the same compartment rather than to `today`. The sweep drops a mutable fact

@@ -129,7 +129,7 @@ WHAT YOU ARE WRITING:
 INPUT (in the user message):
 * `today: <ISO date>`: the current date.
 * `allowed sections:` the sections a fact may belong to. Any other value is discarded.
-* `<existing_facts>`: the server's stored facts, one per block, each starting `[<id>] section=... durability=...`. That id is the only handle you have on a fact.
+* `<existing_facts>`: the server's stored facts, one per block, each starting `[<id>] section=... durability=... last_confirmed=<date>`. That id is the only handle you have on a fact; `last_confirmed` is the day evidence last backed it.
 * `<raw_entries>`: new raw entries, each under a `## <ISO timestamp>` header, oldest first. Each observation carries `normalized_key`, `evidence_kind`, `confidence`, `durability`, `promotion_eligible` and `ttl_days`; use them as hard evidence gates, not decorative metadata.
 * `<recent_detail>`: previously consumed evidence, oldest first. Reference, NOT new input: ground your facts in it and verify durable items against it. Do not resurrect content already dropped.
 

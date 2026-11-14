@@ -249,7 +249,10 @@ def render_existing_facts(facts: list[MemoryFact]) -> str:
     """
     blocks: list[str] = []
     for fact in sorted(facts, key=lambda item: (item.section, item.fact_id)):
-        header = f"[{fact.fact_id}] section={fact.section} durability={fact.durability}"
+        header = (
+            f"[{fact.fact_id}] section={fact.section} durability={fact.durability} "
+            f"last_confirmed={fact.last_confirmed.date().isoformat()}"
+        )
         keys = ",".join(fact.keys)
         lines = [header, f"summary: {fact.summary}"]
         if keys:

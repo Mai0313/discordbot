@@ -457,6 +457,12 @@ def test_existing_facts_render_with_the_ids_the_model_must_echo() -> None:
     assert "from_keys: preference.a" in rendered
 
 
+def test_existing_facts_render_with_the_day_each_was_last_confirmed() -> None:
+    """Compaction condenses by age, which the model can only judge from a date it is shown."""
+    rendered = render_existing_facts(facts=[_fact()])
+    assert f"last_confirmed={STAMPED_AT.date().isoformat()}" in rendered
+
+
 def test_a_batch_reports_the_ids_it_wrote() -> None:
     """A rebuild drops what it did not re-emit, so it needs the written set, not the survivors."""
     scope = user_scope(user_id=111)

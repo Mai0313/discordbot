@@ -98,7 +98,7 @@ WHAT A COMPARTMENT IS:
 INPUT (in the user message):
 * `today: <ISO date>`: the current date.
 * `allowed sections:` the sections a fact may belong to. Any other value is discarded.
-* `<existing_facts>`: this compartment's stored facts, one per block, each starting `[<id>] section=... durability=...`. That id is the only handle you have on a fact.
+* `<existing_facts>`: this compartment's stored facts, one per block, each starting `[<id>] section=... durability=... last_confirmed=<date>`. That id is the only handle you have on a fact; `last_confirmed` is the day evidence last backed it.
 * `<raw_entries>`: new raw entries for THIS compartment, each under a `## <ISO timestamp>` header, oldest first. Each observation carries `normalized_key`, `evidence_kind`, `confidence`, `durability`, `promotion_eligible` and `ttl_days`; use them as hard evidence gates, not decorative metadata.
 * `<recent_detail>`: previously consumed evidence for this compartment, oldest first. It is reference, NOT new input: ground your facts in it, verify durable items against it, and recover context for ambiguous raw entries. Do not resurrect content already dropped.
 
@@ -168,8 +168,13 @@ SAFETY:
 # and the way to shrink it is fewer, denser facts.
 PHASE2_COMPACTION_BLOCK = f"""
 COMPACTION (this run):
-* When `<existing_facts>` holds facts, this compartment has grown large. Spend this pass merging: fold overlapping facts into one `update` plus `delete`s, condense low-signal ones, and drop what the evidence no longer supports, aiming for roughly {COMPACTION_TARGET_CHARS} characters of stored text in total.
-* When `<existing_facts>` is empty, the compartment is being rebuilt from its evidence: write the compact set directly, folding overlapping observations into one fact rather than one per entry and leaving out what the evidence does not support, aiming for the same total.
+* When `<existing_facts>` holds facts, this compartment has grown large. Spend this pass merging: fold overlapping facts into one `update` plus `delete`s, condense the older ones, and drop what the evidence no longer supports, bringing the `text` of all stored facts together to no more than roughly {COMPACTION_TARGET_CHARS} characters.
+* When `<existing_facts>` is empty, the compartment is being rebuilt from its evidence: write the compact set directly, folding overlapping observations into one fact rather than one per entry and leaving out what the evidence does not support, within the same total.
+* Condense by age. Measure each fact from its `last_confirmed` (on a rebuild, from the newest entry behind it) to `today`:
+  - within about two weeks: keep its detail;
+  - about a month: keep the gist in a sentence or two, dropping the specifics a reply would no longer act on;
+  - about two months or more: one short line, or fold it into a related fact.
+* Age decides how much a fact keeps, not whether it survives. A `permanent` fact, an enforced directive and a `member_alias` row stay however old they are: shorten one only where that loses no part of the rule, and never merge alias rows of different members.
 * Well-supported durable facts may be merged or tightened. Drop unsupported, weak, stale, or one-off items first.
 """
 
