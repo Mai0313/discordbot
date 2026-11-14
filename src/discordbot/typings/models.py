@@ -205,21 +205,24 @@ class RouteClassification(BaseModel):
             "only on the QA route to decide which source builders may start."
         ),
     )
-    # Overrides the answer model's effort on the QA path. Deliberately binary, with `high` as the
-    # grade an ordinary message gets and `low` as the exception that has to be earned: the route
-    # reads text-only parts, so it never sees an attachment's content, a linked post, or the
-    # history behind a short message, and every one of those blind spots hides work rather than
-    # inventing it. Both values still have to exist on whatever `slow_model` names, and no effort
-    # is universal — not even `high` — so repointing that tier or widening this grade is checked
-    # against the snapshot first (see `ModelSettings.effort`).
-    effort: Literal["low", "high"] = Field(
-        default="high",
+    # Overrides the answer model's effort on the QA path. `medium` is the grade an ordinary
+    # message gets and the one a failed route call falls back to; `low` and `high` each have to be
+    # earned. The route reads text-only parts, so it never sees an attachment's content, a linked
+    # post, or the history behind a short message, and a short question pointing at one of those
+    # is `medium`, never `low`. Every value still has to exist on whatever `slow_model` names and
+    # on each model in its proxy fallback chain, and no effort is universal, so repointing that
+    # tier or widening this grade is checked against the snapshot first (see
+    # `ModelSettings.effort`).
+    effort: Literal["low", "medium", "high"] = Field(
+        default="medium",
         description=(
-            "Reasoning effort the answer model should spend. Use low only for a message "
-            "that asks for nothing, looks nothing up and works nothing out — banter and "
-            "greetings, even when phrased as a question — and that is fully answerable "
-            "from what you were shown; everything else, including anything you are "
-            "unsure about, is high."
+            "Reasoning effort the answer model should spend. medium is the ordinary grade and "
+            "the answer whenever you are unsure. Use low only for a message that asks for "
+            "nothing, looks nothing up and works nothing out — banter and greetings, even when "
+            "phrased as a question — and that is fully answerable from what you were shown. "
+            "Use high only for work that needs real reasoning: writing or debugging code, "
+            "maths, or a multi-step analysis, comparison or plan, including a follow-up that "
+            "asks to fix or extend code or a calculation you were shown."
         ),
     )
 

@@ -284,7 +284,7 @@ async def create_interactions_answer_stream(
         model (str): Gemini model name to dispatch.
         system_instruction (str): Runtime developer instructions for the turn.
         steps (list[StepParam]): Translated conversation and YouTube input steps.
-        effort (ReasoningEffort): Reasoning effort grade (`"low"` or `"high"`).
+        effort (ReasoningEffort): Reasoning effort grade (`"low"`, `"medium"` or `"high"`).
     """
     responses = await client.aio.interactions.create(
         model=model,
@@ -297,7 +297,7 @@ async def create_interactions_answer_stream(
             type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
         ),
         generation_config=GenerationConfigParam(
-            # effort is the route grade copied onto slow_model (always low or high here), and
+            # effort is the route grade copied onto slow_model (always low, medium or high), and
             # the set Gemini accepts is per-model, looked up rather than assumed (see
             # `ModelSettings.effort`). A level the model does not list is refused outright and
             # loses the whole reply; narrowing ReasoningEffort to the enum here is safe only

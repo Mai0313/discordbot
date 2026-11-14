@@ -96,7 +96,7 @@ async def test_route_classify_carries_decision_and_defaults_qa(
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
-    assert fallback.effort == "high"
+    assert fallback.effort == "medium"
     # Nothing raised, so this record is the only trace that the route was never read.
     assert [fields["message_id"] for _, fields in warned] == [message.id]
 
@@ -194,12 +194,12 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last()
     assert route.effort == "low"
 
 
-async def test_an_unparseable_route_falls_back_to_a_plain_high_effort_qa(
+async def test_an_unparseable_route_falls_back_to_a_plain_medium_effort_qa(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A triage answer that fails its schema loses the picks along with everything else.
 
-    The fallback is the plain class, so the pipeline resolves no picks from it, and `high`,
+    The fallback is the plain class, so the pipeline resolves no picks from it, and `medium`,
     the grade the route gives whatever it is unsure about.
     """
     cog = _cog()
@@ -221,7 +221,7 @@ async def test_an_unparseable_route_falls_back_to_a_plain_high_effort_qa(
     )
 
     assert type(route) is RouteClassification
-    assert route == RouteClassification(decision="QA", effort="high")
+    assert route == RouteClassification(decision="QA", effort="medium")
 
 
 async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
@@ -229,7 +229,7 @@ async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
 ) -> None:
     """A provider outage on the triage call costs the route, not the reply.
 
-    The same plain high-effort QA as an answer outside the schema. A refusal keeps raising, so a
+    The same plain medium-effort QA as an answer outside the schema. A refusal keeps raising, so a
     defect in the request is not buried under a turn that looks routed.
     """
     cog = _cog()
@@ -262,7 +262,7 @@ async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
     for _ in range(2):
         route = await classify()
         assert type(route) is RouteClassification
-        assert route == RouteClassification(decision="QA", effort="high")
+        assert route == RouteClassification(decision="QA", effort="medium")
     with pytest.raises(BadRequestError):
         await classify()
 

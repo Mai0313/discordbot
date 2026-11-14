@@ -316,7 +316,7 @@ class AnswerTurn(BaseModel):
         self,
         system_prompt: str,
         context: ReplyContext,
-        effort: Literal["low", "high"] = "high",
+        effort: Literal["low", "medium", "high"] = "medium",
         allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
@@ -329,7 +329,7 @@ class AnswerTurn(BaseModel):
         Args:
             system_prompt (str): Base QA system prompt before marker instructions are applied.
             context (ReplyContext): Pre-built conversation, link, and memory context.
-            effort (Literal["low", "high"]): Reasoning effort selected by the router.
+            effort (Literal["low", "medium", "high"]): Reasoning effort selected by the router.
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
         """
