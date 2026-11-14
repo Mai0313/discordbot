@@ -138,6 +138,9 @@ class RouteClassifier(BaseModel):
             link_context_sources=route.link_context_sources,
             watch_video=route.watch_video,
             recall_candidates=len(recall_candidates),
+            recall_user_ids=route.recall_user_ids
+            if isinstance(route, RecallRouteClassification)
+            else [],
             message_id=self.message.id,
         )
         return route

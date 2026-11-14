@@ -124,12 +124,15 @@ _ROUTE_SERVER_MEMORY = render_server_memory_block(
 )
 
 
-async def test_the_route_reads_neither_memory_block_without_candidates() -> None:
+async def test_the_route_reads_neither_memory_block_without_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """With nothing to pick from, the route asks the plain question over the messages alone.
 
     The server memory is handed in on every turn that has one, and must still stay out: only a
-    candidate block gives the route a reason to read it.
+    candidate block gives the route a reason to read it. Its log record shows no picks.
     """
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
     cog = _cog()
     # Staged with picks, which the plain schema has no field for.
     _recorded(cog).responses.output_parsed = RecallRouteClassification(
@@ -149,10 +152,19 @@ async def test_the_route_reads_neither_memory_block_without_candidates() -> None
     assert responses.parse_inputs == [[*_ROUTE_REFERENCE, *_ROUTE_CURRENT]]
     assert type(route) is RouteClassification
     assert route.effort == "low"
+    assert [
+        fields["recall_user_ids"] for msg, fields in logged if msg == "gen_reply route done"
+    ] == [[]]
 
 
-async def test_the_route_reads_the_server_memory_first_and_the_candidates_last() -> None:
-    """Offered candidates, the route reads the table first and decides against the block last."""
+async def test_the_route_reads_the_server_memory_first_and_the_candidates_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offered candidates, the route reads the table first and decides against the block last.
+
+    Its log record shows which members it picked.
+    """
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
     cog = _cog()
     _recorded(cog).responses.output_parsed = RecallRouteClassification(
         decision="QA", effort="low", recall_user_ids=["42"]
@@ -192,6 +204,9 @@ async def test_the_route_reads_the_server_memory_first_and_the_candidates_last()
     assert isinstance(route, RecallRouteClassification)
     assert route.recall_user_ids == ["42"]
     assert route.effort == "low"
+    assert [
+        fields["recall_user_ids"] for msg, fields in logged if msg == "gen_reply route done"
+    ] == [["42"], ["42"]]
 
 
 async def test_an_unparseable_route_falls_back_to_a_plain_medium_effort_qa(
