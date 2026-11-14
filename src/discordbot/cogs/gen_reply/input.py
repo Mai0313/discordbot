@@ -22,6 +22,7 @@ from discordbot.utils.llm_transcript import (
     FORWARDED_MESSAGE_MARKER,
     sanitize_identity,
 )
+from discordbot.typings.context_budgets import HISTORY_EARLIER_REPLY_MAX_CHARS
 from discordbot.cogs.gen_reply.generation import VOICE_REPLY_FILENAME
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
@@ -32,6 +33,17 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence, Coroutine
+
+
+def shorten_earlier_reply(text: str) -> str:
+    """Returns `text` cut to `HISTORY_EARLIER_REPLY_MAX_CHARS` with a mark saying so, or unchanged when it fits.
+
+    Args:
+        text (str): An earlier bot reply's cleaned text.
+    """
+    if len(text) <= HISTORY_EARLIER_REPLY_MAX_CHARS:
+        return text
+    return f"{text[:HISTORY_EARLIER_REPLY_MAX_CHARS].rstrip()} [… rest of this reply omitted]"
 
 
 class AttachmentSource(BaseModel):
@@ -185,7 +197,7 @@ class MessageInputBuilder(BaseModel):
         ]
         return "\n".join(texts)
 
-    async def get_cleaned_content(self, message: Message) -> str:
+    async def get_cleaned_content(self, message: Message, shorten: bool = False) -> str:
         """Returns `message`'s cleaned text, with embed/system fallbacks and forwarded snapshots.
 
         Strips the usage footer from the bot's own messages so model/token/cost lines are not
@@ -193,6 +205,7 @@ class MessageInputBuilder(BaseModel):
 
         Args:
             message (Message): Message whose text content is extracted.
+            shorten (bool): Whether to cut the text to its opening (`shorten_earlier_reply`).
         """
         content = message.content
         content_present = bool(content.strip())
@@ -207,7 +220,7 @@ class MessageInputBuilder(BaseModel):
         forwarded = self._forwardedsnapshot_text(message=message)
         if forwarded:
             content = f"{content}\n{forwarded}".strip() if content else forwarded
-        return content
+        return shorten_earlier_reply(text=content) if shorten else content
 
     def collect_attachment_sources(self, message: Message) -> list[AttachmentSource]:
         """Returns every renderable attachment source classified from `message` and its snapshots.
@@ -620,7 +633,7 @@ class MessageInputBuilder(BaseModel):
         )
 
     async def render_text_only(
-        self, message: Message, sources: list[AttachmentSource]
+        self, message: Message, sources: list[AttachmentSource], shorten: bool = False
     ) -> EasyInputMessageParam:
         """Returns `message` rendered as cleaned text plus `[attachment: ...]` markers without uploading.
 
@@ -630,8 +643,9 @@ class MessageInputBuilder(BaseModel):
         Args:
             message (Message): Message to render.
             sources (list[AttachmentSource]): Modality-filtered attachment sources for `message`.
+            shorten (bool): Whether to cut the text to its opening (`shorten_earlier_reply`).
         """
-        content = await self.get_cleaned_content(message=message)
+        content = await self.get_cleaned_content(message=message, shorten=shorten)
         markers: list[ResponseInputTextParam] = [
             ResponseInputTextParam(text=f"[attachment: {source.marker_kind}]", type="input_text")
             for source in sources
@@ -641,7 +655,11 @@ class MessageInputBuilder(BaseModel):
         )
 
     async def process_single_message(
-        self, message: Message, text_only: bool = False, allow_dead_cache: bool = False
+        self,
+        message: Message,
+        text_only: bool = False,
+        allow_dead_cache: bool = False,
+        shorten: bool = False,
     ) -> EasyInputMessageParam:
         """Returns `message` rendered as a Responses API input message, degrading to empty text on error.
 
@@ -650,14 +668,18 @@ class MessageInputBuilder(BaseModel):
             text_only (bool): Whether to emit `[attachment: ...]` markers without uploading.
             allow_dead_cache (bool): Whether permanently dead CDN URLs may be skipped via cache
                 (set on history scrollback only).
+            shorten (bool): Whether to cut the text to its opening (`shorten_earlier_reply`); set
+                on an earlier bot reply in history only.
         """
         try:
             if text_only:
                 sources = self._supported_sources(
                     sources=self.collect_attachment_sources(message=message), message_id=message.id
                 )
-                return await self.render_text_only(message=message, sources=sources)
-            content = await self.get_cleaned_content(message=message)
+                return await self.render_text_only(
+                    message=message, sources=sources, shorten=shorten
+                )
+            content = await self.get_cleaned_content(message=message, shorten=shorten)
             sources = self._supported_sources(
                 sources=self.collect_attachment_sources(message=message), message_id=message.id
             )

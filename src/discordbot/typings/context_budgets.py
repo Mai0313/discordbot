@@ -44,19 +44,28 @@ from typing import Final
 # --------------------------------------------------------------------------------------
 
 # Discord chat is mostly short one-line messages, so a message count alone either starves a
-# chatty channel or lets a channel of long posts blow up the input. Ordinary chat reaches this
-# axis first while `HISTORY_CHAR_BUDGET` bounds long posts; anything older than the active
-# conversation belongs to long-term memory.
+# chatty channel or lets a channel of long posts blow up the input. The bot's own replies are long
+# posts, so `HISTORY_CHAR_BUDGET` binds first on nine turns in ten (2026-11); anything older than
+# the active conversation belongs to long-term memory.
 HISTORY_MESSAGE_LIMIT: Final[int] = 50
 
 # Paired with the message limit, this binds only once messages average over 40 characters, so
-# what it bounds is a channel of long posts.
+# what it bounds is a channel of long posts. The bot's most recent reply is kept whole even past it
+# (`gen_reply/context.py::trim_history_to_budget`).
 HISTORY_CHAR_BUDGET: Final[int] = 4000
 
 # What a history message costs beyond its own text: the rendered form carries an author header,
 # and an attachment-only message has empty `content` but still renders a marker standing in for
 # it. Without a floor per message a run of image posts would count as free and overshoot.
 HISTORY_PER_MESSAGE_OVERHEAD: Final[int] = 40
+
+# How much of each earlier bot reply the history carries: its opening, then a mark saying the rest
+# was left out. The most recent reply stays whole, every message of it, so a game or a running
+# answer keeps its latest state. One reply runs a median ~1,300 characters, so without this about
+# three of them filled `HISTORY_CHAR_BUDGET` and the bot's own words were over 80% of the window;
+# the budget counts the shortened form, so what this frees goes to more of what people said
+# (2026-11, 961 replies: median window 9 messages to 16, people's 4 to 8).
+HISTORY_EARLIER_REPLY_MAX_CHARS: Final[int] = 300
 
 # How many history attachments ride as real uploaded files. The character budget cannot see this
 # cost: an attachment-only message spends only `HISTORY_PER_MESSAGE_OVERHEAD` there while

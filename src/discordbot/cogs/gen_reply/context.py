@@ -11,6 +11,7 @@ members.
 import time
 from typing import TYPE_CHECKING
 import asyncio
+from datetime import datetime
 
 import logfire
 from nextcord import Message
@@ -19,8 +20,8 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryCredits
-from discordbot.cogs.gen_reply.input import MessageInputBuilder
-from discordbot.utils.llm_transcript import sanitize_identity
+from discordbot.cogs.gen_reply.input import MessageInputBuilder, shorten_earlier_reply
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, sanitize_identity
 from discordbot.cogs.gen_reply.recall import (
     NO_STORED_MEMORY,
     UserMemory,
@@ -170,21 +171,91 @@ class RecallPlan(BaseModel):
     )
 
 
-def trim_history_to_budget(messages: list[Message]) -> list[Message]:
+def latest_reply_ids(messages: list[Message], bot_user_id: int | None) -> set[int]:
+    """Returns the ids of the bot's most recent reply in `messages`, every message of it.
+
+    The reply is found by its usage footer, since the bot's other posts (a public command's
+    output, a link expansion, a hosted-media link) carry none and may be newer. The footer sits on
+    a long reply's last message, and every message of it replies to the one before
+    (`TurnSurface.follow_up`), so the walk follows `reference` back from there through the bot's own
+    messages. A stored `/ask` answer is one message, footer included.
+
+    Args:
+        messages (list[Message]): History messages ordered oldest-first.
+        bot_user_id (int | None): The bot's user id, or None before it has logged in.
+    """
+    own = {message.id: message for message in messages if message.author.id == bot_user_id}
+    # The blank line put back in front: a footer that followed its answer in a message of its own
+    # lost the one it anchors on to Discord's trim (`ResponseStreamer._split_reply_for_discord`).
+    current = next(
+        (
+            message
+            for message in reversed(messages)
+            if message.id in own and USAGE_FOOTER_RE.search(f"\n\n{message.content}")
+        ),
+        None,
+    )
+    ids: set[int] = set()
+    while current is not None:
+        ids.add(current.id)
+        reference = current.reference
+        current = own.get(reference.message_id) if reference is not None else None
+    return ids
+
+
+def gap_separator(earlier: datetime, later: datetime) -> str | None:
+    """Returns the separator naming the time between two messages, or None under half an hour.
+
+    Args:
+        earlier (datetime): When the earlier message was sent.
+        later (datetime): When the later message was sent.
+    """
+    minutes = round((later - earlier).total_seconds() / 60)
+    if minutes < 30:
+        return None
+    if minutes < 60:
+        span = f"{minutes} minutes"
+    elif minutes < 48 * 60:
+        hours = round(minutes / 60)
+        span = "1 hour" if hours == 1 else f"{hours} hours"
+    else:
+        span = f"{round(minutes / (24 * 60))} days"
+    return f"==== {span} later ===="
+
+
+def trim_history_to_budget(
+    messages: list[Message], bot_user_id: int | None, current_at: datetime
+) -> list[Message]:
     """Returns the newest history messages that fit `HISTORY_CHAR_BUDGET`, cut on a message boundary.
 
-    Always keeps the newest message even when it alone exceeds `HISTORY_CHAR_BUDGET`.
+    Counts what `ReplyContextBuilder.render_history` renders: an earlier bot reply at its shortened
+    length, and the gap separator after a message. Always keeps the newest message even when it
+    alone exceeds the budget, and never cuts into the bot's most recent reply once part of it is
+    kept, so that reply can overshoot it too.
 
     Args:
         messages (list[Message]): Candidate history messages ordered oldest-first.
+        bot_user_id (int | None): The bot's user id, or None before it has logged in.
+        current_at (datetime): When the message being answered was sent.
     """
+    latest = latest_reply_ids(messages=messages, bot_user_id=bot_user_id)
     kept: list[Message] = []
     spent = 0
+    later = current_at
     for candidate in reversed(messages):
-        spent += len(candidate.content or "") + HISTORY_PER_MESSAGE_OVERHEAD
-        if spent > HISTORY_CHAR_BUDGET and kept:
+        text = candidate.content or ""
+        if candidate.author.id == bot_user_id and candidate.id not in latest:
+            text = shorten_earlier_reply(text=text)
+        separator = gap_separator(earlier=candidate.created_at, later=later) or ""
+        spent += len(text) + len(separator) + HISTORY_PER_MESSAGE_OVERHEAD
+        if (
+            spent > HISTORY_CHAR_BUDGET
+            and kept
+            and not (candidate.id in latest and kept[-1].id in latest)
+        ):
             break
         kept.append(candidate)
+        later = candidate.created_at
     kept.reverse()
     return kept
 
@@ -312,19 +383,31 @@ class ReplyContextBuilder(BaseModel):
         """Returns the message being answered, read off `self.surface`."""
         return self.surface.message
 
+    @property
+    def bot_user_id(self) -> int | None:
+        """Returns the bot's own user id, or None before it has logged in."""
+        bot_user = self.toolkit.bot.user
+        return bot_user.id if bot_user is not None else None
+
     async def fetch_history(self, limit: int) -> list[Message]:
         """Returns up to `limit` history messages from `self.surface`, trimmed to `HISTORY_CHAR_BUDGET`.
 
         Args:
             limit (int): Maximum number of history messages to request from the surface.
         """
-        return trim_history_to_budget(messages=await self.surface.fetch_history(limit=limit))
+        return trim_history_to_budget(
+            messages=await self.surface.fetch_history(limit=limit),
+            bot_user_id=self.bot_user_id,
+            current_at=self.message.created_at,
+        )
 
     async def render_history(self, hist_messages: list[Message]) -> list[EasyInputMessageParam]:
         """Returns rendered history blocks with uploaded attachment parts, capped by the media budgets.
 
         Opts into `allow_dead_cache=True` and degrades messages past `MAX_HISTORY_MEDIA_PARTS` or
-        `MAX_HISTORY_INLINE_BYTES` to `text_only=True` markers.
+        `MAX_HISTORY_INLINE_BYTES` to `text_only=True` markers. Shortens every bot reply but the
+        most recent one, and puts a `gap_separator` block after each message followed by a gap,
+        the last one's measured to the message being answered.
 
         Args:
             hist_messages (list[Message]): Trimmed history messages ordered oldest-first.
@@ -333,9 +416,16 @@ class ReplyContextBuilder(BaseModel):
             return []
         input_builder = self.toolkit.input_builder
         over_budget = history_media_over_budget(builder=input_builder, hist_messages=hist_messages)
+        latest = latest_reply_ids(messages=hist_messages, bot_user_id=self.bot_user_id)
+        shortened = {
+            m.id for m in hist_messages if m.author.id == self.bot_user_id and m.id not in latest
+        }
         tasks: list[Awaitable[EasyInputMessageParam]] = [
             input_builder.process_single_message(
-                message=m, text_only=m.id in over_budget, allow_dead_cache=True
+                message=m,
+                text_only=m.id in over_budget,
+                allow_dead_cache=True,
+                shorten=m.id in shortened,
             )
             for m in hist_messages
         ]
@@ -349,14 +439,32 @@ class ReplyContextBuilder(BaseModel):
         ]
         for index in payload_capped:
             processed[index] = await input_builder.process_single_message(
-                message=hist_messages[index], text_only=True
+                message=hist_messages[index],
+                text_only=True,
+                shorten=hist_messages[index].id in shortened,
             )
+        blocks: list[EasyInputMessageParam] = []
+        for index, rendered in enumerate(processed):
+            blocks.append(rendered)
+            later = (
+                hist_messages[index + 1].created_at
+                if index + 1 < len(hist_messages)
+                else self.message.created_at
+            )
+            separator = gap_separator(earlier=hist_messages[index].created_at, later=later)
+            # `role=user`, not the `system_block` other separators use: the proxy's Gemini
+            # transform lifts every system item out of the conversation into `system_instruction`,
+            # and this marker means nothing away from the two messages it sits between.
+            if separator is not None:
+                blocks.append(EasyInputMessageParam(role="user", content=separator))
         logfire.info(
             "gen_reply history render done",
             elapsed_seconds=time.monotonic() - started,
             message_count=len(hist_messages),
             media_capped=sum(over_budget.values()),
             payload_capped_messages=len(payload_capped),
+            shortened_replies=len(shortened),
+            gap_separators=len(blocks) - len(processed),
             message_id=self.message.id,
         )
         # Names the block and stops there. Wording that invites the model to answer from the
@@ -367,7 +475,7 @@ class ReplyContextBuilder(BaseModel):
         # call this render feeds, none of which is answering a question; the memory review
         # transcript opens with this header verbatim.
         header = system_block(text="==== Chat History: earlier messages in this channel. ====")
-        return [header, *processed]
+        return [header, *blocks]
 
     async def render_reference_message(
         self, text_only: bool = False
