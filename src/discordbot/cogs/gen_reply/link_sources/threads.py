@@ -46,7 +46,7 @@ from discordbot.services.platforms.threads import (
 from discordbot.cogs.gen_reply.link_sources import (
     PostSeparators,
     read_post,
-    system_block,
+    marker_block,
     defuse_markers,
     post_context_blocks,
 )
@@ -730,7 +730,7 @@ async def build_threads_context_messages(
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Threads post URL.
 
-    Returns `[separator, user-content]` for a readable conversation, or a single system notice
+    Returns `[separator, user-content]` for a readable conversation, or a single notice marker
     block when the post cannot be read. Never raises. Renders the reply chain, any post quoted
     by the target, and the reply branches as text, and uploads up to `MAX_THREADS_MEDIA_PARTS`
     of the target and quoted post's media to the Files API for Gemini answer models.
@@ -758,7 +758,7 @@ async def build_threads_context_messages(
             unreadable_notice=THREADS_UNAVAILABLE_NOTICE,
         )
         if isinstance(conversation, str):
-            return [system_block(text=conversation)]
+            return [marker_block(text=conversation)]
 
         # Trim a long chain to the target plus its nearest ancestors before rendering, so the
         # text side is bounded like the media side (the tail is closest to the linked post).

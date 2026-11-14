@@ -12,6 +12,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.images import to_data_uri
 from discordbot.typings.media import RenderedAttachment
+from discordbot.utils.llm_transcript import defuse_separator_fences
 from discordbot.typings.context_budgets import MAX_INLINE_ATTACHMENT_BYTES
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
@@ -161,6 +162,7 @@ class InlineRenderer(AttachmentRenderer):
                 self._unreadable.popitem(last=False)
             return None
         text_part = ResponseInputTextParam(
-            type="input_text", text=f"[attached file: {filename}]\n{text}"
+            type="input_text",
+            text=defuse_separator_fences(text=f"[attached file: {filename}]\n{text}"),
         )
         return RenderedAttachment(part=text_part, expires_at=_inline_expiry())

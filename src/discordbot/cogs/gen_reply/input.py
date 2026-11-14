@@ -21,6 +21,7 @@ from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
     FORWARDED_MESSAGE_MARKER,
     sanitize_identity,
+    defuse_separator_fences,
 )
 from discordbot.typings.context_budgets import HISTORY_EARLIER_REPLY_MAX_CHARS
 from discordbot.cogs.gen_reply.generation import VOICE_REPLY_FILENAME
@@ -606,6 +607,7 @@ class MessageInputBuilder(BaseModel):
         role and message shape even when every upload is dropped.
         """
         is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
+        content = defuse_separator_fences(text=content)
 
         # Bot's own history without attachments → role=assistant carries identity, so the
         # sender-prefix is dropped here. Without this, the model sees its own past replies

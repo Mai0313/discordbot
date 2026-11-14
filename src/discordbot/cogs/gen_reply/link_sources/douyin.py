@@ -38,7 +38,7 @@ from discordbot.services.platforms.douyin import (
 )
 from discordbot.cogs.gen_reply.link_sources import (
     AI_INGEST_QUALITY,
-    system_block,
+    marker_block,
     link_context_blocks,
 )
 from discordbot.cogs.gen_reply.link_sources.image_ingest import bounded_media_step
@@ -206,7 +206,7 @@ async def build_douyin_context_messages(
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Douyin post URL.
 
-    Returns `[separator, user-content]` for a readable post, or a single system notice block
+    Returns `[separator, user-content]` for a readable post, or a single notice marker block
     naming why it could not be read. Never raises.
 
     Args:
@@ -234,14 +234,14 @@ async def build_douyin_context_messages(
                 url=url,
                 _exc_info=True,
             )
-            return [system_block(text=DOUYIN_BLOCKED_NOTICE)]
+            return [marker_block(text=DOUYIN_BLOCKED_NOTICE)]
         except DouyinTransferError:
             logfire.warn(
                 "Douyin context read did not go through; injecting the retryable notice",
                 url=url,
                 _exc_info=True,
             )
-            return [system_block(text=DOUYIN_TRANSFER_NOTICE)]
+            return [marker_block(text=DOUYIN_TRANSFER_NOTICE)]
         except DouyinUnavailableError as error:
             # A deleted, private or missing post is a routine remote outcome, not a defect; the
             # message is the only place Douyin's own filter reason or HTTP status lives.
@@ -250,7 +250,7 @@ async def build_douyin_context_messages(
                 url=url,
                 reason=str(error),
             )
-            return [system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
+            return [marker_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
         except Exception as error:
             # Broad on purpose: anything else says nothing about the post (an unresolvable link,
             # a refusal HTTP does not classify, a changed payload shape), and
@@ -261,7 +261,7 @@ async def build_douyin_context_messages(
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            return [system_block(text=DOUYIN_UNREADABLE_NOTICE)]
+            return [marker_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:

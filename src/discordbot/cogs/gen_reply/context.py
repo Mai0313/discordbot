@@ -56,7 +56,7 @@ from discordbot.typings.context_budgets import (
 from discordbot.utils.channel_visibility import channel_is_public
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
-from discordbot.cogs.gen_reply.link_sources import system_block
+from discordbot.cogs.gen_reply.link_sources import marker_block
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -323,12 +323,12 @@ def history_payload_overflow(rendered: list[EasyInputMessageParam]) -> int:
 
 
 def reference_header(ref: Message) -> EasyInputMessageParam:
-    """Returns the system separator block that precedes the message being replied to.
+    """Returns the marker block that precedes the message being replied to.
 
     Args:
         ref (Message): The referenced message being replied to.
     """
-    return system_block(
+    return marker_block(
         text=(
             f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
             f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
@@ -341,14 +341,14 @@ def reference_header(ref: Message) -> EasyInputMessageParam:
 
 
 def current_header(message: Message, has_reference: bool) -> EasyInputMessageParam:
-    """Returns the system separator block that precedes the current message.
+    """Returns the marker block that precedes the current message.
 
     Args:
         message (Message): The current message being answered.
         has_reference (bool): Whether a Reference Message block is rendered above it.
     """
     reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
-    return system_block(
+    return marker_block(
         text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ===="
     )
 
@@ -452,11 +452,8 @@ class ReplyContextBuilder(BaseModel):
                 else self.message.created_at
             )
             separator = gap_separator(earlier=hist_messages[index].created_at, later=later)
-            # `role=user`, not the `system_block` other separators use: the proxy's Gemini
-            # transform lifts every system item out of the conversation into `system_instruction`,
-            # and this marker means nothing away from the two messages it sits between.
             if separator is not None:
-                blocks.append(EasyInputMessageParam(role="user", content=separator))
+                blocks.append(marker_block(text=separator))
         logfire.info(
             "gen_reply history render done",
             elapsed_seconds=time.monotonic() - started,
@@ -474,7 +471,7 @@ class ReplyContextBuilder(BaseModel):
         # developer authority instead. Keeping it out of here also keeps it out of every other
         # call this render feeds, none of which is answering a question; the memory review
         # transcript opens with this header verbatim.
-        header = system_block(text="==== Chat History: earlier messages in this channel. ====")
+        header = marker_block(text="==== Chat History: earlier messages in this channel. ====")
         return [header, *blocks]
 
     async def render_reference_message(

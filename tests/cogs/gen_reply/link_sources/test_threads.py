@@ -1115,7 +1115,7 @@ async def test_build_empty_post_returns_unavailable_notice(
     )
 
     assert len(blocks) == 1
-    assert blocks[0]["role"] == "system"
+    assert blocks[0]["role"] == "user"
     assert block_separator(blocks=blocks) == THREADS_UNAVAILABLE_NOTICE
 
 
