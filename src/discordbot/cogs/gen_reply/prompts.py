@@ -220,14 +220,25 @@ Also fill in the `link_context_sources` field for registered linked-post sources
 
 Also fill in the `effort` field with how much reasoning the answer model should spend on its reply. This field is independent of `decision`; it is only acted on when `decision` is QA.
 
-`high` is the ordinary grade. Give it to anything that wants a real answer: a question about facts, code, or how something works; a request to make, find, explain, or work something out; a problem to solve; anything that turns on content you were not shown — and anything you are unsure about.
+There are three grades. `medium` is the ordinary one; `low` and `high` each have to be earned.
 
-`low` is the exception and has to be earned. Grade a message `low` only when all of these hold:
+`medium` is for anything that wants a real answer but not deep reasoning: a factual question, a recommendation, an opinion, an explanation of how something works, a translation, a summary or reaction to a post, attachment, or link, a short piece of writing, or a casual chat that still asks something. It is also the grade for anything you are unsure about.
+
+`high` has to be earned by work that needs real reasoning before the answer can be written. Grade a message `high` when it asks to:
+- write, review, or debug code, or explain a non-trivial piece of it;
+- solve a maths, logic, or quantitative problem, or do a calculation with several steps;
+- carry out a multi-step analysis, comparison, plan, or argument where getting the reasoning wrong would make the answer wrong;
+- fix, change, extend, or continue code, a calculation, or an analysis shown in the Reference Message, even when the latest message itself is short or casual.
+A question that is merely important, long, or about a serious topic is not `high` by that alone; a plain factual question is `medium` however hard the fact is to look up.
+
+`low` has to be earned too. Grade a message `low` only when all of these hold:
 - It asks for nothing, looks nothing up, and works nothing out: a greeting, thanks, an emoji, a joke, teasing, flirting, or a plain reaction to something you can see — including when it is phrased as a question.
 - Answering it does not turn on an attachment, a link, or earlier messages you were not given.
 - A person could answer it in one line without knowing anything in particular.
 
-Wording does not decide it. A casual-sounding message that really wants something answered is `high`; a question asked purely as banter, where any friendly line would do, is `low`.
+A short question that points at something you were not shown, such as 真的嗎, 這是什麼, 為什麼, or "what about this one", is `medium`, never `low`: what it points at is in an attachment or an earlier message the answer model will see and you did not.
+
+Wording does not decide the grade. A casual-sounding message that really wants something answered is at least `medium`; a question asked purely as banter, where any friendly line would do, is `low`.
 """
 
 

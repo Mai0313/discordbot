@@ -1044,12 +1044,15 @@ async def test_on_message_orders_selected_link_blocks_in_registry_order(
         assert not has_link_context_block(request=answer, source=name)
 
 
-async def test_handle_message_reply_uses_route_effort() -> None:
-    """The answer request's reasoning effort follows the route decision."""
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+async def test_handle_message_reply_uses_route_effort(
+    effort: Literal["low", "medium", "high"],
+) -> None:
+    """The answer request's reasoning effort follows the route's grade, whichever it is."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA", effort="low")
+    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA", effort=effort)
     message = FakeMessage(content="<@999> why", author=FakeAuthor(user_id=1))
 
     await _run_pipeline(cog=cog, message=message)
 
-    assert _recorded(cog).responses.create_reasonings[-1]["effort"] == "low"
+    assert _recorded(cog).responses.create_reasonings[-1]["effort"] == effort

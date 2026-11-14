@@ -190,13 +190,13 @@ async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPa
     assert message.guild is not None
     message.guild.id = 424242
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext(), effort="low", yt_url=url
+        system_prompt="SYS", context=ReplyContext(), effort="medium", yt_url=url
     )
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
     assert _recorded(cog).responses.create_streams == []
     assert len(interactions.calls) == 1
-    assert interactions.calls[0].generation_config["thinking_level"] == "low"
+    assert interactions.calls[0].generation_config["thinking_level"] == "medium"
     last_step_parts = interactions.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url, "processing": "agentic"} in last_step_parts
     # The video turn is told the request's time and place, exactly as a Responses one is.
