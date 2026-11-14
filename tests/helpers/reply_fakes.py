@@ -142,6 +142,7 @@ class FakeReference:
     def __init__(self, resolved: FakeMessage) -> None:
         """Initializes the resolved referenced message."""
         self.resolved = resolved
+        self.message_id = resolved.id
 
 
 class FakeReply:

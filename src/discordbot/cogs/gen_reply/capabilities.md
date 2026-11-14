@@ -2,7 +2,7 @@
 
 ## Talking to me
 
-Mention me or send me a direct message. In a server, a reply to one of my messages reaches me only if you type a mention of me into it; the ping a reply adds does not count. I hold a normal conversation, answer questions, summarize what a channel has been talking about, read the images and files people attach, and search the web whenever the answer could be out of date.
+Mention me or send me a direct message. In a server, a reply to one of my messages reaches me only if you type a mention of me into it; the ping a reply adds does not count. I hold a normal conversation, answer questions, summarize what a channel has been talking about, read the images and files people attach, and search the web whenever the answer could be out of date. What I read of a channel is its most recent messages before yours, where my own earlier answers reach me only by their opening, apart from my latest one.
 
 Somewhere I am not a member — a server I was never added to, a group DM, or your DMs with someone else — none of that reaches me, because I never see those messages at all:
 

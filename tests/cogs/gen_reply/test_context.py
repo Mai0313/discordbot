@@ -4,29 +4,39 @@ from __future__ import annotations
 
 from typing import cast
 import asyncio
+from datetime import timedelta
 
 import pytest
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.cogs.gen_reply.input import shorten_earlier_reply
 from discordbot.cogs.gen_reply.context import (
     ReplyContext,
+    ReplyContextBuilder,
+    gap_separator,
+    latest_reply_ids,
     trim_history_to_budget,
     history_media_over_budget,
 )
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     MAX_HISTORY_MEDIA_PARTS,
     HISTORY_PER_MESSAGE_OVERHEAD,
+    HISTORY_EARLIER_REPLY_MAX_CHARS,
 )
+from discordbot.cogs.gen_reply.ask_store import record_ask_turn
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 
 from tests.helpers.casting import as_message, step_dicts
 from tests.helpers.reply_fakes import (
+    FAKE_MESSAGE_CREATED_AT,
     FakeReply,
     FakeAuthor,
     FakeMessage,
+    FakeReference,
     FakeAttachment,
     _cog,
     _answer,
@@ -36,7 +46,39 @@ from tests.helpers.reply_fakes import (
     _context_builder,
     _install_streamer,
 )
+from tests.helpers.ask_interaction import ASKER_ID, CHANNEL_ID, ASK_SNOWFLAKE, _interaction
 from tests.helpers.logfire_capture import capture_logs
+
+BOT_ID = 999
+# What every finished reply ends with on Discord, and what marks a bot post as a reply at all.
+FOOTER = "\n\n-# gemini-test (high) · ⬆ 1 ⬇ 2"
+
+
+def _said(content: str, author_id: int = 1, minutes: float = 0) -> FakeMessage:
+    """A message `minutes` after `FAKE_MESSAGE_CREATED_AT`, from the bot when `author_id` is `BOT_ID`."""
+    message = FakeMessage(content=content, author=FakeAuthor(user_id=author_id))
+    message.created_at = FAKE_MESSAGE_CREATED_AT + timedelta(minutes=minutes)
+    return message
+
+
+def _trim(messages: list[FakeMessage], current_minutes: float = 0) -> list[FakeMessage]:
+    """Trims `messages` as the gateway does for a message sent `current_minutes` in."""
+    return cast(
+        "list[FakeMessage]",
+        trim_history_to_budget(
+            messages=[as_message(fake=m) for m in messages],
+            bot_user_id=BOT_ID,
+            current_at=FAKE_MESSAGE_CREATED_AT + timedelta(minutes=current_minutes),
+        ),
+    )
+
+
+def _text(block: EasyInputMessageParam) -> str:
+    """One rendered block's text, whether it was rendered as a string or as parts."""
+    content = block["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(str(part.get("text", "")) for part in step_dicts(steps=content))
 
 
 @pytest.mark.usefixtures("no_memory_review")
@@ -110,7 +152,7 @@ def test_trim_history_keeps_the_newest_messages_within_the_budget() -> None:
     fits = HISTORY_CHAR_BUDGET // per_message
     messages = [FakeMessage(content=body, author=FakeAuthor(user_id=1)) for _ in range(fits + 20)]
 
-    kept = trim_history_to_budget(messages=[as_message(fake=m) for m in messages])
+    kept = _trim(messages=messages)
 
     # order-contract: history is fed to the model oldest-first, and the exact tail is what is kept.
     assert [m.id for m in kept] == [m.id for m in messages[-fits:]]
@@ -120,7 +162,7 @@ def test_trim_history_keeps_one_message_that_alone_exceeds_the_budget() -> None:
     """A single oversized post must not reduce history to nothing."""
     huge = FakeMessage(content="y" * (HISTORY_CHAR_BUDGET * 3), author=FakeAuthor(user_id=1))
 
-    kept = trim_history_to_budget(messages=[as_message(fake=huge)])
+    kept = _trim(messages=[huge])
 
     assert len(kept) == 1
 
@@ -129,7 +171,7 @@ def test_trim_history_charges_an_attachment_only_message() -> None:
     """Empty `content` still costs, so a run of image posts cannot overshoot the budget."""
     blanks = [FakeMessage(content="", author=FakeAuthor(user_id=1)) for _ in range(2000)]
 
-    kept = trim_history_to_budget(messages=[as_message(fake=m) for m in blanks])
+    kept = _trim(messages=blanks)
 
     assert len(kept) <= HISTORY_CHAR_BUDGET // HISTORY_PER_MESSAGE_OVERHEAD
 
@@ -277,3 +319,188 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
         current_message=[{"role": "user", "content": "now"}],
     )
     assert [part["content"] for part in context.message_list] == ["hist", "ref", "now"]
+
+
+def test_an_earlier_bot_reply_costs_only_its_opening_so_more_of_the_chat_fits() -> None:
+    """Six long replies would fill the budget three times over at full length.
+
+    At their shortened length every message fits, the most recent reply whole.
+    """
+    messages: list[FakeMessage] = []
+    for index in range(6):
+        messages.append(_said(content=f"question {index}"))
+        messages.append(_said(content="答" * 1300 + FOOTER, author_id=BOT_ID))
+    messages.append(_said(content="and now?"))
+
+    kept = _trim(messages=messages)
+
+    assert [m.id for m in kept] == [m.id for m in messages]
+
+
+def test_the_most_recent_reply_is_kept_whole_across_its_chunks_past_the_budget() -> None:
+    """A reply split across two messages is not cut in half by the budget, even when it overshoots."""
+    older = _said(content="older")
+    first = _said(content="a" * 1990, author_id=BOT_ID)
+    second = _said(content="b" * 1990 + FOOTER, author_id=BOT_ID)
+    second.reference = FakeReference(resolved=first)
+    newest = _said(content="c" * 500)
+
+    kept = _trim(messages=[older, first, second, newest])
+
+    assert [m.id for m in kept] == [first.id, second.id, newest.id]
+
+
+def test_the_latest_reply_is_found_by_its_footer_even_when_the_footer_followed_alone() -> None:
+    """A newer command output is not a reply, and a footer sent on its own still marks one."""
+    earlier = _said(content="earlier" + FOOTER, author_id=BOT_ID)
+    answer = _said(content="a" * 1990, author_id=BOT_ID)
+    footer_alone = _said(content=FOOTER.lstrip("\n"), author_id=BOT_ID)
+    footer_alone.reference = FakeReference(resolved=answer)
+    command_output = _said(content="🎰 slots", author_id=BOT_ID)
+
+    latest = latest_reply_ids(
+        messages=[as_message(fake=m) for m in (earlier, answer, footer_alone, command_output)],
+        bot_user_id=BOT_ID,
+    )
+
+    assert latest == {answer.id, footer_alone.id}
+
+
+def test_trim_charges_the_gap_separator_a_message_brings() -> None:
+    """The separator is rendered, so a message that fits only without it is left out."""
+    separator = gap_separator(
+        earlier=FAKE_MESSAGE_CREATED_AT, later=FAKE_MESSAGE_CREATED_AT + timedelta(hours=3)
+    )
+    assert separator is not None
+    newest = _said(content="n" * (2000 - HISTORY_PER_MESSAGE_OVERHEAD), minutes=180)
+    fits_without = HISTORY_CHAR_BUDGET - 2000 - HISTORY_PER_MESSAGE_OVERHEAD - len(separator) // 2
+    older = _said(content="o" * fits_without)
+
+    kept = _trim(messages=[older, newest], current_minutes=180)
+
+    assert [m.id for m in kept] == [newest.id]
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected"),
+    [
+        (29, None),
+        (30, "==== 30 minutes later ===="),
+        (75, "==== 1 hour later ===="),
+        (170, "==== 3 hours later ===="),
+        (60 * 47, "==== 47 hours later ===="),
+        (60 * 24 * 5, "==== 5 days later ===="),
+    ],
+)
+def test_a_gap_separator_names_only_the_time_that_passed(
+    minutes: int, expected: str | None
+) -> None:
+    """Under half an hour says nothing; past it, the gap in the unit a person would use."""
+    assert (
+        gap_separator(
+            earlier=FAKE_MESSAGE_CREATED_AT,
+            later=FAKE_MESSAGE_CREATED_AT + timedelta(minutes=minutes),
+        )
+        == expected
+    )
+
+
+async def test_render_history_shortens_earlier_replies_and_marks_where_time_passed() -> None:
+    """Earlier replies render as their opening, the latest whole, and long gaps get a separator.
+
+    A newer bot post that is not a reply (a command's output) does not take the latest reply's
+    place, and the last separator measures the gap to the message being answered.
+    """
+    earlier_reply = "早" * (HISTORY_EARLIER_REPLY_MAX_CHARS + 200)
+    latest_reply = "晚" * (HISTORY_EARLIER_REPLY_MAX_CHARS + 200)
+    history = [
+        _said(content=earlier_reply + FOOTER, author_id=BOT_ID),
+        _said(content="ok", minutes=10),
+        _said(content=latest_reply + FOOTER, author_id=BOT_ID, minutes=180),
+        _said(
+            content="🎰 " + "x" * HISTORY_EARLIER_REPLY_MAX_CHARS, author_id=BOT_ID, minutes=181
+        ),
+    ]
+    current = _said(content="<@999> next", minutes=225)
+
+    rendered = await _context_builder(
+        cog=_cog(bot_user_id=BOT_ID), message=as_message(fake=current)
+    ).render_history(hist_messages=[as_message(fake=m) for m in history])
+
+    assert [_text(block=block) for block in rendered[1:]] == [
+        shorten_earlier_reply(text=earlier_reply),
+        "Tester (tester) [id: 1]: ok",
+        "==== 3 hours later ====",
+        latest_reply,
+        shorten_earlier_reply(text="🎰 " + "x" * HISTORY_EARLIER_REPLY_MAX_CHARS),
+        "==== 44 minutes later ====",
+    ]
+    assert [block["role"] for block in rendered[1:]] == [
+        "assistant",
+        "user",
+        "user",
+        "assistant",
+        "assistant",
+        "user",
+    ]
+    assert shorten_earlier_reply(text=earlier_reply).endswith("[… rest of this reply omitted]")
+
+
+async def test_an_ask_conversation_gets_the_same_shortening_and_separators() -> None:
+    """Stored `/ask` turns rebuild with real send times, so the window reads the same there."""
+    interaction = _interaction()
+    hour_ago = ASK_SNOWFLAKE - ((60 * 60 * 1000) << 22)
+    two_hours_ago = ASK_SNOWFLAKE - ((2 * 60 * 60 * 1000) << 22)
+    long_answer = "長" * (HISTORY_EARLIER_REPLY_MAX_CHARS + 50)
+    for message_id in (two_hours_ago, hour_ago):
+        await record_ask_turn(
+            channel_id=CHANNEL_ID,
+            user_id=ASKER_ID,
+            message_id=message_id,
+            question="q",
+            answer=long_answer + FOOTER,
+        )
+    builder = ReplyContextBuilder(
+        toolkit=_cog(bot_user_id=BOT_ID).toolkit,
+        surface=TurnSurface.for_interaction(interaction=interaction, question="now"),
+    )
+
+    rendered = await builder.render_history(hist_messages=await builder.fetch_history(limit=50))
+
+    assert [_text(block=block) for block in rendered[1:]] == [
+        "Asker (asker) [id: 4242]: q",
+        shorten_earlier_reply(text=long_answer),
+        "==== 1 hour later ====",
+        "Asker (asker) [id: 4242]: q",
+        long_answer,
+        "==== 1 hour later ====",
+    ]
+
+
+async def test_an_earlier_reply_degraded_to_markers_is_still_shortened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The text-only re-render a payload-capped post gets keeps the opening-only form."""
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="gemini-test", effort="high")),
+    )
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.context.MAX_HISTORY_INLINE_BYTES", 2_000)
+    reply = "早" * (HISTORY_EARLIER_REPLY_MAX_CHARS + 200)
+    earlier = _said(content=reply, author_id=BOT_ID)
+    earlier.attachments = [FakeAttachment(filename="0.txt", payload=b"x" * 3_000, attachment_id=0)]
+    latest = _said(content="latest" + FOOTER, author_id=BOT_ID)
+
+    rendered = await _context_builder(
+        cog=_cog(bot_user_id=BOT_ID), message=as_message(fake=_said(content="hi"))
+    ).render_history(hist_messages=[as_message(fake=m) for m in (earlier, latest)])
+
+    assert _text(block=rendered[1]) == (
+        f"Tester (tester) [id: {BOT_ID}]: {shorten_earlier_reply(text=reply)}[attachment: file]"
+    )
