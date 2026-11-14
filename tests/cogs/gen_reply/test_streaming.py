@@ -50,23 +50,31 @@ if TYPE_CHECKING:
     from openai.types.responses import ResponseStreamEvent
 
 
-def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
-    """Builds a completed event whose output text carries the given annotation types."""
+_REDIRECT = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/"
+
+
+def _annotated_completed_event(
+    annotations: list[SimpleNamespace], web_search_requests: int
+) -> SimpleNamespace:
+    """Builds a completed event whose output text carries `annotations`, as the proxy reports one."""
     return SimpleNamespace(
         type="response.completed",
         response=SimpleNamespace(
             model=TEST_LLM_MODEL,
-            usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=2,
+                input_tokens_details=SimpleNamespace(
+                    model_extra={"web_search_requests": web_search_requests}
+                ),
+            ),
             output=[
                 SimpleNamespace(type="reasoning"),
                 SimpleNamespace(
                     type="message",
                     content=[
                         SimpleNamespace(type="refusal"),
-                        SimpleNamespace(
-                            type="output_text",
-                            annotations=[SimpleNamespace(type=kind) for kind in annotation_types],
-                        ),
+                        SimpleNamespace(type="output_text", annotations=annotations),
                     ],
                 ),
             ],
@@ -74,10 +82,33 @@ def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
     )
 
 
-async def test_streaming_counts_only_url_citation_annotations(
+def _citation(url: str, title: str) -> SimpleNamespace:
+    """A `url_citation` annotation as the Responses bridge carries one."""
+    return SimpleNamespace(type="url_citation", url=url, title=title)
+
+
+def _tool_use_logged(logged: list[tuple[str, dict[str, object]]]) -> list[tuple[object, ...]]:
+    """The tool-use fields of every `gen_reply reply finalized` record."""
+    return [
+        (
+            fields["web_search_queries"],
+            fields["url_fetches"],
+            fields["url_citations"],
+            fields["cited_domains"],
+        )
+        for message, fields in logged
+        if message == "gen_reply reply finalized"
+    ]
+
+
+async def test_streaming_logs_the_searches_and_cited_domains_the_proxy_reports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Grounding is counted off the completed output, past the reasoning and refusal shapes."""
+    """Searches come off the usage counter and domains off the citations, past other shapes.
+
+    A redirect's domain is its title only when the title is one; a page title names none. URL
+    context reaches the bot through no field, so it stays "not reported".
+    """
     logged = capture_logs(monkeypatch=monkeypatch, level="info")
     streamer = _streamer(message=FakeMessage())
 
@@ -87,21 +118,67 @@ async def test_streaming_counts_only_url_citation_annotations(
             events=[
                 _text_event(delta="grounded"),
                 _annotated_completed_event(
-                    annotation_types=["url_citation", "file_citation", "url_citation"]
+                    annotations=[
+                        _citation(url=f"{_REDIRECT}a", title="example.com"),
+                        SimpleNamespace(type="file_citation"),
+                        _citation(url=f"{_REDIRECT}b", title="Some Page - Wikipedia"),
+                        _citation(url="https://news.example.org/a/b?c=d", title="A page"),
+                        _citation(url=f"{_REDIRECT}c", title="Example.com"),
+                    ],
+                    web_search_requests=3,
                 ),
             ]
         ),
     )
 
-    assert [fields["url_citations"] for _, fields in logged if "url_citations" in fields] == [2]
+    assert _tool_use_logged(logged=logged) == [(3, None, 4, "example.com,news.example.org")]
+
+
+async def test_streaming_logs_no_searches_when_the_proxy_reports_no_counter() -> None:
+    """The proxy leaves the counter out of a completed answer that ran no search."""
+    streamer = _streamer(message=FakeMessage())
+
+    await _stream(streamer=streamer, responses=_stream_events())
+
+    assert streamer.tool_use.web_search_queries == 0
+    assert streamer.tool_use.url_citations == 0
+    assert streamer.tool_use.cited_domains == []
+
+
+async def test_streaming_shows_ten_cited_domains_and_counts_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long citation list is cut visibly, so the record stays short without hiding the cut."""
+    logged = capture_logs(monkeypatch=monkeypatch, level="info")
+
+    await _stream(
+        streamer=_streamer(message=FakeMessage()),
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="grounded"),
+                _annotated_completed_event(
+                    annotations=[
+                        _citation(url=f"{_REDIRECT}{index}", title=f"site{index}.com")
+                        for index in range(12)
+                    ],
+                    web_search_requests=1,
+                ),
+            ]
+        ),
+    )
+
+    assert _tool_use_logged(logged=logged)[0][3] == ",".join(
+        [f"site{index}.com" for index in range(10)] + ["+2"]
+    )
 
 
 async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The Interactions path reports grounding in another shape, so it must not log a zero.
+    """A completed event without output leaves the tool use to whatever filled it, never zero.
 
-    A zero here would read as an ungrounded answer.
+    The Interactions adapter fills it from its own events; zeros written here would read as an
+    answer that neither searched nor cited.
     """
     logged = capture_logs(monkeypatch=monkeypatch, level="info")
     streamer = _streamer(message=FakeMessage(), backend="interactions")
@@ -123,7 +200,7 @@ async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no
         ),
     )
 
-    assert [fields["url_citations"] for _, fields in logged if "url_citations" in fields] == [None]
+    assert _tool_use_logged(logged=logged) == [(None, None, None, None)]
 
 
 def _reply_chain(head: FakeReply) -> list[FakeReply]:
@@ -176,7 +253,9 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
                     type="response.completed",
                     response=SimpleNamespace(
                         model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+                        usage=SimpleNamespace(
+                            input_tokens=1, output_tokens=2, input_tokens_details=None
+                        ),
                         output=[],
                     ),
                 ),

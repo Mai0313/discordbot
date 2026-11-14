@@ -24,10 +24,12 @@ import logfire
 from google.genai.errors import APIError
 from openai.types.responses import ResponseStreamEvent
 from google.genai.interactions import (
+    Step,
     StepParam,
     URLContext,
     ContentParam,
     GoogleSearch,
+    StepDeltaData,
     ThinkingLevel,
     AllowlistParam,
     EnvironmentParam,
@@ -42,6 +44,8 @@ from google.genai.interactions import (
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_content_param import ResponseInputContentParam
+
+from discordbot.cogs.gen_reply.streaming import AnswerToolUse
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -170,6 +174,47 @@ def to_interactions_input(answer_input: ResponseInputParam, youtube_url: str) ->
     return steps
 
 
+def _note_tool_use(
+    part: Step | StepDeltaData, queries: set[str], urls: set[str], citations: list[tuple[str, str]]
+) -> None:
+    """Adds what `part` carries if it is a search or URL context call or a text annotation."""
+    if part.type == "google_search_call":
+        queries.update(part.arguments.queries or [])
+    elif part.type == "url_context_call":
+        urls.update(part.arguments.urls or [])
+    elif part.type == "text_annotation_delta":
+        citations.extend(
+            (annotation.url or "", annotation.title or "")
+            for annotation in part.annotations or []
+            if annotation.type == "url_citation"
+        )
+
+
+async def _record_tool_use(
+    stream: "AsyncIterator[InteractionSSEEvent]", tool_use: AnswerToolUse
+) -> "AsyncIterator[InteractionSSEEvent]":
+    """Passes `stream` through, writing what its tool calls and citations did into `tool_use`.
+
+    Written only once the interaction completes, as the Responses path reports only then. A call's
+    arguments may come on its `step.start`, its `step.delta` or both, hence the sets.
+    """
+    queries: set[str] = set()
+    urls: set[str] = set()
+    citations: list[tuple[str, str]] = []
+    async for event in stream:
+        if event.event_type == "step.start":
+            _note_tool_use(part=event.step, queries=queries, urls=urls, citations=citations)
+        elif event.event_type == "step.delta":
+            _note_tool_use(part=event.delta, queries=queries, urls=urls, citations=citations)
+        elif (
+            event.event_type == "interaction.completed" and event.interaction.status == "completed"
+        ):
+            tool_use.web_search_queries = len(queries)
+            tool_use.url_fetches = len(urls)
+            tool_use.record_citations(citations=citations)
+        yield event
+
+
 async def adapt_interactions_stream(
     stream: "AsyncIterator[InteractionSSEEvent]",
 ) -> AsyncIterator[ResponseStreamEvent]:
@@ -241,9 +286,8 @@ async def adapt_interactions_stream(
                     response=SimpleNamespace(
                         model=(event.interaction.model or model_name),
                         usage=usage_ns,
-                        # None, not []: this surface reports grounding in a shape the Responses
-                        # event cannot carry, and the streamer logs "not reported" rather than a
-                        # zero that would read as an ungrounded answer.
+                        # None, not []: `_record_tool_use` already wrote this answer's grounding
+                        # into the streamer, and an empty output would overwrite it with zeros.
                         output=None,
                         incomplete_details=None
                         if completed
@@ -274,12 +318,13 @@ async def adapt_interactions_stream(
             )
 
 
-async def create_interactions_answer_stream(
+async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inputs plus the streamer's tool-use record
     client: genai.Client,
     model: str,
     system_instruction: str,
     steps: list[StepParam],
     effort: ReasoningEffort,
+    tool_use: AnswerToolUse,
 ) -> AsyncIterator[ResponseStreamEvent]:
     """Yields adapted `ResponseStreamEvent` items for a YouTube-aware QA answer on the Gemini Interactions API.
 
@@ -292,6 +337,7 @@ async def create_interactions_answer_stream(
         system_instruction (str): Runtime developer instructions for the turn.
         steps (list[StepParam]): Translated conversation and YouTube input steps.
         effort (ReasoningEffort): Reasoning effort grade (`"low"`, `"medium"` or `"high"`).
+        tool_use (AnswerToolUse): The streamer's record of the answer's tool use.
     """
     responses = await client.aio.interactions.create(
         model=model,
@@ -321,5 +367,7 @@ async def create_interactions_answer_stream(
     # `stream=True` returns an async event stream; the overload still types it as a union with
     # the non-streaming Interaction, so narrow to the iterator the adapter consumes.
     stream = cast("AsyncIterator[InteractionSSEEvent]", responses)
-    async for event in adapt_interactions_stream(stream=stream):
+    async for event in adapt_interactions_stream(
+        stream=_record_tool_use(stream=stream, tool_use=tool_use)
+    ):
         yield event

@@ -6,6 +6,7 @@ from typing import Literal
 import asyncio
 import contextlib
 import unicodedata
+from urllib.parse import urlsplit
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
@@ -14,7 +15,7 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
-from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
+from openai.types.responses import Response, ResponseOutputItem, ResponseStreamEvent
 
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.memory import MemoryCredits
@@ -103,21 +104,70 @@ REASONING_PREVIEW_MAX_LINES = 4
 REASONING_PREVIEW_MAX_CHARS = 320
 
 
-def _count_url_citations(output: list[ResponseOutputItem]) -> int:
-    """Counts `url_citation` annotations across message output text parts in `output`.
+def _citation_domain(url: str, title: str) -> str | None:
+    """The domain a citation points at, or None when neither its url nor its title names one.
 
-    The Responses bridge reports grounding solely as `url_citation` annotations on `output_text`
-    parts and never populates `groundingMetadata`.
+    A Google Search citation's url is a Vertex redirect, whose title is the source's domain on a
+    search hit and the page's own title on a page URL context read, so only a domain-shaped title
+    stands in for the host.
     """
-    return sum(
-        1
+    host = urlsplit(url=url).hostname
+    if host != "vertexaisearch.cloud.google.com":
+        return host
+    if re.fullmatch(pattern=r"(?:[a-z0-9-]+\.)+[a-z]{2,}", string=title, flags=re.IGNORECASE):
+        return title.lower()
+    return None
+
+
+def _url_citations(output: list[ResponseOutputItem]) -> list[tuple[str, str]]:
+    """The `(url, title)` of every `url_citation` annotation across message output text parts."""
+    return [
+        (annotation.url, annotation.title)
         for item in output
         if item.type == "message"
         for part in item.content
         if part.type == "output_text"
         for annotation in part.annotations
         if annotation.type == "url_citation"
+    ]
+
+
+class AnswerToolUse(BaseModel):
+    """What the answer's server-side tools did, as far as its backend reports it.
+
+    None on a field means the backend does not report it, never zero: a zero there would read as
+    an answer that did not search or cite.
+    """
+
+    web_search_queries: int | None = Field(
+        default=None, description="Distinct Google Search queries the answer ran."
     )
+    url_fetches: int | None = Field(
+        default=None,
+        description="Distinct URLs URL context retrieved. The Responses bridge never reports it.",
+    )
+    url_citations: int | None = Field(
+        default=None, description="`url_citation` annotations on the answer text."
+    )
+    cited_domains: list[str] | None = Field(
+        default=None,
+        description="Distinct domains those citations point at, in first-cited order.",
+        examples=[["wikipedia.org", "nownews.com"]],
+    )
+
+    def record_citations(self, citations: list[tuple[str, str]]) -> None:
+        """Records the answer's `(url, title)` citations as a count and their domains."""
+        self.url_citations = len(citations)
+        domains = (_citation_domain(url=url, title=title) for url, title in citations)
+        self.cited_domains = list(dict.fromkeys(domain for domain in domains if domain))
+
+    def record_response(self, response: Response) -> None:
+        """Records what a completed Responses API answer reports: its citations and searches."""
+        self.record_citations(citations=_url_citations(output=response.output))
+        if response.usage:
+            details = response.usage.input_tokens_details
+            extra = (details.model_extra if details is not None else None) or {}
+            self.web_search_queries = extra.get("web_search_requests", 0)
 
 
 def _in_code_block(text: str, cut: int) -> bool:
@@ -275,6 +325,13 @@ class ResponseStreamer(BaseModel):
         "them reports is not read as an absence on the other.",
         examples=["responses", "interactions"],
     )
+    tool_use: AnswerToolUse = Field(
+        default_factory=AnswerToolUse,
+        description=(
+            "What the answer's search and URL tools did, filled from the completed response on "
+            "the Responses backend and by the stream adapter on the Interactions one."
+        ),
+    )
     input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
     output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
     memory_lookups: MemoryCredits = Field(
@@ -352,12 +409,6 @@ class ResponseStreamer(BaseModel):
     _reasoning_logged: bool = PrivateAttr(default=False)
     # How long the answer call itself took, stamped when the stream is consumed.
     _answer_seconds: float = PrivateAttr(default=0.0)
-    # Grounding citations the completed response carried, or None when this backend never
-    # reported any. The distinction is the point: only the Responses bridge reports grounding,
-    # and only as `url_citation` annotations, so a zero written for the Interactions path (or for
-    # a stream that ended without `response.completed`) would read as a genuinely ungrounded
-    # answer. See the grounding note in `.agents/rules/responses-api.md`.
-    _url_citations: int | None = PrivateAttr(default=None)
 
     @staticmethod
     def _split_reply_for_discord(
@@ -729,13 +780,12 @@ class ResponseStreamer(BaseModel):
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
                     self.output_tokens += response.response.usage.output_tokens
-                # `output` is None on the Interactions path, which reports grounding in a shape
-                # this event cannot carry; leaving the counter None there keeps "not reported"
-                # distinct from "reported as zero".
+                # `output` is None on the Interactions path, whose adapter fills `tool_use` from
+                # its own events. The proxy reports grounding as `url_citation` annotations and a
+                # distinct-query count in the input details, and URL context not at all (see the
+                # grounding note in `.agents/rules/responses-api.md`).
                 if response.response.output is not None:
-                    self._url_citations = (self._url_citations or 0) + _count_url_citations(
-                        output=response.response.output
-                    )
+                    self.tool_use.record_response(response=response.response)
             elif response.type == "response.incomplete":
                 self.model_name = response.response.model
                 # Billed like any other attempt, so it counts toward the footer a retry ends on.
@@ -816,6 +866,8 @@ class ResponseStreamer(BaseModel):
         # Every best-effort hint this turn produced is in by now, so the surface that could not
         # react gets its one line here rather than an edit per dropped item.
         await self._write_hint_line()
+        domains = self.tool_use.cited_domains
+        shown_domains = 10
         logfire.info(
             "gen_reply reply finalized",
             message_id=self.message.id,
@@ -827,7 +879,16 @@ class ResponseStreamer(BaseModel):
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cost=cost,
-            url_citations=self._url_citations,
+            web_search_queries=self.tool_use.web_search_queries,
+            url_fetches=self.tool_use.url_fetches,
+            url_citations=self.tool_use.url_citations,
+            # Joined rather than a list, which the console exporter prints one element per line.
+            cited_domains=None
+            if domains is None
+            else ",".join(
+                domains[:shown_domains]
+                + ([f"+{len(domains) - shown_domains}"] if len(domains) > shown_domains else [])
+            ),
             reasoning_chars=len(self.reasoning_content),
             reply_chars=reply_chars,
             voice_requested=self.markers.voice_requested,
