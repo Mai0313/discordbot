@@ -21,8 +21,6 @@ where #459 lost whole replies to it.
 """
 
 import json
-from types import SimpleNamespace
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -50,18 +48,6 @@ def _catalog_models() -> dict[str, ModelSettings]:
     ]
     found = {name: getattr(catalog, name) for name in names}
     return {name: value for name, value in found.items() if isinstance(value, ModelSettings)}
-
-
-def _catalog_at(monkeypatch: pytest.MonkeyPatch, now: datetime) -> RuntimeModelCatalog:
-    """A catalog whose clock reads `now`, until the test ends or pins another instant."""
-
-    def fixed_now(tz: object) -> datetime:
-        """Returns the pinned timestamp."""
-        assert tz is UTC
-        return now
-
-    monkeypatch.setattr("discordbot.typings.models.datetime", SimpleNamespace(now=fixed_now))
-    return RuntimeModelCatalog()
 
 
 def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
@@ -96,59 +82,6 @@ def test_no_tier_dispatches_an_alias() -> None:
         "A `*-latest` alias moves under the deployment and switches LiteLLM onto its pre-3 "
         f"translation branch. Name the snapshot instead. Offenders: {offenders}"
     )
-
-
-def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every slow-model branch stays on a pinned snapshot.
-
-    The one tier whose effort is decided at runtime is also the one dispatched direct to Google,
-    where the accepted `thinking_level` set is per-model and a rejection costs the whole reply.
-    A pinned snapshot's set can at least be looked up; an alias resolves elsewhere, so it cannot.
-    Which snapshot a branch names is free to change; that none of them is an alias is not free,
-    and nothing else in the tree reports it. Whether two branches may name the SAME snapshot is
-    not this test's question either way.
-
-    Every hour of a week is swept rather than one instant per branch the catalog has today: the
-    dispatch condition is the catalog's own to change, so a branch added on a second condition
-    would be invisible to a fixed pair of timestamps and the guard would report nothing. That
-    sweep is also why the catalog-wide alias guard above does not replace this one: reading the
-    property once shows only the branch the clock happened to select.
-    """
-    monday = datetime(year=2026, month=5, day=18, tzinfo=UTC)
-    aliases: dict[str, str] = {}
-    for offset in range(7 * 24):
-        now = monday + timedelta(hours=offset)
-        settings = _catalog_at(monkeypatch=monkeypatch, now=now).slow_model
-        when = f"{now:%a %H:00} UTC"
-        if "latest" in settings.name:
-            aliases.setdefault(settings.name, when)
-
-    assert aliases == {}, (
-        "A `*-latest` alias resolves under the deployment, so the thinking levels this tier can "
-        "be dispatched with cannot be looked up for it and can change without this repo "
-        f"changing. Name the snapshot, which can. #459 was that failure. Aliases: {aliases}"
-    )
-
-
-def test_the_catalog_computes_the_peak_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The catalog still knows the peak window a tier branches on when peak refusals return."""
-
-    def snapshot_at(now: datetime) -> tuple[bool, bool]:
-        """Returns the peak flag and its dumped value with the catalog clock pinned to `now`."""
-        catalog = _catalog_at(monkeypatch=monkeypatch, now=now)
-        return catalog.is_peak, catalog.model_dump()["is_peak"] is True
-
-    peak_start = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
-    peak_end = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
-    before_peak = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=7, tzinfo=UTC))
-    after_peak = snapshot_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
-    weekend = snapshot_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
-
-    assert peak_start == (True, True)
-    assert peak_end == (True, True)
-    assert before_peak == (False, False)
-    assert after_peak == (False, False)
-    assert weekend == (False, False)
 
 
 def test_model_settings_and_catalog_helpers() -> None:

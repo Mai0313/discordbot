@@ -1,9 +1,8 @@
 """The model tiers every runtime call dispatches on, and the shapes a triage call fills in."""
 
 from typing import Literal, cast
-from datetime import UTC, datetime
 
-from pydantic import Field, BaseModel, computed_field
+from pydantic import Field, BaseModel
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
@@ -80,17 +79,6 @@ class ModelSettings(BaseModel):
 class RuntimeModelCatalog(BaseModel):
     """Runtime model settings used by Discord bot LLM paths."""
 
-    @computed_field
-    @property
-    def is_peak(self) -> bool:
-        """Returns whether the current UTC time is inside the weekday peak-hour window (08:00-17:00).
-
-        No tier reads this today. Kept on purpose: peak-hour high-demand refusals come and go,
-        and this is what a tier branches on when they return.
-        """
-        now = datetime.now(tz=UTC)
-        return now.weekday() < 5 and 8 <= now.hour < 17
-
     @property
     def image_model(self) -> ModelSettings:
         """Returns model settings for `images.generate` and `images.edit`."""
@@ -134,7 +122,7 @@ class RuntimeModelCatalog(BaseModel):
 
         Must name a model accepted by the Antigravity agent; `effort` and `tools` are unused.
         """
-        return ModelSettings(name="gemini-3.8-flash")
+        return ModelSettings(name="gemini-4-hydrogen")
 
     @property
     def triage_model(self) -> ModelSettings:
