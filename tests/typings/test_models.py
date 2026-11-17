@@ -66,7 +66,7 @@ def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
 def test_no_tier_dispatches_an_alias() -> None:
     """Every tier names an explicit snapshot rather than a `*-latest` alias.
 
-    `slow_model` has a hard reason of its own, guarded below. Every other tier has a quieter
+    `slow_model` has a hard reason of its own. Every other tier has a quieter
     one: an alias carries no `gemini-3` substring, so LiteLLM translates its effort into a
     `thinkingBudget` on the pre-3 branch instead of a `thinking_level`, and picks `v1beta`
     over `v1alpha` while it is there. Nothing fails, the model is simply asked for something
