@@ -72,7 +72,10 @@ class DeltaOutcome(BaseModel):
     deleted: int = Field(default=0, description="Facts removed.")
     dropped: int = Field(
         default=0,
-        description="Deltas refused individually: unknown section, empty body, or bad id.",
+        description=(
+            "Deltas refused individually: unknown section, empty body, bad id, or one losing to "
+            "another write or delete of the same fact."
+        ),
     )
     rejected: str = Field(default="", description="Why the batch was refused; empty when applied.")
     written: tuple[str, ...] = Field(
@@ -287,7 +290,9 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     """Validates and applies one compartment's delta batch.
 
     Deletes run before writes so a fact narrowed from one compartment to another is never
-    present in both at once.
+    present in both at once. Each fact id takes one write per batch: when two writes still land
+    on one id, the permanent one is kept, else the later one, and when a fact is both rewritten
+    and deleted the rewrite is kept. Each delta that loses is logged and counted as dropped.
 
     Args:
         scope (str): Memory scope key.
@@ -306,7 +311,10 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     now = utc_now()
     dropped = 0
     to_delete: set[str] = set()
-    to_write: list[MemoryFact] = []
+    to_write: dict[str, MemoryFact] = {}
+    # Every id the batch names up front, so a create is never re-aimed onto a fact the batch
+    # also rewrites or deletes, whichever comes first; each write claims its id as it lands.
+    claimed = {delta.fact_id.strip() for delta in deltas} & existing.keys()
     for delta in deltas:
         if deletes_only and delta.action != "delete":
             logfire.warn(
@@ -315,7 +323,11 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
             dropped += 1
             continue
         resolved = _resolve_delta(
-            delta=delta, compartment=compartment, existing=existing, allowed=allowed
+            delta=delta,
+            compartment=compartment,
+            existing=existing,
+            allowed=allowed,
+            claimed=claimed,
         )
         if resolved is None:
             dropped += 1
@@ -324,29 +336,41 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
         if is_delete:
             to_delete.add(target_id)
             continue
-        to_delete.discard(target_id)
+        claimed.add(target_id)
         previous = existing.get(target_id)
-        to_write.append(
-            MemoryFact(
-                fact_id=target_id,
-                summary=" ".join(delta.summary.split()),
-                section=delta.section,
-                durability=delta.durability,
-                text=_delta_body(delta=delta),
-                compartment=compartment,
-                owner_id=owner.owner_id,
-                owner_name=owner.owner_name,
-                subject_id=_subject_id_of(delta=delta),
-                node_type=node_type_for(section=delta.section),
-                created=previous.created if previous is not None else now,
-                last_confirmed=now,
-                # Unioned, never replaced: the keys are what lets a retried batch
-                # recognise this fact again, so a rewrite that cites fewer of them must
-                # not shrink the handle it will be found by next time.
-                keys=_merged_keys(delta=delta, previous=previous),
-            )
+        fact = MemoryFact(
+            fact_id=target_id,
+            summary=" ".join(delta.summary.split()),
+            section=delta.section,
+            durability=delta.durability,
+            text=_delta_body(delta=delta),
+            compartment=compartment,
+            owner_id=owner.owner_id,
+            owner_name=owner.owner_name,
+            subject_id=_subject_id_of(delta=delta),
+            node_type=node_type_for(section=delta.section),
+            created=previous.created if previous is not None else now,
+            last_confirmed=now,
+            # Unioned, never replaced: the keys are what lets a retried batch
+            # recognise this fact again, so a rewrite that cites fewer of them must
+            # not shrink the handle it will be found by next time.
+            keys=_merged_keys(delta=delta, previous=previous),
         )
-    written_ids = {fact.fact_id for fact in to_write}
+        kept = to_write.get(target_id)
+        if kept is not None:
+            fact = _settle_collision(scope=scope, earlier=kept, later=fact)
+            dropped += 1
+        to_write[target_id] = fact
+    for fact_id in sorted(to_delete & to_write.keys()):
+        logfire.warn(
+            "Memory delta deletes a fact the same batch rewrites; keeping the rewrite",
+            scope=scope,
+            compartment=compartment,
+            fact_id=fact_id,
+        )
+        dropped += 1
+    to_delete -= to_write.keys()
+    written_ids = set(to_write)
     created = len(written_ids - existing.keys())
     net_loss = len(to_delete) - created
     if not allow_mass_delete and net_loss > net_deletion_ceiling(existing=len(existing)):
@@ -355,9 +379,9 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
         return DeltaOutcome(dropped=dropped, rejected="mass deletion")
     for fact_id in sorted(to_delete):
         delete_fact(scope=scope, compartment=compartment, fact_id=fact_id)
-    for fact in to_write:
+    for fact in to_write.values():
         write_fact(scope=scope, fact=fact)
-    kept_keys = {key for fact in to_write for key in fact.keys}
+    kept_keys = {key for fact in to_write.values() for key in fact.keys}
     kept_keys.update(
         key for fact_id, fact in existing.items() if fact_id not in to_delete for key in fact.keys
     )
@@ -378,14 +402,16 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     compartment: str,
     existing: dict[str, MemoryFact],
     allowed: frozenset[MemorySection],
+    claimed: set[str],
 ) -> tuple[str, bool] | None:
     """Resolves one delta to `(fact_id, is_delete)`, or None when it must be dropped.
 
     An `update` naming an id that is gone becomes a `create`, and a `create` whose evidence keys
     already back an existing fact becomes an `update` of that fact so retried batches stay
-    idempotent. A delete is resolved by its id alone before the section gate, since a delete's
-    section is unused and gating on it would drop a `<forget-memory>` deletion when the model
-    names a section from the other flavor.
+    idempotent. That re-aim skips a fact in `claimed`, one the batch names or already writes, so
+    a fact split out of another in the same batch stays a fact of its own. A delete is resolved
+    by its id alone before the section gate, since a delete's section is unused and gating on it
+    would drop a `<forget-memory>` deletion when the model names a section from the other flavor.
     """
     named_id = delta.fact_id.strip()
     known = named_id if FACT_ID_RE.match(named_id) and named_id in existing else ""
@@ -402,7 +428,7 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
         return None
     if known:
         return known, False
-    matched = _fact_sharing_keys(delta=delta, existing=existing)
+    matched = _fact_sharing_keys(delta=delta, existing=existing, claimed=claimed)
     if matched is not None:
         return matched, False
     return mint_fact_id(compartment=compartment, summary=delta.summary), False
@@ -441,15 +467,42 @@ def _merged_keys(delta: MemoryFactDelta, previous: MemoryFact | None) -> tuple[s
     return tuple(sorted({*existing_keys, *(key for key in delta.from_keys if key)}))
 
 
-def _fact_sharing_keys(delta: MemoryFactDelta, existing: dict[str, MemoryFact]) -> str | None:
-    """Returns an existing fact id whose evidence keys overlap this delta's."""
+def _fact_sharing_keys(
+    delta: MemoryFactDelta, existing: dict[str, MemoryFact], claimed: set[str]
+) -> str | None:
+    """Returns an existing fact id outside `claimed` whose evidence keys overlap this delta's."""
     if not delta.from_keys:
         return None
     wanted = set(delta.from_keys)
     for fact_id, fact in existing.items():
-        if wanted & set(fact.keys):
+        if fact_id not in claimed and wanted & set(fact.keys):
             return fact_id
     return None
+
+
+def _settle_collision(scope: str, earlier: MemoryFact, later: MemoryFact) -> MemoryFact:
+    """Returns which of two writes to one fact id lands, logging the one that does not.
+
+    The permanent one wins, so an enforced directive never loses to an ordinary rewrite;
+    otherwise the later one does, as the model's last word.
+    """
+    kept, lost = later, earlier
+    if _is_permanent(fact=earlier) and not _is_permanent(fact=later):
+        kept, lost = earlier, later
+    logfire.warn(
+        "Memory delta lands on a fact the same batch already writes; dropping one",
+        scope=scope,
+        compartment=kept.compartment,
+        fact_id=kept.fact_id,
+        kept_durability=kept.durability,
+        dropped_durability=lost.durability,
+    )
+    return kept
+
+
+def _is_permanent(fact: MemoryFact) -> bool:
+    """Whether `fact` is one the sweep never ages, an enforced directive included."""
+    return fact.durability == "permanent" or fact.section == "permanent"
 
 
 def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[str, ...]) -> int:
