@@ -1,5 +1,5 @@
 ---
-description: "Read before changing, planning or reviewing a model call or a measurement of one: cogs/gen_reply/, cogs/research/, cogs/memory/, services/memory/, the LLM and model typings, utils/llm*.py, scripts/*_dev.py, scripts/regen_memories.py, and the LLM utils' tests and input helper."
+description: "Read before changing, planning or reviewing a model call or a measurement of one: cogs/gen_reply/, cogs/research/, cogs/memory/, services/memory/, the LLM and model typings, utils/llm*.py, scripts/develop/*_dev.py, scripts/admin/regen_memories.py, and the LLM utils' tests and input helper."
 trigger: model_decision
 paths:
   - "src/discordbot/cogs/gen_reply/**"
@@ -9,8 +9,8 @@ paths:
   - "src/discordbot/typings/llm.py"
   - "src/discordbot/typings/models.py"
   - "src/discordbot/utils/llm*.py"
-  - "scripts/*_dev.py"
-  - "scripts/regen_memories.py"
+  - "scripts/develop/*_dev.py"
+  - "scripts/admin/regen_memories.py"
   - "tests/utils/test_llm*.py"
   - "tests/helpers/llm_input.py"
 ---

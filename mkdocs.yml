@@ -152,6 +152,7 @@ nav:
               - commands: Reference/discordbot/typings/commands.md
               - config: Reference/discordbot/typings/config.md
               - context_budgets: Reference/discordbot/typings/context_budgets.md
+              - discord_markdown: Reference/discordbot/typings/discord_markdown.md
               - economy: Reference/discordbot/typings/economy.md
               - emojis: Reference/discordbot/typings/emojis.md
               - games: Reference/discordbot/typings/games.md
@@ -193,18 +194,20 @@ nav:
               - usage_log: Reference/discordbot/utils/usage_log.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
-      - agents_dev: Scripts/agents_dev.md
-      - antigravity_dev: Scripts/antigravity_dev.md
-      - batch_dev: Scripts/batch_dev.md
+      - admin:
+          - modify_balance: Scripts/admin/modify_balance.md
+          - regen_memories: Scripts/admin/regen_memories.md
+          - usage_report: Scripts/admin/usage_report.md
+      - develop:
+          - agents_dev: Scripts/develop/agents_dev.md
+          - antigravity_dev: Scripts/develop/antigravity_dev.md
+          - batch_dev: Scripts/develop/batch_dev.md
+          - image_dev: Scripts/develop/image_dev.md
+          - prompt_dev: Scripts/develop/prompt_dev.md
+          - route_dev: Scripts/develop/route_dev.md
+          - video_dev: Scripts/develop/video_dev.md
+          - voice_dev: Scripts/develop/voice_dev.md
       - gen_docs: Scripts/gen_docs.md
-      - image_dev: Scripts/image_dev.md
-      - modify_balance: Scripts/modify_balance.md
-      - prompt_dev: Scripts/prompt_dev.md
-      - regen_memories: Scripts/regen_memories.md
-      - route_dev: Scripts/route_dev.md
-      - usage_report: Scripts/usage_report.md
-      - video_dev: Scripts/video_dev.md
-      - voice_dev: Scripts/voice_dev.md
   # <<< auto-generated nav end
 
 theme:

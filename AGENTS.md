@@ -95,7 +95,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Every request site classifies its failure, media downloads included, and never by testing a `requests` response for truth** (`Response.__bool__` is `self.ok`, so a 429 or 503 is falsy). `utils/link_errors.py`'s `link_fetch_error` / `is_retryable_fetch_failure` are the shared classifiers.
 - **Scratch downloads go in a per-invocation `utils/scratch_dir.py::scratch_directory`, never under `data/`**: `tests/guards/test_scratch_dir.py` catches only `TemporaryDirectory` / `mkdtemp`, and the module docstring has why.
 - **`cogs/template/` is a real loaded cog, not a scaffold to copy or delete**.
-- **Usage records (`utils/usage_log.py`, #429) cover slash invocations and AI replies only**: a research run gets no record of its own, since its launch is already a `reply.db` `research` row and the `/deep_research` or `QA` turn that started it is recorded as usual. `scripts/usage_report.py` names only what was used, so a zero-use inventory comes from `gen_reply/capabilities.md`.
+- **Usage records (`utils/usage_log.py`, #429) cover slash invocations and AI replies only**: a research run gets no record of its own, since its launch is already a `reply.db` `research` row and the `/deep_research` or `QA` turn that started it is recorded as usual. `scripts/admin/usage_report.py` names only what was used, so a zero-use inventory comes from `gen_reply/capabilities.md`.
 
 ## Conventions
 

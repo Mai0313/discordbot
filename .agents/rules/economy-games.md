@@ -1,5 +1,5 @@
 ---
-description: "Read before changing, planning or reviewing the economy or the casino games: cli.py, cogs/economy/, cogs/games/, services/economy/, their typings, the amount-parsing, avatar, interaction-response, stored-integer and number-text utils, scripts/modify_balance.py, and their tests and helpers."
+description: "Read before changing, planning or reviewing the economy or the casino games: cli.py, cogs/economy/, cogs/games/, services/economy/, their typings, the amount-parsing, avatar, interaction-response, stored-integer and number-text utils, scripts/admin/modify_balance.py, and their tests and helpers."
 trigger: model_decision
 paths:
   - "src/discordbot/cli.py"
@@ -13,13 +13,13 @@ paths:
   - "src/discordbot/utils/interaction_responses.py"
   - "src/discordbot/utils/number_text.py"
   - "src/discordbot/utils/stored_integer.py"
-  - "scripts/modify_balance.py"
+  - "scripts/admin/modify_balance.py"
   - "tests/test_cli.py"
   - "tests/cogs/economy/**"
   - "tests/cogs/games/**"
   - "tests/services/economy/**"
   - "tests/guards/test_ack_before_write.py"
-  - "tests/scripts/test_modify_balance.py"
+  - "tests/scripts/admin/test_modify_balance.py"
   - "tests/typings/test_economy.py"
   - "tests/utils/test_amount_parsing.py"
   - "tests/utils/test_avatars.py"
