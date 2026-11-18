@@ -4,6 +4,7 @@ import time
 from typing import Any
 import asyncio
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import BaseModel
@@ -417,6 +418,55 @@ async def test_regenerate_scope_memory_rebuilds_from_evidence_only() -> None:
     assert "舊的整理" not in user_text
     assert "喜歡條列式" in user_text
     assert "喜歡簡短回覆" in user_text
+
+
+async def test_a_rebuild_dates_its_facts_by_their_evidence_and_ages_them() -> None:
+    """Running confirms nothing, so a rebuilt fact must not read as confirmed today (#1157).
+
+    A fact takes the newest and oldest stamps of the observations sharing its keys, a `recent`
+    one whose evidence is past its TTL is swept as a consolidation sweeps it, and a fact whose
+    keys match no evidence takes the newest evidence, the latest it can rest on.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    first, last, stale = (now - timedelta(days=days) for days in (50, 10, 45))
+    append_detail(
+        scope=USER_SCOPE,
+        text="\n\n".join((
+            _entry(first.isoformat(), _CITY),
+            _entry(
+                stale.isoformat(), _observation(summary="下週出差", normalized_key="recent.trip")
+            ),
+            _entry(last.isoformat(), _CITY, _PET),
+        )),
+    )
+    writer, fake_client = _writer()
+    fake_client.responses.output_parsed = ConsolidatedMemory(
+        deltas=(
+            make_delta(
+                section="fact", summary="住在台中", text="住台中", from_keys=("fact.city",)
+            ),
+            make_delta(
+                section="recent",
+                durability="recent",
+                summary="下週出差",
+                text="下週要出差",
+                from_keys=("recent.trip",),
+            ),
+            make_delta(
+                section="fact", summary="喜歡咖啡", text="愛喝咖啡", from_keys=("fact.coffee",)
+            ),
+        )
+    )
+
+    report = await _regenerate(writer=writer)
+
+    assert report.result == "regenerated"
+    facts = {
+        fact.summary: fact for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    }
+    assert sorted(facts) == ["住在台中", "喜歡咖啡"]
+    assert (facts["住在台中"].created, facts["住在台中"].last_confirmed) == (first, last)
+    assert (facts["喜歡咖啡"].created, facts["喜歡咖啡"].last_confirmed) == (last, last)
 
 
 async def test_regenerate_scope_memory_replaces_the_directory_not_only_what_it_could_read(

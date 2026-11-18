@@ -4,7 +4,9 @@ The incremental fan-out in `consolidation.py` merges one raw batch into the fact
 stored. This is the other direction: the existing facts are not shown to the model at all,
 every compartment is distilled from the detail tail plus any unconsumed raw entries, and
 whatever the rebuild did not re-emit is deleted. Only it and a forget pass may lose most of a
-compartment at once, because replacing the whole set is what it is for.
+compartment at once, because replacing the whole set is what it is for. Running confirms
+nothing, so the rebuilt facts take their dates from the evidence they rest on and are then
+aged as a consolidation ages them.
 
 It runs either inside the bot under the scope lock, or offline in a second process — where
 it is not equivalent, since its closing `clear_raw` unlinks whatever `raw.md` gained while
@@ -23,6 +25,7 @@ from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.tone import forget_tone, rebuild_tone_note
+from discordbot.services.memory.facts import today_utc
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     clear_raw,
@@ -40,8 +43,10 @@ from discordbot.services.memory.store import (
 from discordbot.services.memory.deltas import (
     apply_deltas,
     forget_segments,
+    sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
+    date_facts_from_evidence,
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidatedMemory
 from discordbot.services.memory.inflight import memory_semaphore
@@ -244,6 +249,11 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
                 # before it.
                 raw_entries = read_raw_entries(scope=scope)
                 evidence = read_evidence(scope=scope)
+                if cleared_since(scope=scope, started_at=started_at):
+                    return RegenerationReport(
+                        result="failed", unreadable_removed=unreadable_removed
+                    )
+                _date_rebuilt_facts(run=run, evidence=evidence)
                 tone_rebuilt = await rebuild_tone_note(run=run, evidence=evidence)
         except TimeoutError:
             logfire.warn(
@@ -353,6 +363,31 @@ async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
     """
     return await apply_forget_buckets(run=run, forgets=forgets) and await forget_tone(
         run=run, forgets=forgets, evidence_only=True
+    )
+
+
+def _date_rebuilt_facts(run: ConsolidationRun, evidence: str) -> None:
+    """Dates every rebuilt fact by the evidence it rests on, then ages the scope as consolidation does.
+
+    The rebuild wrote each fact at the time it ran, which would read a fact distilled from
+    months-old evidence as just confirmed and give a stale `recent` one a fresh TTL (#1157).
+    Each compartment is dated only by the evidence routed to it, the same evidence its calls saw.
+    """
+    buckets = partition_raw_entries(raw_text=evidence, flavor=run.flavor)
+    today = today_utc()
+    keyed = swept = facts = 0
+    for compartment in list_compartments(scope=run.scope):
+        facts += len(read_facts(scope=run.scope, compartment=compartment))
+        keyed += date_facts_from_evidence(
+            scope=run.scope, compartment=compartment, raw_text=buckets.get(compartment, "")
+        )
+        swept += sweep_stale_facts(scope=run.scope, compartment=compartment, today=today)
+    logfire.info(
+        "Memory rebuild dated its facts from their evidence",
+        scope=run.scope,
+        facts=facts,
+        keyed=keyed,
+        swept=swept,
     )
 
 

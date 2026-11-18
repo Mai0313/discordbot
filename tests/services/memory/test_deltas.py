@@ -1,6 +1,6 @@
 """Tests for applying consolidation deltas: writes, deletes, forgets, aging and alias rows."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -25,6 +25,7 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     render_existing_facts,
     drop_released_evidence,
+    date_facts_from_evidence,
     partition_forget_requests,
 )
 from discordbot.services.memory.writer import MemoryFactDelta
@@ -730,3 +731,17 @@ def test_member_alias_rows_never_age_out() -> None:
         fact.fact_id for fact in read_facts(scope=SERVER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     }
     assert remaining == {"a" * 16, "b" * 16, "d" * 16}
+
+
+def test_a_fact_dated_by_evidence_keeps_an_earlier_creation_date() -> None:
+    """A fact older than the evidence a rebuild still holds was created before that evidence."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(keys=("preference.test",)))
+    evidence = _entry("2026-08-05T00:00:00+00:00", _observation(summary="喜歡簡短"))
+
+    dated = date_facts_from_evidence(
+        scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT, raw_text=evidence
+    )
+
+    [fact] = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert dated == 1
+    assert (fact.created, fact.last_confirmed) == (STAMPED_AT, datetime(2026, 8, 5, tzinfo=UTC))
