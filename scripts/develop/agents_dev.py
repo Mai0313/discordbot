@@ -10,10 +10,10 @@ import orjson
 from rich.console import Console
 from agents.result import RunResult
 from google.genai.interactions import (
-    AllowlistParam,
     EnvironmentParam,
     AllowlistEntryParam,
     InteractionSSEEvent,
+    EnvironmentNetworkEgressAllowlistParam,
 )
 from agents.models.openai_responses import OpenAIResponsesModel
 
@@ -65,7 +65,10 @@ def gen_reply_gemini(user_prompt: str) -> None:
         system_instruction=REPLY_PROMPT,
         input=user_prompt,
         environment=EnvironmentParam(
-            type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
+            type="remote",
+            network=EnvironmentNetworkEgressAllowlistParam(
+                allowlist=[AllowlistEntryParam(domain="*")]
+            ),
         ),
         stream=True,
         tools=RESEARCH_TOOLS,

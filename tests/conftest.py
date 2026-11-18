@@ -54,6 +54,7 @@ for name in list(os.environ):
         del os.environ[name]
 
 from discordbot.utils.model_pricing import _LoadedTable  # noqa: E402 -- `.env` must be off first
+from discordbot.services.memory.git_history import memory_git  # noqa: E402 -- `.env` must be off first
 
 
 class NetworkAccessError(Exception):
@@ -229,8 +230,9 @@ def memory_isolated_dir(
     monkeypatch.setattr("discordbot.services.memory.store._render_cache", {})
     # No test may ever run git against the real store, so the committer stays off and
     # its queue stays unbound; `memory_git.start()` is exercised on its own.
-    monkeypatch.setattr("discordbot.services.memory.git_history.memory_git.enabled", False)
-    monkeypatch.setattr("discordbot.services.memory.git_history.memory_git._queue", None)
+    monkeypatch.setattr(target=memory_git, name="enabled", value=False)
+    assert memory_git.__pydantic_private__ is not None
+    monkeypatch.setitem(dic=memory_git.__pydantic_private__, name="_queue", value=None)
     monkeypatch.setattr("discordbot.services.memory.consolidation._last_consolidation", {})
     monkeypatch.setattr("discordbot.services.memory.regeneration._last_regeneration", {})
     monkeypatch.setattr("discordbot.services.memory.catchup._last_catchup", {})

@@ -2,8 +2,6 @@
 
 import json
 
-# openai 3.x builds its exceptions on httpx2, so a request or response handed to one has to
-# come from there. google-genai is still on httpx 0.x, and both live in the environment.
 import httpx2
 from openai import APIError, APITimeoutError, BadRequestError, APIConnectionError
 from google.genai.errors import ClientError

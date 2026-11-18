@@ -504,7 +504,7 @@ async def _upsert_user_metadata_in_session(
 
 def _build_credit_upsert(
     user_id: int, name: str, amount: int, now: datetime
-) -> ReturningInsert[tuple[int]]:
+) -> ReturningInsert[int]:
     """Returns a wallet upsert statement that credits `amount` points.
 
     Caller guarantees `amount > 0` and refreshes `user_account` metadata
@@ -533,7 +533,7 @@ def _build_credit_upsert(
 
 def _build_signed_delta_upsert(
     user_id: int, name: str, delta: int, now: datetime
-) -> ReturningInsert[tuple[int]]:
+) -> ReturningInsert[int]:
     """Returns a wallet upsert statement applying a signed `delta` without clamping.
 
     Only an explicitly unclamped adjustment may use this; a player-side loss
