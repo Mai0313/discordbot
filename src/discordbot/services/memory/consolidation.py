@@ -25,9 +25,9 @@ from discordbot.services.memory.facts import today_utc, is_past_recent_ttl, sect
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
-    clear_raw,
     read_facts,
     scope_lock,
+    replace_raw,
     append_detail,
     cleared_since,
     raw_file_bytes,
@@ -45,6 +45,7 @@ from discordbot.services.memory.deltas import (
     forget_segments,
     reconfirm_facts,
     sweep_stale_facts,
+    net_deletion_ceiling,
     partition_raw_entries,
     render_existing_facts,
     drop_released_evidence,
@@ -54,6 +55,7 @@ from discordbot.services.memory.writer import MemoryWriterAI, ConsolidationReque
 from discordbot.typings.context_budgets import (
     MEMORY_INJECTION_MAX_CHARS,
     MEMORY_INJECTION_WARN_CHARS,
+    MEMORY_DETAIL_RETRY_MAX_CHARS,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
 )
 from discordbot.services.memory.inflight import memory_semaphore
@@ -64,6 +66,11 @@ from discordbot.services.memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.services.memory.git_history import memory_git
+from discordbot.services.memory.raw_entries import (
+    iter_observations,
+    split_raw_entries,
+    render_file_entries,
+)
 
 # Per-scope consolidation attempt times for the cooldown; monotonic, so it does
 # not need a loop-change reset.
@@ -72,6 +79,12 @@ _last_consolidation: dict[str, float] = {}
 # Consecutive refused consolidation batches per (scope, compartment); `_record_rejection`
 # owns what the count is for and when it escalates.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
+
+# (scope, compartment) pairs whose last observation call failed, so the next reads less evidence.
+_failed_observations: set[tuple[str, str]] = set()
+
+# The UTC day each (scope, compartment)'s last compaction failed or was refused.
+_failed_compactions: dict[tuple[str, str], str] = {}
 
 
 def needs_consolidation(scope: str) -> bool:
@@ -183,12 +196,15 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
     timeout, and compartments run sequentially, so neither the worst-case lock hold nor the
     per-scope proxy load scales with the compartment count.
 
-    The raw batch is retired only when every compartment applied and the tone call answered.
-    A retry re-runs the ones that already landed, which is safe because a delta is an upsert
-    keyed by an id the model echoes back and, failing that, by the evidence keys the fact
-    carries.
+    The batch is retired up to the first forget segment that did not fully apply, and that
+    stretch only once the tone call answered; the rest stays in `raw.md` for the next run, so
+    a batch too long for one run is worked through across several instead of restarting each
+    time. A retry re-runs what already landed in the segment it resumes at, which is safe
+    because a delta is an upsert keyed by an id the model echoes back and, failing that, by
+    the evidence keys the fact carries.
     """
-    raw_entries = read_raw_entries(scope=run.scope)
+    segments = forget_segments(raw_text=read_raw_entries(scope=run.scope))
+    completed = 0
     try:
         async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
             # In the order they were recorded: a forget can reach the facts made from what came
@@ -196,43 +212,57 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
             # written. A forget only removes evidence stamped before it, so the segments still
             # ahead are the same text they were when this batch was split.
             observed = True
-            for observations, forgets in forget_segments(raw_text=raw_entries):
-                # Once a pass has failed the batch is kept for a retry, so the passes after it
-                # are skipped; the forgets are not, since a fact an earlier batch stored must not
-                # go on being injected until that retry, which a stuck compartment may never let
-                # succeed.
+            for observations, forgets in segments:
+                # Once a pass has failed the segments from there on are kept for a retry, so
+                # their observation passes are skipped; the forgets are not, since a fact an
+                # earlier batch stored must not go on being injected until that retry, which a
+                # stuck compartment may never let succeed.
                 if observed:
-                    observed = await _consolidate_observations(
-                        run=run,
-                        raw_text=observations,
-                        # Not ahead of a forget: merging the fact it names into others first
-                        # would leave it only the choice of deleting all of them or none.
-                        may_compact=not forgets,
-                    )
+                    observed = await _consolidate_observations(run=run, raw_text=observations)
                 # Forget requests are a separate pass: they are copied into every compartment
                 # their speaker could read from, including one the pass above just made, and
                 # each of those calls may only delete.
                 if not await apply_forget_buckets(run=run, forgets=forgets):
-                    return
+                    break
                 # A tone preference is never stored as a fact, so the pass above cannot reach
                 # one; it gets its own, taking only this segment's forgets so a tone
                 # restatement made after one of them is not offered to it.
                 if not await forget_tone(run=run, forgets=forgets):
-                    return
-            if not observed:
-                return
-            # Read again after the forget passes, which may have taken evidence out of the
-            # file: the batch retired at the end no longer carries it.
-            raw_entries = read_raw_entries(scope=run.scope)
+                    break
+                completed += observed
+            else:
+                # Only now that every forget in the batch has run: merging the fact one names
+                # into others first would leave it only the choice of deleting all of them or
+                # none. It runs even after a failed observation pass, so a compartment too
+                # large for its own consolidation is smaller when that pass is retried.
+                await _compact_oversized(run=run)
     except TimeoutError:
         logfire.warn(
-            "Memory consolidation fan-out timed out; keeping raw batch",
+            "Memory consolidation fan-out timed out; keeping the unfinished part of the raw batch",
             scope=run.scope,
-            compartments=len(partition_raw_entries(raw_text=raw_entries, flavor=run.flavor)),
+            segments=len(segments),
+            completed_segments=completed,
         )
+    if not completed or cleared_since(scope=run.scope, started_at=run.started_at):
         return
-    if cleared_since(scope=run.scope, started_at=run.started_at):
-        return
+    # Cut the file as it is now, after the forget passes may have taken evidence out of it, so
+    # the stretch retired below no longer carries that. A forget pass never removes a forget,
+    # so the last one of the final completed segment still marks where that stretch ends.
+    boundary = (
+        iter_observations(text=segments[completed - 1][1])[-1]
+        if completed < len(segments)
+        else None
+    )
+    raw_entries, remaining = _split_after(
+        raw_text=read_raw_entries(scope=run.scope), boundary=boundary
+    )
+    if remaining:
+        logfire.info(
+            "Memory consolidation retiring part of the raw batch",
+            scope=run.scope,
+            segments=len(segments),
+            completed_segments=completed,
+        )
     tone_updated = await update_tone_note(run=run, raw_entries=raw_entries)
     if not tone_updated or cleared_since(scope=run.scope, started_at=run.started_at):
         return
@@ -247,15 +277,13 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
     # The consumed batch's content is preserved in the cold-tier detail file; every
     # failure path above returns before this, so it can never retire an unread bucket.
     append_detail(scope=run.scope, text=raw_entries)
-    clear_raw(scope=run.scope)
+    replace_raw(scope=run.scope, text=remaining)
     # Best-effort and deliberately fire-and-forget: the worker takes this same scope
     # lock, so it commits once the caller releases it and never sees a half-written batch.
     memory_git.enqueue(scope=run.scope, reason="update")
 
 
-async def _consolidate_observations(
-    run: ConsolidationRun, raw_text: str, may_compact: bool
-) -> bool:
+async def _consolidate_observations(run: ConsolidationRun, raw_text: str) -> bool:
     """Runs the observation fan-out over one slice of the raw batch, returning whether it applied."""
     buckets = partition_raw_entries(raw_text=raw_text, flavor=run.flavor)
     if not buckets:
@@ -281,17 +309,33 @@ async def _consolidate_observations(
             )
         if cleared_since(scope=run.scope, started_at=run.started_at):
             return False
+        recent_detail = detail_buckets.get(compartment, "")
+        if (run.scope, compartment) in _failed_observations:
+            # The same call would most likely fail the same way, and a compartment whose
+            # evidence alone defeats it would never move again.
+            recent_detail = _newest_entries(
+                text=recent_detail, max_chars=MEMORY_DETAIL_RETRY_MAX_CHARS
+            )
+            logfire.info(
+                "Memory consolidation retrying a failed compartment with less evidence",
+                scope=run.scope,
+                compartment=compartment,
+                detail_chars=len(recent_detail),
+            )
         outcome = await _consolidate_compartment(
             run=run,
             compartment=compartment,
             request_parts=CompartmentInput(
                 raw_entries=buckets.get(compartment, ""),
-                recent_detail=detail_buckets.get(compartment, ""),
+                recent_detail=recent_detail,
                 global_reference=global_reference,
             ),
-            may_compact=may_compact,
         )
-        if outcome is None or not outcome.applied:
+        if outcome is None:
+            _failed_observations.add((run.scope, compartment))
+            return False
+        _failed_observations.discard((run.scope, compartment))
+        if not outcome.applied:
             return False
         if compartment == GLOBAL_COMPARTMENT:
             global_reference = render_existing_facts(
@@ -345,6 +389,50 @@ async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
     return True
 
 
+async def _compact_oversized(run: ConsolidationRun) -> None:
+    """Compacts every compartment whose fact text is past the trigger, each in a call of its own.
+
+    The call carries the compartment's facts and no evidence, which merging and condensing them
+    does not need. Best-effort: a pass that fails or is refused leaves the facts as they were and
+    holds back nothing. A compartment whose pass failed is not tried again until the next UTC
+    day, since in 2026-11 every compaction call spent its whole output budget reasoning and
+    returned nothing, however small.
+    """
+    empty = CompartmentInput(raw_entries="", recent_detail="", global_reference="")
+    for compartment in list_compartments(scope=run.scope):
+        facts = _live_facts(scope=run.scope, compartment=compartment)
+        before = sum(len(fact.text) for fact in facts)
+        if before <= COMPACTION_TRIGGER_CHARS:
+            continue
+        key = (run.scope, compartment)
+        if _failed_compactions.get(key) == run.today:
+            logfire.debug(
+                "Memory compaction skipped; it already failed today",
+                scope=run.scope,
+                compartment=compartment,
+            )
+            continue
+        if cleared_since(scope=run.scope, started_at=run.started_at):
+            return
+        outcome = await _consolidate_compartment(
+            run=run, compartment=compartment, request_parts=empty, compact=True
+        )
+        if outcome is None or not outcome.applied:
+            _failed_compactions[key] = run.today
+            continue
+        _failed_compactions.pop(key, None)
+        logfire.info(
+            "Memory compartment compacted",
+            scope=run.scope,
+            compartment=compartment,
+            facts_before=len(facts),
+            chars_before=before,
+            chars_after=sum(
+                len(fact.text) for fact in _live_facts(scope=run.scope, compartment=compartment)
+            ),
+        )
+
+
 class CompartmentInput(BaseModel):
     """Per-compartment evidence and reference inputs for a consolidation request."""
 
@@ -360,13 +448,14 @@ async def _consolidate_compartment(
     compartment: str,
     request_parts: CompartmentInput,
     deletes_only: bool = False,
-    may_compact: bool = True,
+    compact: bool = False,
 ) -> DeltaOutcome | None:
     """Runs and applies one compartment's consolidation; None means the LLM path failed.
 
     The request carries only the evidence routed to the compartment being written, which is
     what makes "a guild-locked observation cannot reach `global/`" structural rather than a
-    rule the prompt asks the model to follow.
+    rule the prompt asks the model to follow. `compact` is the compaction pass, which carries
+    no evidence at all.
     """
     # A forget call is shown every fact: its delete is what releases the evidence by key, and
     # the sweep that would remove an expired fact releases none.
@@ -378,23 +467,24 @@ async def _consolidate_compartment(
     # Measured on the bodies, which are what a reply reads and what the target counts; the
     # rendered headers would let a server's alias rows trigger it with little text behind them.
     stored_chars = sum(len(fact.text) for fact in existing)
-    # Never on a forget-only call, however large the compartment is: compaction asks the model
-    # to merge and condense, and `apply_deltas` then drops every non-delete it produced with a
-    # warning apiece. The block would only buy a rewrite nobody can apply.
-    compact = may_compact and not deletes_only and stored_chars > COMPACTION_TRIGGER_CHARS
-    result = await run.writer.consolidate(
-        flavor=run.flavor,
-        request=compartment_request(
-            run=run,
-            compartment=compartment,
-            existing_facts=render_existing_facts(facts=existing),
-            parts=request_parts,
-            compact=compact,
-        ),
+    request = compartment_request(
+        run=run,
+        compartment=compartment,
+        existing_facts=render_existing_facts(facts=existing),
+        parts=request_parts,
+        compact=compact,
     )
+    if compact:
+        # Told up front, since `apply_deltas` refuses a pass past it whole.
+        request = request.model_copy(
+            update={"net_removal_limit": net_deletion_ceiling(existing=len(existing))}
+        )
+    result = await run.writer.consolidate(flavor=run.flavor, request=request)
     if result is None:
         logfire.warn(
-            "Memory consolidation LLM call failed; keeping raw batch",
+            "Memory compaction LLM call failed"
+            if compact
+            else "Memory consolidation LLM call failed; keeping raw batch",
             scope=run.scope,
             compartment=compartment,
             raw_entries=count_raw_entries(scope=run.scope),
@@ -416,11 +506,15 @@ async def _consolidate_compartment(
         deletes_only=deletes_only,
     )
     if not outcome.applied:
+        if compact:
+            # Best-effort and holds nothing back, so it stays out of the stuck-batch count.
+            return outcome
         _record_rejection(
             scope=run.scope, compartment=compartment, outcome=outcome, stored=len(existing)
         )
         return outcome
-    _consecutive_rejections.pop((run.scope, compartment), None)
+    if not compact:
+        _consecutive_rejections.pop((run.scope, compartment), None)
     reconfirmed = 0
     if not deletes_only:
         # Ahead of the sweep, which would otherwise age out a fact this batch restated.
@@ -515,6 +609,25 @@ def compartment_request(
         compact=compact,
         emit_tone=False,
     )
+
+
+def _newest_entries(text: str, max_chars: int) -> str:
+    """Returns the newest whole entries of oldest-first evidence `text` within `max_chars`."""
+    kept: list[str] = []
+    size = 0
+    for entry in reversed(split_raw_entries(text=text)):
+        size += len(entry) + 2
+        if size > max_chars:
+            break
+        kept.append(entry)
+    return "\n\n".join(reversed(kept))
+
+
+def _split_after(raw_text: str, boundary: tuple[str, str] | None) -> tuple[str, str]:
+    """Returns `raw_text` split right after the `boundary` entry, or whole when it is None."""
+    pairs = iter_observations(text=raw_text)
+    cut = len(pairs) if boundary is None else pairs.index(boundary) + 1
+    return render_file_entries(pairs=pairs[:cut]), render_file_entries(pairs=pairs[cut:])
 
 
 def global_first(compartments: set[str]) -> list[str]:

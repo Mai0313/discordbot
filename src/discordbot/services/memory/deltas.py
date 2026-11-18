@@ -264,6 +264,15 @@ def render_existing_facts(facts: list[MemoryFact]) -> str:
     return "\n\n".join(blocks)
 
 
+def net_deletion_ceiling(existing: int) -> int:
+    """Returns how many facts one batch may remove net from a compartment holding `existing`.
+
+    Args:
+        existing (int): Facts the compartment holds before the batch.
+    """
+    return max(MAX_NET_FACT_DELETIONS_FLOOR, existing // 2)
+
+
 def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartment/flavor) plus the batch, its stamp, and the two write exemptions
     scope: str,
     compartment: str,
@@ -338,8 +347,7 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     written_ids = {fact.fact_id for fact in to_write}
     created = len(written_ids - existing.keys())
     net_loss = len(to_delete) - created
-    ceiling = max(MAX_NET_FACT_DELETIONS_FLOOR, len(existing) // 2)
-    if not allow_mass_delete and net_loss > ceiling:
+    if not allow_mass_delete and net_loss > net_deletion_ceiling(existing=len(existing)):
         # Net rather than raw deletes: merging several near-duplicates into one is
         # consolidation's whole job, so a raw-delete ceiling would refuse the common case.
         return DeltaOutcome(dropped=dropped, rejected="mass deletion")

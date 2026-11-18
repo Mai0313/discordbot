@@ -187,8 +187,10 @@ THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
 # the disk work between them -- a shape no per-request backend deadline can bound. Kept because
 # its expiry is what releases the scope lock and the global-concurrency permit: past it, that
 # user or server would never get another memory update. It is a liveness backstop, not a latency
-# or cost guard; a slow background rewrite is harmless.
-MEMORY_CONSOLIDATE_TIMEOUT_SECONDS: Final[float] = 600.0
+# or cost guard; a slow background rewrite is harmless. Sized so one forget-bearing stretch of a
+# heavy scope's batch fits: its observation, forget and tone-forget calls took about 13 minutes
+# in 2026-11, and a run that cannot finish even that much never makes progress.
+MEMORY_CONSOLIDATE_TIMEOUT_SECONDS: Final[float] = 1800.0
 
 # --------------------------------------------------------------------------------------
 # Link expansion and downloads
