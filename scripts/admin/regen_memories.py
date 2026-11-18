@@ -44,11 +44,11 @@ all of them in one pass, which nothing else here would say out loud.
 
 Run from the repo root::
 
-    uv run python -m scripts.regen_memories                            # rebuild all
-    uv run python -m scripts.regen_memories --dry-run                  # preview all
-    uv run python -m scripts.regen_memories 1234567890
-    uv run python -m scripts.regen_memories bot_memories/9876543210
-    uv run python -m scripts.regen_memories users
+    uv run python -m scripts.admin.regen_memories                            # rebuild all
+    uv run python -m scripts.admin.regen_memories --dry-run                  # preview all
+    uv run python -m scripts.admin.regen_memories 1234567890
+    uv run python -m scripts.admin.regen_memories bot_memories/9876543210
+    uv run python -m scripts.admin.regen_memories users
 """
 
 from typing import TYPE_CHECKING, cast

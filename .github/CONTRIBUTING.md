@@ -27,7 +27,7 @@ Run the bot:
 uv run discordbot
 ```
 
-The `scripts/*_dev.py` smoke tests call the live APIs using the credentials in `.env`, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run `uv run python -m scripts.<name>`. `make gen-docs` regenerates `docs/` and the `mkdocs.yml` nav from the README files, `CONTRIBUTING.md`, and the Python sources.
+The `scripts/develop/*_dev.py` smoke tests call the live APIs using the credentials in `.env`, so every run is a paid call; edit the call under `if __name__ == "__main__":` and run `uv run python -m scripts.develop.<name>`. `make gen-docs` regenerates `docs/` and the `mkdocs.yml` nav from the README files, `CONTRIBUTING.md`, and the Python sources.
 
 ## Architecture
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import regen_memories as regen_script
+from scripts.admin import regen_memories as regen_script
 from discordbot.typings.memory import MemoryOwner
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.services.memory.store import (
