@@ -2,7 +2,7 @@
 
 import pytest
 
-from scripts.admin import modify_balance as modify_balance_script
+from discordbot.admin import modify_balance as modify_balance_script
 from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
 from discordbot.services.economy.database import get_account, adjust_balance
 
