@@ -19,8 +19,8 @@ nothing records its name.
 
 Run from the repo root::
 
-    uv run python -m scripts.admin.usage_report              # every month on disk
-    uv run python -m scripts.admin.usage_report 2026-08      # one month
+    uv run usage-report              # every month on disk
+    uv run usage-report 2026-08      # one month
 """
 
 from typing import TYPE_CHECKING

@@ -96,6 +96,9 @@ Repository = "https://github.com/Mai0313/discordbot"
 [project.scripts]
 cli = "discordbot.cli:main"
 discordbot = "discordbot.cli:main"
+modify-balance = "discordbot.admin.modify_balance:main"
+regen-memories = "discordbot.admin.regen_memories:main"
+usage-report = "discordbot.admin.usage_report:main"
 
 [dependency-groups]
 dev = [

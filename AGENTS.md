@@ -22,7 +22,12 @@ uv run pytest                    # tests, coverage gate: 80% (--cov-fail-under)
 uv run pytest <path> --no-cov    # focused run; without --no-cov a subset exits 1 on that gate
 uvx pre-commit run -a            # canonical pre-push check (= make fmt)
 uvx pre-commit run ty -a         # type check alone; `uvx ty check` rejects --all-groups (a uv flag)
+uv run usage-report              # operator tools act on ./data, so run from the repo root
+uv run modify-balance
+uv run regen-memories
 ```
+
+An operator tool with a `main()` and arguments lives in `src/discordbot/admin/` and runs as `uv run <command>` through `[project.scripts]`, since an entry point cannot reach `scripts/`, which the wheel does not package. An edit-and-run development script stays in `scripts/develop/` and runs as `uv run python -m scripts.develop.<name>`.
 
 Config comes from `.env` (see `.env.example`); only `DISCORD_BOT_TOKEN` is required to boot. OpenAI clients are lazy `cached_property`s, so an empty `OPENAI_API_KEY` fails at first use (a turn, or a non-empty memory resume in `on_ready`), not at boot.
 
@@ -95,7 +100,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Every request site classifies its failure, media downloads included, and never by testing a `requests` response for truth** (`Response.__bool__` is `self.ok`, so a 429 or 503 is falsy). `utils/link_errors.py`'s `link_fetch_error` / `is_retryable_fetch_failure` are the shared classifiers.
 - **Scratch downloads go in a per-invocation `utils/scratch_dir.py::scratch_directory`, never under `data/`**: `tests/guards/test_scratch_dir.py` catches only `TemporaryDirectory` / `mkdtemp`, and the module docstring has why.
 - **`cogs/template/` is a real loaded cog, not a scaffold to copy or delete**.
-- **Usage records (`utils/usage_log.py`, #429) cover slash invocations and AI replies only**: a research run gets no record of its own, since its launch is already a `reply.db` `research` row and the `/deep_research` or `QA` turn that started it is recorded as usual. `scripts/admin/usage_report.py` names only what was used, so a zero-use inventory comes from `gen_reply/capabilities.md`.
+- **Usage records (`utils/usage_log.py`, #429) cover slash invocations and AI replies only**: a research run gets no record of its own, since its launch is already a `reply.db` `research` row and the `/deep_research` or `QA` turn that started it is recorded as usual. `admin/usage_report.py` names only what was used, so a zero-use inventory comes from `gen_reply/capabilities.md`.
 
 ## Conventions
 
