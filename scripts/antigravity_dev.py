@@ -46,13 +46,13 @@ config = LLMConfig()
 # unanswered rather than blocking.
 AGENT_TOOLS = BuiltinTools.all_tools()
 
-# The harness defaults to `gemini-3.5-flash` and takes a `thinking_level` where the Responses
+# The harness defaults to `gemini-4-hydrogen` and takes a `thinking_level` where the Responses
 # path takes a `reasoning_effort`; naming the endpoint is what pins both to one key.
 AGENT_MODEL = ModelTarget(
-    name="gemini-3.5-flash",
+    name="gemini-4-hydrogen",
     endpoint=GeminiAPIEndpoint(
         api_key=config.gemini_api_key,
-        options=GeminiModelOptions(thinking_level=ThinkingLevel.HIGH),
+        options=GeminiModelOptions(thinking_level=ThinkingLevel.LOW),
     ),
 )
 
