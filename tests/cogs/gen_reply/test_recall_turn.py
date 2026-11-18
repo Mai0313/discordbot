@@ -211,9 +211,7 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["writer"] is cog.toolkit.memory_writer
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
-    assert (
-        cog.toolkit.memory_writer.model.name == cog.toolkit.runtime_models.memory_writer_model.name
-    )
+    assert cog.toolkit.memory_writer.model.name == cog.toolkit.runtime_models.memory_model.name
 
 
 async def test_handle_message_reply_without_stored_memory_keeps_instructions(

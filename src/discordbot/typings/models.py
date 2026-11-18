@@ -161,7 +161,7 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-4-carbon", effort="high")
 
     @property
-    def memory_writer_model(self) -> ModelSettings:
+    def memory_model(self) -> ModelSettings:
         """Returns model settings for background long-term memory evaluation and consolidation.
 
         The note evaluator and the consolidator share one tier because both gate what is

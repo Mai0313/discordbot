@@ -91,7 +91,7 @@ def test_a_collective_target_over_an_empty_store_is_not_an_error() -> None:
 def test_parse_args_defaults_to_the_real_rebuild_over_the_whole_store() -> None:
     """The rebuild is the common case, so the preview is the flag and not the default."""
     args = regen_script._parse_args(argv=[])
-    writer = RuntimeModelCatalog().memory_writer_model
+    writer = RuntimeModelCatalog().memory_model
     assert args.target == "all"
     assert args.dry_run is False
     assert regen_script._parse_args(argv=["--dry-run"]).dry_run is True
