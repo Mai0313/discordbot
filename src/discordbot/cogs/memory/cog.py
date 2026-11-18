@@ -116,7 +116,7 @@ class MemoryCogs(commands.Cog):
     @cached_property
     def memory_writer(self) -> MemoryWriterAI:
         """Returns the cached `MemoryWriterAI` bound to this cog's client and memory model."""
-        return MemoryWriterAI(client=self.client, model=self.runtime_models.memory_writer_model)
+        return MemoryWriterAI(client=self.client, model=self.runtime_models.memory_model)
 
     @nextcord.slash_command(
         name="memory",

@@ -161,25 +161,17 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-4-carbon", effort="high")
 
     @property
-    def memory_writer_model(self) -> ModelSettings:
+    def memory_model(self) -> ModelSettings:
         """Returns model settings for background long-term memory evaluation and consolidation.
 
         The note evaluator and the consolidator share one tier because both gate what is
         staged and written to fact files and the tone note; a weaker model on either risks
-        losing or leaking memory. The compaction pass alone runs on `memory_compaction_model`.
-        """
-        return ModelSettings(name="gemini-4-carbon", effort="high")
+        losing or leaking memory.
 
-    @property
-    def memory_compaction_model(self) -> ModelSettings:
-        """Returns model settings for the memory compaction pass, the one memory call off the writer tier.
-
-        At `high` the compaction instructions sent `gemini-4-carbon` into reasoning until its whole
-        output budget was gone, whatever the compartment's size, so no compaction ever completed
-        (#1167). On the four largest compartments (2026-11-18) `medium` completed and was applied
-        on every one in five to six minutes, one only after the SDK retried an attempt that outran
-        its 600 s timeout; `low` emitted no reasoning and three of the four batches were refused by
-        the net-deletion ceiling.
+        Not `high`: there the compaction pass reasoned until its whole output budget was gone, so
+        no compaction ever completed (#1167). Not `low`: it reasoned not at all, and three of four
+        compaction batches were refused by the net-deletion ceiling, then half the facts
+        (2026-11-18).
         """
         return ModelSettings(name="gemini-4-carbon", effort="medium")
 

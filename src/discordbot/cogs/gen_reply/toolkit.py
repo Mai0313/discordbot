@@ -124,6 +124,6 @@ class ReplyToolkit(BaseModel):
         """Returns the memory writer service for user and server scopes."""
         return MemoryWriterAI(
             client=self.openai_client,
-            model=self.runtime_models.memory_writer_model,
+            model=self.runtime_models.memory_model,
             bot_user_id=self.bot.user.id if self.bot.user is not None else None,
         )

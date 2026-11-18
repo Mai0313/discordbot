@@ -344,8 +344,7 @@ class MemoryWriterAI(BaseModel):
     model: ModelSettings = Field(
         ...,
         description=(
-            "Model running every memory call but compaction, which consolidation runs on a copy "
-            "carrying its own tier. Required rather than optional: the note review "
+            "Model running every memory call. Required rather than optional: the note review "
             "is the only step that authors a raw entry's fields, so omitting it would turn "
             "memory writing into a silent no-op."
         ),

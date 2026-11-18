@@ -12,7 +12,6 @@ from collections import Counter
 import pytest
 from pydantic import BaseModel
 
-from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.services.memory import pipeline, consolidation
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
@@ -66,9 +65,9 @@ from tests.helpers.user_memory import (
     _consolidated,
     _forget_entry,
     _consolidate_at,
+    _forget_all_answer,
     _wait_for_inflight,
     _consolidate_forced,
-    _forget_four_answer,
     _consolidation_stage,
     _stage_raw_observation,
 )
@@ -312,17 +311,13 @@ async def test_a_forget_naming_several_facts_is_applied_and_the_batch_moves_on()
         _forget_entry("2026-09-02T00:00:00+00:00"), _entry("2026-09-03T00:00:00+00:00", _PET)
     )
     writer, fake_client = _writer()
-    fake_client.responses.answer = _forget_four_answer(
+    fake_client.responses.answer = _forget_all_answer(
         observe=_consolidated(text=_PET.summary_zh, summary=_PET.summary_zh, section="fact")
     )
     await _consolidate_forced(writer=writer)
 
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
-    assert sorted(fact.summary for fact in facts) == sorted([
-        _SIX[4].summary_zh,
-        _SIX[5].summary_zh,
-        _PET.summary_zh,
-    ])
+    assert [fact.summary for fact in facts] == [_PET.summary_zh]
     assert read_raw_entries(scope=USER_SCOPE) == ""
 
 
@@ -495,31 +490,6 @@ async def test_compaction_is_a_call_of_its_own_carrying_no_evidence(
     assert re.search(r"today: \d{4}-\d{2}-\d{2}", body) is not None
     assert "net fact removals allowed: 3" in body
     assert "壓縮後" in _memory_text()
-
-
-async def test_only_the_compaction_pass_runs_on_its_own_tier() -> None:
-    """At the writer's effort a compaction call reasoned until its output budget was gone."""
-    _oversized_fact()
-    _stage_raw(_entry("2026-09-01T00:00:00+00:00", _PET))
-    writer, fake_client = _writer()
-    fake_client.responses.answer = _recording(calls=[], observe=ConsolidatedMemory())
-    await _consolidate_forced(writer=writer)
-
-    responses = fake_client.responses
-    dispatched = {
-        (PHASE2_COMPACTION_BLOCK in prompt, model, effort)
-        for prompt, model, effort in zip(
-            responses.parse_instructions,
-            responses.parse_models,
-            responses.parse_efforts,
-            strict=True,
-        )
-    }
-    compaction = RuntimeModelCatalog().memory_compaction_model
-    assert dispatched == {
-        (True, compaction.name, compaction.effort),
-        (False, TEST_MEMORY_MODEL.name, TEST_MEMORY_MODEL.effort),
-    }
 
 
 async def test_a_failed_compaction_is_tried_again_only_the_next_day(

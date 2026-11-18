@@ -85,16 +85,22 @@ RECENT_CONTEXT_TTL_DAYS = 30
 RENDER_CACHE_MAX_ENTRIES = 512
 
 # Net fact loss one consolidation batch may cause before it is refused, as
-# `deletes - creates > max(this, existing // 2)`. Net rather than raw, because merging four
-# near-duplicates into one is consolidation's primary job and the median scope holds only a
-# handful of facts, so a raw-delete cap would reject the common case. A rebuild's replace pass is
-# exempt, since rebuilding from evidence legitimately replaces the whole set. So is every forget
-# pass, a rebuild's replay included: it can only delete, so the cap would count raw deletes, and
-# its refusal recurs on every retry and holds back the whole scope. Nothing then bounds what one
-# forget answer removes, including a delete the prompt's general rules allow beyond the fact the
-# forget names. The passes that merge what came after a forget are not exempt, and a refusal
-# there fails the rebuild.
+# `deletes - creates > max(this, int(existing * ratio))`, the ratio being the next constant. Net
+# rather than raw, because merging four near-duplicates into one is consolidation's primary job
+# and the median scope holds only a handful of facts, so a raw-delete cap would reject the common
+# case. A rebuild's replace pass is exempt, since rebuilding from evidence legitimately replaces
+# the whole set. So is every forget pass, a rebuild's replay included: it can only delete, so the
+# cap would count raw deletes, and its refusal recurs on every retry and holds back the whole
+# scope. Nothing then bounds what one forget answer removes, including a delete the prompt's
+# general rules allow beyond the fact the forget names. The passes that merge what came after a
+# forget are not exempt, and a refusal there fails the rebuild.
 MAX_NET_FACT_DELETIONS_FLOOR = 3
+
+# Kept wide on purpose, so it can be tightened later without being rewritten. Net loss still
+# counts a merge as a deletion, so at `existing // 2` a compaction folding many facts into few
+# was refused although nothing was lost (2026-11-18); now only a batch emptying nearly the whole
+# compartment is.
+MAX_NET_FACT_DELETIONS_RATIO = 0.9
 
 # Store-level backstop for the per-user tone note. The note is injected on every reply for the
 # message author, so it must stay small; shortness is asked for in the prompt and this clamp only

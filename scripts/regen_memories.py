@@ -361,7 +361,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="all",
         help="all (default), users, servers, a user id, or bot_memories/<server_id>.",
     )
-    writer = RuntimeModelCatalog().memory_writer_model
+    writer = RuntimeModelCatalog().memory_model
     parser.add_argument("--model", default=writer.name)
     parser.add_argument("--effort", default=writer.effort)
     parser.add_argument(

@@ -389,6 +389,29 @@ def test_a_wipe_is_refused_and_changes_nothing() -> None:
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 10
 
 
+def test_a_merge_folding_most_facts_into_one_is_applied() -> None:
+    """Net loss counts a merge as a deletion, so a ceiling at half the facts refused a compaction
+    that lost nothing.
+    """
+    scope = user_scope(user_id=111)
+    ids = [f"{index:016x}" for index in range(10)]
+    for fact_id in ids:
+        write_fact(scope=scope, fact=_fact(fact_id=fact_id))
+    outcome = apply_deltas(
+        scope=scope,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="user",
+        deltas=(
+            make_delta(action="update", fact_id=ids[0], text="合併後"),
+            *(make_delta(action="delete", fact_id=fact_id) for fact_id in ids[1:9]),
+        ),
+        owner=_OWNER,
+        allow_mass_delete=False,
+    )
+    assert outcome.applied
+    assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
+
+
 def test_a_rebuild_may_replace_the_whole_set() -> None:
     """The regeneration path is exempt: replacing everything is what it is for."""
     scope = user_scope(user_id=111)
