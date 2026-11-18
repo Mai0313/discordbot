@@ -771,6 +771,19 @@ def clear_raw(scope: str) -> None:
     _raw_path(scope=scope).unlink(missing_ok=True)
 
 
+def replace_raw(scope: str, text: str) -> None:
+    """Replaces `scope`'s `raw.md` with the entries consolidation has not consumed yet.
+
+    Args:
+        scope (str): Memory scope key.
+        text (str): Entries left for a later run; empty deletes the file.
+    """
+    if not text.strip():
+        clear_raw(scope=scope)
+        return
+    _replace_file(path=_raw_path(scope=scope), text=text + "\n")
+
+
 def clear_tone(scope: str) -> None:
     """Deletes `scope`'s tone note after a full rebuild found no tone signal or a forget emptied it.
 

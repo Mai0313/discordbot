@@ -3,6 +3,7 @@
 import re
 import time
 from typing import Any, Self
+import asyncio
 from pathlib import Path
 from datetime import UTC, tzinfo, datetime, timedelta
 from itertools import count
@@ -37,7 +38,7 @@ from discordbot.services.memory.raw_entries import (
     render_memory_observations,
 )
 
-from tests.helpers.memory import make_delta
+from tests.helpers.memory import MemoryAnswer, make_delta
 from tests.helpers.user_memory import (
     _PET,
     _SIX,
@@ -48,6 +49,7 @@ from tests.helpers.user_memory import (
     USER_SCOPE,
     _GUILD_222,
     _TONE_NOTE,
+    DETAIL_EVIDENCE,
     _GUILD_222_NOTE,
     TEST_MEMORY_MODEL,
     _OLDEST_DETAIL_HEADER,
@@ -71,14 +73,12 @@ from tests.helpers.user_memory import (
 )
 
 
-async def test_a_forget_only_call_is_never_told_to_compact() -> None:
-    """Compaction asks a `deletes_only` call for a rewrite `apply_deltas` then throws away.
+async def test_neither_a_forget_nor_an_observation_call_is_told_to_compact() -> None:
+    """Compaction is a call of its own; the passes that carry evidence never get its block.
 
-    The trigger reads the compartment's own fact text, and a forget is copied into every
-    compartment its speaker can read from — so on a large one the forget call was handed the
-    block telling it to merge and condense, and every non-delete it produced was dropped with
-    a logged warning apiece. The observation pass over that same compartment still compacts,
-    which is what says the trigger itself is untouched.
+    A forget call told to compact produced rewrites `apply_deltas` throws away, and an
+    observation call told to compact a large compartment beside the detail log spent its whole
+    output budget reasoning and failed on every run.
     """
     write_fact(
         scope=USER_SCOPE,
@@ -106,7 +106,7 @@ async def test_a_forget_only_call_is_never_told_to_compact() -> None:
     assert forget_prompts, "the forget reached consolidation"
     assert observation_prompts, "the observation reached consolidation"
     assert all(PHASE2_COMPACTION_BLOCK not in prompt for prompt in forget_prompts)
-    assert all(PHASE2_COMPACTION_BLOCK in prompt for prompt in observation_prompts)
+    assert all(PHASE2_COMPACTION_BLOCK not in prompt for prompt in observation_prompts)
 
 
 async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
@@ -367,41 +367,225 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails() -> None:
     assert count_raw_entries(scope=USER_SCOPE) == 4
 
 
-async def test_nothing_compacts_ahead_of_a_forget() -> None:
-    """Compaction merges facts, so it waits until the batch's forgets have run.
-
-    Run in the pass right before a forget, it could fold the fact the forget names into others,
-    leaving the forget to delete all of them or none. The pass after the forget still compacts,
-    which is what says the trigger itself is untouched.
+def _recording(calls: list[str], observe: ConsolidatedMemory | None = None) -> MemoryAnswer:
+    """Answers every memory call with no change, recording each as `observe`, `forget`,
+    `compact` or `tone` in `calls`; compaction fails, and an observation pass answers `observe`,
+    failing when it is None.
     """
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Records the call's kind and answers it."""
+        if text_format is ToneForget:
+            return ToneForget()
+        if "<tone_evidence>" in body:
+            calls.append("tone")
+            return ConsolidatedMemory()
+        if "forget_request" in body:
+            calls.append("forget")
+            return ConsolidatedMemory()
+        if "net fact removals allowed" in body:
+            calls.append("compact")
+            return None
+        calls.append("observe")
+        return observe
+
+    return answer
+
+
+def _FixedDay(day: str) -> type[datetime]:  # noqa: N802 -- stands in for the `datetime` class
+    """Returns a `datetime` whose `now` is midnight UTC on `day`."""
+
+    class FixedDay(datetime):
+        """Answers `now` with the fixed day."""
+
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            return cls.fromisoformat(f"{day}T00:00:00+00:00").astimezone(tz)
+
+    return FixedDay
+
+
+def _oversized_fact() -> None:
+    """Stores one fact whose text alone is past the compaction trigger."""
     write_fact(
         scope=USER_SCOPE,
         fact=_stored_fact(fact_id="a" * 16, text="住" * (COMPACTION_TRIGGER_CHARS + 1)),
     )
+
+
+async def test_compaction_waits_for_every_forget_in_the_batch() -> None:
+    """Compaction merges facts, so it runs only once each forget the batch carries has.
+
+    Run before a forget, it could fold the fact the forget names into others, leaving the
+    forget to delete all of them or none.
+    """
+    _oversized_fact()
     _stage_raw(
         _entry("2026-09-01T00:00:00+00:00", _PET),
         _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
         _entry("2026-09-03T00:00:00+00:00", _CITY),
+        _forget_entry("2026-09-04T00:00:00+00:00"),
     )
     writer, fake_client = _writer()
-    fake_client.responses.answer = _answers()
+    calls: list[str] = []
+    fake_client.responses.answer = _recording(calls=calls, observe=ConsolidatedMemory())
     await _consolidate_forced(writer=writer)
 
-    observation_calls = [
-        (prompt, body)
-        for prompt, body in zip(
-            fake_client.responses.parse_instructions,
-            fake_client.responses.parse_bodies,
-            strict=True,
-        )
-        if "forget_request" not in body and "<tone_evidence>" not in body
-    ]
-    before = [prompt for prompt, body in observation_calls if "fact.pet" in body]
-    after = [prompt for prompt, body in observation_calls if "fact.city" in body]
-    assert before, "the observation ahead of the forget reached consolidation"
-    assert after, "the observation after the forget reached consolidation"
-    assert all(PHASE2_COMPACTION_BLOCK not in prompt for prompt in before)
-    assert all(PHASE2_COMPACTION_BLOCK in prompt for prompt in after)
+    # order-contract: compaction follows the last forget, and the tone call closes the run.
+    assert calls == ["observe", "forget", "observe", "forget", "compact", "tone"]
+
+
+async def test_a_failed_observation_pass_still_compacts_once_the_forgets_ran() -> None:
+    """A compartment too large for its own consolidation must shrink before the retry.
+
+    That pass failing kept the batch, the forget it carried kept compaction off, and the same
+    call failed again on every later run while the memory stopped moving.
+    """
+    _oversized_fact()
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", _PET),
+        _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    fake_client.responses.answer = _recording(calls=calls)
+    await _consolidate_forced(writer=writer)
+
+    # order-contract: the forget runs past the failed pass, then compaction.
+    assert calls == ["observe", "forget", "compact"]
+    assert count_raw_entries(scope=USER_SCOPE) == 2
+
+
+async def test_compaction_is_a_call_of_its_own_carrying_no_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shown the detail log beside a large compartment, the call reasoned until it ran out.
+
+    It gets the facts, today's date for grading by age, and the net removal ceiling
+    `apply_deltas` holds it to, and its result replaces the oversized fact.
+    """
+    _consolidate_at(monkeypatch=monkeypatch, entries=1)
+    _oversized_fact()
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    writer, fake_client = _writer()
+    review = _answers(review=_draft("訊號"))
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Rewrites the oversized fact on the compaction pass alone."""
+        if "net fact removals allowed" in body:
+            return ConsolidatedMemory(
+                deltas=(make_delta(action="update", fact_id="a" * 16, text="壓縮後"),)
+            )
+        return await review(body=body, text_format=text_format)
+
+    fake_client.responses.answer = answer
+    _schedule(writer=writer)
+    await _wait_for_inflight()
+
+    calls = zip(
+        fake_client.responses.parse_instructions, fake_client.responses.parse_bodies, strict=True
+    )
+    compactions = [(prompt, body) for prompt, body in calls if PHASE2_COMPACTION_BLOCK in prompt]
+    assert len(compactions) == 1
+    body = compactions[0][1]
+    assert "住住住" in body
+    assert "<raw_entries>\n(empty)" in body
+    assert "<recent_detail>\n(empty)" in body
+    assert re.search(r"today: \d{4}-\d{2}-\d{2}", body) is not None
+    assert "net fact removals allowed: 3" in body
+    assert "壓縮後" in _memory_text()
+
+
+async def test_a_failed_compaction_is_tried_again_only_the_next_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compartment over the trigger must not pay for a doomed compaction on every run."""
+    _oversized_fact()
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    fake_client.responses.answer = _recording(calls=calls)
+    for day in ("2026-09-02", "2026-09-02", "2026-09-03"):
+        monkeypatch.setattr("discordbot.services.memory.run.datetime", _FixedDay(day))
+        _stage_raw(_forget_entry(f"{day}T00:00:00+00:00"))
+        await _consolidate_forced(writer=writer)
+
+    assert calls.count("compact") == 2, "once on the first day, once on the next"
+
+
+async def test_a_failed_observation_call_is_retried_on_less_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same prompt failing again would hold the batch back forever.
+
+    The retry reads only the newest detail entries; a success restores the full window.
+    """
+    old = _observation(summary="很久以前的事", normalized_key="fact.old")
+    new = _entry(
+        "2026-09-01T00:00:00+00:00", _observation(summary="最近的事", normalized_key="fact.new")
+    )
+    append_detail(scope=USER_SCOPE, text=_entry("2026-01-01T00:00:00+00:00", old))
+    append_detail(scope=USER_SCOPE, text=new)
+    monkeypatch.setattr(consolidation, "MEMORY_DETAIL_RETRY_MAX_CHARS", len(new) + 10)
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    outcomes = iter([None, ConsolidatedMemory(), ConsolidatedMemory()])
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Fails the first observation call and answers the rest."""
+        if "<tone_evidence>" in body:
+            return ConsolidatedMemory()
+        calls.append(body.split("<recent_detail>")[1])
+        return next(outcomes)
+
+    fake_client.responses.answer = answer
+    for _ in range(3):
+        _stage_raw(_entry("2026-09-02T00:00:00+00:00", _PET))
+        await _consolidate_forced(writer=writer)
+
+    first, retry, after = calls
+    assert "fact.old" in first
+    assert "fact.old" not in retry
+    assert "fact.new" in retry
+    assert "fact.old" in after
+
+
+async def test_a_batch_too_long_for_one_run_is_retired_as_far_as_it_got(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restarting the whole batch after a timeout never got further than the first time.
+
+    The forget segments that applied are retired, so the next run picks up where this stopped,
+    and the segment cut off mid-way stays whole, forget included, for that run to redo.
+    """
+    monkeypatch.setattr(consolidation, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 0.5)
+    _stage_raw(
+        _entry("2026-09-01T00:00:00+00:00", _PET),
+        _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
+        _entry("2026-09-03T00:00:00+00:00", _CITY),
+        _forget_entry("2026-09-04T00:00:00+00:00"),
+    )
+    writer, fake_client = _writer()
+    stage = _consolidation_stage(calls=[])
+
+    async def answer(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        """Hangs the second segment's observation pass past the fan-out timeout."""
+        if "fact.city" in body and "forget_request" not in body and "<raw_entries>" in body:
+            await asyncio.sleep(5)
+        return await stage(body=body, text_format=text_format)
+
+    fake_client.responses.answer = answer
+    await _consolidate_forced(writer=writer)
+
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    raw = read_raw_entries(scope=USER_SCOPE)
+    assert "fact.pet" in detail
+    assert "使用者不想再提工作的事" in detail
+    assert "fact.pet" not in raw
+    assert "fact.city" in raw
+    assert "不住台中" in raw
+    assert [
+        fact.summary for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    ] == [_PET.summary_zh]
 
 
 async def test_pipeline_consolidates_at_threshold(
@@ -469,29 +653,6 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
     # A genuine no-op still consumes the batch, so it lands in the detail file too.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "已知資訊" in detail_text
-
-
-async def test_pipeline_compaction_triggers_past_compartment_size(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Compaction is decided per compartment, off the text of its own facts."""
-    _consolidate_at(monkeypatch=monkeypatch, entries=1)
-    monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
-    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
-    writer, fake_client = _writer()
-    fake_client.responses.answer = _answers(
-        review=_draft("訊號"), facts=_consolidated(text="壓縮後")
-    )
-    _schedule(writer=writer)
-    await _wait_for_inflight()
-    assert "壓縮後" in _memory_text()
-    # The oversized compartment flips consolidation into compaction mode, and the
-    # consolidation input is dated so the model can reason about how old evidence is.
-    # order-contract: the compartment's call follows the note review and precedes the tone call.
-    assert PHASE2_COMPACTION_BLOCK in fake_client.responses.parse_instructions[1]
-    assert (
-        re.search(r"today: \d{4}-\d{2}-\d{2}", fake_client.responses.parse_bodies[1]) is not None
-    )
 
 
 async def test_pipeline_small_compartment_skips_compaction(

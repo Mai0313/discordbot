@@ -159,6 +159,13 @@ MEMORY_REPLY_MAX_CHARS: Final[int] = 8_000
 # top). `DETAIL_FILE_MAX_BYTES` is sized against this and must stay above it.
 MEMORY_DETAIL_CONTEXT_MAX_CHARS: Final[int] = 500_000
 
+# The same evidence, cut to the compartment's newest entries, on the attempt after that
+# compartment's consolidation call failed. Large prompts are what fail: in 2026-11 the calls
+# carrying 60k or more tokens spent their whole output budget on reasoning about one time in four,
+# those under 30k almost never, so the retry is sized to land well under that. The call before it
+# saw the full window, and the next success restores it.
+MEMORY_DETAIL_RETRY_MAX_CHARS: Final[int] = 30_000
+
 # --------------------------------------------------------------------------------------
 # Linked posts read for one reply
 # --------------------------------------------------------------------------------------

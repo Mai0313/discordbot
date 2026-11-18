@@ -235,6 +235,8 @@ def memory_isolated_dir(
     monkeypatch.setattr("discordbot.services.memory.regeneration._last_regeneration", {})
     monkeypatch.setattr("discordbot.services.memory.catchup._last_catchup", {})
     monkeypatch.setattr("discordbot.services.memory.consolidation._consecutive_rejections", {})
+    monkeypatch.setattr("discordbot.services.memory.consolidation._failed_observations", set())
+    monkeypatch.setattr("discordbot.services.memory.consolidation._failed_compactions", {})
     monkeypatch.setattr("discordbot.services.memory.inflight._db_tasks", set())
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
     # real file: every schedule_memory_update now persists, and those writes are

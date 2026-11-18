@@ -326,6 +326,10 @@ class ConsolidationRequest(BaseModel):
     )
     today: str = Field(..., description="ISO date used for dating and aging.")
     compact: bool = Field(..., description="Whether the compartment is large enough to compact.")
+    net_removal_limit: int | None = Field(
+        default=None,
+        description="Facts a compaction pass may remove net before it is refused; None when uncapped.",
+    )
     emit_tone: bool = Field(..., description="Whether this call owns the tone note.")
 
 
@@ -434,6 +438,10 @@ class MemoryWriterAI(BaseModel):
             f"today: {request.today}",
             f"compartment: {request.compartment_note}",
             f"allowed sections: {sections}",
+        ]
+        if request.net_removal_limit is not None:
+            blocks.append(f"net fact removals allowed: {request.net_removal_limit}")
+        blocks += [
             _tagged(tag="existing_facts", body=request.existing_facts),
             _tagged(tag="raw_entries", body=request.raw_entries),
             _tagged(tag="recent_detail", body=request.recent_detail),
