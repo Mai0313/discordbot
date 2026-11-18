@@ -168,6 +168,7 @@ class FakeMemoryResponses:
     def __init__(self) -> None:
         """Initializes recorded calls and the configured parsed output."""
         self.parse_models: list[str] = []
+        self.parse_efforts: list[str] = []
         self.parse_instructions: list[str] = []
         self.parse_bodies: list[str] = []
         self.parse_extra_kwargs: list[dict[str, object]] = []
@@ -193,9 +194,10 @@ class FakeMemoryResponses:
         pass (e.g. a reintroduced `max_output_tokens`) so a test can assert the
         memory path leaves the output budget to the backend.
         """
-        del reasoning, service_tier, extra_headers
+        del service_tier, extra_headers
         body = input[0]["content"]
         self.parse_models.append(model)
+        self.parse_efforts.append(reasoning["effort"])
         self.parse_instructions.append(instructions)
         self.parse_bodies.append(body)
         self.parse_extra_kwargs.append(unexpected)
