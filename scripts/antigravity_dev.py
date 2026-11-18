@@ -51,8 +51,7 @@ AGENT_TOOLS = BuiltinTools.all_tools()
 AGENT_MODEL = ModelTarget(
     name="gemini-4-hydrogen",
     endpoint=GeminiAPIEndpoint(
-        api_key=config.gemini_api_key,
-        options=GeminiModelOptions(thinking_level=ThinkingLevel.LOW),
+        api_key=config.gemini_api_key, options=GeminiModelOptions(thinking_level=ThinkingLevel.LOW)
     ),
 )
 
@@ -201,6 +200,8 @@ async def gen_reply_agent_structured(user_prompt: str) -> PrimeAnswer:
 
 
 if __name__ == "__main__":
-    asyncio.run(gen_reply_agent(user_prompt="幫我上網搜尋一下今天台灣新聞"))
-    # asyncio.run(gen_reply_agent_buffered(user_prompt="幫我上網搜尋一下今天台灣新聞"))
-    # asyncio.run(gen_reply_agent_structured(user_prompt="為何 37 是質數?"))
+    asyncio.run(
+        gen_reply_agent(
+            user_prompt="幫我上網搜尋一下今天台灣新聞, 然後整理成一份 markdown 報告寫到 `./report.md`"
+        )
+    )
