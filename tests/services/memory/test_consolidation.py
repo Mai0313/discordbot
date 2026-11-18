@@ -12,7 +12,6 @@ from collections import Counter
 import pytest
 from pydantic import BaseModel
 
-from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.services.memory import pipeline, consolidation
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
@@ -495,31 +494,6 @@ async def test_compaction_is_a_call_of_its_own_carrying_no_evidence(
     assert re.search(r"today: \d{4}-\d{2}-\d{2}", body) is not None
     assert "net fact removals allowed: 3" in body
     assert "壓縮後" in _memory_text()
-
-
-async def test_only_the_compaction_pass_runs_on_its_own_tier() -> None:
-    """At the writer's effort a compaction call reasoned until its output budget was gone."""
-    _oversized_fact()
-    _stage_raw(_entry("2026-09-01T00:00:00+00:00", _PET))
-    writer, fake_client = _writer()
-    fake_client.responses.answer = _recording(calls=[], observe=ConsolidatedMemory())
-    await _consolidate_forced(writer=writer)
-
-    responses = fake_client.responses
-    dispatched = {
-        (PHASE2_COMPACTION_BLOCK in prompt, model, effort)
-        for prompt, model, effort in zip(
-            responses.parse_instructions,
-            responses.parse_models,
-            responses.parse_efforts,
-            strict=True,
-        )
-    }
-    compaction = RuntimeModelCatalog().memory_compaction_model
-    assert dispatched == {
-        (True, compaction.name, compaction.effort),
-        (False, TEST_MEMORY_MODEL.name, TEST_MEMORY_MODEL.effort),
-    }
 
 
 async def test_a_failed_compaction_is_tried_again_only_the_next_day(

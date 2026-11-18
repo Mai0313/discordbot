@@ -18,7 +18,6 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.memory import MemoryFact, MemoryFlavor
-from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.services.memory.tone import forget_tone, update_tone_note
@@ -394,14 +393,12 @@ async def _compact_oversized(run: ConsolidationRun) -> None:
     """Compacts every compartment whose fact text is past the trigger, each in a call of its own.
 
     The call carries the compartment's facts and no evidence, which merging and condensing them
-    does not need, and runs on `memory_compaction_model`. Best-effort: a pass that fails or is
-    refused leaves the facts as they were and holds back nothing. A compartment whose pass failed
-    is not tried again until the next UTC day: a refusal re-derived from the same facts would
-    repeat, and each attempt costs minutes of the fan-out's timeout.
+    does not need. Best-effort: a pass that fails or is refused leaves the facts as they were and
+    holds back nothing. A compartment whose pass failed is not tried again until the next UTC
+    day: a refusal re-derived from the same facts would repeat, and each attempt costs minutes of
+    the fan-out's timeout.
     """
     empty = CompartmentInput(raw_entries="", recent_detail="", global_reference="")
-    writer = run.writer.model_copy(update={"model": RuntimeModelCatalog().memory_compaction_model})
-    run = run.model_copy(update={"writer": writer})
     for compartment in list_compartments(scope=run.scope):
         facts = _live_facts(scope=run.scope, compartment=compartment)
         before = sum(len(fact.text) for fact in facts)
