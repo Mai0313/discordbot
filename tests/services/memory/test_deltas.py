@@ -20,6 +20,7 @@ from discordbot.services.memory.store import (
     guild_compartment,
 )
 from discordbot.services.memory.deltas import (
+    DeltaOutcome,
     apply_deltas,
     sweep_stale_facts,
     partition_raw_entries,
@@ -54,6 +55,7 @@ from tests.helpers.server_memory import (
     _server_fact,
     _server_document,
 )
+from tests.helpers.logfire_capture import capture_logs
 
 
 async def test_forget_reaches_a_fact_stored_in_another_compartment() -> None:
@@ -297,6 +299,143 @@ def test_an_update_naming_a_missing_id_becomes_a_create() -> None:
         allow_mass_delete=False,
     )
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
+
+
+_TARGET = "0123456789abcdef"
+
+
+def _apply_to_global(deltas: tuple[MemoryFactDelta, ...]) -> DeltaOutcome:
+    """Applies one batch to the test user's `global` compartment."""
+    return apply_deltas(
+        scope=USER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="user",
+        deltas=deltas,
+        owner=_OWNER,
+        allow_mass_delete=False,
+    )
+
+
+def _texts() -> dict[str, str]:
+    """The test user's `global` facts, as id to text."""
+    return {
+        fact.fact_id: fact.text
+        for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    }
+
+
+_SPLIT_OUT = make_delta(
+    section="permanent",
+    durability="permanent",
+    summary="稱呼規則",
+    text="永遠稱呼他老大",
+    from_keys=("preference.address",),
+)
+_REWRITE = make_delta(
+    action="update",
+    fact_id=_TARGET,
+    text="改寫後的互動紀錄",
+    from_keys=("preference.address", "interaction.other"),
+)
+
+
+@pytest.mark.parametrize("batch", [(_SPLIT_OUT, _REWRITE), (_REWRITE, _SPLIT_OUT)])
+def test_a_fact_split_out_of_one_the_batch_rewrites_is_kept_as_its_own(
+    batch: tuple[MemoryFactDelta, ...],
+) -> None:
+    """Re-aimed onto the fact the same batch rewrites, the new fact or the rewrite was lost."""
+    write_fact(scope=USER_SCOPE, fact=_fact(keys=("preference.address", "interaction.other")))
+    outcome = _apply_to_global(deltas=batch)
+    split_id = mint_fact_id(compartment=GLOBAL_COMPARTMENT, summary="稱呼規則")
+    assert _texts() == {_TARGET: "改寫後的互動紀錄", split_id: "永遠稱呼他老大"}
+    assert (outcome.created, outcome.updated, outcome.dropped) == (1, 1, 0)
+    # A retry of the same batch finds the split-out fact again instead of filing a third.
+    _apply_to_global(deltas=batch)
+    assert sorted(_texts()) == sorted((_TARGET, split_id))
+
+
+def test_two_creates_resting_on_one_fact_each_keep_their_own() -> None:
+    """The first re-aims onto the fact; the second must not overwrite it."""
+    write_fact(scope=USER_SCOPE, fact=_fact(keys=("preference.a",)))
+    batch = (
+        make_delta(summary="第一", text="一", from_keys=("preference.a",)),
+        make_delta(summary="第二", text="二", from_keys=("preference.a",)),
+    )
+    outcome = _apply_to_global(deltas=batch)
+    second_id = mint_fact_id(compartment=GLOBAL_COMPARTMENT, summary="第二")
+    assert _texts() == {_TARGET: "一", second_id: "二"}
+    assert (outcome.created, outcome.updated) == (1, 1)
+    _apply_to_global(deltas=batch)
+    assert sorted(_texts().values()) == ["一", "二"]
+
+
+def test_a_create_does_not_re_aim_onto_a_fact_the_batch_deletes() -> None:
+    """The delete is the model's own decision; the create lands beside it as a new fact."""
+    write_fact(scope=USER_SCOPE, fact=_fact(keys=("preference.a",)))
+    outcome = _apply_to_global(
+        deltas=(
+            make_delta(summary="新版", text="新內容", from_keys=("preference.a",)),
+            make_delta(action="delete", fact_id=_TARGET),
+        )
+    )
+    assert _texts() == {mint_fact_id(compartment=GLOBAL_COMPARTMENT, summary="新版"): "新內容"}
+    assert (outcome.created, outcome.deleted) == (1, 1)
+
+
+@pytest.mark.parametrize("permanent_first", [True, False])
+def test_two_writes_to_one_fact_keep_the_permanent_one_and_log_the_other(
+    monkeypatch: pytest.MonkeyPatch, permanent_first: bool
+) -> None:
+    """Only one write can land on an id; an enforced directive is never the one that loses."""
+    warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
+    write_fact(scope=USER_SCOPE, fact=_fact())
+    permanent = make_delta(
+        action="update", fact_id=_TARGET, section="permanent", durability="permanent", text="規則"
+    )
+    ordinary = make_delta(action="update", fact_id=_TARGET, text="普通")
+    batch = (permanent, ordinary) if permanent_first else (ordinary, permanent)
+    outcome = _apply_to_global(deltas=batch)
+    assert _texts() == {_TARGET: "規則"}
+    assert (outcome.updated, outcome.dropped) == (1, 1)
+    assert warnings == [
+        (
+            "Memory delta lands on a fact the same batch already writes; dropping one",
+            {
+                "scope": USER_SCOPE,
+                "compartment": GLOBAL_COMPARTMENT,
+                "fact_id": _TARGET,
+                "kept_durability": "permanent",
+                "dropped_durability": "stable",
+            },
+        )
+    ]
+
+
+def test_two_ordinary_writes_to_one_fact_keep_the_later_one() -> None:
+    """Two creates with one summary mint one id; the later is the model's last word."""
+    outcome = _apply_to_global(deltas=(make_delta(text="先"), make_delta(text="後")))
+    assert list(_texts().values()) == ["後"]
+    assert (outcome.created, outcome.updated, outcome.dropped) == (1, 0, 1)
+
+
+@pytest.mark.parametrize("delete_first", [True, False])
+def test_a_fact_both_rewritten_and_deleted_keeps_the_rewrite(
+    monkeypatch: pytest.MonkeyPatch, delete_first: bool
+) -> None:
+    """Either order keeps the content the batch asked to store, and the count says so."""
+    warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
+    write_fact(scope=USER_SCOPE, fact=_fact())
+    rewrite = make_delta(action="update", fact_id=_TARGET, text="改寫")
+    delete = make_delta(action="delete", fact_id=_TARGET)
+    outcome = _apply_to_global(deltas=(delete, rewrite) if delete_first else (rewrite, delete))
+    assert _texts() == {_TARGET: "改寫"}
+    assert (outcome.updated, outcome.deleted, outcome.dropped) == (1, 0, 1)
+    assert warnings == [
+        (
+            "Memory delta deletes a fact the same batch rewrites; keeping the rewrite",
+            {"scope": USER_SCOPE, "compartment": GLOBAL_COMPARTMENT, "fact_id": _TARGET},
+        )
+    ]
 
 
 def test_bad_deltas_are_dropped_without_failing_the_batch() -> None:
