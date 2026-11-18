@@ -338,21 +338,19 @@ _SIX = tuple(
 )
 
 
-def _forget_four_answer(observe: ConsolidatedMemory) -> MemoryAnswer:
-    """Answers a forget pass by deleting four of the facts `global/` holds, more than the
-    mass-deletion ceiling allows a six-fact compartment, and any observation pass with `observe`.
+def _forget_all_answer(observe: ConsolidatedMemory) -> MemoryAnswer:
+    """Answers a forget pass by deleting every fact `global/` holds, more than the
+    mass-deletion ceiling allows any compartment, and any observation pass with `observe`.
     """
 
     async def answer(body: str, text_format: type[BaseModel]) -> BaseModel:
-        """Deletes four stored facts on the forget pass; nothing else changes the tone note."""
+        """Deletes every stored fact on the forget pass; nothing else changes the tone note."""
         if text_format is ToneForget:
             return ToneForget()
         if "forget_request" in body:
             stored = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
             return ConsolidatedMemory(
-                deltas=tuple(
-                    make_delta(action="delete", fact_id=fact.fact_id) for fact in stored[:4]
-                )
+                deltas=tuple(make_delta(action="delete", fact_id=fact.fact_id) for fact in stored)
             )
         if "<tone_evidence>" in body:
             return _no_change()

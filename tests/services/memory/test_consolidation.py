@@ -65,9 +65,9 @@ from tests.helpers.user_memory import (
     _consolidated,
     _forget_entry,
     _consolidate_at,
+    _forget_all_answer,
     _wait_for_inflight,
     _consolidate_forced,
-    _forget_four_answer,
     _consolidation_stage,
     _stage_raw_observation,
 )
@@ -311,17 +311,13 @@ async def test_a_forget_naming_several_facts_is_applied_and_the_batch_moves_on()
         _forget_entry("2026-09-02T00:00:00+00:00"), _entry("2026-09-03T00:00:00+00:00", _PET)
     )
     writer, fake_client = _writer()
-    fake_client.responses.answer = _forget_four_answer(
+    fake_client.responses.answer = _forget_all_answer(
         observe=_consolidated(text=_PET.summary_zh, summary=_PET.summary_zh, section="fact")
     )
     await _consolidate_forced(writer=writer)
 
     facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
-    assert sorted(fact.summary for fact in facts) == sorted([
-        _SIX[4].summary_zh,
-        _SIX[5].summary_zh,
-        _PET.summary_zh,
-    ])
+    assert [fact.summary for fact in facts] == [_PET.summary_zh]
     assert read_raw_entries(scope=USER_SCOPE) == ""
 
 

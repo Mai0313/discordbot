@@ -47,6 +47,7 @@ from discordbot.services.memory.store import (
 from discordbot.services.memory.writer import MemoryFactDelta
 from discordbot.services.memory.constants import (
     MAX_NET_FACT_DELETIONS_FLOOR,
+    MAX_NET_FACT_DELETIONS_RATIO,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
 from discordbot.services.memory.raw_entries import (
@@ -270,7 +271,7 @@ def net_deletion_ceiling(existing: int) -> int:
     Args:
         existing (int): Facts the compartment holds before the batch.
     """
-    return max(MAX_NET_FACT_DELETIONS_FLOOR, existing // 2)
+    return max(MAX_NET_FACT_DELETIONS_FLOOR, int(existing * MAX_NET_FACT_DELETIONS_RATIO))
 
 
 def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartment/flavor) plus the batch, its stamp, and the two write exemptions

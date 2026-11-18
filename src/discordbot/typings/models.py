@@ -169,8 +169,9 @@ class RuntimeModelCatalog(BaseModel):
         losing or leaking memory.
 
         Not `high`: there the compaction pass reasoned until its whole output budget was gone, so
-        no compaction ever completed (#1167). Not `low`: three of four compaction batches were
-        refused by the net-deletion ceiling (2026-11-18).
+        no compaction ever completed (#1167). Not `low`: it reasoned not at all, and three of four
+        compaction batches were refused by the net-deletion ceiling, then half the facts
+        (2026-11-18).
         """
         return ModelSettings(name="gemini-4-carbon", effort="medium")
 

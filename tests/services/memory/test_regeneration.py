@@ -50,7 +50,7 @@ from tests.helpers.user_memory import (
     _stored_fact,
     _consolidated,
     _forget_entry,
-    _forget_four_answer,
+    _forget_all_answer,
     _consolidation_stage,
     _clearing_tone_answer,
     _stage_raw_observation,
@@ -269,7 +269,7 @@ async def test_a_rebuild_replays_a_forget_naming_several_facts() -> None:
         _entry("2026-09-01T00:00:00+00:00", *_SIX), _forget_entry("2026-09-02T00:00:00+00:00")
     )
     writer, fake_client = _writer()
-    fake_client.responses.answer = _forget_four_answer(
+    fake_client.responses.answer = _forget_all_answer(
         observe=ConsolidatedMemory(
             deltas=tuple(
                 make_delta(
@@ -286,7 +286,7 @@ async def test_a_rebuild_replays_a_forget_naming_several_facts() -> None:
     report = await _regenerate(writer=writer)
 
     assert report.result == "regenerated"
-    assert len(read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)) == 2
+    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
 
 
 _ROAST_FORGET = _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再被粗口互嗆")
