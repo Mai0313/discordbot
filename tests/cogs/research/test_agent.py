@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING
 
-import httpx
 from google import genai
+import httpx2
 import pytest
 from google.genai import types
 
@@ -209,7 +209,7 @@ class _PolledInteraction:
     """
 
     def __init__(
-        self, failure: "Callable[[httpx.Request], httpx.Response]", failures: int
+        self, failure: "Callable[[httpx2.Request], httpx2.Response]", failures: int
     ) -> None:
         self.failure = failure
         self.failures = failures
@@ -217,26 +217,26 @@ class _PolledInteraction:
         self.client = genai.Client(
             api_key="test",
             http_options=types.HttpOptions(
-                httpx_async_client=httpx.AsyncClient(
-                    transport=httpx.MockTransport(handler=self._respond)
+                httpx_async_client=httpx2.AsyncClient(
+                    transport=httpx2.MockTransport(handler=self._respond)
                 ),
                 # Keeps the SDK's own re-sends but makes them sleepless.
                 retry_options=types.HttpRetryOptions(initial_delay=0),
             ),
         )
 
-    def _respond(self, request: httpx.Request) -> httpx.Response:
+    def _respond(self, request: httpx2.Request) -> httpx2.Response:
         self.polls += 1
         if self.polls <= self.failures:
             return self.failure(request)
-        return httpx.Response(status_code=200, json=_POLLED_TERMINAL)
+        return httpx2.Response(status_code=200, json=_POLLED_TERMINAL)
 
 
-def _poll_answered(status: int) -> "Callable[[httpx.Request], httpx.Response]":
+def _poll_answered(status: int) -> "Callable[[httpx2.Request], httpx2.Response]":
     """A poll the API answers with `status`."""
 
-    def respond(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             status_code=status,
             json={"error": {"code": status, "message": f"provider answered {status}"}},
         )
@@ -244,9 +244,9 @@ def _poll_answered(status: int) -> "Callable[[httpx.Request], httpx.Response]":
     return respond
 
 
-def _poll_connection_refused(request: httpx.Request) -> httpx.Response:
+def _poll_connection_refused(request: httpx2.Request) -> httpx2.Response:
     """A poll that fails before any response arrives."""
-    raise httpx.ConnectError("connection refused", request=request)
+    raise httpx2.ConnectError("connection refused", request=request)
 
 
 @pytest.mark.parametrize("status", [400, 403, 404])
@@ -273,7 +273,7 @@ async def test_a_poll_the_api_refuses_ends_the_run_at_once(
     ],
 )
 async def test_a_transient_poll_error_is_still_retried(
-    monkeypatch: pytest.MonkeyPatch, failure: "Callable[[httpx.Request], httpx.Response]"
+    monkeypatch: pytest.MonkeyPatch, failure: "Callable[[httpx2.Request], httpx2.Response]"
 ) -> None:
     monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")

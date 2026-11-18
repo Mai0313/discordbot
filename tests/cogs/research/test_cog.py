@@ -404,7 +404,7 @@ async def test_a_launch_that_cannot_say_why_it_stopped_logs_it(
         del kwargs
         raise failure
 
-    anchor.reply = refuse  # ty: ignore[invalid-assignment]
+    anchor.reply = refuse
     records = {
         name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
     }

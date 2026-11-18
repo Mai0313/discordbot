@@ -6,8 +6,6 @@ import json
 from typing import TYPE_CHECKING, cast
 import asyncio
 
-# openai 3.x builds its exceptions on httpx2, so a request or response handed to one has to
-# come from there. google-genai is still on httpx 0.x, and both live in the environment.
 import httpx2
 from openai import APIError, AsyncOpenAI, BadRequestError
 import pytest

@@ -90,7 +90,7 @@ async def test_a_removal_that_fails_never_replaces_the_failure_that_called_it() 
         """Fails the way a deleted placeholder or a lost connection does."""
         raise RuntimeError("discord said no")
 
-    source.reply_messages[0].delete = refuse  # ty: ignore[invalid-assignment]
+    source.reply_messages[0].delete = refuse
 
     await placeholder.discard()
 
@@ -104,7 +104,7 @@ async def _refusing(error: Exception) -> FakeDiscordMessage:
         del kwargs
         raise error
 
-    source.reply = refuse  # ty: ignore[invalid-assignment]
+    source.reply = refuse
     return source
 
 
@@ -237,7 +237,7 @@ async def _interrupted(
         posted.id = placeholder_id
         return posted
 
-    source.reply = reply  # ty: ignore[invalid-assignment]
+    source.reply = reply
     placeholder = await send_expansion_placeholder(
         message=as_message(fake=source), text=_TEXT, source=_SOURCE, url=_URL
     )

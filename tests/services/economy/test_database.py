@@ -165,7 +165,7 @@ async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dic
         jackpot_row = result.one()
         result = await session.execute(statement=text(text="PRAGMA table_info(jackpot_pool)"))
         jackpot_column_types = {row[1]: row[2] for row in result.all()}
-    return (cast("tuple[int, int, int, int, int]", tuple(jackpot_row)), jackpot_column_types)
+    return (tuple(jackpot_row), jackpot_column_types)
 
 
 def _assert_money_columns_are_text(table_column_types: dict[str, dict[str, str]]) -> None:

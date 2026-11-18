@@ -4,8 +4,8 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
-import httpx
 from google import genai
+import httpx2
 import pytest
 from google.genai import types
 from google.genai.errors import APIError
@@ -364,9 +364,9 @@ async def _tool_use_of(status: str) -> AnswerToolUse:
     client = genai.Client(
         api_key="test",
         http_options=types.HttpOptions(
-            httpx_async_client=httpx.AsyncClient(
-                transport=httpx.MockTransport(
-                    handler=lambda request: httpx.Response(
+            httpx_async_client=httpx2.AsyncClient(
+                transport=httpx2.MockTransport(
+                    handler=lambda request: httpx2.Response(
                         status_code=200,
                         headers={"content-type": "text/event-stream"},
                         content=stream,
@@ -400,11 +400,11 @@ async def test_an_unfinished_youtube_answer_reports_no_tool_use() -> None:
     assert await _tool_use_of(status="incomplete") == AnswerToolUse()
 
 
-def _http_status(status: int) -> "Callable[[httpx.Request], httpx.Response]":
+def _http_status(status: int) -> "Callable[[httpx2.Request], httpx2.Response]":
     """A failure the API answers with `status`."""
 
-    def respond(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             status_code=status,
             json={"error": {"code": status, "message": f"provider answered {status}"}},
         )
@@ -412,22 +412,22 @@ def _http_status(status: int) -> "Callable[[httpx.Request], httpx.Response]":
     return respond
 
 
-def _connection_refused(request: httpx.Request) -> httpx.Response:
+def _connection_refused(request: httpx2.Request) -> httpx2.Response:
     """A failure before any response arrives."""
-    raise httpx.ConnectError("connection refused", request=request)
+    raise httpx2.ConnectError("connection refused", request=request)
 
 
-class _DroppedMidStream(httpx.AsyncByteStream):
+class _DroppedMidStream(httpx2.AsyncByteStream):
     """An answer stream whose connection dies after its first event."""
 
     async def __aiter__(self) -> "AsyncIterator[bytes]":
         yield _sse(events=[_INTERACTION_CREATED])
-        raise httpx.RemoteProtocolError("peer closed connection")
+        raise httpx2.RemoteProtocolError("peer closed connection")
 
 
-def _dropped_mid_stream(request: httpx.Request) -> httpx.Response:
+def _dropped_mid_stream(request: httpx2.Request) -> httpx2.Response:
     """A failure after the answer has started streaming."""
-    return httpx.Response(
+    return httpx2.Response(
         status_code=200, headers={"content-type": "text/event-stream"}, stream=_DroppedMidStream()
     )
 
@@ -461,24 +461,24 @@ class _YouTubeAnswerTurn:
     SDK re-sends it; every later attempt streams a complete answer.
     """
 
-    def __init__(self, first_attempt: "Callable[[httpx.Request], httpx.Response]") -> None:
+    def __init__(self, first_attempt: "Callable[[httpx2.Request], httpx2.Response]") -> None:
         self.first_attempt = first_attempt
         self.opened = 0
         self.client = genai.Client(
             api_key="test",
             http_options=types.HttpOptions(
-                httpx_async_client=httpx.AsyncClient(
-                    transport=httpx.MockTransport(handler=self._respond)
+                httpx_async_client=httpx2.AsyncClient(
+                    transport=httpx2.MockTransport(handler=self._respond)
                 ),
                 # Keeps the SDK's own re-sends but makes them sleepless.
                 retry_options=types.HttpRetryOptions(initial_delay=0),
             ),
         )
 
-    def _respond(self, request: httpx.Request) -> httpx.Response:
+    def _respond(self, request: httpx2.Request) -> httpx2.Response:
         if self.opened == 1:
             return self.first_attempt(request)
-        return httpx.Response(
+        return httpx2.Response(
             status_code=200, headers={"content-type": "text/event-stream"}, content=_ANSWER_STREAM
         )
 
@@ -523,7 +523,7 @@ def sleepless_answer_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     ],
 )
 async def test_a_transient_interactions_failure_reopens_the_youtube_answer(
-    first_attempt: "Callable[[httpx.Request], httpx.Response]",
+    first_attempt: "Callable[[httpx2.Request], httpx2.Response]",
 ) -> None:
     """A transient failure on the Interactions backend is retried like one on Responses.
 
@@ -567,7 +567,7 @@ async def test_an_interactions_answer_that_ends_short_is_asked_again(
     """
     logged = capture_logs(monkeypatch=monkeypatch, level="warn")
     turn = _YouTubeAnswerTurn(
-        first_attempt=lambda request: httpx.Response(
+        first_attempt=lambda request: httpx2.Response(
             status_code=200,
             headers={"content-type": "text/event-stream"},
             content=_CUT_SHORT[reason],

@@ -69,21 +69,21 @@ authors = [
 dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.20.1",
-    "anthropic>=1.7.0",
-    "google-genai>=2.24.0",
-    "logfire>=5.1.0",
+    "anthropic>=2.10.0",
+    "google-genai>=3.5.0",
+    "logfire>=5.6.0",
     "nextcord[speed,voice]>=3.2.0",
-    "openai>=3.16.2",
-    "pillow>=12.3.0",
-    "pydantic>=2.13.5",
-    "pydantic-settings>=2.15.0",
-    "python-dotenv>=1.2.0",
+    "openai>=3.55.1",
+    "pillow>=13.0.0",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.3",
+    "python-dotenv>=1.2.4",
     "requests>=2.34.2",
     "rich>=15.0.0",
-    "sqlalchemy[asyncio]>=2.0.54",
+    "sqlalchemy[asyncio]>=2.1.9",
     "tenacity>=9.1.4",
-    "xai-sdk>=1.19.0",
-    "yt-dlp>=2026.8.19",
+    "xai-sdk>=1.21.0",
+    "yt-dlp>=2026.10.26",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -102,19 +102,17 @@ usage-report = "discordbot.admin.usage_report:main"
 
 [dependency-groups]
 dev = [
-    # 0.1.8+ ships protobuf 7 gencode, which refuses the protobuf 6 runtime that xai-sdk's
-    # `protobuf<7` holds the lock to; lift this ceiling once xai-sdk accepts protobuf 7.
-    "google-antigravity<0.1.8",
+    "google-antigravity",
     "ipykernel",
     "ipywidgets",
     "notebook",
-    "openai-agents>=0.22.3",
+    "openai-agents>=0.25.0",
     "poethepoet",
     "pre-commit",
 ]
 test = [
     "genbadge[all]",
-    "httpx2>=2.13.0",
+    "httpx2>=2.16.2",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

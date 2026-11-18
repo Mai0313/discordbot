@@ -767,7 +767,7 @@ def _fail_the_delivery(staged: _Staged) -> None:
         placeholder.edit_failure = make_server_error()
         return placeholder
 
-    staged.message.reply = failing_slot  # ty: ignore[invalid-assignment]
+    staged.message.reply = failing_slot
 
 
 @pytest.mark.parametrize(argnames="cog", argvalues=_COGS, ids=_cog_id)
@@ -813,7 +813,7 @@ async def test_a_refused_preview_restore_names_its_ids_and_the_cross_still_lands
             raise make_forbidden(message="Missing Permissions")
         await edit(**cast("Any", kwargs))
 
-    staged.message.edit = refuse_restore  # ty: ignore[invalid-assignment]
+    staged.message.edit = refuse_restore
     warns = capture_logs(monkeypatch=monkeypatch, level="warn")
 
     await staged.cog.on_message(message=as_message(fake=staged.message))

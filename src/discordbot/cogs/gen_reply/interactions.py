@@ -31,7 +31,6 @@ from google.genai.interactions import (
     GoogleSearch,
     StepDeltaData,
     ThinkingLevel,
-    AllowlistParam,
     EnvironmentParam,
     TextContentParam,
     VideoContentParam,
@@ -40,6 +39,7 @@ from google.genai.interactions import (
     InteractionSSEEvent,
     ModelOutputStepParam,
     GenerationConfigParam,
+    EnvironmentNetworkEgressAllowlistParam,
 )
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
@@ -347,7 +347,10 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inp
         # existing environment's id. The `*` allowlist leaves outbound networking unrestricted so
         # the server-side tools and the YouTube fetch can reach any domain.
         environment=EnvironmentParam(
-            type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
+            type="remote",
+            network=EnvironmentNetworkEgressAllowlistParam(
+                allowlist=[AllowlistEntryParam(domain="*")]
+            ),
         ),
         generation_config=GenerationConfigParam(
             # effort is the route grade copied onto slow_model (always low, medium or high), and

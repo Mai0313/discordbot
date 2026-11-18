@@ -149,7 +149,7 @@ def test_a_refused_page_leaves_each_reader_as_a_retryable_error(
     downloader = build_downloader()
 
     with pytest.raises(LinkRetryableError):
-        downloader._fetch_page(url="https://example.test/p/1")  # ty: ignore[unresolved-attribute]
+        downloader._fetch_page(url="https://example.test/p/1")  # ty: ignore[missing-attribute]
 
 
 @pytest.mark.parametrize(

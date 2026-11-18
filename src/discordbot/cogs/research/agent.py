@@ -22,10 +22,10 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from google.genai.interactions import (
     URLContext,
     GoogleSearch,
-    AllowlistParam,
     EnvironmentParam,
     AllowlistEntryParam,
     AntigravityAgentConfigParam,
+    EnvironmentNetworkEgressAllowlistParam,
 )
 
 from discordbot.typings.models import RuntimeModelCatalog
@@ -353,7 +353,10 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
         on_created (CreatedCallback): Callback invoked with the interaction ID on creation.
     """
     environment = EnvironmentParam(
-        type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
+        type="remote",
+        network=EnvironmentNetworkEgressAllowlistParam(
+            allowlist=[AllowlistEntryParam(domain="*")]
+        ),
     )
     driver = _StreamDriver(client=client)
 
