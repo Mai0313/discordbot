@@ -18,7 +18,8 @@ main jobs:
 * **Aging.** `last_confirmed` is code-stamped, so the freshness rules are a deterministic
   sweep here rather than something a prompt has to re-apply. Stable facts age by displacement
   against the freshest fact *in the same compartment*, so an active guild cannot evict
-  the memory of one the user visits less often.
+  the memory of one the user visits less often. A rebuild confirms nothing by running, so it
+  dates its facts by their evidence keys before it sweeps (`date_facts_from_evidence`).
 """
 
 from datetime import datetime, timedelta
@@ -477,6 +478,45 @@ def reconfirm_facts(scope: str, compartment: str, raw_text: str, written: tuple[
             write_fact(scope=scope, fact=fact.model_copy(update={"last_confirmed": now}))
             reconfirmed += 1
     return reconfirmed
+
+
+def date_facts_from_evidence(scope: str, compartment: str, raw_text: str) -> int:
+    """Re-dates facts from the observations in `raw_text` that share one of their keys.
+
+    A rebuild writes every fact at the time it ran, though nothing behind a fact is newer than
+    its evidence: `last_confirmed` becomes the newest such observation's timestamp and `created`
+    the oldest, unless the fact already carried an earlier one. A fact whose keys match no
+    observation takes the newest timestamp in `raw_text` for both, the latest it can rest on;
+    left at the rebuild's time it would outlive its evidence and displace every dated `stable`
+    fact in a quiet compartment.
+
+    Args:
+        scope (str): Memory scope key.
+        compartment (str): Compartment whose facts are re-dated.
+        raw_text (str): The evidence routed to this compartment.
+
+    Returns:
+        Number of facts dated by their keys rather than by the newest evidence.
+    """
+    stamps: dict[str, list[datetime]] = {}
+    every: list[datetime] = []
+    for timestamp, block in iter_observations(text=raw_text):
+        stamp = datetime.fromisoformat(timestamp)
+        every.append(stamp)
+        key = fields_of(block=block).get("normalized_key")
+        if key:
+            stamps.setdefault(key, []).append(stamp)
+    newest = [max(every)] if every else []
+    keyed = 0
+    for fact in read_facts(scope=scope, compartment=compartment):
+        times = [stamp for key in fact.keys for stamp in stamps.get(key, ())]
+        keyed += bool(times)
+        times = times or newest
+        if not times:
+            continue
+        dates = {"last_confirmed": max(times), "created": min(fact.created, *times)}
+        write_fact(scope=scope, fact=fact.model_copy(update=dates))
+    return keyed
 
 
 def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:

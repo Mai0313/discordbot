@@ -990,3 +990,41 @@ async def test_a_restated_fact_is_confirmed_again_when_consolidation_changes_not
     }
     # The restated fact is renewed and kept; the one nobody mentioned keeps its date.
     assert confirmed == {"a" * 16: True, "b" * 16: False}
+
+
+@pytest.mark.usefixtures("memory_isolated_dir")
+async def test_a_consolidation_dates_what_it_writes_by_when_it_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike a rebuild's, a consolidation's batch is a real confirmation, so old evidence behind
+    a fact does not date it.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    append_detail(
+        scope=USER_SCOPE,
+        text=_entry(
+            "2026-01-01T00:00:00+00:00",
+            _observation(summary="住在台中", normalized_key="fact.city"),
+        ),
+    )
+    _consolidate_at(monkeypatch=monkeypatch, entries=1)
+    writer, fake_client = _writer()
+    fake_client.responses.answer = _answers(
+        review=_draft("住在台中", normalized_key="fact.city"),
+        facts=ConsolidatedMemory(
+            deltas=(
+                make_delta(
+                    section="fact",
+                    summary="住在台中",
+                    text="使用者住在台中",
+                    from_keys=("fact.city",),
+                ),
+            )
+        ),
+    )
+    _schedule(writer=writer)
+    await _wait_for_inflight()
+
+    [fact] = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert fact.created >= now
+    assert fact.last_confirmed >= now
