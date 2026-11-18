@@ -417,7 +417,7 @@ async def test_threads_cog_logs_a_failed_step_with_its_own_cause(
         del results
         raise RuntimeError("the embed plan blew up")
 
-    cog._build_embeds = exploding_plan  # ty: ignore[invalid-assignment]
+    cog._build_embeds = exploding_plan
     await cog.on_message(message=as_message(fake=message))
 
     assert placeholder_withdrawn(message=message)

@@ -14,10 +14,7 @@ from nextcord.ext import commands
 from discordbot.utils.usage_log import UsageRecorder
 
 if TYPE_CHECKING:
-    from nextcord.types.interactions import (
-        ApplicationCommandInteractionData,
-        ApplicationCommandInteractionDataOption,
-    )
+    from nextcord.types.interactions import ApplicationCommandInteractionData
 
 
 def command_path(data: "ApplicationCommandInteractionData") -> str:
@@ -37,15 +34,13 @@ def command_path(data: "ApplicationCommandInteractionData") -> str:
         ApplicationCommandOptionType.sub_command_group.value,
     )
     parts = [name]
-    options = cast("list[ApplicationCommandInteractionDataOption]", data.get("options") or [])
+    options = data.get("options") or []
     while options:
         nested = next((option for option in options if option["type"] in subcommand_types), None)
         if nested is None:
             break
         parts.append(nested["name"])
-        options = cast(
-            "list[ApplicationCommandInteractionDataOption]", nested.get("options") or []
-        )
+        options = nested.get("options") or []
     return " ".join(parts)
 
 
