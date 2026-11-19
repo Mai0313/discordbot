@@ -20,8 +20,9 @@ class ModelSettings(BaseModel):
     )
     # Which efforts a model accepts is per-model and not derivable from its name, its family, or
     # a sibling snapshot. The vocabulary itself differs by provider, so a guess is not even wrong
-    # in a consistent direction: Gemini has `minimal` and no `xhigh`, OpenAI has `xhigh` and on
-    # some models `none`, Anthropic has `max`. Look the model up in openrouter's list
+    # in a consistent direction: Gemini has `minimal` on older flash snapshots and `xhigh` on
+    # some Gemini 4 snapshots, OpenAI has `xhigh` and on some models `none`, Anthropic has `max`.
+    # Look the model up in openrouter's list
     # (https://openrouter.ai/api/v1/models) under its `<provider>/<name>` id, where `reasoning`
     # carries `supported_efforts`, `default_effort` and `mandatory` (whether thinking can be
     # switched off at all). Sending an effort outside a model's own set is never a downgrade: direct
@@ -151,14 +152,15 @@ class RuntimeModelCatalog(BaseModel):
         # a level the model does not list loses the whole reply there and errors the
         # streaming answer through the proxy. Before repointing, check the new snapshot's set
         # (see `ModelSettings.effort`) covers every value `RouteClassification.effort` emits.
-        # `gemini-4-carbon` accepts low / medium / high, not `minimal` (openrouter and Google's
-        # thinking page, read 2026-11-11).
+        # `gemini-4-neon` accepts low / medium / high / xhigh, not `minimal` (openrouter and
+        # Google's thinking page, read 2026-11-19); routing intentionally stays on low / medium /
+        # high.
         #
         # Without an entry in LiteLLM's price table a reply's footer shows no cost, and a
         # non-Gemini name falls back to the `{"text", "image"}` modality gate: an audio or video
         # attachment then never reaches the route or the answer model, so a clip posted with one
         # line of text is answered as if the line were the whole message.
-        return ModelSettings(name="gemini-4-carbon", effort="high")
+        return ModelSettings(name="gemini-4-neon", effort="high")
 
     @property
     def memory_model(self) -> ModelSettings:
@@ -173,7 +175,7 @@ class RuntimeModelCatalog(BaseModel):
         compaction batches were refused by the net-deletion ceiling, then half the facts
         (2026-11-18).
         """
-        return ModelSettings(name="gemini-4-carbon", effort="medium")
+        return ModelSettings(name="gemini-4-neon", effort="medium")
 
 
 class RouteClassification(BaseModel):
