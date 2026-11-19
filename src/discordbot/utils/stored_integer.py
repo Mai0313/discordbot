@@ -7,9 +7,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.sql.elements import ColumnElement
 
-# A mapped column is spelled `Model.column`, which is an `InstrumentedAttribute`
-# rather than a `ColumnElement`; SQLAlchemy coerces it, but the annotation has to
-# say so or every ORM call site is a type error.
+# ORM attributes are InstrumentedAttribute, not ColumnElement; accept both for type checking.
 type _StoredIntegerColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 
 
@@ -144,15 +142,11 @@ class _StoredIntegerComparator(TypeDecorator.Comparator[int]):
 
 
 class StoredInteger(TypeDecorator[int]):
-    """Persists Python integers as decimal text in SQLite.
+    """Persists arbitrary-precision Python integers as canonical decimal text in SQLite.
 
-    Text rather than `INTEGER` because a balance can outgrow SQLite's 64-bit integer, which
-    Python's own int never does; the comparator keeps SQL arithmetic and the `<`, `<=`, `>`,
-    `>=` comparisons numeric. `==` and `!=` are not routed through it and compare the text,
-    which is exact only because every write stores canonical decimal text; the pinned
-    conditional `UPDATE`s depend on that. Ordering is not covered either: SQLAlchemy exposes no
-    `ORDER BY` hook here, so a bare `order_by` on one of these columns sorts lexically, and
-    every DB-side ranking builds its own decimal-aware order terms instead.
+    Routes `+`, `-`, `<`, `<=`, `>`, and `>=` through integer-aware SQLite UDFs; `==` and `!=`
+    compare canonical text directly. Does not override `ORDER BY`: bare `order_by` sorts
+    lexically, so numeric rankings must build explicit decimal-aware order terms.
     """
 
     impl = Text

@@ -1,21 +1,9 @@
-"""LiteLLM model pricing and input-modality lookup.
+"""Cached LiteLLM model pricing and input-modality lookup.
 
-Fetches the LiteLLM upstream price table
-(https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
-on first use, mirrors what it parsed to `MODEL_INFO_CACHE_PATH`, and holds it for a day
-before fetching it again. Fetching live is the point: the rates track a maintained upstream
-instead of a hardcoded table that rots.
-
-A lookup never raises. The table only feeds a cosmetic cost estimate and the attachment
-modality gate, so an unreachable upstream degrades to the mirror and then to an empty
-table, where every model is unknown: no rates, so a usage footer with no cost, and the
-modality defaults in `get_supported_modalities`, which keep a Gemini model's audio and
-video and drop only those on any other model instead of the whole message's attachments.
-
-A degrade is not permanent either: the process remembers when upstream served the table
-it holds, and `refresh_model_info` re-checks upstream while it never has, and again once
-that table is a day old. It is driven off the event loop every `MODEL_INFO_REFRESH_MINUTES`,
-so neither recovery nor the daily refetch costs a lookup anything or needs a restart.
+Fetches LiteLLM's upstream price table on first use, mirrors usable tables to
+`MODEL_INFO_CACHE_PATH`, and refreshes via `refresh_model_info` while degraded or past
+`MODEL_INFO_MAX_AGE_HOURS`. Lookups never raise: an unavailable upstream degrades to the mirror
+and then to an empty table (unknown rates and default modalities).
 """
 
 import json
@@ -35,10 +23,7 @@ MODEL_INFO_URL = (
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
 MODEL_INFO_CACHE_PATH = Path("./data/model_prices_and_context_window.json")
-# Half an hour is far inside the weeks a process can outlive an outage by, and it keeps the
-# fetch warning a total outage emits per attempt readable.
 MODEL_INFO_REFRESH_MINUTES = 30.0
-# A day is how long a model upstream has just listed goes without its rates and modalities.
 MODEL_INFO_MAX_AGE_HOURS = 24.0
 
 
@@ -74,8 +59,7 @@ class _LoadedTable(BaseModel):
     )
 
 
-# Only the swap of the held table happens under this lock, never a fetch: a load runs
-# outside it so two callers that miss together do not wait out each other's timeout.
+# Guards table swaps only; network fetches run outside the lock.
 _LOADED_TABLE_LOCK = threading.Lock()
 _LOADED_TABLE: _LoadedTable | None = None
 
@@ -102,8 +86,7 @@ def _decode_table(payload: str, source: str) -> dict[str, ModelPriceEntry] | Non
         try:
             prices[name] = ModelPriceEntry(**entry)
         except (TypeError, ValidationError):
-            # Per entry, not per table: upstream is a community-maintained file, and one
-            # retyped row must not cost the rest their rates and modalities.
+            # Drop malformed rows individually so one bad upstream entry leaves the rest intact.
             dropped.append(name)
     if dropped:
         logfire.warn(
@@ -134,12 +117,9 @@ def _fetch_table() -> str | None:
 def _read_mirror() -> str | None:
     """Returns the mirrored price table as raw text, or None when there is no readable one."""
     try:
-        # `errors="replace"` rather than a wider except: a corrupt mirror raises
-        # UnicodeDecodeError, which is a ValueError and would sail past `except OSError`
-        # into the caller. Replaced bytes just make `_decode_table` reject the payload.
+        # `errors="replace"` avoids UnicodeDecodeError bypassing except OSError.
         return MODEL_INFO_CACHE_PATH.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        # Nothing has been mirrored yet; the caller reports the outcome once it knows it.
         return None
     except OSError as exc:
         logfire.warn(
@@ -149,12 +129,8 @@ def _read_mirror() -> str | None:
 
 
 def _write_mirror(payload: str) -> None:
-    """Mirrors a usable price table so a later start without upstream still has rates.
-
-    The temp name is unique because a load runs outside the lock that swaps the held table
-    in: two threads that miss together both run this, and a shared temp path lets one
-    truncate the other's bytes into the mirror the next outage depends on.
-    """
+    """Atomically mirrors `payload` to `MODEL_INFO_CACHE_PATH` via a unique temp file."""
+    # Unique temp name prevents concurrent unlocked cold-start fetches from clobbering each other.
     tmp_path = MODEL_INFO_CACHE_PATH.with_name(
         f"{MODEL_INFO_CACHE_PATH.name}.{secrets.token_urlsafe(8)}.tmp"
     )
@@ -169,11 +145,7 @@ def _write_mirror(payload: str) -> None:
 
 
 def _load_upstream() -> tuple[dict[str, ModelPriceEntry] | None, str]:
-    """Returns `(prices, "served")` from upstream, or `(None, reason)` when unusable.
-
-    Only a payload that yielded at least one entry is mirrored, so neither an upstream
-    shape change nor an empty answer can overwrite the last good table.
-    """
+    """Returns `(prices, "served")` from upstream (mirroring non-empty), or `(None, reason)`."""
     payload = _fetch_table()
     if payload is None:
         return None, "unreachable"
@@ -203,8 +175,7 @@ def _load_table() -> _LoadedTable:
             )
             return _LoadedTable(prices=prices, served_at=None)
 
-    # The one line saying this happened, and the only one an operator can act on: a reply
-    # still goes out, so nothing else about the process looks wrong from the outside.
+    # Log at error since replies still succeed without a price table.
     logfire.error(
         "no model price table available; every model reads as unknown",
         upstream=upstream,
@@ -216,13 +187,10 @@ def _load_table() -> _LoadedTable:
 
 
 def load_model_info() -> dict[str, ModelPriceEntry]:
-    """Returns the validated LiteLLM model info table (empty if none could be loaded).
+    """Returns the cached LiteLLM model info table, or an empty dict if none could be loaded.
 
-    The first call takes the whole chain and holds whatever it got; every later one reads
-    that back, so an outage costs one timeout for the life of the process rather than one
-    per call. `refresh_model_info` replaces a held table upstream did not serve once
-    upstream is reachable again, and one it did serve once a day, so neither a degrade nor
-    a newly listed model waits for a restart.
+    Loads once on first call (upstream, mirror, then empty) and serves the held table until
+    `refresh_model_info` replaces it.
     """
     global _LOADED_TABLE  # noqa: PLW0603 -- the process-wide price table
 
@@ -233,26 +201,16 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
 
     loaded = _load_table()
     with _LOADED_TABLE_LOCK:
-        # A refresh may have installed an upstream table while this call was loading, and
-        # the mirror it fell back to must not replace it.
+        # Keep an upstream table installed by a concurrent refresh instead of overwriting it.
         if _LOADED_TABLE is None:
             _LOADED_TABLE = loaded
         return _LOADED_TABLE.prices
 
 
 def refresh_model_info() -> None:
-    """Loads the price table, or re-checks upstream while what is held is missing or stale.
+    """Loads the price table if unset, or re-fetches upstream when degraded or past max age.
 
-    A caller outside this module runs this off the event loop, so no retry is ever paid on
-    a lookup's path. The first load still falls to whichever caller reaches it first, which
-    is why `_write_mirror` needs a unique temp name. A table upstream did not serve is
-    re-checked on every call, and one it did serve once it is `MODEL_INFO_MAX_AGE_HOURS`
-    old, so a model upstream lists after this process started gains its rates and
-    modalities without a restart.
-
-    A retry that fails keeps what is held: the table a process is serving is worth more
-    than the empty one re-running the whole chain would install over it once the mirror
-    file goes away.
+    Retains the currently held table if a refresh attempt fails.
     """
     global _LOADED_TABLE  # noqa: PLW0603 -- the process-wide price table
 
@@ -279,22 +237,16 @@ def refresh_model_info() -> None:
 
 
 def _price_entry(model_name: str) -> ModelPriceEntry | None:
-    """Returns the table entry for `model_name`, its Gemini Developer API one first.
-
-    Every Gemini call the bot makes is billed by the Gemini Developer API, and upstream can
-    list a new Gemini model under `gemini/` alone; the bare name is Vertex's entry. No other
-    provider prefix is tried: resellers list the same bare name at different rates, and one
-    listing no rates would read as free.
-    """
+    """Returns the table entry for `model_name`, checking `gemini/` before the bare name."""
     model_info = load_model_info()
+    # Prefer gemini/ (Developer API) over bare name (Vertex); never try reseller prefixes.
     return model_info.get(f"gemini/{model_name}") or model_info.get(model_name)
 
 
 def get_token_rates(model_name: str) -> tuple[float, float] | None:
     """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`, or None if unknown.
 
-    An unknown model has no rates rather than zero ones: a listed rate of zero is a free
-    model, and folding the two together would price every unknown model as free.
+    Returns None rather than `(0.0, 0.0)` for unknown models to distinguish them from free models.
 
     Args:
         model_name (str): Model identifier to look up in the cached price table.

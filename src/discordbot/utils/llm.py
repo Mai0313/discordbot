@@ -1,13 +1,8 @@
-"""Shared best-effort Responses API call surfaces for one-shot LLM calls.
+"""Shared best-effort Responses API helpers for one-shot LLM calls.
 
-Each helper owns the proxy call surface, the optional per-call deadline, and the failure
-handling so a caller only maps a None result to its own fallback. Client construction stays at
-its call site: this is the call surface, not a client factory.
-
-`timeout_seconds` is optional because most callers should not set one: it is for a caller with
-a deadline of its own, not a guard against a hung provider. The client already bounds itself
-(`typings/timeouts.py` carries the measured figures), so a wrapper on background work would
-restate that bound for nothing.
+Each helper degrades timeouts and errors to None; callers map None to their own fallback and
+construct their own `AsyncOpenAI` clients. Leave `timeout_seconds=None` unless the caller owns a
+tighter deadline than the client's own timeout (`typings/timeouts.py`).
 """
 
 import asyncio
@@ -22,11 +17,7 @@ from discordbot.typings.models import ModelSettings
 
 
 def output_text_or_empty(responses: Response) -> str:
-    """Returns the concatenated `output_text` from `responses`, tolerating `text=None` parts.
-
-    The SDK's `Response.output_text` does a bare `"".join(...)` over every `output_text` part's
-    text; a part with `text=None` makes that join raise `TypeError`. This keeps only non-empty
-    text parts so a stray None yields `""` instead of raising.
+    """Returns concatenated non-empty `output_text` parts from `responses`, or `""` if none.
 
     Args:
         responses (Response): Responses API result to read text from.
@@ -50,7 +41,7 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     text_format: type[StructuredT],
     timeout_seconds: float | None = None,
 ) -> StructuredT | None:
-    """Returns the parsed `StructuredT` from one best-effort `responses.parse` call, or None on failure.
+    """Returns the parsed `StructuredT` from `responses.parse`, or None on failure.
 
     A timeout, an empty output or off-schema payload (`ValidationError`), a refusal
     (`output_parsed` is None), an incomplete response, or any other error all degrade to None.
@@ -122,7 +113,7 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
     end_user_id: str,
     timeout_seconds: float | None = None,
 ) -> str | None:
-    """Returns the trimmed output text from one best-effort `responses.create` call, or None on failure.
+    """Returns trimmed output text from `responses.create`, or None on failure.
 
     Args:
         client (AsyncOpenAI): OpenAI client pointed at the LiteLLM proxy.

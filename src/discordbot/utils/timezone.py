@@ -1,10 +1,7 @@
 """Shared Asia/Taipei timezone helpers for persisted timestamps.
 
-The storage layers that reach for these stamp their rows in Asia/Taipei and
-re-interpret stored datetimes in that zone; this module is the single source so
-no layer grows its own copy. Not every table is in that zone — anything stamped
-by SQLite's own `CURRENT_TIMESTAMP` or by a Discord snowflake time is UTC and
-never comes through here.
+Tables stamped via SQLite's `CURRENT_TIMESTAMP` or Discord snowflakes use UTC instead and do not
+pass through these helpers.
 """
 
 from typing import Final

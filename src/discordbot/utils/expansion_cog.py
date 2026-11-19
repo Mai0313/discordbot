@@ -1,24 +1,11 @@
-"""The shell around an auto-expansion, so a platform module contributes only its card.
+"""Shared base cogs and card-building helpers for link auto-expansion.
 
-Expanding a pasted link is one feature: claim a reply slot under the link, mark the message,
-read the post, upload the card's images, edit the card onto the slot, mark the outcome. None of
-that differs per platform, and a difference that turns up there is a defect rather than a choice.
-So it lives here once, and a cog supplies the platform: where its URLs are, how to read one, and
-what the card looks like.
+`ExpansionCog` owns the placeholder lifecycle, reactions, image upload, and delivery;
+`ConversationExpansionCog` adds blocking conversation reads and the default embed card.
+`utils/expansion_placeholder.py` owns the persisted placeholder and restart-resume half.
 
-`utils/expansion_placeholder.py` owns the other half of this contract, the parts a resumed
-expansion needs as much as a fresh one does. This module is the cog side.
-
-`ConversationExpansionCog` goes one step further for a platform whose reader fetches a post and
-its discussion in one blocking call and whose card is embeds alone: the read, the refusal of an
-unreadable post and the card's shape are written once, and a cog supplies the parts that are its
-platform's own.
-
-A failure leaves nothing in the channel. The reaction is the whole report, which is what lets
-every step below simply return.
-
-There is deliberately no kill-switch anywhere in this feature: turning an expansion off means
-deleting its cog.
+Failures leave no message in the channel; the reaction on the source message is the sole report.
+There is deliberately no kill-switch; disabling an expansion means removing its cog.
 """
 
 import re
@@ -75,42 +62,30 @@ from discordbot.utils.expansion_placeholder import (
     resume_expansion_placeholders,
 )
 
-# What a post card shows before it starts scrolling the channel. A gallery post can carry far
-# more, so the footer says how many were left behind and the embed's own link leads to the rest.
-# Not a `context_budgets` constant: nothing here reaches a model, this bounds a rendered message.
+# Cap images per card to avoid channel flood; not a model context budget.
 POST_CARD_MAX_IMAGES = 4
 
-# The rail of every card that is not the linked post itself (a comment it singled out, a post it
-# replies to or quotes), neutral so the one being linked is never confused with its context. The
-# platform's own brand colour belongs to the cog wearing it, and neither is in
-# `typings/colors.py`, which is Discord's own semantic palette.
+# Neutral rail color for secondary cards (quoted/replied posts, comments), distinct from platform
+# brand colors.
 CONTEXT_CARD_COLOR = 0x65686C
 
 TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
 VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 
-# What a secondary card's budget leaves unmeasured: every card's author line, plus its header and
-# the line break under it on a card that does not take them off its own budget.
-# Every measurement against Discord's limits is in UTF-16 units (`utf16_length`), Discord's own.
+# Unmeasured UTF-16 overhead on secondary cards (author line, header, spacing).
 _CONTEXT_CARD_SLACK = 400
 
-# What the post gives up so the comment its URL singled out always fits beside it.
+# UTF-16 budget reserved from the post card so a singled-out comment always fits.
 _COMMENT_RESERVE = 2000
 _COMMENT_HEADER = "💬 **指定的留言**"
 
-# Where a poster kept a link out of sight: behind spoiler bars, which may cover the text around it
-# too, or in the angle brackets that turn Discord's preview off. Paired the way Discord pairs them,
-# left to right and shortest first, so `||a|| link ||b||` leaves the link in the open. Code spans
-# and escapes are not parsed, so a `||` inside one pairs with the next real bar.
+# Matches spoiler bars (`||...||`) and angle-bracketed links (`<...>`) shortest-first; does not
+# parse code spans or escapes.
 _HIDDEN_LINK_RE = re.compile(pattern=r"\|\|.+?\|\||<[^\s<>]+>", flags=re.DOTALL)
 
 
 class CardPost(Protocol):
-    """What the shared card reads off one post or comment.
-
-    Spelled structurally because the platforms' own models live under `services/`, which
-    `utils/` may not import.
-    """
+    """Structural protocol for one post or comment rendered on an expansion card."""
 
     @property
     def text(self) -> str:
@@ -182,8 +157,7 @@ class ConversationReader[ConversationT](Protocol):
 def with_gallery(card: Embed, images: list[str]) -> list[Embed]:
     """Returns `card` with its first image attached, followed by a bare embed per extra image.
 
-    The further embeds reuse the card's URL, which makes Discord merge them into one gallery
-    under the card rather than stacking separate cards.
+    Extra embeds reuse `card.url` to merge into one Discord gallery under `card`.
 
     Args:
         card (Embed): The post's own embed.
@@ -208,10 +182,9 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
     suffix: str,
     reserve: int,
 ) -> list[Embed]:
-    """Returns the linked post's own embed followed by one bare embed per further image.
+    """Returns the linked post's embed followed by one bare embed per extra image.
 
-    A long body is cut rather than split across a second embed: the whole card is one post, and
-    a reader who wants the tail has the link.
+    Clips long bodies with `TRUNCATION_NOTICE` rather than splitting across embeds.
 
     Args:
         post (CardPost): The linked post.
@@ -244,10 +217,7 @@ def post_card_embeds(  # noqa: PLR0913 -- one argument per part a platform suppl
 
 
 def context_card_budget(card: Embed) -> int:
-    """Returns the UTF-16 units left under the message-wide ceiling for secondary cards.
-
-    Budgeted across all secondary cards rather than clipping each card independently, so their
-    sum never exceeds Discord's message-wide embed limit.
+    """Returns remaining UTF-16 units under Discord's message-wide limit for secondary cards.
 
     Args:
         card (Embed): The linked post's own embed.
@@ -375,8 +345,8 @@ def report_expansion_delivery_failure(
 ) -> None:
     """Logs a failed delivery at the severity matching its outcome.
 
-    Only the placeholder's own disappearance is routine. On an edit, error code 50035 is a
-    rejected body rather than a missing message, so `is_reply_target_gone` is not used here.
+    Logs `NotFound` at `info`, `Forbidden` at `warn` (code only), and other errors at `error`;
+    on edits, HTTP 50035 is a rejected body rather than a missing target.
 
     Args:
         error (Exception): Exception raised by the delivery.
@@ -393,8 +363,7 @@ def report_expansion_delivery_failure(
             channel_id=channel_id,
         )
     elif isinstance(error, Forbidden):
-        # No traceback, whose stack is the same on every refusal; the code says which refusal it
-        # was, since not every one here is a missing permission.
+        # Omit traceback: stack is identical on every refusal; error.code identifies which refusal.
         logfire.warn(
             f"Missing permission to post the {platform} expansion",
             url=url,
@@ -443,8 +412,7 @@ class ExpansionCog[ParsedT](commands.Cog):
     """
 
     SOURCE: ClassVar[LinkSourceName]
-    """Keys this cog's rows in the pending-expansion table and its marker in
-    `LINK_SOURCE_EMOJIS`, so one platform is spelled one way wherever it is named."""
+    """Pending-expansion table key and `LINK_SOURCE_EMOJIS` key for this platform."""
 
     PLATFORM: ClassVar[str]
     """The platform's display name, for log messages."""
@@ -469,8 +437,7 @@ class ExpansionCog[ParsedT](commands.Cog):
             )
         )
         self._resume_started = False
-        # Taken at load, before the gateway connects, as `DiscordBot._started_at` is: the restart
-        # sweep must not re-run an expansion this process starts ahead of `on_ready`.
+        # Captured before on_ready so the restart sweep skips expansions from this process.
         self._started_at = database_now()
 
     @staticmethod
@@ -526,10 +493,7 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Runs again the expansions a restart interrupted (once per process).
-
-        `on_ready` fires on every gateway reconnect, so the flag guards it to one sweep.
-        """
+        """Resumes expansions interrupted by a restart, guarded to run once across reconnects."""
         if self._resume_started:
             return
         self._resume_started = True
@@ -538,12 +502,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         )
 
     async def _mark_failed(self, message: Message, current_emoji: str | None) -> None:
-        """Paints the failure cross, naming the platform when nothing else on the message does.
-
-        `current_emoji` is None only when claiming the reply slot failed, before either mark
-        went on. The cross alone cannot say which link died, so the platform marker goes on
-        first.
-        """
+        """Reacts with the failure cross, adding the platform mark if `current_emoji` is None."""
         if current_emoji is None:
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji=LINK_SOURCE_EMOJIS[self.SOURCE]
@@ -557,15 +516,13 @@ class ExpansionCog[ParsedT](commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Expands the first link in the open that this cog's pattern matches and accepts.
+        """Expands the first non-hidden URL matched by `URL_PATTERN` and `url_is_expandable`.
 
-        A refused match is skipped rather than ending the scan, so a profile link ahead of a
-        post never hides the post. A link behind spoiler bars or in angle brackets is skipped
-        the same way: the poster asked Discord not to show it, and a card would show it to
-        everyone.
+        Skips bot messages, messages addressed to the bot, and links inside spoiler bars or angle
+        brackets.
 
         Args:
-            message (Message): The message that was sent.
+            message (Message): Incoming Discord message.
         """
         if message.author.bot:
             return
@@ -585,27 +542,21 @@ class ExpansionCog[ParsedT](commands.Cog):
         if url is None:
             return
 
-        # A link addressed to the bot is gen_reply's to answer about, not ours to expand.
-        # Checked after the URL match so the common no-link message costs one regex, not two.
+        # Messages addressed to the bot belong to gen_reply; checked after regex to skip non-links.
         if is_addressed_to_bot(message=message, bot_user=self.bot.user):
             return
 
-        # Nothing is on the message yet, and the handler below is reachable before anything is:
-        # claiming the reply slot is itself a step that can fail. Left unset rather than
-        # pre-filled so a failure mark removes a reaction only when one is there.
+        # None until a working reaction is added so _mark_failed only removes an existing mark.
         current_emoji: str | None = None
         try:
             placeholder = await send_expansion_placeholder(
                 message=message, text=self.PLACEHOLDER_TEXT, source=self.SOURCE, url=url
             )
             if placeholder is None:
-                # A channel that refused the placeholder will refuse the card too, so the read
-                # is never started.
+                # A channel refusing the placeholder will also refuse the card; skip reading.
                 await self._mark_failed(message=message, current_emoji=current_emoji)
                 return
-            # The platform marker, then the working ring under it. Both go on after the reply
-            # slot is claimed: they share one per-channel rate-limit bucket that a message send
-            # does not, so claiming first is what stops the card queueing behind them.
+            # Reactions follow placeholder send: reactions share a separate per-channel rate limit.
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji=LINK_SOURCE_EMOJIS[self.SOURCE]
             )
@@ -617,9 +568,7 @@ class ExpansionCog[ParsedT](commands.Cog):
                     message=message, url=url, current_emoji=current_emoji, placeholder=placeholder
                 )
             finally:
-                # Every step below returns rather than raising, so this one line covers all of
-                # them: an expansion that delivered nothing leaves nothing behind. Once
-                # delivered it is a no-op.
+                # No-op once delivered; cleans up the placeholder on any early return.
                 await placeholder.discard()
         # Broad on purpose: the listener's last line of defence, so nothing escapes into the
         # dispatcher and every failure still reaches the user as a reaction.
@@ -636,10 +585,9 @@ class ExpansionCog[ParsedT](commands.Cog):
     async def _expand(
         self, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
     ) -> None:
-        """Reads the post and puts it on screen, marking the outcome it earned.
+        """Reads `url`, uploads card images, delivers onto `placeholder`, and updates reactions.
 
-        The signature is the one `resume_expansion_placeholders` calls with, so a resumed
-        expansion runs exactly what the listener runs.
+        Signature matches `resume_expansion_placeholders`'s `ExpansionRetry` protocol.
         """
         async with contextlib.AsyncExitStack() as stack:
             try:
@@ -681,16 +629,8 @@ class ExpansionCog[ParsedT](commands.Cog):
     async def _attach_card_images(
         self, message: Message, url: str, delivery: ExpansionDelivery
     ) -> None:
-        """Swaps the card's linked images for uploaded copies, as far as the message has room.
-
-        Discord fetches a linked embed image once, as the card is sent, and keeps a failed fetch
-        as an empty image it never retries; on Instagram's CDN that emptied about a third of the
-        cards (#1122). An image that fails to download, that the room left beside the card's own
-        media cannot carry, or in a channel refusing attachments keeps its link.
-        """
-        # Walked from the last embed: a Threads or Twitter card puts the linked post and the post
-        # it quotes after the chain above them, so when the attachment cap or the upload room
-        # binds, a far ancestor's image is the one left linked.
+        """Downloads card images and uploads them as attachments within message upload limits."""
+        # Reverse order prioritizes the linked/quoted post over ancestor embeds when caps bind.
         image_urls = list(
             dict.fromkeys(
                 embed.image.url
@@ -747,21 +687,16 @@ class ExpansionCog[ParsedT](commands.Cog):
         current_emoji: str,
         placeholder: ExpansionPlaceholder,
     ) -> None:
-        """Edits the card onto the placeholder and marks the source message done.
-
-        A card that never lands hands back the preview hidden for it, so the link is left with
-        its own preview rather than with nothing.
-        """
-        # Only a preview this call did hide is shown again: a guild that refused the hide would
-        # refuse showing it too.
+        """Suppresses source preview, delivers the card, and restores the preview on failure."""
+        # Restore preview only if this call hid it; otherwise the guild would refuse restore too.
         preview_hidden = False
-        # Broad on purpose: the delivery step must never escape into the listener, and the
-        # severity its failure earns is `report_expansion_delivery_failure`'s to pick.
+        # Broad on purpose: delivery failures must not escape into the listener, and severity is
+        # classified by `report_expansion_delivery_failure`.
         try:
             try:
                 await message.edit(suppress=True)
                 preview_hidden = True
-            # Deleting the link while the post was being read withdraws the request.
+            # Source message deleted mid-read withdraws the expansion.
             except NotFound:
                 logfire.info(
                     f"{self.PLATFORM} expansion target is gone",
@@ -770,8 +705,7 @@ class ExpansionCog[ParsedT](commands.Cog):
                     channel_id=message.channel.id,
                 )
                 return
-            # A guild without Manage Messages refuses this on every expansion with an identical
-            # stack, so the ids are the whole finding.
+            # Missing Manage Messages is expected; omit identical traceback.
             except Forbidden as error:
                 logfire.warn(
                     "Could not suppress the source message embed",
@@ -806,11 +740,10 @@ class ExpansionCog[ParsedT](commands.Cog):
             if preview_hidden:
                 try:
                     await message.edit(suppress=False)
-                # The link was deleted meanwhile, so there is no preview left to hand back.
+                # Source message deleted meanwhile; nothing left to restore.
                 except NotFound:
                     pass
-                # The guild took Manage Messages away since the hide; the ids are the whole
-                # finding.
+                # Manage Messages revoked since hide; omit identical traceback.
                 except Forbidden as restore_error:
                     logfire.warn(
                         "Could not restore the source message embed",
@@ -879,10 +812,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     async def build_delivery(
         self, message: Message, url: str, parsed: ConversationT
     ) -> ExpansionDelivery | None:
-        """Returns the finished card for `parsed`, or None when the post is not readable.
-
-        A post that comes back unreadable is a deleted, private, protected or login-walled one:
-        an ordinary outcome for a link someone pasted rather than a defect.
+        """Returns the finished card for `parsed`, or None when target is missing or unreadable.
 
         Args:
             message (Message): The message carrying the link.
@@ -900,11 +830,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         return ExpansionDelivery(embeds=self._build_embeds(conversation=parsed))
 
     def _build_embeds(self, conversation: ConversationT) -> list[Embed]:
-        """Builds the whole expansion: the post, its images, and the named comment if any.
-
-        A video post carries a link to it, since nothing here attaches the clip and the card
-        would otherwise have nothing in it.
-        """
+        """Builds the post embed, gallery embeds, and optional selected-comment embed."""
         post: PostT | None = conversation.target
         if post is None:
             return []
@@ -929,12 +855,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         return embeds
 
     def _comment_embed(self, comment: PostT, post_url: str, budget: int) -> Embed:
-        """Returns the card for the one comment the URL singled out.
-
-        Grey rather than the post's colour, and headed by a line saying what it is. Its URL is
-        the comment's own, which keeps it out of the image gallery since Discord merges embeds
-        sharing a URL.
-        """
+        """Returns the neutral-rail embed for the comment singled out by the URL."""
         header = f"{_COMMENT_HEADER}\n\n"
         # Beside a short post the message-wide budget exceeds what one description may carry.
         body = clip_to_utf16_limit(
@@ -944,6 +865,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         )
         embed = Embed(
             description=f"{header}{body}",
+            # Distinct URL keeps Discord from merging the comment into the post's image gallery.
             url=self._comment_url(post_url=post_url, comment=comment),
             color=Color(value=CONTEXT_CARD_COLOR),
             timestamp=comment.taken_at,

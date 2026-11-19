@@ -4,11 +4,9 @@ from nextcord import NotFound, HTTPException
 
 
 def is_reply_target_gone(error: HTTPException) -> bool:
-    """Returns whether a reply failed because the message it replies to no longer exists.
+    """Returns whether a reply send failed for a missing reference (`NotFound` or `50035`).
 
-    Discord answers that with NotFound or with 50035. 50035 is the generic invalid-form-body code,
-    so it means this only on a send that carries a message reference; on an edit it is a
-    rejected body.
+    Valid only for sends carrying a message reference; on edits, `50035` indicates a rejected body.
 
     Args:
         error (HTTPException): Exception raised by the reply send.

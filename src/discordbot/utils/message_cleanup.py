@@ -16,7 +16,6 @@ from discordbot.utils.asyncio_locks import spawn_tracked
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
-# The scheduled deletions still waiting out their TTL.
 _delete_tasks: set[asyncio.Task[None]] = set()
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 metadata = MetaData()
@@ -205,12 +204,10 @@ async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage
 
 
 def report_press_failure(error: HTTPException, message: Message, action: str) -> None:
-    """Logs a press's token failing to `action` a public message, before the channel is tried.
+    """Logs an interaction-token `action` failure before falling back to the channel endpoint.
 
-    A 404 is a message already gone or one the token cannot reach, and a 401 a token past its
-    life, which Discord answers in either form; the channel attempt tells those apart and
-    reports. A 403 is a refusal whose code is the whole finding. Anything else keeps its
-    traceback.
+    Logs 404 and 401 at `info` (code only), 403 at `warn` (code only), and other HTTP errors at
+    `warn` with traceback.
 
     Args:
         error (HTTPException): Exception raised when acting through the press's token.
@@ -233,21 +230,16 @@ def report_press_failure(error: HTTPException, message: Message, action: str) ->
 async def edit_public_message(
     message: Message, interaction: Interaction[commands.Bot] | None, payload: dict[str, Any]
 ) -> None:
-    """Edits a public message through a press on it while that press's token lives, else the channel.
+    """Edits `message` via `interaction`'s token while unexpired, falling back to `message.edit`.
 
-    A press's own token edits the message its control sits on whatever the channel allows, where
-    the channel endpoint answers 403 once the server shuts the bot out. An edit no press
-    triggered, a timeout's, rides the last press acknowledged on the message, so only a message
-    with no live press left has only the channel. That press must be one answered on the message
-    itself: a press answered with a private notice holds a token for that notice instead. A
-    token that fails hands the edit to the channel too, since only the channel tells a message
-    already gone from a token that cannot reach it.
+    `interaction` must have been acknowledged on `message` itself (not a separate ephemeral
+    notice). Any `HTTPException` from the interaction token falls back to the channel endpoint.
 
     Args:
         message (Message): Public message to edit.
         interaction (Interaction[commands.Bot] | None): Press acknowledged on `message`, or None
-            when only the channel is available.
-        payload (dict[str, Any]): Keyword arguments forwarded to the message edit call.
+            to edit directly via the channel.
+        payload (dict[str, Any]): Keyword arguments forwarded to the edit call.
     """
     if interaction is not None and not interaction.is_expired():
         try:
@@ -262,13 +254,7 @@ async def edit_public_message(
 async def _deleted_through_press(
     interaction: Interaction[commands.Bot] | None, message: Message
 ) -> bool:
-    """Deletes through a live press on the message; False leaves the delete to the channel.
-
-    A press's token reaches the message its control sits on whatever the channel allows, where
-    the channel endpoint answers 403 once the server shuts the bot out. That the token can
-    delete that message, not only edit it, is read off Discord's docs rather than measured, so
-    any failure hands the delete to the channel.
-    """
+    """Returns True after deleting `message` via an unexpired `interaction` token, else False."""
     if interaction is None or interaction.is_expired():
         return False
     try:
@@ -302,8 +288,7 @@ async def delete_public_message(
     except NotFound:
         pass
     except Forbidden:
-        # Expected rather than diagnosable, like the sweep's fetch below: the server's overwrites
-        # shut the bot out of the channel, so the ids are the whole finding.
+        # Expected when channel overwrites exclude the bot; omit traceback.
         logfire.warn(
             "Discord refused to delete a public response",
             message_id=resolved_message_id,
@@ -350,12 +335,7 @@ async def delete_tracked_public_messages(bot: commands.Bot, tracked_before: date
             )
             continue
         except Forbidden:
-            # Expected rather than diagnosable, and the one `warn` here that attaches nothing:
-            # the channel's overwrites are the server's to set, so the bot's own identity can
-            # be shut out of a channel an interaction still reaches. The type and the two ids
-            # are the whole story, while the traceback is sixteen identical lines per record
-            # per boot. Split from the branch below so a 5xx or a rate limit — which is worth
-            # a traceback — does not lose one by sharing this handler.
+            # Expected when channel overwrites exclude the bot; omit traceback.
             logfire.warn(
                 "Stale public response sits in a channel the bot cannot read",
                 channel_id=record.channel_id,

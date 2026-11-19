@@ -1,9 +1,7 @@
-"""A view and a modal whose failures land in `./data/logs`.
+"""`nextcord.ui.View` and `Modal` subclasses that log callback, submit, and timeout failures.
 
-nextcord hands an exception raised by a control's callback, a view's `interaction_check` or a
-modal's submit to that view's or modal's own `on_error`, never to `DiscordBot.on_error`, and the
-default only prints it to `sys.stderr`, which `./data/logs` does not tee. A view's `on_timeout`
-reaches neither: nextcord runs it as a task nothing awaits, so asyncio prints its failure there.
+`nextcord` routes view/modal errors to `on_error` (defaulting to `sys.stderr`) and runs
+`on_timeout` as an unawaited task; both bypass `DiscordBot.on_error` and `./data/logs`.
 """
 
 from typing import Self, ClassVar

@@ -1,21 +1,9 @@
-"""The reply slot an expansion claims before it has anything to put in it.
+"""Persisted reply placeholders and restart resumption for link auto-expansions.
 
-An expansion takes seconds. In a busy channel that is long enough for other people to talk, and
-the finished card then lands several messages below the link it belongs to, which is worst for
-exactly the reader it was posted for — someone tagged in it has to work out which link the card
-came from. So the cog replies with one line the moment it starts and edits that same message into
-the finished expansion: the card sits under the link whatever happened in between.
-
-A failure leaves nothing behind. `discard` removes the placeholder, and the reaction on the source
-message is the whole report.
-
-The one failure that rule cannot cover is a restart, which kills the expansion mid-read with the
-placeholder already posted and nothing left running to withdraw it. So a posted placeholder is a
-row in `pending_expansion` (`data/database/reply.db`) from the moment it lands until it is either
-delivered onto or discarded, and `resume_expansion_placeholders` runs the interrupted expansion
-again on `on_ready`. What it runs is the cog's own `_expand` with the arguments the listener
-passes, so a resumed expansion succeeds or fails exactly as a fresh one does — and a failed one
-ends in the same `discard`, which turns the stale placeholder back into nothing.
+Claims a reply slot under the source link immediately, persists it in `pending_expansion`
+(`data/database/reply.db`), and edits the finished card onto it. Undelivered placeholders are
+deleted on failure; rows left by a restart are resumed on `on_ready` via
+`resume_expansion_placeholders`.
 """
 
 from typing import Final, Protocol, runtime_checkable
@@ -36,23 +24,9 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 
-# The whole reaction vocabulary an auto-expansion answers with, shared so one symbol means one
-# thing whichever platform was linked. Nothing else reaches the channel, so the reaction is the
-# report and a reader who learns it once reads every expansion. What separates them is what the
-# reader should do next:
-#
-#   WORKING     the expansion is under way. Also what the restart sweep hands `_expand`, since
-#               it cannot ask the interrupted listener what it had scheduled.
-#   DONE        the card is on screen.
-#   RETRY_LATER the platform refused the request or took too long. The post is fine and the
-#               same link works later, which is why this is never the unreadable mark: telling
-#               someone their working link is dead is the worst answer this feature can give.
-#   UNREADABLE  the platform served an answer and there is nothing showable in it — deleted,
-#               private, or past a Discord limit no retry can get under.
-#   FAILED      the bot broke. Nothing about the post explains it, and it is worth a log.
-#
-# This vocabulary is the auto-expansion contract alone. A reply turn is a different surface with
-# a different lifecycle and spells its own marks.
+# Shared auto-expansion reaction outcomes (independent of reply-turn marks):
+# WORKING: in progress; DONE: card delivered; RETRY_LATER: transient fetch/timeout failure;
+# UNREADABLE: gone, private, or over Discord limits; FAILED: unexpected bot error.
 EXPANSION_WORKING_EMOJI: Final[str] = "🔗"
 EXPANSION_DONE_EMOJI: Final[str] = "<:greencheck:1517565102424068226>"
 EXPANSION_RETRY_LATER_EMOJI: Final[str] = "⏱️"
@@ -67,20 +41,15 @@ class Base(DeclarativeBase):
 
 
 class PendingExpansionRow(Base):
-    """A placeholder that is posted but not yet delivered onto or discarded.
+    """A posted placeholder not yet delivered onto or discarded.
 
     Attributes:
-        message_id (Mapped[int]): The placeholder's own Discord id, which is also the row key: one
-            placeholder is one expansion, and the cog reaches the row through it.
-        channel_id (Mapped[int]): The channel both messages live in, so the resume can fetch them.
-        source_message_id (Mapped[int]): The message carrying the link, which `_expand` reacts on.
-        source (Mapped[str]): Which cog owns the row, keyed as in
-            `typings/emojis.py::LINK_SOURCE_EMOJIS`, so each cog sweeps its own rows and never
-            resumes another's.
-        url (Mapped[str]): The URL the listener matched, stored rather than re-derived so an
-            edited or unreadable source message cannot change what the resumed expansion reads.
-        created_at (Mapped[datetime]): Write timestamp; the sweep runs oldest first and only rows
-            from before its process started.
+        message_id (Mapped[int]): Placeholder Discord message id (primary key).
+        channel_id (Mapped[int]): Channel holding both the source and placeholder messages.
+        source_message_id (Mapped[int]): Source Discord message carrying the link.
+        source (Mapped[str]): Owning cog key matching `typings/emojis.py::LINK_SOURCE_EMOJIS`.
+        url (Mapped[str]): Matched post URL persisted for restart resumption.
+        created_at (Mapped[datetime]): Write timestamp in Asia/Taipei; sweeps oldest first.
     """
 
     __tablename__ = "pending_expansion"
@@ -106,14 +75,7 @@ class PendingExpansion(BaseModel):
 
 @runtime_checkable
 class MessageFetcher(Protocol):
-    """A channel the sweep can read both of its messages back out of.
-
-    Named for the one capability rather than typed `nextcord.abc.Messageable`, which
-    `bot.get_channel` can also answer a category or forum for: those carry no messages, so
-    what the sweep needs is exactly this method. `runtime_checkable` is what makes the check
-    an honest `isinstance` — `Messageable` is a plain ABC, so nothing that did not inherit
-    from it passes, a test double included.
-    """
+    """Channel protocol supporting `fetch_message`, excluding non-messageable channels."""
 
     async def fetch_message(self, id: int, /) -> Message:  # noqa: A002 -- nextcord's own name
         """Returns one message read back off the channel.
@@ -159,8 +121,7 @@ async def _record_pending(
                     url=url,
                 )
             )
-    # Broad on purpose: see above — the expansion is already under way and nothing here can
-    # improve its outcome.
+    # Broad on purpose: best-effort bookkeeping must not abort an in-flight expansion.
     except Exception as error:
         logfire.warn(
             "Could not record a pending expansion",
@@ -231,28 +192,17 @@ class ExpansionPlaceholder(BaseModel):
     async def deliver(
         self, embeds: list[Embed], content: str | None = None, files: list[File] | None = None
     ) -> None:
-        """Edits the finished expansion onto the placeholder.
+        """Edits the finished expansion onto the placeholder and drops its pending row on success.
 
-        Clearing the placeholder line takes an explicit empty string, never None: an
-        expansion brings files (its media, or the embed spacer), which sends the edit as
-        multipart, and `http.py::get_message_payload` drops a None content out of that body
-        altogether instead of clearing it. It clears on the JSON path, which is exactly what
-        makes the difference easy to miss.
-
-        The spacer rides as an edit so its `attachments` key drops whatever the placeholder
-        held, which is also what lets `files` be the whole of the new attachment list.
-
-        Whatever the edit raises travels out, so the cog's own failure path reports it. The
-        row is dropped only once the edit has landed, so an edit that raises leaves the
-        restart sweep something to find.
+        Propagates edit errors without clearing the pending row so a restart sweep can retry.
 
         Args:
-            embeds (list[Embed]): The finished expansion.
-            content (str | None): The text under the expansion, or None for an expansion that is
-                embeds and attachments alone.
-            files (list[File] | None): Media attaching natively beside the embeds.
+            embeds (list[Embed]): Finished expansion embeds.
+            content (str | None): Text under the embeds, or None to clear the placeholder line.
+            files (list[File] | None): Media attachments sent beside the embeds.
         """
         await self.message.edit(
+            # Multipart edits in nextcord drop content=None instead of clearing existing text.
             content=content or "",
             embeds=embeds,
             allowed_mentions=AllowedMentions.none(),
@@ -264,14 +214,9 @@ class ExpansionPlaceholder(BaseModel):
         await _forget_pending(message_id=self.message.id)
 
     async def discard(self) -> None:
-        """Removes an undelivered placeholder, leaving the reaction as the whole report.
+        """Deletes an undelivered placeholder and clears its pending row, swallowing delete errors.
 
-        Safe in a `finally`: it swallows its own failure rather than replacing whatever sent
-        the expansion down the failure path, and a placeholder already deleted by hand is the
-        outcome this wanted anyway.
-
-        The row goes whether or not the delete did, because a resume would only find the same
-        undeliverable placeholder and try the same delete again.
+        No-op if `delivered` is True; safe to call in a `finally` block.
         """
         if self.delivered:
             return
@@ -292,18 +237,15 @@ class ExpansionPlaceholder(BaseModel):
 async def send_expansion_placeholder(
     message: Message, text: str, source: str, url: str
 ) -> ExpansionPlaceholder | None:
-    """Returns a posted placeholder replying to `message`, or None when the channel refused it.
+    """Returns a posted placeholder replying to `message`, or None if refused or target is gone.
 
-    A refusal here is the whole expansion's answer as well: a channel that will not take this
-    one line will not take the card either, and learning it now costs no fetch. Both refusals
-    are ordinary rather than defects, so they are classified here instead of reaching the
-    listener's last-resort handler.
+    Persists the placeholder in `pending_expansion` before returning.
 
     Args:
-        message (Message): The message carrying the link, which the placeholder replies to.
-        text (str): The line to show until the expansion replaces it.
-        source (str): The owning cog's key, as in `typings/emojis.py::LINK_SOURCE_EMOJIS`.
-        url (str): The URL being expanded, kept so a restart can run the same expansion again.
+        message (Message): Source message carrying the link.
+        text (str): Temporary placeholder line.
+        source (str): Owning cog key from `typings/emojis.py::LINK_SOURCE_EMOJIS`.
+        url (str): Post URL being expanded, stored for restart resumption.
     """
     try:
         placeholder = await message.reply(
@@ -329,20 +271,11 @@ async def send_expansion_placeholder(
 
 
 async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: ExpansionRetry) -> None:
-    """Re-runs one interrupted expansion, or removes what it left behind.
-
-    Both messages are fetched rather than taken as partials: `embed_spacer_payload` reads the
-    placeholder's own attachments to retain an already-uploaded spacer, and `_expand` reacts
-    on the source and suppresses its preview.
-    """
-    # A guild channel is in the cache by `on_ready`; a DM channel need not be, so the fetch
-    # is the fallback rather than the first move.
+    """Re-runs one interrupted expansion or cleans up its placeholder if channel/source is gone."""
+    # Guild channels are cached by on_ready; fall back to fetch for DMs.
     try:
         channel = bot.get_channel(record.channel_id) or await bot.fetch_channel(record.channel_id)
-    # The channel is gone, or the bot was removed from the guild while it was down: the
-    # placeholder went with it, so there is nothing to withdraw and nothing to retry. Narrow
-    # on purpose — anything else keeps the row for the next restart rather than dropping a
-    # placeholder that is still sitting in a channel this could not reach right now.
+    # Drop row only on NotFound/Forbidden; transient errors keep it for the next restart.
     except (NotFound, Forbidden):
         await _forget_pending(message_id=record.message_id)
         return
@@ -352,8 +285,7 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
 
     try:
         placeholder_message = await channel.fetch_message(record.message_id)
-    # Someone removed the stale line by hand, or the channel is no longer readable. Either
-    # way there is nothing left to deliver onto and nothing to clean up.
+    # Placeholder already gone or channel unreadable; nothing left to clean up.
     except (NotFound, Forbidden):
         await _forget_pending(message_id=record.message_id)
         return
@@ -361,8 +293,7 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
 
     try:
         source_message = await channel.fetch_message(record.source_message_id)
-    # The link was withdrawn while the bot was down, which is exactly the case a live
-    # expansion answers by posting nothing.
+    # Source link deleted while down; discard the placeholder.
     except (NotFound, Forbidden):
         await placeholder.discard()
         return
@@ -374,9 +305,8 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
             current_emoji=EXPANSION_WORKING_EMOJI,
             placeholder=placeholder,
         )
-    # `_expand` reports its own failures and returns, so this is the unexpected one: without
-    # the mark the source keeps the working ring with no outcome ever painted, which is the
-    # never-resolving state this sweep exists to clear. Re-raised so the caller still logs it.
+    # Broad on purpose: mark unexpected _expand failures on the source message before re-raising
+    # so the working reaction does not remain stuck.
     except Exception:
         await update_reaction(
             message=source_message,
@@ -386,27 +316,20 @@ async def _resume_one(bot: commands.Bot, record: PendingExpansion, expand: Expan
         )
         raise
     finally:
-        # The same line the listener runs, covering every failure `_expand` returns on, and a
-        # no-op once delivered.
+        # Cleans up the placeholder on early returns; no-op once delivered.
         await placeholder.discard()
 
 
 async def resume_expansion_placeholders(
     bot: commands.Bot, source: str, expand: ExpansionRetry, created_before: datetime
 ) -> None:
-    """Runs again every expansion of `source` that a restart interrupted.
-
-    What runs is the cog's own `_expand` with the arguments its listener passes, so a resumed
-    expansion delivers, refuses or fails exactly as a fresh one does. One row at a time, because
-    a restart's backlog would otherwise hit a platform with every stale link at once, which is
-    the request volume a WAF bans on.
+    """Resumes pending expansions for `source` recorded before `created_before`, sequentially.
 
     Args:
-        bot (commands.Bot): The bot, used to resolve the channel both messages live in.
-        source (str): The cog's key, so it sweeps its own rows and never another cog's.
-        expand (ExpansionRetry): The cog's `_expand`.
-        created_before (datetime): When this process started. Listeners run before `on_ready`
-            does, so a row recorded since is an expansion this process is still running.
+        bot (commands.Bot): Bot used to resolve channels and messages.
+        source (str): Cog key matching `PendingExpansionRow.source`.
+        expand (ExpansionRetry): Cog `_expand` callback.
+        created_before (datetime): Process start timestamp; skips rows created by this process.
     """
     try:
         records = await _load_pending(source=source, created_before=created_before)
@@ -423,6 +346,7 @@ async def resume_expansion_placeholders(
     if not records:
         return
     logfire.info("Resuming interrupted expansions", source=source, pending=len(records))
+    # Sequential to avoid bursting a platform WAF on restart backlogs.
     for record in records:
         try:
             await _resume_one(bot=bot, record=record, expand=expand)
