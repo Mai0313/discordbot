@@ -30,6 +30,7 @@ from nextcord import (
     AllowedMentions,
 )
 from nextcord.ext import commands
+from google.genai.types import HttpOptions
 
 from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
@@ -135,7 +136,10 @@ class ResearchCogs(commands.Cog):
         Raises `ValueError` when `gemini_api_key` is missing; both run loops access this inside
         their `try` blocks so a missing key surfaces as a thread failure notice.
         """
-        return genai.Client(api_key=self.config.gemini_api_key)
+        # Pinned to `v1beta` like `ReplyToolkit.gemini_client`: preview agents are not served on `v1`.
+        return genai.Client(
+            api_key=self.config.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
+        )
 
     @cached_property
     def responses_client(self) -> AsyncOpenAI:

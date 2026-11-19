@@ -11,6 +11,7 @@ from mimetypes import guess_type
 
 from google import genai
 from rich.console import Console
+from google.genai.types import HttpOptions
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.media import LoadedMedia
@@ -41,7 +42,9 @@ def gen_video(
         source_video_path (str | None): Optional local video file to edit in place.
     """
     generator = VideoGenerator(
-        client=genai.Client(api_key=config.gemini_api_key),
+        client=genai.Client(
+            api_key=config.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
+        ),
         video_model=RuntimeModelCatalog().video_model,
     )
     source_video = (

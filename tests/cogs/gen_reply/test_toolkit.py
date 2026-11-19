@@ -5,6 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import httpx2
+from google.genai import _api_client as genai_api_client
+
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
@@ -41,3 +44,29 @@ def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:
     bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
     toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="")
     assert toolkit.memory_writer.bot_user_id == 999
+
+
+async def test_gemini_client_pins_v1beta_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Direct Gemini calls use `v1beta` so omni/Lyria resolve and Files URIs match LiteLLM."""
+    paths: list[str] = []
+
+    async def fake_send(
+        _self: httpx2.AsyncClient, request: httpx2.Request, **_kwargs: object
+    ) -> httpx2.Response:
+        paths.append(request.url.path)
+        return httpx2.Response(
+            status_code=200,
+            request=request,
+            json={
+                "name": "files/abc",
+                "uri": "https://generativelanguage.googleapis.com/v1beta/files/abc",
+                "state": "ACTIVE",
+            },
+        )
+
+    monkeypatch.setattr(target=genai_api_client, name="has_aiohttp", value=False)
+    monkeypatch.setattr(target=httpx2.AsyncClient, name="send", value=fake_send)
+    bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")))
+    toolkit = ReplyToolkit(bot=bot, openai_client=FakeClient(), gemini_api_key="test-key")
+    await toolkit.gemini_client.aio.files.get(name="files/abc")
+    assert paths == ["/v1beta/files/abc"]

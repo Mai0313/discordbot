@@ -139,6 +139,7 @@ def gen_reply_gemini(user_prompt: str) -> None:
         api_key=config.api_key,
         http_options=HttpOptions(
             base_url=config.base_url,
+            api_version="v1beta",
             # NOTICE: extra_body properties are not supported in `.interactions` yet
             # But this is fine for leaving it here.
             extra_body={
