@@ -1,23 +1,14 @@
-"""Custom emoji marking which platform's link the bot just read.
+"""Platform link-source names and custom emoji markers shared by expansion and reply paths.
 
-Shared because two layers put the same marker on the same message and cannot import each other:
-the expansion shell marks a link it expanded into the channel, while the reply pipeline marks one
-it read into an answer instead. A platform with no expansion cog is marked by the reply path
-alone.
-
-Scope is the platform markers alone; the status marks an auto-expansion answers with live beside
-the protocol that gives each of them its meaning.
-
-The keys below are also what an expansion names its `pending_expansion` rows by, so a platform is
-spelled one way wherever it is named; `LinkSourceName` is that spelling.
+`LinkSourceName` is the canonical spelling for registry entries, `pending_expansion` rows,
+route outputs, and `LINK_SOURCE_EMOJIS` keys. Expansion status emojis stay beside the
+expansion protocol.
 """
 
 from typing import Final, Literal
 
-# Every registered link source's name: the registry's, the route call's schema's, each
-# expansion's, and the keys below. A plain alias rather than a `type` statement, because the
-# route call's schema has to carry the enum inline and pydantic hoists a `type` alias into
-# `$defs` behind a `$ref`.
+# Plain alias rather than a `type` statement so `RouteClassification`'s JSON schema inlines
+# the enum instead of hoisting it into `$defs` behind a `$ref`.
 LinkSourceName = Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
 
 FACEBOOK_EMOJI: Final[str] = "<:facebook:1546179601288396810>"
@@ -27,8 +18,6 @@ TWITTER_EMOJI: Final[str] = "<:twitter:1558536389287747604>"
 DOUYIN_EMOJI: Final[str] = "<:douyin:1546180677710385304>"
 BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
 
-# Keyed by `LinkContextSource.name`, so the reply path can mark whichever sources it read with a
-# plain subscript.
 LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "threads": THREADS_EMOJI,
     "facebook": FACEBOOK_EMOJI,

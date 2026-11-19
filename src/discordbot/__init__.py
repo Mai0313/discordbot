@@ -45,15 +45,13 @@ class _TeeStream:
 
 
 def setup_logging() -> None:
-    """Configures logging with logfire, teeing output to a file.
+    """Configures logfire logging to stdout and `./data/logs/<timestamp>.log`.
 
-    The floor is `LOG_LEVEL` (default `debug`), so `./data/logs` keeps the full trace
-    a debugging session needs while a deployment that only wants outcomes can raise it
-    without touching code. See the logging ladder in `.github/CONTRIBUTING.md`.
+    Applies `LOG_LEVEL` (default `debug`) as the minimum console/file level and suppresses
+    pydantic serializer warnings from Responses API payloads.
     """
-    # LiteLLM forwards Responses API output as ResponseReasoningItem objects that
-    # pydantic's discriminated-union serializer does not recognise, producing a
-    # noisy multi-line UserWarning on every reply. The payload still streams fine.
+    # LiteLLM forwards Responses API reasoning items that pydantic's union serializer does
+    # not recognise, emitting a noisy UserWarning per reply while streaming works fine.
     warnings.filterwarnings(
         action="ignore", message=r"Pydantic serializer warnings:", category=UserWarning
     )
@@ -65,8 +63,6 @@ def setup_logging() -> None:
         send_to_logfire=False,
         scrubbing=False,
         inspect_arguments=False,
-        # `output` is what tees the console to a file; the rest of this block carries
-        # the console format and the `LOG_LEVEL` floor, so dropping it loses those too.
         console=logfire.ConsoleOptions(
             colors="auto",
             span_style="show-parents",

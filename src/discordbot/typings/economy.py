@@ -15,31 +15,24 @@ MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
 MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 # Minimum interest a borrower owes on a contract regardless of repayment timing.
 MIN_INTEREST_DAYS: Final[int] = 30
-# How many rows each public leaderboard shows.
 LEADERBOARD_SIZE: Final[int] = 10
 
 # Anti-inflation levers; re-measure before changing them.
-# Absolute ceiling on any single casino wager. Invisible to ordinary players; it
-# bounds all-in doubling to linear growth once a balance gets large.
+# Caps any single casino wager, bounding all-in doubling to linear growth.
 MAX_SINGLE_BET: Final[int] = 1_000_000
-# Per-user cooldown between message rewards, so the flat per-message grant cannot
-# be farmed by spamming.
 MESSAGE_REWARD_COOLDOWN_SECONDS: Final[float] = 60.0
 # Permanent money sink: the burn on every transfer, in basis points.
 TRANSFER_TAX_BPS: Final[int] = 500
 # VIP perk: the payout multiplier on a winning round, as a fraction.
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
-# The multiplier as command descriptions print it.
 VIP_WIN_MULTIPLIER_LABEL: Final[str] = f"{_VIP_WIN_MULTIPLIER_NUM / _VIP_WIN_MULTIPLIER_DEN:g}x"
 
 # Central-bank levers; re-measure before changing them.
 # How many times their own free equity a borrower may owe the central bank.
 CENTRAL_BANK_CREDIT_MULTIPLIER: Final[int] = 2
-# The central bank's starting capital. The interest it keeps is added on top, and
-# the two together are what a server whose own members hold almost nothing can
-# still borrow against. A constant rather than a seeded ledger row, so the ledger
-# row holds only accrued interest.
+# Starting central-bank capital kept as a constant rather than a seeded ledger row so
+# the ledger holds accrued interest alone.
 CENTRAL_BANK_BASE_CAPACITY: Final[int] = 5_000_000
 
 
@@ -102,8 +95,7 @@ def clamped_balance(balance: int, delta: int, allow_negative: bool) -> int:
 def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
     """Returns the post-bonus player delta after applying the VIP payout multiplier.
 
-    The bonus only fires on positive deltas (wins). Pushes and losses pass
-    through unchanged so VIP never softens a loss.
+    Applies only to positive deltas; zero and negative deltas are returned unchanged.
 
     Args:
         delta (int): Pre-bonus player delta for the round.
@@ -115,23 +107,16 @@ def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
 
 
 def central_bank_credit_ceiling(balance: int, total_debt: int) -> int:
-    """Returns how much more central-bank credit one borrower may still draw.
+    """Returns how much additional central-bank credit a borrower may draw.
 
-    Mirrors the lending pool's own double subtraction. A central-bank loan mints
-    into the borrower's balance, so the first term takes that mint back out and
-    the second charges the debt as capacity already used. Borrowing `x` therefore
-    lowers the result by exactly `x`, which is what keeps total minting tied to
-    equity somebody actually earned.
-
-    `total_debt` counts every lender, not just the central bank. A personal loan
-    carries no transfer tax and may be written at 0%, so a ceiling blind to it is
-    reset by lending a minted balance on to a second account, and the pair can
-    then take turns borrowing against each other without limit.
+    Computes `max((balance - total_debt) * CENTRAL_BANK_CREDIT_MULTIPLIER - total_debt, 0)`.
+    `total_debt` must include all lenders (central bank and personal loans), not just the
+    central bank.
 
     Args:
         balance (int): Current wallet balance.
-        total_debt (int): Outstanding principal plus accrued interest the borrower owes
-            across every active contract, whoever lent it.
+        total_debt (int): Outstanding principal plus accrued interest across all active
+            contracts, regardless of lender.
     """
     return max((balance - total_debt) * CENTRAL_BANK_CREDIT_MULTIPLIER - total_debt, 0)
 

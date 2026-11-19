@@ -1,252 +1,137 @@
-"""Every bound on how much content one model request is allowed to carry.
+"""Per-request content caps that reduce what a model sees without failing the call.
 
-The single place to look up what the bot puts in front of a model, and the only place to
-change one. What belongs here is a cap that, when it binds, leaves the model seeing less while
-the request goes out anyway: fewer history messages, fewer attachments, a shorter memory
-document, a truncated transcript. That is the whole rule, and it is what separates this module
-from `typings/timeouts.py`, where expiry produces a failure or a degradation instead.
+A constant belongs here when its binding leaves the model seeing less content while the
+request still goes out (fewer messages, attachments, or linked posts; shorter memory or
+transcript). Excluded by rule:
 
-Three neighbouring kinds of number are deliberately not here, because each answers a different
-question and filing them together would imply they must agree.
-
-**A write-side clamp trims a file, not a request.** `TONE_FILE_MAX_BYTES` is the one that looks
-most like it belongs here and does not: the tone note it bounds is injected on every reply, but
-the clamp fires on the write, so what it limits is what reaches disk and the reader stays
-unbounded. Every clamp of that shape stays beside the write path that applies it.
-
-**A rewrite target tells the model what to produce.** `COMPACTION_TARGET_CHARS` is an
-instruction in a prompt, and `COMPACTION_TRIGGER_CHARS` is the switch that turns that
-instruction on. Neither bounds what the request may contain, so a value either shares with a
-budget below is a coincidence rather than a coupling.
-
-**An output cap bounds what comes back.** `MAX_INLINE_IMAGES`, `DISCORD_MESSAGE_LIMIT` and
-`DISCORD_ATTACHMENT_LIMIT` all bound the reply, so a value one shares with a budget here is the
-same coincidence again.
-
-Also absent: provider hard limits nobody here chose (`FILES_API_MAX_BYTES` is Google's 2 GB),
-UI rendering caps (`REASONING_PREVIEW_MAX_CHARS`, `MEMORY_PAGE_MAX_CHARS`), concurrency, and
-cache sizes.
-
-The one bound that reads like an input budget and is not here is
-`MAX_BILIBILI_INGEST_DURATION_SECONDS`, which stays beside the fetch it gates. Its whole
-justification is that a longer clip cannot finish its download and upload inside
-`LINK_MEDIA_TIMEOUT_SECONDS`, so it is a precomputed deadline rather than a judgement about how
-much video is worth reading.
+- Write-side disk clamps (`TONE_FILE_MAX_BYTES`): stay beside the write path.
+- Prompt rewrite targets/triggers (`COMPACTION_TARGET_CHARS`, `COMPACTION_TRIGGER_CHARS`).
+- Reply/Discord output caps (`MAX_INLINE_IMAGES`, `DISCORD_MESSAGE_LIMIT`,
+  `DISCORD_ATTACHMENT_LIMIT`).
+- Provider hard limits (`FILES_API_MAX_BYTES`), UI caps (`REASONING_PREVIEW_MAX_CHARS`,
+  `MEMORY_PAGE_MAX_CHARS`), concurrency, cache sizes, and deadline-derived fetch gates
+  (`MAX_BILIBILI_INGEST_DURATION_SECONDS`).
+- Wall-clock deadlines that fail or degrade a call (`typings/timeouts.py`).
 """
 
 from typing import Final
 
 # --------------------------------------------------------------------------------------
-# Channel history in one reply
-#
-# Bounded on three axes because no one of them is the right shape alone, and whichever binds
-# first wins.
+# Channel history in one reply (whichever axis binds first wins)
 # --------------------------------------------------------------------------------------
 
-# Discord chat is mostly short one-line messages, so a message count alone either starves a
-# chatty channel or lets a channel of long posts blow up the input. The bot's own replies are long
-# posts, so `HISTORY_CHAR_BUDGET` binds first on nine turns in ten (2026-11); anything older than
-# the active conversation belongs to long-term memory.
+# Max channel history messages per reply; `HISTORY_CHAR_BUDGET` usually binds first.
 HISTORY_MESSAGE_LIMIT: Final[int] = 50
 
-# Paired with the message limit, this binds only once messages average over 40 characters, so
-# what it bounds is a channel of long posts. The bot's most recent reply is kept whole even past it
-# (`gen_reply/context.py::trim_history_to_budget`).
+# Max rendered history chars per reply; the bot's most recent reply is kept whole past it.
 HISTORY_CHAR_BUDGET: Final[int] = 4000
 
-# What a history message costs beyond its own text: the rendered form carries an author header,
-# and an attachment-only message has empty `content` but still renders a marker standing in for
-# it. Without a floor per message a run of image posts would count as free and overshoot.
+# Per-message char floor covering author headers and attachment-only markers.
 HISTORY_PER_MESSAGE_OVERHEAD: Final[int] = 40
 
-# How much of each earlier bot reply the history carries: its opening, then a mark saying the rest
-# was left out. The most recent reply stays whole, every message of it, so a game or a running
-# answer keeps its latest state. One reply runs a median ~1,300 characters, so without this about
-# three of them filled `HISTORY_CHAR_BUDGET` and the bot's own words were over 80% of the window;
-# the budget counts the shortened form, so what this frees goes to more of what people said
-# (2026-11, 961 replies: median window 9 messages to 16, people's 4 to 8).
+# Chars kept from each earlier bot reply (the most recent bot reply stays whole).
 HISTORY_EARLIER_REPLY_MAX_CHARS: Final[int] = 300
 
-# How many history attachments ride as real uploaded files. The character budget cannot see this
-# cost: an attachment-only message spends only `HISTORY_PER_MESSAGE_OVERHEAD` there while
-# re-sending every file to the model on each reply, and the Files-API cache saves only the
-# re-upload, never the ~1.1k input tokens per media part. Past this cap, older attachments
-# degrade to `[attachment: ...]` markers so the model still knows a file was posted, and the
-# answer avoids waiting on heavy history uploads that share `MEDIA_CONCURRENCY` slots across
-# replies in flight.
+# Max history attachments uploaded as media parts; older ones degrade to text markers.
 MAX_HISTORY_MEDIA_PARTS: Final[int] = 5
 
 # --------------------------------------------------------------------------------------
-# Attachment bytes inlined into one reply
-#
-# Binds only where an attachment rides in the request itself (base64, or a text file's text)
-# rather than as an uploaded file's handle (`InlineRenderer`). Google documents a 100 MB
-# per-request limit and rejects base64 payloads well below 97 MB with a 429, while ~77 MB
-# succeeds; base64 adds a third to a file's raw size.
+# Inlined attachment bytes (`InlineRenderer`; Gemini rejects base64 payloads ~77-97 MB)
 # --------------------------------------------------------------------------------------
 
-# Largest attachment inlined at all, checked against the size Discord reports before downloading.
-# Matches Discord's non-Nitro upload limit, and encodes to ~28 MB of base64: small enough to stay
-# under the ~77 MB request ceiling even when rendered twice (in history and again as the
-# replied-to reference message). It no longer fits `MAX_HISTORY_INLINE_BYTES`, so a file this
-# large degrades to a marker in history.
+# Max raw size for a single inlined attachment (~28 MB base64; fits even if rendered
+# twice in history and reference, and degrades to a marker past `MAX_HISTORY_INLINE_BYTES`).
 MAX_INLINE_ATTACHMENT_BYTES: Final[int] = 20 * 1024 * 1024
 
-# What the history window's attachments may put in the request, counted in the bytes they render
-# to, newest kept first. Past it older posts degrade to the `[attachment: ...]` markers the
-# media-part cap above uses. Without it, files that fit one at a time add up past the ceiling and
-# every later reply resends them until they leave the window. Room for most of the five parts the
-# cap above admits when they are downscaled photos (~3-5 MB of base64 each), with one file at
-# `MAX_INLINE_ATTACHMENT_BYTES` of the turn's own beside it still under 77 MB. The current and
-# replied-to messages render whole on top, so more than that one file there can still pass it.
+# Max total base64/inlined bytes across history attachments (newest first); older ones
+# degrade to markers. Current and replied-to messages render whole on top of this cap.
 MAX_HISTORY_INLINE_BYTES: Final[int] = 24_000_000
 
 # --------------------------------------------------------------------------------------
 # Memory read into a request
 # --------------------------------------------------------------------------------------
 
-# How many users' memories one reply may carry. Deterministic participants are never displaced:
-# if they fill or exceed the target the route is offered no optional candidates, otherwise the
-# ones it names can use only the remaining slots.
+# Target user-memory count per reply; deterministic participants are never displaced and
+# optional route picks only fill remaining slots.
 MEMORY_CONTEXT_TARGET_USERS: Final[int] = 8
 
-# Ceiling on one rendered memory document (the merged compartments injected for one reply).
-# Ordinary rendered documents are a few thousand characters at most, so this is a backstop
-# that makes a runaway scope degrade to its newest facts plus an explicit notice instead of
-# silently bloating every request. Rendering stops at the cap without deleting anything on
-# disk, so it never fights the next consolidation over content it would immediately write back.
-#
-# Re-measure the rendered form, not the fact files on disk: a file's `---` header is routinely
-# longer than the body it describes, and only the body is ever rendered.
+# Cap on one merged rendered memory document (body text only, not frontmatter); truncates
+# to newest facts with a notice without deleting anything on disk.
 MEMORY_INJECTION_MAX_CHARS: Final[int] = 30_000
 
-# Not a budget of its own: nothing binds on it and no request is ever shortened by it. It is the
-# operator's warning line for the cap above, logged after a write, and it lives here only because
-# reading it anywhere other than beside that cap would say nothing.
+# Post-write warning threshold for `MEMORY_INJECTION_MAX_CHARS`; does not truncate requests.
 MEMORY_INJECTION_WARN_CHARS: Final[int] = 24_000
 
 # --------------------------------------------------------------------------------------
 # Memory note review and consolidation requests
 # --------------------------------------------------------------------------------------
 
-# Transcript truncation for the note review (keeps head and tail, drops the middle). Large on
-# purpose: the reply history window should reach the review whole, and the memory models accept
-# 1M-token inputs.
+# Middle-truncation cap on transcripts sent to memory note review (keeps head and tail).
 MEMORY_TRANSCRIPT_MAX_CHARS: Final[int] = 100_000
 
-# Cap for one memory note the answer model wrote inline, as it reaches the evaluator and, for a
-# forget, the consolidation prompts. A note is asked for as one sentence, so this only bounds a
-# model that ignored that; it is per note rather than per batch because `MAX_MEMORY_NOTES` already
-# bounds the count, and because a batch cap would let one runaway note starve the rest.
+# Per-note char cap on inline memory notes (batch count is bounded by `MAX_MEMORY_NOTES`).
 MEMORY_NOTE_MAX_CHARS: Final[int] = 400
 
-# How many notes of one kind survive a merge, when several turns were skipped while one memory
-# update was in flight and their notes were folded into one payload. It bounds the request that
-# carries the accumulated result, not what one answer may emit. Two replies' worth, because a
-# merge that deep already means the pipeline is behind.
+# Max notes of one kind kept when merging skipped turns into one queued memory payload.
 MEMORY_MERGED_NOTES_MAX: Final[int] = 10
 
-# Cap for the bot's own reply inside that transcript. The reply is secondary evidence and is
-# appended last, so without this cap a long (e.g. a long summary) reply fills the entire kept tail
-# and the middle-truncation drops the current user message right before it.
+# Cap on the bot's reply inside memory transcripts so it cannot crowd out the user turn.
 MEMORY_REPLY_MAX_CHARS: Final[int] = 8_000
 
-# Tail window of the detail file fed to consolidation as low-trust provenance. Effectively the
-# whole evidence log for any realistic user: this bot injects memory exactly once per reply with
-# no on-demand retrieval, so the stored facts must be distilled from the full evidence base in the
-# background. The bound only keeps a pathological log inside the consolidation input window
-# (~500k zh-TW chars stays well under the 1M-token window with the stored facts and raw batch on
-# top). `DETAIL_FILE_MAX_BYTES` is sized against this and must stay above it.
+# Tail window of `detail.md` fed to consolidation; `DETAIL_FILE_MAX_BYTES` and its trim
+# target must stay above `MEMORY_DETAIL_CONTEXT_MAX_CHARS * 4`.
 MEMORY_DETAIL_CONTEXT_MAX_CHARS: Final[int] = 500_000
 
-# The same evidence, cut to the compartment's newest entries, on the attempt after that
-# compartment's consolidation call failed. Large prompts are what fail: in 2026-11 the calls
-# carrying 60k or more tokens spent their whole output budget on reasoning about one time in four,
-# those under 30k almost never, so the retry is sized to land well under that. The call before it
-# saw the full window, and the next success restores it.
+# Smaller `detail.md` tail used after a compartment's consolidation call fails (prompts
+# >=60k tokens frequently exhaust output budget on reasoning); next success restores full.
 MEMORY_DETAIL_RETRY_MAX_CHARS: Final[int] = 30_000
 
 # --------------------------------------------------------------------------------------
 # Linked posts read for one reply
 # --------------------------------------------------------------------------------------
 
-# Cap on media parts injected for a whole Threads block, shared by the linked post and the post it
-# quotes rather than counted per post. It bounds what one answer pays for a huge carousel: each
-# part costs a fetch and an upload as well as the tokens it spends.
+# Max media parts uploaded across a Threads block (linked post and quoted post combined).
 MAX_THREADS_MEDIA_PARTS: Final[int] = 10
 
-# Cap on posts rendered from a Threads reply chain, mirroring the cog's deep-chain trim: a linked
-# reply deep in a long thread would otherwise render every ancestor's text and bloat or overflow
-# the answer input. The chain is ordered oldest-first, so the tail keeps the target plus its
-# nearest ancestors.
+# Max posts rendered from a Threads reply chain (keeps the target and nearest ancestors).
 MAX_THREADS_POSTS: Final[int] = 6
 
-# Cap on the comments rendered below the target, counted across every branch. Kept on its own axis
-# rather than sharing `MAX_THREADS_POSTS`: the chain is the context leading up to the linked post,
-# the comments are the discussion under it, and one should never squeeze the other out. As of
-# 2026-09, the page ships at most ten reply branches with an unfollowed cursor for the rest, so
-# this is a backstop rather than a policy.
+# Max comments rendered below a Threads target post across all branches.
 MAX_THREADS_REPLIES: Final[int] = 30
 
-# Cap on images ingested from a Douyin photo post. Each costs a download plus an upload, and a
-# model reading eight frames of a gallery already has the gist; the cog's Discord-side cap is
-# separate and larger, because attaching a file is far cheaper than tokenizing it.
+# Max images uploaded from a Douyin photo post (independent of the expansion cog's cap).
 MAX_DOUYIN_INGEST_IMAGES: Final[int] = 8
 
-# Cap on images ingested from a Facebook post, sized to match the Douyin one for the same
-# reason: each costs a fetch plus an upload on the reply's critical path. Deliberately larger
-# than what `parse_facebook` renders into the channel, because the two bound different things —
-# that one stops the expansion scrolling the channel, this one bounds what the answer pays for.
+# Max images uploaded from a Facebook post (independent of `parse_facebook`'s display cap).
 MAX_FACEBOOK_INGEST_IMAGES: Final[int] = 8
 
-# Cap on the comments injected below a Facebook post. Logged out, the page preloads only a
-# handful of comments, so this is a backstop against an unusually long preload rather than a
-# policy about how much discussion to read.
+# Backstop cap on preloaded comments injected below a Facebook post.
 MAX_FACEBOOK_COMMENTS: Final[int] = 10
 
-# Cap on images ingested from an Instagram post, sized to match the other two for the same
-# reason: each costs a fetch plus an upload on the reply's critical path. A carousel routinely
-# carries nine or ten, so this one really does bind, unlike Facebook's.
+# Max images uploaded from an Instagram carousel.
 MAX_INSTAGRAM_INGEST_IMAGES: Final[int] = 8
 
-# Cap on images ingested from a Twitter post. The reader already keeps at most four media items,
-# so this binds on nothing today; it is here for the reason the Instagram one is: the cost is a
-# fetch plus an upload each, on the reply's critical path, and a reader that starts keeping more
-# should not silently raise what one reply spends. Twitter's video is deliberately not ingested at
-# all, matching Facebook and Instagram — the clip rides as a link the model is told it did not watch.
+# Max images uploaded from a Twitter post; Twitter videos stay as links and are not ingested.
 MAX_TWITTER_INGEST_IMAGES: Final[int] = 4
 
-# Cap on posts rendered from a Twitter thread, the linked post included, set to the Threads one for
-# the same reason: FxTwitter walks to the root, so a reply deep in a long argument would otherwise
-# render every post above it. The nearest ancestors are the ones kept.
+# Max posts rendered from a Twitter thread, keeping the linked post and nearest ancestors.
 MAX_TWITTER_POSTS: Final[int] = MAX_THREADS_POSTS
 
-# Cap on the replies rendered below a Twitter post, set to the Threads one. FxTwitter's first page
-# measured 33 to 46 direct replies (2026-10-31), so this does bind, keeping the most-liked.
+# Max replies rendered below a Twitter post (keeps most-liked when FxTwitter returns more).
 MAX_TWITTER_REPLIES: Final[int] = MAX_THREADS_REPLIES
 
-# Cap on one reply's text below a Twitter post. FxTwitter serves a long post whole (432 characters
-# of one syndication cuts at ~275, 2026-10-31), so one essay-length reply would otherwise outweigh
-# the post and every other reply in the block. The longest of 145 sampled replies ran 928
-# characters, so this binds only on an essay, and the render says how much it cut.
+# Per-reply char cap below a Twitter post; truncated replies state how much was omitted.
 MAX_TWITTER_REPLY_CHARS: Final[int] = 2000
 
-# Cap on the comments injected below an Instagram post. Higher than Facebook's because the page
-# carries the whole list rather than a preload, so this is what keeps a viral post's discussion
-# from crowding out the rest of the request.
+# Max comments injected below an Instagram post (page carries the full comment list).
 MAX_INSTAGRAM_COMMENTS: Final[int] = 20
 
-# Render-time cap on the Bilibili description injected as text. Descriptions can run to thousands
-# of characters of tags and sponsor text; the head is where the signal lives.
+# Head chars kept from a Bilibili video description.
 MAX_BILIBILI_DESCRIPTION_CHARS: Final[int] = 1000
 
 # --------------------------------------------------------------------------------------
 # Requests that are not the reply
 # --------------------------------------------------------------------------------------
 
-# How many subject reference images ride into an omni video render, and into the prompt refine in
-# front of it. Shared so the director grounds on exactly the set the render will send, rather than
-# describing references omni never receives (and uploading those unused bytes on the path). omni
-# accepts a handful, so the provider bounds this from above; the number here is what the two calls
-# agree on.
+# Max subject reference images shared by omni video renders and their preceding prompt refine.
 MAX_VIDEO_REFERENCE_IMAGES: Final[int] = 3

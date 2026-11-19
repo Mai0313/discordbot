@@ -7,8 +7,7 @@ from pydantic_settings import BaseSettings
 class LLMConfig(BaseSettings):
     """Configuration settings for LLM integration, reading from environment variables."""
 
-    # All credentials default to empty so tests never have to supply env vars; a real
-    # deployment provides them via .env, and an empty value fails at the API call.
+    # Credentials default to empty for credential-less tests; missing keys fail at first call.
     base_url: str = Field(
         default="",
         description="The base url for the OpenAI API or a compatible endpoint.",
@@ -151,29 +150,15 @@ class LLMConfig(BaseSettings):
 
     @property
     def deep_research_available(self) -> bool:
-        """Returns whether deep research is enabled and has a direct Gemini API key configured.
-
-        Deep research calls Google directly with `gemini_api_key`, so the QA marker and
-        `/deep_research` are offered only when both the kill-switch and the key are active.
-        """
+        """Returns whether deep research is enabled and a direct Gemini API key is configured."""
         return self.deep_research_enabled and self.gemini_key_configured
 
     @property
     def music_available(self) -> bool:
-        """Returns whether inline music is enabled and has a direct Gemini API key configured.
-
-        Music generation calls the Lyria Interactions API directly with `gemini_api_key`, so
-        the QA `<generate-music>` marker is offered only when both the kill-switch and the
-        key are active.
-        """
+        """Returns whether inline music is enabled and a direct Gemini API key is configured."""
         return self.inline_music_enabled and self.gemini_key_configured
 
     @property
     def video_available(self) -> bool:
-        """Returns whether inline video is enabled and has a direct Gemini API key configured.
-
-        Video generation calls the omni Interactions API directly with `gemini_api_key`, so
-        the QA `<generate-video>` marker is offered only when both the kill-switch and the
-        key are active.
-        """
+        """Returns whether inline video is enabled and a direct Gemini API key is configured."""
         return self.inline_video_enabled and self.gemini_key_configured

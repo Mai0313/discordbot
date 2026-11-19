@@ -1,15 +1,13 @@
 """Offline stocktake of the append-only usage records under `data/usage`.
 
-`utils/usage_log.py` writes one JSON line per slash invocation and per AI reply so that
-the features nobody uses can be found; this is the reader for that. It only ever opens
-the month files, so it is safe against a live bot: a line half-written while it reads is
-counted as unreadable rather than silently dropped, and nothing here writes back.
+Reads the monthly JSONL files written per slash invocation and per AI reply. Safe against
+a live bot: nothing writes back, and a partially written tail line is counted as
+unreadable rather than silently dropped.
 
 Every number is a count of invocations. The records carry no success field, no arguments
-and no content (see that module's docstring for why), so a share below is a share of uses
-and never a success rate. That also bounds what this can answer: a command that exists but
-was never run leaves no record at all, so the tables name the features that were used, not
-the ones that were not.
+and no content, so a share below is a share of uses and never a success rate. A command
+that exists but was never run leaves no record at all, so the tables name the features
+that were used, not the ones that were not.
 
 A user is grouped by id and labelled with the username the newest of their records carries.
 That username is a write-time snapshot: someone who renamed leaves both names in the file,
@@ -44,12 +42,7 @@ console = Console()
 
 
 def _month_files(directory: Path, month: str | None) -> list[Path]:
-    """Returns the month files to read, oldest first.
-
-    Raises:
-        SystemExit: The directory is absent or holds nothing matching, which is what a
-            mistyped month and a deployment that never recorded both look like.
-    """
+    """Returns matching monthly JSONL files sorted oldest first; exits if none exist."""
     if not directory.is_dir():
         raise SystemExit(f"no usage records at {directory}")
     files = sorted(directory.glob(pattern="*.jsonl"))
@@ -61,13 +54,7 @@ def _month_files(directory: Path, month: str | None) -> list[Path]:
 
 
 def _read_records(paths: Sequence[Path]) -> tuple[list[UsageRecord], int]:
-    """Parses every record in `paths`, returning them in time order plus the unreadable count.
-
-    Parsing goes through `UsageRecord` itself so this report tracks the writer's schema
-    instead of a second copy of it. A line it rejects is counted rather than raised on:
-    the last line of a live month file is routinely a partial write, and one torn line
-    must not cost the report the whole month.
-    """
+    """Returns time-sorted records parsed from `paths` and the count of unreadable lines."""
     records: list[UsageRecord] = []
     unreadable = 0
     for path in paths:
@@ -91,13 +78,10 @@ def _bar(value: int, peak: int) -> str:
     """Renders `value` as a block bar scaled against the largest value in its column."""
     if peak <= 0:
         return ""
-    # Sized so the widest table still fits an 80-column terminal: past that rich takes the
-    # space back out of the bar itself, which is the one column that means nothing once it is
-    # cropped.
+    # Keeps the widest table within 80 columns so rich never crops the bar.
     bar_width = 16
     filled = round(value / peak * bar_width)
-    # A feature that was used never renders as an empty cell, however far behind the peak
-    # it is: an empty bar and a zero count would otherwise look the same at a glance.
+    # Render a thin sliver for non-zero counts that round to zero blocks.
     return "█" * filled if filled else "▏"
 
 
@@ -128,7 +112,6 @@ def _overview(records: list[UsageRecord], paths: Sequence[Path], unreadable: int
     dms = sum(1 for record in records if record.guild_id is None)
     table.add_row("guilds", f"{len(guilds)}" + (f"  ({dms} uses came from DMs)" if dms else ""))
     if unreadable:
-        # Said out loud: a torn tail line is expected, a hundred of them is a broken file.
         table.add_row("unreadable", f"[yellow]{unreadable} line(s) skipped[/yellow]")
     return table
 
@@ -170,11 +153,7 @@ def _feature_table(records: list[UsageRecord], kind: "UsageKind", title: str, la
 
 
 def _daily_table(records: list[UsageRecord]) -> Table:
-    """Returns one row per calendar day, oldest first.
-
-    The user count sits beside the totals on purpose: it is what tells a busy day apart
-    from one person hammering a single command.
-    """
+    """Returns one daily summary row per calendar day, oldest first."""
     per_day: defaultdict[str, Counter[str]] = defaultdict(Counter)
     users: defaultdict[str, set[int]] = defaultdict(set)
     for record in records:
@@ -210,12 +189,7 @@ def _top_table(
     key: Callable[[UsageRecord], str],
     display: dict[str, str] | None = None,
 ) -> Table:
-    """Returns the `top_rows` busiest values of `key`, with everything else as one row.
-
-    `display` relabels a key for the table only. Grouping and labelling are separate on
-    purpose: a username drifts and an id does not, so the id is what counts the rows up
-    and the name is only what the row is called.
-    """
+    """Returns the busiest `key` buckets (top 10 plus a tail row), relabelled via `display`."""
     counts = Counter(key(record) for record in records)
     features: defaultdict[str, Counter[str]] = defaultdict(Counter)
     for record in records:
@@ -232,9 +206,6 @@ def _top_table(
     table.add_column("share", justify="right")
     table.add_column("", style="cyan")
     table.add_column("most used")
-    # The per-guild and per-user tables are long-tailed — a hundred users, thirty guilds, most of
-    # them one visit — and the tail is reported as a count so a truncated table never reads as the
-    # whole population.
     top_rows = 10
     top = counts.most_common(top_rows)
     peak = max((count for _, count in top), default=0)
@@ -260,8 +231,6 @@ def _top_table(
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses the usage-report CLI arguments."""
-    # `--help` carries the whole module docstring, so what the records can and cannot
-    # answer reaches an operator who never opens the file.
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -293,8 +262,7 @@ def main() -> None:
     console.print(
         _top_table(
             records=records,
-            # Titled by the question rather than by the key: DM traffic carries no guild
-            # and is one row here, so "guilds - 31" would be one more than there are.
+            # Avoids "guilds" title because DM traffic occupies one row alongside guilds.
             title="where used",
             label="guild id",
             key=lambda record: "DM" if record.guild_id is None else str(record.guild_id),

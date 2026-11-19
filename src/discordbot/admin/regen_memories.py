@@ -1,10 +1,8 @@
 """Offline rebuild of file-backed memory from cold-tier evidence.
 
-Rebuilds one scope, or a batch of them, through `regenerate_scope_memory` — the same
-pure-evidence path `/memory regenerate` runs, which distills the detail tail window plus
-any unconsumed raw entries and never reads the existing facts. That function resolves the
-flavor's sections, partitioning and prompts itself, so this script only decides which scopes
-it is pointed at.
+Rebuilds one scope, or a batch of them, from the detail tail window plus any unconsumed
+raw entries without reading existing facts (the same pure-evidence rebuild as
+`/memory regenerate`).
 
 The target is a scope key or one of three collective words::
 
@@ -14,15 +12,13 @@ The target is a scope key or one of three collective words::
     <user_id>                 one user
     bot_memories/<server_id>  one server
 
-Stop the bot before a real run, whatever the target. This runs in a second process and
-`scope_lock` is an in-process `asyncio.Lock`, so nothing serializes the two: the rebuild
-ends by unlinking `raw.md`, which drops any observation the bot appended while it ran, and
-the bot keeps serving its cached pre-rebuild document until its own next write to that
-scope. `/memory regenerate` is the live-safe way to rebuild one scope, precisely because it
-runs inside the bot under that lock. What the target grades is blast radius, not safety, so
-a collective one also asks for the store to be committed first. Rebuilding is the default,
-so that warning is followed by a typed confirmation rather than by a flag: nothing is
-written, and no client is even built, until the operator answers `y`.
+Stop the bot before a real run, whatever the target. This runs in a second process with
+no cross-process locking: the rebuild ends by unlinking `raw.md`, which drops any
+observation the bot appended while it ran, and the bot keeps serving its cached
+pre-rebuild document until its own next write to that scope. Use `/memory regenerate`
+for a live-safe single-scope rebuild. A collective target also requires committing
+`data/memories` first. Rebuilding is the default, so nothing is written until you confirm
+with `y`.
 
 Two expected losses, reported rather than hidden:
 
@@ -32,15 +28,10 @@ Two expected losses, reported rather than hidden:
   read as having no memory in a server it has never spoken in, until its next
   cross-server-safe observation.
 
-A scope with no evidence at all is not one of them: the rebuild skips it, facts and tone
-note untouched, and the report says so.
+A scope with no evidence at all is skipped with its facts and tone note untouched.
 
-The report also names any file in a compartment directory the store did not write. A
-rebuild removes every fact file it did not re-emit, an unreadable one included, but
-never a foreign file — so those are what a rebuilt scope still holds unaccounted for.
-It counts the unreadable ones it removed as well: renaming a section or a durability
-value makes every fact carrying the old one unparsable, and the next rebuild then drops
-all of them in one pass, which nothing else here would say out loud.
+The report also lists foreign files in compartment directories (which a rebuild never
+removes) and counts unreadable fact files removed during the rebuild.
 
 Run from the repo root::
 
@@ -83,13 +74,9 @@ if TYPE_CHECKING:
 
 console = Console()
 
-# The offline fan-out's own bound, deliberately not `MEMORY_GLOBAL_CONCURRENCY`: that one
-# is sized for background work sharing the proxy with the latency-critical reply path, on
-# the assumption that path exists. A batch run here has no reply latency to protect and no
-# reason to push the proxy as hard. No flag on purpose — edit this if a store needs more.
+# Offline batch concurrency; `regenerate_scope_memory` also acquires `memory_semaphore` (24).
 _CONCURRENCY = 20
 
-# Targets naming more than one scope, which is what makes a run store-scale.
 _BATCH_TARGETS = ("all", "users", "servers")
 
 
@@ -117,14 +104,7 @@ class _ScopeRow(BaseModel):
 
 
 def _scopes_for_target(target: str) -> list[str]:
-    """Returns the scopes a target names, in store order.
-
-    Raises:
-        SystemExit: The target names a single scope with nothing on disk to rebuild,
-            which is what a mistyped id looks like. Reported here rather than left to
-            come back as a skipped `no_evidence` row, which would pass the typo off as a
-            real scope.
-    """
+    """Returns matching scopes in store order; exits if a single target is absent on disk."""
     scopes = iter_scopes()
     if target == "all":
         return scopes
@@ -137,13 +117,7 @@ def _scopes_for_target(target: str) -> list[str]:
 
 
 def _preview_row(scope: str) -> _ScopeRow:
-    """Returns the dry-run row for one scope: the observation counts a rebuild of it would see.
-
-    A scope whose evidence cannot be read or decoded gets an error row with no counts instead
-    of raising: the dry run and the real run's failure handler both build on this, and a raise
-    from either would end the whole batch at that scope. The rebuild opens with the same read,
-    so the dry run names the scopes the real run fails.
-    """
+    """Returns the dry-run observation counts for `scope`, capturing read errors in the row."""
     try:
         evidence = read_evidence(scope=scope)
     except (OSError, UnicodeDecodeError) as error:
@@ -156,7 +130,7 @@ def _preview_row(scope: str) -> _ScopeRow:
     buckets = partition_raw_entries(raw_text=evidence, flavor=flavor_of(scope=scope))
     return _ScopeRow(
         scope=scope,
-        # The rebuild's own guard, so the preview names the scopes the run skips.
+        # Matches `regenerate_scope_memory`'s empty-evidence skip condition.
         result="dry-run" if evidence else "no_evidence",
         counts={compartment: text.count("### ") for compartment, text in buckets.items()},
         unreadable_removed=0,
@@ -172,17 +146,7 @@ def _written(scope: str) -> dict[str, int]:
 
 
 def _loss_note(result: str, buckets: dict[str, int]) -> str:
-    """Returns the note for a scope the rebuild skips, empties, or leaves without `global`.
-
-    The skip is read off the result, never off the counts: a skipped scope's real-run
-    counts are the facts it still holds, and a scope whose evidence holds no observation
-    (only a forget request, say) is still rebuilt, from nothing. The dry run reports the
-    skip under the same result for that reason. Empty counts mean an empty rebuild only on
-    a rebuild that finished or the preview of one; a failed or raised one may have stopped
-    before distilling anything. The empty-bucket test also keeps the `EMPTY GLOBAL` note
-    off server scopes, whose evidence all routes to `global` by construction, so its
-    user-flavored wording cannot land on one.
-    """
+    """Returns a warning note when a scope is skipped, rebuilds empty, or lacks `global`."""
     if result == "no_evidence":
         return "SKIPPED: no evidence to rebuild from, so its memory is kept as it is"
     if not any(buckets.values()):
@@ -195,14 +159,7 @@ def _loss_note(result: str, buckets: dict[str, int]) -> str:
 
 
 def _unaccounted_note(scope: str) -> str:
-    """Returns the note for files a rebuild of this scope leaves behind untouched.
-
-    A rebuild removes every fact file it did not re-emit, but never a file the store did
-    not write, so those survive it and nothing else will ever remove them either. The
-    rebuild logs them through logfire, which is unconfigured in a script run and reaches
-    nobody here; this is the operator's copy, and it lands on the dry run too, while
-    there is still time to act on it.
-    """
+    """Returns a warning note listing foreign files left in `scope`'s compartments."""
     stray = [
         f"{compartment}/{name}"
         for compartment in list_compartments(scope=scope)
@@ -212,27 +169,15 @@ def _unaccounted_note(scope: str) -> str:
 
 
 def _unreadable_note(removed: int) -> str:
-    """Returns the note for fact files a rebuild of this scope destroyed unread.
-
-    The one loss nothing else here can report after the fact: the files are gone, and
-    `prune_compartment` is the only thing that saw them, so the count travels back on the
-    rebuild's own report. Names would not help — they are `mint_fact_id` digests of a
-    file that no longer exists — but the count says a rebuild took content with it, which
-    an operator running without `MEMORY_GIT_ENABLED` had no way to learn at all.
-    """
+    """Returns a warning note when unreadable fact files were removed during rebuild."""
     return f"UNREADABLE: {removed} fact file(s) removed unread" if removed else ""
 
 
 def _report(rows: list[_ScopeRow]) -> None:
-    """Prints one line per scope, flagging what a rebuild of it loses, leaves and destroys.
-
-    Deliberately not a `rich.Table`: the notes are the half an operator acts on, and a
-    table cell narrower than one ellipsizes it away. Word wrap can still fold a long note
-    across lines here, but it never drops what it cannot fit.
-    """
+    """Prints the per-scope regeneration summary and warning notes."""
+    # Plain lines instead of `rich.Table` so long warning notes wrap rather than ellipsize.
     console.print("[bold]memory regeneration[/bold]")
-    # Only the scope is padded. A failed rebuild carries the exception text as its result,
-    # so aligning on that column too would let one long error indent every other row.
+    # Pad only scope width; failed results contain long exception strings.
     width = max((len(row.scope) for row in rows), default=0)
     for row in rows:
         summary = ", ".join(f"{name}={count}" for name, count in sorted(row.counts.items()))
@@ -253,11 +198,8 @@ async def _regen_one(
     """Rebuilds one scope, prints its outcome, and returns its report row."""
     removed = 0
     async with semaphore:
-        # The batch's own bound (`_CONCURRENCY` has why). The rebuild still takes
-        # `memory_semaphore` inside, so a run reaches whichever of the two is tighter.
         try:
-            # Inside the handler because it reads the store too: a raise there would
-            # otherwise escape the batch and throw away every row that had already rebuilt.
+            # Keep `read_owner` inside try so a store read error does not abort the batch.
             identity = render_owner_identity(owner=read_owner(scope=scope))
             report = await regenerate_scope_memory(scope=scope, writer=writer, identity=identity)
             result, removed = report.result, report.unreadable_removed
@@ -266,21 +208,12 @@ async def _regen_one(
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
             result = f"error: {type(error).__name__}: {error}"
             counts = _preview_row(scope=scope).counts
-    # A store-wide run is minutes of LLM work, so each scope reports as it lands rather
-    # than leaving the closing report as the only output.
     console.print(f"{scope}: {result}")
     return _ScopeRow(scope=scope, result=result, counts=counts, unreadable_removed=removed)
 
 
 async def _rebuild_batch(writer: MemoryWriterAI, scopes: list[str]) -> list[_ScopeRow]:
-    """Rebuilds every scope concurrently, advancing one bar over the whole batch.
-
-    The bar counts finished scopes out of total rather than tracking any one of them,
-    since `_CONCURRENCY` of them are in flight at once and they land out of order. It
-    shows elapsed time and no estimate, which out-of-order LLM completions would make up.
-    It draws on the module's own console, so `_regen_one`'s per-scope lines scroll above
-    it instead of fighting its redraw.
-    """
+    """Rebuilds `scopes` concurrently with a progress bar, returning rows in input order."""
     semaphore = asyncio.Semaphore(_CONCURRENCY)
     rows: dict[str, _ScopeRow] = {}
     with Progress(
@@ -296,17 +229,12 @@ async def _rebuild_batch(writer: MemoryWriterAI, scopes: list[str]) -> list[_Sco
             row = await landing
             rows[row.scope] = row
             progress.advance(task)
-    # Keyed back into store order: which scope happened to finish first is noise, and a
-    # report shuffled by it cannot be compared against the previous run's.
+    # Restore input store order after out-of-order async completion.
     return [rows[scope] for scope in scopes]
 
 
 def _confirmed() -> bool:
-    """Asks for a typed `y` before the run writes anything.
-
-    Nothing on stdin raises `EOFError`, which is refused rather than read as consent: an
-    unattended or piped invocation is exactly the one that must not rewrite the store.
-    """
+    """Prompts for a typed `y` confirmation, returning False on EOF or any other input."""
     try:
         answer = console.input("[bold yellow]Type y to rebuild: [/bold yellow]")
     except EOFError:
@@ -314,8 +242,6 @@ def _confirmed() -> bool:
         return False
     if answer.strip().lower() == "y":
         return True
-    # Said out loud rather than returned silently: `yes` is refused like anything else,
-    # and a run that just stops after the warnings reads like a crash.
     console.print("[red]Not confirmed; nothing was written.[/red]")
     return False
 
@@ -324,10 +250,6 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
     """Previews or rebuilds every scope the target names, warning about the race first."""
     scopes = _scopes_for_target(target=target)
     console.print(f"{len(scopes)} scope(s) found; dry_run={dry_run}")
-    # Printed on the dry run too, which is when there is still time to act on it, and on
-    # every target: an out-of-process write races the bot's own `scope_lock` whether it
-    # touches one scope or all of them (`/memory regenerate` is the live-safe single-scope
-    # path). Only the blast radius is graded.
     console.print(
         "[yellow]Stop the bot before rebuilding: this writes from a second process, so a "
         "rebuilt scope loses whatever raw entries the bot appended meanwhile.[/yellow]"
@@ -350,8 +272,6 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses the offline rebuild CLI arguments."""
-    # `--help` carries the whole module docstring, so the target table and the
-    # stop-the-bot framing reach an operator who never opens the file.
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

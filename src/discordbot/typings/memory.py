@@ -1,18 +1,8 @@
-"""Pure types for long-term memory: the observation vocabulary and one stored fact.
+"""Pure types for long-term memory: observation vocabularies, facts, and config.
 
-The write side speaks in observations (one conversational signal) and the read side
-speaks in facts (one distilled memory, one file). `MemorySection` is the facts'
-vocabulary, shared by the consolidation delta schema and the rendered document: it is an
-ASCII key rather than the rendered heading, so the structured LLM schema stays English
-while the injected document stays Traditional Chinese.
-
-A fact's fields split into two ownership zones. The model authors `summary`, `section`,
-`durability` and the body, and names `subject_id` plus the keys a fact distils from;
-everything else is stamped by code so the model cannot copy provenance wrong. Stamped is
-not the same as hidden: `MemoryFact` below documents which fields an update or delete
-receives back. `compartment` is stamped too, so a tree edited outside the store can be
-detected: a fact whose stored value disagrees with its containing directory is skipped
-(`facts.parse_fact_file`).
+The write side records observations and the read side stores distilled facts (one file per
+fact). `MemorySection` uses ASCII keys for structured LLM schemas that map to Traditional
+Chinese headings at render time.
 """
 
 from typing import Literal
@@ -46,9 +36,8 @@ type MemoryConfidence = Literal["low", "medium", "high"]
 type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
 type MemorySharing = Literal["global", "source_only"]
 
-# Which section of the rendered document a fact belongs to. One vocabulary for both
-# flavors: `profile`, `fact` and `recent` are shared, the rest are flavor-specific and
-# are rejected when they arrive on the wrong flavor.
+# Fact document sections across both flavors: `profile`, `fact`, and `recent` are shared;
+# all others are flavor-specific and rejected on the wrong flavor.
 type MemorySection = Literal[
     "profile",
     "permanent",
@@ -61,23 +50,16 @@ type MemorySection = Literal[
     "recent",
 ]
 
-# What a stored file holds. Derived from `section` by code so it can never disagree
-# with it; kept as its own field so a reader can select alias rows without knowing the
-# section vocabulary.
+# Derived from `section` by code to let readers filter alias rows directly.
 type MemoryNodeType = Literal["memory", "member_alias"]
 
-# What one consolidation delta asks for. `create` mints a fresh id, `update` and
-# `delete` name an existing one.
 type MemoryDeltaAction = Literal["create", "update", "delete"]
 
-# The `### <category>` header a forget request carries inside `raw.md`. Deliberately not a
-# `MemoryCategory`: a forget is an instruction to consolidation, not an observation to store, and
-# keeping it out of that vocabulary is what keeps it out of every reader that walks observation
-# fields.
+# `raw.md` section header for forget requests; kept out of `MemoryCategory` so observation
+# readers never treat a forget instruction as a stored observation.
 FORGET_REQUEST_CATEGORY = "forget_request"
 
-# The exact header a tone note must lead with. The tier is injected on every reply, so anything
-# else is a rewrite that did not land and must not be written.
+# Required leading header for `tone.md`; rewrites lacking it are rejected.
 TONE_HEADER = "## 語氣偏好"
 
 
@@ -97,13 +79,10 @@ class MemoryOwner(BaseModel):
 class MemoryFact(BaseModel):
     """One distilled memory, stored as a single file inside one compartment.
 
-    The model authors `summary`, `section`, `durability` and `text`, except that a
-    `member_alias` body is code-built and its `text` unread. Code owns provenance —
-    `fact_id`, `compartment`, the `owner_*` and timestamp fields — and mints `fact_id`
-    itself so conversation content can never influence it. Provenance is not hidden
-    from the model: an update or delete has to name the id it is editing, so every
-    stored fact is shown to it with its id, `keys` and `subject_id`, and the delta
-    schema takes those back.
+    The model authors `summary`, `section`, `durability`, and `text` (except `member_alias`
+    rows, whose rendered body is code-built). Code stamps `fact_id`, `compartment`,
+    `owner_id`, `owner_name`, `node_type`, `created`, and `last_confirmed`; updates and
+    deletes still receive `fact_id`, `keys`, and `subject_id` to target existing rows.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -156,15 +135,10 @@ class MemoryFact(BaseModel):
 
 
 class MemoryWriteSummary(BaseModel):
-    """What one turn's memory work recorded, for the note shown under the reply.
+    """Structured summary of one turn's memory writes for the reply footer note.
 
-    Structured rather than pre-rendered because the wording is a Discord concern and the
-    pipeline is not: `services/` never composes what a user reads.
-
-    `private` is a count, not a list. A `source_only` observation is one the pipeline judged
-    unsafe to repeat outside the conversation it came from, and while the reply is in that
-    conversation, the note under it stays in the channel long after the exchange scrolls past.
-    Saying how many were taken keeps the report honest without publishing them.
+    `private` records only a count rather than text, keeping `source_only` observations out
+    of channel history.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -179,14 +153,10 @@ class MemoryWriteSummary(BaseModel):
 
 
 class MemoryCredits(BaseModel):
-    """Who the usage footer credits for the memory one reply read.
+    """Users credited in the usage footer for memory read during a reply.
 
-    Two fields rather than one list because the footer treats them differently: a named user
-    is worth printing, while an unnamed one is worth counting and nothing more. The unnamed
-    are the table-only members of a server memory's `## 成員稱呼`, who carry no Discord label
-    anywhere in the conversation and whose name cannot be fetched from anywhere trustworthy,
-    so the alternative to counting them is publishing a raw snowflake nobody in the channel
-    can resolve.
+    Splits nameable users (`named`) from table-only `## 成員稱呼` members with no Discord
+    label in the conversation (`unnamed`, counted only).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -203,11 +173,7 @@ class MemoryCredits(BaseModel):
 
 
 class MemoryConfig(BaseSettings):
-    """Deployment switches for long-term memory, read from environment variables.
-
-    Kept apart from `LLMConfig` because memory itself has no kill-switch — it is always
-    on — and this is about how the store is kept on disk, not about a model call.
-    """
+    """Deployment settings for long-term memory storage, read from environment variables."""
 
     git_history_enabled: bool = Field(
         default=True,
