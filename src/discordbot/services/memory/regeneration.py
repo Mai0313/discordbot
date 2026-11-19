@@ -1,16 +1,11 @@
-"""Rebuilding a scope's memory from cold-tier evidence alone.
+"""From-scratch memory rebuilds from cold-tier evidence (`detail.md` plus `raw.md`).
 
-The incremental fan-out in `consolidation.py` merges one raw batch into the facts already
-stored. This is the other direction: the existing facts are not shown to the model at all,
-every compartment is distilled from the detail tail plus any unconsumed raw entries, and
-whatever the rebuild did not re-emit is deleted. Only it and a forget pass may lose most of a
-compartment at once, because replacing the whole set is what it is for. Running confirms
-nothing, so the rebuilt facts take their dates from the evidence they rest on and are then
-aged as a consolidation ages them.
+Distills each compartment without showing existing facts, replays recorded forget requests, dates
+rebuilt facts from their supporting evidence, and sweeps stale facts.
 
-It runs either inside the bot under the scope lock, or offline in a second process — where
-it is not equivalent, since its closing `clear_raw` unlinks whatever `raw.md` gained while
-it worked.
+Runs either in-process under `scope_lock` (`/memory regenerate`) or offline
+(`admin/regen_memories.py`). The two are not equivalent: an offline run holds no live process
+lock, so its closing `clear_raw` unlinks any entries appended to `raw.md` while it ran.
 """
 
 import time
@@ -60,17 +55,13 @@ from discordbot.services.memory.consolidation import (
     report_injection_size,
 )
 
-# The ways a from-scratch rebuild can end, carried on `RegenerationReport.result`.
+# Outcome tags carried on `RegenerationReport.result`.
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
 
-# Per-scope regeneration attempt times, separate from the consolidation cooldown
-# so a manual `/memory regenerate` never starves the automatic background
-# consolidation or vice versa. Recorded at attempt time so failures cool down too.
+# Per-scope monotonic attempt times (separate from consolidation cooldown; stamped at attempt).
 _last_regeneration: dict[str, float] = {}
 
-# Per-scope in-flight regeneration tasks so a manual rebuild runs in the
-# background without blocking the command, and a second request while one is
-# still running cannot double-schedule the rebuild.
+# Loop-local in-flight rebuild tasks to prevent overlapping manual rebuilds per scope.
 _regeneration_tasks: LoopLocalRegistry[str, asyncio.Task["RegenerationReport"]] = (
     LoopLocalRegistry()
 )
@@ -104,8 +95,7 @@ def regeneration_on_cooldown(scope: str) -> bool:
     """
     last_attempt = _last_regeneration.get(scope)
     if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
-        # A clear since the last attempt wiped the memory that cooldown
-        # belonged to; the fresh post-clear state deserves a prompt rebuild.
+        # Post-clear state ignores the wiped memory's prior cooldown.
         return False
     return time.monotonic() - last_attempt < MEMORY_REGENERATION_COOLDOWN_SECONDS
 
@@ -140,10 +130,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
     if _regeneration_tasks.get(key=scope) is task:
         _regeneration_tasks.pop(key=scope)
     if task.cancelled():
-        # Cancelled (e.g. bot shutdown): reading result() would raise
-        # CancelledError out of this callback. A cancel before the last forget replay has
-        # applied puts back every compartment the rebuild replaced, and raw.md is not
-        # yet retired either way.
+        # Cancelled tasks raise CancelledError from result(); skip logging on shutdown.
         return
     try:
         task.result()
@@ -163,12 +150,10 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
 ) -> RegenerationReport:
     """Rebuilds every compartment of `scope` from cold-tier evidence alone.
 
-    Existing facts are not shown to the model: the rebuild distills the detail tail window
-    plus any unconsumed raw entries from scratch, one forget segment at a time in recorded
-    order so what came before a forget is rebuilt, the forget replayed, and what came after
-    merged into the rebuilt facts. A run that stops before its last forget replay applies
-    restores every compartment it replaced; the raw batch is retired only when every
-    compartment and the tone note finish rebuilding.
+    Distills `detail.md` plus any unconsumed `raw.md` one forget segment at a time in recorded
+    order without showing existing facts. Restores replaced compartments if the run fails or
+    times out before the final forget replay applies; retires `raw.md` only after all
+    compartments and the tone note succeed.
 
     Args:
         scope (str): Memory scope key to rebuild.
@@ -183,9 +168,7 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
     unreadable_removed = 0
     async with scope_lock(scope=scope), memory_semaphore():
         if regeneration_on_cooldown(scope=scope):
-            # Invocations queued behind a held lock all pass the command-level
-            # cooldown check before the first one stamps the attempt; the
-            # re-check under the lock keeps the per-scope limit on the rewrite.
+            # Re-check under the lock because concurrent invocations can pass the command check.
             return RegenerationReport(result="cooldown")
         run = start_run(scope=scope, writer=writer, identity=identity, started_at=started_at)
         raw_entries = read_raw_entries(scope=scope)
@@ -197,29 +180,21 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
         compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
         replaced: dict[str, list[MemoryFact]] = {}
         try:
-            # The individual calls carry no deadline of their own, so this is the only
-            # thing standing between a stuck rebuild and a scope lock held for as long as
-            # the client will keep one compartment's request alive.
+            # Single deadline across the compartment loop; client calls carry no tighter bound.
             async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-                # One forget at a time, in the order they were recorded, as consolidation takes
-                # a batch: a forget reaches only the facts made from what came before it, and
-                # what was said after it is a restatement it must not reach.
+                # Replay segments in recorded order so forgets reach earlier facts, not later ones.
                 for index, (observations, forgets) in enumerate(
                     forget_segments(raw_text=evidence)
                 ):
                     segment = partition_raw_entries(raw_text=observations, flavor=run.flavor)
-                    # The first pass touches every compartment, so one with nothing left to
-                    # rebuild from is emptied; a later one only those it has evidence for.
+                    # First segment visits every compartment to empty obsolete ones; later ones
+                    # only visit active buckets.
                     for compartment in (
                         compartments if index == 0 else global_first(compartments=set(segment))
                     ):
                         raw_bucket = segment.get(compartment, "")
                         if not raw_bucket:
-                            # Nothing to distil before the first forget: the model would be
-                            # handed an empty corpus and could only answer with an empty batch,
-                            # so the prune alone reaches the same state without a call that
-                            # could fail the compartments that do have something. A later
-                            # segment merges into the emptied compartment.
+                            # No pre-forget evidence: prune directly instead of an empty LLM call.
                             replaced[compartment] = read_facts(
                                 scope=scope, compartment=compartment
                             )
@@ -242,11 +217,9 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
                         return RegenerationReport(
                             result="failed", unreadable_removed=unreadable_removed
                         )
-                # The replay has reached every compartment, so the rebuild stands from here.
+                # All forget replays applied; commit point (skip restore on later exit).
                 replaced.clear()
-                # The replay takes the evidence of what it deleted out of both files, so the
-                # tone rebuild and the retirement below must not work from the copies read
-                # before it.
+                # Re-read evidence after forget replays stripped released entries from both files.
                 raw_entries = read_raw_entries(scope=scope)
                 evidence = read_evidence(scope=scope)
                 if cleared_since(scope=scope, started_at=started_at):
@@ -266,8 +239,7 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         report_injection_size(scope=scope, flavor=run.flavor)
         if raw_entries:
-            # The rebuild consumed the raw batch; retire it to the cold tier so it
-            # cannot be re-ingested.
+            # Retire consumed raw entries into detail.md so they are not re-ingested.
             append_detail(scope=scope, text=raw_entries)
             clear_raw(scope=scope)
         memory_git.enqueue(scope=scope, reason="rebuild")
@@ -277,14 +249,7 @@ async def regenerate_scope_memory(  # noqa: C901, PLR0911 -- one early report pe
 async def _rebuild_compartment(
     run: ConsolidationRun, compartment: str, raw_bucket: str, replaced: dict[str, list[MemoryFact]]
 ) -> int | None:
-    """Rebuilds one compartment from one segment's evidence; None means the run stops here.
-
-    The compartment's first pass replaces it from that evidence alone, recording what it held
-    for `_restore_compartments`. A later pass merges the segment into what this run rebuilt, as
-    consolidation merges a batch: shown no earlier evidence, so a fact-writing call never sees
-    what a forget left behind, and never compacting, since it could not check a fact against
-    evidence it was not shown. Returns how many unreadable files the replace removed.
-    """
+    """Rebuilds or merges one segment into `compartment`, returning unreadable count or None."""
     rebuilt = compartment in replaced
     existing = read_facts(scope=run.scope, compartment=compartment) if rebuilt else []
     result = await run.writer.consolidate(
@@ -329,12 +294,7 @@ async def _rebuild_compartment(
 
 
 def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[MemoryFact]]) -> None:
-    """Puts every compartment the run replaced back to the facts it held before the run.
-
-    Only what `read_facts` could read was kept, so a file the replace pass removed unread
-    stays gone and stays counted. Skipped after a clear, which already deleted both
-    generations: writing the old facts back would undo it.
-    """
+    """Restores compartments replaced during an aborted rebuild unless the scope was cleared."""
     if not replaced or cleared_since(scope=run.scope, started_at=run.started_at):
         return
     for compartment, facts in replaced.items():
@@ -352,27 +312,14 @@ def _restore_compartments(run: ConsolidationRun, replaced: dict[str, list[Memory
 
 
 async def _reapply_forgets(run: ConsolidationRun, forgets: str) -> bool:
-    """Re-runs one segment's forget requests against the facts and tone evidence rebuilt before it.
-
-    A rebuild derives facts from `detail.md` and `raw.md` rather than from current facts, so an
-    observation whose earlier forget found nothing to delete can still sit in `detail.md` and
-    be re-created by the rebuild. Replaying the forget requests in their own `deletes_only` and
-    `forget_tone(evidence_only=True)` calls deletes those recreated facts and their evidence
-    without feeding the forget's own sentence to a fact-creating call. Returns False when a
-    replay call fails so the caller restores the replaced compartments.
-    """
+    """Replays one segment's forget requests against rebuilt facts and tone evidence."""
     return await apply_forget_buckets(run=run, forgets=forgets) and await forget_tone(
         run=run, forgets=forgets, evidence_only=True
     )
 
 
 def _date_rebuilt_facts(run: ConsolidationRun, evidence: str) -> None:
-    """Dates every rebuilt fact by the evidence it rests on, then ages the scope as consolidation does.
-
-    The rebuild wrote each fact at the time it ran, which would read a fact distilled from
-    months-old evidence as just confirmed and give a stale `recent` one a fresh TTL (#1157).
-    Each compartment is dated only by the evidence routed to it, the same evidence its calls saw.
-    """
+    """Re-dates rebuilt facts per compartment from their evidence and sweeps stale facts."""
     buckets = partition_raw_entries(raw_text=evidence, flavor=run.flavor)
     today = today_utc()
     keyed = swept = facts = 0
@@ -392,14 +339,7 @@ def _date_rebuilt_facts(run: ConsolidationRun, evidence: str) -> None:
 
 
 def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
-    """Returns every compartment a rebuild touches, `global` first.
-
-    Compartments that still hold files but have no surviving evidence are included so
-    the rebuild empties them; leaving them alone would keep pre-rebuild facts visible
-    alongside the new ones with no evidence behind them. Touching one does not always
-    mean consolidating it: an entry with no evidence before the first forget is pruned
-    without a model call (`regenerate_scope_memory` has the why).
-    """
+    """Returns all compartments to rebuild (`global` first), including ones without evidence."""
     return global_first(
         compartments={GLOBAL_COMPARTMENT, *buckets, *list_compartments(scope=scope)}
     )
@@ -408,12 +348,7 @@ def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
 def _replace_compartment(
     run: ConsolidationRun, compartment: str, result: ConsolidatedMemory
 ) -> int:
-    """Replaces a compartment's contents with a from-scratch rebuild's facts.
-
-    Applies the batch first with `allow_mass_delete=True` and prunes afterwards to the ids the
-    batch actually wrote, so a fact the rebuild kept is never momentarily absent and any fact
-    not re-emitted is removed.
-    """
+    """Applies a rebuild batch with `allow_mass_delete=True` and prunes unemitted facts."""
     outcome = apply_deltas(
         scope=run.scope,
         compartment=compartment,

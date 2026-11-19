@@ -1,7 +1,6 @@
 """LLM review and consolidation for long-term memory, in either flavor.
 
-Each review and consolidation call is handed its scope's flavor, which picks the phase prompt,
-so the per-user and the per-server memory share every gate, renderer and redaction here.
+Shares validation gates, transcript rendering, and secret redaction across user and server flavors.
 """
 
 import re
@@ -51,13 +50,8 @@ from discordbot.services.memory.server_prompts import (
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-# Both phases run on model output that originated in user conversations, so
-# secrets are scrubbed before upload and again on the model output. Patterns
-# stay shape-specific on purpose: a bare-hex rule would also eat git SHAs,
-# which are common non-secret content in a developer Discord. The prompts
-# instruct the model to redact anything token-like as the generic backstop.
-# The dotted shapes anchor their start on ASCII word characters, not `\b`, which counts
-# Chinese as a word character and misses a token typed straight against it.
+# Shape-specific secret patterns scrubbed on input and output (bare hex excluded to preserve git
+# SHAs). Dotted tokens use ASCII lookbehinds rather than `\b` because Python treats CJK as `\w`.
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"AIza[A-Za-z0-9_-]{30,}"),
@@ -72,35 +66,22 @@ _SECRET_PATTERNS = (
 )
 
 _AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
-# The trusted author prefix as it appears inside a rendered transcript block, indented
-# by `_indent_block`. Read to recover who else took part in the conversation, so the
-# sharing gate can recognise a third party named in plain prose rather than by id.
+# Matches indented author prefixes in rendered transcripts to build the participant roster.
 _PARTICIPANT_PREFIX_RE = re.compile(
     r"^[ \t]*(?P<display>.+?) \((?P<username>[^()\n]+)\) \[id: (?P<user_id>\d+)\]:",
     flags=re.MULTILINE,
 )
 _LATIN_NAME_RE = re.compile(r"^[\w.\- ]+$", flags=re.ASCII)
-# Another participant referenced inside an observation's text (an id token or a raw
-# Discord mention). Such an observation is about a relationship or someone else's
-# business, so the sharing gate locks it to its source conversation. The id is captured
-# so the gate can exempt the target's own id and the bot's: neither names anybody else,
-# and both are the tokens most likely to be quoted into evidence (an author prefix, a
-# message addressed to the bot).
+# Matches `[id: N]` and Discord mentions in observation text; captures id to exempt target and bot.
 _OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention_id>\d+)>")
-# The target-user id inside a phase-1 subject; None for the server flavor.
+# Extracts `target_user_id` from a phase-1 subject; absent for server flavor.
 _SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", flags=re.MULTILINE)
-# The optional second subject line naming where the conversation happened. Format and
-# parser are co-located so the writer (`user_subject`) and the reader
-# (`parse_subject_source`) cannot drift apart across the memory_job round-trip.
+# Co-located parser for the optional `source` line written by `user_subject`.
 _SUBJECT_SOURCE_RE = re.compile(r"^source: (?P<source>guild \d+|dm)$", flags=re.MULTILINE)
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
-# Column-0 transcript block marker (`[message N | role]`). Used to realign a middle-
-# truncated tail to a trusted block boundary so a sliced indent never leaves user
-# content at column 0, where the marker scheme reserves the trusted authorship signal.
+# Column-0 message marker used to align middle-truncated tails to a trusted block boundary.
 _BLOCK_MARKER_RE = re.compile(r"^\[message \d+ \| ", flags=re.MULTILINE)
-# One `[memory notes | <kind>]` block plus its indented body, as `render_turn_payload` writes it.
-# The body runs to the first line that is neither indented nor blank, which is the next column-0
-# marker or the end of the payload.
+# Matches `[memory notes | remember|forget]` blocks and their indented bodies.
 _NOTES_BLOCK_RE = re.compile(
     r"^\[memory notes \| (?P<kind>remember|forget)\]$(?P<body>(?:\n(?:[ \t]+.*)?)*)",
     flags=re.MULTILINE,
@@ -292,11 +273,9 @@ class ToneForget(BaseModel):
 
 
 class ConsolidationRequest(BaseModel):
-    """Everything one compartment's consolidation call is given.
+    """Inputs for one compartment's consolidation call.
 
-    A block that defaults to `""` is one some calls have nothing to put in. `_tagged` marks
-    an absent block explicitly, so an omitted one and one passed as `""` reach the model
-    identically.
+    Empty optional blocks are rendered explicitly as `(empty)` by `_tagged`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -492,11 +471,7 @@ class MemoryWriterAI(BaseModel):
     async def _parse[OutputT: BaseModel](
         self, instructions: str, user_text: str, text_format: type[OutputT], end_user_label: str
     ) -> OutputT | None:
-        """Runs one structured Responses API call, returning None on any failure.
-
-        Delegates to `parse_responses_or_none` so refused or truncated outputs return None rather
-        than a half-emitted delta batch.
-        """
+        """Runs one structured Responses API call via `parse_responses_or_none`."""
         return await parse_responses_or_none(
             client=self.client,
             model=self.model,
@@ -532,10 +507,7 @@ def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
 def participant_names_from_transcript(
     transcript: str, target_user_id: int | None, bot_user_id: int | None
 ) -> tuple[str, ...]:
-    """Returns the matchable display names and usernames of participants other than target and bot.
-
-    Reads the author prefixes from `transcript` so a resumed job rebuilds the same roster
-    from its stored transcript without an extra DB column.
+    """Returns matchable display names and usernames of participants other than target and bot.
 
     Args:
         transcript (str): Rendered conversation transcript.
@@ -552,9 +524,7 @@ def participant_names_from_transcript(
 
 def _is_matchable_name(name: str) -> bool:
     """Whether a roster name is distinctive enough to lock an observation on."""
-    # Shortest roster name the gate will match on, split by script. A Latin name also has
-    # to land on a word boundary, which a CJK name cannot (there are no spaces), so the CJK
-    # floor carries that burden on its own.
+    # Minimum lengths by script: Latin uses ASCII word boundaries; CJK matches by substring.
     min_latin_name = 3
     min_other_name = 2
     floor = min_latin_name if _LATIN_NAME_RE.match(name) else min_other_name
@@ -562,14 +532,7 @@ def _is_matchable_name(name: str) -> bool:
 
 
 def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
-    """Whether the text names another participant in plain prose.
-
-    Latin names must land on an ASCII word boundary, so `amy` does not fire on `amylase` but
-    does on `跟Amy吵架`, where Chinese puts no space around a name; a CJK
-    name has no boundaries to anchor to and is matched as a substring, which is the
-    deliberate asymmetry — a false positive keeps a harmless fact inside one guild,
-    while a false negative publishes a private one everywhere.
-    """
+    """Returns whether `text` mentions any roster name (ASCII-bounded Latin or CJK substring)."""
     folded = text.casefold()
     for name in roster:
         candidate = name.casefold()
@@ -584,8 +547,8 @@ def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
 def transcript_from_messages(message_list: list[EasyInputMessageParam], full_reply: str) -> str:
     """Returns `message_list` and `full_reply` rendered as an indented block transcript.
 
-    Each message opens with `[message <n> | <role>]` at column 0 and has its body indented by
-    two spaces so user-authored text cannot forge a block boundary or an author prefix.
+    Prefixes each message with `[message <n> | <role>]` at column 0 and indents body lines by
+    two spaces.
 
     Args:
         message_list (list[EasyInputMessageParam]): Input messages from the reply context.
@@ -600,12 +563,10 @@ def transcript_from_messages(message_list: list[EasyInputMessageParam], full_rep
         blocks.append(f"{marker}\n{_indent_block(text=text)}")
     reply = USAGE_FOOTER_RE.sub("", full_reply).strip()
     if len(reply) > MEMORY_REPLY_MAX_CHARS:
-        # The reply is secondary evidence; capping it keeps the tail of the
-        # middle-truncation budget free for the current user message.
+        # Cap reply text so middle truncation preserves the current user message.
         reply = f"{reply[:MEMORY_REPLY_MAX_CHARS]}\n[... reply truncated ...]"
     if reply:
-        # A catchup reads a channel with no reply of its own, and an empty block would still
-        # tell the reviewer the bot answered.
+        # Omit empty reply blocks (e.g., server catchup) so the reviewer sees no bot turn.
         blocks.append(
             f"[message {len(blocks) + 1} | assistant reply (this turn)]\n{_indent_block(text=reply)}"
         )
@@ -636,17 +597,14 @@ def target_centered_memory_messages(
     ]
 
 
-# One turn's inline memory notes, `(remember, forget)`. A payload merged from several waiting
-# turns carries one per turn, oldest first; `parse_turn_payload` has why.
+# One turn's inline memory notes `(remember, forget)`; merged payloads hold rounds oldest-first.
 type NoteRound = tuple[tuple[str, ...], tuple[str, ...]]
 
 
 def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
     """Returns `transcript` and `rounds` bundled into a single string for `memory_job.transcript`.
 
-    Notes ride inside `transcript` so `memory_job` needs no extra schema columns, and are
-    appended after the transcript's own truncation under column-0 `[memory notes | <kind>]`
-    markers with indented bodies so conversation content cannot forge them.
+    Appends indented `[memory notes | <kind>]` blocks after `transcript` using column-0 markers.
 
     Args:
         transcript (str): Rendered conversation transcript.
@@ -656,8 +614,7 @@ def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
     for position, (remember, forget) in enumerate(rounds, start=1):
         for kind, notes in (("remember", remember), ("forget", forget)):
             lines = [text for note in notes if (text := note_text(note=note))]
-            # A round with another after it always ends in its forget block, empty or not,
-            # since that block is where `parse_turn_payload` closes a round.
+            # Emit a forget delimiter before later rounds so parse_turn_payload splits rounds.
             if lines or (kind == "forget" and position < len(rounds)):
                 body = _indent_block(text="\n".join(lines))
                 blocks.append(f"[memory notes | {kind}]\n{body}".rstrip())
@@ -666,9 +623,6 @@ def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
 
 def parse_turn_payload(payload: str) -> tuple[str, tuple[NoteRound, ...]]:
     """Returns `payload` split back into `(transcript, rounds)` in round order.
-
-    Rounds stay separate so an older turn's remember notes are staged into `raw.md` ahead of a
-    newer turn's forget requests.
 
     Args:
         payload (str): Combined turn payload created by `render_turn_payload`.
@@ -811,18 +765,8 @@ def _sanitize_observation(
     evidence_quote = _trim_text(
         text=redact_secrets(text=observation.evidence_quote), max_chars=OBSERVATION_QUOTE_MAX_CHARS
     )
-    # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
-    # are private by construction, and an observation about another participant is
-    # about a relationship, not a portable fact (neither the target's own id nor the
-    # bot's names anybody else, so both stay exempt). Scans the pre-trim text so a token
-    # past the truncation point cannot dodge the gate. Code only ever tightens
-    # sharing to source_only; it never loosens a source_only call back to global.
-    #
-    # The roster half exists because `global` is permanent cross-server reach with no
-    # read-time filter behind it, so "他跟女友吵架" — which carries no id token at all —
-    # cannot be left entirely to the model's own judgement. Matching the conversation's other
-    # participants literally is the deterministic half; `PHASE1_EVALUATOR_PROMPT` covers whoever
-    # is named but absent.
+    # Deterministic sharing backstop: scan pre-trim text so truncated tokens cannot bypass the
+    # gate. Only tightens to `source_only`; never loosens a model-chosen `source_only` to `global`.
     scanned = f"{observation.summary_zh}\n{observation.evidence_quote}"
     sharing = observation.sharing
     if (
@@ -933,13 +877,7 @@ def _indent_block(text: str) -> str:
 
 
 def _strip_forwarded_payload(text: str) -> str:
-    """Drops a block's forwarded snapshot span so memory never attributes it to the forwarder.
-
-    `get_cleaned_content` appends forwarded text last under `FORWARDED_MESSAGE_MARKER`, so the
-    first marker is the suffix boundary: everything from it to end-of-body is someone else's
-    words and must not become a fact about the (target) forwarder. The answer still sees the
-    full body; only this memory-evidence transcript excludes it.
-    """
+    """Strips text from `FORWARDED_MESSAGE_MARKER` onward to exclude forwarded content."""
     index = text.find(FORWARDED_MESSAGE_MARKER)
     if index == -1:
         return text
@@ -955,22 +893,14 @@ def _message_text(message: EasyInputMessageParam) -> str:
     for part in content:
         if part.get("type") != "input_text":
             continue
-        # Narrow to the concrete text part type after the runtime type check, so the
-        # `text` key reads as str instead of widening every part to dict[str, object].
+        # Narrow after runtime type check so text_part["text"] types as str.
         text_part = cast("ResponseInputTextParam", part)
         parts.append(text_part["text"])
     return "\n".join(parts).strip()
 
 
 def _truncate_middle(text: str, max_chars: int) -> str:
-    """Keeps the head and tail of an oversized transcript, dropping the middle.
-
-    The tail is realigned forward to the next column-0 block marker so the resumed
-    region always starts at a trusted `[message N | role]` boundary; without this a
-    cut landing inside an indented body could leave user content at column 0 and forge
-    a block boundary. When no marker lands inside the tail it is returned as a best
-    effort.
-    """
+    """Middle-truncates `text` to `max_chars`, aligning the tail to a column-0 block marker."""
     if len(text) <= max_chars:
         return text
     marker = "\n\n[... transcript truncated ...]\n\n"

@@ -1,28 +1,18 @@
 """File-backed storage for long-term memory, keyed by an opaque scope.
 
-A scope is a relative path under `data/memories/` that doubles as the registry key.
-Per-user memory uses `user_scope(user_id)` (`<user_id>`); the bot's own per-server
-memory uses `server_scope(server_id)` (`bot_memories/<server_id>`).
+A scope is a relative path under `data/memories/` that doubles as the registry key:
+`user_scope(user_id)` (`<user_id>`) for per-user memory, `server_scope(server_id)`
+(`bot_memories/<server_id>`) for per-server memory.
 
-Inside a scope the consolidated tier is **one file per fact**, filed under the
-compartment that decides who may read it — `global/` (safe anywhere),
-`g/<guild_id>/` (that guild only) and `dm/` (the owner's own DMs). The path *is*
-the privacy boundary: reading for guild G is `global/` plus `g/<G>/`, two joins each
-guarded by `_COMPARTMENT_RE`, with no read-time content filter to get wrong. A server
-scope has one compartment (`global/`) because a server memory is per-guild by
-construction and its evidence carries no source to route by.
+Consolidated facts are stored one file per fact under the compartment that enforces visibility:
+`global/` (safe anywhere), `g/<guild_id>/` (that guild only), and `dm/` (the owner's own DMs).
+Server scopes use only `global/`. Per-scope files sit alongside compartments: `raw.md` (staged
+phase-1 entries), `detail.md` (append-only cold evidence trimmed to a byte cap, losing only
+forget-released entries), and `tone.md` (per-user tone note).
 
-The remaining tiers are per-scope: `raw.md` accumulates phase-1 entries
-until consolidation consumes them, `detail.md` is the append-only cold evidence log
-(read as a tail window, trimmed to a hard byte cap, and losing only what a forget released),
-and `tone.md` is the short always-read note of how the user wants the bot to sound.
-
-IO is synchronous, which one fact per file would otherwise make untenable on the reply
-path: `read_memory_document` is cached under a per-scope generation counter that
-every fact write bumps, so a repeat read costs no syscalls at all. The counter is exact
-because every write in this process goes through here; editing the tree from outside
-while the bot runs is not supported. The read also leaves out facts past their date TTL,
-whose only time input is the UTC day, so the cache is stamped with that day as well.
+Store IO is synchronous. `read_memory_document` caches rendered documents by `(scope,
+compartments, flavor, max_chars)` stamped with a per-scope write generation and UTC day (for date
+TTL filtering). Out-of-process edits while the bot runs are unsupported.
 """
 
 import os
@@ -66,26 +56,21 @@ from discordbot.services.memory.raw_entries import (
 
 _MEMORY_DIR = Path("./data/memories")
 
-# Fixed parent directory for the bot's own per-server memory. Deliberately not the
-# bot's user id: a numeric directory is indistinguishable from a user scope on disk,
-# and it strands the whole server memory the moment the bot account changes.
+# Fixed parent dir for server memory (not the bot's user id, which collides with user scopes and
+# breaks on account change).
 BOT_MEMORY_DIR_NAME = "bot_memories"
 
-# The three compartment shapes. `g/<id>` carries a separator on purpose so it joins
-# straight onto the scope directory; `_COMPARTMENT_RE` is what stops anything else
-# (`..`, an absolute path, a stray name) ever becoming a directory.
+# Valid compartment paths; _COMPARTMENT_RE prevents traversal and stray names.
 GLOBAL_COMPARTMENT = "global"
 DM_COMPARTMENT = "dm"
 _COMPARTMENT_RE = re.compile(r"^(?:global|dm|g/\d{1,20})$")
 _GUILD_DIR_NAME = "g"
 
-# Per-scope file-write locks, rebuilt per event loop by the shared registry.
+# Per-scope file-write locks, rebuilt per event loop.
 _scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
-# Manual-clear timestamps; monotonic, so it is not loop-keyed.
+# Per-scope monotonic timestamps of manual clears.
 _cleared_at: dict[str, float] = {}
-# Per-scope write counter and the rendered-document cache keyed on it. Not loop-bound
-# (plain dicts, no asyncio primitive). All three are process-global and describe one store
-# root, so relocating that root has to reset them.
+# Process-global write counter and rendered-document cache for the active store root.
 _write_generation: dict[str, int] = {}
 _render_cache: dict[
     tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[tuple[int, datetime], str]
@@ -148,7 +133,7 @@ def flavor_of(scope: str) -> MemoryFlavor:
 
 
 def memory_root() -> Path:
-    """Returns the store root, read through this accessor so it can be relocated."""
+    """Returns the memory store root path."""
     return _MEMORY_DIR
 
 
@@ -175,8 +160,7 @@ def compartment_dir(scope: str, compartment: str) -> Path:
 def list_compartments(scope: str) -> list[str]:
     """Returns every compartment that exists on disk for `scope`, in a stable order.
 
-    Ordered `global`, ascending guild id, then `dm` so the assembled document does not
-    reshuffle between reads of an unchanged scope.
+    Ordered `global`, ascending guild id, then `dm`.
 
     Args:
         scope (str): Memory scope key.
@@ -199,20 +183,7 @@ def list_compartments(scope: str) -> list[str]:
 
 
 def _scope_has_memory(scope: str) -> bool:
-    """Whether a scope already has live memory on disk.
-
-    Checks the single-file tiers first: they answer for most scopes without touching the
-    compartment tree, which costs one `iterdir` per compartment. `detail.md` counts even
-    though it is never injected — it is the evidence a rebuild reconstructs everything
-    from, and a scope that has gone quiet since its last consolidation holds nothing else,
-    which is the steady state for a server.
-
-    The compartment tier is parsed rather than listed, so a file no reader can parse does
-    not answer for a scope on its own: listing would keep such a scope on `iter_scopes`
-    forever, handed to every sweep with nothing any of them could do about it. The parse
-    costs nothing in practice: a scope that has ever consolidated has a `detail.md` and
-    answers above, so what reaches the walk is a leftover directory with no fact in it.
-    """
+    """Returns whether `scope` has live single-file tiers or parseable facts on disk."""
     scope_dir = _scope_dir(scope=scope)
     if any((scope_dir / name).is_file() for name in ("raw.md", "tone.md", "detail.md")):
         return True
@@ -223,12 +194,7 @@ def _scope_has_memory(scope: str) -> bool:
 
 
 def _is_scope_key(key: str) -> bool:
-    """Whether a directory key under the store names a scope, logging one that does not.
-
-    The store names a scope directory only after the id `scope_owner_id` parses back out of
-    the key, so any other name is a hand-made copy such as a backup. Handed out as a scope,
-    it would raise in the first caller that reads its owner.
-    """
+    """Returns whether `key` ends in a numeric scope id, logging and skipping other names."""
     if key.rsplit("/", maxsplit=1)[-1].isdecimal():
         return True
     logfire.info("Memory directory is not named after an id; skipping", directory=key)
@@ -238,15 +204,10 @@ def _is_scope_key(key: str) -> bool:
 def iter_scopes() -> list[str]:
     """Returns every scope with on-disk memory (user = flat, server = under the bot dir).
 
-    Walks `data/memories/`: a top-level directory holding memory is a user scope
-    (`<user_id>`), and the child directories of `bot_memories/` holding memory are the
-    `bot_memories/<server_id>` server scopes. A directory at either level not named after
-    an id is skipped (`_is_scope_key`).
-
-    `bot_memories` is the only directory descended into, and dot directories are
-    skipped outright (the store is itself a git work tree), so nested memory anywhere
-    else — a stray directory, or a symlink to `bot_memories` — can never hand the sweep
-    the same memory under a second name.
+    Walks `data/memories/`: top-level numeric directories holding memory are user scopes
+    (`<user_id>`), and numeric child directories of `bot_memories/` holding memory are server
+    scopes (`bot_memories/<server_id>`). Descends only into `bot_memories/`, skipping dot
+    directories and non-id names.
     """
     scopes: list[str] = []
     if not _MEMORY_DIR.is_dir():
@@ -289,23 +250,14 @@ def _read_text(path: Path) -> str:
 
 
 def _replace_file(path: Path, text: str) -> None:
-    """Replaces a memory file atomically, writing a `.md.tmp` sibling and moving it over `path`.
-
-    The sibling's name is what `delete_memory_files` and `_is_store_file` recognise a stranded
-    one by.
-    """
+    """Atomically replaces `path` via a `.md.tmp` sibling and `os.replace`."""
     tmp_path = path.with_suffix(".md.tmp")
     tmp_path.write_text(data=text, encoding="utf-8")
     os.replace(src=tmp_path, dst=path)
 
 
 def _fact_paths(directory: Path) -> list[Path]:
-    """Returns the fact files in one compartment directory, missing dir counting as none.
-
-    The `is_file` test is load-bearing: a *directory* whose name ends in `.md` otherwise
-    reaches `_read_text`, which catches only `FileNotFoundError`, so one hand-made
-    directory inside a compartment takes down every reader that walks the tree.
-    """
+    """Returns sorted `.md` files (excluding directories) in `directory`, or `[]` if missing."""
     try:
         return sorted(
             path for path in directory.iterdir() if path.suffix == ".md" and path.is_file()
@@ -324,7 +276,7 @@ def scope_lock(scope: str) -> asyncio.Lock:
 
 
 def mark_cleared(scope: str) -> None:
-    """Records a manual memory clear so older in-flight updates abort their writes.
+    """Records a manual clear timestamp for `scope` to abort older in-flight updates.
 
     Args:
         scope (str): Memory scope key being cleared.
@@ -360,10 +312,7 @@ def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
         try:
             text = _read_text(path=path)
         except (OSError, UnicodeDecodeError) as error:
-            # A file that cannot even be decoded is skipped like one that cannot be
-            # parsed, rather than raised: every scope walk reads through here, so one hand
-            # edit saved in the wrong encoding would otherwise take them all down — the
-            # repair path an operator reaches for included.
+            # Skip undecodable files instead of raising so one bad edit cannot break scope walks.
             logfire.warn(
                 "Memory fact file could not be read; skipping",
                 scope=scope,
@@ -408,15 +357,12 @@ def read_memory_document(
         fact
         for compartment in compartments
         for fact in read_facts(scope=scope, compartment=compartment)
-        # Expiry is a date, so a scope nobody consolidates must not keep serving what the
-        # sweep would already have deleted; the sweep still owns the deletion.
+        # Filter expired facts on read; sweep_stale_facts owns disk deletion.
         if not is_past_recent_ttl(fact=fact, today=stamp[1])
     ]
     document = render_memory_document(facts=facts, flavor=flavor, max_chars=max_chars)
     if len(_render_cache) >= RENDER_CACHE_MAX_ENTRIES:
-        # Whole-cache reset rather than an LRU: entries are cheap to rebuild and the
-        # working set is one entry per (scope, reading context), so the bound is only
-        # here to stop a long-lived process accumulating stale keys forever.
+        # Full reset rather than LRU: entries are cheap to rebuild and the cap bounds stale keys.
         _render_cache.clear()
     _render_cache[key] = (stamp, document)
     return document
@@ -456,15 +402,9 @@ def delete_fact(scope: str, compartment: str, fact_id: str) -> bool:
 
 
 def _is_store_file(path: Path) -> bool:
-    r"""Whether one entry of a compartment directory is a file the store itself wrote.
-
-    Matched by name — `<fact id>.md`, or the `.md.tmp` a crash between `write_fact`'s tmp
-    write and its `os.replace` can strand. Every name the store mints is a `mint_fact_id`
-    digest, so a `notes.md` an operator dropped in beside the facts fails the test and a
-    prune cannot take it. `fullmatch`, not `match`: `$` also matches before a trailing
-    newline, so `<fact id>\\n.md` would otherwise pass for one of ours.
-    """
+    """Returns whether `path` is a store-owned `<fact_id>.md` or `.md.tmp` file."""
     stem, _, suffix = path.name.partition(".")
+    # fullmatch (not match) rejects a trailing newline before "$".
     return path.is_file() and suffix in {"md", "md.tmp"} and FACT_ID_RE.fullmatch(stem) is not None
 
 
@@ -479,8 +419,7 @@ def unaccounted_files(scope: str, compartment: str) -> list[str]:
         compartment (str): Compartment name to inspect.
     """
     try:
-        # Materialized inside the guard: `iterdir` is a generator, so a missing
-        # directory would otherwise raise out of the comprehension below instead.
+        # Materialize inside the try so a missing directory raises here, not in the comprehension.
         children = list(compartment_dir(scope=scope, compartment=compartment).iterdir())
     except FileNotFoundError:
         return []
@@ -503,9 +442,8 @@ class PrunedCompartment(BaseModel):
 def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCompartment:
     """Reduces `compartment` to the fact ids in `keep` and removes empty directories.
 
-    Walks the directory listing rather than `read_facts` so unreadable `.md` fact files and
-    stranded `.md.tmp` files are removed alongside unkept facts, while foreign entries stay
-    untouched and are reported in `unaccounted`.
+    Walks the directory listing to remove unkept facts, unreadable `.md` fact files, and
+    stranded `.md.tmp` files while leaving foreign entries untouched in `unaccounted`.
 
     Args:
         scope (str): Memory scope key.
@@ -539,9 +477,7 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCom
     with contextlib.suppress(OSError):
         directory.rmdir()
         if compartment.startswith(f"{_GUILD_DIR_NAME}/"):
-            # A `g/<id>` leaves the `g/` parent behind, which `delete_memory_files`
-            # removes for the same reason. Inside the same suppression on purpose: a
-            # compartment that survived is what stops the parent being tried at all.
+            # Remove empty `g/` parent after removing a guild dir; skipped if rmdir above failed.
             directory.parent.rmdir()
     return PrunedCompartment(
         unaccounted=tuple(unaccounted_files(scope=scope, compartment=compartment)),
@@ -606,14 +542,11 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
     rendered = "\n\n".join(entries)
     encoded = rendered.encode("utf-8")
     if len(encoded) > RAW_FILE_MAX_BYTES:
-        # A single oversized entry cannot be evicted; truncate it so the raw
-        # file still honors the advertised hard cap (memory is best-effort,
-        # and the truncated tail is the only loss not kept in the detail file).
+        # Single oversized entry cannot be evicted; truncate to honor RAW_FILE_MAX_BYTES.
         rendered = encoded[:RAW_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
     _replace_file(path=raw_path, text=rendered + "\n")
     if evicted:
-        # Move to the detail file only after the raw write succeeded so a
-        # failed write cannot retire entries that still live in the raw file.
+        # Append evicted entries only after raw.md succeeds so failed writes keep live entries.
         append_detail(scope=scope, text="\n\n".join(evicted))
 
 
@@ -640,18 +573,9 @@ def append_detail(scope: str, text: str) -> None:
 
 
 def _trim_detail(path: Path) -> None:
-    """Drops the oldest detail entries until the file fits the trim target.
-
-    The dropped entries are deleted permanently instead of cascading into yet
-    another unbounded file: nothing can read past the consolidation window, so
-    they carry no functional value. The headroom between the cap and the trim
-    target is what amortizes this O(file) rewrite; the write goes through
-    tmp + os.replace so a crash cannot leave a half-trimmed file.
-    """
+    """Atomically drops oldest entries from `path` down to `DETAIL_FILE_TRIM_TARGET_BYTES`."""
     entries = split_raw_entries(text=_read_text(path=path))
-    # Track the rendered size incrementally; recomputing the joined size per
-    # dropped entry would be O(n^2) on a megabyte-scale file and stall the
-    # event loop, since store IO is synchronous by design.
+    # Track byte total incrementally to avoid O(n^2) re-joins on megabyte files.
     sizes = [len(entry.encode("utf-8")) for entry in entries]
     total = sum(sizes) + 2 * max(len(entries) - 1, 0)
     start = 0
@@ -691,15 +615,13 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
     try:
         with _detail_path(scope=scope).open(mode="rb") as handle:
             size = handle.seek(0, os.SEEK_END)
-            # UTF-8 spends at most 4 bytes per character, so this window can
-            # never decode to fewer than max_chars characters.
+            # UTF-8 uses at most 4 bytes/char, guaranteeing at least max_chars characters.
             window_bytes = max_chars * 4
             handle.seek(max(0, size - window_bytes))
             data = handle.read()
     except FileNotFoundError:
         return ""
-    # A window starting mid-file can open inside a multi-byte character, on at most
-    # three of its continuation bytes (0b10xxxxxx); only those are skipped.
+    # Skip at most 3 leading UTF-8 continuation bytes (0b10xxxxxx) if seek landed mid-char.
     skip = 0
     if size > len(data):
         while skip < min(3, len(data)) and data[skip] & 0xC0 == 0x80:
@@ -812,8 +734,7 @@ def delete_memory_files(scope: str) -> bool:
             (scope_dir / name).unlink()
             removed = True
         except FileNotFoundError:
-            # Already gone (e.g. offline maintenance); deletion stays idempotent
-            # without the exists()-then-unlink() race.
+            # Missing files are expected; unlink directly to avoid exists-then-unlink races.
             continue
         finally:
             (scope_dir / f"{name}.tmp").unlink(missing_ok=True)

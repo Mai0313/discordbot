@@ -1,21 +1,8 @@
-"""When background memory work runs, and the reply.db bookkeeping around it.
+"""In-flight scheduling, replay merging, concurrency cap, and `reply.db` staging for memory.
 
-While a scope's update runs, later turns for that scope are held rather than dropped and
-replayed one at a time afterwards. Within one conversation source only the newest is kept, its
-history window already covering the earlier ones, and its memory notes merged in so nothing a
-marker wrote is lost, unless a clear has since erased it.
-
-The turn's own body is not here: `enqueue_memory_update` takes it as `run`, and the replay
-carries it on through the done-callback. That is what keeps this module below `pipeline.py`
-rather than beside it — the queue owns when a turn runs and what happens to the ones it
-displaces, and nothing about what a turn does.
-
-`memory_semaphore` is the same question one level up: the queue serializes a scope, and the
-semaphore caps the whole process. It belongs to none of the modules that take it, so it sits
-here with the package's other process-wide primitives and everything imports downward to get it.
-
-The detached reply.db writes live here for the same reason: several callers stage through them
-and they all have to agree on one staging lock.
+Holds overlapping updates per scope and replays them sequentially per conversation source
+(`subject`), merging memory notes from superseded turns within the same source unless a clear
+intervened. Also owns the process-wide `memory_semaphore` and detached `reply.db` write queue.
 """
 
 import time
@@ -46,9 +33,7 @@ from discordbot.services.memory.writer import (
 from discordbot.typings.context_budgets import MEMORY_MERGED_NOTES_MAX
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 
-# What a caller is handed once a turn's memory writes land. `services/` never composes what
-# a user reads, so this reports the shape and lets the cog word it. In-memory only: a resumed
-# turn runs after a restart, long past the reply it belonged to, and has no report to make.
+# In-memory callback notifying the cog of recorded writes; omitted for restart-resumed turns.
 type MemoryWriteReport = Callable[[MemoryWriteSummary], Awaitable[None]]
 
 
@@ -103,39 +88,23 @@ class MemoryTurn(BaseModel):
     )
 
 
-# The turn body `enqueue_memory_update` schedules. Injected rather than imported: it lives in
-# `pipeline.py`, one layer up, and importing it here would close the loop. A coroutine
-# function rather than any awaitable, because `asyncio.create_task` accepts nothing looser.
+# Injected turn body from pipeline.py (Coroutine required by asyncio.create_task).
 type TurnRunner = Callable[[MemoryTurn], Coroutine[Any, Any, None]]
 
-# Process-level per-scope in-flight de-dupe; while one update runs, the skipped turns are
-# held and replayed afterwards.
-#
-# The second key is the subject, which carries the source line, and it is a correctness
-# boundary rather than bookkeeping: the scope is guild-independent, so a user active in two
-# guilds at once would otherwise have one conversation's notes replayed under the other's
-# source stamp, filing a `source_only` observation in a compartment the speaker never spoke
-# in. Sources are replayed one after another, each keeping its own subject.
-#
-# Loop-local, like `regeneration`'s task registry: an `asyncio.Task` belongs to the loop that
-# created it, so an entry surviving a loop change parks every later turn for that scope
-# behind a task nothing on this loop can ever see finish.
+# Per-scope in-flight task and held turns keyed by `subject` (which carries the source line).
+# Keying by `subject` prevents merging turns from different guilds under one source stamp.
+# Loop-local so an asyncio.Task never outlives its event loop.
 _inflight_tasks: LoopLocalRegistry[str, asyncio.Task[None]] = LoopLocalRegistry()
 _pending_updates: LoopLocalRegistry[str, dict[str, MemoryTurn]] = LoopLocalRegistry()
 
-# Detached best-effort tasks, held so the event loop keeps a strong reference until they
-# finish; reset by the test fixture.
+# Strong references to detached DB tasks until completion.
 _db_tasks: set[asyncio.Task[None]] = set()
 
-# A clear and the short reply.db staging transaction must not pass each other:
-# otherwise an INSERT can commit after the clear's tombstone write. This is separate
-# from the minutes-long file-write lock and is held only around reply.db staging
-# or the clear's tombstone plus synchronous file removal.
+# Short per-scope lock serializing reply.db staging against clear tombstones (distinct from
+# scope_lock).
 staging_locks = KeyedLockManager[str]()
 
-# Process-wide semaphore capping concurrent background memory updates so a busy server
-# cannot fan out unbounded LLM work; shared across flavors and rebuilt per loop. The cap
-# is read at build time so a test that lowers MEMORY_GLOBAL_CONCURRENCY first still applies.
+# Process-wide semaphore capping background memory updates; rebuilt per loop.
 _memory_semaphore_holder = LoopLocalSemaphore(capacity_provider=lambda: MEMORY_GLOBAL_CONCURRENCY)
 
 
@@ -166,11 +135,7 @@ async def safe_db_write(coro: Awaitable[None], scope: str) -> None:
 
 
 def _spawn_db(coro: Awaitable[None], scope: str) -> None:
-    """Runs a detached best-effort coroutine, tracked so it is not GC'd mid-flight.
-
-    A failure is logged as a `memory_job` persistence write, so anything that is not one must
-    swallow its own.
-    """
+    """Spawns a tracked best-effort coroutine whose failures log as `memory_job` write errors."""
     spawn_tracked(
         coro=safe_db_write(coro=coro, scope=scope), tasks=_db_tasks, name="memory-db-write"
     )
@@ -181,10 +146,8 @@ async def stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capt
 ) -> None:
     """Stages one turn only in the memory lifetime that captured it.
 
-    The short per-scope lock serializes staging with the clear's tombstone write.
-    A row committed before a clear is scrubbed by that newer logical token. A row
-    waiting while a clear is in progress sees its closing stamp before it can
-    write, so it cannot leave a during-clear transcript for restart to resume.
+    Serializes staging against clear tombstones under `staging_locks`; returns without writing if
+    the scope was cleared after `captured_at`.
 
     Args:
         scope (str): Memory scope key.
@@ -214,9 +177,7 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
         turn (MemoryTurn): Captured turn to review.
         run (TurnRunner): Turn body, carried through to the replay by the done-callback.
     """
-    # Stamped here, not inside the worker: a clear landing between this call and
-    # the task actually starting must still abort the turn, and a worker that
-    # timed itself would read the clear as older than its own work and write on.
+    # Stamp before scheduling so a clear landing before the task starts aborts it.
     turn = turn.model_copy(update={"captured_at": time.monotonic()})
     running = _inflight_tasks.get(key=turn.scope)
     if running is not None and not running.done():
@@ -225,8 +186,7 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
         if superseded is not None and cleared_since(
             scope=turn.scope, started_at=superseded.captured_at
         ):
-            # Captured before a clear finished, so its notes belong to the memory that clear
-            # erased: it is dropped as it would be on its own, and this turn waits unmerged.
+            # Superseded turn predates a clear; drop it unmerged and settle its reply.
             _release_pending_report(pending=superseded)
         elif superseded is not None:
             turn = turn.model_copy(
@@ -237,16 +197,12 @@ def enqueue_memory_update(turn: MemoryTurn, run: TurnRunner) -> None:
                     "report": _merged_report(
                         newer=turn.report, older=superseded.report, scope=turn.scope
                     ),
-                    # The merged payload opens with the older turn's round, whose forget a
-                    # retry would take as already filed.
+                    # Merged payload starts with the older round, whose forgets are not filed yet.
                     "retry": False,
                 }
             )
         by_subject[turn.subject] = turn
-        # Persist the deferred turn so a redeploy before it runs still resumes it.
-        # Safe from a same-token race: this turn's worker only starts after the
-        # in-flight one ends, long after this detached write lands, and it carries
-        # a newer token than the running turn so newest-wins keeps it.
+        # Persist deferred turn for restart recovery; its newer token wins over the running turn.
         _spawn_db(
             coro=stage_turn(
                 scope=turn.scope,
@@ -281,8 +237,7 @@ async def report_writes(
 ) -> None:
     """Invokes `report` with `summary`, swallowing any Discord failure.
 
-    An empty summary is reported like any other so a reply showing `正在整理記憶⋯` settles once
-    the turn completes.
+    Reports empty summaries too, settling any reply showing `正在整理記憶⋯`.
 
     Args:
         report (MemoryWriteReport): Callback reporting what the turn recorded.
@@ -303,12 +258,7 @@ async def report_writes(
 
 
 def _merged_payload(newer: str, older: str) -> str:
-    """Carries a superseded turn's memory notes into the turn replacing it.
-
-    The newer turn's transcript already covers earlier messages in the same source, while inline
-    marker notes exist only in the reply that emitted them and stay ordered by round so a newer
-    forget can reach an older remember.
-    """
+    """Merges `older`'s note rounds ahead of `newer`'s while keeping `newer`'s transcript."""
     transcript, rounds = parse_turn_payload(payload=newer)
     _, older_rounds = parse_turn_payload(payload=older)
     return render_turn_payload(
@@ -332,12 +282,7 @@ def _merged_report(
 
 
 def _capped(rounds: tuple[NoteRound, ...]) -> tuple[NoteRound, ...]:
-    """Drops exact repeats, keeps writing order, and caps what a merge can accumulate.
-
-    Keeps the newest occurrence of any repeated note so it is not staged ahead of a forget
-    written after an earlier occurrence, drops the oldest notes past `MEMORY_MERGED_NOTES_MAX`,
-    and folds adjacent rounds when the earlier one has no forget.
-    """
+    """Deduplicates rounds (newest kept), caps at `MEMORY_MERGED_NOTES_MAX`, and folds them."""
     seen: tuple[set[str], set[str]] = (set(), set())
     newest_first: list[NoteRound] = []
     for round_ in reversed(rounds):
@@ -361,12 +306,7 @@ def _capped(rounds: tuple[NoteRound, ...]) -> tuple[NoteRound, ...]:
 
 
 def _release_pending_report(pending: MemoryTurn) -> None:
-    """Tells a dropped turn's reply that nothing was recorded, detached.
-
-    A deferred turn is dropped rather than replayed when the scope was cleared under it, and
-    its reply is still showing `正在整理記憶⋯`. Detached because every caller is synchronous
-    while the report reaches Discord.
-    """
+    """Detaches an empty write report for a dropped pending turn so its reply settles."""
     if pending.report is None:
         return
     _spawn_db(
@@ -382,9 +322,7 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None], run: TurnRunner)
     if _inflight_tasks.get(key=scope) is task:
         _inflight_tasks.pop(key=scope)
     if task.cancelled():
-        # Cancelled (e.g. bot shutdown): reading result() would raise
-        # CancelledError (a BaseException on 3.11+) out of this callback, and a
-        # pre-shutdown turn is not worth replaying.
+        # Cancelled tasks raise CancelledError from result(); skip replay on shutdown.
         return
     try:
         task.result()
@@ -402,16 +340,13 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None], run: TurnRunner)
     if not by_subject:
         _pending_updates.pop(key=scope)
         return
-    # Oldest source first (dicts keep insertion order), and only one replayed: each replay ends
-    # in this same callback, which picks up the next one. A dropped turn starts nothing, so the
-    # walk goes on past it, or every source behind it would wait with nothing in flight.
+    # Replay one pending source at a time (FIFO); skip cleared turns so later ones do not stall.
     while by_subject:
         pending = by_subject.pop(next(iter(by_subject)))
         if not by_subject:
             _pending_updates.pop(key=scope)
         if cleared_since(scope=scope, started_at=pending.captured_at):
-            # The durable clear tombstone owns the privacy guarantee. This remains a
-            # best-effort cleanup for store-level clears that only stamped the process.
+            # Best-effort DB cleanup for store-level clears; the tombstone owns the guarantee.
             _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token), scope=scope)
             _release_pending_report(pending=pending)
             continue

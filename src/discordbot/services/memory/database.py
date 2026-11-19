@@ -1,32 +1,21 @@
 """Persistent phase-1 memory review inbox (`data/database/reply.db`).
 
-One row per scope (a user or a bot-per-server). The row durably stages a phase-1
-review turn so a bot restart resumes the work the in-memory pipeline had not
-yet flushed to `raw.md`. A finished turn is *recorded* (`status='done'`,
-`transcript` cleared) rather than the row deleted, so the table doubles as an
-inspectable per-scope processing state; `done` means terminal, not successful,
-since a review that fails its one retry closes there too. An LLM failure parks
-the row at `status='failed'` with its transcript kept, so the next restart
-retries it once without any timeout tuning. A user-requested memory clear
-replaces the row with a transcript-free `cleared` tombstone, whose ordering
-token prevents a staging write captured before the clear from recreating the
-erased transcript after it commits.
+One row per scope stages a phase-1 review turn so a restart can resume work not yet flushed to
+`raw.md`. Lifecycle states:
+- `pending`: staged with `transcript` intact.
+- `done`: terminal state with `transcript` cleared (completed turns and exhausted retries).
+- `failed`: LLM failure with `transcript` kept for one restart retry.
+- `cleared`: transcript-free tombstone whose token blocks older staging writes from reappearing.
 
-`reply.db` is shared with tables owned elsewhere, so this module keeps its own
-`Base`, its own bootstrap and a module-level `AsyncEngine` singleton (a per-instance
-`cached_property` engine would leak the pool / dialect cache). No `from __future__ import
-annotations` — SQLAlchemy resolves the `Mapped[datetime]` columns when the class is built,
-and under postponed evaluation ruff's TC rules move the annotation-only `datetime` import
-under `TYPE_CHECKING`, where the mapper cannot resolve it and the module fails to import.
+`reply.db` is shared with other modules, so this module keeps its own `Base`, bootstrap, and
+module-level `AsyncEngine` singleton. Do not add `from __future__ import annotations`: SQLAlchemy
+resolves `Mapped[datetime]` at class-definition time, and postponed annotations cause ruff's TC
+rules to move `datetime` under `TYPE_CHECKING`, breaking import.
 
-The version / ordering token is a logical `INTEGER`, not a wall clock. Each process
-reserves one range from `memory_token_clock`, above both the prior watermark and
-the largest token already in `memory_job`, then assigns turns and clears in
-capture order inside that range. This keeps newest-wins comparable across
-restarts without letting an NTP clock correction make a clear older than the
-transcript it must erase. The upsert and terminal updates are guarded on this
-token, so a stale turn's write no-ops once a newer turn has overwritten the
-scope's row.
+Ordering tokens are logical integers reserved per process in disjoint blocks from
+`memory_token_clock`, above both the prior watermark and the max token in `memory_job`. Upserts
+and terminal updates guard on this token for restart-safe newest-wins ordering independent of wall
+clocks.
 """
 
 from typing import Literal, cast, get_args
@@ -53,9 +42,7 @@ _TOKEN_BLOCK_SIZE = 1_000_000_000_000
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
-# Negative values are process-local placeholders. The first database operation
-# maps them into a range reserved durably from SQLite; the same placeholder then
-# resolves to the same positive token for every later terminal update.
+# Negative values are process-local placeholders resolved lazily into a reserved SQLite range.
 _token_sequence = count(start=1)
 _token_block_bases: dict[AsyncEngine, int] = {}
 _token_state_lock = Lock()
@@ -176,7 +163,11 @@ def _row_to_model(row: MemoryJobRow) -> MemoryJob:
 
 
 def new_token() -> int:
-    """Returns a process-local token placeholder in strict capture order."""
+    """Returns a process-local token placeholder in strict capture order.
+
+    Raises:
+        RuntimeError: This process exhausted its reserved token block.
+    """
     with _token_state_lock:
         sequence = next(_token_sequence)
     if sequence > _TOKEN_BLOCK_SIZE:
@@ -221,9 +212,7 @@ async def _resolve_token(token: int) -> int:
         block_base = _token_block_bases.get(engine)
     if block_base is None:
         reserved_base = await _reserve_token_block(engine=engine)
-        # Two event loops can race to reserve ranges for the same engine. Both
-        # reservations are durable and disjoint; the first cached range wins and
-        # the other is simply an unused gap.
+        # Concurrent loops may reserve disjoint ranges; first cached wins, the other is a gap.
         with _token_state_lock:
             block_base = _token_block_bases.setdefault(engine, reserved_base)
     return block_base + sequence
@@ -234,9 +223,7 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 ) -> None:
     """Records (newest-wins) a pending review turn for a scope.
 
-    On conflict the row is overwritten only when the new `token` is strictly
-    newer than the stored one, so an older turn's write can never clobber a newer
-    turn's row.
+    Overwrites an existing row only when `token` is strictly greater than the stored token.
 
     Args:
         scope (str): Memory scope key.
@@ -320,13 +307,10 @@ async def mark_failed(scope: str, token: int, error: str) -> None:
 
 
 async def clear_job(scope: str, flavor: MemoryFlavor, token: int) -> bool:
-    """Scrubs a scope's row and leaves a token-guarded clear tombstone.
+    """Scrubs a scope's row and leaves a token-guarded `cleared` tombstone.
 
-    The tombstone closes both possible commit orderings with a staging write. A
-    pending row that committed first is overwritten here; a stale upsert that
-    commits later loses the existing newest-token guard. `BEGIN IMMEDIATE` makes
-    the existence check and tombstone upsert one serialized write transaction, so
-    the caller can still distinguish an empty scope without reopening that race.
+    Runs the existence check and tombstone upsert inside one `BEGIN IMMEDIATE` transaction so
+    concurrent staging writes either get overwritten or lose the newest-token guard.
 
     Args:
         scope (str): Memory scope key to scrub.
@@ -337,12 +321,8 @@ async def clear_job(scope: str, flavor: MemoryFlavor, token: int) -> bool:
         True when a non-cleared row existed and was scrubbed.
 
     Raises:
-        RuntimeError: The scope already carries a row newer than `token`, so the guarded
-            upsert would no-op and leave a pre-clear transcript in `reply.db` for the
-            restart sweep to resume. Raising rolls the transaction back before the caller's
-            file pass, keeping every tier in place. `_resolve_token` reserves one block per
-            process, so the clear's token only rises above a stray row after a restart picks
-            a base above it.
+        RuntimeError: The scope already carries a row newer than `token`; the transaction rolls
+            back before any files are erased.
     """
     token = await _resolve_token(token=token)
     now = _database_now()

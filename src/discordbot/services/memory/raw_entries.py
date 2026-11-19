@@ -1,8 +1,8 @@
-"""The entry grammar of `raw.md` and `detail.md`: how evidence is rendered, stamped and read back.
+"""The entry grammar of `raw.md` and `detail.md`: how evidence is rendered, stamped, and parsed.
 
-Both files hold entries under a `## <timestamp>` header, and an entry holds blocks that each
-open with a `### <category>` header followed by `- name: value` fields. Detail entries are
-retired raw entries verbatim, so one grammar serves both files.
+Both files hold entries under a `## <timestamp>` header, each containing `### <category>` blocks
+followed by `- name: value` fields. Detail entries are retired raw entries verbatim and share the
+same grammar.
 """
 
 import re
@@ -12,13 +12,10 @@ from itertools import groupby, pairwise
 from discordbot.typings.memory import FORGET_REQUEST_CATEGORY
 from discordbot.services.memory.writer import MemoryObservation, note_text
 
-# Raw entries start with a `## <ISO-8601 timestamp>` header line. An entry's
-# body is bullet-style prose, so the date prefix doubles as the split marker;
-# `timestamp` is the rest of the header line.
+# Matches `## <ISO-8601 timestamp>` entry headers used as split markers.
 RAW_ENTRY_HEADER_RE = re.compile(
     r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T.*?)\s*$", flags=re.MULTILINE
 )
-# One observation block's header inside a raw entry.
 _OBSERVATION_HEADER_RE = re.compile(r"^### (?P<category>\S+)")
 _FIELD_RE = re.compile(r"^\s*-\s*(?P<name>[a-z_]+):\s*(?P<value>.*?)\s*$")
 _GUILD_SOURCE_RE = re.compile(r"^guild (?P<guild_id>\d+)$")
@@ -58,8 +55,7 @@ def render_memory_observations(
 def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
     """Returns `<forget-memory>` notes rendered as raw entries under `### forget_request`.
 
-    A forget is not a `MemoryObservation`, so its header stays outside `MemoryCategory` and
-    invisible to readers that walk observation fields.
+    Uses `FORGET_REQUEST_CATEGORY`, outside `MemoryCategory`.
 
     Args:
         notes (tuple[str, ...]): Raw `<forget-memory>` note strings.
