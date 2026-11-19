@@ -145,7 +145,7 @@ def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
 
 
 def _last_result_line(result: DragonGateTurnResult) -> str:
-    """One-line summary of the previous turn for placement above the current state."""
+    """Returns a one-line summary of the previous turn for placement above the current state."""
     outcome_label = _outcome_label(outcome=result.outcome)
     pillars = " ".join(str(card) for card in result.pillars)
     return (

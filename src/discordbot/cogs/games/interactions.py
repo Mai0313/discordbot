@@ -46,7 +46,7 @@ class GameView(LoggedView):
         self.last_press = interaction
 
     async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Defers `interaction` on the game message if needed, records it, and sends an ephemeral notice."""
+        """Defers `interaction` if needed, records it, and sends an ephemeral notice."""
         if not interaction.response.is_done():
             await interaction.response.defer()
         self._keep_press(interaction=interaction)
@@ -104,9 +104,8 @@ async def publish_final_table(
 
     `interaction` is the press that settled the table or, on a timeout, the last press
     acknowledged on it; the render and the deletion both go through it while its token lives
-    (`edit_public_message`). Never raises: settlement is already committed when this runs, so a
-    render that fails is logged (`failure_fields` ride the warning) and the deletion is
-    scheduled regardless.
+    (`edit_public_message`). Never raises: render failures are logged with `failure_fields`
+    and deletion is scheduled regardless.
 
     Args:
         message (Message): Public table message to edit and schedule for deletion.
@@ -132,8 +131,7 @@ async def publish_final_table(
         logfire.info(f"{game_name} table message gone before final edit", message_id=message.id)
         landed = False
     except Forbidden:
-        # Only a render with no working press behind it goes through the channel, which the
-        # server can shut the bot out of; the ids are the whole finding.
+        # Only a render without a live press token hits channel REST, which can return 403.
         logfire.warn(
             f"Discord refused the {game_name} final table edit; settled round never rendered",
             **failure_fields,

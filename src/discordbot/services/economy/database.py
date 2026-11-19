@@ -1,28 +1,14 @@
 """Persistent point-balance store for the economy cog.
 
-Every balance-mutating write path is atomic at the SQLite transaction level.
-Most paths are a single UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a
-conditional `UPDATE ... WHERE ... RETURNING`; multi-row finance paths still roll
-back as one unit when a conditional write loses a race. Reading a row into
-Python and writing the mutated value back would lose an update whenever two
-coroutines race on the same user, and would raise `IntegrityError` when two of
-them insert the same brand-new user.
+Every balance-mutating write path is atomic at the SQLite transaction level via UPSERT or
+conditional `UPDATE ... WHERE ... RETURNING`; multi-row writes roll back as one unit on a lost
+race.
 
-VIP bumps the player's winning Blackjack payout and is permanent once set.
-Admin status gates maintenance-only economy commands and is set out-of-band by a
-direct DB write; `set_admin` exists for that path rather than for a runtime
-caller. Daily casino counters live on `casino_account`, one row per user, which
-the current-day loss ranking reads directly.
-
-Personal loan requests debit the lender on acceptance, and central-bank loans
-mint borrower balance on approval. What bounds that minting is the per-borrower
-ceiling in `typings/economy.py`, not the approver: approval belongs to a Discord
-server administrator, and anyone can become one by creating a server. The
-per-guild lending pool is a second, looser throttle on top, and `guild_participant`
-is what says whose balance backs which guild.
-
-Runtime casino and jackpot settlement applies the player delta and the
-house-side mirror in one atomic SQLite transaction.
+VIP bumps winning Blackjack payouts and is permanent once set. Admin status gates economy-admin
+commands and is set out-of-band via `set_admin`. Daily casino counters live on `casino_account`
+(one row per user). Personal loan approval debits the lender; central-bank approval mints
+principal bounded by the per-guild lending pool (`guild_participant`) and the per-borrower
+ceiling. Casino and jackpot settlements commit player and house writes in one transaction.
 """
 
 from time import monotonic
@@ -162,22 +148,9 @@ class UserWallet(Base):
 class GuildParticipant(Base):
     """One user recorded as taking part in one guild's economy.
 
-    Identity and balance are cross-server by design, so nothing on `user_wallet`
-    says which guild a balance should back. This table is the only thing that
-    does, and the central bank reads it to decide whose money backs a guild's
-    lending. It cannot be derived instead: the gateway runs without the members
-    intent, so the bot cannot enumerate a guild's membership at all.
-
-    A row records the caller of a `/central_bank` command or the author of a
-    rewarded message. It must never record the target of a `member:` option, which
-    would let anyone import a stranger's balance into a pool they administer.
-
-    Nothing ever removes a row. Leaving is invisible here — the gateway runs
-    without the members intent — so a sweep would have to guess, and guessing
-    wrong takes collateral away from a guild whose member simply went quiet. The
-    cost of keeping them is bounded by what the row backs: a departed member's
-    balance still counts toward that guild's collateral, which the whole bank's
-    outstanding principal is subtracted from either way.
+    Rows are append-only: recorded only for rewarded message authors and `/central_bank` callers,
+    never for `member:` targets, and never pruned. The central bank reads this table to determine
+    which wallets back a guild's lending pool.
     """
 
     __tablename__ = "guild_participant"
@@ -196,9 +169,9 @@ class CasinoAccount(Base):
         user_id (Mapped[int]): Discord user ID primary key.
         name (Mapped[str]): Last-seen Discord username for quick inspection.
         day_started_at (Mapped[datetime | None]): Asia/Taipei midnight for the stored counters.
-        daily_loss (Mapped[int]): Current-day gross loss from player-side casino settlements, stored as a decimal string.
-        daily_win (Mapped[int]): Current-day gross win from player-side casino settlements, stored as a decimal string.
-        daily_net (Mapped[int]): Current-day signed net casino result, stored as a decimal string.
+        daily_loss (Mapped[int]): Current-day gross loss from player-side casino settlements.
+        daily_win (Mapped[int]): Current-day gross win from player-side casino settlements.
+        daily_net (Mapped[int]): Current-day signed net casino result.
         updated_at (Mapped[datetime]): Taiwan-local timestamp of the last casino counter write.
     """
 
@@ -301,11 +274,8 @@ class LoanContract(Base):
 class JackpotPool(Base):
     """Per-game cumulative jackpot shared across every table of that game.
 
-    One row per game (keyed by `game_id`). Wager flows update
-    `pool_balance` atomically while `total_contributed` /
-    `total_claimed` accumulate gross in/out flows so the seeded
-    on-the-house amount stays distinguishable from organic player
-    contributions.
+    One row per game (keyed by `game_id`). Tracks `total_contributed`,
+    `total_claimed`, and `seeded_amount` alongside `pool_balance`.
 
     Attributes:
         game_id (Mapped[str]): Game identifier primary key.
@@ -316,8 +286,8 @@ class JackpotPool(Base):
             (absolute value of negative deltas from player wins).
         seeded_amount (Mapped[int]): Lifetime on-the-house seed total; bookkeeping only,
             never decremented.
-        generation (Mapped[int]): Incremented every time a seeded pool is depleted and
-            replenished, so stale table snapshots cannot claim the next seed.
+        generation (Mapped[int]): Incremented each time a seeded pool is depleted and
+            replenished.
         updated_at (Mapped[datetime]): Taiwan-local timestamp of the last write.
     """
 
@@ -337,11 +307,9 @@ class JackpotPool(Base):
 class CasinoLedger(Base):
     """Cumulative profit and loss for the casino system (cross-server).
 
-    The casino is the dealer in Blackjack. Player wins flow out of this row,
-    player losses flow in. The bot sits at the table as an ordinary player, so
-    its `user_wallet` is not the house ledger; this row is. `balance` may go
-    negative when payouts exceed take-in; `total_earned` and `total_spent`
-    accumulate gross flows so a reader can see direction of volume, not just net.
+    Player wins flow out of this row; player losses flow in. The bot's own
+    `user_wallet` is a player wallet, not the house ledger. `balance` may go
+    negative when payouts exceed take-in.
 
     Attributes:
         ledger_id (Mapped[str]): Singleton ledger identifier primary key.
@@ -363,19 +331,15 @@ class CasinoLedger(Base):
 
 
 class CentralBankLedger(Base):
-    """Interest the central bank has kept, which it lends out again.
+    """Cumulative interest retained by the central bank for relending.
 
-    Central-bank principal is minted on approval and burned on repayment, so it
-    nets to nothing. The interest on top is kept here and added to the starting
-    capital in `typings/economy.py`, the two together being the bank's own money
-    to lend. The row holds earnings only, never the starting capital, so a
-    database created before it existed starts at zero and needs nothing seeded
-    into it.
+    Central-bank principal is minted on approval and burned on repayment; only collected
+    interest accumulates here and is added to `CENTRAL_BANK_BASE_CAPACITY`.
 
     Attributes:
         ledger_id (Mapped[str]): Singleton ledger identifier primary key.
-        balance (Mapped[int]): Interest kept and available to lend again.
-        total_earned (Mapped[int]): Lifetime gross interest, so a reader sees volume, not just net.
+        balance (Mapped[int]): Retained interest available to lend again.
+        total_earned (Mapped[int]): Lifetime gross interest collected.
         updated_at (Mapped[datetime]): Taiwan-local timestamp of the last write.
     """
 
@@ -409,22 +373,16 @@ _top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEn
 def invalidate_economy_leaderboard_cache() -> None:
     """Clears process-local leaderboard row caches.
 
-    These are keyed on the query, so a write leaves them holding the wrong answer
-    until they are cleared. The rendered board images are keyed on the rows
-    themselves and expire on their own, which is why nothing here reaches into a
-    renderer.
+    Leaves rendered board image caches untouched; those are keyed on row data.
     """
     _top_n_cache.clear()
     _top_losers_cache.clear()
 
 
 async def _commit_balance_write(session: AsyncSession) -> None:
-    """Commits a write that moved a balance, then clears the leaderboard caches.
-
-    The clear has to follow the commit: cleared any earlier, a leaderboard read in between
-    caches the rows the write is about to replace, and serves them until the TTL runs out.
-    """
+    """Commits a balance-mutating write, then clears the leaderboard caches."""
     await session.commit()
+    # Clear after commit so a concurrent read cannot cache pre-commit rows until TTL expiry.
     invalidate_economy_leaderboard_cache()
 
 
@@ -534,14 +492,7 @@ def _build_credit_upsert(
 def _build_signed_delta_upsert(
     user_id: int, name: str, delta: int, now: datetime
 ) -> ReturningInsert[int]:
-    """Returns a wallet upsert statement applying a signed `delta` without clamping.
-
-    Only an explicitly unclamped adjustment may use this; a player-side loss
-    clamps at zero, and the casino's own negative P&L is a `casino_ledger` row
-    rather than a wallet. `total_earned` / `total_spent` still accumulate gross
-    flows, so `balance == total_earned - total_spent` holds through a negative
-    balance.
-    """
+    """Returns an unclamped wallet upsert statement applying a signed `delta`."""
     effective_name = name or str(user_id)
     initial_earned = max(delta, 0)
     initial_spent = max(-delta, 0)
@@ -616,12 +567,7 @@ async def _apply_daily_casino_delta_in_session(
 async def _take_back_daily_casino_loss_in_session(
     session: AsyncSession, user_id: int, amount: int, now: datetime
 ) -> None:
-    """Takes a refunded debit back off today's `casino_account` counters, as if never booked.
-
-    A row that cannot be holding the debit is left alone: one still on an earlier Taipei day,
-    which no leaderboard reads any more, or one whose loss today is smaller than the debit,
-    which was then booked before the last midnight.
-    """
+    """Subtracts a refunded debit from today's `casino_account` loss on the same Taipei day."""
     await session.execute(
         statement=update(CasinoAccount)
         .where(
@@ -640,12 +586,9 @@ async def _take_back_daily_casino_loss_in_session(
 async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper keeps income writes atomic
     session: AsyncSession, user_id: int, name: str, avatar_url: str, amount: int, now: datetime
 ) -> CreditResult:
-    """Credits income inside the caller's transaction.
+    """Credits income inside the caller's transaction without repaying loans.
 
-    Despite the name, nothing here repays a loan: income does not settle debt,
-    which takes an explicit repayment or collection. The name stays because
-    routing income through a single facade is deliberate. Caller must guarantee
-    `amount > 0`.
+    Caller must guarantee `amount > 0`.
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -660,13 +603,9 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
 async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and delta state
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
-    """Applies a clamped signed delta and returns the balance plus applied delta.
+    """Applies a clamped signed delta via conditional UPDATE, returning `(balance, applied)`.
 
-    The observed balance is pinned in the UPDATE predicate, so concurrent
-    clamped debits cannot both compute their applied delta from the same stale
-    balance. A negative delta against a missing row is a no-op so manual clamp
-    operations do not create zero-balance accounts. Caller guarantees
-    `delta != 0`.
+    Caller must guarantee `delta != 0`. A negative delta on a missing row returns `(0, 0)`.
     """
     for _ in range(_CONDITIONAL_WRITE_MAX_RETRIES):
         read_result = await session.execute(
@@ -756,11 +695,7 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
 async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and signed delta
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
-    """Applies a signed delta without clamping.
-
-    Player-side losses use the clamped path, and the casino mirror has its own
-    row writer (`_apply_casino_ledger_delta_in_session`).
-    """
+    """Applies an unclamped signed `delta` to a user wallet, returning the new balance."""
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
     )
@@ -772,7 +707,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 async def _apply_casino_ledger_delta_in_session(
     session: AsyncSession, delta: int, now: datetime
 ) -> int:
-    """Applies a signed `delta` to the global casino ledger row without clamping and returns the new balance."""
+    """Applies an unclamped signed `delta` to the global casino ledger, returning its balance."""
     initial_earned = max(delta, 0)
     initial_spent = max(-delta, 0)
     stmt = (
@@ -878,13 +813,10 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
     now: datetime,
     refund: bool = False,
 ) -> tuple[int, int]:
-    """Applies a casino or jackpot player delta and returns the balance plus applied delta.
+    """Applies a casino or jackpot player delta, returning `(new_balance, applied_delta)`.
 
-    Positive deltas take the shared income path and count as fully applied; a
-    `refund` takes the debit it returns back off today's loss instead of
-    counting as a win. Negative deltas clamp at zero so a casino or Dragon Gate
-    loss cannot drive the player account negative; the returned delta is the
-    actual debit.
+    Negative deltas clamp at zero; a positive `refund` reverses today's loss instead of logging
+    a win.
     """
     if delta > 0:
         credit_result = await _credit_with_repayment_in_session(
@@ -925,8 +857,7 @@ async def credit_with_repayment(
 ) -> CreditResult:
     """Credits `amount` to the user through the shared income path.
 
-    A long-term loan is settled only by an explicit repayment or collection, so
-    income lands fully in balance and only increases `total_earned`.
+    Does not repay loans; income lands in `balance` and increments `total_earned`.
 
     Args:
         user_id (int): Discord user ID receiving the credit.
@@ -959,9 +890,7 @@ async def adjust_balance(
 ) -> BalanceAdjustmentResult:
     """Applies an explicit manual balance adjustment.
 
-    This is the public maintenance API for scripts and admin tooling. It
-    touches neither loan contracts, daily casino counters nor the casino
-    ledger, so the loss leaderboard and house P&L do not move.
+    Touches neither loan contracts, daily casino counters, nor the casino ledger.
 
     Args:
         user_id (int): Discord user ID whose balance should be adjusted.
@@ -1010,14 +939,10 @@ async def apply_blackjack_settlement(
 ) -> RoundSettlementResult:
     """Applies a finished Blackjack round's player delta and mirrors casino P&L.
 
-    Positive player deltas go through the shared income path. Negative player
-    deltas clamp at zero; when a loss cannot be fully collected, the casino
-    ledger records less by exactly what was left uncollected, and by nothing
-    else. `player_delta` can carry system-funded bonuses (e.g. five-card 21)
-    that credit the player and count as casino payout but must not move the
-    `/casino` ledger, so the caller passes `casino_delta` explicitly with those
-    bonuses left out. The player write and the casino mirror commit as one
-    atomic transaction.
+    Positive player deltas credit in full; negative deltas clamp at zero,
+    reducing a positive `casino_delta` by any uncollected shortfall. Pass
+    `casino_delta` without system-funded bonuses (such as five-card 21).
+    Commits player and casino writes in one atomic transaction.
 
     Args:
         player_id (int): Discord user ID for the player account.
@@ -1113,11 +1038,7 @@ async def _replenish_jackpot_if_depleted_in_session(
 async def _apply_jackpot_delta_in_session(
     session: AsyncSession, game_id: str, delta: int, now: datetime
 ) -> tuple[JackpotSnapshot, bool]:
-    """Applies a signed `delta` to a game's jackpot pool inside the caller's session.
-
-    Seeded pools are replenished automatically when drained, returning the post-write
-    snapshot and whether this write depleted the pool.
-    """
+    """Applies a signed `delta` to a jackpot pool, returning `(snapshot, depleted)`."""
     contributed_add = max(delta, 0)
     claimed_add = max(-delta, 0)
     stmt = (
@@ -1154,10 +1075,7 @@ async def _apply_jackpot_delta_in_session(
 async def _read_jackpot_snapshot_or_replenish_in_session(
     session: AsyncSession, game_id: str, now: datetime
 ) -> JackpotSnapshot:
-    """Reads the jackpot balance, replenishing the seed if depleted.
-
-    Returns a zero snapshot if no pool row exists for the game.
-    """
+    """Reads a jackpot snapshot, replenishing if depleted or returning zero if missing."""
     result = await session.execute(
         statement=select(JackpotPool.pool_balance, JackpotPool.generation).where(
             JackpotPool.game_id == game_id
@@ -1226,7 +1144,7 @@ async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mi
     player_avatar_url: str = "",
     expected_jackpot_generation: int | None = None,
 ) -> JackpotSettlementResult:
-    """Atomic player-and-jackpot settlement for a single wager event.
+    """Applies a single player wager settlement against a shared jackpot pool.
 
     Args:
         player_id (int): Discord user ID for the player.
@@ -1372,8 +1290,6 @@ async def apply_jackpot_settlement_batch(
                     settlement.require_full_debit
                     and applied_player_delta != effective_player_delta
                 ):
-                    # Nothing in the batch is committed yet, so one rollback
-                    # discards every player and jackpot write so far.
                     await session.rollback()
                     return await _rejected_jackpot_batch_result(
                         session=session,
@@ -1421,8 +1337,8 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
     """Promotes the user to VIP after debiting `VIP_PURCHASE_COST` points.
 
     Returns `None` when the user is missing either the account or the wallet
-    row, is already VIP, has insufficient balance, or the retry budget for the
-    conditional UPDATE was exhausted.
+    row, is already VIP, has insufficient spendable balance, or the retry
+    budget for the conditional UPDATE was exhausted.
 
     Args:
         user_id (int): Discord user ID purchasing VIP.
@@ -1544,10 +1460,9 @@ async def get_admin(user_id: int) -> bool:
 async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
     """Sets the economy admin flag for a Discord user.
 
-    Granting creates the identity row if the user has never touched the economy
-    system; no wallet row is created, so the balance still reads 0. Revoking
-    updates an existing row only; missing users are left untouched so revoke
-    operations do not create empty account rows.
+    Granting creates the `user_account` row if missing without creating a
+    `user_wallet` row. Revoking updates an existing row only and ignores
+    missing users.
 
     Args:
         user_id (int): Discord user ID to modify.
@@ -1628,21 +1543,12 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     sender_avatar_url: str = "",
     receiver_avatar_url: str = "",
 ) -> TransferResult | None:
-    """Atomically moves points from sender to receiver, burning a transfer tax.
+    """Atomically transfers points from sender to receiver, burning a transfer tax.
 
-    The debit is a single conditional `UPDATE` gated on `balance >= amount`;
-    if that returns no row the transfer is rejected without ever touching
-    the receiver. The credit is a UPSERT in the same transaction, so the
-    receiver row is created on first contact and the whole transfer is one
-    all-or-nothing operation. Both balances are returned from the same SQL
-    writes, so callers do not need extra reads after a successful transfer.
-
-    The sender is debited the full `amount`, but the receiver only receives
-    `amount - tax` where `tax = amount * TRANSFER_TAX_BPS // 10_000`. The
-    burned difference is removed from circulation entirely, acting as a
-    permanent money sink. Per-side the `balance == total_earned - total_spent`
-    invariant is preserved (sender `total_spent += amount`, receiver
-    `total_earned += net`).
+    Serializes on `spending(sender_id)` and rejects when any table holds the entire
+    wallet or `balance < amount + sender_held`. The sender is debited `amount`, the
+    receiver is credited `amount - tax` (`tax = amount * TRANSFER_TAX_BPS // 10_000`),
+    and the tax is burned.
 
     Args:
         sender_id (int): Discord user ID to debit.
@@ -1654,8 +1560,8 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         receiver_avatar_url (str): Last-seen Discord avatar URL for the receiver.
 
     Returns:
-        The post-transfer balances when the transfer committed, or `None`
-        when validation failed or the sender had insufficient funds.
+        The post-transfer balances when committed, or `None` when validation
+        failed or spendable funds were insufficient.
     """
     if amount <= 0 or sender_id == receiver_id:
         return None
@@ -1717,23 +1623,13 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
 async def top_n(
     limit: int | None = LEADERBOARD_SIZE, include_hidden: bool = False
 ) -> list[LeaderboardEntry]:
-    """Returns accounts ordered by balance descending.
+    """Returns accounts ordered by balance descending, omitting hidden accounts unless requested.
 
-    Hidden accounts are the only rows dropped (`include_hidden`): the bot ranks
-    as an ordinary player, and the casino's own P&L is a `casino_ledger` row
-    rather than a wallet. Stored integer values are sorted in SQL with explicit
-    decimal-text aware order terms so the query can still apply `LIMIT` before
-    rows reach Python.
+    `avatar_url` is empty when an account has never been seen by an avatar-aware write path.
 
     Args:
-        limit (int | None): Maximum number of accounts to return, or `None` to return all
-            matching accounts.
-        include_hidden (bool): Whether to include accounts marked as hidden from
-            public leaderboards.
-
-    Returns:
-        Leaderboard entries ordered by balance descending. `avatar_url` is
-        empty when the user has never been seen by an avatar-aware write path.
+        limit (int | None): Maximum number of accounts to return, or `None` for all matching.
+        include_hidden (bool): Whether to include accounts hidden from public leaderboards.
     """
     if limit is not None and limit <= 0:
         return []
@@ -1760,21 +1656,12 @@ async def top_n(
 
 
 async def top_losers(limit: int = LEADERBOARD_SIZE) -> list[LossLeaderboardEntry]:
-    """Returns the biggest gross casino losers for the current Taipei day.
+    """Returns the biggest gross casino losers for the current Taipei day, loss descending.
 
-    The leaderboard reads persisted `casino_account` daily counters. Writes lazily reset stale
-    counters at the first casino settlement after Taipei midnight, while this
-    query filters by today's `day_started_at` so yesterday's counters
-    never leak into a new day.
-
-    Accounts hidden from public leaderboards are dropped.
+    Omits hidden accounts and zero-loss rows; `loss_amount` is always positive.
 
     Args:
         limit (int): Maximum number of accounts to return.
-
-    Returns:
-        Loss leaderboard entries ordered by loss descending. `loss_amount`
-        is always positive.
     """
     if limit <= 0:
         return []
@@ -1866,7 +1753,7 @@ def _loan_proposal_is_expired(proposal: LoanProposal, now: datetime) -> bool:
 async def _decide_pending_proposal_in_session(
     session: AsyncSession, proposal_id: int, status: LoanProposalStatus, now: datetime
 ) -> bool:
-    """Moves a pending proposal to `status` inside the caller's session, returning whether it was still pending."""
+    """Moves a pending proposal to `status`, returning whether it was still pending."""
     result = await session.execute(
         statement=update(LoanProposal)
         .where(LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING)
@@ -1894,11 +1781,9 @@ async def _reject_expired_loan_proposal_in_session(
 async def _undecided_proposal_in_session(
     session: AsyncSession, proposal_id: int, now: datetime, creator_id: int | None = None
 ) -> LoanProposal | None:
-    """Loads a pending proposal that is still inside its decision window.
+    """Loads an unexpired pending proposal, or `None` if missing, decided, or wrong creator.
 
-    Returns `None` when the proposal is missing, already decided, or not created by
-    `creator_id`; rejects and commits an expired one before raising
-    `LoanProposalExpiredError`.
+    Commits rejection and raises `LoanProposalExpiredError` if the proposal has expired.
     """
     statement = select(LoanProposal).where(
         LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
@@ -1980,19 +1865,7 @@ async def _outstanding_central_bank_principal_in_session(session: AsyncSession) 
 async def _central_bank_status_in_session(
     session: AsyncSession, guild_id: int
 ) -> CentralBankStatus:
-    """Computes one guild's central-bank lending capacity.
-
-    What is per guild is the collateral: a guild lends against the balances of the
-    people who take part in it. What is not, and cannot be, is the debt. Wallets
-    cross servers and debt does not follow them, so a loan minted in one guild and
-    handed to somebody who takes part in another arrives there as collateral with
-    nothing owed against it. Charging only the local participants' debt therefore
-    stops bounding anything once three accounts take part in three guilds: a
-    borrow-then-`/give` loop among them grows without limit. Subtracting the whole
-    bank's outstanding principal is what closes that, at the cost of making the credit
-    budget shared — a guild's own wealth decides how much of the bank it may draw
-    on, not how much the bank has.
-    """
+    """Computes a guild's central-bank lending capacity from guild collateral minus global debt."""
     ledger_balance = await _central_bank_ledger_balance_in_session(session=session)
     participants = select(GuildParticipant.user_id).where(GuildParticipant.guild_id == guild_id)
     count_result = await session.execute(
@@ -2000,10 +1873,8 @@ async def _central_bank_status_in_session(
     )
     participant_count = count_result.scalar_one()
 
-    # Joined rather than fetching the ids and binding them into an `IN (...)`: a guild's
-    # participants only ever accumulate, and one bind parameter per id stops working at
-    # SQLite's 32,766-variable ceiling. Summed in Python rather than by the database,
-    # because money columns are decimal text and SQLite's own SUM reads them as floats.
+    # Subquery avoids SQLite's 32,766 bind-parameter limit as guild participants accumulate;
+    # sum in Python because StoredInteger columns are decimal text and SQLite SUM uses floats.
     total_result = await session.execute(
         statement=select(UserWallet.balance).where(
             UserWallet.user_id.in_(participants.scalar_subquery())
@@ -2014,24 +1885,15 @@ async def _central_bank_status_in_session(
     )
 
     outstanding_principal = await _outstanding_central_bank_principal_in_session(session=session)
-    # Central-bank loans mint into user balances, so subtract outstanding
-    # principal once to estimate the pre-loan pool and once for already-used
-    # capacity.
+    # Central-bank loans mint into user balances: subtract outstanding principal once for
+    # pre-loan collateral and once below for already-used capacity.
     base_lending_pool = max(total_positive_user_balance - outstanding_principal, 0)
     return CentralBankStatus(
         participant_count=participant_count,
         total_positive_user_balance=total_positive_user_balance,
         outstanding_principal=outstanding_principal,
-        # The bank's own capital — its starting capital plus the interest it has kept — is
-        # inside the outstanding subtraction, so lending depletes it and a fully leveraged
-        # guild reaches zero. Adding it outside instead pins the pool at a floor it can
-        # never fall through, which takes the pool out of the bounding job altogether: the
-        # per-borrower ceiling cannot cover for it, because a ceiling clamped at zero stops
-        # charging the debt of a borrower who has given their balance away, and a pair
-        # alternating `/give` then mints without limit. Subtracted once rather than twice
-        # because, unlike the participants' balances, that capital was never minted into
-        # anybody's wallet. Lending the kept interest back out cannot be farmed either:
-        # every unit of it was paid out of a borrower's own balance first.
+        # Bank capital sits inside `- outstanding_principal` so a fully leveraged guild hits
+        # zero instead of an unexhaustible floor; subtracted once since never minted into wallets.
         available_credit=max(
             base_lending_pool
             + CENTRAL_BANK_BASE_CAPACITY
@@ -2044,10 +1906,7 @@ async def _central_bank_status_in_session(
 
 
 async def _user_total_debt_in_session(session: AsyncSession, user_id: int, now: datetime) -> int:
-    """Returns everything one borrower owes across every active contract as of `now`.
-
-    Counts the interest owed up to `now` that has not been written yet, without writing it.
-    """
+    """Returns a borrower's total active debt as of `now`, including unpersisted interest."""
     result = await session.execute(
         statement=select(
             LoanContract.principal_remaining,
@@ -2103,9 +1962,7 @@ async def get_credit_ceiling(user_id: int) -> int:
 async def record_guild_participant(guild_id: int, user_id: int) -> None:
     """Records that `user_id` takes part in `guild_id`'s economy.
 
-    Only ever the caller of a command or the author of a rewarded message. Passing
-    somebody else's id here hands their whole balance to a guild's lending pool
-    without their knowledge.
+    Pass only a command caller or rewarded message author, never a `member:` target.
 
     Args:
         guild_id (int): Discord guild ID where the participation occurred.
@@ -2271,8 +2128,7 @@ async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | N
 async def reject_loan_proposals_created_before(cutoff: datetime) -> None:
     """Rejects every proposal still pending from before `cutoff`.
 
-    A request's decision view lives only in the process that posted it, so one an earlier
-    process left pending can no longer be decided or time out.
+    Unsettled decision views do not survive process restarts.
 
     Args:
         cutoff (datetime): Proposals created before this timestamp are rejected.
@@ -2393,7 +2249,7 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
 
     Returns:
         The opened contract and post-approval balances, or `None` when rejected by
-        validation, permissions, or insufficient capacity/funds.
+        validation, permissions, or insufficient capacity or spendable funds.
 
     Raises:
         LoanProposalExpiredError: When this call found the request past its decision window
@@ -2450,9 +2306,7 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
                 return None
             if proposal.borrower_id == actor_id and not allow_central_bank_self_approval:
                 return None
-            # Both bounds are recomputed here rather than passed in, so the
-            # BEGIN IMMEDIATE transaction this runs in is what serialises them and
-            # two approvals racing cannot each see the capacity the other spends.
+            # Recompute under BEGIN IMMEDIATE so concurrent approvals cannot double-spend capacity.
             central_status = await _central_bank_status_in_session(
                 session=session, guild_id=guild_id
             )
@@ -2478,10 +2332,8 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind
             amount=proposal.amount,
             now=now,
         )
-        # Prepay MIN_INTEREST_DAYS of interest so borrowers cannot dodge interest
-        # by repaying immediately. last_interest_accrued_at points past the
-        # prepaid window, so _loan_interest_delta returns 0 until real time
-        # catches up and then accrues normally.
+        # Front-load MIN_INTEREST_DAYS of interest and advance last_interest_accrued_at past the
+        # window so immediate repayment still pays the minimum and later accrual resumes normally.
         prepaid_interest = simple_interest(
             principal=proposal.amount,
             monthly_rate_bps=proposal.monthly_rate_bps,
@@ -2547,13 +2399,7 @@ async def _loan_contracts_for_payment_in_session(
 async def _pay_lender_side_in_session(
     session: AsyncSession, contract: LoanContract, paid: int, interest_paid: int, now: datetime
 ) -> int | None:
-    """Passes one contract's payment on to whoever lent it.
-
-    A personal lender is credited the whole payment and their balance after the
-    credit is returned. The central bank is credited only the interest — its
-    principal was minted on approval and nets out by being burned here — and
-    returns `None`.
-    """
+    """Credits a contract payment to the lender, returning a personal lender's balance or None."""
     if contract.lender_type == LoanLenderType.CENTRAL_BANK:
         await _credit_central_bank_ledger_in_session(
             session=session, amount=interest_paid, now=now
@@ -2661,13 +2507,7 @@ async def _collect_loan_payment(  # noqa: PLR0913 -- a payment names both sides,
     forced: bool,
     guild_id: int | None = None,
 ) -> LoanPaymentResult | None:
-    """Applies one repayment or forced collection across a borrower's contracts and commits it.
-
-    A forced collection accrues interest on every contract before taking anything, and a
-    `None` amount then takes everything owed. A repayment accrues only the contracts its
-    amount reaches. With `guild_id`, a borrower who does not take part in that guild's
-    economy is refused. Returns `None` when nothing was paid.
-    """
+    """Applies a repayment or forced collection across active contracts, or `None` if unpaid."""
     now = _database_now()
     async with spending(user_id=borrower_id), open_session() as session:
         if guild_id is not None and not await _is_guild_participant_in_session(
@@ -2801,10 +2641,7 @@ async def call_central_bank_loans(
 ) -> LoanPaymentResult | None:
     """Forcibly collects active central-bank loans from a borrower.
 
-    Refuses a borrower who does not take part in `guild_id`'s economy. Approval
-    rests on being an administrator of some guild, which anyone can arrange
-    by creating one, so without this an administrator anywhere could sweep the
-    balance of any borrower in the whole economy.
+    Refuses borrowers not recorded in `guild_id`'s `guild_participant` table.
 
     Args:
         guild_id (int): Discord guild ID whose economy `borrower_id` must participate in.
@@ -2831,9 +2668,7 @@ async def call_central_bank_loans(
 async def list_loan_contracts(user_id: int) -> list[LoanContractView]:
     """Returns active loan contracts where `user_id` is borrower or personal lender.
 
-    Accrues and persists interest-due on active contracts first (a write),
-    matching `get_portfolio`'s lazy-accrual behavior, so the returned views
-    reflect interest owed up to now.
+    Accrues and persists due interest on active contracts before returning.
 
     Args:
         user_id (int): Discord user ID to inspect.
@@ -2895,6 +2730,8 @@ async def _portfolio_in_session(
 
 async def get_portfolio(user_id: int) -> PortfolioView:
     """Returns a user's current portfolio and estimated net worth.
+
+    Accrues and persists due interest on active debt before returning.
 
     Args:
         user_id (int): Discord user ID to inspect.

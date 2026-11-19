@@ -28,10 +28,9 @@ if TYPE_CHECKING:
 
 
 class PrepareParticipant(Protocol):
-    """Callable used by lobby join buttons to validate a participant.
+    """Callable used by lobby join buttons to validate and build a participant.
 
-    Game-specific wager / mode / insufficient-balance copy are pre-bound by
-    the caller, so the callable signature stays uniform across lobbies.
+    Game-specific wager, mode, and insufficient-balance copy are pre-bound by the caller.
     """
 
     async def __call__(self, interaction: Interaction[commands.Bot]) -> GameParticipant | None:
@@ -130,9 +129,7 @@ class BaseGameLobbyView(GameView):
                 message_id=self.message.id,
             )
         except Forbidden:
-            # Once a press has rebound the message, an edit with no working press behind it
-            # goes through the channel, which the server can shut the bot out of; the ids are
-            # the whole finding.
+            # Only an edit without a live press token hits channel REST, which can return 403.
             logfire.warn(
                 "Discord refused the lobby's timeout edit",
                 channel_id=self.message.channel.id,
@@ -285,8 +282,7 @@ class BaseGameLobbyView(GameView):
             # Still started means the table is up and the refusal came from playing it.
             if self._started:
                 raise
-            # Expected rather than diagnosable, so the code and the ids are the whole finding: a
-            # lobby someone deleted is routine, a refusal is not.
+            # Expected failures: log code and ids without a traceback (NotFound is routine).
             if isinstance(error, NotFound):
                 logfire.info(
                     "Lobby message gone before its start edit; lobby reopened",

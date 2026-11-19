@@ -1,15 +1,8 @@
-"""Money a player has on a casino table, which no other debit may take while the round plays.
+"""In-process wallet holds for players seated at active casino tables.
 
-A Blackjack stake is settled only after play, and its loss is collected only up to what the wallet
-holds then, so money a seated player moved out mid-round (a transfer, a VIP purchase, a loan
-repayment or one they fund) would leave that loss uncollectable. While a round seats a player,
-the most it can take from them stays on the table: every voluntary debit sees the wallet minus
-that hold, and runs under the player's spending lock, so a table that claims the player can wait
-out a debit already in flight before it reads the balance. Money earned during the round stays
-spendable.
-
-Held in process only: a round dies with the process without touching a balance, and its hold
-goes with it.
+While a player is seated, voluntary debits serialize on `spending` and see only the balance
+above active holds; money earned during the round remains spendable. Holds live in process
+only and vanish on restart along with unsettled rounds.
 """
 
 from typing import Protocol
@@ -62,8 +55,7 @@ def release_stake(user_id: int, holder: StakeHolder) -> None:
 def held_amount(user_id: int) -> int | None:
     """Returns how much of the user's wallet is held: 0 for none, None for all of it.
 
-    A holder that no longer holds seats holds nothing, so a hold its table failed to release
-    cannot freeze the wallet.
+    Holders whose `holds_seats()` is False are ignored.
 
     Args:
         user_id (int): Discord user ID to inspect.

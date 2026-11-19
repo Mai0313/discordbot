@@ -5,9 +5,8 @@ measuring every legal action's expected value in multiples of the base hand
 bet. The engine sees the dealer hole card as the bot's private informational
 edge, and only the recommended action leaves this module, never an EV figure.
 
-The shoe is collapsed into a 10-bucket value-count multiset (`2..9`, ten-value,
-ace), so results depend only on which cards remain, not their order. A
-five-card non-bust hand wins immediately and a five-card 21 earns a
+Collapses the shoe into a 10-bucket value-count multiset (`2..9`, ten-value,
+ace). A five-card non-bust hand wins immediately and a five-card 21 earns a
 system-funded bonus; the settlement-layer VIP payout bonus is intentionally
 excluded.
 """
@@ -45,9 +44,9 @@ _PlayerMemo = dict[tuple[int, bool, int, tuple[int, ...]], float]
 class _EvContext(BaseModel):
     """Fixed per-decision state threaded through the EV recursions.
 
-    `frozen` blocks rebinding only: the memo dicts below are mutated in place
-    throughout a decision. Validation copies a dict, so a context cannot be handed a
-    warm memo — it would hold the copy and silently start cold.
+    `frozen` blocks attribute rebinding only; the memo dicts mutate in place.
+    Pydantic validation copies dicts, so callers must pass empty memos rather
+    than expecting shared mutation of a warm memo.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -82,10 +81,9 @@ def build_shoe_value_counts(shoe: list[Card]) -> tuple[int, ...]:
 def compute_true_count(shoe: list[Card]) -> float:
     """Returns the Hi-Lo true count of the cards already dealt out of `shoe`.
 
-    Hi-Lo assigns +1 to 2-6, 0 to 7-9, and -1 to ten-value cards and aces. A
-    full balanced shoe sums to zero, so the running count of the dealt cards is
-    the negative of the Hi-Lo sum still in `shoe`, divided by the decks
-    remaining; returns 0.0 for an empty shoe.
+    Hi-Lo assigns +1 to 2-6, 0 to 7-9, and -1 to ten-value cards and aces; the
+    dealt running count equals the negated Hi-Lo sum still in `shoe`, divided
+    by the decks remaining (0.0 for an empty shoe).
 
     Args:
         shoe (list[Card]): Remaining cards in the shoe.
@@ -121,7 +119,7 @@ def _add_value(total: int, soft: bool, bucket: int) -> tuple[int, bool]:
 def _dealer_distribution(
     total: int, soft: bool, shoe: tuple[int, ...], memo: _DealerMemo
 ) -> _DealerDist:
-    """Computes the exact dealer final-total distribution over `{17, 18, 19, 20, 21, bust}` under H17."""
+    """Returns the exact H17 dealer final-total distribution over `{17..21, bust}`."""
     if total > 21:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
     if total > 17 or (total == 17 and not soft):
@@ -133,11 +131,8 @@ def _dealer_distribution(
         return cached
     shoe_total = sum(shoe)
     if shoe_total == 0:
-        # Defensive guard for a degraded/empty shoe (callers may pass one): the
-        # dealer cannot draw, so the sub-17 total stands. The tuple has no slot
-        # below 17, so that stand is reported in the 17 bucket. Without the
-        # guard the loop below would skip every bucket and return an unnormalised
-        # all-zero distribution rather than raise.
+        # Empty shoe: dealer cannot draw and stands; map sub-17 into the 17 bucket so the
+        # distribution stays normalized instead of all-zero.
         return (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     accumulator = [0.0] * 6
     for bucket, count in enumerate(shoe):
@@ -165,11 +160,7 @@ def _dealer_dist_for(ctx: _EvContext, shoe: tuple[int, ...]) -> _DealerDist:
 def _stand_ev_unit(
     player_total: int, five_card_eligible: bool, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
-    """Returns the per-unit EV of standing on a non-bust hand against the dealer.
-
-    A five-card non-bust wins immediately (+1); a five-card 21 also earns the
-    system bonus, so its EV is `2 - P(dealer 21)`.
-    """
+    """Returns the per-unit EV of standing on a non-bust hand against the dealer."""
     if five_card_eligible:
         if player_total == 21:
             # The bonus is one bet, as `settlement.py::_hand_settlement_from_state` pays it.

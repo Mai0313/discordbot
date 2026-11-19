@@ -202,12 +202,10 @@ def choose_bot_action(
 
 
 def bot_takes_insurance(shoe: list[Card], dealer_cards: list[Card]) -> bool:
-    """Returns whether the bot buys insurance: only when the face-down cards make it +EV.
+    """Returns whether the bot buys insurance (when face-down ten-value density exceeds 1/3).
 
-    Priced from the ten-value density of every card still face down at the table: the remaining
-    shoe plus the dealer's hole card (`dealer_cards[0]`, hole first as dealt). Insurance pays 2:1,
-    so it turns +EV once that density exceeds one third; the hole card is pooled with `shoe` so
-    its identity never leaks into the insurance decision.
+    Pools `dealer_cards[0]` (the hole card) with `shoe` without peeking its rank; returns
+    False when `shoe` is empty.
 
     Args:
         shoe (list[Card]): Remaining undealt cards in the shoe.

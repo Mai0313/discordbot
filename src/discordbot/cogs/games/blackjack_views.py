@@ -82,7 +82,7 @@ BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
-    """H1 heading combining the hand and its total, e.g. `# 10♠  5♥ = 15`."""
+    """Returns an H1 heading combining the hand and its total, e.g. `# 10♠  5♥ = 15`."""
     if not cards:
         return ""
     return f"{card_line(cards_text=render_hand(cards=cards))} = {hand_value(cards=cards)}{suffix}"
@@ -167,8 +167,7 @@ def _insurance_refusal_notice(error: ValueError) -> str:
         return "你的下注太小，一半不到 1 點，這局沒有保險可買"
     if isinstance(error, InsuranceBeyondBalanceError):
         return "餘額不足，不能買保險"
-    # `InsuranceClosedError` plus anything the rules raise that is not about this seat's money: the
-    # table has moved and the newest one is the answer either way.
+    # `InsuranceClosedError` or any non-balance rule error means the table already moved on.
     return "現在不能買保險，請看最新牌桌"
 
 
@@ -1330,10 +1329,6 @@ class BlackjackView(GameView):
             )
 
     async def wait_for_background_tasks(self) -> None:
-        """Waits for the round's off-critical-path tasks (round-history persistence).
-
-        The round never blocks on them, so this drain exists only for a caller that
-        needs those writes to have landed.
-        """
+        """Waits for the round's background tasks (round-history persistence) to finish."""
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))

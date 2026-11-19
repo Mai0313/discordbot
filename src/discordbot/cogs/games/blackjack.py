@@ -22,11 +22,9 @@ RoundPhase = Literal["insurance", "player_actions", "settled"]
 
 
 class InsuranceRefusedError(ValueError):
-    """The round refused an insurance side bet.
+    """Base error raised when a round refuses an insurance side bet.
 
-    Subclasses distinguish closed insurance, insufficient balance, and a sub-unit
-    half-bet so the view can pick a player-facing notice from the exception type
-    while rules callers can still catch `ValueError`.
+    Subclasses distinguish closed insurance, insufficient balance, and a sub-unit half-bet.
     """
 
 
@@ -39,10 +37,7 @@ class InsuranceBeyondBalanceError(InsuranceRefusedError):
 
 
 class InsuranceBetTooSmallError(InsuranceRefusedError):
-    """Half the seat's bet rounds to zero, so there is no side wager to place.
-
-    Permanent for the round: no refresh and no other seat's move changes it.
-    """
+    """Half the seat's bet rounds to zero; permanent for the round."""
 
 
 SHOE_DECK_COUNT = 4
@@ -62,10 +57,7 @@ def draw_card(rng: Random) -> Card:
 
 
 def build_shoe(rng: Random) -> list[Card]:
-    """Returns a shuffled `SHOE_DECK_COUNT`-deck shoe (4 decks = 208 cards).
-
-    Cards are popped from index 0 (FIFO). The deck count is sized so a full
-    table taking splits and double-downs never runs the shoe out mid-round.
+    """Returns a shuffled `SHOE_DECK_COUNT`-deck shoe (4 decks = 208 cards), drawn FIFO.
 
     Args:
         rng (Random): Random source used to shuffle the shoe.
@@ -304,8 +296,6 @@ def can_double(hand: BlackjackHandState, balance_remaining: int) -> bool:
         return False
     if hand.is_split_hand:
         return False
-    # Doubling doubles the hand's stake; keep it within the single-bet cap so it
-    # cannot bypass the anti-inflation guardrail that bounds every wager.
     if hand.bet * 2 > MAX_SINGLE_BET:
         return False
     return balance_remaining >= hand.bet
@@ -361,7 +351,7 @@ def max_round_loss(bet: int, balance_at_start: int) -> int:
 
 
 def surrender_loss(bet: int) -> int:
-    """Returns what a Late Surrender forfeits: half `bet`, rounded up so a 1-point bet is not free.
+    """Returns what a Late Surrender forfeits: half `bet`, rounded up.
 
     Args:
         bet (int): Original hand wager.
@@ -383,7 +373,6 @@ def _settle_regular_hand(
         outcome: SettleOutcome = "push"
         delta = 0
     elif player_bj:
-        # A natural pays 3:2.
         outcome, delta = "blackjack", bet * 3 // 2
     elif dealer_bj:
         outcome, delta = "lose", -bet
@@ -403,11 +392,10 @@ def _settle_regular_hand(
 def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOutcome, int]:
     """Returns `(outcome, delta)` for one finished sub-hand against `dealer`.
 
-    Surrender short-circuits to a half-bet refund. `is_five_card_win` also
-    matches a five-card 21, so the 21 is tested first to preserve its bonus
-    label; a five-card 21 pushes its main leg against a dealer 21 while the
-    settlement layer adds its system-funded bonus. A split hand's two-card 21
-    is not a natural and settles as an ordinary 21.
+    Surrender forfeits `surrender_loss(base_bet)`. A five-card 21 returns
+    `five_card_twenty_one` and pushes its main leg against a dealer 21 (the
+    settlement layer adds its system-funded bonus); other five-card non-bust
+    hands win `bet`. Split hands do not qualify as natural Blackjacks.
 
     Args:
         hand (BlackjackHandState): Finished sub-hand to settle.
@@ -478,9 +466,7 @@ class BlackjackRound(BaseModel):
     ) -> "BlackjackRound":
         """Returns a round initialized from `participants`.
 
-        When `shoe` is provided, the round validates a copy into `round_state.shoe`
-        so dealing never mutates the caller's list; otherwise a fresh shuffled
-        shoe is built.
+        Copies `shoe` when provided; otherwise builds a fresh shuffled shoe.
 
         Args:
             rng (Random): Random source used for card draws and fresh shoes.
@@ -585,8 +571,8 @@ class BlackjackRound(BaseModel):
     def active_player(self) -> BlackjackPlayerHand | None:
         """Returns the player whose turn is active, if any.
 
-        Advances the table past players who have finished, so this is not a
-        pure read: it can move the turn cursor and settle the round.
+        Not a pure read: skips finished players, advancing the turn cursor and
+        settling the round when none remain.
         """
         if self.finished or self.phase != "player_actions":
             return None
@@ -845,7 +831,7 @@ class BlackjackRound(BaseModel):
         self._resolve_peek(dealer_has_blackjack=is_blackjack(cards=self.dealer))
 
     def _resolve_peek(self, dealer_has_blackjack: bool) -> None:
-        """Applies the hole-card peek result, settling on a dealer natural or entering `player_actions`."""
+        """Applies the hole-card peek, settling on a dealer natural or starting player actions."""
         if dealer_has_blackjack:
             self.peeked_blackjack = True
             for player in self.players:

@@ -1,9 +1,6 @@
 """In-memory per-channel persistent Blackjack shoe for cross-round card counting.
 
-The shoe carries over between rounds in the same Discord channel so the bot's
-Hi-Lo count has signal and the EV engine reasons over the real depleted shoe.
-State is in-memory only: a bot restart drops every channel's shoe, which is an
-acceptable natural reshuffle.
+Shoes carry over between rounds in the same Discord channel and reset on bot restart.
 """
 
 from random import Random
@@ -15,21 +12,17 @@ from discordbot.typings.games import Card
 from discordbot.cogs.games.blackjack import build_shoe
 from discordbot.cogs.games.blackjack_ev import compute_true_count
 
-# Reshuffle a round before it starts once fewer than this many cards remain. It must cover
-# the most cards one round can deal, or the shoe empties mid-round into `draw_card`'s
-# infinite fallback and the count is corrupted. It cannot simply be raised for headroom either:
-# what is left under it is the penetration the count reads, and 96 of the 4-deck shoe's 208
-# cards leaves ~54%, deep enough to count.
+# Reshuffle before a round when fewer cards remain. Bounded below by the most cards one round
+# can draw (avoiding `draw_card`'s infinite fallback) and above by counting penetration
+# (96 of 208 cards leaves ~54% dealt).
 RESHUFFLE_THRESHOLD_CARDS: Final[int] = 96
 
 
 class BlackjackShoeStore(BaseModel):
-    """Holds one persistent shoe per channel so the bot's card counting has signal.
+    """Per-channel persistent shoe store keyed by Discord channel id.
 
-    Shoes are keyed by Discord channel id. The mutating methods are synchronous and
-    never await, so they are atomic under the single-threaded event loop; two
-    concurrent games in one channel degrade gracefully to a fresh shoe rather than
-    interleaving draws on a shared list.
+    Mutating methods are synchronous and atomic on the single-threaded event loop; concurrent
+    games in one channel each get a fresh shoe rather than sharing a list.
     """
 
     shoes: dict[int, list[Card]] = Field(
@@ -43,9 +36,8 @@ class BlackjackShoeStore(BaseModel):
         """Returns `(shoe, generation)` for a new round, removing the shoe from the store.
 
         Rebuilds a fresh shoe when the channel has none or fewer than
-        `RESHUFFLE_THRESHOLD_CARDS` remain. Pass `generation` back to `save_shoe`
-        once the round settles so an older in-flight round cannot overwrite a
-        newer table's shoe.
+        `RESHUFFLE_THRESHOLD_CARDS` remain. Pass `generation` to `save_shoe`
+        on settlement to prevent stale writes from overwriting a newer round's shoe.
 
         Args:
             channel_id (int): Discord channel ID owning the shoe.
@@ -79,8 +71,8 @@ class BlackjackShoeStore(BaseModel):
     def put_back_shoe(self, channel_id: int, cards: list[Card]) -> None:
         """Restores `cards` for a round that failed before showing a card.
 
-        Leaves any shoe another round saved since untouched and records no
-        generation, so an in-flight round still saves over the restored shoe.
+        Leaves any shoe saved since untouched and records no generation, allowing
+        an in-flight round to overwrite it.
 
         Args:
             channel_id (int): Discord channel ID owning the shoe.

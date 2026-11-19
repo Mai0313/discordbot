@@ -1,13 +1,8 @@
-"""Persistent Blackjack round history for the games cog.
+"""Persistent Blackjack round history stored in `data/database/games.db`.
 
-Every settled Blackjack round writes one row per seated player (the bot
-player included) into `data/database/games.db`. The query side reads the most recent
-rounds for a single player so `/games blackjack_history` can show someone's
-recent hands, bets, dealer hands, and results.
-
-Per-hand card detail rides in one `BlackjackHistoryPayload` JSON column, so anything
-that has to be filtered, ordered or summarised needs a flat column of its own rather
-than a payload field.
+Every settled round writes one row per seated player (the bot player included). Per-hand card
+detail rides in one `BlackjackHistoryPayload` JSON column; fields that must be filtered,
+ordered, or summarised need flat columns.
 """
 
 from typing import cast
