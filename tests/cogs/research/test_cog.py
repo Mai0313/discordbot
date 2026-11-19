@@ -6,6 +6,7 @@ import asyncio
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx2
 import pytest
 from nextcord import Embed, Thread, Permissions, AllowedMentions, PartialMessageable
 from sqlalchemy.exc import OperationalError
@@ -73,6 +74,26 @@ def test_failure_text_distinguishes_budget() -> None:
     ]
     assert all(texts)
     assert len(set(texts)) == 3
+
+
+async def test_interactions_client_pins_v1beta_api_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preview research agents run against `v1beta` rather than `google-genai`'s `v1` default."""
+    paths: list[str] = []
+
+    async def fake_send(
+        _self: httpx2.AsyncClient, request: httpx2.Request, **_kwargs: object
+    ) -> httpx2.Response:
+        paths.append(request.url.path)
+        return httpx2.Response(
+            status_code=200, request=request, json={"id": "int_1", "status": "completed"}
+        )
+
+    monkeypatch.setattr(target=httpx2.AsyncClient, name="send", value=fake_send)
+    cog = _research_cog(enabled=True)
+    await cog.interactions_client.aio.interactions.get(id="int_1")
+    assert paths == ["/v1beta/interactions/int_1"]
 
 
 # ----- restart resume sweep -----------------------------------------------------------------

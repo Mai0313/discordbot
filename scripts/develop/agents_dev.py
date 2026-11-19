@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 import orjson
 from rich.console import Console
 from agents.result import RunResult
+from google.genai.types import HttpOptions
 from google.genai.interactions import (
     EnvironmentParam,
     AllowlistEntryParam,
@@ -59,7 +60,9 @@ def gen_reply_gemini(user_prompt: str) -> None:
     Args:
         user_prompt (str): User message to send as the single prompt input.
     """
-    client = genai.Client(api_key=config.gemini_api_key)
+    client = genai.Client(
+        api_key=config.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
+    )
     responses = client.interactions.create(
         agent=RuntimeModelCatalog().antigravity_model.name,
         system_instruction=REPLY_PROMPT,

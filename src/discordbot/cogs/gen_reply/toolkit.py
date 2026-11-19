@@ -17,6 +17,7 @@ from google import genai
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
+from google.genai.types import HttpOptions
 
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -63,7 +64,11 @@ class ReplyToolkit(BaseModel):
         Raises at construction when `gemini_api_key` is empty; callers that can run without a key
         use `gemini_client_if_configured` instead.
         """
-        return genai.Client(api_key=self.gemini_api_key)
+        # `google-genai` defaults to `v1`, where `gemini-omni-*` and `lyria-*` 404 and `files.upload`
+        # returns `/v1/files/` URIs that miss LiteLLM's `/v1beta/files/` pass-through prefix.
+        return genai.Client(
+            api_key=self.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
+        )
 
     @property
     def gemini_client_if_configured(self) -> genai.Client | None:
