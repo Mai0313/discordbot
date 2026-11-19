@@ -783,7 +783,7 @@ class ResponseStreamer(BaseModel):
                 # `output` is None on the Interactions path, whose adapter fills `tool_use` from
                 # its own events. The proxy reports grounding as `url_citation` annotations and a
                 # distinct-query count in the input details, and URL context not at all (see the
-                # grounding note in `.agents/rules/responses-api.md`).
+                # grounding note in `.agents/skills/dev-rules/references/responses-api.md`).
                 if response.response.output is not None:
                     self.tool_use.record_response(response=response.response)
             elif response.type == "response.incomplete":

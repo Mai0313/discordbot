@@ -2,17 +2,9 @@
 
 Rules, invariants and traps the code at the edit site does not show: each bullet is the rule, at most a clause of why, and one pointer.
 
-## Rule files
+## Project rules skill
 
-Rules that matter only for part of the code live in `.agents/rules/`, and `.claude/rules` is a symlink to it. Before changing, planning or reviewing code, or operating on what `data/` holds, read the files there that cover it: Claude Code loads one only once a file its `paths` match is opened, Antigravity sees only each file's `description` until it reads the file, and other agents see none of them.
-
-- `reply-pipeline.md`: the `gen_reply` turn, its routes and linked-post sources, inline markers and attachments, deep research, and the turn's logs.
-- `responses-api.md`: what the Responses API, the proxy and `interactions.create` do to a request.
-- `memory.md`: long-term memory, the reply's memory hand-off and the memory caps.
-- `economy-games.md`: the economy and the casino games.
-- `link-expansion.md`: the link-expansion cogs, the platform readers behind them and their pairing with link sources.
-
-A rule file's `paths` and its `description` must name the same code. Its trigger is `model_decision`, not `glob`, which `agy` 1.4.5 never fired on a viewed or edited file (2026-10-28). Antigravity truncates any rule file past 24,000 bytes, this one included.
+Area-specific rules live in the `dev-rules` project skill at `.agents/skills/dev-rules/SKILL.md` (with `.claude/skills` symlinked to `../.agents/skills`). Before changing, planning or reviewing code in a covered area, or operating on what `data/` holds, load `dev-rules` and read the `references/` files its path table maps to your files. Antigravity truncates `AGENTS.md` past 24,000 bytes.
 
 ## Commands
 
@@ -52,20 +44,9 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 
 - **Design a user-facing surface in an artifact before building it.** A panel, view, modal, embed layout or PNG board is settled on a published mockup (Discord-faithful chrome, both themes, real copy, every screen the flow reaches) carrying each open question with a recommendation; wording-only work skips this.
 - **A permission the bot had is not one it has.** Server admins change channel overwrites without notice, so any channel REST call can answer `403 Missing Access`: log it at `warn` with the ids and no traceback (the one carve-out from `.github/CONTRIBUTING.md#logging`) and escalate nothing. A slash command answers on its own token without consulting channel permissions, so a reply landing proves no read access (#694), and anything that returns to such a message later (delete, edit, history read) must go through the interaction while its token is alive.
-- **A Discord `400001 Access to file uploads has been limited` on a guild days old lifted by itself (#719)**: check the guild's age before touching code.
-- **A feature that shares schema, concepts or many helpers with an existing cog extends that cog** (the loan commands live in `cogs/economy/cog.py`); only a low-coupling feature gets a new one. Do not add a status or query command just for symmetry; fold the information into an existing command's embed, as `/balance` does (a preference: `/credit status` and `/central_bank status` exist).
 - **One `commands.Cog` subclass per `cog.py`**.
-- **A shared slash-option vocabulary is a `Literal`, never a `StrEnum`** (`typings/video.py::VideoQuality` has why and the sites a new preset must reach). `SlashOption(default=...)` is typed `Any` upstream, so `ty` cannot check a default.
 - **Every user-visible command or behavior change updates `gen_reply/capabilities.md` in the same change, and a command change also updates the three README command tables.** The answer model knows the bot's features only from that document.
-- **Aligned-width embeds use `utils.discord_embeds.embed_spacer_payload(..., target=)`**.
-- **Content past embed limits is paginated, rendered to a PNG via `attachment://...`, or clipped with a visible notice (`utils/discord_embeds.py::clip_to_utf16_limit`); never truncate silently.**
-- **Markdown headings render reliably only inside `embed.description`.**
-- **Never hardcode a Discord attachment-size ceiling; read it through `utils/media_delivery.py::upload_limit_for(guild=...)`, also passing `interaction=` when the media goes out through one**.
-- **Decide attach vs host vs drop only in `MediaDeliveryPlanner.plan`; keep the Discord send and the degradation policy at each site**. Pass `envelope_margin=MEDIA_ENVELOPE_MARGIN` for a combined attach or one riding with embeds, and keep every new site host-free under `MEDIA_HOSTING_ENABLED=false` (module docstring).
-- **A Discord forward has empty `content` / `embeds` / `attachments`; its payload is in `message.snapshots`** (`gen_reply/input.py`).
-- **`channel.history(before=..., oldest_first=True)` reverses each 100-message page on its own**, so past one page the order scrambles: fetch newest first and reverse the list yourself (`gen_reply/surface.py::TurnSurface.fetch_history`).
 - **Only `InteractionContextType.bot_dm` is a direct message**: `private_channel` also covers group DMs and other people's DMs, and a DM reading hands recall a `dm_partner_id` that opens every compartment the owner has.
-- **A slash command's first followup after a defer keeps the defer's flag**, so a public settlement after an ephemeral defer goes through `utils/interaction_responses.py::send_expiring_followup_after_private_defer`.
 
 ## AI Pipeline
 
@@ -73,23 +54,16 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 
 - **Every runtime conversation is `AsyncOpenAI` on the Responses API through the LiteLLM proxy (`OPENAI_BASE_URL`).** Never switch back to Chat Completions or import a provider-native SDK (`google-genai`, `anthropic`, `xai-sdk`) into any request path other than the non-proxied ones listed next.
 - **The non-proxied paths are the only direct-to-Google calls, and they forgo proxy-side cost/usage tracking**: attachment and linked-post Files API uploads (`gen_reply/attachment/gemini_file_api.py`, `gen_reply/files_api.py`), the YouTube answer turn (`gen_reply/interactions.py`), omni video (`VideoGenerator`, VIDEO route and `<generate-video>`), `<generate-music>` (`MusicGenerator`) and deep research (`cogs/research/`).
-- **Every direct-to-Google generation call is `interactions.create`; `generate_content` must not come back.** Never read a `generate_content` or proxy result as what `interactions.create` can do, or back, since their capability gates differ (see `.agents/rules/responses-api.md`).
-- **Cast an `interactions.create()` result to a Protocol, as `generation.py::_InteractionResult` does.**
+- **Every direct-to-Google generation call is `interactions.create`; `generate_content` must not come back.** Never read a `generate_content` or proxy result as what `interactions.create` can do, or back, since their capability gates differ (see `.agents/skills/dev-rules/references/responses-api.md`).
 - **Runtime model strings live only in `RuntimeModelCatalog` (`typings/models.py`); pick a tier by whether the output's shape is already fixed.**
 - **The owner does not trade quality for inference cost**: never propose a cheaper tier or a tighter memory limit on cost grounds. `slow_model` candidates are the newest snapshot or a pro one; never propose anything else for it on latency grounds.
-- **Look up which efforts a model accepts before repointing a tier, widening `RouteClassification.effort`, or dispatching an existing tier down a new path; never trust a list in the repo, a comment, or memory.** Read `reasoning.supported_efforts` for the `<provider>/<name>` id at `https://openrouter.ai/api/v1/models`, not `supported_parameters` (it lists no values), and cross-check against the provider's own docs where they publish one: Google's thinking page matched openrouter exactly when last compared and is the only source for a snapshot openrouter lacks.
+- **Look up which efforts a model accepts before repointing a tier, widening `RouteClassification.effort`, or dispatching an existing tier down a new path; never trust a list in the repo, a comment, or memory.** Read `reasoning.supported_efforts` for the `<provider>/<name>` id at `https://openrouter.ai/api/v1/models`, not `supported_parameters` (it lists no values), and cross-check against the provider's own docs where they publish one: Google's thinking page matched openrouter exactly when last compared and is the only source for a snapshot openrouter lacks. See `dev-rules`'s `responses-api.md` for proxy fallback and effort-mismatch behaviour.
 - **Before pointing a tier at a Gemini id, read its row on `https://aistudio.google.com/docs/deprecations`**: a routed id answers as its target under the old name (`gemini-3.7-flash` is `gemini-3.8-flash`), and the models API keeps listing ids past their shutdown.
-- **A tier pointed at an alias with no entry in `~/repo/litellm/litellm.yaml`'s `fallbacks` has no proxy fallback**: the bot leaves fallbacks to the proxy, so add the alias's chain there in the same change (#1148).
-- **Through the proxy an out-of-set effort is an HTTP 200 from the fallback deployment on a non-streaming call and an error on a streaming one (the streaming fallback skips a 400); direct to Google it is a hard failure (#459).** On a non-streaming call only the response's own `model` field proves which model answered, so a tier can look healthy for months and fail the first time a feature dispatches it direct to Google.
-- **One `GEMINI_API_KEY` both uploads Files and backs the proxy's conversational aliases (`~/repo/litellm/configs/gemini.yaml`), so the proxy must never pool a conversational alias across keys.**
-- **Pass `ReplyToolkit` (`gen_reply/toolkit.py`) explicitly, never through a `ContextVar`**, so a missed hand-off is a `ty` error.
 - **Do not reintroduce per-key dispatch** (#582, removed in #620). A peak-hour 503 is upstream model capacity, not a per-project limit (#583: split evenly across keys, zero 429s), while per-key dispatch doubled Files uploads.
 - **Author runtime prompts in English** (prompts, tool descriptions, `TTS_STYLE_DIRECTIVE`). Chinese stays only as quoted data (a token the context carries, such as `## 成員稱呼`, or a sample of what users type or a note should say), the 轉帳 caution in `COMMON_PROMPT` and the bot's name 破貓.
 - **A runtime prompt whose output is posted to Discord as markdown embeds `typings/discord_markdown.py::DISCORD_MARKDOWN_RULES`**; output that stays model input (a memory note) or plain text (a thread title) does not.
 - **IMAGE and VIDEO carry no default aesthetic; never reintroduce a code-side static style suffix**, which cannot honor "unless the user specified".
 - **Name a Responses API call's result `responses` and its stream items `response`.**
-- **Answer proxy-behavior questions from LiteLLM's source in the running container, not its docs, which lag it.** Use `docker exec litellm-litellm-1 python -c "import importlib.metadata as m; print(m.version('litellm'))"` and `/app/.venv/lib/python3.13/site-packages/litellm`, or shallow-clone upstream into a scratch dir for a version the container lacks.
-- **A `Vertex_ai_betaException` in a proxy error is the Gemini Developer API**: every Gemini conversational alias is a `gemini/...` deployment, whose route reuses LiteLLM's Vertex transformation. Read the model group a LiteLLM error names before blaming a tier for it.
 - **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn, on an error or on a stream that ends without completing** (`streaming.py::stream_answer_with_retry` has why). The owner keeps that retry beside the proxy's fallbacks: do not propose removing it.
 - **Read retryability structurally, never off the message, through `utils/llm_errors.py::llm_status_code` / `is_retryable_llm_error`**.
 - **A kill-switch is an `*_enabled` field on `LLMConfig` (`typings/llm.py`) whose description states its own off-behaviour**.
@@ -100,7 +74,6 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **Every request site classifies its failure, media downloads included, and never by testing a `requests` response for truth** (`Response.__bool__` is `self.ok`, so a 429 or 503 is falsy). `utils/link_errors.py`'s `link_fetch_error` / `is_retryable_fetch_failure` are the shared classifiers.
 - **Scratch downloads go in a per-invocation `utils/scratch_dir.py::scratch_directory`, never under `data/`**: `tests/guards/test_scratch_dir.py` catches only `TemporaryDirectory` / `mkdtemp`, and the module docstring has why.
 - **`cogs/template/` is a real loaded cog, not a scaffold to copy or delete**.
-- **Usage records (`utils/usage_log.py`, #429) cover slash invocations and AI replies only**: a research run gets no record of its own, since its launch is already a `reply.db` `research` row and the `/deep_research` or `QA` turn that started it is recorded as usual. `admin/usage_report.py` names only what was used, so a zero-use inventory comes from `gen_reply/capabilities.md`.
 
 ## Conventions
 

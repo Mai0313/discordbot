@@ -1,21 +1,13 @@
----
-description: "Read before changing, planning or reviewing a model call or a measurement of one: cogs/gen_reply/, cogs/research/, cogs/memory/, services/memory/, the LLM and model typings, utils/llm*.py, scripts/develop/*_dev.py, admin/regen_memories.py, and the LLM utils' tests and input helper."
-trigger: model_decision
-paths:
-  - "src/discordbot/cogs/gen_reply/**"
-  - "src/discordbot/cogs/memory/**"
-  - "src/discordbot/cogs/research/**"
-  - "src/discordbot/services/memory/**"
-  - "src/discordbot/typings/llm.py"
-  - "src/discordbot/typings/models.py"
-  - "src/discordbot/utils/llm*.py"
-  - "scripts/develop/*_dev.py"
-  - "src/discordbot/admin/regen_memories.py"
-  - "tests/utils/test_llm*.py"
-  - "tests/helpers/llm_input.py"
----
-
 ## AI Pipeline
+
+### Proxy, Tiers and Interactions API
+
+- **Cast an `interactions.create()` result to a Protocol, as `generation.py::_InteractionResult` does.**
+- **A tier pointed at an alias with no entry in `~/repo/litellm/litellm.yaml`'s `fallbacks` has no proxy fallback**: the bot leaves fallbacks to the proxy, so add the alias's chain there in the same change (#1148).
+- **Through the proxy an out-of-set effort is an HTTP 200 from the fallback deployment on a non-streaming call and an error on a streaming one (the streaming fallback skips a 400); direct to Google it is a hard failure (#459).** On a non-streaming call only the response's own `model` field proves which model answered, so a tier can look healthy for months and fail the first time a feature dispatches it direct to Google.
+- **One `GEMINI_API_KEY` both uploads Files and backs the proxy's conversational aliases (`~/repo/litellm/configs/gemini.yaml`), so the proxy must never pool a conversational alias across keys.**
+- **Answer proxy-behavior questions from LiteLLM's source in the running container, not its docs, which lag it.** Use `docker exec litellm-litellm-1 python -c "import importlib.metadata as m; print(m.version('litellm'))"` and `/app/.venv/lib/python3.13/site-packages/litellm`, or shallow-clone upstream into a scratch dir for a version the container lacks.
+- **A `Vertex_ai_betaException` in a proxy error is the Gemini Developer API**: every Gemini conversational alias is a `gemini/...` deployment, whose route reuses LiteLLM's Vertex transformation. Read the model group a LiteLLM error names before blaming a tier for it.
 
 ### Responses API Gotchas
 
