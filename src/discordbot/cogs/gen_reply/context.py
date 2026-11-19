@@ -174,11 +174,8 @@ class RecallPlan(BaseModel):
 def latest_reply_ids(messages: list[Message], bot_user_id: int | None) -> set[int]:
     """Returns the ids of the bot's most recent reply in `messages`, every message of it.
 
-    The reply is found by its usage footer, since the bot's other posts (a public command's
-    output, a link expansion, a hosted-media link) carry none and may be newer. The footer sits on
-    a long reply's last message, and every message of it replies to the one before
-    (`TurnSurface.follow_up`), so the walk follows `reference` back from there through the bot's own
-    messages. A stored `/ask` answer is one message, footer included.
+    Identifies the reply by its usage footer (excluding commands, link expansions, and hosted
+    media links) and walks `reference` back through the bot's own messages.
 
     Args:
         messages (list[Message]): History messages ordered oldest-first.
@@ -280,13 +277,9 @@ def history_media_over_budget(
         try:
             count = builder.count_supported_sources(message=candidate)
         except Exception:  # noqa: S112
-            # Broad for the same reason `process_single_message` is, and load-bearing here for a
-            # different one: this runs inside `ReplyContextBuilder.build`'s gather, which has no
-            # except of its own, so an unexpected nextcord shape would take the whole reply out
-            # through the generic error path rather than costing one message its attachments.
-            # Silent against S112 on purpose: the message is left out of the refusal set, so its
-            # own render re-collects a moment later, fails the same way, and that handler logs it
-            # with the message id and the traceback. Logging here would double every such failure.
+            # Broad on purpose: runs inside `build`'s unguarded gather, so an unexpected nextcord
+            # shape must not abort the reply. Silent (S112) because leaving the message out lets
+            # `process_single_message` re-fail and log it once with id and traceback.
             continue
         if not count:
             continue
@@ -354,12 +347,7 @@ def current_header(message: Message, has_reference: bool) -> EasyInputMessagePar
 
 
 class ReplyContextBuilder(BaseModel):
-    """Builds one turn's `ReplyContext` from Discord history plus stored memory.
-
-    Everything here reads and nothing writes, which is what lets the pipeline start the build
-    speculatively alongside the route call and throw it away when the turn fails before
-    consuming it.
-    """
+    """Builds one turn's `ReplyContext` from read-only Discord history and stored memory."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -464,13 +452,8 @@ class ReplyContextBuilder(BaseModel):
             gap_separators=len(blocks) - len(processed),
             message_id=self.message.id,
         )
-        # Names the block and stops there. Wording that invites the model to answer from the
-        # history competes with the Reference Message's own claim to be the primary context and
-        # loses the reply's subject to whatever in the window reads as the most answerable thing.
-        # Where the subject may come from is a behaviour rule, so it lives in `REPLY_PROMPT` at
-        # developer authority instead. Keeping it out of here also keeps it out of every other
-        # call this render feeds, none of which is answering a question; the memory review
-        # transcript opens with this header verbatim.
+        # Label only (no behavior rules): `REPLY_PROMPT` owns subject selection, and the memory
+        # review transcript reuses this header verbatim.
         header = marker_block(text="==== Chat History: earlier messages in this channel. ====")
         return [header, *blocks]
 
@@ -570,9 +553,7 @@ class ReplyContextBuilder(BaseModel):
         if server_memory and self.message.guild is not None:
             widen_allowlist_with_aliases(allowed=deterministic_allowed, memory=server_memory)
             if channel_is_public(guild=self.message.guild, channel=self.message.channel):
-                # No credit label, because nothing in this channel names these members;
-                # `RecallCandidate` owns what the footer does about that and why no name is
-                # pulled from anywhere else.
+                # Omit credit label for absent members; `RecallCandidate` owns footer attribution.
                 optional_allowed = {
                     user_id: RecallCandidate(prompt_label=label)
                     for user_id, label in allowlist_ids_from_server_memory(
@@ -599,7 +580,6 @@ class ReplyContextBuilder(BaseModel):
         optional candidates only when deterministic participants leave remaining slots.
         """
         server_memory = self.read_server_memory()
-        # Where this reply is happening, for compartment scoping of every user-memory read.
         recall_context = build_recall_context(
             author_id=self.message.author.id,
             guild_id=self.surface.guild_id,
@@ -610,9 +590,6 @@ class ReplyContextBuilder(BaseModel):
                 server_memory=server_memory, recall_context=recall_context
             )
         )
-        # The optional offer does not depend on the deterministic lookup having found anything:
-        # a conversation where nobody present has a stored fact is exactly the one the code path
-        # has nothing of its own to contribute to.
         remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
         logfire.debug(
             "gen_reply memory candidates built",
@@ -658,9 +635,7 @@ class ReplyContextBuilder(BaseModel):
             "gen_reply optional recall resolved",
             selected=len(kept),
             selected_ids=[memory.user_id for memory in kept],
-            # The model-facing label, not the footer credit: this is an operator record, so the
-            # community nickname the route matched on is exactly what makes the row readable, and
-            # it is never None.
+            # Log the non-None `prompt_label` (community nickname) rather than the footer credit.
             labels=[memory.prompt_label for memory in kept],
             candidate_count=len(recall.optional_candidates),
             deterministic_count=len(recall.memories),
@@ -692,22 +667,14 @@ class ReplyContextBuilder(BaseModel):
 
         raw_history = await self.fetch_history(limit=history_limit)
 
-        # The message author's tone-preference note is read directly for that one author
-        # (their own preference for how the bot should sound, cross-server safe by
-        # construction) and injected on every reply with no selection phase. One file read, no
-        # extra LLM call.
         author_tone = read_tone(scope=user_scope(user_id=self.message.author.id))
         tone_block = render_tone_block(tone=author_tone) if author_tone else None
 
-        # The answer needs the uploaded renders; await the full history render and the shared
-        # reference/current uploads here. Cancelling this build cancels the upload too, which is
-        # safe only while nothing else reads `parts_task`.
+        # Cancelling `build` cancels `parts_task`; safe only while nothing else awaits it.
         with logfire.span("gen_reply context build", message_id=self.message.id):
             hist_messages, (reference_messages, current_message) = await asyncio.gather(
                 self.render_history(hist_messages=raw_history), parts_task
             )
-        # Covers the history fetch/render plus waiting on the shared attachment upload, so
-        # the log separates pre-answer attachment cost from the route-call cost.
         logfire.info(
             "gen_reply context build done",
             elapsed_seconds=time.monotonic() - build_started,

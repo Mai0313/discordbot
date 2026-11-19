@@ -1,18 +1,9 @@
 """Persistent deep-research session store (`data/database/reply.db`).
 
-One row per launched research thread. The row lets a bot restart resume an
-in-flight research: the Gemini interaction runs server-side with `store=True`,
-so after a restart the cog reloads the rows still in `researching` and re-attaches
-a live stream to each `interaction_id`. It is also the per-user concurrency
-guard (one active research per owner).
-
-`reply.db` is shared with other reply-side tables. Each call opens an `AsyncSession`
-bound to the current `_engine`, so tests can monkeypatch `_engine` per-test.
-
-This module deliberately avoids `from __future__ import annotations`: SQLAlchemy
-resolves the `Mapped[datetime]` column annotations when the class is built, and under
-postponed evaluation ruff's TC rules move the annotation-only `datetime` import under
-`TYPE_CHECKING`, where the mapper cannot resolve it and the module fails to import.
+Tracks one row per launched research thread for restart resume (`store=True`) and the per-owner
+single-active-session limit. Opens an `AsyncSession` against `_engine` per call so tests can swap
+`_engine`. Omits `from __future__ import annotations`: SQLAlchemy resolves `Mapped[datetime]` at
+class creation, where ruff's `TC` rules would move `datetime` under `TYPE_CHECKING`.
 """
 
 from typing import Literal
@@ -28,8 +19,7 @@ from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
-# Lifecycle of a research session, persisted in the `phase` column. Any stored value outside
-# this set is inert: nothing selects it.
+# Persisted values for the phase column; values outside this set are ignored by queries.
 ResearchPhase = Literal["researching", "done", "failed", "cancelled"]
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")

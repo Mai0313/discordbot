@@ -1,18 +1,8 @@
-"""Gemini Interactions API answer path for QA turns that must watch a YouTube video.
+"""Gemini Interactions API answer path for QA turns watching a YouTube video.
 
-The runtime answer normally streams through the OpenAI Responses API on the LiteLLM proxy,
-but that bridge HTTP-fetches every URL (a YouTube link comes back as HTML) so Gemini never
-sees the video. The native Gemini Interactions API forwards a video URI untranslated for
-Gemini to fetch server-side, so `RouteClassification.watch_video` swaps the one answer turn's
-backend to it rather than running a second pass. This module is the whole swap surface: it
-translates the already-assembled OpenAI-shaped answer input into the Interactions step schema,
-appends the YouTube video to the current message, and adapts the Interactions stream events
-back into the shapes `ResponseStreamer._consume` reads, so the preview / footer / markers /
-voice / image / reply-edit machinery is reused unchanged. It calls Gemini direct (the
-toolkit's `gemini_client` uses `gemini_api_key`, no proxy): the Interactions API is inherently
-Gemini and the swap only fires on a Gemini answer model, so this is the one runtime answer
-turn that does not ride the LiteLLM proxy. Importing the google-genai Interactions types here
-is the documented carve-out for video ingestion.
+Translates OpenAI Responses input into Interactions steps with the YouTube `VideoContentParam`
+appended, calls Gemini directly via `genai.Client`, and adapts Interactions SSE events into the
+`ResponseStreamEvent` shapes `ResponseStreamer._consume` reads.
 """
 
 from types import SimpleNamespace
@@ -56,8 +46,7 @@ if TYPE_CHECKING:
 def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "document"]:
     """Infers the Interactions content kind from `filename`'s extension, defaulting to `"document"`.
 
-    Must stay aligned with `InlineRenderer`'s file MIME types so inlined and uploaded files map
-    to the same kind.
+    Must stay aligned with `InlineRenderer`'s file MIME types.
     """
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if suffix in {"mp4", "mov", "webm", "avi", "mpeg", "mpg", "flv", "wmv", "3gp", "3gpp", "mkv"}:
@@ -72,11 +61,7 @@ def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "do
 def _media_content(
     kind: Literal["image", "video", "audio", "document"], reference: str
 ) -> ContentParam | None:
-    """Builds a media `ContentParam` from a Files API URI or a `data:` base64 string, or None when invalid.
-
-    A `data:` reference is parsed into `data` and `mime_type` (or dropped if malformed) so it is
-    never sent as a `uri` for the server to fetch.
-    """
+    """Builds a media `ContentParam` from a Files URI or `data:` base64 string, or None."""
     inline_prefix = "data:"
     base64_marker = ";base64"
     if not reference.startswith(inline_prefix):
@@ -91,17 +76,12 @@ def _media_content(
             payload_length=len(payload),
         )
         return None
-    # Each `mime_type` is typed as a Literal of what that kind accepts, and this one came off a
-    # Discord attachment, so it is the server that gets to reject it rather than `ty`.
+    # Cast bypasses Literal mime_type checking; invalid attachment MIME types fail server-side.
     return cast("ContentParam", {"type": kind, "data": payload, "mime_type": mime_type})
 
 
 def _translate_part(part: ResponseInputContentParam) -> ContentParam | None:
-    """Translates one OpenAI input content part into an Interactions content param.
-
-    Returns None for an empty or unmappable part so the caller drops it instead of breaking
-    the request.
-    """
+    """Translates one OpenAI input part into an Interactions `ContentParam`, or None."""
     part_type = part["type"]
     if part_type == "input_text":
         text = cast("ResponseInputTextParam", part)["text"]
@@ -112,8 +92,7 @@ def _translate_part(part: ResponseInputContentParam) -> ContentParam | None:
         return _media_content(kind="image", reference=reference) if reference else None
     if part_type == "input_file":
         file_part = cast("ResponseInputFileParam", part)
-        # `file_data` is the inlined half: a PDF rendered without the Files API arrives only
-        # there, and reading the other two alone would drop it without a log line.
+        # `file_data` carries inlined files (e.g. PDFs when the Files API is off).
         reference = (
             file_part.get("file_url") or file_part.get("file_id") or file_part.get("file_data")
         )
@@ -158,8 +137,7 @@ def to_interactions_input(answer_input: ResponseInputParam, youtube_url: str) ->
             entries[-1][1].extend(parts)
         else:
             entries.append((out_role, parts))
-    # Agentic lets the model load only the segments or transcript a question needs instead of
-    # every frame at 1 FPS; `slow_model`'s model page lists it as supported (read 2026-11-19).
+    # Agentic processing loads only needed segments/transcript instead of sampling 1 FPS.
     video_part = VideoContentParam(type="video", uri=youtube_url, processing="agentic")
     if entries and entries[-1][0] == "user":
         entries[-1][1].append(video_part)
@@ -193,11 +171,8 @@ def _note_tool_use(
 async def _record_tool_use(
     stream: "AsyncIterator[InteractionSSEEvent]", tool_use: AnswerToolUse
 ) -> "AsyncIterator[InteractionSSEEvent]":
-    """Passes `stream` through, writing what its tool calls and citations did into `tool_use`.
-
-    Written only once the interaction completes, as the Responses path reports only then. A call's
-    arguments may come on its `step.start`, its `step.delta` or both, hence the sets.
-    """
+    """Yields `stream` unchanged, writing tool calls and citations to `tool_use` on completion."""
+    # Tool arguments may arrive on step.start, step.delta, or both, so deduplicate with sets.
     queries: set[str] = set()
     urls: set[str] = set()
     citations: list[tuple[str, str]] = []
@@ -220,24 +195,20 @@ async def adapt_interactions_stream(
 ) -> AsyncIterator[ResponseStreamEvent]:
     """Yields `ResponseStreamEvent`-shaped namespaces adapted from `stream` for `ResponseStreamer._consume`.
 
-    Remaps text and reasoning deltas, emits token usage once on `interaction.completed` so
-    `ResponseStreamer._consume`'s `+=` accumulation never double-counts, turns an
-    `interaction.completed` whose status is not `completed` into `response.incomplete`, and
-    converts an `"error"` event into `APIError`.
+    Remaps text and reasoning deltas, emits token usage once on `interaction.completed`, maps
+    non-`completed` terminal statuses to `response.incomplete`, and converts `"error"` events into
+    `APIError`.
 
     Args:
-        stream ("AsyncIterator[InteractionSSEEvent]"): Raw Gemini Interactions SSE stream.
+        stream (AsyncIterator[InteractionSSEEvent]): Raw Gemini Interactions SSE stream.
 
     Raises:
         APIError: The Interactions stream emitted an `"error"` event.
     """
     model_name = ""
-    # Fallback when `interaction.completed` omits usage and `total_usage` was reported on
-    # `step.delta` instead; without it a stream that reports usage only per step leaves the
-    # footer and the turn's token fields reading zero.
+    # Fallback when interaction.completed omits usage and only step.delta reported total_usage.
     streamed_usage = None
-    # Branch on `event.event_type` directly (not a copied local) so the discriminated
-    # InteractionSSEEvent union narrows to the member that carries the field being read.
+    # Branch on event.event_type directly so ty narrows the discriminated union.
     async for event in stream:
         if event.event_type == "interaction.created":
             model_name = event.interaction.model or ""
@@ -265,8 +236,6 @@ async def adapt_interactions_stream(
                         SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
                     )
         elif event.event_type == "interaction.completed":
-            # Usage rides the completed interaction; `interaction.usage` is optional on a
-            # streaming payload, so the last `total_usage` seen above stands in for it.
             usage = event.interaction.usage or streamed_usage
             usage_ns = (
                 SimpleNamespace(
@@ -276,8 +245,7 @@ async def adapt_interactions_stream(
                 if usage is not None
                 else None
             )
-            # This payload carries no finish reason, so a status short of `completed` stands in
-            # for one, and an answer that spent its output budget reads like a filtered one.
+            # Interactions carries no finish_reason; non-completed status stands in for it.
             completed = event.interaction.status == "completed"
             yield cast(
                 "ResponseStreamEvent",
@@ -286,8 +254,7 @@ async def adapt_interactions_stream(
                     response=SimpleNamespace(
                         model=(event.interaction.model or model_name),
                         usage=usage_ns,
-                        # None, not []: `_record_tool_use` already wrote this answer's grounding
-                        # into the streamer, and an empty output would overwrite it with zeros.
+                        # None (not []) so ResponseStreamer keeps tool_use from _record_tool_use.
                         output=None,
                         incomplete_details=None
                         if completed
@@ -296,14 +263,8 @@ async def adapt_interactions_stream(
                 ),
             )
         elif event.event_type == "error":
-            # Typed rather than a bare RuntimeError so `extract_friendly_error` can show the
-            # user what the provider actually said instead of this event's repr. What it does
-            # not buy is a retry: the SDK documents `Error.code` as "A URI that identifies the
-            # error type", not a status, so an in-band failure here carries no HTTP status at
-            # all and `is_retryable_llm_error` leaves it alone. Passing a decimal one through
-            # is a hedge against the payload diverging from that doc, not a path anything has
-            # been seen to take. What this backend does retry is what the SDK itself raises
-            # for a transient status or a lost connection.
+            # Raise APIError for extract_friendly_error; SDK Error.code is a URI (not HTTP status),
+            # so in-band errors carry code=0 (unretried) unless decimal.
             failure = event.error
             code = failure.code if failure is not None else None
             raise APIError(
@@ -343,9 +304,8 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inp
         model=model,
         system_instruction=system_instruction,
         input=steps,
-        # Ad-hoc remote sandbox, not an environment ID: a bare "remote" string is read as an
-        # existing environment's id. The `*` allowlist leaves outbound networking unrestricted so
-        # the server-side tools and the YouTube fetch can reach any domain.
+        # Ad-hoc remote sandbox (a bare "remote" string is treated as an environment ID); "*"
+        # allows server-side tools and YouTube fetches to reach any domain.
         environment=EnvironmentParam(
             type="remote",
             network=EnvironmentNetworkEgressAllowlistParam(
@@ -353,11 +313,8 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inp
             ),
         ),
         generation_config=GenerationConfigParam(
-            # effort is the route grade copied onto slow_model (always low, medium or high), and
-            # the set Gemini accepts is per-model, looked up rather than assumed (see
-            # `ModelSettings.effort`). A level the model does not list is refused outright and
-            # loses the whole reply; narrowing ReasoningEffort to the enum here is safe only
-            # while the grade stays inside every branch's set.
+            # Direct to Google refuses unsupported thinking_level values; effort must stay within
+            # slow_model's supported set.
             thinking_level=cast("ThinkingLevel", effort),
             thinking_summaries="auto",
         ),
@@ -367,8 +324,7 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- the request inp
         ],
         stream=True,
     )
-    # `stream=True` returns an async event stream; the overload still types it as a union with
-    # the non-streaming Interaction, so narrow to the iterator the adapter consumes.
+    # Overload still returns Interaction | AsyncStream even with stream=True.
     stream = cast("AsyncIterator[InteractionSSEEvent]", responses)
     async for event in adapt_interactions_stream(
         stream=_record_tool_use(stream=stream, tool_use=tool_use)

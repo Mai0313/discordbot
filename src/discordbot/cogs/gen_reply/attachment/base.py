@@ -17,29 +17,18 @@ from discordbot.cogs.gen_reply.attachment.loaders import attachment_mime, load_a
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
 
-# Lazily fetches a source's bytes and mime type. Awaited only when an upload is actually needed,
-# so a renderer that can adopt an already-uploaded file never re-downloads the source.
+# Lazy loader so renderers adopting an existing upload avoid re-downloading bytes.
 type FileBytesLoader = Callable[[], Awaitable[LoadedMedia]]
 
-# Which render asked for an upload, for a provider that declares an image upload differently
-# from any other file.
+# Distinguishes image vs generic file uploads for providers that handle them differently.
 type UploadKind = Literal["image", "file"]
 
-# A source whose byte fetch fails (typically an expired Discord/Threads CDN url that sits in
-# history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
-# reply; after the window it is retried once so a transient blip self-heals.
+# Window to skip failing scrollback sources before retrying once.
 DEAD_SOURCE_TTL = timedelta(minutes=30)
-# Bounds concurrent media fetch + Files-API upload work across all in-flight pipelines. Above
-# the typical per-message attachment count so a single request stays fully parallel, while two
-# concurrent pipelines cannot launch dozens of simultaneous uploads and starve each other (the
-# source of the worst observed render tail).
+# Process-wide cap on concurrent media fetch + upload tasks across in-flight turns.
 MEDIA_CONCURRENCY = 8
 
-# Module-level rather than per renderer, so the cap holds however many renderers exist: a
-# per-instance semaphore would multiply it by their count, restoring exactly the starvation the
-# number above was measured against. Loop-local because a module-level `asyncio.Semaphore` binds
-# to the first loop that waits on it and every test runs a fresh one (`utils/asyncio_locks.py`
-# has the mechanism).
+# Module-level so the concurrency cap holds across all renderer instances.
 media_semaphore = LoopLocalSemaphore(capacity_provider=lambda: MEDIA_CONCURRENCY)
 
 
@@ -57,28 +46,17 @@ def loggable_cache_key(cache_key: int | str) -> int | str:
 class AttachmentRenderer(BaseModel):
     """Strategy that turns one Discord attachment source into a Responses API content part.
 
-    Each implementation owns one way to make an attachment readable by the answer model
-    (Gemini Files-API upload, or per-type inline base64), so the answer model's provider is
-    swapped by injecting a different renderer into `MessageInputBuilder`, not by branching
-    inside it. Both methods return the rendered part plus the cache expiry the per-message
-    render cache reuses it until, or None when the source is dropped (unsupported / failed).
-    `cache_key` and `allow_dead_cache` drive the dead-source cache below (and the Gemini
-    uploader's own re-poll cache); `InlineRenderer` inherits the dead-source cache for interface
-    parity but never uses it.
+    `render_image` and `render_file` return a `RenderedAttachment` with its cache expiry, or
+    `None` when the source is unsupported or fails. `cache_key` and `allow_dead_cache` drive
+    the per-instance dead-source cache.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Input modalities this renderer drops whatever the answer model accepts. The modality gate
-    # subtracts them, so the route marker, the history media budget and the render cache leave
-    # them out just as the answer does.
+    # Modalities dropped regardless of answer-model support; subtracted by the modality gate.
     dropped_modalities: ClassVar[frozenset[str]] = frozenset()
 
-    # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. Held here rather
-    # than on each uploader so the Files-API uploaders cannot drift (the dict itself is per
-    # instance); a hit within DEAD_SOURCE_TTL skips the fetch fast, past it the entry is dropped
-    # and the source retried once. Bounded at 128 entries. InlineRenderer inherits but never
-    # touches it.
+    # Per-instance LRU (max 128) of `cache_key -> first_failure_at` for dead-source skipping.
     _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
 
     def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
@@ -170,13 +148,10 @@ class AttachmentRenderer(BaseModel):
 
 
 class FileUploadRenderer(AttachmentRenderer):
-    """A renderer that uploads each source to a provider's Files API and references its handle.
+    """Renderer that uploads each source to a provider's Files API and references its handle.
 
-    A provider supplies `_upload_file`, plus its own `render_image`, since how an uploaded image
-    is referenced differs per provider. The file render and the upload resolution are shared: a
-    history source known dead is skipped, and one media slot spans the download and the upload.
-    A provider with more to decide before uploading overrides `_resolve_file_upload` and then
-    defers to it.
+    Subclasses implement `_upload_file` and `render_image`, and may override
+    `_resolve_file_upload` to short-circuit before downloading bytes.
     """
 
     async def render_file(
@@ -219,15 +194,8 @@ class FileUploadRenderer(AttachmentRenderer):
         kind: UploadKind,
         allow_dead_cache: bool = False,
     ) -> UploadedFile | None:
-        """Returns an uploaded file's handle and expiry, or None when the source is dropped.
-
-        One media slot spans the whole download plus upload, so concurrent pipelines cannot
-        launch dozens of CDN downloads at once and buffer all their bytes while they wait for
-        an upload.
-        """
-        # The dead-source skip is for history scrollback only (an expired CDN url that
-        # re-fails every turn); current/reference renders never opt in, so one transient
-        # failure on a just-posted attachment is not poisoned for the next reply.
+        """Uploads one source under a single media slot spanning download and upload, or `None`."""
+        # Only history scrollback opts in so transient errors never poison a fresh attachment.
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
         wait_started = time.monotonic()
@@ -256,8 +224,5 @@ class FileUploadRenderer(AttachmentRenderer):
     async def _upload_file(
         self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
-        """Uploads one source's bytes, returning the handle or None when the upload failed.
-
-        `cache_key` names the source, for a provider that keeps per-source upload state.
-        """
+        """Uploads one source's bytes and returns the handle, or `None` on failure."""
         raise NotImplementedError

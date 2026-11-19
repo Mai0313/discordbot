@@ -29,23 +29,16 @@ def _inline_expiry() -> datetime:
 
 
 class InlineRenderer(AttachmentRenderer):
-    """Inlines attachments as base64 / text parts.
+    """Inlines attachments as base64 or UTF-8 text parts, ignoring `allow_dead_cache`.
 
-    Selected for any non-Gemini answer model, none of which can resolve a Gemini Files URI,
-    for a Gemini one when no Gemini key is configured to upload with, and for every provider
-    while `file_api_enabled` is off. Every render fetches the source and embeds it directly in
-    the request, so there is no upload handle to track and `allow_dead_cache` is ignored; all it
-    remembers is which files it has read and cannot carry. Images inline as `input_image` base64,
-    PDFs as base64 `input_file`, UTF-8 files as `input_text`, and anything else is dropped, as is
-    an attachment past `MAX_INLINE_ATTACHMENT_BYTES`.
+    Images inline as base64 `input_image`, PDFs as base64 `input_file`, and UTF-8 files as
+    `input_text`. Audio, video, files over `MAX_INLINE_ATTACHMENT_BYTES`, and non-UTF-8 binary
+    files are dropped and recorded so `carries` rejects them on later turns.
     """
 
     dropped_modalities = frozenset({"video", "audio"})
 
-    # Files whose bytes turned out to be neither a PDF nor UTF-8, which only the bytes can tell (a
-    # Big5 `.txt` is `text/plain` like a UTF-8 one). `carries` refuses them from then on, so the
-    # route marker, the history media budget and the render cache leave them out after the first
-    # read. Bounded like the render cache.
+    # Per-instance LRU (max 128) of unreadable non-PDF/non-UTF-8 keys refused by `carries`.
     _unreadable: OrderedDict[int | str, None] = PrivateAttr(default_factory=OrderedDict)
 
     def carries(self, content_type: str, cache_key: int | str, size: int | None) -> bool:
@@ -140,7 +133,7 @@ class InlineRenderer(AttachmentRenderer):
     def _inline_file_part(
         self, filename: str, data: bytes, mime_type: str, cache_key: int | str
     ) -> RenderedAttachment | None:
-        """Returns `data` as a base64 PDF `input_file` or UTF-8 `input_text` part, recording unreadable files."""
+        """Returns a base64 PDF or UTF-8 text part, recording non-UTF-8 keys in `_unreadable`."""
         if mime_type == "application/pdf":
             pdf_part = ResponseInputFileParam(
                 type="input_file",

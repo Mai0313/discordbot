@@ -30,9 +30,7 @@ from discordbot.services.memory.store import (
 )
 from discordbot.cogs.gen_reply.link_sources import marker_block
 
-# Returned for an allowed id that has no stored memory file, so the model still
-# sees an explicit signal. Also lets the usage footer tell "looked up" apart from
-# "actually had memory".
+# Sentinel for allowed users with no stored memory; also lets the footer exclude empty lookups.
 NO_STORED_MEMORY = "(no stored memory for this user)"
 
 
@@ -67,13 +65,7 @@ def build_recall_context(
 
 
 class RecallCandidate(BaseModel):
-    """Model-facing and footer-facing labels for one allowlisted user.
-
-    `prompt_label` carries the Discord identity plus any `## 成員稱呼` alias row (or the alias row
-    alone for a table-only member). `credit_label` stays the short Discord label for the usage
-    footer, or None for a table-only member so the footer counts them without leaking another
-    guild's consolidated display name or a raw user id.
-    """
+    """Model-facing and footer-facing labels for one allowlisted user."""
 
     prompt_label: str = Field(
         ...,
@@ -103,16 +95,10 @@ class UserMemory(BaseModel):
 
 
 def _user_label(user: Member | User) -> str:
-    """Renders a sanitized `display (username)` label for a Discord user.
-
-    Mirrors `render_author_identity` minus the `[id: ...]` suffix (the id is the
-    allowlist key) and collapses whitespace so the callable-users block stays
-    one line per user.
-    """
+    """Renders a single-line sanitized, mention-escaped `display (username)` label."""
     safe_display = " ".join(sanitize_identity(value=user.display_name).split())
     safe_username = " ".join(sanitize_identity(value=user.name).split())
-    # Neutralize @everyone/@here/<@id> in user-controlled names so a label can never
-    # turn the public usage footer into an unwanted ping.
+    # Escape mentions so user-controlled names cannot ping via the public usage footer.
     return escape_mentions(f"{safe_display} ({safe_username})")
 
 
@@ -216,8 +202,7 @@ def render_server_memory_block(memory: str) -> EasyInputMessageParam:
 def render_tone_block(tone: str) -> EasyInputMessageParam:
     """Returns the target user's tone-preference note as a low-authority `assistant` message.
 
-    Tone preferences govern phrasing only and are cross-server safe, so they are injected on
-    every reply without compartment filtering.
+    Injected on every reply without compartment filtering.
 
     Args:
         tone (str): Consolidated tone-preference markdown for the reply target.
@@ -242,9 +227,7 @@ def compartments_for_reading(owner_id: int, context: RecallContext) -> list[str]
     """
     scope = user_scope(user_id=owner_id)
     if context.dm_partner_id == owner_id:
-        # `list_compartments` already leads with `global` when it exists, and the reader
-        # concatenates whatever it is handed, so prepending it again renders every
-        # cross-server fact twice and charges it twice against the size cap.
+        # list_compartments already leads with global when present; do not prepend it twice.
         return list_compartments(scope=scope) or [GLOBAL_COMPARTMENT]
     if context.guild_id is not None:
         return [GLOBAL_COMPARTMENT, guild_compartment(guild_id=context.guild_id)]

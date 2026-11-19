@@ -1,12 +1,7 @@
-"""The IMAGE and VIDEO routes: generate the media, deliver it, then talk about it.
+"""The IMAGE and VIDEO routes: generate media, deliver it, then stream a best-effort persona reply.
 
-Both routes keep media generation on the hard error path; once the picture or clip is delivered,
-the streamed persona reply (`answer.py`) is best-effort and leaves the delivered media on screen
-whatever happens.
-
-Each generation runs inside `TurnSurface.delivery_budget_seconds` (None on the gateway path) so an
-`/ask` turn times out while its interaction token can still carry both the deliverable and the
-failure notice.
+Media generation runs inside `TurnSurface.delivery_budget_seconds` on the hard error path; once
+delivered, the persona reply (`answer.py`) is best-effort and leaves the media on screen.
 """
 
 import time
@@ -60,11 +55,7 @@ class MediaReplyRoutes(BaseModel):
         return self.answer.message
 
     async def _deliver(self, data: bytes, filename: str) -> Message | None:
-        """Delivers generated media bytes, returning the sent message or None when hosted as a URL.
-
-        When hosting is unavailable, attempts a native upload so an oversize failure stays on the
-        route's outer error path.
-        """
+        """Delivers generated media, returning the sent message or None when hosted as a URL."""
         item = MediaItem(source=data, filename=filename)
         plan = await self.answer.media_delivery.plan(
             items=[item],
@@ -77,11 +68,9 @@ class MediaReplyRoutes(BaseModel):
                 content=self.message.author.mention, media=plan.native[0]
             )
         if not plan.hosted_urls:
-            # Hosting is off or failed: attempt the native upload so oversize raises on the outer
-            # error path.
+            # Hosting unavailable: try native upload so oversize raises on the outer error path.
             return await self.answer.reply_or_send(content=self.message.author.mention, media=item)
-        # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
-        # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
+        # Hosted URL is the deliverable; return None so the persona reply uses a fresh message.
         await self.answer.reply_or_send(
             content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}"
         )
@@ -91,11 +80,9 @@ class MediaReplyRoutes(BaseModel):
     async def _delivery_window(
         self, context_task: asyncio.Task[ReplyContext]
     ) -> AsyncGenerator[asyncio.Timeout]:
-        """Yields the surface delivery timeout for media generation and drains `context_task` on error.
+        """Yields the surface delivery timeout and drains `context_task` on error.
 
-        Callers enter the yielded timeout around generation only, keeping upload delivery outside
-        it. An expired window re-raises `TimeoutError(WINDOW_EXPIRED_NOTICE)` to distinguish
-        surface expiry from a renderer's own timeout.
+        Caller must enter the timeout around generation only, leaving upload delivery outside.
         """
         window = asyncio.timeout(delay=self.answer.surface.delivery_budget_seconds())
         try:
@@ -111,8 +98,7 @@ class MediaReplyRoutes(BaseModel):
     ) -> None:
         """Generates or edits an image, delivers it, and streams a best-effort persona reply.
 
-        `context_task` is awaited only after the image lands on screen so context preparation
-        overlaps generation; on failure before delivery, `_delivery_window` drains `context_task`.
+        Awaits `context_task` only after delivery; `_delivery_window` drains it on error.
 
         Args:
             user_prompt (str): Mention-stripped request text from the user.
@@ -130,7 +116,7 @@ class MediaReplyRoutes(BaseModel):
                         message=message, replied_to=replied_to_message(message=message)
                     )
                 ]
-                # Logged once the sources are in, since only they say whether this is an edit.
+                # Logged after loading sources so has_source_images reflects edit vs fresh render.
                 logfire.info(
                     "gen_reply image generation start",
                     message_id=message.id,
@@ -145,8 +131,7 @@ class MediaReplyRoutes(BaseModel):
                     enabled=self.answer.config.image_refine_prompt_enabled,
                     image_bytes_list=image_bytes_list or None,
                 )
-                # The director above is best-effort and swallows its own failures, so from here
-                # the image model is the only one a failure can be reported against.
+                # Prompt refinement is best-effort; failures past here belong to image_model.
                 dispatched_model.set(toolkit.runtime_models.image_model.name)
                 image_bytes = await toolkit.image_generator.render(
                     prompt=refined_prompt,
@@ -161,8 +146,7 @@ class MediaReplyRoutes(BaseModel):
                 elapsed_seconds=time.monotonic() - started,
             )
 
-        # Inline base64 keeps the image persona reply provider-agnostic, unlike video's Files API
-        # upload.
+        # Inline base64 keeps the image persona reply provider-agnostic.
         await self.answer.stream_media_persona_reply(
             reply=reply,
             context_task=context_task,
@@ -200,32 +184,24 @@ class MediaReplyRoutes(BaseModel):
             async with window:
                 replied_to = replied_to_message(message=message)
                 source_messages = [message, *([replied_to] if replied_to is not None else [])]
-                # Find the source video first, by priority (current message, then replied-to);
-                # each message reads at most its first clip. Only when there is no source video do
-                # we download reference images, so an edit is never delayed by media it discards.
+                # Check for a source video first (current, then replied-to) before fetching images.
                 source_video: LoadedMedia | None = None
                 for source_message in source_messages:
                     videos = await toolkit.input_builder.get_video_sources(message=source_message)
                     if videos:
                         source_video = videos[0]
                         break
-                # Both branches end in the same omni render, and the director the else branch runs
-                # first is best-effort, so this is the model a failure past here belongs to.
+                # Prompt refinement is best-effort; failures past here belong to video_model.
                 dispatched_model.set(toolkit.runtime_models.video_model.name)
                 if source_video is not None:
-                    # A source video is edited in place (task=edit): omni ingests the actual clip,
-                    # so the prompt is the literal edit instruction. The director is skipped here —
-                    # it only grounds on image parts (a video-only edit would run it blind) and it
-                    # sits serially on the time-to-video path; the user's edit request is already
-                    # specific. omni takes a single input here, so any accompanying reference
-                    # images are dropped.
+                    # task="edit" skips refinement (director sees images only) and drops reference
+                    # images (omni takes one video input).
                     video_bytes = await toolkit.video_generator.render(
                         prompt=user_prompt, reference_image_sources=[], source_video=source_video
                     )
                 else:
-                    # No source video: gather the message + replied-to images as subject
-                    # references, capped to the same set render sends (omni takes a few), so the
-                    # director grounds on exactly those frames and no unused bytes ride the path.
+                    # Cap reference images before refinement so the director sees the exact frames
+                    # passed to render.
                     images = (
                         await toolkit.input_builder.get_turn_image_sources(
                             message=message, replied_to=replied_to
@@ -257,10 +233,7 @@ class MediaReplyRoutes(BaseModel):
     async def _reply_about_video(
         self, reply: Message | None, video_bytes: bytes, context_task: asyncio.Task[ReplyContext]
     ) -> None:
-        """Uploads `video_bytes` to the Gemini Files API and streams a best-effort persona reply.
-
-        Drains `context_task` when the upload fails so no orphaned reply message is created.
-        """
+        """Uploads `video_bytes` for a persona reply, draining `context_task` on upload failure."""
         video_part = await upload_as_input_file(
             client=self.answer.toolkit.gemini_client,
             source=video_bytes,

@@ -1,14 +1,11 @@
-"""The marks a reply turn shows: its reactions on the message it answers, and its notes' symbols.
+"""Reaction emojis and footnote symbols for reply turns.
 
-Each is named once so one symbol means one thing wherever a turn shows it. They are the reply
-turn's own vocabulary: the auto-expansion marks spell theirs separately, even where the two
-render the same.
+Single source of truth for the reply turn's vocabulary, kept separate from auto-expansion marks.
 """
 
 from typing import Final
 
-# The status chain, in the order a turn advances it: routing, then the route it took, then how
-# it ended.
+# Status chain in turn order: routing, route taken, terminal outcome.
 ROUTING_EMOJI: Final[str] = "<:flowchart:1517561877973045349>"
 IMAGE_EMOJI: Final[str] = "<:image:1517559727880667226>"
 VIDEO_EMOJI: Final[str] = "<:video:1517560671913377842>"
@@ -16,27 +13,21 @@ ANSWER_EMOJI: Final[str] = "<:message:1517560873000898860>"
 DONE_EMOJI: Final[str] = "<:greencheck:1517565102424068226>"
 FAILED_EMOJI: Final[str] = "<:redcross:1517565100838355016>"
 
-# Marks a message that asked for nothing, beside the bare `?` it is answered with.
+# Marks a message that asked for nothing, beside the bare `?` reply.
 EMPTY_PROMPT_EMOJI: Final[str] = "❓"
-# Marks a spoken clip is being synthesized for the reply.
 VOICE_EMOJI: Final[str] = "<:voice:1517558121092878376>"
-# Marks a music clip is being rendered for the reply; there is no app emoji for music.
+# No app emoji exists for music.
 MUSIC_EMOJI: Final[str] = "🎵"
-# Marks a reply grounded in a watched YouTube video.
 YOUTUBE_EMOJI: Final[str] = "<:youtube:1517546722535018596>"
 
-# Best-effort media the reply goes out without: a spoken clip that ran out of time, and
-# anything else dropped (a timed-out song, video or image included).
+# Best-effort dropped media: timed-out voice vs any other dropped media.
 TIMEOUT_HINT_EMOJI: Final[str] = "⏱️"
 DROPPED_HINT_EMOJI: Final[str] = "⚠️"
 
-# Shown on both retry surfaces, so the reaction on the source message and the notice on the
-# reply read as the same event rather than two unrelated hints.
+# Shared between the source reaction and the reply's retrying notice.
 RETRY_HINT_EMOJI: Final[str] = "🔁"
 
-# Distinct symbols for memory read, write, and forget so stacked notes at the bottom of a reply
-# are immediately distinguishable; `utils/llm_transcript.py::USAGE_FOOTER_RE` matches the write
-# and forget marks as well.
+# Memory footnote symbols; utils/llm_transcript.py::USAGE_FOOTER_RE matches write and forget too.
 MEMORY_READ_EMOJI: Final[str] = "📖"
 MEMORY_WRITE_EMOJI: Final[str] = "✏️"
 MEMORY_FORGET_EMOJI: Final[str] = "🩹"

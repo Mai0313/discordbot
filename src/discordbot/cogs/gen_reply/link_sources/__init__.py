@@ -1,26 +1,13 @@
-"""Descriptor for one linked-content source `gen_reply` reads into answer context.
+"""Descriptor and shared helpers for linked-content sources read into `gen_reply` answer context.
 
-Each source keeps its own builder module beside this one; the model here carries only the wiring
-`gen_reply` needs to treat them uniformly: spot the URL, decide how far to look for it, start the
-intent-selected build, gate its media ingestion, and inject a deterministic notice when the build
-outruns the post-route grace.
+`LinkContextSource` defines uniform wiring for each source (URL matching, optional replied-to
+message lookup via `search_replied_to_message`, builder adapter, media-ingest gate, and timeout
+notice). Sources are built only after the router selects them for QA.
 
-A build starts only after the router selects that source for QA, so an incidental URL never
-reaches a network-capable builder.
-
-How far to look is per source rather than global (`search_replied_to_message`). A source opts in
-when what it fetches includes something its own expansion does not show — the comments under the
-post — so a mention on someone else's link has something new to answer from. A source whose value
-is a single clip stays on the triggering message: a second read finds what the first did, and
-those platforms are the rate-limit sensitive ones.
-
-`registry.py` holds the instances and says why each entry's `build` is an adapter rather than the
-builder itself.
-
-What the builders share lives here too: the block shapes, the marker defusing, the comment lines,
-the clip quality, `read_post`, the read every conversation-shaped post source starts with, and
-`build_post_context`, the read-render-upload flow every one of them runs except Threads, whose
-media step splits one budget across two posts.
+Also provides the shared block builders (`marker_block`, `link_context_blocks`,
+`post_context_blocks`), inline-marker defusing (`defuse_markers`), comment formatting
+(`comment_lines`), and the shared `read_post` / `build_post_context` flow. Instances live in
+`registry.py`.
 """
 
 import re
@@ -49,21 +36,15 @@ from discordbot.services.platforms.base import (
 )
 from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
 
-# Resolution asked for a clip the model reads: the lowest preset. The model samples frames at its
-# own media resolution, so extra source pixels buy it nothing while costing download and upload
-# time on the reply's critical path, which on long-form video scales with duration first (and
-# anonymous Bilibili access mostly tops out around 480p regardless). Deliberately below what the
-# bot asks for a clip it posts to Discord, where a human watching does notice.
+# Lowest preset: the model downsamples frames, so higher resolution only adds transfer latency.
 AI_INGEST_QUALITY: VideoQuality = "low"
 
 
 def marker_block(text: str) -> EasyInputMessageParam:
-    """Returns `text` wrapped as a `role="user"` input block marking where a part of the input starts.
+    """Returns `text` wrapped as a `role="user"` input block marking a section boundary.
 
-    Not `role="system"`: the proxy's Gemini transform lifts every system item out of the
-    conversation into `system_instruction`, and a marker means nothing away from where it sits.
-    What tells a marker from what people wrote is its `====` fence, which
-    `defuse_separator_fences` keeps out of every message and post.
+    Uses `role="user"` rather than `role="system"` so markers stay in position; `====` fences
+    distinguish them from user text sanitized by `defuse_separator_fences`.
 
     Args:
         text (str): Separator or notice text to wrap.
@@ -204,8 +185,7 @@ async def read_post[ConversationT: PlatformConversation[Any]](  # noqa: PLR0913 
     try:
         conversation = await asyncio.to_thread(reader().parse_metadata, url=url)
     except LinkUnavailableError as error:
-        # A deleted or private post is a routine remote outcome, not a defect; the message is the
-        # only place the platform's own reason lives.
+        # Routine remote outcome, not a defect; log at info with the platform's reason.
         logfire.info(
             f"{platform} post is gone or private; injecting unavailable notice",
             url=url,
@@ -306,9 +286,7 @@ async def build_post_context[OutputT: PlatformOutput, ConversationT: PlatformCon
     )
 
 
-# The pipeline's own inline markers, opening or closing, derived from the extractor's own set so
-# a tag added there cannot be missed here. Case-insensitive because the extraction is, and a
-# defusing pass stricter than what it defends against is no defence at all.
+# Derived from `MARKER_TAG_NAMES` and case-insensitive to match `extract_inline_markers`.
 _MARKER_TAG_RE = re.compile(
     pattern=rf"</?({'|'.join(re.escape(pattern=name) for name in MARKER_TAG_NAMES)})>",
     flags=re.IGNORECASE,
@@ -318,11 +296,8 @@ _MARKER_TAG_RE = re.compile(
 def defuse_markers(text: str) -> str:
     """Returns `text` with inline pipeline marker tags neutralized into parenthesized names.
 
-    `extract_inline_markers` parses the answer model's own output regardless of kill-switches, so
-    a `<generate-video>` or `<forget-memory>` tag in quoted post or comment text would trigger a
-    media render or write into the replied-to user's long-term memory if the model quoted it
-    verbatim. Sources that inject surrounding posts or comments defuse their text here; Douyin
-    and Bilibili single-author metadata relies on `COMMON_PROMPT`'s never-echo rule.
+    Prevents quoted external text from triggering `extract_inline_markers` if echoed by the
+    answer model.
 
     Args:
         text (str): Quoted post, author, or comment text to sanitize.

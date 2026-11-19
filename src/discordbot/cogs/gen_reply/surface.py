@@ -1,29 +1,9 @@
-"""Where one turn's messages go, and what conversation it continues.
+"""Discord surface abstraction separating gateway message replies from `/ask` interactions.
 
-A gateway reply is a reply to a message in a channel the bot is a member of. `/ask` has neither
-half: a user-installed app is not in the channel it was invoked in, so it cannot send there,
-cannot read the history, and cannot react. All it holds is an interaction token, which buys
-unlimited edits of one original response plus a small number of follow-ups, and only for as long
-as Discord keeps that token alive.
-
-`TurnSurface` is that difference, and only that difference. It carries the turn's message, and
-`for_message` reproduces the gateway behaviour exactly, so the `on_message` path answers as it
-would without one.
-
-Three notes on what it deliberately does not paper over:
-
-- **Progress signals are dropped rather than replaced.** The pipeline's status chain and the
-  per-marker "working on it" emoji are never attempted on the interaction path — which is right,
-  because Discord shows its own thinking state while the response is deferred and the reply then
-  streams in place. Only the best-effort failure hints (a dropped clip's ⏱️ / ⚠️) have nothing
-  left to say them, which is what `hint` collects and the streamer writes onto the reply as one
-  line.
-- **`send` and `send_unparented` are two methods, not one with a fallback.** A `nextcord.File` is
-  read once, so a caller that wants a second attempt has to rebuild its payload first.
-- **`guild_id` is carried rather than read.** The synthesized `/ask` message's `guild` is None in
-  every server, one the bot is in included. Everything that must not be wrong about where a turn
-  happened — the location line at developer authority, the memory source stamp, the compartments
-  a memory read may open — takes it from here instead.
+`TurnSurface` encapsulates message sending, overflow follow-ups, history loading, reactions, and
+guild/DM identity across both paths. Progress reactions are no-ops on `/ask`; `hint` queues
+dropped-media emojis for `take_hints` instead. `send` and `send_unparented` stay separate so
+callers can rebuild single-use `nextcord.File` payloads before retrying unparented.
 """
 
 from typing import Any
@@ -40,17 +20,11 @@ from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_conversation
 
-# How many follow-up messages Discord lets a user-installed app POST per interaction while it is
-# not a member of the server (`interactions/receiving-and-responding.mdx:474`, read 2026-08-26).
-# The cap is on creating messages only: editing the original response, or an existing follow-up,
-# is documented nowhere as bounded and is what the whole streaming preview rides on.
+# Discord caps user-installed app follow-up POSTs at 5 per interaction outside bot guilds;
+# editing the original response or existing follow-ups is uncapped.
 INTERACTION_FOLLOWUP_LIMIT = 5
 
-# What a `/ask` turn says when it ran out of surface before it ran out of work. Spelled out rather
-# than left to asyncio's own `TimeoutError`, whose message is empty: `extract_friendly_error`
-# falls back to `str(exc)`, so a bare one reaches the user as an empty code block under "Something
-# went wrong" -- the same silence the bound exists to end, with a box drawn round it. It names no
-# duration because the one it would name is Discord's to change.
+# Explicit message for /ask TimeoutError so extract_friendly_error avoids an empty code block.
 WINDOW_EXPIRED_NOTICE = (
     "This took longer than Discord keeps a slash command open, "
     "so there was nowhere left to deliver it."
@@ -99,11 +73,9 @@ class TurnSurface(BaseModel):
         default=False, description="Whether this is a 1:1 DM between the author and the bot."
     )
 
-    # Discord treats the deferred response as already sent, so the first send edits it into place
-    # and only later ones spend the follow-up budget.
+    # First /ask send edits the deferred response; later sends consume follow-up slots.
     _original_consumed: bool = PrivateAttr(default=False)
     _followups_spent: int = PrivateAttr(default=0)
-    # The failure hints reactions would have carried, in the order they happened.
     _hints: list[str] = PrivateAttr(default_factory=list)
 
     def answer_capacity(self, has_landed_reply: bool) -> int | None:
@@ -124,12 +96,11 @@ class TurnSurface(BaseModel):
         return remaining
 
     def delivery_budget_seconds(self) -> float | None:
-        """Returns the seconds remaining to produce a deliverable before the surface expires, or None.
+        """Returns seconds remaining to produce a deliverable before the surface expires, or None.
 
-        Gateway turns return None because channel sends do not expire. On `/ask`, returns the time
-        left until `interaction.expires_at` minus `INTERACTION_DELIVERY_MARGIN_SECONDS` (clamped to
-        `0.0`) so a slow turn times out while the interaction token can still deliver the result or
-        `WINDOW_EXPIRED_NOTICE`. Assumes the interaction has already been deferred.
+        Returns None on the gateway path. On `/ask`, returns time until `interaction.expires_at`
+        minus `INTERACTION_DELIVERY_MARGIN_SECONDS`, clamped to `0.0`. Assumes the interaction is
+        deferred.
         """
         if self.interaction is None:
             return None
@@ -210,7 +181,7 @@ class TurnSurface(BaseModel):
     ) -> Message:
         """Returns a message sent to the channel without a reply reference when the source was deleted.
 
-        On `/ask`, delegates to `send` since interaction responses carry no message reference.
+        On `/ask`, delegates to `send`.
 
         Args:
             content (str | None): Message text content.
@@ -257,8 +228,7 @@ class TurnSurface(BaseModel):
             limit (int): Maximum number of historical messages to return.
         """
         if self.interaction is None:
-            # Newest first, then reversed here: nextcord's `oldest_first=True` reverses each
-            # 100-message page on its own, so past one page the newest messages come out first.
+            # Fetch newest first and reverse: oldest_first=True reverses each 100-message page.
             history = [
                 m async for m in self.message.channel.history(limit=limit, before=self.message)
             ]
@@ -294,8 +264,7 @@ class TurnSurface(BaseModel):
     async def hint(self, emoji: str) -> None:
         """Records a best-effort dropped-media hint `emoji` as a reaction or queued `/ask` subtext.
 
-        Reacts on `message` on the gateway path, and queues `emoji` for `take_hints` on `/ask` so a
-        dropped clip, image, song, or video still leaves a visible trace on the reply.
+        Reacts on `message` on the gateway path, and queues `emoji` for `take_hints` on `/ask`.
 
         Args:
             emoji (str): Hint emoji to record.
@@ -315,8 +284,7 @@ class TurnSurface(BaseModel):
     async def record_turn(self, answer: str) -> None:
         """Persists the question and `answer` to the `/ask` store, or no-ops on the gateway path.
 
-        Best-effort: database errors are logged and swallowed so a completed reply never fails
-        after delivery.
+        Best-effort: logs and swallows database errors.
 
         Args:
             answer (str): Finalized reply text to store for future `/ask` turns.
@@ -332,8 +300,7 @@ class TurnSurface(BaseModel):
                 answer=answer,
             )
         except Exception as exc:
-            # Broad on purpose, per the docstring: nothing above this can recover, and the
-            # only cost is that the next `/ask` in this channel starts a turn short.
+            # Broad: best-effort history write must never fail a delivered /ask reply.
             logfire.warn(
                 "Failed to record the /ask turn; the next one starts without it",
                 message_id=self.message.id,

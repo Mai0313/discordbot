@@ -56,11 +56,7 @@ class _MessageLogFields(TypedDict):
 
 
 def _message_log_fields(surface: TurnSurface) -> _MessageLogFields:
-    """Returns the standard Discord identifying fields for correlating one reply's logs.
-
-    Reads `guild_id` from `surface` rather than `message.guild` so a `/ask` turn in a server is
-    not logged as a DM.
-    """
+    """Returns the standard Discord identifying fields for correlating one reply's logs."""
     message = surface.message
     guild = message.guild
     return {
@@ -120,27 +116,16 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Resumes persisted memory work after a restart (runs once).
-
-        `on_ready` fires on every gateway reconnect, so `_resume_started` guards it
-        to a single sweep per process. The sweep is spawned, never awaited, so the
-        gateway is not blocked while it digests in the background.
-        """
+        """Spawns the one-shot post-restart memory resume on the first gateway ready event."""
         if self._resume_started:
             return
-        # Bound to this loop, so it starts here rather than at import: an unstarted
-        # service drops every commit request instead of binding its queue to whichever
-        # loop happened to enqueue first.
+        # Start on the running loop; an unstarted service drops commits instead of binding early.
         memory_git.start()
         self._resume_started = True
         spawn_tracked(coro=self._resume_memory(), tasks=self._tasks, name="memory-resume")
 
     async def _resume_memory(self) -> None:
-        """Re-enqueues persisted review jobs and consolidates over-threshold scopes.
-
-        Both paths serialize on the per-scope lock and re-check the consolidation threshold under
-        lock, making the resumed review and the sweep idempotent.
-        """
+        """Re-enqueues persisted review jobs and consolidates over-threshold scopes."""
         jobs = await safe_list_resumable(updated_before=self._started_at)
         for job in jobs:
             if job.transcript is None:
@@ -234,15 +219,9 @@ class ReplyGeneratorCogs(commands.Cog):
         message = surface.message
         user_prompt = await self.toolkit.input_builder.get_user_prompt(content=content)
         has_attachment = bool(message.attachments or message.stickers)
-        # A forward leaves content/attachments/stickers empty and puts the payload in
-        # `message.snapshots`, so it must not be gated out as an empty message here, or the
-        # snapshot text/media render in `input.py` never runs.
         is_forward = bool(message.snapshots)
-        # A forward puts its request in `message.snapshots`, not content, so merge the forwarded
-        # text into the prompt (after the forwarder's own comment, if any). A guild forward can
-        # only trigger via a `<@bot>` comment, so the comment is usually non-empty: merging (not
-        # just an empty fallback) is what lets an IMAGE/VIDEO route render the forwarded "draw a
-        # cat" even when the trigger comment ("@bot please") survives mention-stripping.
+        # Merge rather than fallback-only: guild forwards carry a `<@bot>` trigger comment that
+        # may survive mention-stripping, and media routes still need the forwarded request text.
         if is_forward and (
             forwarded := self.toolkit.input_builder.forwarded_request_text(message=message)
         ):
@@ -345,9 +324,7 @@ class ReplyGeneratorCogs(commands.Cog):
         if not is_addressed_to_bot(message=message, bot_user=self.bot.user):
             return
 
-        # Skip a (mentioned) message typed inside a research thread the ResearchCogs cog is
-        # actively driving: the thread is its workspace until the report lands, so QA must not
-        # answer over the live status edits. The skip lifts the moment the run finishes.
+        # Yield active research threads to `ResearchCogs` until the report lands.
         surface = TurnSurface.for_message(message=message)
         if in_active_research_thread(bot=self.bot, channel_id=message.channel.id):
             logfire.debug(

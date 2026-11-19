@@ -1,9 +1,4 @@
-"""Media-generation services: the prompt director and the image, voice, video and music renders.
-
-Each is a BaseModel service held as a `ReplyToolkit` `cached_property`, so every media render
-goes through one calling convention, and a provider swap (or a move of a render off the proxy)
-changes one place.
-"""
+"""Media-generation services: prompt refinement and image, voice, video, and music renderers."""
 
 import re
 import time
@@ -46,27 +41,19 @@ if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-# Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
-# the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
-# distorts); it is prepended to the input (English on purpose: Gemini TTS style prompting is
-# documented in English and is read as style, not spoken aloud).
+# Gemini TTS style prompting is documented in English and read as style rather than spoken aloud.
 TTS_VOICE = "Despina"
 TTS_STYLE_DIRECTIVE = "Using a natural 18-year-old woman's voice that fits the following text:"
 TTS_SPEED = 1.5
 
-# Filename of the attached voice clip. Shared so input rendering can recognise and skip the
-# bot's own clip when it later appears in history, instead of re-uploading it as self-input.
+# Shared with input.py so history rendering skips the bot's own spoken clip.
 VOICE_REPLY_FILENAME = "reply.wav"
 
-# Default filename for a generated image; multiple images fall back to `generated_<n>.png`.
 INLINE_IMAGE_FILENAME = "generated.png"
 
-# Filename for a generated video attachment; omni returns MP4, which Discord inline-plays.
 INLINE_VIDEO_FILENAME = "generated.mp4"
 
-# Fixed musical-style directive sent as the Lyria `system_instruction` (in English per Lyria's
-# prompt surface), defaulting both genre and vocal language to Japanese anime / J-pop unless the
-# description asks for a different genre, style, lyric language, or instrumental.
+# Sent as Lyria's system_instruction (in English per Lyria's prompt surface).
 MUSIC_STYLE_DIRECTIVE = (
     "Compose in a Japanese anime / J-pop style with Japanese-language vocals by default; if the "
     "description clearly asks for a different genre, style, or lyric language, or for an "
@@ -80,9 +67,8 @@ def music_filename(mime_type: str | None) -> str:
     Args:
         mime_type (str | None): Audio MIME type reported by the model, or None.
     """
-    # Discord's inline audio player keys off the extension, and `AudioContent.mime_type` can be a
-    # non-obvious value (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would
-    # yield an unplayable name; anything unmapped falls back to `.mp3`.
+    # Discord's inline audio player keys off the file extension; map non-obvious MIME subtypes
+    # (audio/mpeg, audio/l16) explicitly and default unmapped values to .mp3.
     audio_mime_extensions = {
         "audio/mp3": ".mp3",
         "audio/mpeg": ".mp3",
@@ -99,12 +85,6 @@ def music_filename(mime_type: str | None) -> str:
     return f"music{extension}"
 
 
-# Discord-specific markup the answer model may embed in a reply: user/role/channel mentions
-# (`<@id>` / `<@!id>` / `<@&id>` / `<#id>`), custom emoji (`<:name:id>` / `<a:name:id>`),
-# timestamps (`<t:unix:style>`), and slash-command references (`</cmd:id>`). Read aloud
-# verbatim these are a bare snowflake or a colon-wrapped name, so they are rewritten to a
-# spoken form before synthesis; the visible text reply keeps the real markup so Discord still
-# renders it.
 _MENTION_RE = re.compile(r"<(?:@[!&]?|#)(\d+)>")
 _CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 _TIMESTAMP_RE = re.compile(r"<t:-?\d+(?::[tTdDfFR])?>")
@@ -146,7 +126,6 @@ def speechify_discord_markup(text: str, resolve_name: MentionNameResolver) -> st
     return cleaned.strip()
 
 
-# Why a spoken-clip synthesis attempt ended, so the caller can hint appropriately.
 VoiceOutcome = Literal["ok", "empty", "timeout", "error"]
 
 
@@ -247,8 +226,7 @@ class ImageGenerator(BaseModel):
                     prompt=user_prompt, end_user_id=end_user_id, image_bytes_list=image_bytes_list
                 )
         except Exception as exc:
-            # Broad on purpose: the inline-marker boundary must degrade to "reply without an
-            # image" whether the render timed out, came back empty, or the provider errored.
+            # Broad: inline-marker boundary degrades to no image on timeout, empty data, or error.
             logfire.warn(
                 "Inline image generation failed; replying without an image",
                 model=self.image_model.name,
@@ -349,9 +327,7 @@ class PromptGenerator(BaseModel):
 class VoiceGenerator(BaseModel):
     """Best-effort text-to-speech renderer through the LiteLLM proxy.
 
-    Prepends `TTS_STYLE_DIRECTIVE` to the input text because the proxy ignores `instructions`
-    for this TTS model, and omits `response_format` because the proxy 500s on it (the model
-    returns WAV by default).
+    Prepends `TTS_STYLE_DIRECTIVE` to `input` and omits `response_format` (model defaults to WAV).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -359,8 +335,6 @@ class VoiceGenerator(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Shared LiteLLM-proxy client used for the audio.speech call."
     )
-    # A bare string rather than a `ModelSettings`, since TTS dispatches no effort and offers
-    # no tools; the caller reads the name off the catalog's `tts_model`.
     model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
 
     async def generate(self, text: str, end_user_id: str) -> VoiceClip:
@@ -379,6 +353,7 @@ class VoiceGenerator(BaseModel):
             return VoiceClip(outcome="empty")
         try:
             async with asyncio.timeout(delay=VOICE_TIMEOUT_SECONDS):
+                # Proxy ignores `instructions` for this TTS model and 500s on `response_format`.
                 responses = await self.client.audio.speech.create(
                     input=f"{TTS_STYLE_DIRECTIVE}\n\n{spoken}",
                     model=self.model_name,
@@ -397,9 +372,6 @@ class VoiceGenerator(BaseModel):
             )
             return VoiceClip(audio=audio, outcome="ok")
         except (TimeoutError, APITimeoutError):
-            # The clip did not arrive within VOICE_TIMEOUT_SECONDS, or the SDK gave up on its own
-            # transport timeout first. The caller marks the message with a timeout hint and still
-            # leaves a plain text reply.
             logfire.warn(
                 "Voice synthesis timed out; replying without audio",
                 model=self.model_name,
@@ -409,9 +381,7 @@ class VoiceGenerator(BaseModel):
             )
             return VoiceClip(outcome="timeout")
         except Exception as exc:
-            # Any other provider error (most often the clip was refused, e.g. policy), and broad
-            # because the proxy can fail in any shape. The caller marks the message with a warning
-            # hint and degrades to a text reply; error_type separates a refusal from a proxy 500.
+            # Broad: proxy/provider failures can take any shape; degrade to text reply with hint.
             logfire.warn(
                 "Voice synthesis failed; replying without audio",
                 model=self.model_name,
@@ -443,16 +413,8 @@ class _RenderedAudio(Protocol):
 class _InteractionResult(Protocol):
     """Structural view of a non-streaming `interactions.create` result.
 
-    Excluding the stream with `isinstance` does not narrow the call's return type, since
-    `AsyncStream` is only structurally an `AsyncIterator` and so stays in the union; the read
-    attributes are declared here and cast to instead. Naming the response class is its own
-    trap: `google.genai.interactions` star-imports `Interaction` from both the request-union
-    alias (which carries none of these attributes) and the response module, and only the
-    runtime import order makes the response class win. `ty` resolves it to the response class,
-    so a nominal `cast("Interaction", ...)` is not wrong there, merely fragile: its meaning rests
-    on that import order, while this Protocol pins the attributes actually read. The collision
-    is real rather than theoretical, since a checker can bind the request union instead, and no
-    checker in the tree will show it.
+    `interactions.create` returns `Interaction | AsyncStream[...]` and `isinstance` against
+    `AsyncIterator` does not narrow `AsyncStream`, so callers cast to this Protocol instead.
     """
 
     @property
@@ -503,16 +465,11 @@ class VideoGenerator(BaseModel):
         """
         text = prompt or "Generate a video from the message content."
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
-        # A source-video edit is the one task pinned: with task omitted, omni infers the mode
-        # (image_to_video vs reference_to_video vs text_to_video) from the prompt + input media,
-        # which covers image_to_video without a brittle image-count heuristic. If the inferred
-        # mode underwhelms (e.g. a lone image not animated in place), pin it here.
+        # Pin task="edit" only for source video; otherwise omni infers the mode from input media.
         generation_config: GenerationConfigParam | None = None
         task_label: str
-        # 16:9 is the generation default we keep for pure text; it is omitted when images are present
-        # (omni may pick image_to_video, which follows the source frame's ratio and can reject an
-        # aspect_ratio the way an edit does) and on an edit (omni 400s it, "cannot be set in response
-        # format for edit task", since an edit keeps the source clip's ratio).
+        # Set 16:9 only for pure text; omni rejects aspect_ratio on edit and may reject it on
+        # image_to_video.
         response_format = VideoResponseFormatParam(type="video", delivery="uri")
         if source_video is not None:
             file_uri = await self._upload_source_video(source_video=source_video)
@@ -524,8 +481,7 @@ class VideoGenerator(BaseModel):
             task_label = "edit"
         elif reference_image_sources:
             content = [TextContentParam(type="text", text=text)]
-            # Each image must carry its real mime type: omni rejects an image content block with
-            # an empty mime ("Unsupported MIME type: ").
+            # Omni rejects image blocks with an empty mime_type.
             content.extend(
                 ImageContentParam(
                     type="image",
@@ -542,8 +498,6 @@ class VideoGenerator(BaseModel):
 
         started = time.monotonic()
         async with asyncio.timeout(delay=VIDEO_RENDER_TIMEOUT_SECONDS):
-            # No `stream=True`, so this is the interaction rather than an event stream, read
-            # through the structural `_InteractionResult` view (its docstring has why).
             responses = cast(
                 "_InteractionResult",
                 await self.client.aio.interactions.create(
@@ -589,8 +543,7 @@ class VideoGenerator(BaseModel):
                 prompt=user_prompt, reference_image_sources=reference_image_sources or []
             )
         except Exception as exc:
-            # Broad on purpose: the inline-marker boundary must degrade to "reply without a
-            # video" whether the render timed out, was refused, or the download failed.
+            # Broad: inline-marker boundary degrades to no video on timeout, refusal, or error.
             logfire.warn(
                 "Inline video generation failed; replying without video",
                 model=self.video_model.name,
@@ -611,8 +564,7 @@ class VideoGenerator(BaseModel):
         attempt = 0
         failure: Exception | None = None
         try:
-            # Covers an attempt that never returns as well as the retries: google-genai sets no
-            # transport timeout of its own.
+            # Covers hung reads as well as retries: google-genai sets no default transport timeout.
             async with asyncio.timeout(delay=FILES_READY_TIMEOUT_SECONDS):
                 while True:
                     try:
@@ -628,17 +580,13 @@ class VideoGenerator(BaseModel):
                         )
                         await asyncio.sleep(2.0)
         except TimeoutError:
-            # The last failed attempt says why the file never became servable; only a download
-            # that never answered at all is left as the bare timeout.
+            # Surface the last download error; re-raise TimeoutError only if no attempt failed.
             if failure is None:
                 raise
             raise failure from None
 
     async def _upload_source_video(self, source_video: LoadedMedia) -> str:
-        """Uploads `source_video` to the Files API and returns its `FileState.ACTIVE` URI.
-
-        Bounds both the upload and activation poll with `FILES_READY_TIMEOUT_SECONDS`.
-        """
+        """Uploads `source_video` within `FILES_READY_TIMEOUT_SECONDS`, returning its URI."""
         try:
             async with asyncio.timeout(delay=FILES_READY_TIMEOUT_SECONDS):
                 return await upload_until_active(
@@ -679,10 +627,8 @@ class MusicGenerator(BaseModel):
             user_prompt (str): Music description passed as the plain-string `input`.
         """
         started = time.monotonic()
-        # Output extraction and base64 decode stay inside the guard: an unexpected audio shape
-        # (a raising `output_audio`, non-base64 `data`) must drop the clip to None like any other
-        # failure, never escape into the streamer's single media-attach gather and abort the
-        # already-ready voice / images alongside it.
+        # Broad: keep extraction and base64 decode inside the guard so malformed audio drops to
+        # None instead of escaping into the streamer's media gather.
         try:
             async with asyncio.timeout(delay=MUSIC_RENDER_TIMEOUT_SECONDS):
                 responses = await self.client.aio.interactions.create(
@@ -690,8 +636,6 @@ class MusicGenerator(BaseModel):
                     input=user_prompt,
                     system_instruction=MUSIC_STYLE_DIRECTIVE,
                 )
-            # No `stream=True`, so this is the interaction rather than an event stream (read via
-            # `_InteractionResult`, see its docstring).
             audio = cast("_InteractionResult", responses).output_audio
             if audio is None or not audio.data:
                 logfire.warn(

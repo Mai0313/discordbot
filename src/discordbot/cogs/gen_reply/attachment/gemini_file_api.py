@@ -1,13 +1,10 @@
 """Gemini Files API attachment renderer: activation bound and pending re-poll cache.
 
-Uploads attachment bytes directly through the Gemini SDK (`files_api.py` has why) and polls each
-file to an `ACTIVE` state before it is referenced, since a reference to a file still
-`PROCESSING` can fail the request with a 400. The answer request references the full
-`https://.../files/<id>` URI so the proxy resolves it to a `fileData.fileUri` part rather than
-failing MIME lookup on a bare
-`files/<id>` resource name, and reuses the handle until the provider-reported `expiration_time`
-(~48h). Files still `PROCESSING` when the activation bound elapses are cached per source to be
-re-polled on later turns instead of re-uploaded.
+Uploads attachment bytes directly via the Gemini SDK (`files_api.py`) and polls each file to
+`ACTIVE` before returning a full `https://.../files/<id>` URI (required by the proxy to emit
+`fileData.fileUri` rather than failing MIME lookup on a bare `files/<id>` name). Handles are
+cached until `expiration_time` (~48h); files still `PROCESSING` when the activation timeout
+elapses are cached per source and re-polled on later turns instead of re-uploaded.
 """
 
 import time
@@ -118,9 +115,7 @@ class GeminiFileUploader(FileUploadRenderer):
         )
         if uploaded is None:
             return None
-        # The LiteLLM bridge drops the filename, but the Interactions answer path classifies the
-        # part by its extension. The route's attachment marker is derived from message metadata,
-        # not from this part.
+        # LiteLLM drops `filename`, but the Interactions answer path classifies parts by extension.
         part = ResponseInputFileParam(
             type="input_file", file_id=uploaded.uri, filename=source_name
         )
@@ -129,8 +124,6 @@ class GeminiFileUploader(FileUploadRenderer):
     async def _repoll_pending_upload(self, cache_key: int | str) -> PendingUploadRepoll:
         """Re-polls a prior pending upload once, without re-downloading the source."""
         pending = self._pending_uploads.get(cache_key)
-        # A pending entry exists only after an upload with a client, so a missing one here
-        # means there is nothing to re-poll.
         client = self.gemini_client()
         if pending is None or client is None:
             return PendingUploadRepoll(handled=False)
@@ -165,10 +158,8 @@ class GeminiFileUploader(FileUploadRenderer):
                 handled=True, uploaded=UploadedFile(uri=pending.uri, expires_at=pending.expires_at)
             )
         if uploaded.state == FileState.PROCESSING:
-            # Still cooking; keep it and retry on the next reference.
             self._pending_uploads.move_to_end(cache_key)
             return PendingUploadRepoll(handled=True)
-        # Terminal non-active state: drop it and let the caller re-upload.
         self._pending_uploads.pop(cache_key, None)
         return PendingUploadRepoll(handled=False)
 
@@ -180,7 +171,7 @@ class GeminiFileUploader(FileUploadRenderer):
         kind: UploadKind,
         allow_dead_cache: bool = False,
     ) -> UploadedFile | None:
-        """Returns an `ACTIVE` uploaded file, re-polling any cached `PendingUpload` before fetching bytes."""
+        """Returns an `ACTIVE` upload, re-polling any cached `PendingUpload` before fetching."""
         repoll = await self._repoll_pending_upload(cache_key=cache_key)
         if repoll.handled:
             return repoll.uploaded
@@ -195,7 +186,7 @@ class GeminiFileUploader(FileUploadRenderer):
     async def _upload_file(
         self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
-        """Uploads `data`, caching the handle in `_pending_uploads` if still `PROCESSING` at the bound."""
+        """Uploads `data`, caching a `PendingUpload` if still `PROCESSING` at the bound."""
         del kind
         result = await self._upload_or_pend(
             filename=filename, data=data, content_type=content_type
@@ -211,7 +202,7 @@ class GeminiFileUploader(FileUploadRenderer):
     async def _upload_or_pend(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
         self, filename: str, data: bytes, content_type: str
     ) -> UploadedFile | PendingUpload | None:
-        """Uploads `data` and polls until `ACTIVE`, returning a `PendingUpload` on poll timeout or `None` on failure."""
+        """Uploads `data` and polls to `ACTIVE`, returning `PendingUpload` on timeout or `None`."""
         started = time.monotonic()
         logfire.debug(
             "gemini upload start", filename=filename, content_type=content_type, bytes=len(data)
@@ -239,9 +230,6 @@ class GeminiFileUploader(FileUploadRenderer):
                 _exc_info=exc,
             )
             return None
-        # The SDK types name/uri as Optional; in practice both are assigned at upload
-        # time. Capture the stable resource name once (guarded) so the poll loop and
-        # PendingUpload reuse it, and degrade explicitly if the provider ever omits it.
         file_name = uploaded.name
         if file_name is None:
             logfire.warn("upload returned no resource name; dropping", filename=filename)
@@ -272,8 +260,6 @@ class GeminiFileUploader(FileUploadRenderer):
             if uploaded.uri is None:
                 logfire.warn("pending upload has no uri; dropping", filename=filename)
                 return None
-            # Hand back the in-flight upload so the caller can re-poll it later
-            # instead of re-uploading the same bytes from scratch.
             return PendingUpload(
                 name=file_name, uri=uploaded.uri, expires_at=_expiry_of(uploaded=uploaded)
             )

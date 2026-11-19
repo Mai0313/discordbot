@@ -1,43 +1,16 @@
-"""xAI Files API attachment renderer for Grok answer models.
+"""xAI Files API attachment renderer for Grok answer models (disabled scaffold).
 
-Uploads file attachments through xAI's own SDK, a direct side-channel rather than the LiteLLM
-proxy, and references the returned file id in Responses API content parts. Kept disabled in
-`select.py` until the reference path is verified against a live Grok answer model; today
-non-Gemini answer models inline instead (`InlineRenderer`).
+Uploads file attachments directly via `xai-sdk` (gRPC; LiteLLM 400s `create_file` for xAI) and
+references the file id in Responses API parts. Kept disabled in `select.py` until verified against
+a live Grok model. Images delegate to `InlineRenderer` because xAI has no image file-id form.
 
-Unlike the OpenAI scaffold, the upload cannot ride the proxy: LiteLLM routes `create_file` only
-for openai / hosted_vllm / azure / vertex_ai / gemini / bedrock / manus / anthropic and 400s an
-xai target, so this uploader carries its own `XAI_API_KEY` and forgoes proxy-side cost tracking,
-like the Gemini and Anthropic ones. The reference half does survive the proxy: a Grok model
-dispatches on xAI's native `/v1/responses`, whose request transform passes `input` through
-untouched, so an `input_file` file id reaches xAI verbatim.
-
-`xai-sdk` is the only gRPC client in this project, every other client here speaking HTTP. That
-is what this half costs, and it buys a call carrying nothing the receiving API ignores: no
-`purpose` (which xAI's own reference documents as optional and never enforced or interpreted),
-and a TTL as a plain number of seconds instead of OpenAI's `{anchor, seconds}` object flattened
-into multipart fields that xAI 400s when they arrive after the file. What goes with the
-multipart body is the declared MIME, since `UploadFileInit` carries only a name and the TTL, so
-xAI types the file by its filename. Nothing suggests that is a loss: neither the REST response
-nor the proto has a MIME field at all.
-
-Images are deliberately not uploaded. xAI's Files API covers text / markdown / code / CSV /
-JSON / PDF, while image understanding documents only `input_image` carrying a base64 data URI
-or a public URL (20 MiB, jpg/png) and has no file-id form; minting a Files public URL instead
-would put a private Discord attachment on an unauthenticated CDN. So `render_image` delegates
-to `InlineRenderer` and only `render_file` uploads.
-
-Prerequisites before uncommenting the `select.py` branch, none of them verified against a live
-model: attaching a file implicitly adds xAI's server-side `attachment_search` tool and needs a
-model with agentic tool calling (grok-4.20 / grok-4.5 / grok-4.6 per the docs), which also rules
-out `n > 1`; the accepted set is documented as text / markdown / code / CSV / JSON / PDF plus
-"many other text-based formats", so keep the type narrowing `InlineRenderer` does today rather
-than uploading every MIME and referencing it blindly; a single file is capped at 48 MB; an
-uploaded file lives forever unless a TTL is sent, which is why every upload here carries one
-(see the constant below); and the client below never closes its gRPC channel, which costs
-nothing while the renderer is disabled and becomes a shutdown obligation the moment it is not.
-One hazard to keep in view: forcing LiteLLM's chat-completions bridge rewrites the part into a
-chat `file` block, where an http(s)-looking file id is fetched and base64-inlined instead.
+Enable-time prerequisites (unverified live):
+- File attachments add xAI's `attachment_search` tool, requiring an agentic tool-calling Grok
+  model and `n == 1`; single-file cap is 48 MB.
+- Keep `InlineRenderer`'s type narrowing (text/markdown/code/CSV/JSON/PDF); xAI types uploads by
+  filename alone (no MIME field on the proto).
+- Close the `AsyncClient` gRPC channel on shutdown once enabled.
+- Avoid LiteLLM's chat-completions bridge, which rewrites `input_file` into chat `file` blocks.
 """
 
 import time
@@ -56,9 +29,7 @@ from discordbot.typings.timeouts import GROK_FILE_UPLOAD_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import UploadKind, FileUploadRenderer
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 
-# TTL sent with every upload. An xAI file is kept until it is deleted, so without this the
-# uploads accumulate against the team's storage forever; 30 days is the documented maximum,
-# and an hour the documented minimum.
+# Upload TTL in seconds (1h min, 30d max); xAI files persist forever without one.
 GROK_FILE_EXPIRY_SECONDS = 2_592_000
 
 
@@ -105,11 +76,9 @@ class GrokFileUploader(FileUploadRenderer):
     async def _upload_file(
         self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind
     ) -> UploadedFile | None:
-        """Uploads bytes to the xAI Files API and returns the uploaded handle.
+        """Uploads bytes to the xAI Files API and returns the handle, or `None` on failure.
 
-        `content_type` is logged rather than sent, the upload carrying only a filename (see the
-        module docstring). The timeout is this call's only deadline, since the SDK's own covers
-        every RPC shape except the client-streaming one an upload uses.
+        `content_type` is logged only; `asyncio.timeout` is the sole deadline for streaming upload.
         """
         del cache_key, kind
         started = time.monotonic()

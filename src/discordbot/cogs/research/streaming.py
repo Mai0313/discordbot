@@ -21,8 +21,7 @@ from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
 if TYPE_CHECKING:
     from google.genai.interactions import InteractionSSEEvent
 
-# Every status line of a running research opens with this, which is how a resume finds the one
-# posted before a restart.
+# Prefix matched by restart resume to locate the pre-restart status message.
 RESEARCHING_PREFIX = "-# Researching..."
 
 
@@ -103,10 +102,10 @@ class ResearchProgressStreamer(BaseModel):
         self._displayed = preview
 
     async def _preview_editor(self) -> None:
-        """Edits the status message with the latest snapshot on a fixed cadence until stopped.
+        """Edits `status` on a fixed cadence until `_editor_stop` is set.
 
-        Stops via the event rather than task cancellation so an in-flight Discord write always
-        lands before `deliver_report` reuses the same status message (a cancel could orphan it).
+        Stopped via event rather than cancellation so an in-flight edit finishes before
+        `deliver_report` reuses `status`.
         """
         message_id = self.status.id if self.status is not None else None
         while True:
@@ -124,16 +123,14 @@ class ResearchProgressStreamer(BaseModel):
                     )
                     return
                 except Forbidden:
-                    # The channel's permissions changed under the run; the id is the whole finding.
                     logfire.warn(
                         "research thread refused the preview edit; stopping preview edits",
                         message_id=message_id,
                     )
                     return
                 except Exception as exc:
-                    # Broad: the preview is best-effort and must never end the run. A failed write
-                    # leaves the snapshot unadvanced, so the same error repeats every tick and only
-                    # the first is logged.
+                    # Broad: live preview is best-effort; log once since _displayed stays unchanged
+                    # across ticks.
                     if not self._preview_error_logged:
                         self._preview_error_logged = True
                         logfire.warn(
@@ -160,9 +157,7 @@ class ResearchProgressStreamer(BaseModel):
         try:
             await self._editor_task
         except Exception as exc:
-            # Broad: the editor already catches its own Discord write failures, so anything here is
-            # unexpected; swallowing keeps the preview best-effort. Catching Exception rather than
-            # BaseException keeps cancellation propagating, as the stop-by-event contract needs.
+            # Broad: keep preview best-effort while letting cancellation propagate.
             logfire.warn(
                 "research preview editor ended with an error",
                 message_id=self.status.id if self.status is not None else None,
