@@ -1,35 +1,9 @@
----
-description: "Read before changing, planning or reviewing the reply pipeline or deep research: cogs/gen_reply/, cogs/research/, the LLM, model, research and timeout typings, utils/reactions.py, their tests and test helpers, or the logs under data/logs/."
-trigger: model_decision
-paths:
-  - "src/discordbot/cogs/gen_reply/**"
-  - "src/discordbot/cogs/research/**"
-  - "src/discordbot/typings/llm.py"
-  - "src/discordbot/typings/models.py"
-  - "src/discordbot/typings/research.py"
-  - "src/discordbot/typings/timeouts.py"
-  - "src/discordbot/utils/reactions.py"
-  - "tests/cogs/gen_reply/**"
-  - "tests/cogs/research/**"
-  - "tests/guards/test_model_media_parts.py"
-  - "tests/guards/test_prompt_guards.py"
-  - "tests/typings/test_llm.py"
-  - "tests/typings/test_models.py"
-  - "tests/utils/test_reactions.py"
-  - "tests/helpers/ask_interaction.py"
-  - "tests/helpers/gen_reply.py"
-  - "tests/helpers/llm_input.py"
-  - "tests/helpers/reply_fakes.py"
-  - "tests/helpers/research.py"
-  - "tests/helpers/test_llm_input.py"
-  - "data/logs/**"
----
-
 ## AI Pipeline
 
 ### Reply pipeline (`gen_reply` orchestration)
 
 - **`/ask` lives on `ReplyGeneratorCogs` because a cog of its own would have to import across cogs**.
+- **Pass `ReplyToolkit` (`gen_reply/toolkit.py`) explicitly, never through a `ContextVar`**, so a missed hand-off is a `ty` error.
 - **Read where a turn happens off the surface (`guild_id`, `is_direct_message`, `surface.py`), not `message.guild`**: a synthesized `/ask` message's `guild` is None even in a server. Only a read that needs the `Guild` object itself (server memory, a permission check) still takes `message.guild`, so it is off or at its DM default on `/ask` (`context.py::read_server_memory` has why).
 - **On `/ask` the interaction token dies 15 minutes after invocation, and the deliverable and the failure notice 404 together, leaving a thinking state that never resolves** (#619). So the media routes' generation (`media_reply.py`), the QA answer stream's attempts and the inline media markers (`streaming.py`, #628) run inside `TurnSurface.delivery_budget_seconds`, and a new `/ask` path that can outlast it joins them. The media persona reply stays outside on purpose, having no failure notice to save the margin for; the video persona's Files upload and the memory note's late edit are unbounded too.
 - **One triage call decides the route, the effort and the optional recall picks, and its two shapes are measured (#725)**: `RouteClassification`, plus `RecallRouteClassification` with the server memory and candidate blocks only on a turn that has candidates (`routing.py::RouteClassifier.classify`). Never hand it channel history: it would wait on the Discord fetch and pick link sources out of older messages. The price is that a failed parse, or a transient provider error on the call (#742), now costs every field at once (QA, `medium`, no picks); the candidate shape, which carries the server memory, failed none of ~470 measured calls.
@@ -64,4 +38,4 @@ paths:
 ### Attachments (`gen_reply/input.py`)
 
 - **Do not delete the commented `OpenAIFileUploader` / `AnthropicFileUploader` / `GrokFileUploader` branches or their modules as dead code**: they are scaffolding awaiting a verified reference path (`attachment/select.py::build_attachment_handler`).
-- **Every attachment to a Gemini answer goes through the Files API whatever its size, by owner decision** (one path and uniform semantics over the upload latency): do not add a small-files-inline threshold; the size rationale in `gemini_file_api.py` is not why. Only a disabled or keyless Files API inlines (`attachment/select.py`).
+- **Every attachment to a Gemini answer goes through the Files API whatever its size, by owner decision** (one path and uniform semantics over the upload latency): do not add a small-files-inline threshold. Only a disabled or keyless Files API inlines (`attachment/select.py`).
