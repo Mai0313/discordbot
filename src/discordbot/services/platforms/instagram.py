@@ -1,34 +1,11 @@
 """Instagram post URL parsing and page extraction.
 
-`base.py` owns the contract every caller is written against.
+Reads logged-out posts and their full comment lists from embedded JSON script blocks using
+`BROWSER_HEADERS`. Downloads nothing — image and video URLs are returned directly.
 
-Logged out, the page ships the whole post — full caption, every carousel image at original
-resolution, the counters, and the complete comment list — inside JSON script blocks, under a
-module whose own name says who it is for (`PolarisLoggedOutDesktopWWWMedia`). The comments are
-the whole list rather than a preload, which is the only thing entitling the injected block to
-say so; measured 2026-09-07 against a 9-image post reporting 11 comments, all 11 came back. A
-crawler-shaped `User-Agent` is served a 650KB shell instead, with no carousel and no comments,
-so the full browser header set is what makes any of that true.
-
-The chain is always exactly one element, since Instagram serves no ancestor posts. The shape is
-carried anyway so a caller reads every platform without learning a second set of rules.
-
-Three things shape the parser.
-
-The page carries other posts by the same author, in a "more posts" rail, and those nodes look
-like the target: same `code` key, same `caption`, same `carousel_media_count`. They differ by
-what they omit — no `carousel_media` list, no `like_count`, no `taken_at` — but the reliable
-test is the shortcode from the URL, so `_find_media` matches on that and never on position.
-
-A comment URL cannot be fetched. `/p/<code>/c/<comment_id>/` answers HTTP 200 with a page
-carrying no post payload at all — 503KB and no media node, against 805KB and a full one for the
-bare post — so `clean_url` strips the comment segment and the id is carried separately in
-`comment_id`. Everything in the query goes the same way, `img_index` included;
-`stkn` is the reason it has to, being a per-share token that names whoever passed the link on.
-
-Image candidates are ordered widest first and carry no dimensions of their own, so
-`candidates[0]` is the original: the ones after it have a size in their `stp=` segment
-(`p720x720`, `s640x640`) and the first does not.
+Comment permalinks (`/p/<code>/c/<id>/`) return a shell without the post payload, so
+`InstagramURL.clean_url` strips `/c/<id>/` and query tracking parameters (`stkn`) while
+preserving `comment_id` separately.
 """
 
 import re
@@ -61,33 +38,22 @@ from discordbot.services.platforms.page_json import (
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 
-# Host-anchored rather than path-anchored, because the path alone cannot separate a post from a
-# profile: `/p/<code>/`, `/reel/<code>/` and `/tv/<code>/` are posts, `/<user>/` is not, and
-# `/<user>/p/<code>/` (the form Instagram's own `og:url` reports) is.
-# `is_instagram_post_url` makes that call on the parsed path. The tail class is ASCII URL
-# characters ending on one a real shortcode or query value ends on, so a link written straight
-# after Chinese or Japanese text is matched without swallowing the terminator.
+# Host-anchored (`is_instagram_post_url` filters non-posts); ASCII tail stops at CJK punctuation.
 INSTAGRAM_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*instagram\.com/"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
-# The three post shapes, each optionally prefixed by the author's handle. The shortcode charset
-# is Instagram's base64url alphabet. `/reels/audio/<id>/` is a sound page rather than a post and
-# is refused here, since it otherwise parses with `audio` as the shortcode.
+# Matches post paths (with optional author handle); excludes `/reels/audio/<id>/` sound pages.
 _POST_PATH_RE = re.compile(
     pattern=r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?!audio/)(?P<code>[A-Za-z0-9_-]+)"
 )
 
-# A comment permalink hangs off the post path. It is parsed but never fetched: see the module
-# docstring for what that URL answers with.
 _COMMENT_PATH_RE = re.compile(pattern=r"/c/(?P<comment>[0-9]+)")
 
 
-# Instagram's own media-type enum, as it appears on both a post and a carousel child.
 _MEDIA_TYPE_VIDEO = 2
 
-# Where a fetch lands when Instagram will not show the post logged out.
 _LOGIN_WALL_PATHS = ("/accounts/login", "/challenge", "/accounts/suspended")
 
 
@@ -104,11 +70,7 @@ def is_instagram_post_url(url: str) -> bool:
 
 
 class InstagramURL(BaseModel):
-    """Parses and normalises an Instagram post URL.
-
-    Every accepted spelling names its post directly, so there is no redirect to resolve and
-    `shortcode` is empty only when the URL is not a post.
-    """
+    """Parses and normalises an Instagram post URL; `shortcode` is empty for non-post URLs."""
 
     raw_url: str = Field(..., description="Original Instagram URL provided by the caller")
 
@@ -129,13 +91,10 @@ class InstagramURL(BaseModel):
     @computed_field
     @cached_property
     def clean_url(self) -> str:
-        """Returns the bare post URL: the fetchable form, and the one safe to publish back.
+        """Returns the canonical `https://www.instagram.com/<kind>/<code>/` URL.
 
-        Everything else goes. The query carries `stkn`, a per-share token naming whoever passed
-        the link on, plus `img_index` and `utm_source`; the `/c/<id>/` segment has to go too,
-        because that URL answers with a page carrying no post payload at all. The author handle
-        is dropped with them: `/p/<code>/` and `/<user>/p/<code>/` return the same page, and the
-        shorter one cannot go stale when a handle changes.
+        Drops the author handle, `/c/<id>/` segment (unfetchable), and all query parameters
+        including share-tracking `stkn`.
         """
         match = _POST_PATH_RE.match(string=urlparse(self.raw_url).path)
         if not match:
@@ -145,14 +104,10 @@ class InstagramURL(BaseModel):
 
 
 class InstagramOutput(LinkableCommentOutput):
-    """One post or one comment, the single shape a conversation is built from.
+    """One Instagram post or comment.
 
-    A comment leaves empty the fields a comment has no version of: it carries no media of its
-    own and no comment count.
-
-    Two inherited fields mean something narrower here: `url` is the post's permalink even on a
-    comment, since a comment permalink is not fetchable (see the module docstring) and would only
-    publish a dead link; `comment_count` is zero on a comment.
+    `url` is always the post permalink even on comments (comment permalinks are not fetchable),
+    and comments carry no media or `comment_count`.
     """
 
     author_full_name: str = Field(
@@ -161,22 +116,15 @@ class InstagramOutput(LinkableCommentOutput):
 
 
 class InstagramConversation(LinkableComments[InstagramOutput]):
-    """One Instagram post and the discussion under it.
+    """One Instagram post and its comment threads.
 
-    `chain` always has exactly one element — Instagram serves no ancestor posts — and is a list
-    only so `target` means the same here as on every other platform. `reply_branches` holds one
-    branch per top-level comment, and that is the whole comment list rather than a preload.
-    `selected_comment_id` is whatever a `/c/<id>/` permalink named.
+    `chain` has one element (no ancestors), `reply_branches` holds the full comment list rather
+    than a preload, and `selected_comment_id` comes from `/c/<id>/`.
     """
 
 
 class InstagramDownloader(PlatformDownloader):
-    """Reads a public Instagram post out of its page.
-
-    Holds no state and writes nothing to disk, so one instance serves every caller; it is a
-    class rather than a function so a test can replace `_fetch_page`, which is the one seam
-    that touches the network.
-    """
+    """Reads a public Instagram post and its comments from the page HTML."""
 
     def _fetch_page(self, url: str) -> FetchedPage:
         """Fetches a page with the browser headers the full payload needs."""
@@ -184,13 +132,8 @@ class InstagramDownloader(PlatformDownloader):
 
     @staticmethod
     def _find_media(payloads: list[Any], shortcode: str) -> dict[str, Any] | None:
-        """Returns the media node for `shortcode`, or `None` when the page carries none.
-
-        Matched on the shortcode alone. The page's "more posts by this author" rail serialises
-        nodes carrying the same keys, so anything positional would read a neighbouring post's
-        caption as this one's; those nodes also omit `carousel_media` and `image_versions2`, so
-        when several nodes share the code, the one carrying either wins.
-        """
+        """Returns the media node matching `shortcode`, or `None` when absent."""
+        # Match shortcode and prefer nodes with media fields over "more posts" rail stubs.
         fallback: dict[str, Any] | None = None
         for payload in payloads:
             for node in walk(node=payload):
@@ -203,12 +146,7 @@ class InstagramDownloader(PlatformDownloader):
 
     @staticmethod
     def _media_urls_of(media: dict[str, Any]) -> tuple[list[str], list[str]]:
-        """Returns `(image_urls, video_urls)` in carousel order.
-
-        A carousel keeps its items under `carousel_media`; a single image or video is the node
-        itself. `candidates[0]` is the original — see the module docstring for how that is known
-        when the candidates carry no dimensions.
-        """
+        """Returns `(image_urls, video_urls)` in carousel order."""
         children = media.get("carousel_media")
         items = children if isinstance(children, list) else [media]
         image_urls: list[str] = []
@@ -223,6 +161,7 @@ class InstagramDownloader(PlatformDownloader):
                 if url:
                     video_urls.append(url)
                     continue
+            # Candidates are ordered widest-first without dimensions; index 0 is the original.
             candidates = deep_get(item, "image_versions2", "candidates")
             first = candidates[0] if isinstance(candidates, list) and candidates else None
             url = str_of(value=deep_get(first, "url"))
@@ -232,19 +171,12 @@ class InstagramDownloader(PlatformDownloader):
 
     @staticmethod
     def _comment_branches(payloads: list[Any], post_url: str) -> list[list[InstagramOutput]]:
-        """Returns every comment on the page, grouped into branches by `thread_branches`.
-
-        A comment carries `parent_comment_id` when it answers another one, so a reply is
-        threaded behind the comment it answers instead of standing alone; everything else opens
-        its own branch. On a public post this is the whole discussion rather than a preload.
-
-        A comment is recognised by carrying both `comment_like_count` and `text`, which no other
-        node on the page does.
-        """
+        """Returns every comment on the page, grouped into branches by `thread_branches`."""
         found: dict[str, InstagramOutput] = {}
         parents: dict[str, str] = {}
         for payload in payloads:
             for node in walk(node=payload):
+                # Comment nodes are identified by carrying both `comment_like_count` and `text`.
                 if "comment_like_count" not in node or "text" not in node:
                     continue
                 comment_id = str(node.get("pk") or "")
@@ -265,23 +197,17 @@ class InstagramDownloader(PlatformDownloader):
         return thread_branches(comments=found, parents=parents)
 
     def parse_metadata(self, url: str) -> InstagramConversation:
-        """Reads one public Instagram post and the comments under it.
+        """Returns the parsed conversation for a public Instagram post, writing nothing to disk.
 
-        Writes nothing to disk, and there is no `parse` counterpart because nothing is
-        downloaded — the images ride out as URLs.
-
-        A private account, a deleted post and a login wall are one outcome from outside, and all
-        three come back as an empty conversation rather than an error.
+        Returns an empty `InstagramConversation` for non-post URLs, login walls, private accounts,
+        or missing payloads.
 
         Args:
             url (str): The Instagram post URL in any accepted form.
 
-        Returns:
-            The parsed conversation; its `chain` is empty when the post could not be read.
-
         Raises:
-            LinkReadError: The page could not be fetched, in the shape `link_fetch_error`
-                classified it as; `RuntimeError` for a failure HTTP does not classify.
+            LinkReadError: If the page fetch fails with a classified HTTP/network error.
+            RuntimeError: If the fetch fails in an unclassified way.
         """
         instagram_url = InstagramURL(raw_url=url)
         if not instagram_url.shortcode:
@@ -329,10 +255,7 @@ class InstagramDownloader(PlatformDownloader):
 
 
 if __name__ == "__main__":
-    """
-    Keep this for self development and testing.
-    DO NOT REMOVE THIS FOR ANY REASON.
-    """
+    # Kept for local manual smoke-testing; do not remove.
     from rich.console import Console
 
     console = Console()

@@ -1,61 +1,12 @@
-"""Twitter (x.com) post URL parsing and reading, through the public syndication endpoint and FxTwitter.
+"""Twitter (x.com) URL parsing and reading via the public syndication API and FxTwitter.
 
-**The page itself is unreadable, so this module does not fetch it.** Measured 2026-09-10:
-`x.com/<user>/status/<id>` answers a pure SPA shell with no post text and no Open Graph tags at
-all, for a browser User-Agent and for `facebookexternalhit` / `Twitterbot` / `Discordbot` alike.
-Scraping the HTML for an embedded payload finds nothing here.
+`x.com` serves an empty SPA shell logged out, so posts are read from
+`cdn.syndication.twimg.com/tweet-result`. Success is indicated by `__typename == "Tweet"`
+(tombstones return HTTP 200).
 
-What does work logged out is `cdn.syndication.twimg.com/tweet-result`, the endpoint the official
-embed widget calls. It needs an `id`, a `token` of any non-empty value, and any `User-Agent`
-header; `lang` is optional and only picks the locale a refusal is worded in (measured: dropping
-it returns a byte-identical body). Both of the required ones are traps rather than ceremony —
-omitting the token answers HTTP 200 with a body of `{}`, and omitting the User-Agent answers 400
-with an empty body — and neither failure says what is wrong.
-
-**Success is `__typename`, never the status code.** A deleted, protected or suspended post comes
-back as HTTP 200 carrying a well-formed `TweetTombstone`, while an id that never existed answers
-404 with HTML. Reading either off the status gets it backwards. The refusal's own text is localized
-by `lang`, so `_Tombstone` reads it for the log and nothing ever matches on its wording.
-
-Three things syndication cannot do, so a second request goes to FxTwitter for them:
-
-Replies are unreachable there. The payload carries `conversation_count` and no reply content, and
-13 parameter variants (`replies`, `conversation`, `cursor`, `expansions`, ...) returned
-byte-identical responses.
-
-The post being replied to arrives embedded exactly one level deep. Where the payload's own
-`in_reply_to_status_id_str` is set and `parent` is absent, the parent is unreadable — 10 of 10
-sampled were deleted, protected or suspended.
-
-A long post is truncated at roughly 275 characters, with the remainder behind an opaque
-`note_tweet.id` the endpoint will not resolve. Nothing in the text marks the cut. `note_tweet` is
-served in the target position alone — an embedded parent or quote carries the identically cut
-`text`, `display_text_range` and `entities` with the key simply absent (measured on both copies of
-post 1724892505647296620) — so only the post asked for can say it was cut. Deriving it from the
-body's length instead is not sound: the ceiling sits under the classic 280-character limit, so an
-ordinary whole post reaches it too, and X weighs a CJK character as two (twitter-text's v3
-config), so no one length marks the cut across scripts.
-
-**FxTwitter's `/2/conversation/<id>` fills all three, and only ever adds to the syndication read.**
-Measured 2026-10-31: no key, documented (docs.fxembed.com; the OpenAPI spec is served at
-https://api.fxtwitter.com/2/openapi.json ), ~1.5s and ~80KB. `thread` is every ancestor plus the
-post itself, in no reliable order (one sample came back parent, root, post), so the chain is
-walked by `replying_to` ids rather than read in order, and read there rather than off the
-top-level `status`, which carries no `replying_to`;
-`replies` is the first page of direct replies, most-liked first, an author's own continuation
-among them; and every post there is whole, a long one flagged `is_note_tweet` and the post it
-quotes included (2,329 characters of a quote syndication cut at 277). Only the text of a long one
-is taken from it for the post asked for and its quote: its counters mean something else there. It is a third party reading X with
-accounts of its own, so it can stop working without notice: any failure there is logged and the
-conversation keeps what syndication served — the post, its quote and its one embedded parent,
-cut — with no replies. Its `display_text_range` counts codepoints, not the UTF-16 units
-syndication's does (`😬` is `[25, 26]`), and only its start is read, to drop the leading reply
-mentions.
-
-That failure is why `TwitterOutput.is_truncated` exists: a caller that cannot see the cut
-presents a fragment as the whole post. **That flag is only meaningful on the post asked for**, the
-only one syndication marks, so an embedded parent or quote reports `is_truncated=False` whether
-or not it was cut.
+FxTwitter's `/2/conversation/<id>` is layered on top for full ancestor chains, replies, and
+untruncated note-tweet bodies (syndication truncates long posts around 275 characters and marks
+`note_tweet` on the target only). Any FxTwitter failure degrades to the syndication read.
 """
 
 import re
@@ -82,22 +33,8 @@ from discordbot.services.platforms.base import (
     thread_branches,
 )
 
-# Path-anchored rather than host-anchored, so no post filter is needed on top: `/status/<digits>`
-# names a post and nothing else on the site does, so a profile, the home page or a list never
-# matches in the first place. Both hosts are matched because `twitter.com` still 301s to `x.com`
-# rather than being retired, and the mobile hosts are what a phone's share sheet copies.
-# `/i/web/status/<id>` is the form a link with no handle takes.
-#
-# The username segment is matched but never trusted: x.com serves the same post under any handle,
-# including one that does not exist (measured — it 307s to the real author's URL), so only the id
-# is load-bearing and every URL this module republishes is built by `post_url` from the author the
-# payload names. That also drops the `?s=46&t=<token>` tail, which is minted per share and names
-# whoever passed the link on.
-#
-# The optional `/photo/1` or `/video/1` suffix is what x.com's own image lightbox copies. The query
-# tail is matched so `?s=46&t=<token>` is consumed rather than left dangling, and it ends on
-# `[A-Za-z0-9_-]` for the reason every pattern here does: a link written straight after Chinese or
-# Japanese text stops at the terminator instead of swallowing it.
+# Path-anchored to `/status/<digits>` (no post filter needed); handle is untrusted and rebuilt
+# from the payload, and the ASCII query tail stops before CJK punctuation.
 TWITTER_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://(?:www\.|mobile\.|m\.)?(?:x|twitter)\.com/"
     r"(?:i/web/status|[A-Za-z0-9_]{1,20}/status(?:es)?)/\d+"
@@ -107,21 +44,14 @@ TWITTER_URL_RE = re.compile(
 
 _STATUS_PATH_RE = re.compile(pattern=r"/status(?:es)?/(?P<id>\d+)")
 
-# A status id is a signed 64-bit snowflake, and one past that range is the only input the endpoint
-# answers 400 to (measured: 2**63 - 1 and every smaller nonsense id answer 404, which classifies as
-# unavailable and earns the ⚠️ mark; a 400 does not classify at all and would reach the reader as
-# the cross that means the bot broke). The pattern cannot carry the bound — a 19-digit prefix of a
-# 21-digit id matches just as well — so the check lives where the id is read.
+# Signed 64-bit snowflake max; larger ids return HTTP 400 (unclassified) instead of 404.
 _MAX_STATUS_ID = 2**63 - 1
 
 _SYNDICATION_URL = "https://cdn.syndication.twimg.com/tweet-result"
 _FXTWITTER_CONVERSATION_URL = "https://api.fxtwitter.com/2/conversation/{status_id}"
 _CANONICAL_TWITTER_ORIGIN = "https://x.com"
 
-# The endpoint rejects a request with no User-Agent (HTTP 400, empty body) and answers `{}` to one
-# with no token. The token's value is never checked — every non-empty string tested returned the
-# same 920-byte payload — so this is a required-but-unvalidated parameter rather than a credential,
-# and nothing here is authenticating as anyone.
+# Syndication returns 400 without User-Agent and `{}` without a non-empty `token`.
 _REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -131,15 +61,10 @@ _REQUEST_HEADERS = {
 }
 _REQUEST_TOKEN = "a"  # noqa: S105 — a parameter the endpoint requires and never reads, not a secret
 
-# Twitter's own image CDN serves `medium` from a bare URL while the payload reports the original's
-# dimensions beside it, so a caller that trusts the JSON and takes the bare URL gets a 900x1200
-# image labelled 3024x4032. Measured: bare 57,759 bytes / 900x1200, `?name=orig` 978,797 bytes /
-# 3024x4032. Where the original is smaller than the `large` bound the two are byte-identical, so
-# this is never a downgrade.
+# Bare `pbs.twimg.com` URLs serve medium size; `?name=orig` fetches full resolution.
 _ORIGINAL_SIZE_QUERY = "?name=orig"
 
-# Twitter's own per-post media limit. The reader keeps at most this many items, so every later
-# cap on a Twitter post's media sits at or under it.
+# Twitter's per-post media limit.
 _MAX_MEDIA_ITEMS = 4
 
 
@@ -161,11 +86,7 @@ class TwitterURL(BaseModel):
     @computed_field
     @cached_property
     def status_id(self) -> str:
-        """Returns the numeric post id the URL names, or an empty string when it names none.
-
-        Read off the path rather than the last segment, so a `/photo/1` suffix does not become the
-        id. This is the whole of what identifies a post: the handle in front of it is decorative.
-        """
+        """Returns the numeric status id from the path, or an empty string when absent."""
         match = _STATUS_PATH_RE.search(string=urlparse(self.raw_url).path)
         return match.group("id") if match else ""
 
@@ -181,24 +102,17 @@ def post_url(handle: str, status_id: str) -> str:
 
 
 class TwitterOutput(PlatformOutput):
-    """One post, the single shape a conversation is built from.
+    """One Twitter post or reply.
 
-    The shared fields and `is_readable` come from `PlatformOutput`; what is declared here is
-    Twitter's own reality. One inherited field means something narrower: `comment_count` is the
-    size of the thread under the post rather than its direct replies, that being the only reply
-    figure the endpoint reports for the post asked for.
-
-    And there is deliberately no `retweet_count`. The endpoint publishes one for an embedded parent
-    or quoted post and never for the post actually asked for, and a field a platform cannot fill is
-    worse than an absent one.
+    `comment_count` holds `conversation_count` on the target post and `reply_count` on embedded
+    posts. `retweet_count` is omitted; syndication populates it only on embedded posts.
     """
 
     video_poster_urls: list[str] = Field(
         default_factory=list,
         description="Still frames for any video, in media order; what the card shows, since nothing here downloads the clip",
     )
-    # One level only, and never populated on a quoted post itself: 46 sampled quotes carried no
-    # nested quote. `_build_output` bounds it anyway rather than trusting the sample.
+    # Bounded to one level of nesting.
     quoted: "TwitterOutput | None" = Field(
         default=None,
         description="The post this one quotes, absent when it quotes nothing readable",
@@ -211,21 +125,11 @@ class TwitterOutput(PlatformOutput):
 
 
 class TwitterConversation(PlatformConversation[TwitterOutput]):
-    """A parsed Twitter post, the thread above it, and the first page of replies under it.
+    """A parsed Twitter post, its ancestor chain, and the first page of replies.
 
-    The shared fields and accessors come from `PlatformConversation`. Three of them carry a
-    Twitter-specific truth.
-
-    `chain` is every readable ancestor FxTwitter served, oldest first, then the target; when that
-    read failed it falls back to syndication's one embedded parent, so a chain of two does not
-    mean the thread starts there.
-
-    `reply_branches` holds one branch per direct reply on FxTwitter's first page, most-liked first,
-    each followed by whatever replies to it that page carried, and nothing when the read failed or
-    the reader was built not to read them.
-
-    `selected_comment_id` is always empty: a reply has a post URL of its own, so a link to one
-    makes it the target.
+    `chain` holds readable ancestors from FxTwitter oldest-first (falling back to syndication's
+    single embedded parent on failure) ending with the target. `reply_branches` holds FxTwitter's
+    first reply page when enabled. `selected_comment_id` is always empty.
     """
 
     @property
@@ -235,13 +139,7 @@ class TwitterConversation(PlatformConversation[TwitterOutput]):
 
 
 class _TwitterPayload(BaseModel):
-    """Base for the syndication payload mirrors.
-
-    Every field below is optional with a default, because the payload omits rather than nulls most
-    of what a given post lacks — `photos` is present-but-empty on a video post, `mediaDetails` is
-    absent entirely on a text post, and `parent` only appears on a reply. A null is not absorbed:
-    only a field typed to accept None takes one, and anywhere else it fails validation.
-    """
+    """Base for syndication mirrors; absent keys default, explicit nulls require nullable types."""
 
 
 class _User(_TwitterPayload):
@@ -252,17 +150,7 @@ class _User(_TwitterPayload):
 
 
 class _VideoVariant(_TwitterPayload):
-    """One rendition of a video.
-
-    Read off `mediaDetails[].video_info.variants` rather than the top-level `video.variants`: the
-    two describe the same renditions under different key names (`content_type`/`url` here,
-    `type`/`src` there) and only this one carries `bitrate`, which is the whole basis for picking
-    a rendition.
-
-    A video leads with the HLS manifest, which has no bitrate and is not a file; an animated GIF
-    carries no manifest at all and exactly one `video/mp4` at `bitrate: 0`. Filtering on the
-    content type rather than skipping the first entry is what makes one reader serve both.
-    """
+    """One video/GIF rendition from `mediaDetails[].video_info.variants` (carries `bitrate`)."""
 
     bitrate: int = Field(default=0, description="Bits per second; absent on the HLS manifest")
     content_type: str = Field(default="", description="MIME type of this rendition")
@@ -276,18 +164,7 @@ class _VideoInfo(_TwitterPayload):
 
 
 class _MediaDetail(_TwitterPayload):
-    """One attachment.
-
-    `mediaDetails` is the only authoritative media list. The sibling `photos` and `video` keys are
-    lossy convenience views: `photos` silently drops videos from a mixed post and loses their
-    position, and `video` holds at most one.
-
-    Mixed media is rare enough to miss: a 417-post sample contained none, and post
-    1885011383672000609 is one — `mediaDetails` reads photo/video/photo/photo while `photos`
-    returns three entries with the clip's place in the order gone. Both `photos` and `mediaDetails`
-    are absent entirely on a post with no media, and `photos` is present-but-empty on a video, so
-    every media field here defaults and none is required.
-    """
+    """One attachment from `mediaDetails` (preserves order across mixed photo/video posts)."""
 
     type: str = Field(default="", description="`photo`, `video` or `animated_gif`")
     media_url_https: str = Field(default="", description="Still image, or a video's poster frame")
@@ -308,26 +185,14 @@ class _Entities(_TwitterPayload):
 
 
 class _Tweet(_TwitterPayload):
-    """One post, as the endpoint serves it — the target, an embedded parent, or a quoted post.
-
-    One model serves all three positions, but the payload is not identical across them and the
-    differences are load-bearing rather than trivia. An embedded parent or quote carries no
-    `__typename`, no `conversation_count` and no `note_tweet`, and carries `reply_count` and
-    `retweet_count` that the target never does. `reply_count` is mirrored and read, for the reason
-    the comment below it gives; `retweet_count` deliberately is not (`TwitterOutput` owns why); and
-    the missing `note_tweet` is why `is_truncated` cannot be trusted on an embedded post, which the
-    module docstring owns.
-    """
+    """Syndication tweet payload (target, embedded parent, or quoted post)."""
 
     id_str: str = Field(default="", description="The post's numeric id")
     text: str = Field(default="", description="Body, with every URL in t.co form")
     created_at: str = Field(default="", description="ISO-8601 Zulu publication time")
     favorite_count: int = Field(default=0, description="Likes")
     conversation_count: int = Field(default=0, description="Size of the thread under the post")
-    # The endpoint reports the reply figure under two names depending on the post's position: the
-    # post asked for carries `conversation_count` and never `reply_count`, while an embedded parent
-    # or quoted post carries `reply_count` and never `conversation_count`. Reading only the first
-    # renders every quoted post as having no replies.
+    # Populated on embedded parent/quoted tweets; the target carries `conversation_count` instead.
     reply_count: int = Field(default=0, description="Direct replies; embedded posts only")
     display_text_range: list[int] = Field(
         default_factory=list, description="Body span in UTF-16 code units, excluding media links"
@@ -347,12 +212,7 @@ class _Tweet(_TwitterPayload):
 
 
 class _TombstoneText(_TwitterPayload):
-    """The innermost block, where the wording finally sits.
-
-    One level deeper than the key name suggests: `tombstone.text` is an object carrying `entities`,
-    `rtl` and a `text` of its own, not the string. Mirroring it one level short fails validation on
-    every real refusal while the rare wordless one passes, since there is then nothing to validate.
-    """
+    """Inner `tombstone.text` object holding the localized refusal string."""
 
     text: str = Field(
         default="", description="Why the post cannot be shown, in the request's lang"
@@ -366,12 +226,7 @@ class _TombstoneBody(_TwitterPayload):
 
 
 class _Tombstone(_TwitterPayload):
-    """A post the platform will not serve: deleted, protected, suspended, or from a gone account.
-
-    The wording is the only thing separating those four, and 4 of 133 sampled refusals carried an
-    empty `tombstone` with no wording at all — so it is logged for an operator and never used to
-    decide anything.
-    """
+    """Unavailable-post tombstone payload; `reason` is localized and for logging only."""
 
     tombstone: _TombstoneBody | None = Field(default=None, description="The refusal, when worded")
 
@@ -384,12 +239,7 @@ class _Tombstone(_TwitterPayload):
 
 
 class _TweetResult(_TwitterPayload):
-    """The response envelope.
-
-    `__typename` is the only readable success signal: a tombstone and a live post are both HTTP
-    200, and the tombstone's text is localized so matching it would work in English and nowhere
-    else.
-    """
+    """Syndication envelope distinguishing live `Tweet` responses from `TweetTombstone`."""
 
     typename: str = Field(
         default="", alias="__typename", description="`Tweet` or `TweetTombstone`"
@@ -397,17 +247,11 @@ class _TweetResult(_TwitterPayload):
 
 
 def _body_text(tweet: _Tweet) -> str:
-    """Returns the post body with the trailing media link removed and external `t.co` links expanded.
-
-    Two index bases live in one payload and mixing them corrupts any post containing an emoji:
-    `display_text_range` is UTF-16 code units (measured: 31 of 31 discriminating samples), while
-    `entities.*.indices` are codepoints (36 of 36). Python strings are indexed by codepoint, so
-    slicing by `display_text_range` directly leaks the first characters of the trailing `t.co`
-    into the body; encoding to UTF-16 first aligns the range before expanding `entities.urls`.
-    """
+    """Returns the post body with the trailing media link removed and `t.co` links expanded."""
     text = tweet.text
     if len(tweet.display_text_range) == 2:
         start, end = tweet.display_text_range
+        # Syndication's `display_text_range` is indexed in UTF-16 code units, not codepoints.
         encoded = text.encode("utf-16-le")
         text = encoded[start * 2 : end * 2].decode("utf-16-le", errors="ignore")
     for entity in tweet.entities.urls if tweet.entities else []:
@@ -417,11 +261,7 @@ def _body_text(tweet: _Tweet) -> str:
 
 
 def _media_urls(tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
-    """Returns `(image_urls, video_urls, video_poster_urls)` from `tweet.mediaDetails` in post order.
-
-    Walks `mediaDetails` rather than `photos` / `video`, which lose a mixed post's order; animated
-    GIFs are treated as videos (served as MP4 with a single bitrate-0 rendition).
-    """
+    """Returns `(image_urls, video_urls, video_poster_urls)` from `mediaDetails` in order."""
     images: list[str] = []
     videos: list[str] = []
     posters: list[str] = []
@@ -430,6 +270,7 @@ def _media_urls(tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
             if media.media_url_https:
                 images.append(f"{media.media_url_https}{_ORIGINAL_SIZE_QUERY}")
             continue
+        # Skip HLS manifests; animated GIFs carry one MP4 rendition at bitrate 0.
         renditions = [
             variant
             for variant in (media.video_info.variants if media.video_info else [])
@@ -444,12 +285,7 @@ def _media_urls(tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
 
 
 def _build_output(tweet: _Tweet, include_quoted: bool = True) -> TwitterOutput:
-    """Turns one payload post into the shared output shape.
-
-    `include_quoted` bounds the recursion at one level. The sample says a quoted post never carries
-    its own quote (0 of 46), so this bounds what was already true rather than truncating anything —
-    but the payload is not ours and a shape we do not control is not a shape to trust.
-    """
+    """Builds a `TwitterOutput` from `tweet`, bounding quoted recursion to one level."""
     images, videos, posters = _media_urls(tweet=tweet)
     author = tweet.user or _User()
     quoted = (
@@ -474,7 +310,7 @@ def _build_output(tweet: _Tweet, include_quoted: bool = True) -> TwitterOutput:
 
 
 class _FxPayload(BaseModel):
-    """Base for the FxTwitter payload mirrors; every field defaults, for the reason `_TwitterPayload` gives."""
+    """Base model for FxTwitter payload mirrors."""
 
 
 class _FxAuthor(_FxPayload):
@@ -540,11 +376,7 @@ class _FxStatus(_FxPayload):
 
 
 class _FxThreadPage(_FxPayload):
-    """The `/2/conversation` envelope.
-
-    Its posts stay raw here and are validated one at a time by `_fx_statuses`, so one malformed
-    reply costs itself rather than the whole thread.
-    """
+    """FxTwitter `/2/conversation` envelope; posts stay raw for per-item validation."""
 
     code: int = Field(default=0, description="FxTwitter's own status, 200 on success")
     thread: list[dict[str, Any]] | None = Field(
@@ -556,11 +388,7 @@ class _FxThreadPage(_FxPayload):
 
 
 def _fx_statuses(items: list[dict[str, Any]] | None) -> list[_FxStatus]:
-    """Returns the items that validate as live posts, dropping the rest.
-
-    A tombstone is dropped rather than kept as an empty post, so the ancestor walk stops at a
-    deleted post instead of showing a blank one.
-    """
+    """Returns live `"status"` items that validate, dropping malformed items and tombstones."""
     statuses: list[_FxStatus] = []
     for item in items or []:
         try:
@@ -578,12 +406,8 @@ def _fx_statuses(items: list[dict[str, Any]] | None) -> list[_FxStatus]:
 
 
 def _fx_text(status: _FxStatus) -> str:
-    """Returns one FxTwitter post's body, past its leading reply mentions.
-
-    Only the range's start is read: it sits past the leading mentions, which are identical in
-    `text` and `raw_text.text`, while the end counts `raw_text.text`'s `t.co` links and would cut
-    the expanded `text` short.
-    """
+    """Returns one FxTwitter post's body, past its leading reply mentions."""
+    # Only use range start (codepoints): the end indexes `raw_text` with unexpanded `t.co` URLs.
     start = (
         status.raw_text.display_text_range[0]
         if status.raw_text and status.raw_text.display_text_range
@@ -640,12 +464,7 @@ def _fx_ancestors(thread: list[_FxStatus], status_id: str) -> list[TwitterOutput
 
 
 def _with_whole_text(post: TwitterOutput, whole: _FxStatus | None) -> TwitterOutput:
-    """Returns `post` with the text syndication cut taken from `whole`, FxTwitter's copy of it.
-
-    Syndication cuts a long post and marks it only on the post asked for, while the post it quotes
-    is cut unmarked. So each takes FxTwitter's text exactly when FxTwitter flags it a long one,
-    which also leaves a fragment flagged as one if FxTwitter served it short.
-    """
+    """Replaces truncated target and quoted bodies with FxTwitter's full `is_note_tweet` text."""
     if whole is None:
         return post
     update: dict[str, Any] = {}
@@ -658,12 +477,7 @@ def _with_whole_text(post: TwitterOutput, whole: _FxStatus | None) -> TwitterOut
 
 
 class TwitterDownloader(PlatformDownloader):
-    """Reads a Twitter post through the public syndication endpoint.
-
-    Holds one setting and writes nothing to disk, so one instance serves every caller that wants
-    the same thing. There is deliberately no `parse`: nothing here downloads media, and every
-    image, poster and clip comes back as a URL.
-    """
+    """Reads a Twitter post via syndication and FxTwitter, writing nothing to disk."""
 
     read_replies: bool = Field(
         default=True,
@@ -684,9 +498,7 @@ class TwitterDownloader(PlatformDownloader):
             raise link_fetch_error(
                 error=error, url=f"{_SYNDICATION_URL}?id={status_id}"
             ) from error
-        # Decoded outside the clause above rather than inside it: `requests.JSONDecodeError`
-        # subclasses `RequestException`, so a body that is not JSON would otherwise be classified
-        # as a failed fetch and reported as one, of a request that landed fine.
+        # Decode outside `RequestException`: `requests.JSONDecodeError` subclasses it.
         try:
             payload = response.json()
         except ValueError as error:
@@ -705,7 +517,7 @@ class TwitterDownloader(PlatformDownloader):
             response.raise_for_status()
         except requests.RequestException as error:
             raise link_fetch_error(error=error, url=url) from error
-        # Outside the clause above for the reason `_fetch_tweet` gives.
+        # Decode outside `RequestException`: `requests.JSONDecodeError` subclasses it.
         try:
             payload = response.json()
         except ValueError as error:
@@ -717,16 +529,8 @@ class TwitterDownloader(PlatformDownloader):
     def _read_conversation(
         self, status_id: str
     ) -> tuple[list[_FxStatus], list[list[TwitterOutput]]]:
-        """Returns `(thread, reply_branches)` from FxTwitter, both empty when it could not be read.
-
-        `thread` is its live posts, the one asked for among them. `replies` is not only direct
-        replies: a reply to one of them follows the reply it answers (6 of 40 on one sample, three
-        deep), so the branches are grouped by `replying_to`.
-        """
-        # On a thread of its own so the bound is on the whole request: `requests` bounds each
-        # socket read, so a response trickling in under that could hold the read past its
-        # caller's deadline and cost the post with it. One still running past the bound is left
-        # to finish unread.
+        """Returns `(thread, reply_branches)` from FxTwitter, or empty lists on any failure."""
+        # Enforce a whole-request deadline; `requests` timeout only bounds per-socket reads.
         pool = ThreadPoolExecutor(max_workers=1)
         fetch = pool.submit(self._fetch_conversation, status_id=status_id)
         pool.shutdown(wait=False)
@@ -762,25 +566,18 @@ class TwitterDownloader(PlatformDownloader):
         )
 
     def parse_metadata(self, url: str) -> TwitterConversation:
-        """Parses a Twitter post URL into the conversation, writing nothing to disk.
+        """Returns the parsed conversation for a Twitter post URL, writing nothing to disk.
 
-        The chain is the readable ancestors oldest first, then the post, and empty when the post
-        could not be read at all — a deleted, protected or suspended post, or an id that never
-        existed or could not be one. An empty conversation is the ordinary outcome for a pasted
-        link rather than an error, so it comes back rather than raising, and the caller marks it
-        unreadable. FxTwitter is asked only once syndication has served the post and, when the
-        replies are not wanted, only for what syndication serves cut: a reply, a quote or a long
-        post.
+        Returns an empty `TwitterConversation` for invalid ids, out-of-range snowflakes, or
+        tombstones. Queries FxTwitter after syndication when `read_replies` is true or when the
+        post is a reply, quote, or truncated note tweet.
 
         Args:
             url (str): The post URL, in any of the forms `TWITTER_URL_RE` matches.
 
-        Returns:
-            The parsed conversation; empty when there is no readable post.
-
         Raises:
-            LinkReadError: If the request itself failed in a way HTTP named.
-            RuntimeError: If the endpoint served something other than a JSON object.
+            LinkReadError: If the syndication request fails with a classified HTTP/network error.
+            RuntimeError: If the endpoint serves a non-JSON or non-object body.
         """
         status_id = TwitterURL(raw_url=url).status_id
         if not status_id or int(status_id) > _MAX_STATUS_ID:
@@ -788,9 +585,7 @@ class TwitterDownloader(PlatformDownloader):
 
         payload = self._fetch_tweet(status_id=status_id)
         if _TweetResult.model_validate(payload).typename != "Tweet":
-            # A tombstone is a 200 with a well-formed body, so this is the only place the
-            # difference is visible. Its own text says which of deleted / protected / suspended it
-            # was, and is localized by `lang`, so it is logged rather than matched on.
+            # Tombstones return HTTP 200; log the localized reason without matching on it.
             logfire.info(
                 "Twitter post is not readable",
                 status_id=status_id,
@@ -800,9 +595,7 @@ class TwitterDownloader(PlatformDownloader):
 
         tweet = _Tweet.model_validate(payload)
         post = _build_output(tweet=tweet)
-        # Without the replies, FxTwitter's ~1.5s buys only the whole text of what syndication
-        # serves cut at ~275 characters: the post itself, and the parent and quote, whose
-        # embedded copies are cut unmarked even when they start the thread.
+        # Skip FxTwitter when replies are off and syndication already has the full standalone post.
         ancestors: list[TwitterOutput] = []
         reply_branches: list[list[TwitterOutput]] = []
         if self.read_replies or tweet.parent or tweet.quoted_tweet or post.is_truncated:
@@ -818,10 +611,7 @@ class TwitterDownloader(PlatformDownloader):
 
 
 if __name__ == "__main__":
-    """
-    Keep this for self development and testing.
-    DO NOT REMOVE THIS FOR ANY REASON.
-    """
+    # Kept for local manual smoke-testing; do not remove.
     from rich.console import Console
 
     console = Console()

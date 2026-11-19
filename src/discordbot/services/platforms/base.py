@@ -1,33 +1,15 @@
 """Shared base models and threading helpers for platform readers.
 
-Three base classes define the common surface across platforms:
+- `PlatformDownloader`: entry point declaring `parse_metadata(url=...)`. Subclasses that write to
+  disk declare a required `output_folder` and add a `parse` (returns a conversation) or `download`
+  (returns downloaded files) method.
+- `PlatformOutput` / `PlatformConversation`: shared post and discussion shapes; single-media
+  platforms return a `<Platform>Metadata` instead.
+- `LinkableCommentOutput` / `LinkableComments`: specialization for platforms whose URLs can name
+  a single comment.
+- `thread_branches`: groups comments into `reply_branches` by parent id.
 
-- `PlatformDownloader` is the entry point, and `parse_metadata(url=...)` is the whole of the
-  required surface. A platform that writes a file adds a second method of its own; see below.
-- `PlatformOutput` holds the common fields a renderer reads without knowing which platform served
-  them. Each platform keeps its own extras on top; that is the platform's reality, not drift.
-- `PlatformConversation` is a post plus the discussion around it, generic in the output model its
-  `chain` holds, so a subclass names its own model once and gets the conversation accessors typed.
-
-`thread_branches` builds that model's `reply_branches` for a platform whose comments name the one
-they answer.
-
-`LinkableCommentOutput` and `LinkableComments` specialise the last two for a platform whose links
-can name a single comment: the comment's own id, and the lookup that resolves `selected_comment`
-from it.
-
-Unimplemented methods raise `NotImplementedError` rather than using `abc.ABC`.
-
-A second download/parse method is deliberately not declared here because the return types and
-options differ across platforms. Many platforms write nothing to disk, handing back image URLs
-for whoever shows the post to fetch. Those that do write have incompatible signatures: a walk that
-downloads as it goes returns its conversation with each file on the post that owns it, while a
-plain fetch returns a model naming its files and takes platform-specific options (quality preset,
-image cap, pre-parsed metadata, stop signal) alongside `url`. Accordingly, `parse` returns a
-parsed conversation and `download` returns files.
-
-A platform whose result is a single piece of media returns a `<Platform>Metadata` instead of a
-`<Platform>Conversation` and subclasses neither conversation model.
+Unimplemented base methods raise `NotImplementedError` rather than using `abc.ABC`.
 """
 
 from datetime import datetime
@@ -39,9 +21,8 @@ from pydantic import Field, BaseModel, computed_field
 class PlatformDownloader(BaseModel):
     """Reads one platform, given a URL.
 
-    A subclass that writes a file carries a required `output_folder` and a second method of its
-    own, which the module docstring has the reason for. One that only reads a page holds no state
-    at all, so a single instance serves every caller.
+    Subclasses that write files declare a required `output_folder` and a `parse` or `download`
+    method. Read-only subclasses hold no state and can be reused across callers.
     """
 
     def parse_metadata(self, url: str) -> BaseModel:
@@ -61,12 +42,9 @@ class PlatformDownloader(BaseModel):
 
 
 class PlatformOutput(BaseModel):
-    """One post or comment, in the vocabulary every platform here shares.
+    """One post or comment in the shared cross-platform schema.
 
-    What a caller may read without asking which source it holds. A platform carrying more puts it
-    on its own subclass. A field only some platforms publish does not belong here at all: it
-    lives on the ones that have it, so a caller reading this model is never handed a zero that
-    means "this platform does not have the concept".
+    Platform-specific fields live on subclasses rather than here.
     """
 
     text: str = Field(default="", description="The post or comment body")
@@ -96,14 +74,10 @@ class PlatformOutput(BaseModel):
 
 
 class PlatformConversation[OutputT: PlatformOutput](BaseModel):
-    """A post, whatever leads to it, and whatever hangs off it.
+    """A post, its ancestor chain, and the discussion under it.
 
-    Generic in the output model it holds so a platform declares its own model once and the
-    accessors below come back typed.
-
-    A field a platform cannot fill is still carried rather than dropped, so the accessors mean
-    the same thing everywhere: `chain` is a list even where a platform serves no ancestors, and
-    `selected_comment_id` is empty on a platform whose replies have URLs of their own.
+    Generic in the platform's `PlatformOutput` subclass. Every platform exposes the same fields
+    (`chain`, `reply_branches`, `selected_comment_id`), leaving inapplicable ones empty.
     """
 
     chain: list[OutputT] = Field(
@@ -122,24 +96,18 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
     @computed_field
     @cached_property
     def target(self) -> OutputT | None:
-        """Returns the linked post itself (`chain[-1]`), or `None` when it could not be read.
+        """Returns the linked post (`chain[-1]`), or `None` when empty.
 
-        Cached, which makes "a conversation is built once and never mutated" load-bearing:
-        pydantic invalidates a `cached_property` on neither an in-place `chain.append(...)` nor a
-        `chain = [...]` assignment, so a mutated conversation keeps answering with its old target.
-        Every platform builds both lists as locals and hands them to the constructor finished;
-        media downloads run before the object exists, not after.
+        Cached; callers must treat the conversation as immutable after construction.
         """
         return self.chain[-1] if self.chain else None
 
     @computed_field
     @cached_property
     def selected_comment(self) -> OutputT | None:
-        """Returns the comment the URL singled out, or `None` unless the platform can name one.
+        """Returns the comment the URL singled out, or `None` on this base class.
 
-        Always `None` on the base class because `selected_comment_id` is matched against a
-        comment id not carried on `PlatformOutput`; platforms whose links can address a single
-        comment subclass `LinkableComments`, which performs the lookup.
+        Platforms whose URLs can address a single comment subclass `LinkableComments`.
         """
         return None
 
@@ -147,10 +115,7 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
     def comments(self) -> list[OutputT]:
         """Returns every reply, flattened out of `reply_branches` in page order.
 
-        Exposed as a plain property rather than a computed field because it re-slices data
-        `reply_branches` already carries, so serializing it would duplicate every reply in a dump.
-        `target` and `selected_comment` instead resolve a pointer that a dump cannot derive on its
-        own.
+        Plain property rather than a `computed_field` to avoid duplicating replies in dumps.
         """
         return [reply for branch in self.reply_branches for reply in branch]
 
@@ -174,12 +139,7 @@ class LinkableComments[OutputT: LinkableCommentOutput](PlatformConversation[Outp
     @computed_field
     @cached_property
     def selected_comment(self) -> OutputT | None:
-        """Returns the comment the URL singled out, or `None` when none was named or preloaded.
-
-        A named comment missing from the page is an ordinary miss rather than an error: a page
-        that preloads only the first handful resolves a link to an older comment to `None`, and
-        the caller shows the post alone.
-        """
+        """Returns the comment the URL singled out, or `None` when none was named or preloaded."""
         if not self.selected_comment_id:
             return None
         return next(
@@ -197,8 +157,7 @@ def thread_branches[OutputT: PlatformOutput](
 ) -> list[list[OutputT]]:
     """Returns `comments` grouped into `reply_branches` lists, each reply behind the comment it answers.
 
-    A comment whose parent has not appeared before it opens a branch of its own rather than being
-    dropped, so a reply the page served without its parent still reaches the caller.
+    A comment whose parent has not appeared before it starts a new branch.
 
     Args:
         comments (dict[str, OutputT]): Every comment, keyed by its own id, in page order.

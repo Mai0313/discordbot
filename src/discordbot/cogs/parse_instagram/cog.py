@@ -1,12 +1,4 @@
-"""Expands a public Instagram post URL into Discord embeds.
-
-Nothing is downloaded here: the card names its images by URL, and the shell uploads them, so this
-cog needs no scratch directory, no media-delivery planner and no size ceiling.
-
-`utils/expansion_cog.py` owns everything around the card and the card's shape: one post, its
-carousel, and the comment a permalink singled out. What is here is what is Instagram's own: its
-colour, its author line, its counters and where its links point.
-"""
+"""Expands public Instagram post URLs into Discord embeds via `ConversationExpansionCog`."""
 
 from nextcord.ext import commands
 
@@ -53,23 +45,17 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         return post.author_full_name
 
     def _comment_author_label(self, comment: InstagramOutput) -> str:
-        """The commenter's handle, the only name a comment carries here."""
+        """Returns the commenter's handle, the only name Instagram comments carry."""
         return f"@{comment.author_name}" if comment.author_name else ""
 
     def _video_link(self, post: InstagramOutput) -> str:
-        """Returns `post.url` rather than `video_urls[0]`, which is Instagram's signed CDN URL.
-
-        The signed CDN URL expires within days while the embed persists, so the card's link must
-        outlive the fetch.
-        """
+        """Returns `post.url` instead of `video_urls[0]`; signed CDN URLs expire within days."""
         return post.url
 
     def _footer_text(self, post: InstagramOutput, shown_images: int) -> str:
-        """Returns the footer line with positive engagement counts and omitted-media notes.
-
-        Instagram serves `-1` when an author hides likes, so only positive counts are shown.
-        """
+        """Returns the footer line with positive engagement counts and omitted-media notes."""
         parts: list[str] = []
+        # Instagram serves `-1` when an author hides likes.
         if post.like_count > 0:
             parts.append(f"❤️ {post.like_count:,}")
         if post.comment_count > 0:
@@ -78,11 +64,7 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         return " · ".join(parts)
 
     def _comment_url(self, post_url: str, comment: InstagramOutput) -> str:
-        """The comment's own `/c/<id>/` permalink.
-
-        Instagram will not serve that URL's payload to this bot, but it is the right thing to
-        hand a reader.
-        """
+        """Returns the `/c/<id>/` comment permalink (unfetchable by the bot, valid for users)."""
         return f"{post_url.rstrip('/')}/c/{comment.comment_id}/"
 
 

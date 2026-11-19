@@ -1,20 +1,15 @@
-"""Shared primitive for pulling a file down over HTTP.
-
-`stream_to_file` writes one remote file and leaves the failure policy to its caller, since what
-a failed transfer means (worth retrying, or worth reporting) differs per source.
-"""
+"""HTTP file download helper; failure classification is left to callers."""
 
 import os
 from pathlib import Path
 
 import requests
 
-# How much is read off the socket at a time. A buffer size, not a policy.
 _CHUNK_BYTES = 1 << 16
 
 
 class DownloadTooLargeError(RuntimeError):
-    """The media exceeds the caller's cap. Deterministic, so it is never worth retrying."""
+    """The media exceeds the caller's cap; deterministic and not retryable."""
 
 
 def _reject_oversize_header(response: requests.Response, url: str, max_bytes: int | None) -> None:
@@ -33,34 +28,24 @@ def _reject_oversize_header(response: requests.Response, url: str, max_bytes: in
 def stream_to_file(
     url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int | None = None
 ) -> Path:
-    """Streams `url` into `filepath` and returns `filepath`, refusing anything past `max_bytes`.
+    """Streams `url` into `filepath` and returns `filepath`, enforcing `max_bytes`.
 
-    Deliberately does not create the parent directory: whoever hands one over makes it once, up
-    front. A caller that gives up mid-download cannot stop the worker thread (`asyncio.to_thread`
-    abandons it), so it removes the scratch dir instead: a file not yet opened fails its open, and
-    the one being written stops at its next chunk. A `mkdir` here would undo that between two
-    files and quietly rebuild a directory nobody will clean up.
-
-    `max_bytes` is a fail-fast guard, not a policy: it exists so a caller whose downstream would
-    reject the file anyway finds out from `Content-Length` in a couple of seconds instead of
-    spending its whole time budget fetching bytes nobody can use. The streamed re-check backs it
-    up when `Content-Length` is absent or wrong.
-
-    A partial file is removed on any failure, since leaving it would let a later `stat()` report
-    a truncated download as a finished one.
+    Does not create the parent directory: callers remove the scratch directory to abort an
+    abandoned `asyncio.to_thread` download. Checks `max_bytes` against `Content-Length` before
+    reading and again while streaming, unlinking any partial file on failure.
 
     Args:
         url (str): The media URL.
-        filepath (Path): Where to write the file; its parent directory must already exist.
+        filepath (Path): Destination file path; its parent directory must already exist.
         headers (dict[str, str]): Request headers the source expects.
         timeout (float): Per-read timeout in seconds.
-        max_bytes (int | None): Refuse media larger than this; `None` accepts any size.
+        max_bytes (int | None): Maximum allowed size in bytes; `None` disables the cap.
 
     Raises:
         DownloadTooLargeError: If the media exceeds `max_bytes`.
         requests.RequestException: If the transfer fails.
-        OSError: If the file cannot be written, `FileNotFoundError` for a removed directory
-            included.
+        OSError: If the file cannot be written, including `FileNotFoundError` when the parent
+            directory was removed mid-download.
     """
     try:
         with requests.Session() as session:

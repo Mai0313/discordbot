@@ -1,9 +1,4 @@
-"""yt-dlp wrapper: a synchronous downloader and metadata probe, plus the asyncio stop signal.
-
-`VideoDownloader` itself is synchronous. The metadata probe is for a caller that has to decide
-whether to fetch at all; `download_with_stop_signal` is the asyncio half, for a caller having to
-abandon a download that outran its budget.
-"""
+"""Synchronous yt-dlp video downloader/metadata probe and its asyncio stop-signal wrapper."""
 
 from typing import Any, ClassVar
 import asyncio
@@ -68,8 +63,7 @@ class VideoDownloader(PlatformDownloader):
 
     output_folder: str = Field(..., description="Directory where downloaded files are written.")
 
-    # Static map of quality presets to yt-dlp format strings; prefers separate
-    # video+audio with safe fallbacks to muxed or video-only streams.
+    # Prefers separate video+audio with fallbacks to muxed or video-only streams.
     quality_formats: ClassVar[dict[VideoQuality, str]] = {
         "best": "bestvideo*+bestaudio/best/bestvideo*",
         "high": "bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080][fps<=60]/best[height<=1080]",
@@ -85,18 +79,13 @@ class VideoDownloader(PlatformDownloader):
         }
 
     def _resolve_facebook_share_url(self, url: str) -> str:
-        """Follows redirects for facebook.com/share/... links to obtain the real target.
-
-        Only where the request landed is wanted, never the page itself, so the GET fallback
-        streams: requests still follows the whole redirect chain and reports `response.url`,
-        but the final page's body is left on the wire instead of being downloaded and thrown
-        away. The HEAD attempt above it never had a body to begin with.
-        """
+        """Follows redirects for `facebook.com/share/...` links to return the final target URL."""
         headers = self._default_http_headers()
         with Session() as session:
             for method_name in ("head", "get"):
                 request_method = getattr(session, method_name)
                 try:
+                    # Stream GET so redirects resolve without downloading the final page body.
                     response = request_method(
                         url,
                         allow_redirects=True,
@@ -145,9 +134,7 @@ class VideoDownloader(PlatformDownloader):
         """
         output_path = Path(self.output_folder)
 
-        # Base headers safe for most sites; site-specific headers added conditionally below.
-        # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
-        # or `bilibili.com.attacker.com` never gets the bilibili Referer.
+        # Match the parsed host, never a substring, before sending a Bilibili Referer.
         http_headers = self._default_http_headers()
         if host_matches_domain(host=normalized_host(url=url), domain="bilibili.com"):
             http_headers["Referer"] = "https://www.bilibili.com"
@@ -167,7 +154,6 @@ class VideoDownloader(PlatformDownloader):
             "ignoreerrors": False,
             "retries": YTDLP_RETRIES,
             "fragment_retries": YTDLP_RETRIES,
-            # Ensure merged output is mp4 when possible (common for Discord uploads)
             "merge_output_format": "mp4",
             "http_headers": http_headers,
             "socket_timeout": YTDLP_SOCKET_TIMEOUT_SECONDS,
@@ -183,12 +169,11 @@ class VideoDownloader(PlatformDownloader):
         Args:
             url (str): The URL of the video to download.
             quality (VideoQuality): The requested quality preset.
-            stop_signal (threading.Event | None): Optional event a caller sets to abort the
-                download. This method blocks its thread, so asyncio cancellation cannot stop it;
-                the signal is checked at every yt-dlp progress tick and aborts with
-                `DownloadStoppedError`.
+            stop_signal (threading.Event | None): Optional event checked at every yt-dlp progress
+                tick to abort the blocking worker thread.
 
         Raises:
+            DownloadStoppedError: When `stop_signal` is set mid-download.
             RuntimeError: When yt-dlp returns no metadata for the URL.
         """
         url = self._convert_facebook_url(url=url)
@@ -209,38 +194,26 @@ class VideoDownloader(PlatformDownloader):
             return DownloadResult(filename=Path(ydl.prepare_filename(info)))
 
     def parse_metadata(self, url: str) -> VideoMetadata:
-        """Reads a video's metadata via yt-dlp without downloading any media.
-
-        `extract_info(download=False)` under `simulate` fetches the metadata silently: `quiet`
-        stays on and nothing asks for the info dict to be dumped to stdout.
+        """Returns a video's metadata via yt-dlp without downloading media.
 
         Args:
             url (str): The URL of the video to inspect.
-
-        Returns:
-            The parsed metadata; absent string fields fall back to empty, duration to 0.0.
 
         Raises:
             RuntimeError: When yt-dlp returns no metadata for the URL.
         """
         url = self._convert_facebook_url(url=url)
         params = self.get_params(quality="best", url=url)
-        # `extract_flat` keeps a playlist-shaped page (a channel, a user space, a collection)
-        # to one request instead of resolving every entry over the network in a probe that is
-        # supposed to take seconds.
+        # Keep playlist-shaped pages to one request instead of probing every entry.
         params.update({"simulate": True, "skip_download": True, "extract_flat": "in_playlist"})
         with YoutubeDL(params=params) as ydl:
             info = ydl.extract_info(url=url, download=False)
         if info is None:
             msg = f"yt-dlp returned no metadata for {url}"
             raise RuntimeError(msg)
-        # The page's own URL wins over the first entry's below, so a caller can tell a
-        # playlist-shaped page apart from the single video it asked about.
+        # Preserve the page's own URL before unwrapping a playlist entry.
         page_url = str(info.get("webpage_url") or "")
-        # `noplaylist` keeps a download to one item, but a multi-part page (e.g. a Bilibili
-        # anthology) can still report itself playlist-shaped; the first entry is the part the
-        # pasted URL shows. `from_playlist` records the unwrap, since only then can these
-        # fields describe some other video than the page the caller asked about.
+        # Unwrap multi-part/playlist pages to their first entry and flag `from_playlist`.
         from_playlist = False
         entries = info.get("entries")
         if entries:
@@ -266,23 +239,15 @@ def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
 async def download_with_stop_signal(
     downloader: VideoDownloader, url: str, quality: VideoQuality
 ) -> DownloadResult:
-    """Runs the blocking download with a stop signal cancellation can actually deliver.
+    """Returns the finished download, delivering a stop signal and bounded join on cancellation.
 
-    `asyncio.to_thread` cannot cancel its worker, so an abandoned download (a post-route
-    discard, a media timeout, a command's own deadline) would otherwise leave yt-dlp
-    downloading for minutes — holding a shared thread-pool slot, writing a file nothing will
-    clean up, and even re-creating the scratch dir after its removal (yt-dlp re-makes the
-    output dir before each DASH format). On any interruption the signal makes the worker abort
-    at its next progress tick, and the bounded join keeps the scratch dir alive until the
-    worker has really stopped, so its removal never races a live writer.
+    Signals `stop_signal` on interruption and waits up to `DOWNLOAD_STOP_JOIN_SECONDS` for the
+    worker thread to exit so scratch-directory cleanup does not race a live yt-dlp write.
 
     Args:
         downloader (VideoDownloader): The downloader to run, already pointed at its scratch directory.
         url (str): The URL to download.
         quality (VideoQuality): The requested quality preset.
-
-    Returns:
-        The finished download.
     """
     stop_signal = threading.Event()
     download_task = asyncio.create_task(
