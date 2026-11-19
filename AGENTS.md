@@ -64,7 +64,7 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 - **A runtime prompt whose output is posted to Discord as markdown embeds `typings/discord_markdown.py::DISCORD_MARKDOWN_RULES`**; output that stays model input (a memory note) or plain text (a thread title) does not.
 - **IMAGE and VIDEO carry no default aesthetic; never reintroduce a code-side static style suffix**, which cannot honor "unless the user specified".
 - **Name a Responses API call's result `responses` and its stream items `response`.**
-- **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn, on an error or on a stream that ends without completing** (`streaming.py::stream_answer_with_retry` has why). The owner keeps that retry beside the proxy's fallbacks: do not propose removing it.
+- **The streaming answer turn is the only LLM request the bot's own code re-issues mid-turn, on an error or on a stream that ends without completing** (`streaming.py::stream_answer_with_retry`). The owner keeps that retry beside the proxy's fallbacks: do not propose removing it.
 - **Read retryability structurally, never off the message, through `utils/llm_errors.py::llm_status_code` / `is_retryable_llm_error`**.
 - **A kill-switch is an `*_enabled` field on `LLMConfig` (`typings/llm.py`) whose description states its own off-behaviour**.
 - **Pricing comes from `utils/model_pricing.py`'s cached LiteLLM table; never hardcode rates.**
