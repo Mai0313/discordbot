@@ -1,15 +1,9 @@
 """Direct Gemini Interactions call layer for the deep-research cog.
 
-Runs `RuntimeModelCatalog.antigravity_model` through an injected `genai.Client` directly against
-Google (`gemini_api_key`, no proxy) with `background=True`, `store=True`, and `stream=True`.
-
-Both `stream_antigravity` (fresh run in a remote sandbox) and `resume_research_stream` (restart
-re-attachment) share `_StreamDriver` and `_drive`. When the SDK closes a long-lived SSE request
-mid-run, `_StreamDriver` re-attaches via `interactions.get(stream=True, last_event_id=...)`.
-The final result is always read through `_poll_until_terminal` (`interactions.get(id)` with
-transient-error retries) rather than from the stream, since `interaction.completed` carries no
-report body and the poll also settles runs whose stream died or lags in `in_progress`. Neither
-streaming nor polling imposes a wall-clock timeout.
+Runs `RuntimeModelCatalog.antigravity_model` directly against Google with `background=True`,
+`store=True`, and `stream=True`, re-attaching SSE streams via `last_event_id` on mid-run drops.
+Reads the authoritative final result via `_poll_until_terminal` (`interactions.get`) with no
+wall-clock timeout on streaming or polling.
 """
 
 import base64
@@ -38,32 +32,24 @@ if TYPE_CHECKING:
 
     from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
-# Built-in tools enabled for every research run: web grounding + URL reading. Passed explicitly
-# (not left to the agent default) so search/url grounding is guaranteed. Code execution is left
-# off on purpose: the agent's bash/python tool calls leak into `output_text` as raw
-# `call:default_api:bash{command:...}` text and corrupt the report.
+# Explicit grounding tools only; code execution is omitted because bash/python tool calls leak
+# raw `call:default_api:bash{...}` text into `output_text`.
 RESEARCH_TOOLS = [
     URLContext(type="url_context"),
     GoogleSearch(search_types=["web_search"], type="google_search"),
 ]
 
-# The agent family's own config block: `model` picks the reasoning model, while
-# `max_total_tokens` stays at its default. Uses the `...Param` TypedDict that
-# `interactions.create` declares. Do not read `agent_config` back off the interaction to verify
-# it took: `interactions.get` can report `agent_config=None` even after a 200 create.
+# `interactions.get` can return `agent_config=None` even after a 200 create; do not read it back.
 RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(
     type="antigravity", model=RuntimeModelCatalog().antigravity_reasoning_model.name
 )
 
-# The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.
+# Poll-fallback interval and re-attach backoff.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 
 
 class _InteractionUsage(Protocol):
-    """Structural view of the token counts a terminal interaction reports.
-
-    Both fields are optional on the SDK model and absent when an interaction never billed.
-    """
+    """Structural view of token counts on a terminal interaction."""
 
     @property
     def total_input_tokens(self) -> int | None: ...
@@ -73,15 +59,7 @@ class _InteractionUsage(Protocol):
 
 
 class _ResearchInteraction(Protocol):
-    """Structural view of a terminal research interaction, as this module reads it.
-
-    `interactions.get` returns `Interaction | AsyncStream[...]`, so the attributes actually read
-    are declared here and cast to; `gen_reply/generation.py::_InteractionResult` has why neither
-    an `isinstance` check nor the response class narrows it.
-
-    `steps` stays the SDK's open `Step` union: its members carry genuinely different payloads, so
-    `_extract_image` still probes each one rather than reading a shape this could declare.
-    """
+    """Structural view of a terminal interaction (see `generation.py::_InteractionResult`)."""
 
     @property
     def id(self) -> str | None: ...
@@ -132,8 +110,7 @@ def _extract_image(interaction: _ResearchInteraction) -> bytes | None:
                 try:
                     return base64.b64decode(item.data)
                 except Exception as exc:
-                    # Broad: a corrupt payload only costs the chart, so the report is still
-                    # delivered; without this the drop leaves nothing at all in the logs.
+                    # Broad: corrupt chart bytes only drop the image; the report still delivers.
                     logfire.warn(
                         "research chart image could not be decoded; delivering without it",
                         interaction_id=interaction.id,
@@ -160,11 +137,7 @@ def _to_result(interaction: _ResearchInteraction) -> ResearchResult:
 
 
 async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _ResearchInteraction:
-    """Polls `interactions.get` without a wall-clock timeout until status leaves `in_progress`.
-
-    Retries transient errors up to `max_consecutive_errors` consecutive times and re-raises
-    non-retryable errors immediately.
-    """
+    """Polls `interactions.get` until leaving `in_progress`, retrying transient errors."""
     max_consecutive_errors = 30
     consecutive_errors = 0
     while True:
@@ -193,14 +166,10 @@ async def _poll_until_terminal(client: genai.Client, interaction_id: str) -> _Re
         await asyncio.sleep(RESEARCH_POLL_INTERVAL_SECONDS)
 
 
-# The SDK can close a create/get(stream=True) SSE request mid-run (each request is bounded) while
-# the agent keeps working server-side; `_StreamDriver` re-attaches via get(stream=True). This caps
-# consecutive re-attaches that make no progress so a dead stream gives up, while a healthy long
-# run that needs periodic re-attach never trips.
+# Caps consecutive zero-progress SSE reconnects after the SDK closes a long-lived stream mid-run.
 MAX_STREAM_RECONNECTS = 20
 
-# Called with the interaction id the moment `interaction.created` arrives (the stream's first event),
-# so the cog persists the id before the minutes-long run.
+# Invoked on interaction.created so the cog persists the ID before the run proceeds.
 type CreatedCallback = Callable[[str], Awaitable[None]]
 
 
@@ -219,12 +188,7 @@ def _is_terminal_event(event: "InteractionSSEEvent") -> bool:
 
 
 class _StreamDriver(BaseModel):
-    """Drives one research interaction's SSE stream with reconnect and id capture.
-
-    Captures the interaction id on `interaction.created` via `on_created` and the resume token on
-    every event, re-attaching via `get(stream=True, last_event_id=...)` when the SDK closes the
-    request before a terminal event.
-    """
+    """Drives a research SSE stream, capturing IDs and reconnecting on mid-run drops."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -251,9 +215,7 @@ class _StreamDriver(BaseModel):
         try:
             await on_created(interaction_id)
         except Exception as exc:
-            # Broad: the callback is a caller-supplied DB write. Losing it does not stop this run,
-            # but a restart cannot resume an unpersisted id, and raising here would kill the live
-            # view for the rest of the run.
+            # Broad: failing to persist the ID forfeits restart resume, not the live run.
             logfire.error(
                 "failed to persist research interaction id",
                 interaction_id=interaction_id,
@@ -286,8 +248,7 @@ class _StreamDriver(BaseModel):
                         terminal = True
                     yield event
             except Exception as exc:
-                # Broad: the SDK surfaces transport/SSE failures as arbitrary exception types; the
-                # reconnect below is the handling, so every type is tolerated here.
+                # Broad: SDK surfaces transport/SSE drops arbitrarily; reconnect handles them.
                 logfire.warn(
                     "research stream dropped; will reconnect",
                     interaction_id=self.interaction_id,
@@ -297,8 +258,7 @@ class _StreamDriver(BaseModel):
             if terminal:
                 return
             if not self.interaction_id:
-                # The first stream ended before `interaction.created`: the create itself failed, so
-                # there is no id to re-attach to. Surface it to the caller's fallback / cog failure.
+                # Stream ended before interaction.created, so there is no ID to reconnect to.
                 raise RuntimeError("research stream ended before interaction.created")
             empty_reconnects = 0 if progressed else empty_reconnects + 1
             if empty_reconnects > MAX_STREAM_RECONNECTS:
@@ -313,11 +273,7 @@ async def _drive(
     open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
     on_created: "CreatedCallback",
 ) -> _ResearchInteraction:
-    """Streams events through `streamer`, then polls for the authoritative terminal interaction.
-
-    Re-raises stream errors that happen before `interaction.created` assigns an id; once an id
-    exists, stream errors are logged and `_poll_until_terminal` settles the run.
-    """
+    """Streams events through `streamer`, then polls for the terminal interaction."""
     try:
         await streamer.stream(
             events=driver.events(open_initial=open_initial, on_created=on_created)

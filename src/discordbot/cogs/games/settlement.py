@@ -75,8 +75,8 @@ async def settle_blackjack_player(
     ledger, and the VIP bonus credited is the larger of the one on the
     dealer-paid win and the one on the five-card 21 bonus — a max, not a sum.
 
-    Bets are not deducted when a round starts, so an unfinished in-memory round
-    vanishes on bot restart without touching balances.
+    Bets are not escrowed at round start; unfinished in-memory rounds vanish on
+    restart without touching balances.
 
     Args:
         round_state (BlackjackRound): Round providing the dealer cards and peek state.

@@ -152,39 +152,26 @@ async def _build_instagram_link_context(
 
 
 def _needs_files_api(config: LLMConfig) -> bool:
-    """Returns whether the Gemini Files API is enabled and configured with an API key.
-
-    Checked before media download and downscaling so disabled Files API turns skip the fetch
-    as well as the upload.
-    """
+    """Returns whether the Gemini Files API is enabled and configured with an API key."""
     return config.file_api_enabled and config.gemini_key_configured
 
 
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Douyin kill-switch on top of the shared Files API gate.
-
-    The clip is downloaded first, on a WAF-sensitive path, so the switch has to be read before
-    the fetch rather than at the upload.
-    """
+    """Returns whether Douyin media download and Files API upload are enabled."""
     return config.douyin_video_enabled and _needs_files_api(config=config)
 
 
 def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Bilibili kill-switch on top of the shared Files API gate.
-
-    Same reason as Douyin minus the WAF: a 30-minute video is downloaded in full before the
-    upload it can no longer feed.
-    """
+    """Returns whether Bilibili media download and Files API upload are enabled."""
     return config.bilibili_video_enabled and _needs_files_api(config=config)
 
 
+# Sources with `search_replied_to_message=True` fetch comments/replies omitted by auto-expansion.
+# Host-level regexes pair with a `url_filter`; path-anchored ones (`twitter`, `bilibili`) do not.
 LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="threads",
         url_pattern=THREADS_URL_RE,
-        # Reads a link the user only replied to: what it fetches is the discussion under the
-        # post, which the `parse_threads` expansion deliberately does not show, so
-        # "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
         search_replied_to_message=True,
         build=_build_threads_link_context,
         timeout_notice=THREADS_TIMEOUT_NOTICE,
@@ -193,12 +180,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="facebook",
         url_pattern=FACEBOOK_URL_RE,
-        # The regex matches the host, not the path, so a profile or group home page would
-        # otherwise spend a full ~950KB page fetch to establish there is no post.
         url_filter=is_facebook_post_url,
-        # Reads a link the user only replied to: what it reads includes the comments under the
-        # post, which the `parse_facebook` expansion deliberately does not show, so asking the
-        # bot about someone else's linked post has something to answer from.
         search_replied_to_message=True,
         build=_build_facebook_link_context,
         timeout_notice=FACEBOOK_TIMEOUT_NOTICE,
@@ -207,11 +189,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="instagram",
         url_pattern=INSTAGRAM_URL_RE,
-        # The regex matches the host, not the path, so a profile or the home page would
-        # otherwise spend a full page fetch to establish there is no post.
         url_filter=is_instagram_post_url,
-        # Reads a link the user only replied to: what it reads is the comment section, which the
-        # `parse_instagram` expansion deliberately does not show.
         search_replied_to_message=True,
         build=_build_instagram_link_context,
         timeout_notice=INSTAGRAM_TIMEOUT_NOTICE,
@@ -219,11 +197,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="twitter",
-        # Path-anchored on `/status/<digits>`, so no `url_filter` is needed: a profile or the
-        # home page never matches in the first place.
         url_pattern=TWITTER_URL_RE,
-        # Reads a link the user only replied to: what it reads includes the replies, which the
-        # `parse_twitter` expansion deliberately does not show.
         search_replied_to_message=True,
         build=_build_twitter_link_context,
         timeout_notice=TWITTER_TIMEOUT_NOTICE,
@@ -232,8 +206,6 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="douyin",
         url_pattern=DOUYIN_URL_RE,
-        # The regex matches the host, not the path: a profile or live-room link is not a post,
-        # so reading it would only spend a rate-limited Douyin request to say so.
         url_filter=is_douyin_post_url,
         build=_build_douyin_link_context,
         timeout_notice=DOUYIN_TIMEOUT_NOTICE,
@@ -241,8 +213,6 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     ),
     LinkContextSource(
         name="bilibili",
-        # Path-anchored to the watchable /video/ forms (plus b23.tv short links), so no url_filter
-        # is needed on top.
         url_pattern=BILIBILI_URL_RE,
         build=_build_bilibili_link_context,
         timeout_notice=BILIBILI_TIMEOUT_NOTICE,

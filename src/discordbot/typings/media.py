@@ -1,9 +1,4 @@
-"""Media handed between the fetch, the upload and the render.
-
-Each is a model rather than a tuple because a pair whose slots only a docstring distinguishes
-reads the same whichever way round it is, so swapping them costs nothing at the call site and
-everything at the provider.
-"""
+"""Media payloads passed between fetch, provider upload, and request rendering."""
 
 from datetime import datetime
 
@@ -46,10 +41,8 @@ class UploadedFile(BaseModel):
     )
 
 
-# What a rendered attachment can be. The Gemini answer model reads a Files-API handle (an
-# `input_file` carrying a file uri); a model that cannot resolve that uri gets the content inlined
-# per type instead: images as `input_image` base64, PDFs as `input_file` base64 file data, and
-# text or code files as `input_text`.
+# Files-API handles use `input_file` with a file URI; inlined attachments use `input_image`
+# (images), `input_file` (PDFs), or `input_text` (text/code).
 type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
 
 

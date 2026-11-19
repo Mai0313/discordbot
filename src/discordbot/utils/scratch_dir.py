@@ -1,31 +1,15 @@
-"""A private scratch directory whose teardown can never speak for the work that used it.
+"""Per-invocation scratch directory whose teardown logs `OSError` instead of raising.
 
-A caller opens one around a worker `asyncio.to_thread` cannot cancel, which keeps fetching past
-the caller's give-up, and a directory of its own is what keeps that overshoot from writing over a
-concurrent request's files or piling up in the system temp dir. What the directory is for past
-that depends on the writer, so do not read one into another. A writer that opens into a folder it
-never rebuilds (`services/platforms/file_downloads.py::stream_to_file`) takes the removal as its
-stop signal: its next open fails, and the file it has open stops at its next chunk. yt-dlp
-re-creates its output dir per DASH format and so cannot; its worker is stopped with a
-`threading.Event` and a bounded join instead
-(`services/platforms/ytdlp.py::download_with_stop_signal`), and reaches the removal as a live
-writer only in the case that logs, where the worker ignored that join window.
+Used around blocking download workers run in `asyncio.to_thread`, which cannot be cancelled
+directly and may keep writing past a caller timeout. Isolating each invocation prevents
+concurrent overwrites and system temp leaks: `services/platforms/file_downloads.py::stream_to_file`
+stops when its folder is removed, whereas `services/platforms/ytdlp.py::download_with_stop_signal`
+stops via a `threading.Event` and bounded join because yt-dlp recreates output directories.
 
-What that leaves everywhere is a teardown that can lose a race with a writer still running:
-`shutil.rmtree` walks a tree something is adding to, and its closing `rmdir` raises `ENOTEMPTY`
-for a file that arrived after the scan (a file that vanished under it is already absorbed, by
-`TemporaryDirectory`'s own handler, which is why the cleanup below stays that class's). That
-exception goes to whoever owned the `with` block, which is always the wrong reader: by then the
-caller has told the user what happened, so a raised cleanup replaces a timeout's own report with
-a generic failure, relabels a delivered file as undelivered, or escapes a listener entirely. So
-the removal is reported here instead, and never travels.
-
-That holds for the `gen_reply/link_sources/` builders too, although they degrade to a notice on
-any failure. A cleanup raising while the post-route grace unwinds a build replaces its
-`CancelledError`, which `asyncio.wait_for` needs to raise `TimeoutError`, so a link that never
-answered would reach the model as one that answered without its media rather than as the
-source's own timeout notice. And each builder returns its result from inside the `with`, so a
-cleanup raising over a finished one would discard it.
+Teardown via `TemporaryDirectory.cleanup()` can race a still-running worker and raise `ENOTEMPTY`.
+Propagating that error from `__exit__` would mask a timeout or `CancelledError` (breaking
+`asyncio.wait_for` timeout reporting) or discard a completed return value, so teardown logs at
+`error` and swallows `OSError`.
 """
 
 from typing import TYPE_CHECKING
@@ -43,8 +27,7 @@ def scratch_directory(prefix: str) -> "Generator[str]":
     """Yields a private temp directory path, removing the directory on exit.
 
     Args:
-        prefix (str): Names the directory after the call site that owns it, so a leaked one is
-            attributable in the system temp dir. Keep it unique across call sites.
+        prefix (str): Unique per-call-site prefix so leaked temp directories stay attributable.
     """
     holder = tempfile.TemporaryDirectory(prefix=prefix)
     try:
@@ -53,8 +36,7 @@ def scratch_directory(prefix: str) -> "Generator[str]":
         try:
             holder.cleanup()
         except OSError as error:
-            # Swallowed rather than raised (see the module docstring), but still an error: what
-            # is left behind is deleted nowhere else, so it names an environment to look at.
+            # Swallow to avoid masking caller errors/results; log at error to surface leaks.
             logfire.error(
                 "Could not remove a scratch directory",
                 directory=holder.name,

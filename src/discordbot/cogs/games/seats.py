@@ -1,16 +1,9 @@
-"""Which started Blackjack round each human player is seated at.
+"""In-process seat registry limiting each human player to one active casino round at a time.
 
-A Blackjack stake is never escrowed, and its settlement clamps a loss at what the wallet holds
-while paying a win in full, so one balance seated at two unsettled rounds is paid every win but
-loses at most once. A player therefore holds one seat at a time, from the moment a lobby admits
-them to its round until that round's settlements are written, and a seat holds the player's stake
-against every other debit (`services/economy/holds.py`): the whole wallet while the lobby is
-still reading balances, then the most the round can take. 射龍門 shares these seats, holding no
-stake (its bets settle as they are made), so a 射龍門 bet or refund can never reach a Blackjack
-stake. The bot player is never seated here: it joins every table on purpose.
-
-Held in process only: a round dies with the process without touching a balance, and its seat
-goes with it.
+A seat runs from lobby admission through round settlement and registers a wallet hold in
+`services/economy/holds.py`: the full wallet while the lobby reads balances, then the table's
+maximum possible loss (`0` for 射龍門, whose bets settle immediately). The bot player is never
+seated here. State is in-process only and clears on restart.
 """
 
 from typing import Protocol

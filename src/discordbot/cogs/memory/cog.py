@@ -75,17 +75,13 @@ _SERVER_MEMORY_TITLE = "🧠 我對這個伺服器的記憶"
 _REGEN_TITLE = "🔄 記憶重建"
 _CATCHUP_TITLE = "📚 跟上進度"
 
-# A catchup's result colours; the next catchup in that channel starts reading after the newest
-# result in one of them. A failure is red and the start message is the memory colour, so
-# neither counts, and a failed run is read again.
+# Colors marking completed catchup checkpoints; red (error) and blue (running) do not count.
 _CATCHUP_CHECKPOINT_COLORS = (DISCORD_GREEN, DISCORD_YELLOW)
 
-# The running catchup per guild, so a second one there is refused rather than started.
+# Per-guild running catchup task to block concurrent catchups in the same server.
 _catchup_tasks: LoopLocalRegistry[int, asyncio.Task[None]] = LoopLocalRegistry()
 
-# `/memory show` is the owner reading their own store, so it is not bound by what a
-# reply prompt can carry; the pager splits whatever comes back. Kept finite only so a
-# corrupted tree cannot build an unbounded string.
+# Finite safety ceiling for `/memory show` (not a reply-prompt budget; paginated by the view).
 _SHOW_MAX_CHARS = 200_000
 
 
@@ -199,8 +195,7 @@ class MemoryCogs(commands.Cog):
             interaction (Interaction[commands.Bot]): Discord command interaction.
         """
         if interaction.guild is None:
-            # Server memory is shown only where the bot is a member. A user install also runs this
-            # in servers the bot was never added to, which carry a guild id but resolve no guild.
+            # User-installed commands can fire in unjoined guilds (`guild_id` set, `guild` None).
             description = (
                 "我沒有被加進這個伺服器，這個指令只能在我所在的伺服器裡使用。"
                 if interaction.guild_id is not None
@@ -232,11 +227,7 @@ class MemoryCogs(commands.Cog):
         pending_template: str,
         tone_text: str = "",
     ) -> None:
-        """Shows a scope's stored memory, or a friendly placeholder when empty.
-
-        `tone_text` leads the display as its own section when present, and user memory is shown
-        compartment by compartment under a heading naming who can read it.
-        """
+        """Sends paginated memory (with optional tone section) or an empty/pending notice."""
         pending_count = count_raw_entries(scope=scope)
         sections: list[str] = []
         if tone_text:
@@ -250,8 +241,7 @@ class MemoryCogs(commands.Cog):
                 title=title,
             )
             return
-        # A review may have staged raw observations before the first
-        # consolidation ran; saying "no memory" then would contradict chat.
+        # Show pending count when raw observations exist before the first consolidation.
         description = (
             pending_template.format(count=pending_count) if pending_count else empty_description
         )
@@ -259,11 +249,7 @@ class MemoryCogs(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     def _memory_sections(self, scope: str) -> list[str]:
-        """Renders one scope's compartments as labelled display sections.
-
-        A server scope has no compartment boundary to explain, so it is rendered bare;
-        a user scope gets one heading per compartment.
-        """
+        """Returns display sections for `scope` (bare for server, labelled per compartment)."""
         flavor = flavor_of(scope=scope)
         compartments = list_compartments(scope=scope)
         if flavor == "server":
@@ -321,8 +307,7 @@ class MemoryCogs(commands.Cog):
         """
         guild = interaction.guild
         if guild is None:
-            # A user install also runs this in servers the bot was never added to, which carry
-            # a guild id but resolve no guild.
+            # User-installed commands can fire in unjoined guilds (`guild_id` set, `guild` None).
             await self._refuse_catchup(
                 interaction=interaction,
                 text=(
@@ -352,8 +337,7 @@ class MemoryCogs(commands.Cog):
             await self._refuse_catchup(interaction=interaction, text="記過了啦 吵啥")
             return
         writer = self.memory_writer
-        # Claimed before the first await, so two callers racing through the checks above
-        # cannot both start a run, and given back on every way out that starts none.
+        # Claim before the first await to prevent concurrent races; released on any early exit.
         start_catchup_cooldown(scope=scope)
         started = False
         try:
@@ -367,10 +351,7 @@ class MemoryCogs(commands.Cog):
     async def _start_catchup(
         self, interaction: Interaction[commands.Bot], channel: Messageable, writer: MemoryWriterAI
     ) -> bool:
-        """Reads the channel and, when there is something to read, starts the run.
-
-        Returns whether a run started; the caller gives the cooldown back when none did.
-        """
+        """Reads channel history and starts the catchup task, returning whether it started."""
         history = await _read_since_checkpoint(interaction=interaction, channel=channel)
         if history is None:
             await self._refuse_catchup(interaction=interaction, text="看不到啦 不給權限我是要看啥")
@@ -413,12 +394,7 @@ class MemoryCogs(commands.Cog):
         read_until: str,
         writer: MemoryWriterAI,
     ) -> None:
-        """Reviews the read messages, replaces the start message with the result, consolidates.
-
-        The review is bounded by what the interaction token has left less the margin to
-        deliver, because the start message can be replaced only through that token: past it,
-        the start message would stand for good.
-        """
+        """Reviews messages within the interaction budget, posts the result, and consolidates."""
         guild = interaction.guild
         user = interaction.user
         if guild is None or user is None:
@@ -500,9 +476,7 @@ class MemoryCogs(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         if not regeneration_has_evidence(scope=scope):
-            # A from-scratch rebuild needs cold-tier evidence; without any, the
-            # background task would silently no-op, so say so up front instead
-            # of claiming a rebuild was scheduled.
+            # Fail fast when no evidence exists rather than scheduling a silent no-op.
             embed = Embed(
                 title=_REGEN_TITLE,
                 description="目前還沒有足夠的觀察記錄可以重建記憶，多跟我聊聊吧。",
@@ -513,7 +487,7 @@ class MemoryCogs(commands.Cog):
         try:
             writer = self.memory_writer
         except OpenAIError as exc:
-            # The SDK refuses to build the client when no proxy key is configured.
+            # OpenAI SDK raises if no API key is configured.
             logfire.info(
                 "memory regeneration needs the proxy key; none is configured", scope=scope
             )
@@ -525,9 +499,7 @@ class MemoryCogs(commands.Cog):
             embed.set_footer(text=type(exc).__name__)
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        # The rebuild runs far past Discord's ack window, so it is dispatched to the
-        # background task queue and the command replies immediately; the user checks
-        # back with `/memory show`.
+        # Dispatch in the background because rebuilds exceed Discord's interaction ack window.
         scheduled = schedule_memory_regeneration(
             scope=scope,
             writer=writer,
@@ -563,8 +535,7 @@ class MemoryCogs(commands.Cog):
         """
         if interaction.user is None:
             return
-        # The wipe is irreversible and covers tiers `/memory show` never displays,
-        # so the command only opens the prompt; the view owns the clear itself.
+        # Wipe is irreversible and covers undisplayed tiers; delegate execution to the view.
         view = MemoryClearConfirmView(scope=user_scope(user_id=interaction.user.id))
         await interaction.response.send_message(
             embed=build_clear_confirm_embed(), view=view, ephemeral=True
@@ -594,13 +565,8 @@ class _CatchupHistory(BaseModel):
 async def _read_since_checkpoint(
     interaction: Interaction[commands.Bot], channel: Messageable
 ) -> _CatchupHistory | None:
-    """Reads members' messages since the last catchup, or None when the bot may not read.
-
-    A result is posted only when its run ends, below whatever members said while it ran, so
-    reading stops not at the result but at the message its title links to, the newest one
-    that run read. Without read-history permission Discord answers an empty page rather than
-    a 403, which would read as a channel nobody talked in, so the permission is checked first.
-    """
+    """Returns member messages since the last catchup, or None without history permission."""
+    # Check permissions upfront: without read_message_history Discord returns empty pages, not 403.
     permissions = interaction.app_permissions
     if not (permissions.view_channel and permissions.read_message_history):
         logfire.warn(
@@ -637,10 +603,7 @@ async def _read_since_checkpoint(
 
 
 def _catchup_boundary(message: Message, bot: commands.Bot) -> int | None:
-    """Returns the newest message id a finished catchup read when `message` is its result, or None.
-
-    Falls back to `message.id` when the result embed carries no jump URL.
-    """
+    """Returns the checkpoint message id from a finished catchup result embed, or None."""
     if bot.user is None or message.author.id != bot.user.id:
         return None
     for embed in message.embeds:
@@ -668,10 +631,7 @@ def _catchup_input(message: Message) -> EasyInputMessageParam:
 def _catchup_result(
     intro: str, observations: tuple[MemoryObservation, ...] | None, invoker: str, read_until: str
 ) -> Embed:
-    """Builds the public result that replaces a catchup's start message.
-
-    Its title links to the newest message the run read, which is where the next run stops.
-    """
+    """Builds the public result embed linked to `read_until` as the next catchup's checkpoint."""
     footer = f"由 {invoker} 發起"
     if observations is None:
         embed = Embed(
@@ -703,10 +663,7 @@ def _catchup_result(
 
 
 async def _post_catchup_result(interaction: Interaction[commands.Bot], result: Embed) -> None:
-    """Posts the result, then removes the start message, both through the interaction.
-
-    In that order, so a failed delete leaves both messages up rather than neither.
-    """
+    """Posts `result` via followup before deleting the start message so both are never lost."""
     try:
         await interaction.followup.send(embed=result)
     except HTTPException as exc:

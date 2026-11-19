@@ -10,9 +10,7 @@ import requests
 from discordbot.typings.media import LoadedMedia
 from discordbot.typings.timeouts import IMAGE_FETCH_TIMEOUT_SECONDS
 
-# Gemini scales anything past 3072x3072 down server-side before the model sees it, so
-# capping the longest edge locally never changes what the model consumes; it only stops
-# us uploading bytes the provider would discard anyway.
+# Gemini downscales inputs past 3072x3072 server-side; cap locally to avoid wasted upload bytes.
 _MAX_IMAGE_DIMENSION = 3072
 
 
@@ -20,8 +18,8 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
     """Returns `payload` downscaled to the provider's effective resolution and re-encoded.
 
     Photos re-encode as JPEG quality 95; images with transparency or an indexed palette stay PNG;
-    GIFs and other animated images pass through untouched so motion context survives. Anything PIL
-    cannot decode passes through unchanged, as does an image already within the cap.
+    GIFs and other animated images pass through untouched. Undecodable payloads and images already
+    within bounds pass through unchanged.
 
     Args:
         payload (bytes): The original encoded image bytes.
@@ -62,19 +60,17 @@ def shrink_image_bytes(payload: bytes, content_type: str, filename: str) -> Load
 
 
 def get_image_data(image_file: str) -> LoadedMedia:
-    """Returns the image at `image_file` as one downscaled still and its MIME type.
+    """Returns the image at `image_file` downscaled to one still frame and its MIME type.
 
-    Unlike an attachment, an animated image keeps only its first frame: linked GIFs are mostly
-    GIF-picker clips of several megabytes, and a reply's history can carry several of them.
-    A still with transparency stays PNG so its alpha survives; anything else becomes JPEG.
+    Animated images keep only their first frame. Stills with transparency stay PNG; all others
+    re-encode as JPEG.
 
     Args:
         image_file (str): `http(s)://...` URL.
 
     Raises:
-        requests.RequestException: The URL could not be fetched, or is not `http(s)://`.
-        PIL.UnidentifiedImageError: What came back is not a decodable image, which is
-            what a 404 HTML body from a dead CDN arrives as.
+        requests.RequestException: URL could not be fetched or is not `http(s)://`.
+        PIL.UnidentifiedImageError: Response body is not a decodable image.
     """
     response = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
     # An image opens on its first frame, and saving without `save_all` writes only that frame.
@@ -94,10 +90,9 @@ def to_data_uri(data: bytes, mime_type: str | None = None) -> str:
     """Returns `data` encoded as a `data:<mime>;base64,...` URI.
 
     Args:
-        data (bytes): The payload to inline.
-        mime_type (str | None): The payload's MIME type, or None to sniff an image type from its
-            first 12 bytes (enough for every format recognised here), `image/jpeg` when
-            unrecognised.
+        data (bytes): Payload to inline.
+        mime_type (str | None): Payload MIME type, or None to sniff from magic bytes (defaulting
+            to `image/jpeg`).
     """
     if mime_type is None:
         header = data[:12]

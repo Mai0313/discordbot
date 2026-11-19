@@ -1,8 +1,4 @@
-"""The channel permissions a deep-research run needs from the bot.
-
-Shared by every entry point that can start a run, which may not import each other; each reads them
-off the cached channel for the bot's own member.
-"""
+"""Channel permission check required before starting a deep-research run."""
 
 from typing import TYPE_CHECKING
 
@@ -19,8 +15,7 @@ def has_research_permissions(channel: "TextChannel", member: "Member") -> bool:
         channel ("TextChannel"): Guild text channel where the research thread would start.
         member ("Member"): The bot's guild member in `channel`.
     """
-    # See the channel, post the anchor, open a public thread from it, write into that thread, and
-    # attach the `research.md` the last report message always carries.
+    # `attach_files` is required for the `research.md` file attached to the final report.
     needed = Permissions(
         view_channel=True,
         send_messages=True,

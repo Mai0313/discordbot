@@ -1,10 +1,7 @@
-"""One reply turn, from the route call to the answer that lands.
+"""Reply turn orchestration from routing to dispatch and speculative-task teardown.
 
-`ReplyPipeline` owns the order the phases run in and nothing else: it starts the speculative
-builds, waits on the one call every dispatch depends on, and hands the turn to whichever handler
-the route named. Each phase lives in its own module, so what is left here is the sequencing, the
-shared post-route deadline the link builders run against, and the teardown that guarantees no
-speculative task outlives the turn.
+`ReplyPipeline` sequences speculative context/attachment builds, triage routing, shared-deadline
+linked-post builds, route dispatch, and `finally` cleanup so no background task outlives a turn.
 """
 
 import time
@@ -106,14 +103,7 @@ class ReplyPipeline(BaseModel):
         deadline: float,
         on_timeout: Callable[[], list[EasyInputMessageParam]],
     ) -> list[EasyInputMessageParam]:
-        """Resolves an intent-selected linked-post build before the shared route deadline.
-
-        Each selected builder owns the deadline fixed when routing finishes. This resolver only
-        retrieves that task, so the builder's cancellation cleanup cannot be interrupted by a
-        second timeout. On expiry it injects a short "could not read it in time" notice instead
-        of nothing; on any other unexpected error it returns [] (cancellation propagates). The
-        builders themselves never raise (they degrade to their own notices).
-        """
+        """Resolves a deadline-bound link task, returning `on_timeout()` on timeout or `[]`."""
         started = time.monotonic()
         try:
             blocks = await await_deadline_bound_task(
@@ -129,10 +119,8 @@ class ReplyPipeline(BaseModel):
             )
             return on_timeout()
         except Exception as exc:
-            # Broad on purpose: the builders are documented never to raise, so anything landing
-            # here is unexpected (a builder bug, or a fetch/WAF failure that escaped its own
-            # notice); error_type is what tells those apart in logs. CancelledError is a
-            # BaseException and deliberately propagates instead of being swallowed as "no link".
+            # Broad: link builders degrade to notices rather than raising; answer without the link
+            # on unexpected errors while letting CancelledError propagate.
             logfire.warn(
                 "Linked-post context failed; answering without it",
                 source=source,
@@ -151,22 +139,14 @@ class ReplyPipeline(BaseModel):
         return blocks
 
     def _start_link_builds(self, selected: set[str], deadline: float) -> dict[str, LinkTask]:
-        """Starts a build per selected source that has a URL it is allowed to read.
-
-        The router selects only source names; URL ownership stays local and the registry still
-        applies every URL filter and replied-to rule. Each builder starts only now, after intent
-        is known, so an incidental link never begins a metadata fetch, media download, or Files
-        API upload.
-        """
+        """Starts deadline-bound link builds for each selected source with a readable URL."""
         link_tasks: dict[str, LinkTask] = {}
         for link_source in LINK_CONTEXT_SOURCES:
             if link_source.name not in selected:
                 continue
             link_url = link_url_for_source(source=link_source, message=self.message)
             if link_url is None:
-                # The router named this source, but its URL is not where the source is
-                # allowed to look: only a source that opts into the replied-to scan reads one
-                # there. So the answer silently goes without the post the user pointed at.
+                # Router named a source whose URL sits outside where the source may scan.
                 logfire.info(
                     "gen_reply selected link source has no readable URL; skipping it",
                     source=link_source.name,
@@ -209,11 +189,7 @@ class ReplyPipeline(BaseModel):
     async def _dispatch_media(
         self, decision: Literal["IMAGE", "VIDEO"], context_task: asyncio.Task[ReplyContext]
     ) -> None:
-        """Runs the IMAGE or VIDEO route, which consumes the speculative context.
-
-        The handler awaits `context_task` only after the media is on screen, so the context
-        build overlaps generation instead of delaying it.
-        """
+        """Dispatches IMAGE or VIDEO, transferring `context_task` ownership to the handler."""
         routes = MediaReplyRoutes(answer=self._answer_turn())
         handler = routes.handle_image if decision == "IMAGE" else routes.handle_video
         await handler(user_prompt=self.user_prompt, context_task=context_task)
@@ -223,9 +199,7 @@ class ReplyPipeline(BaseModel):
     ) -> None:
         """Streams the QA answer, watching a linked YouTube video when the router asked for one."""
         message = self.message
-        # Watch a linked YouTube video only when the router judged the user is asking
-        # about it; the URL itself is taken from the message text or the replied-to
-        # message (never the model) so the answer turn ingests the exact link posted.
+        # Take the URL from the message/replied-to (never the model) so the exact link is watched.
         yt_url = find_youtube_url(message=message) if route.watch_video else None
         if route.watch_video and yt_url is None:
             logfire.info(
@@ -249,13 +223,10 @@ class ReplyPipeline(BaseModel):
     async def run(self) -> None:  # noqa: PLR0915 -- the turn's sequence, and the task handles its `finally` drains
         """Routes the message and dispatches the matching handler with speculative QA context."""
         message = self.message
-        # Named in the usage record below, which is written from this method's `finally`
-        # because this is the one scope that has both outcomes and the route in hand.
+        # Tracked here so finally records the reached route (or UNROUTED_REPLY) in usage.
         route_decision: Literal["IMAGE", "VIDEO", "QA"] | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
-        # The started link builds and the one deadline they share, set together; None until the
-        # route selects a source, so None means there is nothing to drain.
         link_builds: tuple[dict[str, LinkTask], float] | None = None
         context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
         classifier = RouteClassifier(
@@ -267,16 +238,10 @@ class ReplyPipeline(BaseModel):
             with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
                 self.reactions.advance(emoji=ROUTING_EMOJI)
-                # The reference + current attachment uploads (and their activation polls)
-                # run in the background and only the answer awaits them. The route call uses
-                # the text-only renders, so it never waits on the Files API. The reply context
-                # builds speculatively in parallel with the route call, and every route consumes
-                # it: IMAGE / VIDEO once their media is on screen.
+                # Upload attachments and build context speculatively in parallel with routing.
                 parts_task = asyncio.create_task(coro=context_builder.render_parts())
                 text_reference, text_current = await context_builder.render_parts(text_only=True)
                 recall = context_builder.plan_recall()
-                # The route's recall picks, which the speculative build joins to the memory it
-                # carries once its history and uploads are in.
                 recall_picks: asyncio.Future[list[str]] = (
                     asyncio.get_running_loop().create_future()
                 )
@@ -294,14 +259,12 @@ class ReplyPipeline(BaseModel):
                     recall_candidates=recall.optional_candidates,
                     server_memory_block=recall.server_memory_block,
                 )
-                # Resolved before anything else can raise: from here on the build waiting on it
-                # may be handed to a media route, where this turn's `finally` no longer cancels it.
+                # Resolve before handing prep_task to a media route (finally stops cancelling it).
                 recall_picks.set_result(
                     route.recall_user_ids if isinstance(route, RecallRouteClassification) else []
                 )
                 if route.decision == "VIDEO" and not self.config.gemini_key_configured:
-                    # The VIDEO route renders direct to Google, so without a key it could only
-                    # pay for the director and then fail the turn; the request is answered as QA.
+                    # VIDEO renders direct to Google; without a Gemini key, downgrade to QA.
                     logfire.info(
                         "gen_reply VIDEO route needs a Gemini key; answering as QA",
                         message_id=message.id,
@@ -317,20 +280,14 @@ class ReplyPipeline(BaseModel):
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
                     link_builds = (link_tasks, link_context_deadline)
-                    # Persistent markers (added directly, not via the status chain) naming which
-                    # linked post was read. Added once every builder is started so the REST calls
-                    # never sit between two of them.
+                    # Persistent provenance marks (not status chain), added after starting builds.
                     for source_name in link_tasks:
                         await self.surface.mark(emoji=LINK_SOURCE_EMOJIS[source_name])
                 if route.decision in ("IMAGE", "VIDEO"):
-                    # IMAGE and VIDEO share identical speculative-task teardown; they differ only
-                    # in the status emoji and which media handler runs. Intent-gated link
-                    # builders never start for these routes.
                     self.reactions.advance(
                         emoji=IMAGE_EMOJI if route.decision == "IMAGE" else VIDEO_EMOJI
                     )
-                    # `parts_task` is left for the finally backstop: a prep discarded before it
-                    # reached its gather never awaited the upload.
+                    # Keep parts_task for finally: a discarded media prep may not have awaited it.
                     media_context_task = prep_task
                     prep_task = None
                     await self._dispatch_media(
@@ -341,9 +298,6 @@ class ReplyPipeline(BaseModel):
                     context = await prep_task
                     prep_task = None
                     parts_task = None
-                    # The selected builds overlapped the remaining reply preparation. Resolve
-                    # each under the same grace and fold the post blocks into the answer context
-                    # in registry order so the splice stays deterministic.
                     if link_builds is not None:
                         link_tasks, link_context_deadline = link_builds
                         link_blocks = await self._collect_link_blocks(
@@ -355,9 +309,7 @@ class ReplyPipeline(BaseModel):
                         route=route, context=context, pipeline_started=pipeline_started
                     )
                 self.reactions.advance(emoji=DONE_EMOJI)
-                # End of the turn on the success path; the failure path is `gen_reply failed`,
-                # which carries the traceback. The console exporter prints no span-end line, so
-                # without this the file holds no total for the turn at all.
+                # Log turn total explicitly because logfire's console exporter prints no span end.
                 logfire.info(
                     "gen_reply pipeline done",
                     elapsed_seconds=time.monotonic() - pipeline_started,
@@ -373,10 +325,7 @@ class ReplyPipeline(BaseModel):
                 await discard_link_tasks(
                     link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
                 )
-            # One record per triggering message, not per delivered artifact: the inline
-            # clips and the media persona reply are all parts of this same turn. A failure
-            # is recorded too — someone still talked to the bot — under the route it had
-            # reached, or `unrouted` when it did not get that far.
+            # One usage record per triggering message (including failures under route or unrouted).
             await self.usage_recorder.record(
                 kind="reply",
                 name=route_decision or UNROUTED_REPLY,

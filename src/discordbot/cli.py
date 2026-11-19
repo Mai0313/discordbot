@@ -67,19 +67,15 @@ class DiscordBot(commands.Bot):
             command.upgrade(
                 config=Config(file_="alembic.ini", ini_section=database), revision="head"
             )
-        # Cogs are loaded synchronously so application_commands is populated
-        # before the gateway connects. Each cog's setup() must also be sync:
-        # nextcord hands an async setup to asyncio.create_task(), which raises
-        # here because no event loop is running yet, so load_extensions aborts
-        # boot with ExtensionFailed.
+        # Load cogs synchronously before gateway connect so application_commands is populated.
+        # Every cog's setup() must be sync: no event loop is running yet for asyncio.create_task().
         self._load_cogs_sync()
         self._initial_setup_done = False
         # Taken before the gateway connects: everything an earlier process recorded falls before
         # it, and nothing this one records can, the interactions run ahead of `on_ready` included.
         self._started_at = database_now()
         self._startup_tasks: set[asyncio.Task[None]] = set()
-        # Process-local per-user cooldown for the flat message reward, so it
-        # cannot be farmed by spamming. Resets on restart by design.
+        # Process-local per-user reward cooldown; resets on restart by design.
         self._message_reward_at: dict[int, float] = {}
         self._message_reward_pruned_at = 0.0
 
@@ -96,12 +92,7 @@ class DiscordBot(commands.Bot):
         self._message_reward_pruned_at = now
 
     def _load_cogs_sync(self) -> None:
-        """Loads every cog directory under `cogs/`.
-
-        Scans one level deep for non-`_`-prefixed directories holding both `__init__.py` and
-        `cog.py`, raising on any directory missing either so an incomplete move cannot fail
-        silently while nested helper packages are not mistaken for extensions.
-        """
+        """Loads every cog directory under `cogs/`; raises on incomplete cog directories."""
         cog_dir = Path(__file__).parent / "cogs"
         cog_files: list[str] = []
         for entry in sorted(cog_dir.iterdir()):
@@ -131,17 +122,14 @@ class DiscordBot(commands.Bot):
         return cls(data=data, state=self._connection)
 
     async def on_connect(self) -> None:
-        """Rebuilds the local application-command registry and starts background tasks on connect.
+        """Restores the local application-command registry and starts background tasks on connect.
 
-        `ConnectionState.parse_ready` empties the local command registry on every `READY`;
-        leaving it empty causes nextcord's lazy-load path on a guildless interaction (DM,
-        group DM, or user install) to run a global `delete_unknown` pass that wipes every
-        registered command. `add_all_application_commands` restores the local registry
-        without calling the API, while `on_ready` owns the one-time command sync.
+        `ConnectionState.parse_ready` clears the local registry on every `READY`; restoring it
+        here without an API call prevents nextcord's guildless-interaction lazy load from
+        running `delete_unknown` and wiping global commands. `on_ready` owns command sync.
         """
         self.add_all_application_commands()
-        # Started at `READY`, ahead of `on_ready`'s command sync, which can raise; a `READY` that
-        # finds the loop already running leaves it be.
+        # Started on connect so an error during `on_ready`'s command sync cannot prevent it.
         if not self.price_table_task.is_running():
             self.price_table_task.start()
         bot_user = self.user
@@ -150,12 +138,7 @@ class DiscordBot(commands.Bot):
         logfire.info("Bot Connected", bot_name=bot_user.name, bot_id=bot_user.id)
 
     async def _count_registered_commands(self) -> int | None:
-        """Returns how many global application commands Discord holds before syncing, or None on error.
-
-        Queries with `with_localizations=False` to keep the diagnostic check cheap; do not pass
-        the returned payload to `sync_all_application_commands(data=...)`, which compares
-        localization dicts and would re-upsert every command on every boot.
-        """
+        """Returns the count of global commands registered on Discord, or None on error."""
         application_id = self.application_id
         if application_id is None:
             return None
@@ -175,12 +158,10 @@ class DiscordBot(commands.Bot):
         return len(registered)
 
     async def on_error(self, event_method: str, *args: object, **kwargs: object) -> None:
-        """Logs an unhandled event-handler exception through logfire.
+        """Logs an unhandled event-handler exception from `sys.exc_info()` through logfire.
 
-        `Client._run_event` funnels unhandled exceptions from event handlers and cog listeners
-        here, and nextcord's default implementation prints only to `sys.stderr`, which never
-        reaches `./data/logs`. Called inside `_run_event`'s `except` block while the active
-        exception is on `sys.exc_info()`.
+        Overrides nextcord's default `sys.stderr` handler; must run inside an active `except`
+        block.
 
         Args:
             event_method (str): Name of the event whose handler raised.
@@ -194,11 +175,9 @@ class DiscordBot(commands.Bot):
         )
 
     async def on_ready(self) -> None:
-        """Called when the bot is ready; performs first-time-only setup.
+        """Performs one-time startup sweeps and application-command sync on first ready.
 
-        `on_ready` re-fires on every gateway reconnect/resume, so the body
-        is gated on `_initial_setup_done` to keep sync + the startup sweeps
-        idempotent.
+        Idempotent across gateway reconnects and resumes.
         """
         if self._initial_setup_done:
             return
@@ -208,16 +187,13 @@ class DiscordBot(commands.Bot):
             logfire.warn("on_ready fired without a logged-in user; skipping initial setup")
             return
         self._initial_setup_done = True
-        # Every cog that posts an expiring public message records it in one table, so the
-        # process sweeps what a previous one left rather than any one cog. Spawned ahead of the
-        # command sync so a raise there cannot skip it.
+        # Spawn startup sweeps before command sync so a sync error cannot skip them.
         spawn_tracked(
             coro=delete_tracked_public_messages(bot=self, tracked_before=self._started_at),
             tasks=self._startup_tasks,
             name="delete-stale-public-responses",
         )
-        # A loan request's decision view died with the process that posted it, so nothing else
-        # will ever decide one that process left waiting.
+        # Reject stale loan proposals whose decision views died with the previous process.
         spawn_tracked(
             coro=reject_loan_proposals_created_before(cutoff=self._started_at),
             tasks=self._startup_tasks,
@@ -235,10 +211,7 @@ class DiscordBot(commands.Bot):
         registered_before = await self._count_registered_commands()
         sync_started_at = monotonic()
         await self.sync_all_application_commands()
-        # The only line that says what the sync did. Its duration is bimodal rather than a
-        # spectrum -- about a second when everything already matched and nothing was written,
-        # about a minute when the whole set was -- and `registered_before` is what tells those
-        # two apart from a count instead of from a stopwatch.
+        # `registered_before` distinguishes a no-op sync (~1s) from a full upsert (~1m).
         logfire.info(
             "Application commands synced",
             registered_before=registered_before,
@@ -247,31 +220,24 @@ class DiscordBot(commands.Bot):
         )
 
         app_info = await self.application_info()
-        # Scopes and permissions are deliberately left off: they live in the Developer Portal's
-        # Default Install Settings, and the authorize page reads them from there. A link that
-        # hardcodes `scope=bot` can only offer the server install, so the "add to my apps" choice
-        # disappears from it — and set as the Portal's Custom Install URL it replaces those
-        # settings entirely, silently turning user installs off for everybody.
+        # Omit `scope`/`permissions` so Discord uses Developer Portal Default Install Settings;
+        # hardcoding `scope=bot` drops the user-install ("add to my apps") option.
         invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
         logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
         logfire.info("Invite Link", invite_url=invite_url)
 
     @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
     async def price_table_task(self) -> None:
-        """Loads the LiteLLM price table, re-checking upstream while degraded and daily after.
+        """Refreshes the LiteLLM model price table off the event loop.
 
-        `tasks.Loop` runs its first iteration immediately on start, warming the cache off the
-        event loop so the first AI reply does not stall on a synchronous network call; once
-        upstream has served, subsequent passes no-op until the cached table is a day old.
+        Runs immediately on start to warm the cache, retries while degraded, and refreshes daily
+        once upstream has succeeded.
         """
         try:
             await asyncio.to_thread(refresh_model_info)
         except Exception as exc:
-            # Broad because what must not happen here is the loop stopping, whatever the
-            # reason: `Loop._loop` re-raises after one failed iteration, and its default
-            # error hook never reports it — `_call_loop_function` prepends `_injected`, so
-            # the bound `_error` gets an argument too many and dies first. A raise would
-            # take recovery down for the life of the process with no line anywhere.
+            # Broad on purpose: an uncaught exception stops the tasks.loop permanently, and
+            # nextcord's bound `_error` crashes silently on class methods (`_injected` arg).
             logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
 
     async def on_message(self, message: Message) -> None:
@@ -290,9 +256,8 @@ class DiscordBot(commands.Bot):
         self._prune_message_reward_cooldowns(now=now)
         last_rewarded_at = self._message_reward_at.get(message.author.id)
         if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
-            # Reserve the cooldown slot before awaiting so two rapid messages cannot
-            # both pass the check and double-credit; roll it back if the credit fails
-            # so a transient error does not cost the user their reward window.
+            # Reserve the cooldown slot before awaiting to prevent double-credits on rapid
+            # messages; restored in the except block if crediting fails.
             self._message_reward_at[message.author.id] = now
             guild = message.guild
             try:
@@ -318,21 +283,13 @@ class DiscordBot(commands.Bot):
                     _exc_info=exc,
                 )
             if guild is not None:
-                # Guarded apart from the reward above, because that handler's rollback
-                # releases the cooldown slot and its log line says the reward failed.
-                # Sharing it would pay the reward twice on the next message whenever the
-                # credit landed and only this write lost a race for the write lock.
-                #
-                # The only bulk source of central-bank participation. It rides the reward's
-                # own cooldown rather than firing per message, so somebody rewarded in one
-                # server registers in the next one they speak in a minute later rather than
-                # on that first message.
+                # Kept outside the reward try block so a failure here cannot roll back the
+                # cooldown slot and double-pay the reward on the next message.
                 try:
                     await record_guild_participant(guild_id=guild.id, user_id=message.author.id)
                 except Exception as exc:
-                    # Broad for the same reason as the reward: missing one guild's
-                    # participation row costs that guild a little lending capacity until
-                    # the member speaks again, and must never raise out of the listener.
+                    # Broad on purpose: participation tracking is best-effort and must never
+                    # raise out of the listener.
                     logfire.warn(
                         "Failed to record economy participation",
                         user_id=message.author.id,
@@ -344,17 +301,10 @@ class DiscordBot(commands.Bot):
     async def on_application_command_error(
         self, interaction: Interaction[commands.Bot], exception: ApplicationError
     ) -> None:
-        """Logs an unhandled slash-command error and notifies the caller when already acknowledged.
+        """Logs an unhandled slash-command error and notifies the caller if already acknowledged.
 
-        No prefix command or `on_command_*` handler can fire: `on_message` never calls
-        `process_commands` and `command_prefix` defaults to `()`. Nextcord's default handler
-        prints only to `sys.stderr`, which `_TeeStream` does not tee into `./data/logs`.
-
-        An unanswered interaction shows Discord's own failure notice, whereas an answered or
-        deferred one shows none and leaves a deferred placeholder hanging, so this handler
-        sends a follow-up notice. Because the failure may happen after a write committed, the
-        notice warns that partial changes may have taken effect; a command that reports its
-        own failure must catch it rather than re-raise.
+        Sends a follow-up notice only when the interaction has already been answered or deferred;
+        commands that report their own failures must catch them rather than re-raise.
 
         Args:
             interaction (Interaction[commands.Bot]): Interaction whose command raised.
@@ -391,8 +341,7 @@ class DiscordBot(commands.Bot):
                 _exc_info=True,
             )
             return
-        # The first followup after a defer fills its placeholder and keeps the defer's flag, so a
-        # public defer's notice is public and expires like the commands' own public replies.
+        # A deferred public interaction ignores `ephemeral=True` on its first followup.
         if not notice.flags.ephemeral:
             schedule_public_message_delete(
                 message=notice,

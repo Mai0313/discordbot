@@ -1,10 +1,7 @@
-"""How `gen_reply` talks to the deep-research cog, without importing it.
+"""Duck-typed bridge from `gen_reply` to `ResearchCogs` via `bot.get_cog`.
 
-Nothing under `cogs/<a>/` may import from `cogs/<b>/`, so every hop across to `ResearchCogs`
-goes through the bot instance and duck-typing. Keeping the three hops here rather than inline
-means the whole cross-cog surface is one short file: whether a research thread can be opened
-from this message, whether the research cog is currently driving this channel, and handing it a
-brief the answer model emitted.
+Covers permission checks, active-research-thread detection, and forwarding `<deep-research>`
+briefs without importing across cog packages.
 """
 
 import logfire
@@ -59,10 +56,8 @@ async def maybe_launch_research(
     launcher = getattr(_research_cog(bot=bot), "launch", None)
     if launcher is None:
         return
-    # Best-effort boundary: the research launch must never break an already-delivered reply, so
-    # the except stays broad. ResearchCogs.launch handles its expected outcomes by return value,
-    # so anything raising here is unexpected and the emitted brief is lost — markers.py already
-    # stripped it from the visible text.
+    # Broad: best-effort launch must never break a delivered reply; ResearchCogs.launch handles
+    # expected outcomes internally.
     try:
         await launcher(message=message, anchor=anchor, brief=brief)
     except Exception as exc:

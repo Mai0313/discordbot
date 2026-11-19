@@ -1,12 +1,4 @@
-"""Reading a post out of a page that embeds its data as JSON instead of serving a schema.
-
-Some platforms answer a logged-out request with a browser page whose payload sits in
-`<script type="application/json">` blocks, in a shape dominated by their own module loader
-rather than by the post. There is nothing to mirror, so the parser walks for a node carrying the
-fields it needs and models only what it extracted. The helpers here are that walk and the
-narrowing that follows it, plus the page fetch itself, which a platform that reads a page for a
-schema it does mirror shares too.
-"""
+"""Shared HTTP page fetching and embedded JSON-script traversal for browser-scraped platforms."""
 
 import re
 import json
@@ -21,10 +13,7 @@ import requests
 
 from discordbot.utils.link_errors import link_fetch_error
 
-# The full set a browser sends. Anything less is served a different page: a refusal, or a shell
-# carrying Open Graph tags and none of the post's own payload. Each platform's module docstring
-# says which of those it answers with, and when that was last checked — the answer is theirs to
-# change, so a date is what says whether it is still true.
+# Full browser header set required by Facebook/Instagram; bare User-Agent gets an OG shell or 400.
 BROWSER_HEADERS: Final[dict[str, str]] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,17 +32,11 @@ JSON_SCRIPT_RE: Final[re.Pattern[str]] = re.compile(
     pattern=r'<script type="application/json"[^>]*>(.*?)</script>', flags=re.DOTALL
 )
 
-# What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses.
 JsonValue = dict[str, Any] | list[Any] | str | float | None
 
 
 class FetchedPage(BaseModel):
-    """One page as it came back: its HTML, and the URL the request actually ended on.
-
-    Where it landed is part of the result because a share link can name its post only there,
-    and because a redirect to a login page is how a platform says the post is not public.
-    """
+    """Fetched HTML body and the final URL after redirects."""
 
     html: str = Field(..., description="The fetched page's HTML body")
     final_url: str = Field(
@@ -97,9 +80,6 @@ def fetch_page(url: str, headers: dict[str, str], timeout: float) -> FetchedPage
 def json_payloads(html: str, platform: str) -> Iterator[Any]:
     """Yields each embedded JSON block's parsed value in page order, skipping unparsable blocks.
 
-    Skipping rather than failing keeps one truncated block, of the dozens a page carries, from
-    costing the post.
-
     Args:
         html (str): The page HTML.
         platform (str): The platform's display name, for the debug log when a block is skipped.
@@ -108,8 +88,7 @@ def json_payloads(html: str, platform: str) -> Iterator[Any]:
         try:
             yield json.loads(s=match.group(1))
         except ValueError:
-            # `json.JSONDecodeError` subclasses this, as does the int-string conversion limit a
-            # very large embedded number can trip.
+            # Covers both `json.JSONDecodeError` and the int-string digit conversion limit.
             logfire.debug(f"Skipped an unparsable {platform} JSON block", _exc_info=True)
             continue
 
@@ -155,8 +134,7 @@ def str_of(value: JsonValue) -> str:
 def count_of(value: JsonValue) -> int:
     """Returns an integer count from a bare int, a `{"count": n}` wrapper, or a formatted string.
 
-    Normalizes counters to `int` so callers pick the formatting once; returns `0` for any other
-    shape.
+    Returns `0` for booleans and any other shape.
 
     Args:
         value (JsonValue): Raw counter value from the page.

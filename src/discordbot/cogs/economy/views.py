@@ -35,13 +35,10 @@ from discordbot.utils.interaction_responses import edit_response_embed, send_pri
 
 
 def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
-    """Returns whether the interacting user administers the server it happened in.
+    """Returns whether the interacting user holds administrator permission in the guild.
 
-    `Interaction.permissions` is what Discord itself resolved for this member in
-    this channel and rides in the payload, so it needs neither the members intent
-    nor a cached guild — which matters because a user-installed invocation in a
-    server the bot was never added to has no cached guild at all. Outside a guild
-    it is empty, which is what refuses a DM.
+    Reads `interaction.permissions` from the Discord payload (requires neither the members
+    intent nor a cached guild); returns False in DMs where permissions are empty.
 
     Args:
         interaction (Interaction[commands.Bot]): Discord interaction to inspect.
@@ -52,16 +49,8 @@ def is_guild_admin(interaction: Interaction[commands.Bot]) -> bool:
 class LoanDecisionViewBase(LoggedView):
     """Shared terminal behavior for public loan-decision views.
 
-    A subclass declares the wording and color of its own panels below, its approved panel, and
-    who may decide its requests; expiry, approval, rejection and the creator-only cancel then
-    behave the same for both.
-
-    Every button that writes defers first, then answers by editing the panel or with a private
-    followup. The token dies three seconds after the click while a SQLite writer waits out lock
-    contention for longer, so deciding the response from the result lets an approval — the
-    moment a lender is debited, or the central bank mints — commit and then fail to say so,
-    leaving the buttons up over balances that have already moved. A component defers without a
-    thinking message, so the panel is untouched until the edit lands.
+    Subclasses define panel wording/color, `_approved_embed`, and `_may_decide`. Write buttons
+    defer before DB calls, then edit the panel or send a private followup.
     """
 
     PANEL_COLOR: ClassVar[int]
@@ -86,24 +75,20 @@ class LoanDecisionViewBase(LoggedView):
         self.proposal_id = proposal_id
         self.creator_id = creator_id
         self.message: Message | None = None
-        # The last press acknowledged on the panel; the timeout's edit and every delete ride its
-        # token.
+        # Last acknowledged press on the panel; timeout edits and deletes use its token.
         self.last_press: Interaction[commands.Bot] | None = None
 
     def _keep_press(self, interaction: Interaction[commands.Bot]) -> None:
-        """Makes a press acknowledged on the panel the one its timeout edit and delete go through.
-
-        nextcord restarts the view's timer on every press, a refused one included, so only the
-        newest press holds a token sure to outlive that timer and the delete after it.
-        """
+        """Records `interaction` as the press driving timeout edits and deletion."""
+        # nextcord resets the view timeout on every press (refused ones included), so only the
+        # newest press token is guaranteed to outlive the timeout and scheduled deletion.
         self.message = interaction.message or self.message
         self.last_press = interaction
 
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user may approve or reject this request.
 
-        Anyone else is answered with the permission notice before this returns `False`,
-        so the caller must not reply again.
+        Sends the permission notice before returning `False`; caller must not reply again.
         """
         raise NotImplementedError
 
@@ -158,9 +143,7 @@ class LoanDecisionViewBase(LoggedView):
                 message_id=self.message.id,
             )
         except Forbidden:
-            # Once a press has rebound the panel, an edit with no working press behind it goes
-            # through the channel, which the server can shut the bot out of; the ids are the
-            # whole finding.
+            # Only an edit without a live press token hits channel REST, which can return 403.
             logfire.warn(
                 "Discord refused the loan request's timeout edit",
                 proposal_id=self.proposal_id,
@@ -222,10 +205,7 @@ class LoanDecisionViewBase(LoggedView):
         guild_id: int | None = None,
         allow_central_bank_self_approval: bool = False,
     ) -> None:
-        """Approves the request for whoever may decide it, and answers anyone else privately.
-
-        The central-bank arguments pass straight through to `accept_loan_proposal`.
-        """
+        """Approves the request if `_may_decide` passes, otherwise answers privately."""
         if interaction.user is None:
             return
         await interaction.response.defer()
@@ -329,8 +309,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user is a server administrator here.
 
-        Anyone else is answered with the permission notice before this returns `False`,
-        so the caller must not reply again.
+        Sends the permission notice before returning `False`; caller must not reply again.
         """
         if is_guild_admin(interaction=interaction):
             return True
@@ -434,8 +413,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def _may_decide(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user is the requested lender.
 
-        Someone other than the lender is answered with the permission notice
-        before this returns `False`, so the caller must not reply again.
+        Sends the permission notice before returning `False`; caller must not reply again.
         """
         if interaction.user is None:
             return False

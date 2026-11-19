@@ -1,15 +1,4 @@
-"""How a downloaded Douyin post reaches Discord: the plan, and the lines that report it.
-
-Kept out of the platform reader because this is the Discord side of the job — it reaches
-`nextcord.File` through `utils/media_delivery.py`, and `services/platforms/` is Discord-free.
-Sitting here is also what lets more than one cog share it: a cog may not import a peer cog, so
-anything several of them need lives one layer down.
-
-What it reads off a finished download is spelled as a Protocol rather than imported, for the
-same layering reason in the other direction: `DouyinDownload` lives under `services/`, and
-`utils/` may not import that. Structural typing costs nothing here — `result` is a parameter,
-never a pydantic field, so nothing validates against it.
-"""
+"""Discord delivery planning and status-line formatting for downloaded Douyin posts."""
 
 from typing import Protocol
 from pathlib import Path
@@ -46,10 +35,9 @@ class DownloadedPost(Protocol):
 
 
 class DouyinDelivery(BaseModel):
-    """A planned Douyin send: what goes out, and the size a refusal has to be able to quote.
+    """Planned Douyin delivery outcome and its pre-planning total size in MiB.
 
-    `DouyinDownload.total_bytes` stats the files on disk, and a successful host moves them out of
-    the temp dir, so `total_mb` is read before planning rather than re-derived afterward.
+    Captures `total_mb` before planning; external hosting unlinks the source files on disk.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -65,8 +53,7 @@ async def plan_douyin_delivery(
 ) -> DouyinDelivery:
     """Returns the delivery plan for one downloaded Douyin post.
 
-    Several files ride one send and Discord measures the whole multipart body, so a gallery
-    holds back the envelope margin; a single-file send keeps it at 0.
+    Reserves `MEDIA_ENVELOPE_MARGIN` for multi-file galleries and `0` for single-file sends.
 
     Args:
         planner (MediaDeliveryPlanner): Planner that partitions items into attach, host, or drop.
@@ -86,10 +73,9 @@ async def plan_douyin_delivery(
 def douyin_delivery_lines(
     result: DownloadedPost, plan: MediaPlan, hosting_available: bool, url: str, dropped_event: str
 ) -> list[str]:
-    """Returns the subtext lines stating what a Douyin send left out, plus any hosted URLs.
+    """Returns subtext lines for omitted or dropped Douyin items, followed by any hosted URLs.
 
-    Omitted gallery images and failed deliveries are reported separately. Hosted URLs come last
-    and unwrapped so they stay clickable and, under ~100 MiB, render Discord's inline player.
+    Hosted URLs are appended last and unwrapped.
 
     Args:
         result (DownloadedPost): Finished Douyin download.

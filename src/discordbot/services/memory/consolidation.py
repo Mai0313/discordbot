@@ -1,13 +1,8 @@
-"""How a raw batch becomes facts: the compartment fan-out and the decision to run it.
+"""Consolidation fan-out from raw entries into compartmentalized memory facts.
 
-Consolidation reads the entries `raw.md` has accumulated for one scope, routes them over the
-compartments that may hold them, and asks the model for a delta batch per compartment.
-`_consolidate_locked` owns the ordering that makes the boundary structural; the decision of
-whether to run at all is `_should_consolidate`, with the cooldown and the refusal counters
-beside it.
-
-Nothing here imports the layer above it. The fan-out is what its callers are built on rather
-than a step in any of them, so each reaches it at one call of its own.
+Routes `raw.md` entries across compartments and applies per-compartment model deltas under the
+scope lock. `global` always runs before guild and DM compartments so downstream calls receive
+current global facts as read-only reference.
 """
 
 import time
@@ -72,26 +67,24 @@ from discordbot.services.memory.raw_entries import (
     render_file_entries,
 )
 
-# Per-scope consolidation attempt times for the cooldown; monotonic, so it does
-# not need a loop-change reset.
+# Per-scope monotonic attempt times for the cooldown.
 _last_consolidation: dict[str, float] = {}
 
-# Consecutive refused consolidation batches per (scope, compartment); `_record_rejection`
-# owns what the count is for and when it escalates.
+# Consecutive refused batches per (scope, compartment); drives warning-to-error escalation.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
 
-# (scope, compartment) pairs whose last observation call failed, so the next reads less evidence.
+# (scope, compartment) pairs whose last observation call failed; retried with less detail.
 _failed_observations: set[tuple[str, str]] = set()
 
-# The UTC day each (scope, compartment)'s last compaction failed or was refused.
+# UTC day of each (scope, compartment)'s last failed or refused compaction.
 _failed_compactions: dict[tuple[str, str], str] = {}
 
 
 def needs_consolidation(scope: str) -> bool:
     """Returns whether `scope`'s raw backlog is over threshold without taking the scope lock.
 
-    `consolidate_if_needed` re-checks under the lock, which stays the authority. An unreadable
-    or undecodable `raw.md` answers False and logs a warning so a boot sweep continues past it.
+    `consolidate_if_needed` re-checks under the lock. An unreadable or undecodable `raw.md` logs
+    a warning and returns False.
 
     Args:
         scope (str): Memory scope to check.
@@ -141,8 +134,8 @@ async def consolidate_after_turn(
 ) -> None:
     """Consolidates `scope` when its backlog warrants it, as of `started_at`.
 
-    Caller must hold the scope lock and a semaphore permit. The cooldown is stamped at attempt
-    time so a failed call waits out the same cooldown as a successful one.
+    Caller must hold the scope lock and a semaphore permit. Stamps the cooldown at attempt time,
+    regardless of outcome.
 
     Args:
         scope (str): Memory scope to consolidate.
@@ -161,80 +154,48 @@ async def consolidate_after_turn(
 
 
 def _should_consolidate(scope: str, forced: bool = False) -> bool:
-    """Returns whether the raw backlog warrants a consolidation right now.
-
-    `forced` (a batch carrying a forget request) skips both the entry-count threshold and the
-    cooldown so a single-entry forget runs immediately.
-    """
+    """Returns whether `scope`'s raw backlog warrants consolidation right now."""
     if forced:
         return True
     if raw_file_bytes(scope=scope) >= RAW_CONSOLIDATION_MAX_BYTES:
-        # A verbose burst consolidates regardless of the cooldown so the raw
-        # file cannot sit large until the timer expires.
+        # Byte cap bypasses the cooldown so a verbose burst cannot leave raw.md oversized.
         return True
     if count_raw_entries(scope=scope) < RAW_CONSOLIDATION_THRESHOLD:
         return False
     last_attempt = _last_consolidation.get(scope)
     if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
-        # No prior attempt, or the memory was cleared since it: the fresh
-        # post-clear state deserves a prompt first consolidation instead of
-        # waiting out a cooldown that belonged to the wiped memory.
+        # Post-clear state ignores the wiped memory's prior cooldown.
         return True
     return time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
 
 
 async def _consolidate_locked(run: ConsolidationRun) -> None:
-    """Fans one raw batch out over the scope's compartments, applying each one's deltas.
+    """Fans one raw batch out over `run.scope`'s compartments and retires completed segments.
 
-    Ordering is load-bearing. `global` runs first, so every later compartment can be
-    handed its facts as read-only reference and neither restates them nor silently
-    contradicts them. Each call sees only the evidence routed to the compartment it writes,
-    which is what makes the boundary structural; the tone note, the one tier that is
-    genuinely cross-compartment, is written afterwards by its own call.
-
-    The whole fan-out sits inside the caller's scope lock and semaphore permit under a single
-    timeout, and compartments run sequentially, so neither the worst-case lock hold nor the
-    per-scope proxy load scales with the compartment count.
-
-    The batch is retired up to the first forget segment that did not fully apply, and that
-    stretch only once the tone call answered; the rest stays in `raw.md` for the next run, so
-    a batch too long for one run is worked through across several instead of restarting each
-    time. A retry re-runs what already landed in the segment it resumes at, which is safe
-    because a delta is an upsert keyed by an id the model echoes back and, failing that, by
-    the evidence keys the fact carries.
+    Caller must hold the scope lock and a semaphore permit.
     """
     segments = forget_segments(raw_text=read_raw_entries(scope=run.scope))
     completed = 0
     try:
         async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-            # In the order they were recorded: a forget can reach the facts made from what came
-            # before it, and a fact re-confirmed after it is not deleted right after being
-            # written. A forget only removes evidence stamped before it, so the segments still
-            # ahead are the same text they were when this batch was split.
+            # Process segments in chronological order so each forget reaches prior facts without
+            # wiping later restatements.
             observed = True
             for observations, forgets in segments:
-                # Once a pass has failed the segments from there on are kept for a retry, so
-                # their observation passes are skipped; the forgets are not, since a fact an
-                # earlier batch stored must not go on being injected until that retry, which a
-                # stuck compartment may never let succeed.
+                # After a failed observation pass, keep later observations for retry but still run
+                # forgets so deleted facts stop injecting immediately.
                 if observed:
                     observed = await _consolidate_observations(run=run, raw_text=observations)
-                # Forget requests are a separate pass: they are copied into every compartment
-                # their speaker could read from, including one the pass above just made, and
-                # each of those calls may only delete.
                 if not await apply_forget_buckets(run=run, forgets=forgets):
                     break
-                # A tone preference is never stored as a fact, so the pass above cannot reach
-                # one; it gets its own, taking only this segment's forgets so a tone
-                # restatement made after one of them is not offered to it.
+                # Tone preferences live outside facts; pass only this segment's forgets so later
+                # restatements survive.
                 if not await forget_tone(run=run, forgets=forgets):
                     break
                 completed += observed
             else:
-                # Only now that every forget in the batch has run: merging the fact one names
-                # into others first would leave it only the choice of deleting all of them or
-                # none. It runs even after a failed observation pass, so a compartment too
-                # large for its own consolidation is smaller when that pass is retried.
+                # Compact only after all forgets finish, and even after a failed observation pass
+                # to shrink oversized compartments before retry.
                 await _compact_oversized(run=run)
     except TimeoutError:
         logfire.warn(
@@ -245,9 +206,7 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
         )
     if not completed or cleared_since(scope=run.scope, started_at=run.started_at):
         return
-    # Cut the file as it is now, after the forget passes may have taken evidence out of it, so
-    # the stretch retired below no longer carries that. A forget pass never removes a forget,
-    # so the last one of the final completed segment still marks where that stretch ends.
+    # Re-read raw.md after forgets strip released evidence; forget entries remain as boundaries.
     boundary = (
         iter_observations(text=segments[completed - 1][1])[-1]
         if completed < len(segments)
@@ -266,20 +225,14 @@ async def _consolidate_locked(run: ConsolidationRun) -> None:
     tone_updated = await update_tone_note(run=run, raw_entries=raw_entries)
     if not tone_updated or cleared_since(scope=run.scope, started_at=run.started_at):
         return
-    # Age every compartment, not just the ones this batch touched: a guild the user has
-    # stopped visiting otherwise keeps its `recent` facts forever and hands them back on
-    # their next visit. The ones that did consolidate were already swept inside the
-    # fan-out, and that is not redundant — a timeout or a clear returns before this line,
-    # so the per-compartment sweep is the only aging those runs get.
+    # Sweep every compartment (not only touched ones) so idle guilds still age out expired facts.
     for compartment in list_compartments(scope=run.scope):
         sweep_stale_facts(scope=run.scope, compartment=compartment, today=today_utc())
     report_injection_size(scope=run.scope, flavor=run.flavor)
-    # The consumed batch's content is preserved in the cold-tier detail file; every
-    # failure path above returns before this, so it can never retire an unread bucket.
+    # Every failure path returns earlier, so retiring into detail.md never drops unread entries.
     append_detail(scope=run.scope, text=raw_entries)
     replace_raw(scope=run.scope, text=remaining)
-    # Best-effort and deliberately fire-and-forget: the worker takes this same scope
-    # lock, so it commits once the caller releases it and never sees a half-written batch.
+    # Worker acquires the same scope lock, so the commit runs after this call releases it.
     memory_git.enqueue(scope=run.scope, reason="update")
 
 
@@ -289,21 +242,15 @@ async def _consolidate_observations(run: ConsolidationRun, raw_text: str) -> boo
     if not buckets:
         return True
     detail_tail = read_detail_tail(scope=run.scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-    # Splitting that window into observation blocks is a real stall on a heavy scope, and this
-    # runs on the same loop as the reply path. Pure function, no shared state, so a thread costs
-    # nothing — and the await is safe here because every write still sits immediately after its
-    # own `cleared_since` guard downstream.
+    # Offload parsing to avoid blocking the reply loop; writes remain guarded by cleared_since.
     detail_buckets = await asyncio.to_thread(
         partition_raw_entries, raw_text=detail_tail, flavor=run.flavor
     )
     global_reference = ""
-    # Every key is a compartment this batch routed evidence to: the partition only creates a
-    # bucket when something lands in it.
     for compartment in global_first(compartments=set(buckets)):
         if compartment != GLOBAL_COMPARTMENT and not global_reference:
-            # Read from disk rather than from this run: when the batch carried no
-            # cross-server evidence there was no global call to take it from, and
-            # a guild compartment still must not restate what is already shared.
+            # Load stored global facts when this batch had no global observations so guild passes
+            # still avoid restating them.
             global_reference = render_existing_facts(
                 facts=_live_facts(scope=run.scope, compartment=GLOBAL_COMPARTMENT)
             )
@@ -311,8 +258,8 @@ async def _consolidate_observations(run: ConsolidationRun, raw_text: str) -> boo
             return False
         recent_detail = detail_buckets.get(compartment, "")
         if (run.scope, compartment) in _failed_observations:
-            # The same call would most likely fail the same way, and a compartment whose
-            # evidence alone defeats it would never move again.
+            # Retry failed compartments with a smaller detail window so oversized evidence does
+            # not deadlock them.
             recent_detail = _newest_entries(
                 text=recent_detail, max_chars=MEMORY_DETAIL_RETRY_MAX_CHARS
             )
@@ -345,11 +292,10 @@ async def _consolidate_observations(run: ConsolidationRun, raw_text: str) -> boo
 
 
 async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
-    """Runs one deletion-only pass per compartment the forget requests in `forgets` can reach.
+    """Runs one deletion-only pass per compartment reachable by `forgets`.
 
-    Each applied call removes the released evidence keys from `raw.md` and `detail.md`
-    immediately so a retry after a later compartment fails does not leave orphaned evidence
-    behind. Any caller holding either file's text from before this pass must read it again.
+    Removes released evidence keys from `raw.md` and `detail.md` after each applied compartment;
+    callers holding earlier file contents must re-read.
 
     Args:
         run (ConsolidationRun): Active consolidation or rebuild run context.
@@ -390,17 +336,11 @@ async def apply_forget_buckets(run: ConsolidationRun, forgets: str) -> bool:
 
 
 async def _compact_oversized(run: ConsolidationRun) -> None:
-    """Compacts every compartment whose fact text is past the trigger, each in a call of its own.
-
-    The call carries the compartment's facts and no evidence, which merging and condensing them
-    does not need. Best-effort: a pass that fails or is refused leaves the facts as they were and
-    holds back nothing. A compartment whose pass failed is not tried again until the next UTC
-    day: a refusal re-derived from the same facts would repeat, and each attempt costs minutes of
-    the fan-out's timeout.
-    """
+    """Compacts compartments over `COMPACTION_TRIGGER_CHARS`, at most once per failed UTC day."""
     empty = CompartmentInput(raw_entries="", recent_detail="", global_reference="")
     for compartment in list_compartments(scope=run.scope):
         facts = _live_facts(scope=run.scope, compartment=compartment)
+        # Measure fact bodies only; rendered headers would let alias rows trip the trigger.
         before = sum(len(fact.text) for fact in facts)
         if before <= COMPACTION_TRIGGER_CHARS:
             continue
@@ -450,22 +390,14 @@ async def _consolidate_compartment(
     deletes_only: bool = False,
     compact: bool = False,
 ) -> DeltaOutcome | None:
-    """Runs and applies one compartment's consolidation; None means the LLM path failed.
-
-    The request carries only the evidence routed to the compartment being written, which is
-    what makes "a guild-locked observation cannot reach `global/`" structural rather than a
-    rule the prompt asks the model to follow. `compact` is the compaction pass, which carries
-    no evidence at all.
-    """
-    # A forget call is shown every fact: its delete is what releases the evidence by key, and
-    # the sweep that would remove an expired fact releases none.
+    """Runs and applies one compartment's consolidation pass, returning None on LLM failure."""
+    # Forgets see expired facts too so their delete releases evidence keys; TTL sweeps do not.
     existing = (
         read_facts(scope=run.scope, compartment=compartment)
         if deletes_only
         else _live_facts(scope=run.scope, compartment=compartment)
     )
-    # Measured on the bodies, which are what a reply reads and what the target counts; the
-    # rendered headers would let a server's alias rows trigger it with little text behind them.
+    # Logged body-only length matching the compaction metric in `_compact_oversized`.
     stored_chars = sum(len(fact.text) for fact in existing)
     request = compartment_request(
         run=run,
@@ -475,7 +407,7 @@ async def _consolidate_compartment(
         compact=compact,
     )
     if compact:
-        # Told up front, since `apply_deltas` refuses a pass past it whole.
+        # Tell the model up front because apply_deltas rejects the whole pass if exceeded.
         request = request.model_copy(
             update={"net_removal_limit": net_deletion_ceiling(existing=len(existing))}
         )
@@ -492,8 +424,7 @@ async def _consolidate_compartment(
         )
         return None
     if cleared_since(scope=run.scope, started_at=run.started_at):
-        # Checked immediately before the first write, with no await in between, so an
-        # in-flight clear can never be overtaken by this batch.
+        # Checked right before disk writes with no await in between.
         return None
     outcome = apply_deltas(
         scope=run.scope,
@@ -501,13 +432,13 @@ async def _consolidate_compartment(
         flavor=run.flavor,
         deltas=result.deltas,
         owner=run.owner,
-        # A forget pass is exempt from the ceiling; `MAX_NET_FACT_DELETIONS_FLOOR` has why.
+        # Forget passes are exempt from the net-deletion cap (see MAX_NET_FACT_DELETIONS_FLOOR).
         allow_mass_delete=deletes_only,
         deletes_only=deletes_only,
     )
     if not outcome.applied:
         if compact:
-            # Best-effort and holds nothing back, so it stays out of the stuck-batch count.
+            # Best-effort and holds nothing back, so exclude it from stuck-batch counts.
             return outcome
         _record_rejection(
             scope=run.scope, compartment=compartment, outcome=outcome, stored=len(existing)
@@ -517,7 +448,7 @@ async def _consolidate_compartment(
         _consecutive_rejections.pop((run.scope, compartment), None)
     reconfirmed = 0
     if not deletes_only:
-        # Ahead of the sweep, which would otherwise age out a fact this batch restated.
+        # Run before sweep_stale_facts so restated facts are re-stamped instead of aged out.
         reconfirmed = reconfirm_facts(
             scope=run.scope,
             compartment=compartment,
@@ -542,11 +473,7 @@ async def _consolidate_compartment(
 
 
 def _live_facts(scope: str, compartment: str) -> list[MemoryFact]:
-    """Returns the compartment's facts a reply can still read, the ones a writing pass is shown.
-
-    One past its date TTL is swept after the call; shown first, it would count toward the
-    compaction trigger and could be merged back to life, since a rewrite re-stamps its date.
-    """
+    """Returns non-expired facts in `compartment` visible to replies and writing passes."""
     today = today_utc()
     return [
         fact
@@ -556,16 +483,8 @@ def _live_facts(scope: str, compartment: str) -> list[MemoryFact]:
 
 
 def _record_rejection(scope: str, compartment: str, outcome: DeltaOutcome, stored: int) -> None:
-    """Logs a refused batch, escalating once refusals stop looking transient.
-
-    A refusal is only a retry if the next run would decide differently. An LLM failure
-    would; a mass deletion the model re-derives from the same unchanged inputs would not,
-    and that scope then burns a consolidation call every cooldown while its memory quietly
-    stops moving. The count is what tells an operator which of the two they are looking at.
-    """
-    # Keyed on the compartment as well: a scope with several compartments would
-    # otherwise have one compartment's success reset another's stuck counter, and the
-    # escalation this exists for would never fire.
+    """Logs a refused batch, escalating to error after repeated consecutive refusals."""
+    # Track per (scope, compartment) so another compartment's success cannot reset a stuck one.
     count = _consecutive_rejections.get((scope, compartment), 0) + 1
     _consecutive_rejections[(scope, compartment)] = count
     max_quiet_rejections = 3
@@ -602,8 +521,7 @@ def compartment_request(
         existing_facts=existing_facts,
         raw_entries=parts.raw_entries,
         recent_detail=parts.recent_detail,
-        # `global` is never handed its own facts as reference: they are already its
-        # `existing_facts`, and offering them twice only invites the model to restate them.
+        # Omit global_reference for global itself; its facts are already in existing_facts.
         global_reference="" if compartment == GLOBAL_COMPARTMENT else parts.global_reference,
         today=run.today,
         compact=compact,
@@ -633,9 +551,6 @@ def _split_after(raw_text: str, boundary: tuple[str, str] | None) -> tuple[str, 
 def global_first(compartments: set[str]) -> list[str]:
     """Returns `compartments` ordered with `global` first and the rest sorted by name.
 
-    `global` leads so its updated facts can be passed as read-only reference to every later
-    compartment in the same run.
-
     Args:
         compartments (set[str]): Compartment names to order.
     """
@@ -645,12 +560,7 @@ def global_first(compartments: set[str]) -> list[str]:
 
 
 def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
-    """Describes, in plain English, who may read the compartment being written.
-
-    Handed to the consolidation prompt so the model's own sense of what belongs here
-    matches the directory it is writing into. It is guidance, not enforcement: the
-    partition above already decided what evidence this call can see.
-    """
+    """Returns a plain-English description of who can read `compartment` for prompts."""
     if flavor == "server":
         return "this server's own community memory; every member of this server can read it"
     if compartment == GLOBAL_COMPARTMENT:
@@ -664,8 +574,7 @@ def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
 def report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
     """Logs when a scope's injectable document approaches or exceeds the hard cap.
 
-    Nothing is deleted on disk so the size check never fights the next consolidation over facts
-    it would immediately write back.
+    Never deletes facts on disk.
 
     Args:
         scope (str): Memory scope to measure.
@@ -674,8 +583,7 @@ def report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
     compartments = list_compartments(scope=scope)
     if not compartments:
         return
-    # The owner's own DM reads every compartment at once, so it is the only combination
-    # that can overflow while each individual reading context stays inside the cap.
+    # Measure across all compartments (matching the owner's DM view, the widest read context).
     widest = len(
         read_memory_document(
             scope=scope,

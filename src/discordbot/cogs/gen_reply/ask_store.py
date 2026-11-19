@@ -1,16 +1,9 @@
-"""The conversation `/ask` keeps for itself (`data/database/reply.db`).
+"""Per-user `/ask` conversation history stored in `data/database/reply.db`.
 
-A user-installed app receives no gateway message events and cannot read channel history, so a
-`/ask` turn has no conversation unless one is kept here. One row per turn, keyed
-`(channel_id, user_id)` rather than by channel alone: the bot only ever sees the halves of the
-channel that were addressed to it, so a channel-wide key would feed one person the text of
-another's turns that they never saw.
-
-This module owns its own `Base` on the shared `reply.db`. It avoids
-`from __future__ import annotations`: SQLAlchemy resolves the `Mapped[datetime]` column when the
-class is built, and under postponed evaluation ruff's TC rules move the annotation-only
-`datetime` import under `TYPE_CHECKING`, where the mapper cannot resolve it and the module fails
-to import.
+Rows are keyed by `(channel_id, user_id)` so one user's `/ask` turns never leak into another's in
+the same channel. Owns its own `Base` metadata on `reply.db` and omits
+`from __future__ import annotations` so SQLAlchemy resolves `Mapped[datetime]` at class-build time
+without ruff's TC rules hiding `datetime` under `TYPE_CHECKING`.
 """
 
 from datetime import datetime
@@ -24,13 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import SqliteBootstrap
 
-# How many of one conversation's turns survive a write. A write-side clamp on the file, like
-# `RAW_FILE_MAX_BYTES`, rather than a bound on what a request carries — which is why it is not in
-# `typings/context_budgets.py`, and why it is deliberately larger than anything a read can ask
-# for: the pipeline reads `HISTORY_MESSAGE_LIMIT` (50) messages, i.e. half that many turns, so
-# the message limit and then `HISTORY_CHAR_BUDGET` always bind first and this number never
-# decides what the model sees. Its only job is to stop the table growing without limit for
-# someone who talks to the bot every day for a year.
+# Write-side table retention cap (not a request budget in `typings/context_budgets.py`);
+# deliberately larger than `HISTORY_MESSAGE_LIMIT` so read-side budgets always bind first.
 ASK_TURN_RETENTION = 500
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")

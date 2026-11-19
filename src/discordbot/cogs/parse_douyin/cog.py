@@ -1,12 +1,7 @@
-"""Expands a Douyin post URL into Discord attachments.
+"""Expands Douyin post URLs into Discord embeds and media attachments.
 
-Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener sees
-every message in every channel, so the request-volume bounds in `services/platforms/douyin.py` are
-load-bearing rather than defensive. A blocked request must never be reported as a missing post:
-telling someone their working link is dead is the worst failure this feature can produce.
-
-`utils/expansion_cog.py` owns everything around the card. What is here is the card: a clip or a
-gallery, downloaded and attached.
+Lifecycle and reactions live in `utils/expansion_cog.py`; this cog provides Douyin reading
+(throttled by `services/platforms/douyin.py`) and card/media delivery.
 """
 
 import asyncio
@@ -131,9 +126,7 @@ class DouyinCogs(ExpansionCog[DouyinPost]):
         )
         plan = delivery.plan
         if not plan.native and not plan.hosted_urls:
-            # The size is stated here rather than in the channel, which is the only place it would
-            # otherwise exist: the mark says the post could not be delivered and nothing else is
-            # left behind, as with every other expansion refusal.
+            # Log `total_mb` here; the channel receives only the refusal reaction.
             logfire.warn(
                 "Douyin media could not be attached or hosted; refusing the post",
                 url=url,

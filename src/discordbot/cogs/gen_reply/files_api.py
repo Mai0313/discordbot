@@ -1,25 +1,9 @@
-"""Gemini Files API upload for media the bot fetched itself (linked posts, generated clips).
+"""Direct-to-Google Gemini Files API uploads for bot-fetched media.
 
-The one supported way to let the answer model read a media file is to upload it here and
-reference the resulting full URI as an `input_file` `file_id`. Handing the model a remote
-http(s) URL instead looks equivalent but is not: the LiteLLM proxy rewrites any http-bearing
-`file_id` / `file_url` into base64 `inline_data`, so the media starts counting against the
-request body and a failed fetch is swallowed silently; and the native Interactions path,
-which has no proxy in the loop at all, only resolves Files API URIs and YouTube links. The
-Files-API URI has a dedicated pass-through branch on both paths and is never re-fetched.
-
-The upload itself goes direct to Google (never through the proxy) because its URI must also
-reach paths with no proxy in the loop (the Interactions answer turn, `VideoGenerator`'s source
-clip), and a proxy upload hands the URI back only inside LiteLLM's own encoded file id. Every
-upload is polled to `FileState.ACTIVE` before it is referenced: referencing a not-yet-active
-file intermittently 400s the whole answer request.
-
-`upload_file` and `poll_while_processing` are the upload and the activation poll every direct
-upload is made of. They decide nothing: each raises the SDK's own error (the poll also a
-`TimeoutError` for a read past the bound its caller set), and what a missing resource name, a
-file still `FileState.PROCESSING` at the bound, or a failure costs is the caller's call.
-`upload_until_active` serves a caller with no later reference to re-poll from: it raises unless
-the file reaches `FileState.ACTIVE`, and that caller bounds the whole transfer and gives up.
+Uploads go directly to Google and are polled to `FileState.ACTIVE` before returning a full URI
+for `input_file` `file_id` parts. `upload_file` and `poll_while_processing` are unguarded
+primitives; `upload_until_active` requires `ACTIVE` or raises; `upload_as_input_file` is
+best-effort and gated on `LLMConfig.file_api_enabled`.
 """
 
 import io
@@ -35,15 +19,11 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 
-# The Files API refuses anything larger, so a caller that can measure a download up front
-# (a Content-Length) aborts at this ceiling instead of spending its whole time budget
-# fetching bytes Google would reject. It is the provider's limit, not a policy of ours.
+# Provider ceiling (2 GiB); callers with a Content-Length abort before downloading.
 FILES_API_MAX_BYTES = 2 * 1024**3
 
-# Caps concurrent `upload_as_input_file` transfers across all in-flight pipelines. Deliberately
-# not the attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can
-# hold its slot for minutes, which would starve the ordinary per-message attachment renders that
-# share that pool. Small on purpose — these uploads are large and few.
+# Separate from attachment renderers' media_semaphore so slow video uploads do not starve
+# ordinary per-message attachment renders.
 INPUT_FILE_UPLOAD_CONCURRENCY = 2
 
 input_file_upload_semaphore = LoopLocalSemaphore(
@@ -172,11 +152,8 @@ async def upload_as_input_file(
         return None
     started = time.monotonic()
     try:
-        # The bound covers the transfer as well as the poll, and sits inside the slot on
-        # purpose. google-genai disables the transport timeout by default (`timeout=None`), so
-        # an upload into a black-holed connection never returns; bounding only the poll would
-        # let two such uploads wedge both slots for the life of the process, after which every
-        # upload behind them burns its full budget waiting here and silently degrades.
+        # Bound sits inside the slot and covers upload + poll: google-genai sets no default
+        # transport timeout, so an unbounded upload on a wedged connection holds a slot forever.
         async with input_file_upload_semaphore.get(), asyncio.timeout(delay=timeout_seconds):
             file_uri = await upload_until_active(
                 client=client, source=source, mime_type=mime_type, display_name=filename

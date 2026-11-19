@@ -24,16 +24,11 @@ def configure_sqlite_connection(
     dbapi_connection: Any,  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     enable_foreign_keys: bool = False,
 ) -> None:
-    """Applies the project's standard PRAGMA setup to a new SQLite connection.
-
-    WAL flips the read/write lock so readers never block on writes.
-    `synchronous=NORMAL` is the right durability trade-off under it: every commit still
-    fsyncs the WAL frame, and only the main file waits for a checkpoint rather than every
-    write. A tolerant `busy_timeout` gives writers time to wait under contention.
+    """Applies standard SQLite PRAGMAs (`WAL`, `synchronous=NORMAL`, `busy_timeout`) and UDFs.
 
     Args:
-        dbapi_connection (Any): The freshly opened DBAPI connection.
-        enable_foreign_keys (bool): Whether to turn on `PRAGMA foreign_keys` for the connection.
+        dbapi_connection (Any): Freshly opened DBAPI connection.
+        enable_foreign_keys (bool): Whether to enable `PRAGMA foreign_keys=ON`.
     """
     with contextlib.closing(dbapi_connection.cursor()) as cursor:
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -45,13 +40,10 @@ def configure_sqlite_connection(
 
 
 class SqliteBootstrap(BaseModel):
-    """The hooks and session factory one async SQLite database needs.
+    """Connect/checkout hooks and session factory for an async SQLite database.
 
-    What it deliberately does not hold is the engine. That stays a module-level `_engine`
-    binding per module, because a `cached_property` engine would leak the pool, the dialect
-    and the inspector cache, and because tests monkeypatch it by that name. So every method
-    here takes the caller's current engine instead, which is what makes a swapped `_engine`
-    take effect on the very next call rather than on the next process.
+    Does not hold an engine; callers pass their module-level `_engine` on each open so engine
+    swaps take effect immediately without leaking pool or inspector state.
     """
 
     enable_foreign_keys: bool = Field(
@@ -73,24 +65,17 @@ class SqliteBootstrap(BaseModel):
         )
 
     def install_hooks(self, engine: AsyncEngine) -> None:
-        """Installs the connect and checkout listeners on an engine exactly once.
+        """Installs `connect` and `checkout` listeners on `engine` idempotently.
 
-        Called on every open, because tests swap the module engines; `event.contains` keeps
-        repeat calls from stacking duplicate listeners. The per-open call is required rather
-        than defensive: an engine handed over with a connection already in its pool has one
-        that never saw `connect`, and `checkout` is the only listener that can still register
-        the `StoredInteger` UDFs onto it. Without it that connection raises
-        `no such function: discordbot_int_add_text`.
-
-        Bound methods are safe to hand it, which is not obvious: SQLAlchemy keys a plain
-        function on `id(fn)`, which a freshly bound method would defeat, and special-cases
-        `MethodType` to `(id(fn.__func__), id(fn.__self__))` instead.
+        Registers `checkout` as well as `connect` so pre-existing pooled connections also receive
+        `StoredInteger` UDFs.
 
         Args:
-            engine (AsyncEngine): The async engine whose sync engine receives the listeners.
+            engine (AsyncEngine): Async engine whose sync engine receives the listeners.
         """
         listeners = (("connect", self._on_connect), ("checkout", self._on_checkout))
         for identifier, listener in listeners:
+            # SQLAlchemy keys bound methods on (id(__func__), id(__self__)), deduplicating safely.
             if not event.contains(target=engine.sync_engine, identifier=identifier, fn=listener):
                 event.listen(target=engine.sync_engine, identifier=identifier, fn=listener)
 

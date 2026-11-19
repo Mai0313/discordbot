@@ -38,8 +38,7 @@ from discordbot.services.platforms.douyin import (
     is_douyin_url,
 )
 
-# The labels Discord shows for the `quality` option, keyed to the presets themselves so a
-# relabelling cannot drift onto a value the downloaders do not answer.
+# Slash-option labels mapped to `VideoQuality` presets.
 QUALITY_CHOICES: dict[str, VideoQuality] = {
     "Best Quality": "best",
     "High (1080p)": "high",
@@ -53,9 +52,8 @@ _DOWNLOAD_FAILED = "-# 檔案無法下載"
 def douyin_failure_message(error: Exception) -> str:
     """Returns the user-facing status line for a Douyin download failure.
 
-    Distinguishes deleted/private posts (`DouyinUnavailableError`), anti-bot blocks
-    (`DouyinBlockedError`), transfer failures (`DouyinTransferError`), and timeouts
-    (`TimeoutError`) so transient network or CDN errors are not misreported as deleted posts.
+    Distinguishes `DouyinUnavailableError`, `DouyinBlockedError`, `DouyinTransferError`, and
+    `TimeoutError`, falling back to `_DOWNLOAD_FAILED`.
 
     Args:
         error (Exception): Exception raised during Douyin download.
@@ -138,9 +136,7 @@ class VideoCogs(commands.Cog):
         await interaction.response.defer()
         await interaction.edit_original_message(content="-# 正在下載影片...")
 
-        # Share buttons hand over a blob of text with the link buried in it, and pasting that
-        # whole thing here is the natural thing to do. Douyin's pattern goes first because its
-        # copy runs straight into Chinese with no space, where the generic rule would swallow it.
+        # Run `DOUYIN_URL_RE` first so share text glued to CJK characters is not swallowed.
         url = extract_first_url(text=url, patterns=(DOUYIN_URL_RE,))
 
         upload_limit = upload_limit_for(guild=interaction.guild, interaction=interaction)
@@ -153,12 +149,9 @@ class VideoCogs(commands.Cog):
             return
 
         try:
-            # The scratch directory is also what removes the downloaded file once it is sent.
             with scratch_directory(prefix="download-video-") as download_dir:
                 downloader = VideoDownloader(output_folder=download_dir)
-                # Bounded because yt-dlp's own `socket_timeout` is per socket and every retry
-                # setting multiplies it, so a stalling host would otherwise leave the user on
-                # "正在下載影片..." indefinitely.
+                # Wall-clock bound; yt-dlp's `socket_timeout` multiplies across retries.
                 async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
                     result = await download_with_stop_signal(
                         downloader=downloader, url=url, quality=quality
@@ -206,8 +199,6 @@ class VideoCogs(commands.Cog):
             )
             return
 
-        # Too big for native upload: host the original-quality file and post its URL, rather
-        # than downgrading quality.
         if plan.hosted_urls:
             await self._deliver_url(
                 interaction=interaction, file_size_mb=file_size_mb, public_url=plan.hosted_urls[0]
@@ -229,11 +220,7 @@ class VideoCogs(commands.Cog):
         with scratch_directory(prefix="download-video-douyin-") as download_dir:
             downloader = DouyinDownloader(output_folder=download_dir)
             try:
-                # Capped at the attachment limit so a 48-image gallery does not download 38 files
-                # that could never be sent; `omitted_images` reports what the cap left behind.
-                # Bounded on wall-clock too, because a gallery costs `download_timeout` x
-                # `max_retries` per file: a stalling CDN would otherwise hold this command open
-                # for half an hour.
+                # Cap images at attachment limit and bound total time across per-file retries.
                 async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
                     result = await asyncio.to_thread(
                         downloader.download,
@@ -263,12 +250,9 @@ class VideoCogs(commands.Cog):
                 )
                 plan = delivery.plan
 
-                # Nothing to attach has two ways out; anything else is the normal reply.
                 if not plan.native:
-                    # Only a lone oversize file may collapse to the bare-URL reply, which
-                    # deliberately posts nothing but the link so Discord renders the inline
-                    # player. A gallery would lose every URL past the first, plus the omitted
-                    # / dropped notices, so it goes through the normal reply instead.
+                    # Only a single oversize file uses the bare-URL reply (for inline player);
+                    # galleries need all URLs plus omitted/dropped notices.
                     if plan.hosted_urls and len(result.filenames) == 1:
                         await self._deliver_url(
                             interaction=interaction,
@@ -318,8 +302,7 @@ class VideoCogs(commands.Cog):
             )
         )
 
-        # An all-hosted gallery reaches here with nothing to attach, and the edit carries only the
-        # URLs, so the attachment list is omitted entirely rather than sent empty.
+        # Omit `files` when an all-hosted gallery has no native attachments.
         files = [item.to_file() for item in plan.native]
         if files:
             await interaction.edit_original_message(

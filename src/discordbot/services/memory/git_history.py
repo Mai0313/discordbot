@@ -1,25 +1,14 @@
-"""Best-effort git history for the memory store.
+"""Best-effort local git history for `data/memories`.
 
-`data/memories` is a local git repository (never pushed; the parent repo ignores
-`/data`), so a consolidation that goes wrong can be read back and compared. The bot
-never creates it: an operator runs `git init` once, and a missing repository disables
-this quietly rather than filling an ignored directory with one nobody asked for.
+An unpushed local repository initialized out of band by the operator (`git init`); a missing
+`.git` directory silently disables the service.
 
-Three properties make committing from inside a running bot safe:
+* **Single worker:** one queue and task serialize all `git` invocations against `.git/index.lock`.
+* **Scope-locked:** commits acquire `scope_lock` so multi-file delta batches commit atomically.
+* **Best-effort:** failures are swallowed and counted; repeated failures disable the service for
+  the rest of the process.
 
-* **One worker.** Every invocation goes through a single queue drained by one task, one
-  commit at a time. Memory writes run concurrently and `git commit` takes
-  `.git/index.lock`, so unserialized commits would fail when the store is busiest.
-* **Under the scope lock.** A delta batch is N renames, not one atomic replace, so a
-  commit taken mid-batch would record a tree that never existed. The worker takes the
-  same `scope_lock` the writer used; it is background work, so waiting costs nothing.
-* **Never load-bearing.** Every failure is swallowed and counted, and a run of them
-  disables the service for the rest of the process. Nothing upstream branches on whether
-  a commit happened.
-
-A `/memory clear` commits the deletion, while every earlier commit still holds the prior
-content and `gc` drops only unreachable objects. Local history therefore outlives a clear by
-design: the store is a private, unpushed, single-operator repository.
+A `/memory clear` commits the file deletion while earlier git history remains intact.
 """
 
 import asyncio
@@ -46,8 +35,7 @@ class _GitRequest(BaseModel):
 class MemoryGitService(BaseModel):
     """Serialized, best-effort committer for the memory store.
 
-    Constructed with no worker: `start` binds the queue and task to the running event loop so
-    nothing touches asyncio at import time.
+    Call `start()` inside a running event loop to bind the queue and worker task.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -59,10 +47,9 @@ class MemoryGitService(BaseModel):
     _failures: int = PrivateAttr(default=0)
 
     def start(self) -> None:
-        """Starts the single worker, if git history is enabled and a repository exists.
+        """Starts the single worker if git history is enabled and a repository exists.
 
-        Deliberately not lazy: an unstarted service drops every request instead of
-        binding a queue to whichever loop happened to enqueue first.
+        Not lazy: requests enqueued before `start()` are dropped.
         """
         if not self.enabled or self._worker is not None:
             return
@@ -81,8 +68,7 @@ class MemoryGitService(BaseModel):
         if worker is None:
             return
         worker.cancel()
-        # Expected: shutdown cancels the worker, and an uncommitted change is picked up
-        # by the next commit of the same scope.
+        # Shutdown cancels the worker; any uncommitted change folds into the next commit.
         with contextlib.suppress(asyncio.CancelledError):
             await worker
 
@@ -114,8 +100,7 @@ class MemoryGitService(BaseModel):
         try:
             async with scope_lock(scope=request.scope):
                 if not await self._has_changes(scope=request.scope):
-                    # `git add` on a path that was never tracked and no longer exists
-                    # exits 128, so this guard is required rather than an optimization.
+                    # Guard required: `git add` on an untracked, deleted path exits 128.
                     return
                 await self._git("add", "-A", "--", request.scope)
                 await self._git("commit", "-m", f"chore(memory): {request.reason} {request.scope}")
@@ -131,9 +116,7 @@ class MemoryGitService(BaseModel):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            # Consecutive failures before the service stops trying. A repository that is
-            # missing, locked by an operator, or out of disk fails every time, and a
-            # background task that retries forever just fills the log.
+            # Disable after consecutive failures so a broken or locked repo does not spam logs.
             max_consecutive_failures = 5
             if self._failures >= max_consecutive_failures:
                 logfire.warn("Memory git history disabled after repeated failures")
@@ -152,17 +135,11 @@ class MemoryGitService(BaseModel):
             "git",
             "-C",
             str(root),
-            # The store is owned by the bot process but may be bind-mounted from a host
-            # with a different uid, which git otherwise refuses as dubious ownership.
+            # Avoid git dubious-ownership errors on host bind mounts with a different uid.
             "-c",
             f"safe.directory={root.resolve()}",
-            # The container runs as an unprivileged user with no gitconfig, and a
-            # container hostname carries no domain, so git rejects its own auto-detected
-            # `app@<id>.(none)` ident and every commit exits 128. An operator's host-side
-            # `git init` cannot supply this: it writes no identity, and a global config
-            # on the host is not visible inside the image. Passed per invocation rather than
-            # written into the repository so the bot never edits an operator's config, and so
-            # a repository created by hand needs no setup beyond `git init`.
+            # Container has no gitconfig and a domainless hostname (git commit exits 128);
+            # pass identity per invocation so an operator's repo needs only `git init`.
             "-c",
             "user.name=discordbot",
             "-c",
@@ -180,5 +157,5 @@ class MemoryGitService(BaseModel):
         return stdout.decode(errors="replace")
 
 
-# One service per process, mirroring the single repository it commits to.
+# Process-wide singleton mirroring the single store repository.
 memory_git = MemoryGitService(enabled=MemoryConfig().git_history_enabled)

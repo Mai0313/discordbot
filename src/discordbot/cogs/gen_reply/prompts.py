@@ -134,10 +134,8 @@ MUSIC_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks or a code block.
 """
 
-# Appended to the QA system prompt only while the video generator is active.
-# The "one video per reply" cap is a deliberate throttle stated as a plain capability limit,
-# never as a cost warning: telling the model a clip is expensive makes it over-refuse, so the cap
-# alone does the throttling while the model still reaches for video when it genuinely helps.
+# Appended when video is active. State the one-video cap as a capability limit (not a cost
+# warning) so the model does not over-refuse.
 VIDEO_INSTRUCTION = f"""
 * Optional short video: when a generated video clip would genuinely add to your reply — motion, a short scene, or an animation a still image or words cannot convey — wrap a description of that video in `{VIDEO_OPEN}...{VIDEO_CLOSE}`. That block is removed from your written reply and sent straight to a video generator, so the description never shows in chat; the finished clip is attached to your reply afterward.
     * You can make at most ONE video per reply, so use it only for the single moment that most benefits from a moving clip, and skip it when a still image or plain text already does the job.
@@ -243,9 +241,7 @@ Wording does not decide the grade. A casual-sounding message that really wants s
 """
 
 
-# Appended to the route prompt only on a turn that offers optional recall candidates, together with the
-# `recall_user_ids` field (`RecallRouteClassification`), so a turn without candidates is asked nothing
-# about memory.
+# Appended to route_prompt with RecallRouteClassification only when recall candidates exist.
 ROUTE_RECALL_SECTION = """
 Also fill in the `recall_user_ids` field: decide whether the latest user message obliquely refers to any additional server members whose long-term memory would help answer it.
 * Every message a participant wrote is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
@@ -256,9 +252,7 @@ Also fill in the `recall_user_ids` field: decide whether the latest user message
 * List an id only when the latest message actually refers to an eligible member and their prior memory would help answer it. An empty list is the normal case.
 """
 
-# Director instructions for the IMAGE route (and edit): restate a thin user request as one
-# self-contained text-to-image prompt without inventing unrequested subjects, scenes, or styles,
-# and with no default aesthetic. Used by `PromptGenerator.refine`, not `<generate-image>`.
+# Director instructions for PromptGenerator.refine on IMAGE (not <generate-image>).
 IMAGE_PROMPT = """
 You are an expert image prompt engineer working behind a Discord bot. A user asked the bot to create or edit an image. Your job is NOT to draw anything and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-image model will render directly. You are a faithful translator, not an art director: you clarify WHAT to render, you do not invent HOW it looks.
 
@@ -286,9 +280,7 @@ If a reference image is attached, the user wants it edited: describe the desired
 Output ONLY the final image prompt text. Nothing else.
 """
 
-# Director instructions for the VIDEO route: faithful about what is in the clip while allowing
-# restrained cinematography per omni's prompt guide, with no default aesthetic and a spoken-language
-# preference order for dialogue. Used by `PromptGenerator.refine` on non-edit video requests.
+# Director instructions for PromptGenerator.refine on non-edit VIDEO requests.
 VIDEO_PROMPT = """
 You are an expert video prompt engineer working behind a Discord bot. A user asked the bot to create a short video. Your job is NOT to make the video and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-video model will render directly. You are faithful about WHAT is in the clip: you never invent subjects, characters, props, settings, actions, events, on-screen text, or audio the user did not state. You MAY add restrained, fitting cinematography (a single continuous shot, a gentle camera move, and lighting / mood that simply suit the stated subject), because this downstream model renders its best results with a little scene, camera, and lighting direction — but keep it minimal and never let it smuggle in content or a storyline.
 

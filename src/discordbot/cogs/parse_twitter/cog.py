@@ -1,18 +1,7 @@
-"""Expands a Twitter (x.com) post URL into Discord embeds.
+"""Expands Twitter (x.com) post URLs into Discord embeds via `ConversationExpansionCog`.
 
-Discord renders nothing useful for an x.com link on its own — the page it fetches is the same
-empty SPA shell `services/platforms/twitter.py` documents — so a pasted link sits in the channel
-as a bare URL. This turns it into the post.
-
-Nothing is downloaded here: the card names the stills and a video's poster frame by URL for the
-shell to upload, and the clip is a link. That is a choice rather than a limit — Twitter's mp4 is
-directly fetchable — so a deployment that wants the file has `/download_video`.
-
-`utils/expansion_cog.py` owns everything around the card and the post's own embed. What is here
-is the rest of the card — every post above it in the thread, as `parse_threads` shows one, and the
-post it quotes — and one thing it has to say out loud because the platform will not: a long post
-FxTwitter could not serve whole arrives cut at roughly 275 characters with no marker of any kind.
-The replies are `gen_reply`'s to read, as on Threads, so the card's reader skips them.
+Renders the ancestor chain, target post (stills or video poster), and quoted post; skips replies
+(left to `gen_reply`) and flags truncated note tweets when FxTwitter is unavailable.
 """
 
 from functools import partial
@@ -45,15 +34,11 @@ from discordbot.services.platforms.twitter import (
     TwitterConversation,
 )
 
-# What the post gives up per context card so they always fit beside it, up to a ceiling that still
-# leaves the post 1,200 characters: a thread of nine cards would otherwise reserve more than the
-# whole message may carry.
+# Per-context-card text reserve, capped so the target post keeps at least 1,200 chars.
 _CONTEXT_RESERVE = 1200
 _CONTEXT_RESERVE_CAP = DISCORD_EMBED_TOTAL_LIMIT - 1200
 
-# Said on the card rather than left to the reader, because Twitter marks a cut body in no way at
-# all: no ellipsis, no "show more", nothing but a key saying a longer version exists that the
-# endpoint will not serve. A card that stays quiet passes a fragment off as the whole post.
+# Appended when `is_truncated` is set because syndication cuts bodies with no ellipsis.
 _TRUNCATED_NOTICE = "\n\n-# ⋯這則貼文較長，Twitter 只提供開頭"
 _PARENT_HEADER = "↩️ **回覆的貼文**"
 _QUOTED_HEADER = "💬 **引用的貼文**"
@@ -67,20 +52,18 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
     URL_PATTERN = TWITTER_URL_RE
     PLACEHOLDER_TEXT = "-# 正在讀取 Twitter 貼文⋯"
     READ_TIMEOUT_SECONDS = TWITTER_EXPAND_TIMEOUT_SECONDS
-    # The old Twitter blue rather than X's black. The rail down an embed's left edge exists to say
-    # which platform a card came from at a glance, and black does not: it reads as a hairline on
-    # Discord's light theme and vanishes into the dark one.
+    # Twitter blue rather than X black so the left embed bar stays visible on dark theme.
     EMBED_COLOR = 0x1DA1F2
     # Skipping the replies spares a short first post that quotes nothing the FxTwitter request.
     # `staticmethod` because a `partial` on a class turns into a method from Python 3.14 on.
     downloader_factory = staticmethod(partial(TwitterDownloader, read_replies=False))
 
     def _author_label(self, post: TwitterOutput) -> str:
-        """The handle, which is the only name a post carries here."""
+        """Returns the handle, which is the only name a post carries here."""
         return f"@{post.author_name}" if post.author_name else ""
 
     def _footer_text(self, post: TwitterOutput, shown_images: int) -> str:
-        """The counters, and what the card could not show."""
+        """Returns the counters and omitted-media notes."""
         parts = [f"♥ {post.like_count:,}", f"💬 {post.comment_count:,}"]
         parts.extend(self._omitted_media_notes(post=post, shown_images=shown_images))
         return " · ".join(parts)
@@ -88,13 +71,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
     def _context_embed(
         self, post: TwitterOutput, header: str, budget: int, show_media: bool
     ) -> Embed:
-        """One grey card for a post this expansion only quotes or shows above the linked one.
-
-        Its own URL rather than the target's, which is what keeps Discord from folding it into the
-        image gallery: embeds sharing a URL are merged, and that merging is exactly what turns the
-        target's extra images into one gallery. With `show_media` it carries its first still, or a
-        clip's poster frame and a link, since a reply on Twitter is often a picture and little else.
-        """
+        """Returns a grey context embed for an ancestor or quoted post, using its own URL."""
         image = next(iter([*post.image_urls, *post.video_poster_urls]), "") if show_media else ""
         hint = (
             VIDEO_HINT.format(url=self._video_link(post=post))
@@ -102,9 +79,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
             else ""
         )
         lead = f"{header}\n" if header else ""
-        # Beside a short post, a lone context card's share of the message exceeds what one
-        # description may carry. The header and the hint come off this card's own share, since
-        # the slack `context_card_budget` keeps is sized for author lines alone.
+        # Cap description to 4096 minus lead/hint (`context_card_budget` slack covers author only).
         spent = utf16_length(value=lead) + utf16_length(value=hint)
         limit = min(max(budget - spent, 0), DISCORD_EMBED_DESCRIPTION_LIMIT - spent)
         body = clip_to_utf16_limit(text=post.text, limit=limit, notice=TRUNCATION_NOTICE)
@@ -121,23 +96,15 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
         return embed
 
     def _build_embeds(self, conversation: TwitterConversation) -> list[Embed]:
-        """Builds the whole expansion: the thread above the post, the post, its images, its quote.
-
-        Discord carries ten embeds a message. The post's own (one per image) and its quote come
-        first, and the posts above it fill what is left nearest first, the rest counted in the
-        post's footer.
-        """
+        """Returns embeds for the ancestor thread, target post (with images), and quoted post."""
         post = conversation.target
         if post is None:
             return []
 
         hint = VIDEO_HINT.format(url=self._video_link(post=post)) if post.video_urls else ""
         truncated = _TRUNCATED_NOTICE if post.is_truncated else ""
-        # The reader keeps no more media per post than the card shows, so the cap binds on nothing
-        # today; it keeps the card bounded if the reader ever keeps more.
         shown = post.image_urls[:POST_CARD_MAX_IMAGES]
-        # A video's poster frame stands in for the image a clip has none of, so a video post is
-        # not a card with nothing on it. Stills win when the post has both.
+        # Fall back to video poster frame when there are no still images.
         poster = next(iter(post.video_poster_urls), "")
         images = shown or ([poster] if poster else [])
         room = DISCORD_EMBED_COUNT_LIMIT - max(len(images), 1) - bool(post.quoted)

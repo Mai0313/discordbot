@@ -109,13 +109,8 @@ class MessageInputBuilder(BaseModel):
     attachment_handler: SkipValidation[AttachmentRenderer] = Field(
         ..., description="Strategy that renders each attachment source to a content part."
     )
-    # Rendered attachment parts per message, so replying repeatedly in the same channel
-    # does not re-upload the same history attachments every time. Keyed on the exact
-    # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
-    # time, so an edit or a late embed unfurl that swaps a URL without changing the
-    # source count still re-renders. Each entry pairs the parts with the earliest expiry among
-    # them (the provider's own for an uploaded file), so a handle is re-uploaded just before it
-    # actually expires instead of on a guessed fixed TTL.
+    # Per-message rendered parts keyed on (message_id, edited_at, source_keys) with earliest
+    # handle expiry, so edits and late embed unfurls re-render and handles refresh before expiry.
     _attachment_cache: OrderedDict[
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
@@ -163,8 +158,7 @@ class MessageInputBuilder(BaseModel):
     def snapshot_text(snapshot: MessageSnapshot) -> str:
         """Returns the rendered text of `snapshot`: its content (minus usage footer) or embed text.
 
-        Strips `USAGE_FOOTER_RE` directly because a forwarded bot reply carries no `author` on
-        its snapshot.
+        Strips `USAGE_FOOTER_RE` unconditionally (snapshots carry no `author`).
 
         Args:
             snapshot (MessageSnapshot): Forwarded message snapshot to render.
@@ -201,8 +195,7 @@ class MessageInputBuilder(BaseModel):
     async def get_cleaned_content(self, message: Message, shorten: bool = False) -> str:
         """Returns `message`'s cleaned text, with embed/system fallbacks and forwarded snapshots.
 
-        Strips the usage footer from the bot's own messages so model/token/cost lines are not
-        fed back into the conversation.
+        Strips the usage footer from the bot's own messages.
 
         Args:
             message (Message): Message whose text content is extracted.
@@ -240,10 +233,7 @@ class MessageInputBuilder(BaseModel):
             embeds=list(message.embeds),
             drop_own_voice=is_own_message,
         )
-        # A forward's real payload lives in `message.snapshots`; the original author is not the
-        # bot, so the own-voice skip never applies. The snapshot carries stickers as
-        # `sticker_items`, and its attachment/embed ids stay unique so the render cache never
-        # collides. Empty for a normal message.
+        # Snapshots carry no author, so drop_own_voice stays False; stickers live on sticker_items.
         for snapshot in message.snapshots:
             sources.extend(
                 self._sources_from_parts(
@@ -262,15 +252,10 @@ class MessageInputBuilder(BaseModel):
         embeds: list[Embed],
         drop_own_voice: bool,
     ) -> list[AttachmentSource]:
-        """Classifies one carrier's attachments / stickers / embed images into sources.
-
-        Shared by the message body and each forwarded snapshot. `drop_own_voice` skips the bot's
-        own generated voice clip (only meaningful on the bot's own message body).
-        """
+        """Classifies one message or snapshot's attachments, stickers, and embeds into sources."""
         sources: list[AttachmentSource] = []
         for attachment in attachments:
-            # Skip the bot's own generated voice clip: its text is already in the transcript,
-            # so re-uploading the WAV only adds latency and feeds the model duplicate self-output.
+            # Skip the bot's own voice clip; its text is already in the transcript.
             if drop_own_voice and attachment.filename == VOICE_REPLY_FILENAME:
                 continue
             content_type = attachment_mime(attachment=attachment)
@@ -317,10 +302,7 @@ class MessageInputBuilder(BaseModel):
     def _split_on_modality(
         self, sources: list[AttachmentSource], model_name: str
     ) -> tuple[list[AttachmentSource], list[tuple[AttachmentSource, str, bool]]]:
-        """Splits `sources` into accepted sources and rejected `(source, modality, carried)` tuples.
-
-        Takes `model_name` explicitly so the gate and its caller log against the same snapshot.
-        """
+        """Splits `sources` into accepted items and rejected `(source, modality, carried)`."""
         modalities = (
             get_supported_modalities(model_name=model_name)
             - self.attachment_handler.dropped_modalities
@@ -427,8 +409,7 @@ class MessageInputBuilder(BaseModel):
                 try:
                     return [await load_attachment_bytes(attachment=source.handle)]
                 except Exception as exc:
-                    # Broad on purpose: a Discord/transport read failure must degrade to the
-                    # next clip, never escape into the VIDEO route's hard-fail path.
+                    # Broad: a Discord/transport read failure degrades to trying the next clip.
                     logfire.warn(
                         "failed to read a source video attachment; trying the next",
                         message_id=message.id,
@@ -469,9 +450,7 @@ class MessageInputBuilder(BaseModel):
             "application/x-mach-binary",
             "application/x-sharedlib",
             "application/wasm",
-            # Office / OpenDocument binaries: the Files API stores them but the Gemini model
-            # 400s "Unsupported MIME type" at generation time, so drop them here rather than
-            # let one leak into the answer request (which has no per-attachment retry).
+            # Office/OpenDocument binaries upload to Files API but Gemini 400s at generation time.
             "application/msword",
             "application/vnd.ms-excel",
             "application/vnd.ms-powerpoint",
@@ -490,22 +469,13 @@ class MessageInputBuilder(BaseModel):
             return "audio"
         if content_type.startswith("image/"):
             return "image"
-        # Everything else (documents, source code, structured text, an unlisted application
-        # type) proxies as `image` / `input_file`. MIME cannot reliably tell an unlisted binary
-        # apart from unlisted text/code, and a positive allowlist silently drops legitimate code
-        # attachments, so the check above stays the only drop rule every renderer shares; the
-        # renderers make the final call (the inline path keeps only PDF + UTF-8, refusing at the
-        # gate what it knows it cannot carry; Gemini ingests the rest).
+        # Remaining types proxy as input_file; each renderer applies its own final support check.
         return "image"
 
     async def _render_attachment_parts(
         self, sources: list[AttachmentSource], allow_dead_cache: bool = False
     ) -> list[RenderedAttachment | None]:
-        """Renders every supported source to a content part + expiry; failures stay None.
-
-        Each source renders concurrently, so a message with several attachments pays
-        roughly one upload's latency (Gemini) or one download's latency (inline), not the sum.
-        """
+        """Renders supported `sources` concurrently with expiries, returning None per failure."""
         tasks: list[Coroutine[object, object, RenderedAttachment | None]] = []
         for source in sources:
             if source.kind == "image":
@@ -541,13 +511,9 @@ class MessageInputBuilder(BaseModel):
         """
         if not sources:
             return []
-        # Key on the exact sources rendered plus the edit time, so a late embed unfurl
-        # or an edit that swaps a source URL re-renders even when the count is unchanged.
         source_keys = tuple(source.cache_key for source in sources)
         cache_key = (message.id, message.edited_at, source_keys)
-        # Reuse the cached handles until shortly before the files actually expire; the
-        # margin keeps a borderline-expired URI from reaching the answer request, which
-        # has no per-attachment retry and would 400 the whole reply.
+        # Refresh handles before expiry; a borderline-expired URI 400s the whole answer.
         cache_safety_margin = timedelta(hours=2)
         cached = self._attachment_cache.get(cache_key)
         if cached is not None and datetime.now(tz=UTC) < cached[0] - cache_safety_margin:
@@ -555,8 +521,7 @@ class MessageInputBuilder(BaseModel):
             logfire.debug(
                 "gen_reply attachment cache hit", message_id=message.id, source_count=len(sources)
             )
-            # Hand out per-part copies so no caller ever holds the cached dicts; the
-            # values are immutable strings, so the copies stay cheap.
+            # Shallow copies prevent callers from mutating cached part dicts.
             return [part.copy() for part in cached[1]]
 
         logfire.debug(
@@ -572,17 +537,13 @@ class MessageInputBuilder(BaseModel):
             resolved=len(resolved),
             dropped=len(sources) - len(resolved),
         )
-        # A None entry means a download/convert or upload failed; skip caching so the
-        # next reply retries instead of pinning a degraded render. The entry's expiry is
-        # the earliest across its files, so the whole entry re-renders before any handle
-        # in it expires.
+        # Skip caching if any source failed so the next turn retries; expire at earliest handle.
         if None not in rendered:
             expires_at = min(item.expires_at for item in rendered if item is not None)
             self._attachment_cache[cache_key] = (expires_at, [part.copy() for part in resolved])
             if len(self._attachment_cache) > 128:
                 self._attachment_cache.popitem(last=False)
-        # Dropping a failed source outright leaves an attachment-only message reading as blank,
-        # and the model then tells the sender nothing was posted.
+        # Keep a placeholder so an attachment-only message does not read as blank.
         return [
             item.part
             if item is not None
@@ -600,18 +561,14 @@ class MessageInputBuilder(BaseModel):
         parts: "Sequence[RenderedPart]",
         has_attachments: bool,
     ) -> EasyInputMessageParam:
-        """Assembles one input message, sharing role and prefix rules across renders.
+        """Assembles one input message using shared role and author-prefix rules.
 
-        `has_attachments` is decided from the message's sources, not from `parts`, so
-        the text-only render (markers) and the full render (uploaded files) agree on
-        role and message shape even when every upload is dropped.
+        `has_attachments` comes from sources so text-only and full renders agree on role.
         """
         is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
         content = defuse_separator_fences(text=content)
 
-        # Bot's own history without attachments → role=assistant carries identity, so the
-        # sender-prefix is dropped here. Without this, the model sees its own past replies
-        # prefixed with `Bot (bot) [id: ...]:` and learns to mimic that header.
+        # Drop sender prefix on bot history without attachments so it does not mimic headers.
         if is_bot and not has_attachments:
             return EasyInputMessageParam(role="assistant", content=content)
 
@@ -621,15 +578,10 @@ class MessageInputBuilder(BaseModel):
             f"[id: {message.author.id}]: {content}"
         )
 
-        # No attachments → use EasyInputMessageParam's string-content shorthand. The SDK
-        # serializes it as `input_text` for role=user, which satisfies the strict rule
-        # about content-part types per role.
         if not has_attachments:
             return EasyInputMessageParam(role="user", content=prefixed)
 
-        # Has attachments → must use a content list. role=assistant cannot carry
-        # `input_file` (only output_text/refusal), so bot replies that include generated
-        # images fall back to role=user; the author prefix above preserves bot identity.
+        # role=assistant forbids input_file; bot messages with attachments use role=user + prefix.
         return EasyInputMessageParam(
             role="user", content=[ResponseInputTextParam(text=prefixed, type="input_text"), *parts]
         )
@@ -639,8 +591,7 @@ class MessageInputBuilder(BaseModel):
     ) -> EasyInputMessageParam:
         """Returns `message` rendered as cleaned text plus `[attachment: ...]` markers without uploading.
 
-        Names stickers `[attachment: sticker]` rather than `[attachment: image]` so a
-        sticker-only reaction is distinguishable from a screenshot during routing.
+        Names stickers `[attachment: sticker]` rather than `[attachment: image]`.
 
         Args:
             message (Message): Message to render.
@@ -695,12 +646,8 @@ class MessageInputBuilder(BaseModel):
                 has_attachments=bool(sources),
             )
         except Exception as exc:
-            # Broad on purpose: the route awaits the text-only render before dispatching and the
-            # answer request carries the full one, so any failure across the collect, gate and
-            # render steps (an unexpected nextcord shape, say) must degrade this one message to
-            # empty text rather than abort the whole reply through the generic error path.
-            # Per-attachment download/upload failures never reach here; the handlers drop them
-            # to None with their own step-named warn.
+            # Broad: degrade one failing message to empty text rather than aborting the whole reply
+            # (per-attachment download/upload errors already degrade to None inside the renderers).
             if text_only:
                 logfire.warn(
                     "gen_reply failed to render message for routing",

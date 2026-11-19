@@ -1,16 +1,11 @@
 """Serialization and rendering for one-fact-per-file memory.
 
-A fact file is a `---` fenced header of single-line `key: value` pairs followed by
-the body. The header is deliberately not YAML: every value is a plain scalar, so a
-hand-rolled reader needs no dependency and cannot be talked into constructing objects.
-Values are written with their whitespace collapsed, so the reader never has to handle
-continuations.
+A fact file has a `---` fenced header of single-line `key: value` scalar pairs (not YAML)
+followed by the body.
 
-Rendering turns a compartment's files back into a Traditional Chinese document. That
-rendered shape is a contract rather than presentation: the `## 成員稱呼` table is parsed
-back out of it (`parse_member_alias_table`), and the reply prompts are told to read it.
-Section keys are ASCII so the structured LLM schema stays English; the headings below are
-the only place the two vocabularies meet.
+Rendering turns a compartment's files into a Traditional Chinese document whose `## 成員稱呼`
+section is parsed back out by `parse_member_alias_table`. Section keys remain ASCII for the
+structured LLM schema; the heading tables below map between the two.
 """
 
 import re
@@ -29,32 +24,23 @@ from discordbot.typings.memory import (
 from discordbot.services.memory.constants import RECENT_CONTEXT_TTL_DAYS
 
 _FENCE = "---"
-# The rendered `<name> [id: <N>]` identity line. It crosses the review job's round-trip
-# as one string, so it is split into its two stamped fields here rather than being
-# threaded as a pair through the DB.
+# Parses `<name> [id: <N>]` identity lines carried across memory_job rows.
 _IDENTITY_RE = re.compile(r"^(?P<name>.*?)\s*\[id:\s*(?P<owner_id>\d+)\]\s*$")
 _HEADER_LINE_RE = re.compile(r"^(?P<key>[a-z_]+):[ ]?(?P<value>.*)$")
-# A fact id is minted by code and is the filename stem, so it must never be able to
-# carry a path separator, a dot, or anything else the filesystem reads structurally.
+# Code-minted hex filename stem; disallows path separators and dots.
 FACT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
-# An `[id: N]` token anywhere in a fact body. Alias rows get theirs appended from the
-# code-stamped `subject_id`, and `parse_member_alias_table` takes the first match on a line,
-# so a body that carries its own would silently win — and that body is distilled from
-# messages anyone in the server can write.
+# Matches `[id: N]` tokens stripped from alias bodies before appending the code-stamped subject_id.
 _ID_TOKEN_RE = re.compile(pattern=r"\[id:\s*(?P<user_id>\d+)\]")
 
-# The nickname table's heading, rendered and parsed back from this one string.
+# Nickname table heading shared by renderer and parser.
 _MEMBER_ALIAS_HEADING = "成員稱呼"
-# The nickname table's section of a rendered server document, up to the next `## ` heading
-# or the end of the document. The heading must open a block, as every rendered heading does:
-# a profile fact renders as a bare line, so one reading `## 成員稱呼` would open a table too.
+# Matches the nickname table section only at block start so bare profile lines cannot forge it.
 _MEMBER_ALIAS_SECTION_RE = re.compile(
     pattern=rf"(?:\A|(?<=\n\n))##\s*{re.escape(pattern=_MEMBER_ALIAS_HEADING)}\s*$(?P<body>.*?)(?=^##\s|\Z)",
     flags=re.MULTILINE | re.DOTALL,
 )
 
-# Rendered headings per flavor, in document order. The tuples double as the per-flavor
-# section allowlist: a delta naming a section absent here is dropped.
+# Rendered headings per flavor in document order; also defines the per-flavor section allowlist.
 _USER_SECTION_HEADINGS: tuple[tuple[MemorySection, str], ...] = (
     ("profile", "使用者輪廓"),
     ("permanent", "永久事實"),
@@ -72,8 +58,7 @@ _SERVER_SECTION_HEADINGS: tuple[tuple[MemorySection, str], ...] = (
     ("recent", "近期脈絡"),
 )
 
-# Appended when the size governor stops rendering, so the model is told the document is
-# partial instead of silently reading a truncated profile as the whole person.
+# Appended when rendering hits max_chars so the model sees the document is partial.
 TRUNCATION_NOTICE = "（記憶已達可注入上限，較舊的內容未列出）"
 
 
@@ -96,7 +81,7 @@ def sections_for_flavor(flavor: MemoryFlavor) -> frozenset[MemorySection]:
 
 
 def node_type_for(section: MemorySection) -> MemoryNodeType:
-    """Returns the stored node type for `section` so the two cannot drift.
+    """Returns the stored node type for `section`.
 
     Args:
         section (MemorySection): Fact section name.
@@ -105,11 +90,9 @@ def node_type_for(section: MemorySection) -> MemoryNodeType:
 
 
 def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str:
-    """Returns an alias row's body rendered from `display_name` and `aliases`, or `""` when empty.
+    """Returns a single-line alias body for `display_name` and `aliases`, or `""` when empty.
 
-    Code owns this row's body so the table stays a single-line name-to-id mapping and nothing
-    else. An empty return drops the delta; a missing `display_name` is allowed since the mapping
-    depends on the alias and id.
+    Allows an empty `display_name`; an empty return causes the caller to drop the delta.
 
     Args:
         display_name (str): Member's current display name.
@@ -152,11 +135,7 @@ def render_owner_identity(owner: MemoryOwner) -> str:
 
 
 def mint_fact_id(compartment: str, summary: str) -> str:
-    """Returns the code-owned hex fact id minted from `compartment` and `summary`.
-
-    Because the fact id is the filename stem, deriving it here from a hash prevents prompt
-    injection from reaching filesystem paths, and including `compartment` avoids
-    cross-compartment id collisions.
+    """Returns a 16-char hex fact id hashed from `compartment` and normalized `summary`.
 
     Args:
         compartment (str): Compartment the fact belongs to.
@@ -199,10 +178,9 @@ def render_fact_file(fact: MemoryFact) -> str:
 def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> MemoryFact | None:
     """Returns the `MemoryFact` parsed from `text`, or None when unusable.
 
-    `compartment` (the directory the file was found in) is authoritative: a stored header
-    `compartment` that disagrees is logged at error and skipped so an out-of-band edit never
-    widens a fact's visibility. Malformed headers are logged at warn; missing front matter is
-    skipped silently.
+    `compartment` is authoritative: a disagreeing header `compartment` logs an error and returns
+    None. Malformed headers log a warning and return None; missing front matter returns None
+    silently.
 
     Args:
         text (str): Raw file content.
@@ -241,8 +219,6 @@ def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> M
             keys=tuple(key for key in header.get("keys", "").split(",") if key),
         )
     except (KeyError, ValueError) as error:
-        # A missing key, an unparsable scalar and a value outside its Literal all mean the
-        # same thing: the file is not a fact.
         logfire.warn(
             "Memory fact file is malformed; skipping",
             scope=scope,
@@ -256,8 +232,8 @@ def parse_fact_file(text: str, compartment: str, scope: str, filename: str) -> M
 def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_chars: int) -> str:
     """Returns `facts` rendered as the Traditional Chinese document the prompts expect.
 
-    Sections render in `flavor`'s fixed order and facts within each section newest first, so
-    truncating at `max_chars` drops the oldest content without deleting anything on disk.
+    Sections render in `flavor`'s fixed order and facts newest-first within each section; entries
+    past `max_chars` are omitted with `TRUNCATION_NOTICE` appended.
 
     Args:
         facts (list[MemoryFact]): Facts to render.
@@ -281,7 +257,7 @@ def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_ch
         block: list[str] = []
         for fact in section_facts:
             line = _render_fact_line(fact=fact, section=section)
-            # +1 for the newline this line costs inside the joined document.
+            # +1 for the newline added when joining lines.
             if used + len(line) + 1 > max_chars:
                 truncated = True
                 break
@@ -298,24 +274,14 @@ def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_ch
 
 
 def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
-    """Renders one fact as its document line.
-
-    Every body is collapsed to one line, since the `## 成員稱呼` table is parsed back out of the
-    render and a line break would let any fact forge a heading or a row of it. The profile is
-    a paragraph rather than a bullet, a recent-context line carries a code-stamped date, and an
-    alias row has every id token stripped from its body before the real `subject_id` is
-    appended — so the id can never be hallucinated (or injected by a member) onto the wrong
-    person, and the table stays parseable by the allowlist reader.
-    """
+    """Renders one fact as a single line, collapsing whitespace and stripping id tokens."""
     body = " ".join(fact.text.split())
     if section == "profile":
         return body
     if section == "recent":
         return f"* [{fact.last_confirmed.date().isoformat()}] {body}"
     if section == "member_alias" and fact.subject_id is not None:
-        # Stripped, not escaped: the row's whole meaning is the name-to-id mapping, and
-        # the only id that may appear in it is the one code stamped. Repeated, because
-        # removing an inner token can complete an outer one around it.
+        # Loop because removing an inner `[id: N]` can join surrounding chars into a new token.
         while _ID_TOKEN_RE.search(string=body):
             body = _ID_TOKEN_RE.sub(repl="", string=body)
         return f"* {body.strip()}[id: {fact.subject_id}]"
@@ -368,7 +334,7 @@ def _optional_int(value: str) -> int | None:
 
 
 def _one_line(text: str) -> str:
-    """Collapses a header value so it can never span lines or forge a fence."""
+    """Collapses whitespace in `text` into single spaces on one line."""
     return " ".join(text.split())
 
 
@@ -383,12 +349,10 @@ def today_utc() -> datetime:
 
 
 def is_past_recent_ttl(fact: MemoryFact, today: datetime) -> bool:
-    """Whether `fact` expires by its own date and that date has passed.
+    """Returns whether `fact` is subject to the date TTL and has expired as of `today`.
 
-    This is the class `deltas.py::sweep_stale_facts` deletes `RECENT_CONTEXT_TTL_DAYS` after
-    `last_confirmed`: everything except the facts that never age (a `permanent` durability or
-    section, a `member_alias` row) and the `stable` facts outside `recent`, which age by
-    displacement within their compartment instead.
+    Exempts `permanent` durability or section facts, `member_alias` rows, and `stable` facts
+    outside `recent` (which age by compartment displacement instead).
 
     Args:
         fact (MemoryFact): Stored fact to classify.

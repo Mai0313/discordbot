@@ -1,23 +1,7 @@
-"""Append-only usage records, kept out of the runtime log on purpose.
+"""Append-only monthly JSONL usage records, separate from `./data/logs`.
 
-`data/logs/<start time>.log` is debug-level and gets cleaned out by hand, so a usage
-history living inside it dies with it; it is also gated on `LOG_LEVEL`, so raising the
-level on a deployment would silently stop recording. These records therefore get their
-own directory, their own kill-switch, and a shape an agent can read a month of in one
-pass.
-
-What a record answers is "someone used this", nothing more: there is no success/failure
-field, because how well a use went is what the runtime log is for, and the slash record
-is written at the one point that sees an invocation before its outcome exists. No message
-content and no command arguments are stored, since no question this file exists to answer
-needs them and nothing prunes these files.
-
-Who is stored twice over: `user_id` is the identifier every read groups by, and
-`user_name` is the Discord username as it read at write time, kept only so an operator
-does not have to resolve a hundred ids by hand. It is a snapshot and it drifts — someone
-who renames leaves both names behind in the same file — so it is a label, never a key.
-The per-guild display name is deliberately not what is stored: it differs per server and
-changes far more often, so it would drift without even identifying anyone.
+Records only feature invocations (no outcomes, message content, or command arguments).
+`user_id` is the grouping key; `user_name` is a write-time username snapshot for readability.
 """
 
 from typing import Literal
@@ -32,14 +16,10 @@ from pydantic_settings import BaseSettings
 
 from discordbot.utils.timezone import database_now
 
-# What produced the record. `slash` is one application-command invocation; `reply` is one
-# AI reply turn, named after the route it took.
+# `slash`: application-command invocation; `reply`: AI reply turn (named by route).
 UsageKind = Literal["slash", "reply"]
 
-# Serialised writes: `record` hands the append to a worker thread, so two concurrent
-# recorders would otherwise interleave inside one line. Deliberately a threading lock
-# rather than one of `utils/asyncio_locks.py` — it is taken off the event loop and so
-# never binds to one.
+# Serializes worker-thread appends; threading.Lock because writes run off the event loop.
 _WRITE_LOCK = threading.Lock()
 
 
@@ -84,25 +64,17 @@ class UsageRecord(BaseModel):
 
 
 def _append_sync(directory: Path, record: UsageRecord) -> None:
-    """Appends one JSON line to the record's own month file.
-
-    The handle is opened and closed per record instead of being held: a month rollover
-    then needs no bookkeeping, and a file moved out from under a long-running bot cannot
-    take further writes into an unlinked inode.
-    """
+    """Appends `record` as one JSON line to its monthly JSONL file under `_WRITE_LOCK`."""
     with _WRITE_LOCK:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{record.at:%Y-%m}.jsonl"
+        # Reopen per append to handle month rollovers and externally moved files.
         with path.open(mode="a", encoding="utf-8") as handle:
             handle.write(f"{record.model_dump_json()}\n")
 
 
 class UsageRecorder(BaseModel):
-    """Appends usage records to a monthly JSONL file.
-
-    One JSON object per line so a partial write can never cost the records before it, and
-    so reading a month is `for line in file: json.loads(line)`.
-    """
+    """Appends `UsageRecord` entries to monthly JSONL files."""
 
     config: UsageLogConfig = Field(
         default_factory=UsageLogConfig,
@@ -118,10 +90,7 @@ class UsageRecorder(BaseModel):
         guild_id: int | None,
         channel_id: int | None,
     ) -> None:
-        """Records one use, off the event loop and best-effort.
-
-        Recording must never cost the thing it records, so a failure to write is logged
-        and swallowed rather than raised into the command or the reply pipeline.
+        """Records one feature use off the event loop, logging and swallowing write failures.
 
         Args:
             kind (UsageKind): Whether this was a slash command or an AI reply.

@@ -1,20 +1,10 @@
-"""Turning a `/ask` interaction, and the conversation before it, into `Message` objects.
+"""Builds `nextcord.Message` objects from a `/ask` interaction and its stored turns.
 
-A user-installed app is handed an `Interaction` where the gateway path is handed a `Message`, and
-the reply pipeline is written entirely around the latter. Rather than widen every signature below
-it, `/ask` builds the `Message` the pipeline expects: a real `nextcord.Message` over a payload
-this module assembles, on the `PartialMessageable` the interaction resolved to.
+Synthesized `/ask` messages carry two deliberate omissions:
 
-Two things such a message cannot carry, and both are deliberate rather than missing:
-
-- **No guild.** The payload names no `guild_id` and a `PartialMessageable` carries no guild of its
-  own, so `message.guild` is None in every server, one the bot is in included. Where the
-  conversation is really happening is carried beside the message by `TurnSurface`, and
-  everything that must not be wrong about it (the location line at developer authority, the memory
-  source stamp, the compartments a read may open) reads it from there.
-- **No mentions.** Discord does not resolve user mentions inside a command option, so
-  `message.mentions` stays empty and a `<@id>` typed into the question never widens the memory
-  allowlist. That errs toward reading less, which is the safe direction.
+- `message.guild` is always `None` (even inside a guild); guild context comes from `TurnSurface`.
+- `message.mentions` is always empty, since Discord does not resolve mentions inside command
+  options, so a `<@id>` typed into the question never widens the memory allowlist.
 """
 
 from typing import TYPE_CHECKING, Any, cast
@@ -78,8 +68,7 @@ def interaction_channel(interaction: Interaction[commands.Bot]) -> PartialMessag
 def resolved_attachment_payloads(interaction: Interaction[commands.Bot]) -> list[dict[str, Any]]:
     """Returns the raw attachment payloads carried by `interaction.data`, if any.
 
-    Read from `interaction.data` rather than the bound `nextcord.Attachment` because
-    `Message.__init__` constructs its own `Attachment` instances from raw payloads.
+    Produces raw payload dicts for `Message.__init__` rather than `nextcord.Attachment` objects.
 
     Args:
         interaction (Interaction[commands.Bot]): Invocation to inspect for resolved attachments.

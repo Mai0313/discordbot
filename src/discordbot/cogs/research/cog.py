@@ -5,7 +5,7 @@ thread, runs `RuntimeModelCatalog.antigravity_model` in a tracked background tas
 cited report there while pinging the requester.
 
 Calls Google directly (`gemini_api_key`, no proxy) via the Interactions API (`agent.py`) and
-persists sessions in `reply.db` so restarts can resume in-flight runs (`store=True`).
+persists sessions in `reply.db` for restart resume (`store=True`).
 """
 
 from typing import TYPE_CHECKING, Literal
@@ -61,18 +61,13 @@ from discordbot.cogs.research.streaming import RESEARCHING_PREFIX, ResearchProgr
 if TYPE_CHECKING:
     import asyncio
 
-# The agent name shown in the thread's status line and in the streamer's live header. One agent
-# runs every research, so the two must agree on one string rather than each spelling their own.
+# Shared agent label for the opening status line and live progress header.
 RESEARCH_LABEL = "Antigravity"
-# Discord thread names cap at 100 chars; keep margin (a hard-limit safety trim, not length control).
+# Safety margin below Discord's 100-char thread name limit.
 THREAD_NAME_MAX = 90
 
-# How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
-# a word each of them spells for itself.
 type StartOutcome = Literal["started", "exists", "unsupported", "forbidden", "error"]
-# The opening status line a fresh or a resumed run posts before its live view takes over.
 RESEARCHING_STATUS = f"{RESEARCHING_PREFIX} ({RESEARCH_LABEL})"
-# What that status line ends as when the run it announced ends without a report.
 RESEARCH_FAILED_STATUS = f"-# Research failed ({RESEARCH_LABEL})"
 
 
@@ -118,25 +113,22 @@ class ResearchCogs(commands.Cog):
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
         self.media_delivery = build_media_delivery_planner()
-        # One in-flight research per owner; the lock guards the check-then-create.
+        # Serializes per-owner check-then-create for the one-active-research limit.
         self._owner_locks: KeyedLockManager[int] = KeyedLockManager()
         self._tasks: set[asyncio.Task[None]] = set()
-        # Thread ids the cog is actively driving; `gen_reply` checks this so QA does not answer
-        # inside a thread the cog is still writing its own status, reasoning and report into.
+        # Checked by gen_reply so QA skips threads this cog is actively writing to.
         self._active_threads: set[int] = set()
         self._resume_started = False
-        # Taken at load, before the gateway connects, as `DiscordBot._started_at` is: the restart
-        # sweep must not re-run a research this process launches ahead of `on_ready`.
+        # Captured before on_ready so restart resume skips sessions launched by this process.
         self._started_at = database_now()
 
     @cached_property
     def interactions_client(self) -> genai.Client:
         """Returns the direct-to-Google Gemini Interactions client, built lazily on first use.
 
-        Raises `ValueError` when `gemini_api_key` is missing; both run loops access this inside
-        their `try` blocks so a missing key surfaces as a thread failure notice.
+        Raises `ValueError` when `gemini_api_key` is missing.
         """
-        # Pinned to `v1beta` like `ReplyToolkit.gemini_client`: preview agents are not served on `v1`.
+        # Pinned to v1beta like ReplyToolkit.gemini_client: preview agents are not served on v1.
         return genai.Client(
             api_key=self.config.gemini_api_key, http_options=HttpOptions(api_version="v1beta")
         )
@@ -169,8 +161,7 @@ class ResearchCogs(commands.Cog):
                 end_user_id="deep-research",
                 timeout_seconds=THREAD_TITLE_TIMEOUT_SECONDS,
             )
-        # Only building `responses_client` lands here, since the helper absorbs its own call's
-        # failures: the SDK refuses an empty `OPENAI_API_KEY`, and that is the whole finding.
+        # Raised by responses_client on empty OPENAI_API_KEY; create_text_or_none absorbs calls.
         except OpenAIError:
             logfire.info(
                 "no proxy key for the deep research thread title; using the brief's first line"
@@ -201,14 +192,12 @@ class ResearchCogs(commands.Cog):
         try:
             await message.reply(content=_launch_reply(outcome=outcome, thread_id=thread_id))
         except Forbidden:
-            # The server's overwrites decide who may post here; the ids are the whole finding.
             logfire.warn(
                 "deep research cannot say why it did not start",
                 message_id=message.id,
                 channel_id=message.channel.id,
             )
-        # Broad on purpose: the launch has already ended, and anything raised here would reach
-        # `research_bridge`, which reports it as a dropped brief.
+        # Broad: launch already ended; raising would make research_bridge report a dropped brief.
         except Exception as exc:
             if isinstance(exc, HTTPException) and is_reply_target_gone(error=exc):
                 logfire.info(
@@ -261,8 +250,7 @@ class ResearchCogs(commands.Cog):
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
         if interaction.user is None or not isinstance(interaction.channel, TextChannel):
-            # A user install also runs this in servers the bot was never added to, which carry a
-            # guild id but resolve no guild, so none of their channels resolves to a text channel.
+            # User-installed invocations outside bot guilds carry guild_id with guild=None.
             content = (
                 "我沒有被加進這個伺服器,深度研究只能在我所在的伺服器裡開"
                 if interaction.guild is None and interaction.guild_id is not None
@@ -270,8 +258,7 @@ class ResearchCogs(commands.Cog):
             )
             await interaction.response.send_message(content=content, ephemeral=True)
             return
-        # Read for the bot's own member, whose token every later write uses, so a channel it cannot
-        # run in is refused before a title call and an anchor ping are spent on it.
+        # Check bot member permissions before spending a title call or posting an anchor.
         if not has_research_permissions(
             channel=interaction.channel, member=interaction.channel.guild.me
         ):
@@ -280,17 +267,13 @@ class ResearchCogs(commands.Cog):
             )
             return
         await interaction.response.defer(ephemeral=True)
-        # Anchor the thread on a bot message so the same message-based create_thread path is reused.
-        # The topic is user-supplied: restrict mentions to the requester so an `@everyone` / role
-        # mention embedded in it cannot turn a research request into a mass ping.
+        # Restrict mentions to the requester so user-supplied topic text cannot mass-ping.
         try:
             anchor = await interaction.channel.send(
                 content=f"{interaction.user.mention} 要研究:{topic[:200]}",
                 allowed_mentions=owner_allowed_mentions(owner_id=interaction.user.id),
             )
         except Forbidden:
-            # The command reached a channel the bot's own identity may not post in; the server's
-            # overwrites decide that, so the type and the ids are the whole finding.
             logfire.warn(
                 "deep research cannot post its anchor in this channel",
                 channel_id=interaction.channel.id,
@@ -300,8 +283,7 @@ class ResearchCogs(commands.Cog):
                 content=_launch_reply(outcome="forbidden", thread_id=None)
             )
             return
-        # Broad: whatever else stops the anchor, nothing was launched, which the command error
-        # handler's generic notice cannot tell the requester.
+        # Broad: report anchor failure directly instead of generic command error handling.
         except Exception as exc:
             logfire.error(
                 "failed to post the deep research anchor",
@@ -329,8 +311,6 @@ class ResearchCogs(commands.Cog):
         self, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims `owner_id`'s slot, opens the thread, spawns the run, and returns `(outcome, thread_id)`."""
-        # A research thread can only hang off a message in a guild text channel; a DM, an existing
-        # thread, or a forum post cannot host a nested thread, so refuse before promising research.
         if anchor.guild is None or not isinstance(anchor.channel, TextChannel):
             return "unsupported", None
         async with self._owner_locks.hold(key=owner_id):
@@ -352,8 +332,6 @@ class ResearchCogs(commands.Cog):
             try:
                 thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
             except Forbidden:
-                # Expected rather than diagnosable: the server's overwrites deny the bot threads
-                # here, so the ids say everything a traceback would.
                 logfire.warn(
                     "deep research cannot open a thread in this channel",
                     message_id=anchor.id,
@@ -385,8 +363,7 @@ class ResearchCogs(commands.Cog):
                     brief=brief,
                 )
             except Exception as exc:
-                # Broad, as above. A thread with no row is never run, so the one just opened is
-                # withdrawn.
+                # Broad: store failure aborts launch; delete the newly opened thread below.
                 logfire.error(
                     "failed to record research session",
                     message_id=anchor.id,
@@ -398,8 +375,7 @@ class ResearchCogs(commands.Cog):
                 try:
                     await thread.delete()
                 except Forbidden:
-                    # Deleting a thread takes Manage Threads, which a launch never requires, so
-                    # the ids are the whole finding.
+                    # Deleting a thread needs Manage Threads, which launch does not require.
                     logfire.warn(
                         "research thread of a failed launch could not be deleted",
                         thread_id=thread.id,
@@ -416,8 +392,7 @@ class ResearchCogs(commands.Cog):
                     )
                 return "error", None
             self._active_threads.add(thread.id)
-        # Mark the source message with the bot's `dino` app emoji so the deep-research activation
-        # is visually distinct from the normal QA pipeline reactions (best-effort).
+        # Distinct research reaction on the anchor message (best-effort).
         await update_reaction(
             message=anchor, bot_user=self.bot.user, emoji="<:dino:1517560319281594570>"
         )
@@ -544,8 +519,6 @@ class ResearchCogs(commands.Cog):
                 await status.edit(content=content, allowed_mentions=AllowedMentions.none())
                 return
             except Forbidden:
-                # The bot's permissions in the parent channel, which the thread inherits, changed
-                # under the run; the id is the whole finding.
                 logfire.warn("research thread refused the status edit", thread_id=thread.id)
             except Exception as exc:
                 # Broad: any Discord failure is recoverable by the fallback send below.
@@ -597,11 +570,7 @@ class ResearchCogs(commands.Cog):
         spawn_tracked(coro=self._resume_all(), tasks=self._tasks, name="research-resume")
 
     async def _resume_all(self) -> None:
-        """Resumes every session left `researching` before this process started.
-
-        When `deep_research_available` is false, rows stay `researching` without posting to their
-        threads so a later start with the setting enabled can still collect the server-side run.
-        """
+        """Resumes sessions left `researching` before startup; leaves rows intact when disabled."""
         sessions = await db.list_resumable(created_before=self._started_at)
         if not sessions:
             return
@@ -624,15 +593,11 @@ class ResearchCogs(commands.Cog):
         """Re-attaches to `session`, taking over its prior status message and delivering on completion."""
         thread = await self._fetch_thread(thread_id=session.thread_id)
         status = await self._find_prior_status(thread=thread) if thread is not None else None
-        # No interaction id means the row was written but the bot restarted before the run id was
-        # stored; there is nothing to resume. End the old status line and tell the thread so the
-        # owner is not left staring at `Researching...` forever.
+        # Restarted before interaction_id was persisted; nothing to re-attach to.
         if session.interaction_id is None:
             await self._abandon_resume(session=session, thread=thread, status=status)
             return
-        # Give the resumed run the same live reasoning view as a fresh one, on a line of its own
-        # when none survived the restart; a fetch miss leaves status None so the streamer's editor
-        # no-ops but still drives the stream to a result.
+        # Post a fresh status line if none survived; status=None still drives the stream.
         if thread is not None and status is None:
             status = await self._safe_send(thread=thread, content=RESEARCHING_STATUS)
         streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
@@ -684,15 +649,13 @@ class ResearchCogs(commands.Cog):
     async def _find_prior_status(self, thread: "Thread") -> Message | None:
         """Returns the bot's `RESEARCHING_PREFIX` status message from before the restart, if found."""
         try:
-            # The thread's id predates every message in it, so the one default page read after it
-            # holds the thread's oldest messages, the run's first post among them.
+            # after=thread starts at the thread's creation ID, returning oldest messages first.
             async for message in thread.history(after=thread):
                 if message.author == self.bot.user and message.content.startswith(
                     RESEARCHING_PREFIX
                 ):
                     return message
         except Forbidden:
-            # Missing Access, such as View Channel lost on the parent; the id is the whole finding.
             logfire.warn("research thread refused the history read", thread_id=thread.id)
         except Exception as exc:
             # Broad: a resume must not die on a best-effort lookup it can do without.
@@ -715,12 +678,9 @@ class ResearchCogs(commands.Cog):
             logfire.info("research thread is gone; skipping", thread_id=thread_id)
             return None
         except Forbidden:
-            # Missing Access, such as View Channel lost on the parent; the id is the whole finding.
             logfire.warn("research thread refused the fetch; skipping", thread_id=thread_id)
             return None
-        # Broad on purpose: every caller treats None as "gone" and returns, so a transient REST
-        # or transport failure must not raise into a resume sweep. It is logged apart from the
-        # deleted case so the two stop looking the same in the log.
+        # Broad: resume callers treat None as gone; log REST errors separately from NotFound.
         except Exception as exc:
             logfire.warn(
                 "could not fetch the research thread; treating it as gone",
@@ -743,7 +703,7 @@ class ResearchCogs(commands.Cog):
         """Sends a message to `thread` best-effort, defaulting to `AllowedMentions.none()`."""
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
-            # Two calls: none of nextcord's `send` overloads accepts `embed=None`.
+            # None of nextcord's send overloads accepts embed=None.
             if embed is None:
                 return await thread.send(content=content, allowed_mentions=mentions)
             return await thread.send(content=content, embed=embed, allowed_mentions=mentions)
@@ -751,8 +711,7 @@ class ResearchCogs(commands.Cog):
             logfire.warn(refused, thread_id=thread.id)
             return None
         except Exception as exc:
-            # Broad: every caller treats a missing message as a degraded outcome, never a failure,
-            # and a failed run's cleanup must still run around this post.
+            # Broad: missing message is a degraded outcome; failed-run cleanup must still finish.
             logfire.warn(failed, thread_id=thread.id, error_type=type(exc).__name__, _exc_info=exc)
             return None
 

@@ -1,8 +1,4 @@
-"""Reads what a caller needs off an SDK-wrapped provider error.
-
-Two questions are asked of the same object and both are answered by digging past the SDK
-wrapper: the message a user should see, and whether the failure is worth another attempt.
-"""
+"""Provider error message extraction and retryability classification for LLM SDK exceptions."""
 
 import re
 import ast
@@ -11,42 +7,24 @@ import json
 from openai import APIError, APIConnectionError
 from google.genai.errors import APIError as GenAIAPIError
 
-# `interactions.create` raises its own hierarchy, unrelated to `google.genai.errors`, and the
-# SDK exports it from no public module; an upgrade that moves it fails this import loudly
-# instead of leaving every Interactions failure unretried.
+# `interactions.create` raises its own hierarchy (not a subclass of `google.genai.errors`), with
+# no public export; importing directly fails loudly if an SDK upgrade moves it.
 from google.genai._gaos.lib.compat_errors import APIError as InteractionsAPIError
 from google.genai._gaos.lib.compat_errors import APIConnectionError as InteractionsConnectionError
 
-# LiteLLM surfaces upstream provider errors as a chain like
-# `litellm.X: litellm.Y: VertexException - b'{"error": {"message": "..."}}'`,
-# where the provider's actual JSON body is embedded as a Python bytes literal.
+# Matches provider JSON embedded as a Python bytes literal in LiteLLM error strings.
 _BYTES_LITERAL_RE = re.compile(pattern=r"b'((?:[^'\\]|\\.)*)'", flags=re.DOTALL)
 
-# The same chain, read as the run of prefixes it is: every LiteLLM exception class prepends
-# `litellm.<ClassName>: ` (`exceptions.py`), the provider mapping prepends
-# `<Provider>Exception - ` and on some branches a second label with it
-# (`exception_mapping_utils.py`, `Timeout Error: ` and `...Exception BadRequestError - `), and a
-# failure that arrives once the stream is open prepends the provider's canonical status
-# (`_check_streaming_error`, `UNAVAILABLE - `). None of those names is written down here: a
-# segment is recognised by its shape alone -- a code-shaped word ending in `Error`, `Exception`
-# or `Timeout`, or an ALL-CAPS status -- so the wording upstream can move without this going
-# stale, and a provider's own sentence, which is prose, matches none of it. `Timeout` is there
-# because the run is anchored: it is the one exception class in `exceptions.py` named after
-# neither of the other two, so leaving it out costs not that segment but every segment behind
-# it, on the paths that already made the user wait longest.
+# Strips anchored LiteLLM/provider wrapper prefixes (`litellm.X: `, `<Provider>Exception - `,
+# `Timeout Error: `, `UNAVAILABLE - `) while leaving prose error messages intact.
 _WRAPPER_PREFIX_RE = re.compile(
     pattern=r"^(?:(?:[A-Z][\w.]* )?[\w.]*(?:Error|Exception|Timeout)(?:: | - )|[A-Z][A-Z0-9_]+ - )+"
 )
 
-# Both SDKs keep the decoded error body on the exception, so it never has to be read back out
-# of the repr their `__str__` builds: `openai` as `.body` (already unwrapped to the `error`
-# object), `google.genai` as `.details` (the whole document).
+# Decoded error payloads on SDK exceptions: openai uses `.body`, google.genai uses `.details`.
 _DECODED_BODY_ATTRIBUTES = ("body", "details")
 
-# Statuses below 500 that are still worth another attempt: the set `openai`'s own client
-# retries (`_base_client.py::_should_retry`) and the one the provider rate-limit guides
-# prescribe. Every other 4xx is the provider refusing the request itself, so re-sending it
-# only spends the user's wait twice.
+# Retryable 4xx statuses matching openai._base_client._should_retry.
 _RETRYABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
 
 

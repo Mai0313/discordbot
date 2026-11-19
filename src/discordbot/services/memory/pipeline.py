@@ -1,19 +1,10 @@
-"""One reply turn's memory lifetime, from the notes it wrote to the clear that ends it.
+"""Per-turn memory review pipeline and full-scope clear protocol.
 
-The pipeline is keyed by an opaque scope (see `store`), so the same orchestration drives both
-per-user and per-server memory. The flavor-specific bits are injected: `subject` names the
-memory target, and the scope's flavor (`flavor_of`) picks the writer's prompts.
+Drives both user and server scopes through the same orchestration: `subject` names the review
+target and `flavor_of(scope)` selects the writer's prompts.
 
-The turn and the clear are the two ends of one protocol rather than two subsystems sharing a
-file. The turn reviews the reply's memory notes, stages what survives, and checks
-`cleared_since` before every write it makes; `clear_scope_memory` is what stamps that flag,
-and its docstring is the only thing that says why each of those checks has to sit immediately
-before its write with no `await` in between. Splitting them would file the guard away from
-what it guards against.
-
-Everything below is a module of its own, and none of them imports this one back: the turn body
-that `inflight` runs reaches it as an argument rather than an import, and a staged turn meets
-the compartment fan-out at one call.
+Every disk write sits immediately after a `cleared_since` check with no `await` in between so
+`clear_scope_memory` can abort in-flight updates without waiting on `scope_lock`.
 """
 
 import asyncio
@@ -70,8 +61,7 @@ async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:
         try:
             removed_files = delete_memory_files(scope=scope)
         finally:
-            # A caller may cancel while this task is running, but the next memory
-            # lifetime still begins only after the tombstone and file pass finish.
+            # Stamp even on cancellation so the next lifetime starts after tombstone and erasure.
             mark_cleared(scope=scope)
     return removed_files, removed_job
 
@@ -90,80 +80,41 @@ async def _await_clear_critical(
 
 
 async def clear_scope_memory(scope: str) -> bool:
-    """Erases everything the pipeline holds for a scope, on the user's request.
+    """Erases all pipeline state for `scope` across all four tiers.
 
-    Four tiers go at once, because leaving any one of them behind rebuilds the
-    memory the user just asked to remove: the on-disk files, the deferred replay
-    still holding a pre-clear transcript in this process, the persisted phase-1
-    row (whose transcript is that same conversation, and which the restart sweep
-    would otherwise resume), and any in-flight update, which aborts itself once
-    `mark_cleared` has stamped the scope. The DB tier remains as a scrubbed
-    `cleared` tombstone so a stale staging commit cannot recreate the transcript.
+    Neutralizes:
+    - On-disk files under the scope directory.
+    - Deferred in-process replay turns held in `inflight`.
+    - The persisted `reply.db` row, replaced with a transcript-free `cleared` tombstone.
+    - In-flight updates, aborted via opening and closing `mark_cleared` stamps.
 
-    Completion is the deliberate user-visible boundary. The opening stamp
-    protects the erase; a closing stamp after file removal also rejects turns
-    captured while the `reply.db` deletion was suspended. Only turns captured
-    after this coroutine returns belong to the new memory lifetime.
-
-    The scope lock is deliberately not taken, since waiting for it would park a
-    user-facing command behind a minutes-long consolidation. Every file write
-    sits immediately after a `cleared_since` guard with no `await` in between,
-    so an in-flight task cannot interleave one past the stamp. The much shorter
-    per-scope staging lock serializes `reply.db` staging with the tombstone write:
-    an earlier `INSERT` is scrubbed by the newer tombstone, and a turn captured
-    during the clear waits for the closing stamp then writes nothing.
-
-    Neither failure below rolls back the stamp or the dropped replay: a failed
-    clear still aborts the turns that were in flight for this scope, so the caller
-    must not report a failure as "nothing happened".
+    Does not acquire `scope_lock`; serializes only against `staging_locks`. Only turns captured
+    after this coroutine returns belong to the new memory lifetime. On failure, the clear stamp
+    and dropped replay are not rolled back.
 
     Args:
         scope (str): Memory scope key to erase.
 
     Returns:
-        True when anything was actually removed.
+        True when either files or a non-cleared DB row were removed.
 
     Raises:
-        Exception: From the `memory_job` tombstone write, the one memory DB call that is
-            not best-effort: swallowing it would leave a resumable row that
-            resurrects the memory on the next restart. It runs before the file
-            deletion, so that failure alone leaves every tier in place — including
-            the case where a row newer than this clear makes the tombstone
-            unwritable, which `clear_job` refuses rather than erasing behind it.
-        OSError: From the file deletion, which walks the tiers one at a time and
-            can therefore stop part way. A clear is idempotent, so the caller
-            recovers by retrying rather than by claiming either outcome.
-        asyncio.CancelledError: Re-raised for a caller that cancelled, after the
-            durable work has drained and after the erase has been recorded.
+        Exception: From the `memory_job` tombstone write (runs before file deletion, leaving
+            files intact on failure, including when a newer DB token blocks the tombstone).
+        OSError: From partial file deletion; retry is idempotent.
+        asyncio.CancelledError: Re-raised after the shielded durable clear finishes and logs.
     """
-    # Stamped before anything else so a row write already in flight sees the
-    # clear on its own re-check. Ordering the stamp first is what makes the
-    # tombstone below safe without draining or taking the minutes-long scope lock.
+    # Stamp first so in-flight updates abort before their next write without taking scope_lock.
     mark_cleared(scope=scope)
-    # Drops the retained transcripts now rather than waiting for the in-flight
-    # task to finish and discard them; `inflight` then finds no pending turn and
-    # replays nothing. Each dropped turn's reply is told, or it would keep saying
-    # it was still working on memory this clear just erased.
+    # Drop deferred turns immediately and settle their replies rather than waiting for replay.
     drop_pending_updates(scope=scope)
     critical_task = asyncio.create_task(_clear_scope_critical(scope=scope))
     (removed_files, removed_job), caller_cancelled = await _await_clear_critical(
         task=critical_task
     )
-    # Both traces are taken before cancellation propagates. The shielded task has already
-    # finished by now, so a cancelled clear erased exactly as much as an uncancelled one;
-    # re-raising first left an irreversible user-driven erase with nothing on record that it
-    # happened. Neither call awaits, so nothing can interleave before the re-raise below.
-    #
-    # Commits the deletion so the working tree stops carrying it, which is all this can
-    # do: the commits before it still hold the content, and no reachable-object pruning
-    # changes that; `git_history.py` says why that is the intended outcome rather than a gap.
+    # Record both git commit and audit log before re-raising cancellation; neither awaits.
     memory_git.enqueue(scope=scope, reason="clear")
-    # A user-driven, irreversible erase of their own data, and the only trace of it outside
-    # reply.db's own `cleared` row, since nothing about it is visible in the files afterwards.
-    # `caller_cancelled` earns its place because that path is silent at the Discord end: the
-    # button deferred before the clear began and nextcord's dispatcher catches only `Exception`,
-    # so a cancelled clear leaves the confirmation prompt simply never edited — no error, no
-    # confirmation, and nothing anywhere but this line saying the wipe happened.
+    # Log caller_cancelled too: nextcord ignores CancelledError so cancelled clears stay silent.
     logfire.info(
         "Cleared personal memory on request",
         scope=scope,
@@ -189,9 +140,8 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 ) -> None:
     """Starts a background memory update without delaying the reply path.
 
-    A turn that carried neither `remember_notes` nor `forget_notes` does nothing. The
-    transcript is rendered eagerly so the persisted job and the in-memory replay carry a plain
-    string.
+    No-ops when both `remember_notes` and `forget_notes` are empty; renders the transcript
+    eagerly into a plain string.
 
     Args:
         scope (str): Memory scope key.
@@ -263,13 +213,7 @@ def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
 def _write_summary(
     observations: tuple[MemoryObservation, ...], forgotten: tuple[str, ...]
 ) -> MemoryWriteSummary:
-    """Builds what the user is told about this turn's memory work.
-
-    Reported at raw-append time rather than after consolidation: that is the point the turn's
-    work is durable, and consolidation can be minutes away. So the wording the caller builds
-    from this has to be "taken down", never "stored as a fact" -- the merge that turns these
-    into facts can still fold or drop any of them.
-    """
+    """Builds the raw-append `MemoryWriteSummary` from staged observations and filed forgets."""
     return MemoryWriteSummary(
         remembered=tuple(
             observation.summary_zh
@@ -282,24 +226,7 @@ def _write_summary(
 
 
 async def _run_memory_update(turn: MemoryTurn) -> None:
-    """Reviews the turn's memory notes and, past the raw threshold, consolidates.
-
-    The reply.db row is written `pending` at the top (awaited, before the lock) so
-    a redeploy mid-review resumes this turn; it is marked `done` once phase-1
-    is terminal (staged, no signal, cleared, or failed on its retry too) and `failed` only
-    when the LLM call itself fails, so the restart sweep retries just that case, once.
-    Consolidation needs no DB row: `raw.md` is its durable, re-entrant queue.
-
-    `turn.captured_at` is when the turn was scheduled, and every clear check runs
-    against it rather than a worker-local clock, so a clear that lands while this
-    turn is still queued aborts it too.
-
-    The caller's `report` is answered exactly once, and the `finally` is what guarantees it:
-    the reply already carries `正在整理記憶⋯`, and this function has more ways to end than
-    ways to record something — two clear checks before the lock, an unread exception out of
-    the review, a shutdown cancellation. Making each of those remember to report is how one
-    of them ends up not doing it and leaves a reply promising work that finished long ago.
-    """
+    """Stages `turn`, reviews its notes, consolidates if needed, and settles its report once."""
     settled = False
 
     async def settle(summary: MemoryWriteSummary) -> None:
@@ -312,9 +239,7 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
 
     try:
         if cleared_since(scope=turn.scope, started_at=turn.captured_at):
-            # Cleared between capture and start: staging the row would hand the
-            # restart sweep the very conversation the clear erased, so drop the turn
-            # before it writes anything at all.
+            # Drop pre-clear turns before staging so restart recovery never resurrects erased data.
             return
         await safe_db_write(
             coro=stage_turn(
@@ -328,8 +253,7 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
             scope=turn.scope,
         )
         if cleared_since(scope=turn.scope, started_at=turn.captured_at):
-            # The clear landed while the row was being written. Its durable tombstone
-            # owns the DB ordering, so drop the in-memory turn before the review.
+            # Clear landed during staging; drop the in-memory turn (tombstone owns DB ordering).
             return
         async with scope_lock(scope=turn.scope), memory_semaphore():
             forced = await _review_and_stage(
@@ -345,46 +269,31 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
                 identity=turn.identity,
             )
     finally:
-        # Nothing recorded is the honest answer for every path that reaches here without having
-        # reported: a cleared scope wrote nothing, and neither did a turn that raised. The one
-        # case where it is a guess is a review whose LLM call failed, which the restart sweep
-        # will retry -- but a resumed turn carries no report (in-memory only, by design), so the
-        # choice is between saying "kept nothing" now and leaving the reply promising work
-        # forever. It says "kept nothing". The forget half of such a turn is reported for real
-        # above, being durable before the evaluator ever runs.
+        # Settle any exit path that did not report (clear, error, or failed review) so replies
+        # do not stay stuck on `正在整理記憶⋯`.
         await settle(MemoryWriteSummary())
 
 
 async def _review_and_stage(  # noqa: C901 -- one review per round, and every write after an await needs its own clear check
     turn: MemoryTurn, report: MemoryWriteReport | None
 ) -> bool | None:
-    """Reviews one turn's notes and stages what survives, under the caller's scope lock.
+    """Reviews `turn`'s notes and stages survivors, returning forced consolidation or None.
 
-    Returns whether consolidation should be forced (a forget is waiting), or None when the
-    turn is finished and must not consolidate at all. `report` is awaited bare, so it must
-    already swallow its own failure.
+    Caller must hold `scope_lock(turn.scope)` and a semaphore permit; `report` must swallow its own
+    errors.
     """
     scope = turn.scope
     transcript, rounds = parse_turn_payload(payload=turn.transcript)
-    # The subject's source line survives the memory_job round-trip, so a resumed
-    # turn stamps the same source; a pre-source row (or the server flavor) parses
-    # to None and renders without the source/sharing fields.
+    # Server flavor or legacy subjects without a source line parse to None.
     source = parse_subject_source(subject=turn.subject)
     forget_notes: tuple[str, ...] = ()
     remember_notes: tuple[str, ...] = ()
     kept: list[MemoryObservation] = []
     reviewed = True
-    # One round per turn, oldest first, so what an older turn asked to remember is in `raw.md`
-    # ahead of a newer turn's forget (`parse_turn_payload`).
+    # Process oldest round first so older remembers land in raw.md ahead of newer forgets.
     for remember, forget in rounds:
-        # Written before the round's review runs, and deliberately not undone by its failure:
-        # a forget needs no model, and making it wait behind one would let a failed call keep
-        # the bot repeating what it was just asked to drop. The attempt a retry repeats already
-        # filed every round's forget, so a retry files one again only once it has re-staged
-        # notes of its own, which that first copy, sitting ahead of them, cannot reach. The
-        # second copy can in turn reach what that attempt staged from the forget's own round on;
-        # that takes three merged turns and a review failing after that round, and is accepted
-        # rather than tracked per round.
+        # File forgets before the LLM review so a failed review never delays deletion.
+        # On a retry, skip already-filed forgets until this attempt re-stages new observations.
         filing = () if turn.retry and not kept else forget
         forget_text = render_forget_requests(notes=filing, source=source)
         if forget_text and not cleared_since(scope=scope, started_at=turn.captured_at):
@@ -392,7 +301,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         forget_notes += filing
         remember_notes += remember
         if not remember or not reviewed:
-            # After a failed review the rest is left to the retry, but not the forgets.
+            # Skip remaining reviews after a failure, but keep filing forgets.
             continue
         draft = await turn.writer.evaluate(
             flavor=flavor_of(scope=scope),
@@ -401,10 +310,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             notes=remember,
         )
         if cleared_since(scope=scope, started_at=turn.captured_at):
-            # Cleared while this update was in flight; dropping the result beats
-            # resurrecting deleted memory. The tombstone already owns the durable
-            # ordering; this terminal write is only best-effort cleanup for a
-            # process-local store clear.
+            # Cleared mid-review; drop results and best-effort mark_done (tombstone owns ordering).
             await safe_db_write(
                 coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope
             )
@@ -413,8 +319,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             reviewed = False
             continue
         if draft.observations:
-            # Staged even when its key is already in the evidence: a member's alias key never
-            # changes, and a restatement is what keeps a stored fact from aging out.
+            # Stage even duplicate keys so restatements refresh last_confirmed and avoid aging out.
             append_raw_entry(
                 scope=scope,
                 entry_text=render_memory_observations(
@@ -423,8 +328,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             )
             kept.extend(draft.observations)
     if not reviewed and turn.retry:
-        # Failed on its one retry too, which is what a refusal does on every attempt: close
-        # the row so no later restart sends the same request again.
+        # Close the row on second failure so restarts do not loop on a permanent refusal.
         logfire.warn(
             "Memory note review failed again on its restart retry; notes dropped",
             scope=scope,
@@ -433,9 +337,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope)
         return True if forget_notes else None
     if not reviewed:
-        # The LLM path itself failed: keep the row (payload intact) so the
-        # restart sweep retries it, no extra timeout needed. The cause detail is
-        # already logged upstream; this line adds the scope attribution.
+        # Park payload intact so the next restart retries once.
         logfire.warn(
             "Memory note review returned no draft; job parked for restart retry",
             scope=scope,
@@ -446,22 +348,15 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             scope=scope,
         )
         if report is not None and (kept or forget_notes):
-            # What earlier rounds staged and every forget are durable regardless of the failed
-            # review, so the reply may say so; the notes that failed are left out rather than
-            # guessed at. A resumed retry carries no report, so this is the only chance.
+            # Report already-staged rounds and forgets now; resumed retries carry no report.
             await report(_write_summary(observations=tuple(kept), forgotten=forget_notes))
-        # The forget above is already durable and has nothing to do with the review that
-        # failed, so it still gets the immediate pass it was written for. Without this it
-        # would wait for an unrelated turn to push the backlog over threshold, and the bot
-        # would go on repeating what it was asked to drop -- exactly what writing it first
-        # was meant to prevent.
+        # Still force consolidation for filed forgets even though the review failed.
         return True if forget_notes else None
     if not kept and not forget_notes:
         logfire.debug("Memory notes survived nothing", scope=scope, notes=len(remember_notes))
         await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope)
         return None
-    # The turn is durable in raw.md now; record success before the (best-effort,
-    # self-healing) consolidation so a consolidation crash never re-runs the review.
+    # Mark done before consolidation so a consolidation crash never re-runs phase-1 review.
     await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token), scope=scope)
     if report is not None:
         await report(_write_summary(observations=tuple(kept), forgotten=forget_notes))
@@ -469,13 +364,10 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
 
 
 async def safe_list_resumable(updated_before: datetime) -> list[memory_db.MemoryJob]:
-    """Returns the persisted `pending` and `failed` jobs for the restart sweep, best-effort.
-
-    Wrapped so a `reply.db` read failure degrades to "nothing to resume" instead of
-    breaking `on_ready`; the in-memory pipeline keeps working regardless.
+    """Returns persisted `pending` and `failed` jobs for the restart sweep, or `[]` on DB error.
 
     Args:
-        updated_before (datetime): When this process started; see `database.py::list_resumable`.
+        updated_before (datetime): Process start timestamp; see `database.py::list_resumable`.
     """
     try:
         return await memory_db.list_resumable(updated_before=updated_before)

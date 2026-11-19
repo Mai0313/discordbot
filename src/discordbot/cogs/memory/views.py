@@ -44,16 +44,14 @@ def compartment_label(compartment: str, bot: commands.Bot) -> str:
     return f"只有 {guild.name} 看得到" if guild is not None else f"只有伺服器 {guild_id} 看得到"
 
 
-# Embed descriptions cap at 4,096 chars; pages stay below that with headroom
-# so the page indicator and footer never push the embed near Discord's
-# 6,000-char total.
+# Below Discord's 4,096-char description cap to leave headroom for footer and page indicator.
 MEMORY_PAGE_MAX_CHARS = 4_000
 
 
 def paginate_on_lines(text: str, limit: int) -> list[str]:
     """Returns `text` split into pages of at most `limit` characters at line boundaries.
 
-    Lines longer than `limit` are hard-split so every page fits within `limit`.
+    Hard-splits lines longer than `limit`.
 
     Args:
         text (str): Text to paginate.
@@ -117,11 +115,7 @@ def build_memory_embed(
 
 
 def build_clear_confirm_embed() -> Embed:
-    """Returns the warning embed shown above the clear confirmation buttons.
-
-    Names every tier that goes, since `/memory show` displays only the consolidated tier and
-    the tone note.
-    """
+    """Returns the warning embed shown above the clear buttons, naming all erased tiers."""
     return Embed(
         title=MEMORY_CLEAR_TITLE,
         description=(
@@ -154,11 +148,7 @@ def build_clear_result_embed(removed: bool) -> Embed:
 
 
 def build_clear_failed_embed() -> Embed:
-    """Returns the outcome embed for a clear that could not complete.
-
-    Points at a retry rather than claiming the memory is untouched, since a filesystem error
-    can occur after some tiers are already removed and a retry is idempotent.
-    """
+    """Returns the outcome embed for an incomplete clear, directing the user to retry."""
     return Embed(
         title=MEMORY_CLEAR_TITLE,
         description="清除沒有完成，可能還有一部分沒清掉。等一下再試一次，重複清除不會有問題。",
@@ -176,14 +166,9 @@ def build_clear_cancelled_embed() -> Embed:
 
 
 class _OriginBoundView(LoggedView):
-    """A view that keeps its prompt's newest interaction, so a timeout can reach the prompt.
+    """Ephemeral view tracking its newest interaction handle so `on_timeout` can disable buttons.
 
-    Both memory views are ephemeral, which is why they need this: there is no message
-    object to edit afterwards, so an interaction is the only handle back to the prompt.
-    That is the command until a press is answered on the prompt, then the newest such
-    press: nextcord restarts the timer on every press, so only the newest one holds a
-    token sure to outlive it. Being ephemeral is also why neither view carries an author check — only
-    the invoker can see or press an ephemeral prompt.
+    No author check is needed because only the invoker can see or press an ephemeral prompt.
     """
 
     def __init__(self, timeout: float) -> None:
@@ -196,17 +181,14 @@ class _OriginBoundView(LoggedView):
         self._origin = interaction
 
     async def on_timeout(self) -> None:
-        """Disables the buttons once the view goes idle; nothing else happens.
-
-        Inert cleanup: the ephemeral response may already be dismissed or gone, and there
-        is nothing left to degrade. Broad on purpose: a narrower filter would let an aiohttp
-        transport error escape and be logged as an error, which for inert cleanup is noise.
-        """
+        """Disables the buttons once the view goes idle, ignoring cleanup errors."""
         if self._origin is None:
             return
         for child in self.children:
             if isinstance(child, Button):
                 child.disabled = True
+        # Broad on purpose: inert cleanup when the ephemeral prompt may already be dismissed or
+        # unreachable; suppressing aiohttp/HTTP errors avoids noise.
         with contextlib.suppress(Exception):
             await self._origin.edit_original_message(view=self)
 
@@ -241,16 +223,11 @@ class MemoryClearConfirmView(_OriginBoundView):
             interaction (Interaction[commands.Bot]): Discord button interaction.
         """
         if self.is_finished():
-            # A second click lands while the first press is still on its way to
-            # removing the buttons. Re-running the clear is harmless (it is
-            # idempotent) but its "nothing to clear" result would overwrite the
-            # real outcome, so this press is acked and dropped.
+            # Ignore duplicate clicks in flight so a second press cannot overwrite the outcome.
             await interaction.response.defer()
             return
         self.stop()
-        # Acked first: the clear writes reply.db and the filesystem, and a reply
-        # that misses Discord's 3s window would report a failure for a wipe that
-        # already happened.
+        # Defer first: clearing DB and disk can exceed Discord's 3s ack window.
         await interaction.response.defer()
         try:
             removed = await clear_scope_memory(scope=self.scope)

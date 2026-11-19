@@ -1,7 +1,6 @@
 """Single-call triage for route selection, reasoning effort, and optional memory recall.
 
-`RouteClassifier.classify` runs on the critical path before any handler dispatches, so it reads
-text-only message renders without waiting on attachment uploads or channel history.
+Runs on the critical path from text-only message renders without attachment uploads or history.
 """
 
 import time
@@ -53,8 +52,8 @@ class RouteClassifier(BaseModel):
 
         Reads text-only message parts without waiting on attachment uploads. When
         `recall_candidates` is non-empty, widens the schema to `RecallRouteClassification` and
-        includes `server_memory_block` plus the candidate block so the call also picks obliquely
-        referenced user ids.
+        includes `server_memory_block` plus the candidate block to also pick obliquely referenced
+        user ids.
 
         Args:
             reference_messages (list[EasyInputMessageParam]): Text-only render of the replied-to
@@ -94,8 +93,7 @@ class RouteClassifier(BaseModel):
                 )
             route = responses.output_parsed
             if route is None:
-                # A response with no message output, or whose message is a refusal, parses to
-                # None rather than raising, so neither except below sees it.
+                # Refusals or empty outputs parse to None without raising.
                 logfire.warn(
                     "RouteClassification returned no parsed output; defaulting to QA",
                     message_id=self.message.id,
@@ -103,9 +101,7 @@ class RouteClassifier(BaseModel):
                 )
                 route = RouteClassification(decision="QA")
         except ValidationError as exc:
-            # `responses.parse` validates the message text before `output_parsed` is reachable,
-            # so an empty text and a genuine schema mismatch both land here; the attached
-            # exception is the only way to tell them apart.
+            # ValidationError covers both empty output text and schema mismatches.
             logfire.warn(
                 "RouteClassification parse failed; defaulting to QA",
                 message_id=self.message.id,
@@ -114,8 +110,7 @@ class RouteClassifier(BaseModel):
             )
             route = RouteClassification(decision="QA")
         except APIError as exc:
-            # The proxy configures no fallback for the triage tier, so retryable provider errors
-            # degrade to QA while non-retryable errors still raise.
+            # Retryable provider errors degrade to QA; non-retryable errors propagate.
             if not is_retryable_llm_error(exc=exc):
                 raise
             logfire.warn(
@@ -127,8 +122,7 @@ class RouteClassifier(BaseModel):
                 _exc_info=exc,
             )
             route = RouteClassification(decision="QA")
-        # Route-call latency is logged on every path: this is the prime suspect for slow
-        # replies, so the log file must show its duration directly, not just a span start.
+        # Log elapsed_seconds explicitly; logfire's console exporter prints no span duration.
         logfire.info(
             "gen_reply route done",
             elapsed_seconds=time.monotonic() - started,

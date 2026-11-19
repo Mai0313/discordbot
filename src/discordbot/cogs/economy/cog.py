@@ -95,10 +95,9 @@ from discordbot.services.economy.presentation import CURRENCY_NAME, currency_tex
 async def _amount_or_refuse(
     interaction: Interaction[commands.Bot], raw_amount: str, title: str, collect: bool = False
 ) -> int | None:
-    """Parses a money option, answering malformed text with an ephemeral notice titled `title`.
+    """Parses a money option or replies ephemerally with an error and returns None.
 
-    The amount must be positive, except a collection's, where blank or 0 means everything owed
-    and comes back as 0. Returns None once the notice is sent, so the caller must not reply again.
+    Callers must not reply again on None. With `collect=True`, blank or 0 returns 0 (collect all).
     """
     if collect and not raw_amount.strip():
         return 0
@@ -125,7 +124,7 @@ class EconomyCogs(commands.Cog):
 
     @staticmethod
     async def _spending_held_by_table(user_id: int) -> bool:
-        """Whether a casino table holds all the money a refused repayment found missing."""
+        """Returns whether a table hold leaves the user with zero spendable balance."""
         return (
             held_amount(user_id=user_id) != 0 and await get_spendable_balance(user_id=user_id) == 0
         )
@@ -776,11 +775,8 @@ class EconomyCogs(commands.Cog):
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
 
-        # Deferred before the write, not after it: the token dies three seconds after dispatch
-        # while a SQLite writer waits out lock contention for longer, so acking on the result
-        # lets a committed settlement reach its owner as "the application did not respond".
-        # Ephemeral because the failure below is private and this ack is what the caller sees
-        # while it runs.
+        # Defer before the DB write (SQLite lock wait can outlast Discord's 3s ack deadline),
+        # ephemerally so failure stays private while success uses a public expiring followup.
         await interaction.response.defer(ephemeral=True)
         result = await repay_personal_loans(
             borrower_id=user.id,
@@ -866,8 +862,7 @@ class EconomyCogs(commands.Cog):
         guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=user, guild=guild)
-        # Acked before the write, and ephemerally — see `credit_repay` for why both halves
-        # matter.
+        # Defer ephemerally before the DB write (3s ack deadline; failure stays private).
         await interaction.response.defer(ephemeral=True)
         result = await call_personal_loans(
             lender_id=user.id,
@@ -989,9 +984,7 @@ class EconomyCogs(commands.Cog):
         )
         if parsed_amount is None:
             return
-        # Refused before the proposal exists rather than at the button: outside a guild
-        # nobody holds `administrator`, so an approve and a reject would both be
-        # impossible and the request would sit until it timed out with no explanation.
+        # Refuse outside a guild upfront: nobody holds administrator there to decide the request.
         if interaction.guild_id is None:
             await send_ephemeral_response(
                 interaction=interaction,
@@ -1079,8 +1072,7 @@ class EconomyCogs(commands.Cog):
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
-        # Acked before the write, and ephemerally — see `credit_repay` for why both halves
-        # matter.
+        # Defer ephemerally before the DB write (3s ack deadline; failure stays private).
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is not None:
             await record_guild_participant(guild_id=interaction.guild_id, user_id=user.id)
@@ -1171,8 +1163,7 @@ class EconomyCogs(commands.Cog):
         guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=guild)
-        # Acked before the write, and ephemerally — see `credit_repay` for why both halves
-        # matter.
+        # Defer ephemerally before the DB write (3s ack deadline; failure stays private).
         await interaction.response.defer(ephemeral=True)
         await record_guild_participant(guild_id=interaction.guild_id, user_id=interaction.user.id)
         result = await call_central_bank_loans(

@@ -1,60 +1,36 @@
-"""Conventions for rendering a Discord message into an LLM transcript.
-
-What one pipeline writes and another reads back lives here rather than in either one: the
-sanitizer that keeps a name from forging the author-identity prefix the reply and memory
-prompts trust as authorship (the prefix itself is spelled where each transcript is built), the
-fence defusing that keeps typed text from passing as one of the reply pipeline's markers, the
-one-line identities memory files are stamped with, the forwarded-content marker, and the usage
-footer the bot appends to its own replies and strips again before reading them back.
-"""
+"""Shared transcript rendering, identity sanitization, fence defusing, and usage-footer helpers."""
 
 import re
 
 from discordbot.utils.model_pricing import get_token_rates
 
-# Strips the usage footer `render_usage_footer` renders from bot-authored messages before
-# feeding them back as `role=assistant` history.
-# Without this, the model performs in-context learning on its own past footers
-# and starts hallucinating fake "-# model · ⬆ ... ⬇ ... · $... · ..." lines into
-# fresh replies. Anchored on the `\n\n-# ` separator plus the ⬆/⬇ token-count
-# icons, which never appear together in user-authored content. The optional
-# trailing `\n-# ...` line matches the second subtext line that credits looked-up
-# memory owners, so the whole footer is stripped as one unit. The optional leading
-# `\n-# ✏️ ...` / `\n-# 🩹 ...` lines are the memory note `set_memory_note` puts directly
-# above the footer, its marks spelled as in `cogs/gen_reply/status_marks.py`: a later turn
-# re-reads the reply off Discord, and a forget note quotes what the user asked to drop.
-# The first may also open the message: Discord trims leading whitespace, so a reply with no
-# prose starts on its note.
+# Strips bot usage footers (plus optional leading ✏️/🩹 memory notes from
+# `cogs/gen_reply/status_marks.py` and trailing owner credit) before re-reading replies as
+# assistant history so the model does not hallucinate footers. `^` covers note-only replies.
 USAGE_FOOTER_RE = re.compile(
     r"(?:(?:^|\n)-# (?:✏️|🩹) [^\n]*)*\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$"
 )
 
-# A display name (or legacy username) containing an `[id: ...]`-shaped string
-# could forge the sender-identity prefix the input builder prepends, which the
-# reply persona prompt and the memory review prompts both treat as the trusted
-# authorship signal. Neutralize the lookalike before rendering.
+# Neutralizes `[id:` lookalikes in display names that could spoof trusted author prefixes.
 _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 
-# Marker prefixing each forwarded snapshot span appended to a rendered message body. The
-# answer model uses it to attribute forwarded content; the memory transcript strips from it
-# to end-of-body so a forward of someone else's words is never recorded as the forwarder's
-# own fact (forwarded text is always appended last, so the marker is the suffix boundary).
+# Suffix boundary for appended forwarded snapshots; memory transcripts strip from here to end.
 FORWARDED_MESSAGE_MARKER = "[forwarded message]"
 
 
 def render_usage_footer(
     model_name: str, label: str, input_tokens: int, output_tokens: int
 ) -> tuple[str, float | None]:
-    """Returns the usage footer line and its USD cost (or None when `model_name` has no rate).
+    """Returns the usage footer line and its USD cost, or None when `model_name` has no rate.
 
-    Its `⬆` / `⬇` icons are what `USAGE_FOOTER_RE` anchors on. The cost is left off when the
-    price table has no entry for `model_name`, since `$0.00000000` would read as a price.
+    Omits the cost suffix when `model_name` is absent from the price table. `USAGE_FOOTER_RE`
+    anchors on the `⬆` / `⬇` icons in the returned line.
 
     Args:
         model_name (str): Model identifier used to look up token rates.
         label (str): Display model label shown in the footer line.
-        input_tokens (int): Input tokens the request reported.
-        output_tokens (int): Output tokens the request reported.
+        input_tokens (int): Input tokens reported by the request.
+        output_tokens (int): Output tokens reported by the request.
     """
     line = f"-# {label} · ⬆ {input_tokens:,} ⬇ {output_tokens:,}"
     rates = get_token_rates(model_name=model_name)
@@ -66,16 +42,12 @@ def render_usage_footer(
 
 
 def defuse_separator_fences(text: str) -> str:
-    """Returns `text` with every run of exactly four `=` (the full-width sign included) cut to `==`.
+    """Returns `text` with exact four-character runs of `=` or full-width equals reduced to `==`.
 
-    The reply pipeline's markers (the history, Reference Message, Current Message and linked-post
-    labels) are fenced with `====` and ride in the same role as what people write, so the fence is
-    what keeps a typed lookalike from passing as one. The full-width sign is one keystroke away on
-    a Chinese input method. Longer runs are left alone: they are not the fence, and code carries
-    them (a merge-conflict divider, a heading underline).
+    Leaves longer runs untouched.
 
     Args:
-        text (str): Text a person or a linked post wrote.
+        text (str): User- or external-sourced text to defuse.
     """
     return re.sub(pattern=r"(?<![=\uff1d])[=\uff1d]{4}(?![=\uff1d])", repl="==", string=text)
 
@@ -90,10 +62,9 @@ def sanitize_identity(value: str) -> str:
 
 
 def render_author_identity(display_name: str, username: str, user_id: int) -> str:
-    """Returns the single-line author identity stamped into memory files.
+    """Returns the sanitized single-line author identity stamped into memory files.
 
-    Whitespace runs collapse to single spaces so the identity never breaks the one-line header
-    format the memory store relies on.
+    Neutralizes `[id:` lookalikes and marker fences, and collapses whitespace to single spaces.
 
     Args:
         display_name (str): User's display name or server nickname.

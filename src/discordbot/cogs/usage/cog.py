@@ -1,9 +1,7 @@
 """Records every slash-command invocation to the usage log.
 
-Listens on `on_interaction` rather than `on_application_command_completion` so invocations
-rejected by permission checks, targeting unresolvable commands, or raising inside the callback
-are still recorded. Implemented as a cog listener because overriding `on_interaction` on
-`DiscordBot` would replace `Client.on_interaction` and prevent slash commands from running.
+Listens on `on_interaction` as a cog listener (preserving `Client.on_interaction` slash-command
+dispatch) to capture rejected, unresolvable, and raising invocations alongside completed ones.
 """
 
 from typing import TYPE_CHECKING, cast
@@ -20,8 +18,8 @@ if TYPE_CHECKING:
 def command_path(data: "ApplicationCommandInteractionData") -> str:
     """Returns the full invoked command path (such as `"memory server show"`) from `data`.
 
-    Reads the payload's option tree directly because `interaction.application_command` is not
-    populated until `invoke_callback_with_hooks` runs later.
+    Walks the raw option tree; `interaction.application_command` is not populated during
+    `on_interaction`.
 
     Args:
         data (ApplicationCommandInteractionData): Raw application-command interaction payload.

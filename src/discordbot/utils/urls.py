@@ -1,41 +1,22 @@
-"""Pulling a usable URL out of text a human pasted.
-
-Share buttons rarely hand over a bare link. Douyin's, for one, wraps it in a blob of copy:
-`7.64 gOX:/ ... https://v.douyin.com/iR2syBRn/ 复制此链接，打开Dou音搜索`. Pasting that whole
-thing into a command that expects a URL is the natural thing to do, so the command should
-find the link rather than fail on it.
-"""
+"""URL extraction and host-matching helpers for user-pasted text."""
 
 import re
 from urllib.parse import urlparse
 from collections.abc import Sequence
 
-# Where a URL is allowed to start. `\b` is the natural spelling of "not glued to the end of another
-# token", but Python's `\w` counts every Unicode letter, so it also refuses the `h` after a Chinese
-# character: `看這篇https://example.com` read as no URL at all, which is how a lot of people type.
-# Refusing only an ASCII word character keeps `xhttps://...` out and lets the Chinese in, widening
-# the pattern by one class of characters rather than by a class of strings. Every scanner takes its
-# head from here, the generic one below and every site pattern alike, so they cannot drift on where
-# a URL begins and `xhttps://v.douyin.com/abc` cannot be refused by one and matched by another.
+# ASCII word-boundary lookbehind: Python's `\b` rejects URLs right after CJK text
+# (`看這篇https://...`), while still excluding ASCII prefixes like `xhttps://...`.
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
-# Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
-# Markdown wrap links in; it deliberately does not stop at CJK, so Chinese written straight
-# after a link is carried into the match. Where a link ends is what a site-specific pattern is
-# the right tool for; where it starts is `URL_START_ANCHOR`'s job just above.
+# Generic URL fallback; stops at whitespace and `<>` (does not stop at trailing CJK).
 URL_RE = re.compile(rf"(?i){URL_START_ANCHOR}https?://[^\s<>]+")
 
-# Sentence punctuation a URL never really ends on, stripped from the tail of a generic match
-# so `see https://example.com/x.` does not carry the full stop into the URL.
+# Sentence punctuation stripped from generic URL match tails.
 _TRAILING_PUNCTUATION = ".,;:!?)]}'\"、。，！？）」』"  # noqa: RUF001 -- CJK sentence punctuation is the point
 
 
 def normalized_url(url: str) -> str:
-    """Returns `url` in a form `urlparse` can read a host out of.
-
-    A user-pasted URL may carry no scheme (`v.douyin.com/xxx`, `www.bilibili.com/video/...`),
-    which `urlparse` reads as a path with no hostname at all; the `//` prefix makes the host
-    parse either way.
+    """Returns `url` prefixed with `//` when scheme-less so `urlparse` extracts its hostname.
 
     Args:
         url (str): User-pasted URL string, with or without a scheme.
@@ -44,10 +25,9 @@ def normalized_url(url: str) -> str:
 
 
 def normalized_host(url: str) -> str:
-    """Returns `url`'s lower-cased hostname, or an empty string when there is none to read.
+    """Returns `url`'s lower-cased hostname, or an empty string if missing or malformed.
 
-    Accepts a scheme-less paste (see `normalized_url`). Never raises: this runs on raw user
-    input in routing checks that sit ahead of any error handling.
+    Accepts scheme-less URLs via `normalized_url` and never raises.
 
     Args:
         url (str): User-pasted URL string.
@@ -72,16 +52,13 @@ def host_matches_domain(host: str, domain: str) -> bool:
 
 
 def extract_first_url(text: str, patterns: Sequence[re.Pattern[str]] = ()) -> str:
-    """Returns the first URL in `text`, or the stripped text when there is none.
+    """Returns the first URL in `text`, or `text.strip()` when no URL matches.
 
-    `patterns` are tried in order before the generic one. Falling back to the raw text rather
-    than an empty string passes a bare URL or unparsable input through untouched so it fails
-    downstream rather than here.
+    Tries `patterns` in order before falling back to `URL_RE`.
 
     Args:
-        text (str): The text a user supplied, which may be a bare URL or a blob containing one.
-        patterns (Sequence[re.Pattern[str]]): Site-specific URL patterns to prefer over the
-            generic match.
+        text (str): User-supplied text containing a URL or raw input.
+        patterns (Sequence[re.Pattern[str]]): Site-specific URL patterns preferred over `URL_RE`.
     """
     for pattern in patterns:
         match = pattern.search(string=text)

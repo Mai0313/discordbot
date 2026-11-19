@@ -1,13 +1,7 @@
-"""Loop-local asyncio primitives that rebind when the running event loop changes.
+"""Loop-local asyncio primitives that rebind on event-loop changes, plus tracked task spawning.
 
-An `asyncio.Lock` / `Semaphore` binds to the loop of the first call that actually waits on
-it rather than to the loop it was built on, so constructing one lazily does not help: the
-next loop to reach it raises `is bound to a different event loop`. Every test case runs on
-a fresh loop, so a primitive held at module level or on a process-wide singleton hits that
-on the second test. Hold one instance per call site; each accessor rebinds to the current
-loop, rebuilding (or clearing) state bound to a stale loop.
-
-`spawn_tracked` starts a fire-and-forget task and holds it until it finishes.
+Hold one instance per call site; each accessor rebinds to the running loop and rebuilds or
+clears state bound to a stale loop.
 """
 
 from typing import Any
@@ -38,9 +32,7 @@ class LoopLocalLock(BaseModel):
 class LoopLocalSemaphore(BaseModel):
     """An asyncio.Semaphore rebuilt whenever the running event loop changes.
 
-    The capacity is read from `capacity_provider` each time the semaphore is (re)built,
-    not at construction, so a test that monkeypatches the cap constant before the first
-    use still takes effect.
+    Reads the capacity from `capacity_provider` on each build rather than at construction.
     """
 
     capacity_provider: Callable[[], int] = Field(
@@ -60,11 +52,7 @@ class LoopLocalSemaphore(BaseModel):
 
 
 class LoopLocalRegistry[K, V](BaseModel):
-    """A process-local dict rebuilt (cleared) whenever the running event loop changes.
-
-    Every access rebinds to the current loop first, dropping entries left over from a
-    stale loop.
-    """
+    """A process-local dict cleared whenever the running event loop changes."""
 
     _items: dict[K, V] = PrivateAttr(default_factory=dict)
     _loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
@@ -113,10 +101,9 @@ class LoopLocalRegistry[K, V](BaseModel):
 
 
 class KeyedLockManager[K](BaseModel):
-    """Refcounted per-key asyncio locks, rebuilt when the running event loop changes.
+    """Refcounted per-key asyncio locks, cleared when the running event loop changes.
 
-    Serializes work per key while keeping the maps bounded: a key's lock and refcount are
-    dropped once the last holder releases, so an idle key leaves no residue.
+    Drops a key's lock and refcount once its last holder releases.
     """
 
     _locks: dict[K, asyncio.Lock] = PrivateAttr(default_factory=dict)
@@ -154,19 +141,15 @@ class KeyedLockManager[K](BaseModel):
 def spawn_tracked(
     coro: Coroutine[Any, Any, None], tasks: set[asyncio.Task[None]], name: str
 ) -> None:
-    """Runs `coro` as a fire-and-forget task, held in `tasks` until it finishes.
+    """Runs `coro` as a background task, retaining a strong reference in `tasks` until done.
 
-    The event loop keeps only a weak reference to a task, so one nothing else holds can be
-    garbage-collected mid-flight; `tasks` is the strong reference, and a caller that needs the
-    work to have landed can await what it holds. `coro` is expected to report its own failures:
-    one that escapes anyway is logged here, since asyncio would print it only to `sys.stderr`,
-    which `./data/logs` never sees.
+    Logs any unhandled exception escaping `coro` via logfire.
 
     Args:
-        coro (Coroutine[Any, Any, None]): The work to run.
-        tasks (set[asyncio.Task[None]]): The owner's set of running tasks; the task leaves it
-            when done.
-        name (str): The task's name, which the failure log carries.
+        coro (Coroutine[Any, Any, None]): Coroutine to schedule.
+        tasks (set[asyncio.Task[None]]): Caller-owned set holding running tasks; the finished
+            task is removed automatically.
+        name (str): Task name recorded on unhandled-failure logs.
     """
     task = asyncio.create_task(coro=coro, name=name)
     tasks.add(task)

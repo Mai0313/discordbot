@@ -1,12 +1,4 @@
-"""Expands a public Facebook post URL into Discord embeds.
-
-Nothing is downloaded here: the card names its images by URL, and the shell uploads them, so this
-cog needs no scratch directory, no media-delivery planner and no size ceiling.
-
-`utils/expansion_cog.py` owns everything around the card and the card's shape: one post, its
-images, and the comment a URL singled out. What is here is what is Facebook's own: its colour,
-its counters and how a comment is linked.
-"""
+"""Expands public Facebook post URLs into Discord embeds via `ConversationExpansionCog`."""
 
 from nextcord.ext import commands
 

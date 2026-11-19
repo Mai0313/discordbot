@@ -1,15 +1,12 @@
-"""Catching a server's memory up on a channel the bot was not addressed in.
+"""Server-memory catchup for channels where the bot was not addressed.
 
-Every other server-memory write starts from a marker the answer model wrote while it was part of
-the conversation. `/memory server catchup` has no such model, so `MemoryWriterAI.propose_server_notes`
-reads the channel and proposes the notes; from there they take the reply path's own review
-(`evaluate`) and staging, and consolidation picks them up like any other raw entry.
+Uses `MemoryWriterAI.propose_server_notes` in place of inline reply markers, then runs the same
+`evaluate` review and `raw.md` staging used by the reply path.
 
-It deliberately does not ride `schedule_memory_update`. That queue merges a held turn into the
-next one of the same subject by keeping only the newer transcript, persists one `memory_job` row
-per scope, and settles a failed review as "kept nothing". A catchup needs its notes judged against
-its own channel, and a failure told apart from an empty result, because its result message is
-where the next catchup in that channel starts reading.
+Bypasses `schedule_memory_update`: that queue replaces pending transcripts on the same scope,
+persists one `memory_job` row per scope, and folds a failed review into an empty result. Catchup
+must judge notes against the scanned channel's transcript and distinguish model failure from an
+empty result, as its result message anchors the next catchup's read point.
 """
 
 import time
@@ -20,8 +17,7 @@ from discordbot.services.memory.inflight import memory_semaphore
 from discordbot.services.memory.constants import MEMORY_CATCHUP_COOLDOWN_SECONDS
 from discordbot.services.memory.raw_entries import render_memory_observations
 
-# Per-scope start times of the last catchup. In-process like `/memory regenerate`'s, so a
-# restart resets it.
+# In-process per-scope cooldowns; a restart resets them.
 _last_catchup: dict[str, float] = {}
 
 
@@ -36,7 +32,9 @@ def catchup_on_cooldown(scope: str) -> bool:
 
 
 def start_catchup_cooldown(scope: str) -> None:
-    """Starts the scope's cooldown; called right after the check, with no await in between.
+    """Starts the scope's cooldown.
+
+    Call immediately after `catchup_on_cooldown` with no await in between.
 
     Args:
         scope (str): Server memory scope starting a catchup.
@@ -45,7 +43,7 @@ def start_catchup_cooldown(scope: str) -> None:
 
 
 def release_catchup_cooldown(scope: str) -> None:
-    """Gives the cooldown back when the catchup never started, such as an empty channel.
+    """Clears the scope's cooldown when a catchup exits before starting work.
 
     Args:
         scope (str): Server memory scope releasing its cooldown.
@@ -58,7 +56,7 @@ async def review_catchup_notes(
 ) -> tuple[MemoryObservation, ...] | None:
     """Proposes notes from `transcript`, reviews them, and stages what survives.
 
-    Consolidation is left to the caller so the result can be reported before it runs.
+    Does not trigger consolidation; the caller schedules it after reporting the result.
 
     Args:
         scope (str): Server memory scope to stage observations into.

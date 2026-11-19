@@ -18,26 +18,8 @@ class ModelSettings(BaseModel):
         description="LiteLLM model string dispatched on the Responses API.",
         examples=["gemini-3.8-flash", "gemini-3.1-flash-image"],
     )
-    # Which efforts a model accepts is per-model and not derivable from its name, its family, or
-    # a sibling snapshot. The vocabulary itself differs by provider, so a guess is not even wrong
-    # in a consistent direction: Gemini has `minimal` on older flash snapshots and `xhigh` on
-    # some Gemini 4 snapshots, OpenAI has `xhigh` and on some models `none`, Anthropic has `max`.
-    # Look the model up in openrouter's list
-    # (https://openrouter.ai/api/v1/models) under its `<provider>/<name>` id, where `reasoning`
-    # carries `supported_efforts`, `default_effort` and `mandatory` (whether thinking can be
-    # switched off at all). Sending an effort outside a model's own set is never a downgrade: direct
-    # to Google it is a hard failure, and through the proxy a non-streaming call is answered by the
-    # fallback deployment instead, so do that lookup instead of trusting a list in this tree.
-    #
-    # Every tier this catalog ships today is Gemini, where `mandatory` is true and `none` /
-    # `disable` are therefore never legal. LiteLLM does not reject them but rewrites them to
-    # minimal / low with `includeThoughts: False`, silently ending the reasoning summary the
-    # streaming preview is built on; on a `*-latest` alias, which carries no `gemini-3`
-    # substring, it instead sends `thinkingBudget: 0`, which a Gemini 3.x model refuses. Both
-    # are facts about these models and this proxy, not about the field.
-    #
-    # The `minimal` default serves only the tiers that dispatch no effort at all (the image /
-    # video / music / TTS / agent models below); every conversational tier states its own.
+    # Default `"minimal"` is only for non-reasoning tiers (image/video/music/TTS/agent);
+    # every conversational tier sets `effort` explicitly from the model's supported set.
     effort: ReasoningEffort = Field(
         default="minimal",
         description="Reasoning effort passed to the Responses API for this model.",
@@ -57,10 +39,8 @@ class ModelSettings(BaseModel):
     def tools(self) -> list[ToolParam]:
         """Returns the built-in search and URL-grounding tool payloads for this model's provider.
 
-        Code execution is intentionally omitted: Gemini and Claude validate every
-        uploaded file part against code execution's narrow MIME allowlist and 400 the
-        whole request on video, audio, or GIF-as-video attachments, so it cannot coexist
-        with attachment ingestion.
+        Omits code execution, which conflicts with non-code attachment MIME types on Gemini and
+        Claude.
         """
         if self.is_gemini:
             return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
@@ -87,10 +67,9 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def video_model(self) -> ModelSettings:
-        """Returns model settings for video generation and source-video editing (`task="edit"`).
+        """Returns model settings for video generation and editing (`task="edit"`).
 
-        Dispatched on the native Gemini Interactions API (`interactions.create`) direct to
-        Google with a bare model name and no provider prefix.
+        Uses a bare Gemini model name for direct `interactions.create` calls.
         """
         return ModelSettings(name="gemini-omni-1.2-flash")
 
@@ -101,19 +80,14 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def tts_model(self) -> ModelSettings:
-        """Returns model settings for spoken-reply synthesis on the `audio.speech` endpoint.
-
-        Only the reply's `<generate-voice>` segments are synthesized into one clip;
-        `effort` is unused for TTS.
-        """
+        """Returns model settings for spoken-reply synthesis (`audio.speech`; `effort` unused)."""
         return ModelSettings(name="gemini-3.8-flash-tts")
 
     @property
     def antigravity_model(self) -> ModelSettings:
-        """Returns model settings for the deep-research Antigravity managed agent.
+        """Returns model settings for the deep-research Antigravity agent.
 
-        Dispatched directly on the Gemini Interactions API; `effort` and `tools` are unused
-        because the agent runs its own internal tool loop.
+        `effort` and `tools` are unused.
         """
         return ModelSettings(name="antigravity-preview-09-2026")
 
@@ -127,11 +101,7 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def triage_model(self) -> ModelSettings:
-        """Returns model settings for filling a fixed-schema triage output.
-
-        Confirm any repointed snapshot supports `minimal` before carrying it across (see
-        `ModelSettings.effort`).
-        """
+        """Returns model settings for fixed-schema triage calls."""
         return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
     @property
@@ -143,38 +113,16 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """Returns model settings for full text replies and strategic reasoning.
 
-        Callers read `name` directly for provider and modality checks as well as dispatching
-        it, so repointing this tier changes what reaches the model, not just how well it
-        reasons.
+        Callers also inspect `name` to determine provider and supported input modalities.
         """
-        # Pinned to a snapshot, never a `*-latest` alias: this tier's effort is the route's grade,
-        # which the YouTube answer turn hands to `interactions.create` as a `thinking_level`, and
-        # a level the model does not list loses the whole reply there and errors the
-        # streaming answer through the proxy. Before repointing, check the new snapshot's set
-        # (see `ModelSettings.effort`) covers every value `RouteClassification.effort` emits.
-        # `gemini-4-neon` accepts low / medium / high / xhigh, not `minimal` (openrouter and
-        # Google's thinking page, read 2026-11-19); routing intentionally stays on low / medium /
-        # high.
-        #
-        # Without an entry in LiteLLM's price table a reply's footer shows no cost, and a
-        # non-Gemini name falls back to the `{"text", "image"}` modality gate: an audio or video
-        # attachment then never reaches the route or the answer model, so a clip posted with one
-        # line of text is answered as if the line were the whole message.
+        # Pin to a snapshot whose supported efforts cover `RouteClassification.effort`;
+        # an unpriced non-Gemini name falls back to `{"text", "image"}` modalities for answers.
         return ModelSettings(name="gemini-4-neon", effort="high")
 
     @property
     def memory_model(self) -> ModelSettings:
-        """Returns model settings for background long-term memory evaluation and consolidation.
-
-        The note evaluator and the consolidator share one tier because both gate what is
-        staged and written to fact files and the tone note; a weaker model on either risks
-        losing or leaking memory.
-
-        Not `high`: there the compaction pass reasoned until its whole output budget was gone, so
-        no compaction ever completed (#1167). Not `low`: it reasoned not at all, and three of four
-        compaction batches were refused by the net-deletion ceiling, then half the facts
-        (2026-11-18).
-        """
+        """Returns model settings for background long-term memory evaluation and consolidation."""
+        # Keep effort="medium": high exhausts compaction output tokens; low trips deletion guard.
         return ModelSettings(name="gemini-4-neon", effort="medium")
 
 
@@ -200,14 +148,8 @@ class RouteClassification(BaseModel):
             "only on the QA route to decide which source builders may start."
         ),
     )
-    # Overrides the answer model's effort on the QA path. `medium` is the grade an ordinary
-    # message gets and the one a failed route call falls back to; `low` and `high` each have to be
-    # earned. The route reads text-only parts, so it never sees an attachment's content, a linked
-    # post, or the history behind a short message, and a short question pointing at one of those
-    # is `medium`, never `low`. Every value still has to exist on whatever `slow_model` names and
-    # on each model in its proxy fallback chain, and no effort is universal, so repointing that
-    # tier or widening this grade is checked against the snapshot first (see
-    # `ModelSettings.effort`).
+    # Overrides `slow_model.effort` on QA; every literal must be supported by `slow_model`
+    # and its proxy fallback chain.
     effort: Literal["low", "medium", "high"] = Field(
         default="medium",
         description=(

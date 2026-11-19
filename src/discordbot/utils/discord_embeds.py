@@ -10,9 +10,7 @@ from nextcord import File, Embed, Attachment
 if TYPE_CHECKING:
     from nextcord.types.embed import Embed as EmbedData
 
-# Discord's own ceilings on what one message may carry: its `content`, one `embed.description`,
-# every text field of every embed in it summed, and how many embeds and attachments it holds.
-# Overshooting any of them makes Discord reject the whole send, not trim it.
+# Discord per-message ceilings; exceeding any rejects the whole send rather than trimming.
 DISCORD_MESSAGE_LIMIT: Final[int] = 2000
 DISCORD_EMBED_DESCRIPTION_LIMIT: Final[int] = 4096
 DISCORD_EMBED_TOTAL_LIMIT: Final[int] = 6000
@@ -23,10 +21,7 @@ DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 
 
 def utf16_length(value: str) -> int:
-    """Returns the UTF-16 code-unit length of `value`.
-
-    Discord's docs never define which unit its embed limits count, so an emoji is priced at the
-    two units it costs on the wire rather than the one `len` sees.
+    """Returns the UTF-16 code-unit length of `value`, counting non-BMP characters as two units.
 
     Args:
         value (str): Text to measure.
@@ -35,11 +30,9 @@ def utf16_length(value: str) -> int:
 
 
 def clip_to_utf16_limit(text: str, limit: int, notice: str) -> str:
-    """Returns `text` within `limit` UTF-16 units, ending in `notice` when it had to cut.
+    """Returns `text` within `limit` UTF-16 code units, appending `notice` when clipped.
 
-    The cut is marked so a truncated post never reads as a whole one. A limit with no room for
-    the notice yields the notice alone: a plain `text[: limit - len(notice)]` takes a negative
-    slice and silently returns more than was asked for.
+    When `limit` leaves no room for `notice`, returns `notice` alone.
 
     Args:
         text (str): Text to clip.
@@ -99,7 +92,11 @@ def _embed_has_real_image(embed: Embed, spacer_url: str) -> bool:
 
 
 def target_allows_file_uploads(target: object | None) -> bool:
-    """Returns False only when the current channel clearly denies file uploads."""
+    """Returns False only when `target`'s channel explicitly denies `attach_files`.
+
+    Args:
+        target (object | None): Discord message, interaction, or channel to inspect.
+    """
     if target is None:
         return True
     channel = getattr(target, "channel", None)
@@ -143,12 +140,10 @@ def embed_spacer_payload(
     target: object | None = None,
     extra_files: list[File] | None = None,
 ) -> dict[str, Any]:
-    """Returns the spacer files/attachments increment to merge into a send or edit.
+    """Returns spacer `files` and `attachments` kwargs to merge into a send or edit.
 
-    The spacer never changes, so an edit retains an already-uploaded spacer by id
-    instead of re-uploading it. Re-uploading the same spacer on every edit trips
-    Discord's per-message edit attachment upload limit (error code 400009) for
-    rapidly edited messages.
+    Updates `embeds` in place. On edits, retains an existing spacer attachment by id instead of
+    re-uploading it.
 
     Args:
         embeds (list[Embed]): Embeds being sent or edited.
@@ -163,6 +158,7 @@ def embed_spacer_payload(
     if any(not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds):
         existing_spacer = _existing_spacer_attachment(target=target) if is_edit else None
         can_upload_spacer = target_allows_file_uploads(target=target)
+        # Retain by id on edits; re-uploading on rapid edits trips Discord error 400009.
         if existing_spacer is not None:
             apply_embed_spacer_image(embeds=embeds)
             retained.append(existing_spacer)
@@ -183,7 +179,7 @@ def embed_spacer_payload(
 
 @cache
 def _transparent_png_bytes() -> bytes:
-    """Returns a 640x1 transparent PNG so spaced embeds render at a uniform width."""
+    """Returns cached 640x1 transparent PNG bytes for the embed width spacer."""
     image = Image.new(mode="RGBA", size=(640, 1), color=(0, 0, 0, 0))
     buffer = BytesIO()
     image.save(fp=buffer, format="PNG", optimize=True)

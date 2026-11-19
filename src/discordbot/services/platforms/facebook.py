@@ -1,27 +1,8 @@
 """Facebook post URL parsing and page extraction.
 
-`base.py` owns the contract every caller is written against.
-
-This module downloads nothing: callers work from the image URLs alone, so there is no scratch
-directory anywhere in this feature.
-
-Two things about this source shape everything below.
-
-The page is only served to something that looks like a browser. A bare `User-Agent` gets an HTTP
-400 and a crawler-shaped one gets a 348KB shell carrying nothing but Open Graph tags, whose
-description is truncated at ~190 characters. The full ~950KB page, with the post's own GraphQL
-payload in it, needs the complete header set: measured 2026-09-06, dropping `Sec-Fetch-Mode`
-alone is enough to lose it. The mobile hosts (`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth
-trying.
-
-And the payload is not a schema this module can mirror. The post sits somewhere inside one of
-~58 JSON script blocks whose shape is dominated by Facebook's own module loader, repeated two or
-three times per page, so the parser walks for a node carrying the fields a story has rather than
-validating a structure. Only the extracted result is modelled.
-
-Video is deliberately out of scope: a logged-out `Video` node carries `permalink_url` and
-`captions_url` but no `playable_url`, so there is no file to fetch. `FacebookOutput.video_urls`
-therefore holds permalinks for a caller to link to, never something to download.
+Reads public posts from embedded GraphQL JSON blocks using `BROWSER_HEADERS`; mobile hosts
+redirect to login and are normalized to `www.facebook.com`. Downloads nothing — image URLs and
+video permalinks (logged-out `Video` nodes carry no `playable_url`) are returned directly.
 """
 
 import re
@@ -54,33 +35,19 @@ from discordbot.services.platforms.page_json import (
     json_payloads,
 )
 
-# Every host Facebook serves posts on, so `FacebookURL.clean_url` aims a fetch from any of them at
-# `www`, where the payload actually is. `fb.com` is a short form its own share sheet emits.
-# `fb.watch` is deliberately absent here and from `FACEBOOK_URL_RE`: logged out, its links redirect
-# to a `/<page>/videos/<id>` page the reader finds no post in (2026-09-30).
+# `fb.watch` is excluded: logged-out redirects land on `/<page>/videos/<id>` with no post payload.
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
-# Deliberately host-anchored rather than path-anchored: a Facebook post is spelled at least six
-# ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`, `/groups/<id>/permalink/<id>`,
-# `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a group feed carrying
-# `?multi_permalinks=`), and a path pattern covering all six would also match the profile and
-# group-home URLs that are not posts at all. `is_facebook_post_url` makes
-# that call on the parsed URL instead, where the query is readable. The tail class is ASCII URL
-# characters ending on one that a real id or query value ends on, so a link written mid-sentence
-# in Chinese or Japanese is matched without swallowing the terminator. The one path refused here
-# is a `/<page>/videos/` page, whose id `is_facebook_post_url` would accept: logged out it carries
-# no post, for the reason `fb.watch` is left out (2026-09-30).
+# Host-anchored (`is_facebook_post_url` filters non-posts); excludes `/<page>/videos/` (no
+# logged-out payload), with an ASCII tail ending on `[A-Za-z0-9_-]` to stop at CJK punctuation.
 FACEBOOK_URL_RE = re.compile(
     pattern=rf"{URL_START_ANCHOR}https?://(?:[a-z0-9-]+\.)*(?:facebook\.com|fb\.com)/"
     r"(?![^/?\s]+/videos/)"
     r"[A-Za-z0-9_.?=&%/~:+-]*[A-Za-z0-9_-]/?"
 )
 
-# The path shapes that name a post on their own. A `share/p/<code>` link names one only through
-# the redirect it answers with. The video (`share/v/`) and reel (`share/r/`) share forms are left
-# out: logged out they carry no post (all 35 the bot met from 2026-09-27 to 09-30 read as
-# unreadable).
+# Post paths only; `share/v/` and `share/r/` carry no logged-out post payload.
 _GROUP_POST_PATH_RE = re.compile(
     pattern=r"^/groups/(?P<group>[^/]+)/(?:posts|permalink)/(?P<post>[0-9]+)"
 )
@@ -88,26 +55,18 @@ _PAGE_POST_PATH_RE = re.compile(pattern=r"^/(?:[^/]+)/(?:posts|videos)/(?P<post>
 _NUMERIC_POST_PATH_RE = re.compile(pattern=r"^/(?:[0-9]+)/posts/(?P<post>[0-9]+)")
 _SHARE_PATH_RE = re.compile(pattern=r"^/share/p/[A-Za-z0-9]+")
 
-# A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
-# every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
-# both are minted per share, so echoing them names whoever sent the link to the channel.
+# Query params preserved by `clean_url`; share-tracking params (`rdid`, `share_url`) are stripped.
 _COMMENT_ID_PARAM = "comment_id"
 _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 
-# Kept by `clean_url` but never read as a post id. `id` names the page or profile that owns the
-# post, and `permalink.php?story_fbid=<post>` cannot resolve without it — dropping it aims the
-# fetch at a URL naming no owner, and the post comes back unreadable. Deliberately not in
-# `_POST_ID_PARAMS`: `profile.php?id=<n>` carries the same parameter and is not a post at all.
+# Preserved by `clean_url` for `permalink.php?story_fbid=`, but excluded from `_POST_ID_PARAMS`
+# so `profile.php?id=<n>` is not accepted as a post.
 _OWNER_ID_PARAMS = ("id",)
 
-# Where a fetch lands when Facebook will not show the post logged out.
 _LOGIN_WALL_PATHS = ("/login", "/checkpoint", "/recover")
 
 
-# A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes both
-# "the comment this URL names" and "the post this comment hangs off" exact matches rather than
-# guesses. `legacy_fbid` carries the trailing id directly and wins for that half; the decode is
-# the fallback for a node without it, and the only source for the leading one.
+# Comment node ids decode as base64 `comment:<post_id>_<comment_id>`.
 _COMMENT_ID_RE = re.compile(pattern=r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
 
 
@@ -115,7 +74,7 @@ def is_facebook_post_url(url: str) -> bool:
     """Returns whether a matched Facebook URL names one post rather than a profile or a feed.
 
     `FACEBOOK_URL_RE` matches the host, so profile, group home, marketplace, and bare
-    `facebook.com` links are rejected here before any page fetch.
+    `facebook.com` links are rejected here.
 
     Args:
         url (str): A URL `FACEBOOK_URL_RE` matched.
@@ -125,23 +84,16 @@ def is_facebook_post_url(url: str) -> bool:
 
 
 class FacebookURL(BaseModel):
-    """Parses and normalises a Facebook post URL.
-
-    Only some of the accepted shapes name their post: a `share/p/<code>` link resolves to one
-    through its redirect, which is why `post_id` being empty is not the same as the URL being
-    unreadable (see `is_share_link` and `is_pfbid_link`).
-    """
+    """Parses and normalises a Facebook post URL; share and `pfbid` links leave `post_id` empty."""
 
     raw_url: str = Field(..., description="Original Facebook URL provided by the caller")
 
     @computed_field
     @cached_property
     def clean_url(self) -> str:
-        """Returns the URL aimed at `www.facebook.com`, carrying only content-identifying parameters.
+        """Returns the `www.facebook.com` URL keeping only post-, owner-, and comment-id params.
 
-        Everything but `comment_id` and the post-id/owner-id parameters is dropped, because `rdid`
-        and `share_url` are minted per share and name whoever passed the link on. That makes this
-        the form safe to publish back into a channel as well as the form to fetch.
+        Strips per-share tracking parameters (`rdid`, `share_url`), making the URL safe to publish.
         """
         parsed = urlparse(self.raw_url)
         kept: list[str] = []
@@ -178,11 +130,7 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def group_id(self) -> str:
-        """Returns the group id the post sits in, or an empty string for a page or profile post.
-
-        Read so the group's name can be matched on the page, which also serialises the groups
-        it recommends beside the one being read.
-        """
+        """Returns the group id the post sits in, or an empty string for a page or profile post."""
         match = _GROUP_POST_PATH_RE.match(string=urlparse(self.raw_url).path)
         if match:
             return match.group("group")
@@ -205,11 +153,7 @@ class FacebookURL(BaseModel):
     @computed_field
     @cached_property
     def is_pfbid_link(self) -> bool:
-        """Returns whether the URL names its post by a `pfbid` id, which no story node carries.
-
-        `post_id` stays empty and the read takes the page's story, as a share link's does.
-        A group feed's `multi_permalinks` is left out: that page serialises several posts.
-        """
+        """Returns whether the URL uses a `pfbid` post id (excludes group `multi_permalinks`)."""
         parsed = urlparse(self.raw_url)
         values = parse_qs(parsed.query).get("story_fbid")
         return bool(values and values[0].startswith("pfbid")) or bool(
@@ -218,14 +162,11 @@ class FacebookURL(BaseModel):
 
 
 class FacebookOutput(LinkableCommentOutput):
-    """One post or one comment, the single shape a conversation is built from.
+    """One Facebook post or comment.
 
-    A comment leaves empty the fields it has no version of: it carries no media, no group, and no
-    counts of its own.
-
-    Two inherited fields have Facebook-specific semantics: `url` is the post's permalink even on
-    a comment (Facebook's own comment permalink is a query parameter on the post URL), and
-    `comment_count` is the total count the post reports, which exceeds what the page preloads.
+    `url` holds the post permalink even on comments, and `comment_count` is the total count
+    reported by the post (which exceeds the preloaded comments). Comments carry no media, group,
+    or counts.
     """
 
     group_name: str = Field(
@@ -236,13 +177,10 @@ class FacebookOutput(LinkableCommentOutput):
 
 
 class FacebookConversation(LinkableComments[FacebookOutput]):
-    """One Facebook post and the discussion under it.
+    """One Facebook post and the preloaded discussion under it.
 
-    What the three inherited fields mean on Facebook. `chain` always has exactly one element —
-    Facebook serves no ancestor posts — and is a list only so `target` means the same here as on
-    every other platform. `reply_branches` holds one branch per top-level comment, and what the
-    page preloads is a handful of a much longer thread, which is the one thing a caller must not
-    present as the whole discussion. `selected_comment_id` is whatever a `?comment_id=` URL named.
+    `chain` has one element (no ancestors), `reply_branches` holds only the comments preloaded
+    with the page, and `selected_comment_id` comes from `?comment_id=`.
     """
 
 
@@ -252,19 +190,14 @@ def _text_of(value: JsonValue) -> str:
 
 
 def _comment_ids_of(node: dict[str, Any]) -> tuple[str, str]:
-    """Returns `(post_id, comment_id)` for a comment node, with either half empty when unreadable.
-
-    Both come out of the base64 node id, which separates a group feed's other posts from the one
-    being read; `legacy_fbid` carries only the comment's own half and wins for it when present.
-    """
+    """Returns `(post_id, comment_id)` from `legacy_fbid` and base64 node id, or empty strings."""
     legacy = node.get("legacy_fbid")
     comment_id = str(legacy) if isinstance(legacy, (int, str)) and str(legacy).isdigit() else ""
     node_id = node.get("id")
     if not isinstance(node_id, str):
         return "", comment_id
     try:
-        # Padded because Facebook serves these unpadded; the extra `=` are ignored when the
-        # length is already a multiple of four.
+        # Facebook omits base64 padding; extra `=` are ignored when already aligned.
         decoded = base64.b64decode(node_id + "==").decode(encoding="utf-8", errors="replace")
     except ValueError:
         return "", comment_id
@@ -275,12 +208,7 @@ def _comment_ids_of(node: dict[str, Any]) -> tuple[str, str]:
 
 
 class FacebookDownloader(PlatformDownloader):
-    """Reads a public Facebook post out of its page.
-
-    Holds no state and writes nothing to disk, so one instance serves every caller; it is a
-    class rather than a function so a test can replace `_fetch_page`, the one seam that touches
-    the network.
-    """
+    """Reads a public Facebook post and its preloaded comments from the page HTML."""
 
     def _fetch_page(self, url: str) -> FetchedPage:
         """Fetches a page with the browser headers Facebook will only answer in full to."""
@@ -288,22 +216,13 @@ class FacebookDownloader(PlatformDownloader):
 
     @staticmethod
     def _find_story(payloads: list[Any], post_id: str) -> dict[str, Any] | None:
-        """Returns the story node for `post_id`, or `None` when the page carries none.
-
-        A story is recognised by the fields it carries rather than by its path: the page nests
-        the same node under several route-dependent keys (`data.node_v2`, `data.node`) and
-        repeats it two or three times. Matching `post_id` is what makes a group feed usable —
-        it serialises several posts, only one of which the URL named — and a feed's other
-        entries come through as stubs carrying no message at all.
-        """
+        """Returns the story node matching `post_id` (or the page's first story when empty)."""
         fallback: dict[str, Any] | None = None
         for payload in payloads:
             for node in walk(node=payload):
                 if "post_id" not in node or "creation_time" not in node:
                     continue
-                # Empty for a `pfbid` link, pasted or landed on from a `/share/p/` link (2 of 8),
-                # which names no numeric id; the page's first story is then the post, as it was
-                # on all 62 of 74 pasted `pfbid` links that read (2026-10-01).
+                # Empty `post_id` occurs on `pfbid` links; take the page's first story.
                 if post_id and str(node.get("post_id")) != post_id:
                     continue
                 if deep_get(
@@ -318,19 +237,12 @@ class FacebookDownloader(PlatformDownloader):
                 ):
                     return node
                 fallback = fallback or node
-        # A post with no text at all is legitimate (an image-only post), so a node that matched
-        # the id but carried no message is still the answer when nothing richer turned up.
+        # Fall back to a message-less story node for image-only posts.
         return fallback
 
     @staticmethod
     def _media_of(story: dict[str, Any]) -> tuple[list[str], list[str]]:
-        """Returns `(image_urls, video_urls)` extracted from `story`'s attachments.
-
-        `viewer_image` is the full-resolution rendition and `image` the feed thumbnail, so the
-        first is preferred; a post with one attachment serves it directly under `media` while a
-        gallery nests every item under `all_subattachments`. A video yields its permalink and
-        never a file: logged out, the node carries no `playable_url` to fetch.
-        """
+        """Returns `(image_urls, video_urls)` extracted from `story`'s attachments."""
         image_urls: list[str] = []
         video_urls: list[str] = []
         for attachment in story.get("attachments") or []:
@@ -349,6 +261,7 @@ class FacebookDownloader(PlatformDownloader):
                     if isinstance(permalink, str) and permalink:
                         video_urls.append(permalink)
                     continue
+                # Prefer full-resolution `viewer_image` over feed thumbnail `image`.
                 rendition = media.get("viewer_image") or media.get("image") or {}
                 uri = rendition.get("uri") if isinstance(rendition, dict) else None
                 if isinstance(uri, str) and uri and uri not in image_urls:
@@ -359,14 +272,7 @@ class FacebookDownloader(PlatformDownloader):
     def _comment_branches(
         payloads: list[Any], post_url: str, post_id: str
     ) -> list[list[FacebookOutput]]:
-        """Returns preloaded comments on `post_id`, grouped into branches by `thread_branches`.
-
-        A reply names its own parent in `comment_direct_parent`, so it is threaded behind that
-        comment rather than behind whichever one the page happened to serialise before it; a
-        comment whose parent is absent from the page opens a branch of its own. The page-wide
-        scan is scoped by `post_id` via `_comment_ids_of` because comments are not nested under
-        the story node and a group feed serialises neighbouring posts' comments alongside them.
-        """
+        """Returns preloaded comments scoped to `post_id`, grouped by `thread_branches`."""
         found: dict[str, FacebookOutput] = {}
         parents: dict[str, str] = {}
         for payload in payloads:
@@ -377,6 +283,7 @@ class FacebookDownloader(PlatformDownloader):
                 text = _text_of(value=node.get("body"))
                 if not comment_id or not text or comment_id in found:
                     continue
+                # Scope page-wide scan to this post; group feeds include neighbouring comments.
                 if owner_id and post_id and owner_id != post_id:
                     continue
                 parent = node.get("comment_direct_parent")
@@ -396,11 +303,8 @@ class FacebookDownloader(PlatformDownloader):
 
     @staticmethod
     def _group_name_of(payloads: list[Any], group_id: str) -> str:
-        """Returns the display name of `group_id`, or an empty string for a page or profile post.
-
-        Matched on the URL's own group id and never guessed without one, since a page also
-        serialises the groups it recommends alongside the one being read.
-        """
+        """Returns the display name matching `group_id`, or an empty string when absent."""
+        # Require an explicit `group_id`; pages also serialize recommended groups.
         if not group_id:
             return ""
         for payload in payloads:
@@ -415,25 +319,16 @@ class FacebookDownloader(PlatformDownloader):
         return ""
 
     def parse_metadata(self, url: str) -> FacebookConversation:
-        """Reads one public Facebook post and the comments the page preloaded with it.
+        """Returns the parsed conversation for a public Facebook post, writing nothing to disk.
 
-        Writes nothing to disk, and there is no `parse` counterpart because nothing is
-        downloaded — the images ride out as URLs.
-
-        A share link names its post only through the redirect it answers with, so the id is
-        read off where the fetch landed. A redirect to the login wall means the post is not
-        public, which is a normal outcome rather than a failure and comes back as an empty
-        conversation.
+        Returns an empty `FacebookConversation` on a login-wall redirect or missing story payload.
 
         Args:
             url (str): The Facebook post URL in any accepted form.
 
-        Returns:
-            The parsed conversation; its `chain` is empty when the post could not be read.
-
         Raises:
-            LinkReadError: The page could not be fetched, in the shape `link_fetch_error`
-                classified it as; `RuntimeError` for a failure HTTP does not classify.
+            LinkReadError: If the page fetch fails with a classified HTTP/network error.
+            RuntimeError: If the fetch fails in an unclassified way.
         """
         facebook_url = FacebookURL(raw_url=url)
         fetched = self._fetch_page(url=facebook_url.clean_url)
@@ -464,8 +359,7 @@ class FacebookDownloader(PlatformDownloader):
         )
         image_urls, video_urls = self._media_of(story=story)
         permalink = story.get("permalink_url")
-        # The permalink the page reports is preferred over the caller's URL for the reason
-        # `clean_url` exists: a pasted share link carries the tokens that name whoever shared it.
+        # Prefer the page's permalink so per-share tracking tokens are never echoed.
         post_url = permalink if isinstance(permalink, str) and permalink else landed.clean_url
         post = FacebookOutput(
             text=_text_of(value=message),
@@ -477,8 +371,7 @@ class FacebookDownloader(PlatformDownloader):
             ),
             image_urls=image_urls,
             video_urls=video_urls,
-            # Not the `i18n_reaction_count` beside it, which is locale-formatted ("1.7萬" under a
-            # zh-TW `Accept-Language`) where this one is the raw number.
+            # Raw integer, unlike locale-formatted `i18n_reaction_count` (e.g. "1.7萬").
             like_count=count_of(value=deep_get(story, "feedback", "reaction_count")),
             comment_count=_comment_total(story=story),
             share_count=count_of(value=deep_get(story, "feedback", "share_count")),
@@ -510,10 +403,7 @@ def _comment_total(story: dict[str, Any]) -> int:
 
 
 if __name__ == "__main__":
-    """
-    Keep this for self development and testing.
-    DO NOT REMOVE THIS FOR ANY REASON.
-    """
+    # Kept for local manual smoke-testing; do not remove.
     from rich.console import Console
 
     console = Console()

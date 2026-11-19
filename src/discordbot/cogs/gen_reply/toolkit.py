@@ -1,14 +1,7 @@
-"""The clients, generators and caches a reply is built out of, made once and reused.
+"""Process-wide clients, generators, model catalog, and input caches for reply composition.
 
-The pipeline is handed one toolkit and reads its clients, generators, model catalog and input
-builder off it, so no call site has to assemble any of that for itself. What is not here is
-deliberate: `media_delivery` and `usage_recorder` stay on the cog, being about delivering a
-reply rather than composing one.
-
-One toolkit serves the whole process rather than one reply. That is the point of it: the
-caches inside — the input builder's rendered-part cache and the uploader's re-poll cache —
-hold Gemini Files API uris, and rebuilding them per reply would re-upload the whole history
-window every time.
+Shared across turns so `input_builder`'s rendered-part and Files API caches persist across
+replies. Delivery and usage services (`media_delivery`, `usage_recorder`) remain on the cog.
 """
 
 from functools import cached_property

@@ -1,12 +1,8 @@
-"""Posts a finished research report body into its Discord thread.
+"""Delivers a finished research report into its Discord thread.
 
-The report is long cited markdown. It is delivered two ways at once so nothing is
-lost: chunked inline messages (split on `---` sections, then paragraph boundaries, so
-citations and headings survive) for in-thread readability, plus the full report as a
-`research.md` File attachment (the durable artifact). A generated chart, if any, rides
-the same message as that attachment. Every send is best-effort. The cog supplies the
-completion line's parts (usage footer, owner ping); this module places them on the
-last chunk, having spent the opening status message on the first.
+Posts the report both as section-chunked inline messages and as a `research.md` attachment (plus
+`research.png` when present) on the final chunk alongside the owner ping and usage footer. Edits
+the opening status message into the first chunk; every send is best-effort.
 """
 
 from typing import TYPE_CHECKING
@@ -124,13 +120,8 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     """
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report_by_sections(text=report) or ["(empty report)"]
-    # Each attachment (the report `.md`, plus the chart `.png` if any) is decided independently:
-    # they are unrelated files, so one is never peeled to a URL just because their *combined* size
-    # crosses the limit (the planner's combined-body guard is for a single multi-file edit; here the
-    # `.md` is the durable artifact and must attach whenever it individually fits). A file too big on
-    # its own is hosted, or left out with a warning when hosting is off or fails.
-    # A Discord Thread always lives in a guild (research never runs in a DM), so the shared
-    # helper reads its boost-tier `filesize_limit` with no None-guild fallback in play.
+    # Plan research.md and research.png separately so their combined size never forces .md off
+    # native attach.
     limit = upload_limit_for(guild=thread.guild)
     items: list[MediaItem] = [MediaItem(source=report.encode("utf-8"), filename="research.md")]
     if result.image_bytes is not None:
@@ -147,12 +138,8 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
                 thread_id=thread.id,
                 filename=item.filename,
             )
-    # The completion suffix (owner ping + usage footer, plus a hosted-URL line for any report file
-    # too big to attach) rides the last chunk only when it still fits under Discord's message-length
-    # cap; otherwise it becomes its own trailing message so a near-limit final chunk never pushes the
-    # send over the limit and drops the chunk / attachment. The footer ends the suffix after a
-    # blank line, the only place `utils/llm_transcript.py::USAGE_FOOTER_RE` strips it from the
-    # bot's own history, so every other line goes before it.
+    # Place ping and hosted URLs before the blank-line-delimited footer so USAGE_FOOTER_RE strips
+    # the footer; overflow into a trailing message if needed.
     hosted_lines = ("\n" + "\n".join(hosted_urls)) if hosted_urls else ""
     suffix = f"\n\n<@{owner_id}>{hosted_lines}\n\n{footer}"
     if len(chunks[-1]) + len(suffix) <= DISCORD_MESSAGE_LIMIT:
@@ -192,8 +179,6 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
                 await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
         except Forbidden:
-            # The bot's permissions in the parent channel, which the thread inherits, changed
-            # under the run; the ids are the whole finding.
             logfire.warn(
                 "research thread refused the report edit",
                 thread_id=thread.id,
@@ -208,9 +193,7 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-        # The failed edit already read each `fp` into its multipart body and `Message.edit`
-        # neither closes nor rewinds it, so the fallback below would post empty attachments.
-        # Rewinding is what nextcord's own retry loop does with a File it re-sends.
+        # Rewind each File after a failed edit: Message.edit reads fp without rewinding.
         for file in files:
             file.reset(seek=True)
     try:
@@ -226,9 +209,8 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
             is_last=is_last,
         )
     except Exception as exc:
-        # Broad on purpose: last resort of a best-effort delivery, so it must not abort the
-        # caller's phase bookkeeping. Only the last chunk carries the file, ping and footer, so
-        # losing it breaks the deliverable; an earlier one is partial.
+        # Broad: best-effort final send must not abort phase bookkeeping; losing the last chunk
+        # drops the attachments and ping.
         log = logfire.error if is_last else logfire.warn
         log(
             "failed to post research report message",

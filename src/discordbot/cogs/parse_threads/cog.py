@@ -1,12 +1,4 @@
-"""Expands a Threads post URL into Discord embeds and media files.
-
-`utils/expansion_cog.py` owns everything around the card. What is here is the card, which on this
-platform is a whole conversation squeezed into Discord's ten embed slots, plus the target's video
-downloaded and attached.
-
-`/clean_threads_url` is the cog's one slash command and takes none of that path: it resolves a
-share link to the post's own URL, reads no post and downloads nothing.
-"""
+"""Expands Threads post URLs into Discord embeds/media and provides `/clean_threads_url`."""
 
 import asyncio
 import contextlib
@@ -48,21 +40,13 @@ from discordbot.services.platforms.threads import (
     ThreadsConversation,
 )
 
-# Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
-# (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
-# post is not a layer of the thread, so a shade from that ramp would read as one.
+# Off the greyscale chain gradient (`0x40`-`0xC0`) so quoted posts read as out-of-chain.
 _QUOTED_POST_COLOR = Color.blurple()
 
-# Appended to the target's own embed when it quotes a post Threads no longer serves. It rides on
-# the target rather than taking an embed slot of its own: there is no content to show, and the
-# tombstone Threads sends carries neither a username nor a shortcode, so there is not even a
-# permalink to offer. Never worded as a deletion — the payload says "unavailable", nothing more.
+# Appended to the target embed; tombstones lack username/shortcode and deletion-vs-privacy info.
 _QUOTED_UNAVAILABLE_HINT = "\n\n🔗 *引用的貼文目前無法瀏覽(可能已刪除或改為私人)*"
 
-# Held back from the message-wide budget for the remainder notes, which are appended to the
-# target's footer after selection has already measured it: what a post gave up is not known until
-# every slot is spent. Sixty-four UTF-16 units is well past the longest pair of notes (emoji count
-# double).
+# UTF-16 budget reserved for remainder footer notes appended after slot allocation.
 _REMAINDER_RESERVE = 64
 
 
@@ -128,9 +112,8 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
     ) -> ThreadsConversation:
         """Returns the parsed conversation with the target's media downloaded into a scratch directory.
 
-        Each invocation uses its own scratch directory so concurrent expansions of the same post do
-        not collide, and removing that directory on timeout stops a stalled `asyncio.to_thread`
-        download on its next write.
+        Uses a per-invocation scratch directory on `stack`; removing it on timeout aborts a
+        stalled `asyncio.to_thread` download on its next write.
 
         Args:
             message (Message): Unused; required by the `ExpansionCog` hook signature.
@@ -154,8 +137,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             url (str): The post URL that was read.
             parsed (ThreadsConversation): The parsed conversation.
         """
-        # The expansion shows the reply chain only; the comments the parse also carries are
-        # gen_reply's to read, and there is no embed budget left for them here.
+        # Expand the ancestor chain only; replies belong to `gen_reply`.
         results = parsed.chain
         if not results:
             logfire.info("Threads parse returned no post; treating as unavailable", url=url)
@@ -163,13 +145,9 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
         target = results[-1]
         if target.quoted_unavailable:
-            # A routine user-driven outcome (a removed remote post), so info, not warn. Logged
-            # because it is common and otherwise invisible in `data/logs`.
             logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
         embeds = self._build_embeds(results=results)
-        # Measured on the rendered descriptions rather than `target.text`: `_build_post_embeds`
-        # appends the quote prefix, video hint, and unavailable hint after any raw-body check, so a
-        # text sitting just under the limit would cross it and fail at Discord with a 400.
+        # Check rendered descriptions (with suffixes) against Discord's 4096-char limit.
         longest_text = max(
             (utf16_length(value=embed.description or "") for embed in embeds), default=0
         )
@@ -188,10 +166,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             envelope_margin=MEDIA_ENVELOPE_MARGIN,
         )
         if plan.dropped_items:
-            # An oversize video that could not be hosted (hosting off or failed) refuses the whole
-            # post rather than posting a partial chain. Kept simple on purpose: in the
-            # near-unreachable hosting-on partial-failure case this leaves one moved file orphaned
-            # at an unposted URL, and both serve-dir writes realistically succeed or fail together.
+            # Refuse the whole post if any video cannot be attached or hosted.
             logfire.warn(
                 "Threads videos could not be hosted; refusing the whole post",
                 url=url,
@@ -200,8 +175,6 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
             return None
 
-        # Clips past the attachment cap cost the post nothing but themselves, so the card says how
-        # many it left out rather than refusing.
         lines: list[str] = []
         if plan.clamped_items:
             lines.append(
@@ -215,13 +188,10 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
-        """Greyscale gradient — lightest at index=0 (root), darkest at index=total-1 (leaf).
-
-        Both ends stay inside [0x40, 0xC0] so every layer renders a visible stripe; pure black
-        (#000000) is reserved for "no stripe" on solo posts.
-        """
+        """Returns a greyscale shade from root (lightest) to leaf (darkest), or default solo."""
         if total <= 1:
             return Color.default()
+        # Stay inside [0x40, 0xC0]; default/black is reserved for solo posts.
         light = 0xC0
         dark = 0x40
         shade = round(light + (dark - light) * index / (total - 1))
@@ -248,28 +218,17 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
         is_target: bool,
         is_quoted: bool = False,
     ) -> list[Embed]:
-        """Builds the embeds for one post, showing `image_count` of its images.
-
-        The main embed carries the post text plus its first shown image; further shown images
-        become bare image embeds reusing the post URL so Discord merges them into one gallery.
-        `image_count == 0` yields a single text-only context embed.
-        """
+        """Builds the main embed plus gallery embeds for one post, showing `image_count` images."""
         main_embed = self._build_post_embed(output=output, color=color)
-        # A quoted post sits outside the chain the gradient describes, so it says what it is:
-        # without the line it reads as one more post in the thread rather than as the post the
-        # linked one is arguing with, and by a different author at that.
+        # Label quoted posts explicitly since they sit outside the thread gradient.
         if is_quoted:
             main_embed.description = f"🔗 **被引用的貼文**\n\n{main_embed.description or ''}"
         embeds = with_gallery(card=main_embed, images=output.image_urls[:image_count])
-        # Target videos are downloaded and attached as files; ancestor and quoted-post videos are
-        # not, so surface a link hint — otherwise a video-only parent shows as an empty embed, and
-        # a quoted clip would look like a quoted post with nothing in it.
+        # Ancestor/quoted videos are not downloaded; add a link hint so embeds stay non-empty.
         if not is_target and output.video_urls and output.url:
             hint = VIDEO_HINT.format(url=output.url)
             main_embed.description = (main_embed.description or "") + hint
-        # Only the target's quote is rendered, so only the target reports an unavailable quote;
-        # otherwise an ancestor quoting a dead post would announce it while an ancestor quoting a
-        # live post stayed silent.
+        # Only the target's quote is rendered, so only the target reports an unavailable quote.
         if is_target and output.quoted_unavailable:
             main_embed.description = (main_embed.description or "") + _QUOTED_UNAVAILABLE_HINT
         return embeds
@@ -277,10 +236,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
     def _select_posts_within_text_limit(
         self, posts: list[ThreadsOutput], priority: list[int], chain_depth: int, quoted_index: int
     ) -> set[int]:
-        """Selects complete posts by relevance until the message-wide text budget is full.
-
-        The target is kept whatever its own text costs; every other post has to fit.
-        """
+        """Selects complete posts within the message text budget; always keeps the target."""
         selected: set[int] = set()
         text_budget = DISCORD_EMBED_TOTAL_LIMIT - _REMAINDER_RESERVE
         for index in priority:
@@ -305,40 +261,27 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
     def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
         """Builds at most ten embeds for the ordered reply chain `[root, ..., direct_parent, target]`."""
-        # Discord caps a single message at 10 embeds, one image each. The posted URL is the target
-        # (last item) and owns the message, so an embed for its own words is reserved first, then
-        # one for the post it quotes; images then claim what is left in the same order, target,
-        # quoted, direct parent, on up the chain. An ancestor that loses the image race still
-        # earns a text-only context embed, but only from slots no image needed. A chain deeper
-        # than the embed cap can't show every post; keep the target and its nearest ancestors,
-        # which are the most relevant context, and count the rest in the target's footer.
+        # Keep at most 10 newest posts; prioritize target, quoted post, then nearest ancestors.
         trimmed = 0
         if len(results) > DISCORD_EMBED_COUNT_LIMIT:
             trimmed = len(results) - DISCORD_EMBED_COUNT_LIMIT
             results = results[-DISCORD_EMBED_COUNT_LIMIT:]
         chain_depth = len(results)
-        # The post the target quotes is not a chain member: it is what the target is talking
-        # about, by someone who never joined this thread. So it is allocated alongside the chain
-        # but emitted after it.
+        # Allocated alongside the chain, emitted after it.
         quoted = results[-1].quoted if results else None
         posts = [*results, *([quoted] if quoted is not None else [])]
         quoted_index = chain_depth if quoted is not None else -1
 
-        # Allocation order: the target, then the post it quotes, then up the chain towards the
-        # root. Emission order is different (root first, quoted last) — see the loop below.
+        # Allocation order (target, quoted, nearest ancestors) differs from emission order.
         priority = [chain_depth - 1, quoted_index, *reversed(range(chain_depth - 1))]
         priority = [index for index in priority if index >= 0]
 
-        # Discord applies the 6000-character budget to every text-bearing field across the
-        # message. Select complete posts in the same relevance order used for embed slots so a
-        # distant ancestor can never displace the target, its quoted post or a nearer ancestor.
         selected = self._select_posts_within_text_limit(
             posts=posts, priority=priority, chain_depth=chain_depth, quoted_index=quoted_index
         )
         priority = [index for index in priority if index in selected]
 
-        # Reserve one slot each for the target and its quoted post ahead of any gallery images so
-        # a multi-image carousel never starves the commentary or a text-only target.
+        # Reserve one slot each for target and quoted post before gallery images.
         reserved = [index for index in (chain_depth - 1, quoted_index) if index in selected]
         slots = _allocate_embed_slots(posts=posts, priority=priority, reserved=reserved)
 
@@ -364,10 +307,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
                 target_embed = built[0]
             embeds.extend(built)
 
-        # Counted after allocation rather than during it: what a post gave up is only known once
-        # every slot is spent. The count rides the target's footer because the target is the post
-        # that was linked, so it is the card a reader is looking at. Only its own images are
-        # counted — an ancestor's are context the expansion never promised.
+        # Count only omitted posts and omitted target images (ancestor images are best-effort).
         if target_embed is not None:
             notes = _remainder_notes(
                 omitted_posts=trimmed + sum(1 for slot in slots if slot == 0),
@@ -404,16 +344,15 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
     ) -> None:
         """Replies ephemerally with the canonical URL of a Threads post or share link.
 
-        Resolves only the share redirect without fetching post JSON or media, so posts that cannot
-        be read still resolve and share tracking parameters are never echoed to the channel.
+        Resolves only the share redirect without fetching post JSON or media, stripping share
+        tracking parameters.
 
         Args:
             interaction (Interaction[commands.Bot]): The interaction that triggered the command.
             url (str): The Threads link to clean, or the share text carrying it.
         """
         await interaction.response.defer(ephemeral=True)
-        # The same regex the listener matches on, run over the whole option so pasting a share
-        # blob works here exactly as pasting it into the channel does.
+        # Search the full option text so pasted share blobs work.
         match = THREADS_URL_RE.search(string=url)
         if not match:
             await interaction.followup.send(
@@ -421,8 +360,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
             return
 
-        # No output folder because nothing is ever written: `resolve_clean_url` reads the redirect
-        # and stops there, so the field the downloader keeps for media never gets read.
+        # `resolve_clean_url` writes nothing to disk.
         downloader = self.downloader_factory(output_folder="")
         try:
             clean_url = await asyncio.to_thread(downloader.resolve_clean_url, url=match.group(0))
@@ -433,9 +371,6 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            # Deliberately one line for every outcome: this command is ephemeral and answers one
-            # person who is waiting, so a second wording buys them nothing they can act on. The
-            # expansion path is where that split is worth spending a reaction on.
             await interaction.followup.send(content="這個連結現在拿不到。", ephemeral=True)
             return
 

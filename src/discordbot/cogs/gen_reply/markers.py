@@ -1,17 +1,9 @@
 """Inline reply markers for spoken segments, media generation, research, and memory notes.
 
-The answer model wraps segments to read aloud in `<generate-voice>...</generate-voice>`: only
-those segments are synthesized into a single voice clip, and their inner text stays visible in
-the reply with only the tags stripped. By contrast, `<generate-image>`, `<generate-music>`,
-`<generate-video>`, `<deep-research>`, `<write-memory>`, `<forget-memory>`, and
-`<write-server-memory>` blocks are pulled in full (tags and content) so generation prompts,
-research briefs, and memory notes never appear in chat. Marker bodies carry no target scope:
-whose memory or server a note writes to is determined by the caller from the turn's message.
-
-Tags are hyphenated (`generate-*`, `<deep-research>`) so they never collide with single-word
-HTML, SVG, or SSML elements such as `<video>`, `<image>`, or `<voice>` in example markup.
-Every marker is registered through `_declare` so extraction, preview scrubbing, and tag-name
-exports cover the same set.
+`<generate-voice>` strips only its tags and keeps inner text visible in the reply. Every other
+marker (`<generate-image>`, `<generate-music>`, `<generate-video>`, `<deep-research>`,
+`<write-memory>`, `<forget-memory>`, `<write-server-memory>`) is pulled in full from the visible
+reply. Tags are hyphenated to avoid HTML, SVG, and SSML collisions.
 """
 
 import re
@@ -20,8 +12,7 @@ from functools import cached_property
 
 from pydantic import Field, BaseModel
 
-# Hard cap on inline images per reply: a voice clip plus 9 images fills Discord's 10-attachment
-# ceiling; `MediaDeliveryPlanner.plan` clamps the rare reply that also adds music or video.
+# Voice clip + 9 images fills Discord's 10-attachment cap; MediaDeliveryPlanner clamps extras.
 MAX_INLINE_IMAGES = 9
 
 # Sanity cap on memory notes of one kind per reply before downstream review.
@@ -122,7 +113,6 @@ FORGET_MEMORY_CLOSE = _FORGET_MEMORY.close
 WRITE_SERVER_MEMORY_OPEN = _WRITE_SERVER_MEMORY.open
 WRITE_SERVER_MEMORY_CLOSE = _WRITE_SERVER_MEMORY.close
 
-# Markers whose entire block is removed from the reply; voice keeps its inner text visible.
 _PULLED = tuple(marker for marker in _MARKERS if marker is not _VOICE)
 
 _ALL_TAGS = tuple(
@@ -213,18 +203,15 @@ def extract_inline_markers(text: str) -> InlineMarkers:
     for marker in _PULLED:
         pulled[marker.open], cleaned = marker.pull(cleaned)
 
-    # Complete blocks only, unlike every pulled marker: an unclosed `<generate-voice>` leaves its
-    # content visible (the bare tag is scrubbed below), so speaking it would put words in the clip
-    # that the reply never marked as spoken.
+    # Complete voice blocks only: an unclosed <generate-voice> stays visible, so speaking it would
+    # read unmarked text.
     voice_segments = [
         segment for match in _VOICE.block.finditer(cleaned) if (segment := match.group(1).strip())
     ]
     cleaned = _VOICE.block.sub(r"\1", cleaned)
     for marker in (*_PULLED, _VOICE):
         cleaned = marker.tag.sub("", cleaned)
-    # Only tidy the gap a removed block leaves behind when marker processing actually changed
-    # the text, so a marker-free reply (poetry, preformatted text, an exact code/output sample)
-    # keeps its intentional blank lines and surrounding whitespace byte-for-byte.
+    # Collapse extra blank lines only when markers were removed, preserving whitespace otherwise.
     if cleaned != text:
         cleaned = _COLLAPSE_BLANK_LINES_RE.sub("\n\n", cleaned).strip()
 
