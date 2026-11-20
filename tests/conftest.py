@@ -198,6 +198,24 @@ def ask_isolated_db(
 
 
 @pytest.fixture(autouse=True)
+def feedback_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
+) -> None:
+    """Points the reply feedback tables at a throwaway `reply.db`.
+
+    Autouse for the same reason `ask_isolated_db` is: every finalized reply records a best-effort
+    `reply_turn` snapshot whose failure is swallowed, so a test missing the swap would pass green
+    while writing fake turns into the live database.
+    """
+    _isolate_engine(
+        monkeypatch=monkeypatch,
+        target="discordbot.cogs.gen_reply.feedback_store._engine",
+        db_path=tmp_path / "reply.db",
+        template=migrated_databases["reply"],
+    )
+
+
+@pytest.fixture(autouse=True)
 def messages_isolated_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
 ) -> None:

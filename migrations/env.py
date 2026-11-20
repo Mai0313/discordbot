@@ -15,6 +15,7 @@ from discordbot.cogs.gen_reply.ask_store import Base as AskBase
 from discordbot.services.memory.database import Base as MemoryBase
 from discordbot.services.economy.database import Base as EconomyBase
 from discordbot.utils.expansion_placeholder import Base as ExpansionBase
+from discordbot.cogs.gen_reply.feedback_store import Base as FeedbackBase
 
 target_metadata = {
     "economy": [EconomyBase.metadata],
@@ -22,6 +23,7 @@ target_metadata = {
     "reply": [
         ResearchBase.metadata,
         AskBase.metadata,
+        FeedbackBase.metadata,
         ExpansionBase.metadata,
         MemoryBase.metadata,
     ],
