@@ -24,7 +24,11 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.discord_errors import is_reply_target_gone
-from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
+from discordbot.utils.llm_transcript import (
+    USAGE_FOOTER_RE,
+    render_author_identity,
+    render_server_identity,
+)
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner
 from discordbot.services.memory.store import user_scope, server_scope
 from discordbot.cogs.gen_reply.context import ReplyContext
@@ -57,6 +61,8 @@ from discordbot.cogs.gen_reply.status_marks import (
     MEMORY_WRITE_EMOJI,
     MEMORY_FORGET_EMOJI,
 )
+from discordbot.cogs.gen_reply.feedback_store import ReplyRoute, record_reply_turn
+from discordbot.cogs.gen_reply.feedback_views import ReplyFeedbackView
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
@@ -155,13 +161,87 @@ class AnswerTurn(BaseModel):
         """Returns the message being answered, read off `self.surface`."""
         return self.surface.message
 
-    async def stream_media_persona_reply(
+    async def _record_feedback_turn(  # noqa: PLR0913 -- maps directly to reply_turn columns
+        self,
+        streamer: ResponseStreamer,
+        route: ReplyRoute,
+        model: str,
+        effort: str,
+        backend: str,
+        question: str,
+    ) -> None:
+        """Persists a best-effort `reply_turn` snapshot for feedback buttons when enabled."""
+        if not self.config.feedback_enabled or streamer.last_reply is None:
+            return
+        recorded_question = question or self.message.content
+        if not recorded_question and (self.message.attachments or self.message.stickers):
+            recorded_question = "[attachment]"
+        recorded_answer = USAGE_FOOTER_RE.sub(repl="", string=streamer.final_answer_text()).strip()
+        try:
+            await record_reply_turn(
+                reply_message_id=streamer.last_reply.id,
+                source_message_id=self.message.id,
+                guild_id=self.surface.guild_id,
+                channel_id=self.message.channel.id,
+                author_id=self.message.author.id,
+                surface="ask" if self.surface.interaction is not None else "gateway",
+                route=route,
+                model=model,
+                effort=effort,
+                backend=backend,
+                question=recorded_question,
+                answer=recorded_answer,
+            )
+        except Exception as exc:
+            # Broad on purpose: best-effort feedback snapshot must never fail a delivered reply.
+            logfire.warn(
+                "Failed to record reply_turn snapshot for feedback",
+                message_id=self.message.id,
+                reply_message_id=streamer.last_reply.id,
+                route=route,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+
+    def _feedback_hook(  # noqa: PLR0913 -- carries per-turn metadata into the streamer callback
+        self,
+        route: ReplyRoute,
+        default_model: str,
+        effort: str,
+        backend: str,
+        question: str,
+        prefer_default_model: bool = False,
+    ) -> Callable[[ResponseStreamer], Awaitable[None]] | None:
+        """Returns the `on_final_message` hook when feedback is enabled, else None."""
+        if not self.config.feedback_enabled:
+            return None
+
+        async def record(active: ResponseStreamer) -> None:
+            recorded_model = (
+                default_model or active.model_name
+                if prefer_default_model
+                else active.model_name or default_model
+            )
+            await self._record_feedback_turn(
+                streamer=active,
+                route=route,
+                model=recorded_model,
+                effort=effort,
+                backend=backend,
+                question=question,
+            )
+
+        return record
+
+    async def stream_media_persona_reply(  # noqa: PLR0913 -- media route passes prompt, pixels, noun, model, question
         self,
         reply: Message | None,
         context_task: asyncio.Task[ReplyContext],
         system_prompt: str,
         focus_part: ResponseInputFileParam | ResponseInputImageParam,
         media_noun: str,
+        media_model: str = "",
+        question: str = "",
     ) -> None:
         """Streams a best-effort persona follow-up onto an already-delivered image or video.
 
@@ -176,6 +256,8 @@ class AnswerTurn(BaseModel):
             focus_part (ResponseInputFileParam | ResponseInputImageParam): Uploaded or inline
                 part representing the generated media.
             media_noun (str): Media label (`"image"` or `"video"`) for the prompt and span.
+            media_model (str): Generator model name recorded on the feedback snapshot.
+            question (str): Mention-stripped user prompt recorded on the feedback snapshot.
         """
         model = self.toolkit.runtime_models.fast_model
         base: Message | None = None
@@ -199,6 +281,7 @@ class AnswerTurn(BaseModel):
                     ],
                 )
             )
+
             streamer = ResponseStreamer(
                 message=self.message,
                 surface=self.surface,
@@ -208,6 +291,15 @@ class AnswerTurn(BaseModel):
                 memory_lookups=context.memory_credits,
                 model_effort=model.effort or "",
                 media_delivery=self.media_delivery,
+                feedback_view=ReplyFeedbackView() if self.config.feedback_enabled else None,
+                on_final_message=self._feedback_hook(
+                    route="IMAGE" if media_noun == "image" else "VIDEO",
+                    default_model=media_model or model.name,
+                    effort="",
+                    backend="interactions" if media_noun == "video" else "responses",
+                    question=question,
+                    prefer_default_model=bool(media_model),
+                ),
             )
             with logfire.span(
                 f"gen_reply {media_noun} reply", model=model.name, message_id=self.message.id
@@ -300,13 +392,14 @@ class AnswerTurn(BaseModel):
                 allowed_mentions=allowed_mentions,
             )
 
-    async def stream_answer(
+    async def stream_answer(  # noqa: PLR0913 -- QA turn parameters from pipeline
         self,
         system_prompt: str,
         context: ReplyContext,
         effort: Literal["low", "medium", "high"] = "medium",
         allow_research: bool = False,
         yt_url: str | None = None,
+        question: str = "",
     ) -> None:
         """Streams the QA answer from `context`, launches any research brief, and schedules memory updates.
 
@@ -320,6 +413,7 @@ class AnswerTurn(BaseModel):
             effort (Literal["low", "medium", "high"]): Reasoning effort selected by the router.
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
+            question (str): Mention-stripped user prompt recorded on the feedback snapshot.
         """
         toolkit = self.toolkit
         voice_generator = toolkit.voice_generator if self.config.inline_voice_enabled else None
@@ -366,6 +460,7 @@ class AnswerTurn(BaseModel):
             # Persistent reaction outside the status chain; added before `ResponseStreamer` so
             # this REST round trip does not inflate answer latency measured from `created_at`.
             await self.surface.mark(emoji=YOUTUBE_EMOJI)
+
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
@@ -378,6 +473,14 @@ class AnswerTurn(BaseModel):
             video_generator=video_generator,
             media_delivery=self.media_delivery,
             input_builder=toolkit.input_builder,
+            feedback_view=ReplyFeedbackView() if self.config.feedback_enabled else None,
+            on_final_message=self._feedback_hook(
+                route="QA",
+                default_model=slow_model.name,
+                effort=effort,
+                backend=backend,
+                question=question,
+            ),
         )
         logfire.info(
             "gen_reply answer dispatch",
@@ -446,7 +549,7 @@ class AnswerTurn(BaseModel):
                 anchor=streamer.reply,
                 brief=streamer.markers.research_brief,
             )
-        # Persist the turn before scheduling fire-and-forget memory review.
+        # Persist the `/ask` turn before scheduling fire-and-forget memory review.
         await self.surface.record_turn(answer=full_reply)
         self._schedule_memory_updates(context=context, full_reply=full_reply, streamer=streamer)
 

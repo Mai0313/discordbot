@@ -11,6 +11,7 @@ from typing import Any
 import logfire
 from nextcord import File, Embed, Message, DMChannel, ClientUser, Interaction, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from nextcord.ui import View
 from nextcord.ext import commands
 from nextcord.enums import InteractionContextType
 from nextcord.utils import utcnow
@@ -31,12 +32,13 @@ WINDOW_EXPIRED_NOTICE = (
 )
 
 
-def _payload(
+def _payload(  # noqa: PLR0913 -- mirrors Discord send/edit payload fields
     content: str | None,
     embed: Embed | None,
     file: File | None,
     files: list[File] | None,
     allowed_mentions: AllowedMentions | None,
+    view: View | None = None,
 ) -> dict[str, Any]:
     """Drops every unset argument, so nothing hands Discord a None it reads as "clear this"."""
     given = {
@@ -45,6 +47,7 @@ def _payload(
         "file": file,
         "files": files,
         "allowed_mentions": allowed_mentions,
+        "view": view,
     }
     return {key: value for key, value in given.items() if value is not None}
 
@@ -143,13 +146,14 @@ class TurnSurface(BaseModel):
             is_direct_message=interaction.context is InteractionContextType.bot_dm,
         )
 
-    async def send(
+    async def send(  # noqa: PLR0913 -- mirrors Discord send/edit fields
         self,
         content: str | None = None,
         embed: Embed | None = None,
         file: File | None = None,
         files: list[File] | None = None,
         allowed_mentions: AllowedMentions | None = None,
+        view: View | None = None,
     ) -> Message:
         """Returns the sent message, replying to `message` on the gateway or editing/following up on `/ask`.
 
@@ -159,9 +163,15 @@ class TurnSurface(BaseModel):
             file (File | None): Single file attachment.
             files (list[File] | None): Multiple file attachments.
             allowed_mentions (AllowedMentions | None): Mention policy for the send.
+            view (View | None): Optional component view to attach.
         """
         payload = _payload(
-            content=content, embed=embed, file=file, files=files, allowed_mentions=allowed_mentions
+            content=content,
+            embed=embed,
+            file=file,
+            files=files,
+            allowed_mentions=allowed_mentions,
+            view=view,
         )
         if self.interaction is None:
             return await self.message.reply(**payload)
@@ -171,13 +181,14 @@ class TurnSurface(BaseModel):
         self._followups_spent += 1
         return await self.interaction.followup.send(**payload, wait=True)
 
-    async def send_unparented(
+    async def send_unparented(  # noqa: PLR0913 -- mirrors Discord send fields
         self,
         content: str | None = None,
         embed: Embed | None = None,
         file: File | None = None,
         files: list[File] | None = None,
         allowed_mentions: AllowedMentions | None = None,
+        view: View | None = None,
     ) -> Message:
         """Returns a message sent to the channel without a reply reference when the source was deleted.
 
@@ -189,16 +200,26 @@ class TurnSurface(BaseModel):
             file (File | None): Single file attachment.
             files (list[File] | None): Multiple file attachments.
             allowed_mentions (AllowedMentions | None): Mention policy for the send.
+            view (View | None): Optional component view to attach.
         """
         payload = _payload(
-            content=content, embed=embed, file=file, files=files, allowed_mentions=allowed_mentions
+            content=content,
+            embed=embed,
+            file=file,
+            files=files,
+            allowed_mentions=allowed_mentions,
+            view=view,
         )
         if self.interaction is not None:
             return await self.send(**payload)
         return await self.message.channel.send(**payload)
 
     async def follow_up(
-        self, previous: Message, content: str, allowed_mentions: AllowedMentions | None = None
+        self,
+        previous: Message,
+        content: str,
+        allowed_mentions: AllowedMentions | None = None,
+        view: View | None = None,
     ) -> Message:
         """Returns the message sent as the next overflow chunk after `previous`.
 
@@ -209,9 +230,15 @@ class TurnSurface(BaseModel):
             previous (Message): Preceding chunk's message.
             content (str): Text content for this overflow chunk.
             allowed_mentions (AllowedMentions | None): Mention policy for the send.
+            view (View | None): Optional component view to attach.
         """
         payload = _payload(
-            content=content, embed=None, file=None, files=None, allowed_mentions=allowed_mentions
+            content=content,
+            embed=None,
+            file=None,
+            files=None,
+            allowed_mentions=allowed_mentions,
+            view=view,
         )
         if self.interaction is None:
             return await previous.reply(**payload)

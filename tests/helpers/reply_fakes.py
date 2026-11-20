@@ -114,13 +114,14 @@ class FakeChannel:
         del role
         return SimpleNamespace(view_channel=self._view_channel)
 
-    async def send(
+    async def send(  # noqa: PLR0913 -- mirrors Discord send fields used by TurnSurface
         self,
         content: str | None = None,
         embed: Embed | None = None,
         file: File | None = None,
         files: list[File] | None = None,
         allowed_mentions: object | None = None,
+        view: object | None = None,
     ) -> FakeReply:
         """Records an unparented channel send (the deleted-source fallback target)."""
         del allowed_mentions
@@ -129,6 +130,7 @@ class FakeChannel:
         sent.embed = embed
         sent.file = file
         sent.files = files
+        sent.view = view
         self.sent.append(sent)
         return sent
 
@@ -152,6 +154,7 @@ class FakeReply:
         self.file: File | None = None
         self.files: list[File] | None = None
         self.embed: Embed | None = None
+        self.view: object | None = None
         self.replies: list[FakeReply] = []
         self.edits: list[str] = []
         self.deleted = False
@@ -175,8 +178,9 @@ class FakeReply:
         embed: Embed | None = None,
         attachments: list[object] | None = None,
         allowed_mentions: object | None = None,
+        view: object | None = None,
     ) -> None:
-        """Records edited content, embed and/or newly attached media (voice clip / inline image)."""
+        """Records edited content, embed, view, and/or newly attached media."""
         del attachments
         if self.edit_error is not None:
             raise self.edit_error
@@ -186,6 +190,8 @@ class FakeReply:
             self.edits.append(content)
         if embed is not None:
             self.embed = embed
+        if view is not None:
+            self.view = view
         if file is not None:
             self.file = file
         if files is not None:
@@ -194,13 +200,16 @@ class FakeReply:
             if len(files) == 1:
                 self.file = files[0]
 
-    async def reply(self, content: str, allowed_mentions: object | None = None) -> FakeReply:
+    async def reply(
+        self, content: str, allowed_mentions: object | None = None, view: object | None = None
+    ) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
         if self.reply_error is not None:
             raise self.reply_error
         self.allowed_mentions_seen.append(allowed_mentions)
         child = FakeReply()
         child.content = content
+        child.view = view
         self.replies.append(child)
         return child
 
@@ -250,13 +259,14 @@ class FakeMessage:
         if False:
             yield self
 
-    async def reply(
+    async def reply(  # noqa: PLR0913 -- mirrors Discord Message.reply fields
         self,
         content: str | None = None,
         file: File | None = None,
         embed: Embed | None = None,
         files: list[File] | None = None,
         allowed_mentions: object | None = None,
+        view: object | None = None,
     ) -> FakeReply:
         """Creates and records a fake reply with the requested content."""
         del allowed_mentions
@@ -267,6 +277,7 @@ class FakeMessage:
         reply.file = file
         reply.files = files
         reply.embed = embed
+        reply.view = view
         self.replies.append(reply)
         return reply
 
@@ -581,10 +592,14 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     reads the environment. The toolkit alone holds a key, whose client is a fake, so a Gemini
     answer model gets the uploading handler a keyed deployment does.
     """
+    added_views: list[object] = []
     cog = ReplyGeneratorCogs(
         bot=as_bot(
             fake=SimpleNamespace(
-                user=SimpleNamespace(id=bot_user_id, name="bot"), get_cog=lambda name: None
+                user=SimpleNamespace(id=bot_user_id, name="bot"),
+                get_cog=lambda name: None,
+                add_view=added_views.append,
+                added_views=added_views,
             )
         )
     )
@@ -620,6 +635,8 @@ def _install_streamer(
 
         carries_turn_notices = False
         content_ever_started = False
+        model_name = ""
+        last_reply: object | None = None
 
         def __init__(self, **kwargs: object) -> None:
             """Records the constructor kwargs and seeds the marker notes."""

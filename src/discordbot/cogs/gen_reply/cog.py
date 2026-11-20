@@ -36,6 +36,7 @@ from discordbot.services.memory.pipeline import safe_list_resumable, resume_memo
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
 from discordbot.services.memory.git_history import memory_git
+from discordbot.cogs.gen_reply.feedback_views import ReplyFeedbackView
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
 
@@ -116,9 +117,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Spawns the one-shot post-restart memory resume on the first gateway ready event."""
+        """Registers persistent feedback views and spawns one-shot post-restart memory resume."""
         if self._resume_started:
             return
+        # Register once regardless of `feedback_enabled` so buttons on earlier replies keep working.
+        self.bot.add_view(ReplyFeedbackView())
         # Start on the running loop; an unstarted service drops commits instead of binding early.
         memory_git.start()
         self._resume_started = True

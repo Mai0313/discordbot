@@ -16,6 +16,8 @@ I slowly learn each person's preferences and how they like me to sound, and I ma
 
 An answer can stop partway, most often because the provider's content filter cut it off. When that happens I try again on my own, and a 🔁 on your message shows I did. If it still does not finish, or if it stopped because it ran out of room to think, my reply keeps whatever I managed to write and says why it stopped.
 
+Finished replies also carry 👍 and 👎 feedback buttons underneath so anyone can rate the answer; clicking again cancels the rating, switching overwrites it, and a 👎 offers optional quick reason buttons (plus a short free-text form under 其他) visible only to the person who clicked.
+
 ### Links I open on my own
 
 - **YouTube**: mention me with a YouTube link, or mention me in a reply to a message carrying one, and I watch the video before answering.
