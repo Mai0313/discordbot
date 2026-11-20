@@ -15,6 +15,7 @@ uv run pytest <path> --no-cov    # focused run; without --no-cov a subset exits 
 uvx pre-commit run -a            # canonical pre-push check (= make fmt)
 uvx pre-commit run ty -a         # type check alone; `uvx ty check` rejects --all-groups (a uv flag)
 uv run usage-report              # operator tools act on ./data, so run from the repo root
+uv run feedback-report
 uv run modify-balance
 uv run regen-memories
 ```
