@@ -125,6 +125,17 @@ class LLMConfig(BaseSettings):
         ),
         validation_alias=AliasChoices("FEEDBACK_ENABLED"),
     )
+    slow_model_blind_test_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether QA turns randomly pick `slow_model` from "
+            "`RuntimeModelCatalog.slow_model_blind_test_candidates` and mask the model name as "
+            "`blind-test-model` in the reply footer and system prompt while still recording the "
+            "real answered model in `reply.db` and logs; when false QA uses `slow_model` and "
+            "shows its real name."
+        ),
+        validation_alias=AliasChoices("SLOW_MODEL_BLIND_TEST_ENABLED"),
+    )
     image_refine_prompt_enabled: bool = Field(
         default=True,
         description=(

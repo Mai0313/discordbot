@@ -8,6 +8,7 @@ surface.
 
 from typing import Literal, cast
 import asyncio
+import secrets
 import contextlib
 from collections.abc import Callable, Awaitable, AsyncIterator
 
@@ -22,6 +23,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
+from discordbot.typings.models import BLIND_TEST_MODEL_LABEL, ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import (
@@ -392,6 +394,31 @@ class AnswerTurn(BaseModel):
                 allowed_mentions=allowed_mentions,
             )
 
+    def _select_qa_model(
+        self, effort: Literal["low", "medium", "high"], system_prompt: str
+    ) -> tuple[ModelSettings, str, str]:
+        """Returns `(slow_model, system_prompt, model_display_name)` for one QA turn.
+
+        When `slow_model_blind_test_enabled` is true, draws one candidate once for the whole turn
+        and masks the visible model label in `system_prompt` and the usage footer while leaving
+        pricing, logs, and `reply_turn.model` on the real model name.
+        """
+        base_slow_model = self.toolkit.runtime_models.slow_model
+        if not self.config.slow_model_blind_test_enabled:
+            return base_slow_model.model_copy(update={"effort": effort}), system_prompt, ""
+        chosen_name = secrets.choice(
+            seq=self.toolkit.runtime_models.slow_model_blind_test_candidates
+        )
+        # Mask the baked-in identity model name so asking the bot does not spoil blind tests.
+        masked_prompt = system_prompt.replace(
+            f"({base_slow_model.name})", f"({BLIND_TEST_MODEL_LABEL})"
+        )
+        return (
+            base_slow_model.model_copy(update={"name": chosen_name, "effort": effort}),
+            masked_prompt,
+            BLIND_TEST_MODEL_LABEL,
+        )
+
     async def stream_answer(  # noqa: PLR0913 -- QA turn parameters from pipeline
         self,
         system_prompt: str,
@@ -434,7 +461,9 @@ class AnswerTurn(BaseModel):
         research_offered = allow_research and self.config.deep_research_available
         if research_offered:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
-        slow_model = toolkit.runtime_models.slow_model.model_copy(update={"effort": effort})
+        slow_model, system_prompt, model_display_name = self._select_qa_model(
+            effort=effort, system_prompt=system_prompt
+        )
         dispatched_model.set(slow_model.name)
         answer_input = context.answer_input(config=self.config)
 
@@ -465,6 +494,7 @@ class AnswerTurn(BaseModel):
             message=self.message,
             surface=self.surface,
             memory_lookups=context.memory_credits,
+            model_display_name=model_display_name,
             model_effort=effort,
             backend=backend,
             voice_generator=voice_generator,
