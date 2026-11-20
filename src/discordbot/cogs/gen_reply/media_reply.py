@@ -155,6 +155,8 @@ class MediaReplyRoutes(BaseModel):
                 image_url=to_data_uri(data=image_bytes), detail="auto", type="input_image"
             ),
             media_noun="image",
+            media_model=toolkit.runtime_models.image_model.name,
+            question=user_prompt,
         )
 
     async def handle_video(
@@ -227,11 +229,20 @@ class MediaReplyRoutes(BaseModel):
             )
 
         await self._reply_about_video(
-            reply=reply, video_bytes=video_bytes, context_task=context_task
+            reply=reply,
+            video_bytes=video_bytes,
+            context_task=context_task,
+            media_model=toolkit.runtime_models.video_model.name,
+            question=user_prompt,
         )
 
     async def _reply_about_video(
-        self, reply: Message | None, video_bytes: bytes, context_task: asyncio.Task[ReplyContext]
+        self,
+        reply: Message | None,
+        video_bytes: bytes,
+        context_task: asyncio.Task[ReplyContext],
+        media_model: str = "",
+        question: str = "",
     ) -> None:
         """Uploads `video_bytes` for a persona reply, draining `context_task` on upload failure."""
         video_part = await upload_as_input_file(
@@ -250,4 +261,6 @@ class MediaReplyRoutes(BaseModel):
             system_prompt=VIDEO_REPLY_PROMPT,
             focus_part=video_part,
             media_noun="video",
+            media_model=media_model,
+            question=question,
         )

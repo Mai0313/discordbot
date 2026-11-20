@@ -204,9 +204,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         effort: str = "high",
         allow_research: bool = False,
         yt_url: str | None = None,
+        question: str = "",
     ) -> None:
         """Records slow message handler dispatch."""
-        del yt_url, allow_research
+        del yt_url, allow_research, question
         calls.append("stream_answer")
         effort_flags.append(effort)
         contexts.append(context)

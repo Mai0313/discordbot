@@ -13,6 +13,7 @@ import logfire
 from nextcord import File, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
+from nextcord.ui import View
 from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import Response, ResponseOutputItem, ResponseStreamEvent
@@ -253,6 +254,21 @@ class ResponseStreamer(BaseModel):
     reply: SkipValidation[Message | None] = Field(
         default=None, description="The Discord reply message, created lazily on the first delta."
     )
+    last_reply: SkipValidation[Message | None] = Field(
+        default=None,
+        description="Final Discord message written for this reply (last chunk when chunked).",
+    )
+    feedback_view: SkipValidation[View | None] = Field(
+        default=None,
+        description="Optional persistent feedback view attached to the final reply message.",
+    )
+    on_final_message: Callable[["ResponseStreamer"], Awaitable[None]] | None = Field(
+        default=None,
+        description=(
+            "Optional async hook called immediately after the final message lands (with feedback "
+            "buttons attached) and before inline media generation starts."
+        ),
+    )
     carries_turn_notices: bool = Field(
         default=True,
         description=(
@@ -438,10 +454,10 @@ class ResponseStreamer(BaseModel):
         kept.reverse()
         return "\n".join([header, *(f"-# {line}" for line in kept)])
 
-    async def _reply_or_send(self, content: str) -> Message:
+    async def _reply_or_send(self, content: str, view: View | None = None) -> Message:
         """Replies with `content`, falling back to unparented send if the source was deleted."""
         try:
-            return await self.surface.send(content=content)
+            return await self.surface.send(content=content, view=view)
         except HTTPException as exc:
             if not is_reply_target_gone(error=exc):
                 raise
@@ -449,7 +465,7 @@ class ResponseStreamer(BaseModel):
                 "Source message deleted before reply; sending unparented",
                 message_id=self.message.id,
             )
-            return await self.surface.send_unparented(content=content)
+            return await self.surface.send_unparented(content=content, view=view)
 
     async def _write_preview_snapshot(self) -> None:
         """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
@@ -532,12 +548,16 @@ class ResponseStreamer(BaseModel):
             footer=footer,
             max_messages=self.surface.answer_capacity(has_landed_reply=self.reply is not None),
         )
+        parent_view = self.feedback_view if not follow_up_chunks else None
         # Record reply here when no preview ran so later media edits target it.
         if self.reply is None:
-            self.reply = await self._reply_or_send(content=parent_content)
+            self.reply = await self._reply_or_send(content=parent_content, view=parent_view)
         else:
             try:
-                await self.reply.edit(content=parent_content)
+                if parent_view is not None:
+                    await self.reply.edit(content=parent_content, view=parent_view)
+                else:
+                    await self.reply.edit(content=parent_content)
             except NotFound:
                 logfire.info(
                     "Reply deleted while streaming; finishing without the final edit",
@@ -545,11 +565,16 @@ class ResponseStreamer(BaseModel):
                     reply_id=self.reply.id,
                 )
                 self.reply = None
+                self.last_reply = None
                 self._reply_deleted = True
                 return
         previous = self.reply
-        for chunk in follow_up_chunks:
-            previous = await self.surface.follow_up(previous=previous, content=chunk)
+        for index, chunk in enumerate(follow_up_chunks):
+            chunk_view = self.feedback_view if index == len(follow_up_chunks) - 1 else None
+            previous = await self.surface.follow_up(
+                previous=previous, content=chunk, view=chunk_view
+            )
+        self.last_reply = previous
 
     def _on_reasoning_delta(self, delta: str) -> None:
         """Accumulates one reasoning-summary delta, logging the first one's latency."""
@@ -754,6 +779,10 @@ class ResponseStreamer(BaseModel):
         await self._write_final_message(content=self.stored_content, footer=usage_footer)
         self.stored_content += usage_footer
         self._usage_footer = usage_footer
+        # Persist feedback turn rows before slow inline media / research runs so live buttons
+        # already have a backing row as soon as the message appears in Discord.
+        if self.on_final_message is not None and self.last_reply is not None:
+            await self.on_final_message(self)
         # Release failure-landing target before media attach: an error edit with the spacer would
         # strip attachments.
         if self.carries_turn_notices:
@@ -800,6 +829,10 @@ class ResponseStreamer(BaseModel):
         if not self._memory_note:
             return text
         return text.replace(f"\n{self._memory_note}", "", 1)
+
+    def final_answer_text(self) -> str:
+        """Returns the finalized reply text with memory notes and dropped-media hints stripped."""
+        return self._without_added_lines(text=self.stored_content)
 
     def _without_added_lines(self, text: str) -> str:
         """Returns `text` with `_memory_note` and `_hint_line` stripped."""

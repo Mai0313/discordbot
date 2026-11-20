@@ -116,6 +116,15 @@ class LLMConfig(BaseSettings):
         ),
         validation_alias=AliasChoices("DEEP_RESEARCH_ENABLED"),
     )
+    feedback_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether finalized replies attach persistent thumbs-up/thumbs-down feedback buttons "
+            "and persist turn snapshots in `reply.db`; when false replies omit the buttons and "
+            "no turn snapshot is recorded."
+        ),
+        validation_alias=AliasChoices("FEEDBACK_ENABLED"),
+    )
     image_refine_prompt_enabled: bool = Field(
         default=True,
         description=(

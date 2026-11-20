@@ -218,6 +218,7 @@ class ReplyPipeline(BaseModel):
             effort=route.effort,
             allow_research=can_launch_research(message=message),
             yt_url=yt_url,
+            question=self.user_prompt,
         )
 
     async def run(self) -> None:  # noqa: PLR0915 -- the turn's sequence, and the task handles its `finally` drains

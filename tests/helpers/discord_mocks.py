@@ -99,16 +99,19 @@ class FakeResponse:
         self.slash_command = slash_command
         self.deferred = False
         self.deferred_ephemeral = False
+        self.deferred_with_message = False
         self.placeholder_pending = False
         self.sent: list[DiscordPayload] = []
         self.edited: list[DiscordPayload] = []
         self.modal_opened = False
+        self.opened_modal: object | None = None
 
-    async def defer(self, ephemeral: bool = False) -> None:
+    async def defer(self, ephemeral: bool = False, with_message: bool = False) -> None:
         """Records that the interaction response was deferred."""
         self.deferred = True
         self.deferred_ephemeral = ephemeral
-        self.placeholder_pending = self.slash_command
+        self.deferred_with_message = with_message
+        self.placeholder_pending = self.slash_command or with_message
 
     async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         """Records an interaction response message."""
@@ -120,8 +123,8 @@ class FakeResponse:
 
     async def send_modal(self, modal: object) -> None:
         """Records that a modal was opened in response to the interaction."""
-        del modal
         self.modal_opened = True
+        self.opened_modal = modal
 
     def is_done(self) -> bool:
         """Returns whether the response was used, by any of the calls nextcord marks as one."""
