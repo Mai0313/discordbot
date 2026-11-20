@@ -304,6 +304,13 @@ class ResponseStreamer(BaseModel):
     model_name: str = Field(
         default="", description="The model name reported by the stream, for the usage footer."
     )
+    model_display_name: str = Field(
+        default="",
+        description=(
+            "Optional display label shown in the Discord usage footer in place of `model_name`; "
+            "pricing, logs, and `reply_turn.model` still read the real `model_name`."
+        ),
+    )
     model_effort: str = Field(
         default="",
         description="Route-decided reasoning effort shown next to the model in the footer.",
@@ -736,12 +743,12 @@ class ResponseStreamer(BaseModel):
 
     async def finalize_reply(self) -> str:
         """Returns the finalized reply text after extracting inline markers, writing the footer, and attaching media."""
-        # Price using the stream's reported model so LiteLLM fallbacks reflect what answered.
+        # Price using the stream's reported model so LiteLLM fallbacks reflect what answered;
+        # `model_display_name` masks only the visible model label (cost stays visible by design).
+        display_name = self.model_display_name or self.model_name
         usage_line, cost = render_usage_footer(
             model_name=self.model_name,
-            label=f"{self.model_name} ({self.model_effort})"
-            if self.model_effort
-            else self.model_name,
+            label=f"{display_name} ({self.model_effort})" if self.model_effort else display_name,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
         )

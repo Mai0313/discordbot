@@ -9,6 +9,9 @@ from openai.types.shared_params.reasoning import Reasoning
 
 from discordbot.typings.emojis import LinkSourceName
 
+# Shown in the Discord usage footer and system prompt when blind testing masks `slow_model`.
+BLIND_TEST_MODEL_LABEL = "blind-test-model"
+
 
 class ModelSettings(BaseModel):
     """Model name and reasoning effort that should be used together."""
@@ -118,6 +121,15 @@ class RuntimeModelCatalog(BaseModel):
         # Pin to a snapshot whose supported efforts cover `RouteClassification.effort`;
         # an unpriced non-Gemini name falls back to `{"text", "image"}` modalities for answers.
         return ModelSettings(name="gemini-4-neon", effort="high")
+
+    @property
+    def slow_model_blind_test_candidates(self) -> tuple[str, ...]:
+        """Candidate Gemini 4 models sampled uniformly per QA turn while blind testing is on.
+
+        Every entry must support `RouteClassification.effort` (`low`, `medium`, `high`) and
+        agentic YouTube video understanding.
+        """
+        return ("gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen")
 
     @property
     def memory_model(self) -> ModelSettings:
