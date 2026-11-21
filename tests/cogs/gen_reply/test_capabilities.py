@@ -68,6 +68,7 @@ def _added_words(before: str, after: str) -> list[str]:
     argvalues=[
         ({"inline_voice_enabled": False}, ("speak a line aloud",), False),
         ({"inline_music_enabled": False}, ("write and record a short song",), False),
+        ({"feedback_enabled": False}, ("feedback buttons", "regenerate the answer"), False),
         ({"youtube_video_enabled": False}, ("I watch the video before answering",), False),
         (
             {"douyin_video_enabled": False},
@@ -94,7 +95,17 @@ def _added_words(before: str, after: str) -> list[str]:
             True,
         ),
     ],
-    ids=["voice", "music", "youtube", "douyin", "bilibili", "file-api", "research", "keyless"],
+    ids=[
+        "voice",
+        "music",
+        "feedback",
+        "youtube",
+        "douyin",
+        "bilibili",
+        "file-api",
+        "research",
+        "keyless",
+    ],
 )
 def test_capabilities_block_drops_each_promise_its_switch_turns_off(
     switched_off: dict[str, object], promises: tuple[str, ...], says_instead: bool
@@ -113,6 +124,7 @@ def test_capabilities_block_drops_each_promise_its_switch_turns_off(
     assert isinstance(content, str)
     assert [promise for promise in promises if promise not in all_on] == []
     assert [promise for promise in promises if promise in content] == []
+    assert "\n\n\n" not in content
     if says_instead:
         assert _added_words(before=all_on, after=content)
 

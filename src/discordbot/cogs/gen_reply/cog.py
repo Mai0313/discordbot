@@ -53,6 +53,7 @@ from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EM
 from discordbot.services.memory.git_history import memory_git
 from discordbot.cogs.gen_reply.feedback_store import (
     RegenChainState,
+    load_reply_turn,
     record_regen_feedback,
     load_regen_chain_state,
     parse_reply_message_ids,
@@ -117,6 +118,19 @@ def _message_log_fields(surface: TurnSurface) -> _MessageLogFields:
         "guild_id": surface.guild_id,
         "guild_name": guild.name if guild else None,
     }
+
+
+async def _delete_dangling_reply() -> None:
+    """Best-effort deletes any partial reply chunks left behind by a failed regen stream."""
+    streamer = current_answer_streamer.get()
+    if streamer is None:
+        return
+    dangling = list(streamer.reply_messages)
+    if not dangling and streamer.reply is not None:
+        dangling = [streamer.reply]
+    for chunk in reversed(dangling):
+        with contextlib.suppress(HTTPException):
+            await chunk.delete()
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -232,6 +246,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """Runs one turn and delivers a last-resort failure notice if an unhandled error escapes."""
         message = surface.message
         reactions = surface.status_chain(bot_user=self.bot.user)
+        dispatched_model.set(None)
+        current_answer_streamer.set(None)
         try:
             await self._start_turn(surface=surface, content=content, reactions=reactions)
         except Exception as e:
@@ -261,6 +277,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     _exc_info=report_error,
                 )
         finally:
+            dispatched_model.set(None)
+            current_answer_streamer.set(None)
             await reactions.flush()
 
     async def _start_turn(
@@ -455,6 +473,7 @@ class ReplyGeneratorCogs(commands.Cog):
             forced_effort=forced_effort,
         )
         dispatched_model.set(None)
+        current_answer_streamer.set(None)
         try:
             new_reply_message_id = await self._start_turn(
                 surface=surface, content=source_message.content, reactions=reactions, regen=regen
@@ -468,14 +487,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=True,
             )
-            streamer = current_answer_streamer.get()
-            if streamer is not None:
-                dangling = list(streamer.reply_messages)
-                if not dangling and streamer.reply is not None:
-                    dangling = [streamer.reply]
-                for chunk in reversed(dangling):
-                    with contextlib.suppress(HTTPException):
-                        await chunk.delete()
+            await _delete_dangling_reply()
             reactions.advance(emoji=FAILED_EMOJI)
             with contextlib.suppress(HTTPException):
                 await interaction.edit_original_message(
@@ -483,6 +495,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
             return None
         finally:
+            dispatched_model.set(None)
             current_answer_streamer.set(None)
             await reactions.flush()
         if new_reply_message_id is None:
@@ -497,15 +510,15 @@ class ReplyGeneratorCogs(commands.Cog):
         """Returns a user-facing refusal reason before locking, or None when allowed."""
         if not self.config.feedback_enabled:
             return "目前已停用重新生成功能"
-        state = await load_regen_chain_state(reply_message_id=reply_message_id)
-        if state is None:
+        turn = await load_reply_turn(reply_message_id=reply_message_id)
+        if turn is None:
             return "這則回覆已超過可重新生成範圍"
-        if state.surface != "gateway" or state.route != "QA":
+        if turn.surface != "gateway" or turn.route != "QA":
             return "這則回覆不支援重新生成"
         user = interaction.user
         if user is None:
             return "只有原發問者可以重新生成這則回覆"
-        is_allowed = user.id == state.author_id or await self.bot.is_owner(user=cast("User", user))
+        is_allowed = user.id == turn.author_id or await self.bot.is_owner(user=cast("User", user))
         if not is_allowed:
             return "只有原發問者可以重新生成這則回覆"
         return None
@@ -689,4 +702,4 @@ def setup(bot: commands.Bot) -> None:
     Args:
         bot (commands.Bot): The Discord bot instance.
     """
-    bot.add_cog(ReplyGeneratorCogs(bot), override=True)
+    bot.add_cog(cog=ReplyGeneratorCogs(bot=bot), override=True)

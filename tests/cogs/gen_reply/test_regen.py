@@ -16,9 +16,11 @@ from discordbot.cogs.gen_reply.feedback_store import (
     ReplyTurnRow,
     ReplyFeedbackRow,
     open_session,
+    load_reply_turn,
     record_reply_turn,
     set_feedback_reason,
     toggle_feedback_vote,
+    load_regen_chain_state,
     parse_reply_message_ids,
 )
 from discordbot.cogs.gen_reply.feedback_views import FEEDBACK_REGEN_CUSTOM_ID, ReplyFeedbackView
@@ -671,3 +673,65 @@ async def test_regen_resolves_partial_messageable_interaction_channel_via_fetch_
     assert full_channel.fetched_ids == [source.id]
     assert full_channel.deleted_ids == [2801]
     assert click.edits[-1]["content"] == "已重新生成回覆"
+
+
+@pytest.mark.usefixtures("no_memory_review")
+async def test_regen_validates_access_with_single_row_lookup_and_walks_chain_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-lock validation reads only the target row; chain walking runs once under the lock."""
+    cog = _cog()
+    cog.config.inline_voice_enabled = False
+    cog.config.inline_image_enabled = False
+    cog.config.inline_music_enabled = False
+    cog.config.inline_video_enabled = False
+
+    source = FakeMessage(content="<@999> Explain WAL", author=FakeAuthor(user_id=100))
+    channel = _FakeRegenChannel(messages={source.id: source})
+    await record_reply_turn(
+        reply_message_id=2901,
+        source_message_id=source.id,
+        guild_id=1,
+        channel_id=channel.id,
+        author_id=100,
+        surface="gateway",
+        route="QA",
+        model="gemini-4-neon",
+        effort="medium",
+        backend="responses",
+        question="Explain WAL",
+        answer="Old answer",
+        reply_message_ids=[2901],
+    )
+
+    row_lookups: list[int] = []
+    chain_walks: list[int] = []
+
+    async def spy_load_reply_turn(reply_message_id: int) -> ReplyTurnRow | None:
+        row_lookups.append(reply_message_id)
+        return await load_reply_turn(reply_message_id=reply_message_id)
+
+    async def spy_load_chain(reply_message_id: int) -> object:
+        chain_walks.append(reply_message_id)
+        return await load_regen_chain_state(reply_message_id=reply_message_id)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.load_reply_turn", spy_load_reply_turn)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.load_regen_chain_state", spy_load_chain)
+
+    # Rejected bystander stops after single-row lookup without walking the chain.
+    bystander = _regen_interaction(reply_message_id=2901, user_id=999, channel=channel)
+    await cog._handle_regen(interaction=as_interaction(fake=bystander))
+    assert bystander.edits[-1]["content"] == "只有原發問者可以重新生成這則回覆"
+    assert row_lookups == [2901]
+    assert chain_walks == []
+
+    # Allowed asker reads the row pre-lock and walks the chain exactly once under the lock.
+    row_lookups.clear()
+    completed = _completed_event(input_tokens=5, output_tokens=5)
+    completed.response.model = "gemini-4-neon"
+    _recorded(cog).responses.stream_queue = [[_text_event(delta="Fresh"), completed]]
+    asker = _regen_interaction(reply_message_id=2901, user_id=100, channel=channel)
+    await cog._handle_regen(interaction=as_interaction(fake=asker))
+    assert asker.edits[-1]["content"] == "已重新生成回覆"
+    assert row_lookups == [2901]
+    assert chain_walks == [2901]

@@ -27,6 +27,7 @@ from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.services.memory.writer import render_turn_payload
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.prompts import PHASE2_PROMPT, PHASE1_EVALUATOR_PROMPT
+from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
@@ -245,6 +246,19 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
     assert [fields.get("model") for text, fields in failures if text == "gen_reply failed"] == [
         "gemini-answer-tier"
     ]
+    assert dispatched_model.get() is None
+    assert current_answer_streamer.get() is None
+
+
+@pytest.mark.usefixtures("no_memory_review")
+async def test_run_turn_clears_contextvars_after_success() -> None:
+    """Normal turns clear `dispatched_model` and `current_answer_streamer` before returning."""
+    cog = _cog()
+    message = FakeMessage(content="<@999> 你好", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=as_message(fake=message))
+
+    assert dispatched_model.get() is None
+    assert current_answer_streamer.get() is None
 
 
 def test_the_cog_builds_no_toolkit_until_a_reply_needs_one(

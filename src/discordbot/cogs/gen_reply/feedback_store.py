@@ -270,6 +270,12 @@ async def update_reply_message_ids(
         turn.reply_message_ids = json.dumps(obj=list(reply_message_ids))
 
 
+async def load_reply_turn(reply_message_id: int) -> ReplyTurnRow | None:
+    """Returns the single `ReplyTurnRow` for `reply_message_id`, or None when absent."""
+    async with open_session() as session:
+        return await session.get(entity=ReplyTurnRow, ident=reply_message_id)
+
+
 async def load_regen_chain_state(reply_message_id: int) -> RegenChainState | None:
     """Loads regeneration target metadata, whether it was already regenerated, and chain ancestry."""
     async with open_session() as session:
