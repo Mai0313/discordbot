@@ -10,7 +10,7 @@ from sqlalchemy import select
 from nextcord.ui import Button
 from openai.types.responses import ResponseStreamEvent
 
-from discordbot.cogs.gen_reply.answer import AnswerTurn
+from discordbot.cogs.gen_reply.answer import AnswerTurn, RegenOptions
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.streaming import ResponseStreamer
@@ -426,7 +426,7 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
             for child in view.children
         )
 
-    # Gateway QA regen_count=0 -> has 🔄; regen_count=1 (blind test off, max=1) -> omits 🔄.
+    # Gateway QA regen=None -> has 🔄; regen_count=1 (blind test off, max=1) -> omits 🔄.
     msg0 = FakeMessage(content="<@999> q0")
     turn0 = AnswerTurn(
         config=cog.config,
@@ -434,7 +434,7 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         toolkit=cog.toolkit,
         surface=TurnSurface.for_message(message=as_message(fake=msg0)),
     )
-    await turn0.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=0)
+    await turn0.stream_answer(system_prompt="Be concise.", context=ReplyContext())
     assert _has_regen(view=msg0.replies[0].view) is True
 
     msg1 = FakeMessage(content="<@999> q1")
@@ -444,7 +444,11 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         toolkit=cog.toolkit,
         surface=TurnSurface.for_message(message=as_message(fake=msg1)),
     )
-    await turn1.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=1)
+    await turn1.stream_answer(
+        system_prompt="Be concise.",
+        context=ReplyContext(),
+        regen=RegenOptions(regen_of_reply_message_id=100, regen_count=1),
+    )
     assert _has_regen(view=msg1.replies[0].view) is False
 
     # Blind test on (3 candidates -> max_regens=2): regen_count=1 still shows 🔄, regen_count=2 hides it.
@@ -456,7 +460,11 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         toolkit=cog.toolkit,
         surface=TurnSurface.for_message(message=as_message(fake=msg_b1)),
     )
-    await turn_b1.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=1)
+    await turn_b1.stream_answer(
+        system_prompt="Be concise.",
+        context=ReplyContext(),
+        regen=RegenOptions(regen_of_reply_message_id=101, regen_count=1),
+    )
     assert _has_regen(view=msg_b1.replies[0].view) is True
 
     msg_b2 = FakeMessage(content="<@999> qb2")
@@ -466,10 +474,14 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         toolkit=cog.toolkit,
         surface=TurnSurface.for_message(message=as_message(fake=msg_b2)),
     )
-    await turn_b2.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=2)
+    await turn_b2.stream_answer(
+        system_prompt="Be concise.",
+        context=ReplyContext(),
+        regen=RegenOptions(regen_of_reply_message_id=102, regen_count=2),
+    )
     assert _has_regen(view=msg_b2.replies[0].view) is False
 
-    # `/ask` omits 🔄 even at regen_count=0.
+    # `/ask` omits 🔄 even at regen=None.
     ask_interaction = _ask_interaction()
     await ask_interaction.response.defer()
     ask_surface = TurnSurface.for_interaction(interaction=ask_interaction, question="ask q")
@@ -479,9 +491,7 @@ async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
         toolkit=cog.toolkit,
         surface=ask_surface,
     )
-    await ask_turn.stream_answer(
-        system_prompt="Be concise.", context=ReplyContext(), regen_count=0
-    )
+    await ask_turn.stream_answer(system_prompt="Be concise.", context=ReplyContext())
     assert _has_regen(view=ask_interaction.edits[-1]["view"]) is False
 
 

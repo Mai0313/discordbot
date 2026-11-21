@@ -21,7 +21,7 @@ from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import LINK_CONTEXT_GRACE_SECONDS
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
-from discordbot.cogs.gen_reply.answer import AnswerTurn
+from discordbot.cogs.gen_reply.answer import AnswerTurn, RegenOptions
 from discordbot.cogs.gen_reply.context import MessageParts, ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 from discordbot.cogs.gen_reply.routing import RouteClassifier
@@ -53,24 +53,7 @@ if TYPE_CHECKING:
 UNROUTED_REPLY = "unrouted"
 
 type LinkTask = asyncio.Task[list[EasyInputMessageParam]]
-
-
-class RegenOptions(BaseModel):
-    """Parameters carried into `ReplyPipeline` when regenerating an earlier QA reply."""
-
-    regen_of_reply_message_id: int = Field(
-        ..., description="Discord message id of the reply being replaced."
-    )
-    regen_count: int = Field(
-        ..., description="1-based regeneration depth of the new reply in its chain."
-    )
-    excluded_models: frozenset[str] = Field(
-        default_factory=frozenset,
-        description="Models already tried earlier in this regen chain, excluded in blind-test mode.",
-    )
-    forced_effort: Literal["low", "medium", "high"] | None = Field(
-        default=None, description="Reasoning effort preserved from the replaced turn, when valid."
-    )
+type LinkBuilds = tuple[dict[str, LinkTask], float]
 
 
 class ReplyPipeline(BaseModel):
@@ -160,8 +143,11 @@ class ReplyPipeline(BaseModel):
         )
         return blocks
 
-    def _start_link_builds(self, selected: set[str], deadline: float) -> dict[str, LinkTask]:
+    def _start_link_builds(self, selected: set[str]) -> LinkBuilds | None:
         """Starts deadline-bound link builds for each selected source with a readable URL."""
+        if not selected:
+            return None
+        deadline = asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
         link_tasks: dict[str, LinkTask] = {}
         for link_source in LINK_CONTEXT_SOURCES:
             if link_source.name not in selected:
@@ -187,12 +173,22 @@ class ReplyPipeline(BaseModel):
                     deadline=deadline,
                 )
             )
-        return link_tasks
+        return (link_tasks, deadline) if link_tasks else None
+
+    async def _mark_link_sources(self, link_builds: LinkBuilds | None) -> None:
+        """Adds persistent provenance reactions for every started link build."""
+        if link_builds is None:
+            return
+        for source_name in link_builds[0]:
+            await self.surface.mark(emoji=LINK_SOURCE_EMOJIS[source_name])
 
     async def _collect_link_blocks(
-        self, link_tasks: dict[str, LinkTask], deadline: float
+        self, link_builds: LinkBuilds | None
     ) -> list[EasyInputMessageParam]:
         """Resolves every started build under the shared grace, in registry splice order."""
+        if link_builds is None:
+            return []
+        link_tasks, deadline = link_builds
         link_blocks: list[EasyInputMessageParam] = []
         for link_source in LINK_CONTEXT_SOURCES:
             link_task = link_tasks.pop(link_source.name, None)
@@ -241,11 +237,7 @@ class ReplyPipeline(BaseModel):
             allow_research=can_launch_research(message=message),
             yt_url=yt_url,
             question=self.user_prompt,
-            regen_count=self.regen.regen_count if self.regen is not None else 0,
-            regen_of_reply_message_id=(
-                self.regen.regen_of_reply_message_id if self.regen is not None else None
-            ),
-            excluded_models=self.regen.excluded_models if self.regen is not None else frozenset(),
+            regen=self.regen,
         )
 
     def _apply_route_overrides(self, route: "RouteClassification") -> "RouteClassification":
@@ -264,7 +256,7 @@ class ReplyPipeline(BaseModel):
             return route.model_copy(update={"decision": "QA"})
         return route
 
-    async def run(self) -> int | None:  # noqa: PLR0915 -- the turn's sequence, and the task handles its `finally` drains
+    async def run(self) -> int | None:
         """Routes the message and dispatches the matching handler with speculative QA context."""
         message = self.message
         # Tracked here so finally records the reached route (or UNROUTED_REPLY) in usage.
@@ -272,7 +264,7 @@ class ReplyPipeline(BaseModel):
         reply_message_id: int | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
-        link_builds: tuple[dict[str, LinkTask], float] | None = None
+        link_builds: LinkBuilds | None = None
         context_builder = ReplyContextBuilder(toolkit=self.toolkit, surface=self.surface)
         classifier = RouteClassifier(
             toolkit=self.toolkit,
@@ -311,17 +303,6 @@ class ReplyPipeline(BaseModel):
                 route = self._apply_route_overrides(route=route)
                 route_decision = route.decision
                 pipeline_span.set_attribute(key="route", value=route.decision)
-                if route.decision == "QA" and route.link_context_sources:
-                    link_context_deadline = (
-                        asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
-                    )
-                    link_tasks = self._start_link_builds(
-                        selected=set(route.link_context_sources), deadline=link_context_deadline
-                    )
-                    link_builds = (link_tasks, link_context_deadline)
-                    # Persistent provenance marks (not status chain), added after starting builds.
-                    for source_name in link_tasks:
-                        await self.surface.mark(emoji=LINK_SOURCE_EMOJIS[source_name])
                 if route.decision in ("IMAGE", "VIDEO"):
                     self.reactions.advance(
                         emoji=IMAGE_EMOJI if route.decision == "IMAGE" else VIDEO_EMOJI
@@ -333,16 +314,19 @@ class ReplyPipeline(BaseModel):
                         decision=route.decision, context_task=media_context_task
                     )
                 else:
+                    # Assign before awaiting marks so finally drains tasks if marking raises/cancels.
+                    link_builds = self._start_link_builds(selected=set(route.link_context_sources))
+                    await self._mark_link_sources(link_builds=link_builds)
                     self.reactions.advance(emoji=ANSWER_EMOJI)
                     context = await prep_task
                     prep_task = None
                     parts_task = None
-                    if link_builds is not None:
-                        link_tasks, link_context_deadline = link_builds
-                        link_blocks = await self._collect_link_blocks(
-                            link_tasks=link_tasks, deadline=link_context_deadline
-                        )
-                        context = context.model_copy(update={"link_blocks": link_blocks})
+                    link_blocks = await self._collect_link_blocks(link_builds=link_builds)
+                    context = (
+                        context.model_copy(update={"link_blocks": link_blocks})
+                        if link_blocks
+                        else context
+                    )
                     pipeline_span.set_attribute(key="effort", value=route.effort)
                     reply_message_id = await self._answer_qa(
                         route=route, context=context, pipeline_started=pipeline_started
@@ -361,9 +345,8 @@ class ReplyPipeline(BaseModel):
                 if task is not None:
                     await discard_task(task=task, label=label, message_id=message.id)
             if link_builds is not None:
-                link_tasks, link_context_deadline = link_builds
                 await discard_link_tasks(
-                    link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
+                    link_tasks=link_builds[0], deadline=link_builds[1], message_id=message.id
                 )
             # One usage record per triggering message (including failures under route or unrouted).
             await self.usage_recorder.record(

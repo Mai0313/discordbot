@@ -41,12 +41,12 @@ from discordbot.utils.asyncio_locks import KeyedLockManager, spawn_tracked
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
-from discordbot.cogs.gen_reply.answer import max_regens_for
+from discordbot.cogs.gen_reply.answer import RegenOptions, max_regens_for
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import read_owner, iter_scopes
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
-from discordbot.cogs.gen_reply.pipeline import RegenOptions, ReplyPipeline
+from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI, EMPTY_PROMPT_EMOJI
