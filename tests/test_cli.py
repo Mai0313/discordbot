@@ -15,10 +15,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
+import logging
 from functools import partial
 from importlib import import_module
 
 import pytest
+from logfire import LogfireLoggingHandler
 from nextcord.errors import ApplicationInvokeError
 
 from discordbot import cli
@@ -154,28 +156,69 @@ async def test_the_registered_command_count_is_read_before_the_sync_overwrites_i
 async def test_the_stale_public_message_sweep_runs_once_even_when_the_sync_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sweep is the process's own, so nothing later in the first `on_ready` can cost it."""
+    """The sweep runs once per process while a failed command sync retries on the next ready."""
     swept: list[tuple[object, datetime]] = []
+    sync_attempts = 0
 
     async def record_sweep(bot: object, tracked_before: datetime) -> None:
         """Stands in for the sweep, recording which bot it ran for and from when."""
         swept.append((bot, tracked_before))
 
-    async def fail_sync() -> None:
-        """Fails the way a Discord outage during the command sync does."""
-        raise RuntimeError("sync failed")
+    async def flaky_sync() -> None:
+        """Fails on the first ready like a Discord outage, then succeeds on reconnect."""
+        nonlocal sync_attempts
+        sync_attempts += 1
+        if sync_attempts == 1:
+            raise RuntimeError("sync failed")
 
     monkeypatch.setattr(cli, "delete_tracked_public_messages", record_sweep)
-    stub = on_ready_bot(started_at=database_now(), sync_all_application_commands=fail_sync)
+    stub = on_ready_bot(started_at=database_now(), sync_all_application_commands=flaky_sync)
     bot = as_discord_bot(fake=stub)
 
     with pytest.raises(RuntimeError, match="sync failed"):
         await DiscordBot.on_ready(bot)
     await asyncio.gather(*stub._startup_tasks)
-    await DiscordBot.on_ready(bot)
+    assert stub._startup_sweeps_done is True
+    assert stub._commands_synced is False
 
+    # Reconnect retries command sync and sets `_commands_synced`, without re-running sweeps.
+    await DiscordBot.on_ready(bot)
+    assert stub._commands_synced is True
+    assert sync_attempts == 2
+
+    # Once synced, later reconnects run neither sweeps nor sync again.
+    await DiscordBot.on_ready(bot)
+    assert sync_attempts == 2
     # The process's start, not `on_ready`'s: whatever ran in between is this process's own.
     assert swept == [(bot, stub._started_at)]
+
+
+async def test_on_ready_does_not_overlap_in_flight_command_sync() -> None:
+    """A reconnect firing `on_ready` mid-sync must not start a second concurrent command sync."""
+    sync_started = asyncio.Event()
+    release_sync = asyncio.Event()
+    sync_calls = 0
+
+    async def slow_sync() -> None:
+        nonlocal sync_calls
+        sync_calls += 1
+        sync_started.set()
+        await release_sync.wait()
+
+    stub = on_ready_bot(started_at=database_now(), sync_all_application_commands=slow_sync)
+    bot = as_discord_bot(fake=stub)
+
+    first = asyncio.create_task(coro=DiscordBot.on_ready(bot))
+    await sync_started.wait()
+    await DiscordBot.on_ready(bot)
+    assert sync_calls == 1
+
+    release_sync.set()
+    await first
+    await asyncio.gather(*stub._startup_tasks)
+    assert stub._commands_synced is True
+    assert stub._commands_syncing is False
+    assert sync_calls == 1
 
 
 def _reward_bot(**state: object) -> SimpleNamespace:
@@ -558,3 +601,83 @@ async def test_cli_counts_registered_commands_and_survives_a_failed_read(
     failing = SimpleNamespace(application_id=7, http=SimpleNamespace(get_global_commands=refused))
     assert await cli.DiscordBot._count_registered_commands(as_discord_bot(fake=failing)) is None
     assert warned
+
+
+async def test_cli_message_reward_rollback_does_not_clobber_a_newer_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late failure from an earlier message must not erase a newer message's cooldown slot."""
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    clock = [1_000.0]
+    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: clock[0])
+
+    async def racing_reward(**_kwargs: Any) -> CreditResult:  # noqa: ANN401 -- facade double
+        if not first_entered.is_set():
+            first_entered.set()
+            await release_first.wait()
+            raise RuntimeError("late failure")
+        return CreditResult(new_balance=10)
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=racing_reward)
+    bot = _reward_bot()
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
+
+    first_task = asyncio.create_task(
+        coro=cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    )
+    await first_entered.wait()
+
+    # Cooldown elapses while the first credit is stuck; a newer message succeeds at t=2000.
+    clock[0] = 2_000.0
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    assert bot._message_reward_at[1] == 2_000.0
+
+    # First credit now fails; it must leave the newer 2000.0 timestamp intact.
+    release_first.set()
+    await first_task
+    assert bot._message_reward_at[1] == 2_000.0
+
+
+async def test_price_table_task_logs_error_type_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Broad catch in `price_table_task` attaches both `error_type` and `_exc_info`."""
+    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+
+    def boom() -> None:
+        raise ValueError("price refresh blew up")
+
+    monkeypatch.setattr(target=cli, name="refresh_model_info", value=boom)
+
+    await cli.DiscordBot.price_table_task.coro(as_discord_bot(fake=SimpleNamespace()))
+
+    assert len(errors) == 1
+    _, fields = errors[0]
+    assert fields["error_type"] == "ValueError"
+    assert isinstance(fields["_exc_info"], ValueError)
+
+
+def test_discord_bot_init_does_not_duplicate_logfire_handlers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Instantiating `DiscordBot` repeatedly attaches at most one `LogfireLoggingHandler` per logger."""
+    monkeypatch.chdir(path=tmp_path)
+    monkeypatch.setattr(target=cli.command, name="upgrade", value=lambda **_kwargs: None)
+    monkeypatch.setattr(target=DiscordBot, name="_load_cogs_sync", value=lambda self: None)
+    for name in ("nextcord.state", "alembic"):
+        logger = logging.getLogger(name=name)
+        for handler in list(logger.handlers):
+            if isinstance(handler, LogfireLoggingHandler):
+                logger.removeHandler(hdlr=handler)
+
+    DiscordBot()
+    DiscordBot()
+
+    for name in ("nextcord.state", "alembic"):
+        logfire_handlers = [
+            handler
+            for handler in logging.getLogger(name=name).handlers
+            if isinstance(handler, LogfireLoggingHandler)
+        ]
+        assert len(logfire_handlers) == 1

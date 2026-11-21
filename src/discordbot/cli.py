@@ -54,12 +54,11 @@ class DiscordBot(commands.Bot):
             description="A Discord bot made with Nextcord.",
             activity=Game("your mama"),
         )
-        state_logger = logging.getLogger("nextcord.state")
-        state_logger.setLevel(logging.WARNING)
-        state_logger.addHandler(LogfireLoggingHandler())
-        alembic_logger = logging.getLogger("alembic")
-        alembic_logger.setLevel(logging.INFO)
-        alembic_logger.addHandler(LogfireLoggingHandler())
+        for logger_name, level in (("nextcord.state", logging.WARNING), ("alembic", logging.INFO)):
+            logger = logging.getLogger(name=logger_name)
+            logger.setLevel(level=level)
+            if not any(isinstance(handler, LogfireLoggingHandler) for handler in logger.handlers):
+                logger.addHandler(hdlr=LogfireLoggingHandler())
         Path("./data/database").mkdir(parents=True, exist_ok=True)
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
         # `messages.db` is left to the log_msg cog's setup: too large to migrate at startup.
@@ -70,7 +69,9 @@ class DiscordBot(commands.Bot):
         # Load cogs synchronously before gateway connect so application_commands is populated.
         # Every cog's setup() must be sync: no event loop is running yet for asyncio.create_task().
         self._load_cogs_sync()
-        self._initial_setup_done = False
+        self._startup_sweeps_done = False
+        self._commands_synced = False
+        self._commands_syncing = False
         # Taken before the gateway connects: everything an earlier process recorded falls before
         # it, and nothing this one records can, the interactions run ahead of `on_ready` included.
         self._started_at = database_now()
@@ -177,54 +178,62 @@ class DiscordBot(commands.Bot):
     async def on_ready(self) -> None:
         """Performs one-time startup sweeps and application-command sync on first ready.
 
-        Idempotent across gateway reconnects and resumes.
+        Idempotent across gateway reconnects and resumes; retries command sync on a later ready
+        when an earlier sync failed.
         """
-        if self._initial_setup_done:
+        if self._startup_sweeps_done and self._commands_synced:
             return
         bot_user = self.user
         if bot_user is None:
-            # Never expected once on_ready fires; leave the latch unset so a reconnect retries.
+            # Never expected once on_ready fires; leave the latches unset so a reconnect retries.
             logfire.warn("on_ready fired without a logged-in user; skipping initial setup")
             return
-        self._initial_setup_done = True
-        # Spawn startup sweeps before command sync so a sync error cannot skip them.
-        spawn_tracked(
-            coro=delete_tracked_public_messages(bot=self, tracked_before=self._started_at),
-            tasks=self._startup_tasks,
-            name="delete-stale-public-responses",
-        )
-        # Reject stale loan proposals whose decision views died with the previous process.
-        spawn_tracked(
-            coro=reject_loan_proposals_created_before(cutoff=self._started_at),
-            tasks=self._startup_tasks,
-            name="reject-stale-loan-requests",
-        )
+        if not self._startup_sweeps_done:
+            self._startup_sweeps_done = True
+            # Spawn startup sweeps before command sync so a sync error cannot skip them.
+            spawn_tracked(
+                coro=delete_tracked_public_messages(bot=self, tracked_before=self._started_at),
+                tasks=self._startup_tasks,
+                name="delete-stale-public-responses",
+            )
+            # Reject stale loan proposals whose decision views died with the previous process.
+            spawn_tracked(
+                coro=reject_loan_proposals_created_before(cutoff=self._started_at),
+                tasks=self._startup_tasks,
+                name="reject-stale-loan-requests",
+            )
 
-        logfire.info(
-            "Logged in",
-            bot_name=bot_user.name,
-            discord_version=nextcord.__version__,
-            python_version=platform.python_version(),
-            system=f"{platform.system()} {platform.release()} ({os.name})",
-        )
+            logfire.info(
+                "Logged in",
+                bot_name=bot_user.name,
+                discord_version=nextcord.__version__,
+                python_version=platform.python_version(),
+                system=f"{platform.system()} {platform.release()} ({os.name})",
+            )
 
-        registered_before = await self._count_registered_commands()
-        sync_started_at = monotonic()
-        await self.sync_all_application_commands()
-        # `registered_before` distinguishes a no-op sync (~1s) from a full upsert (~1m).
-        logfire.info(
-            "Application commands synced",
-            registered_before=registered_before,
-            local_count=len(self.get_application_commands()),
-            elapsed_seconds=round(monotonic() - sync_started_at, 3),
-        )
+        if not self._commands_synced and not self._commands_syncing:
+            self._commands_syncing = True
+            try:
+                registered_before = await self._count_registered_commands()
+                sync_started_at = monotonic()
+                await self.sync_all_application_commands()
+                self._commands_synced = True
+            finally:
+                self._commands_syncing = False
+            # `registered_before` distinguishes a no-op sync (~1s) from a full upsert (~1m).
+            logfire.info(
+                "Application commands synced",
+                registered_before=registered_before,
+                local_count=len(self.get_application_commands()),
+                elapsed_seconds=round(monotonic() - sync_started_at, 3),
+            )
 
-        app_info = await self.application_info()
-        # Omit `scope`/`permissions` so Discord uses Developer Portal Default Install Settings;
-        # hardcoding `scope=bot` drops the user-install ("add to my apps") option.
-        invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
-        logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
-        logfire.info("Invite Link", invite_url=invite_url)
+            app_info = await self.application_info()
+            # Omit `scope`/`permissions` so Discord uses Developer Portal Default Install Settings;
+            # hardcoding `scope=bot` drops the user-install ("add to my apps") option.
+            invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
+            logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
+            logfire.info("Invite Link", invite_url=invite_url)
 
     @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
     async def price_table_task(self) -> None:
@@ -238,7 +247,11 @@ class DiscordBot(commands.Bot):
         except Exception as exc:
             # Broad on purpose: an uncaught exception stops the tasks.loop permanently, and
             # nextcord's bound `_error` crashes silently on class methods (`_injected` arg).
-            logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
+            logfire.error(
+                "model price table refresh failed; retrying next pass",
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     async def on_message(self, message: Message) -> None:
         """Awards the cooldown-gated message reward.
@@ -269,10 +282,11 @@ class DiscordBot(commands.Bot):
                     amount=BASE_MESSAGE_REWARD_AMOUNT,
                 )
             except Exception as exc:
-                if last_rewarded_at is None:
-                    self._message_reward_at.pop(message.author.id, None)
-                else:
-                    self._message_reward_at[message.author.id] = last_rewarded_at
+                if self._message_reward_at.get(message.author.id) == now:
+                    if last_rewarded_at is None:
+                        self._message_reward_at.pop(message.author.id, None)
+                    else:
+                        self._message_reward_at[message.author.id] = last_rewarded_at
                 # Broad on purpose: the reward is best-effort and must never raise out of
                 # the listener, so every failure mode (DB, avatar fetch) is swallowed.
                 logfire.warn(
