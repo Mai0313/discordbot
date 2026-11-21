@@ -13,7 +13,7 @@ import contextlib
 from collections.abc import Callable, Sequence, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import Message, HTTPException, AllowedMentions
+from nextcord import Message, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
@@ -25,7 +25,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.typings.models import BLIND_TEST_MODEL_LABEL, ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
     render_author_identity,
@@ -396,24 +395,12 @@ class AnswerTurn(BaseModel):
         Raises:
             HTTPException: Sending failed for a reason other than a deleted reply target.
         """
-        try:
-            return await self.surface.send(
-                content=content,
-                file=media.to_file() if media else None,
-                allowed_mentions=allowed_mentions,
-            )
-        except HTTPException as exc:
-            if not is_reply_target_gone(error=exc):
-                raise
-            logfire.info(
-                "Source message deleted before the media reply; sending unparented",
-                message_id=self.message.id,
-            )
-            return await self.surface.send_unparented(
-                content=content,
-                file=media.to_file() if media else None,
-                allowed_mentions=allowed_mentions,
-            )
+        return await self.surface.send_or_unparented(
+            content=content,
+            file=media.to_file if media else None,
+            allowed_mentions=allowed_mentions,
+            unparented_log="Source message deleted before the media reply; sending unparented",
+        )
 
     def _select_qa_model(
         self,

@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 import logfire
 import nextcord
 from nextcord import (
+    File,
     User,
     Embed,
     Locale,
@@ -215,18 +216,17 @@ class ReplyGeneratorCogs(commands.Cog):
         if streamer is not None and await streamer.land_failure(embed=error_embed):
             return
         message = surface.message
-        spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)
-        try:
-            await surface.send(embed=error_embed, **spacer)
-        except HTTPException as send_error:
-            # Source deleted before the error landed: send it unparented. Rebuild the
-            # spacer; the failed reply already consumed the single-use spacer file.
-            if not is_reply_target_gone(error=send_error):
-                raise
-            fresh_spacer = embed_spacer_payload(
-                embeds=[error_embed], is_edit=False, target=message
+
+        def _spacer_files() -> list[File] | None:
+            return embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message).get(
+                "files"
             )
-            await surface.send_unparented(embed=error_embed, **fresh_spacer)
+
+        await surface.send_or_unparented(
+            embed=error_embed,
+            files=_spacer_files,
+            unparented_log="Source message deleted before failure notice; sending unparented",
+        )
 
     async def _run_turn(self, surface: TurnSurface, content: str) -> None:
         """Runs one turn and delivers a last-resort failure notice if an unhandled error escapes."""

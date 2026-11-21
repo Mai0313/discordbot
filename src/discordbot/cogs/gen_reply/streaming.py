@@ -24,7 +24,6 @@ from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT, embed_spacer_payload
-from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.utils.llm_transcript import render_usage_footer
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -480,26 +479,16 @@ class ResponseStreamer(BaseModel):
         kept.reverse()
         return "\n".join([header, *(f"-# {line}" for line in kept)])
 
-    async def _reply_or_send(self, content: str, view: View | None = None) -> Message:
-        """Replies with `content`, falling back to unparented send if the source was deleted."""
-        try:
-            return await self.surface.send(content=content, view=view)
-        except HTTPException as exc:
-            if not is_reply_target_gone(error=exc):
-                raise
-            logfire.info(
-                "Source message deleted before reply; sending unparented",
-                message_id=self.message.id,
-            )
-            return await self.surface.send_unparented(content=content, view=view)
-
     async def _write_preview_snapshot(self) -> None:
         """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
         preview = self._render_preview()
         if not preview or preview == self.displayed_content:
             return
         if self.reply is None:
-            self.reply = await self._reply_or_send(content=preview)
+            self.reply = await self.surface.send_or_unparented(
+                content=preview,
+                unparented_log="Source message deleted before reply; sending unparented",
+            )
         else:
             await self.reply.edit(content=preview)
         self.displayed_content = preview
@@ -577,7 +566,11 @@ class ResponseStreamer(BaseModel):
         parent_view = self.feedback_view if not follow_up_chunks else None
         # Record reply here when no preview ran so later media edits target it.
         if self.reply is None:
-            self.reply = await self._reply_or_send(content=parent_content, view=parent_view)
+            self.reply = await self.surface.send_or_unparented(
+                content=parent_content,
+                view=parent_view,
+                unparented_log="Source message deleted before reply; sending unparented",
+            )
         else:
             edit_kwargs: _EditKwargs = {"content": parent_content}
             if parent_view is not None:

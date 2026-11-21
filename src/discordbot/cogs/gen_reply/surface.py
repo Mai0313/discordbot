@@ -2,14 +2,24 @@
 
 `TurnSurface` encapsulates message sending, overflow follow-ups, history loading, reactions, and
 guild/DM identity across both paths. Progress reactions are no-ops on `/ask`; `hint` queues
-dropped-media emojis for `take_hints` instead. `send` and `send_unparented` stay separate so
-callers can rebuild single-use `nextcord.File` payloads before retrying unparented.
+dropped-media emojis for `take_hints` instead. `send_or_unparented` handles the deleted-target
+fallback, accepting fresh-file factories or rewinding seekable `nextcord.File` payloads on retry.
 """
 
 from typing import Any
+from collections.abc import Callable
 
 import logfire
-from nextcord import File, Embed, Message, DMChannel, ClientUser, Interaction, AllowedMentions
+from nextcord import (
+    File,
+    Embed,
+    Message,
+    DMChannel,
+    ClientUser,
+    Interaction,
+    HTTPException,
+    AllowedMentions,
+)
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ui import View
 from nextcord.ext import commands
@@ -18,6 +28,7 @@ from nextcord.utils import utcnow
 
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
+from discordbot.utils.discord_errors import is_reply_target_gone
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, rebuild_conversation
 
@@ -176,10 +187,12 @@ class TurnSurface(BaseModel):
         if self.interaction is None:
             return await self.message.reply(**payload)
         if not self._original_consumed:
+            sent = await self.interaction.edit_original_message(**payload)
             self._original_consumed = True
-            return await self.interaction.edit_original_message(**payload)
+            return sent
+        sent = await self.interaction.followup.send(**payload, wait=True)
         self._followups_spent += 1
-        return await self.interaction.followup.send(**payload, wait=True)
+        return sent
 
     async def send_unparented(  # noqa: PLR0913 -- mirrors Discord send fields
         self,
@@ -214,6 +227,54 @@ class TurnSurface(BaseModel):
             return await self.send(**payload)
         return await self.message.channel.send(**payload)
 
+    async def send_or_unparented(  # noqa: PLR0913 -- mirrors Discord send fields plus fallback log
+        self,
+        content: str | None = None,
+        embed: Embed | None = None,
+        file: Callable[[], File] | None = None,
+        files: Callable[[], list[File] | None] | None = None,
+        allowed_mentions: AllowedMentions | None = None,
+        view: View | None = None,
+        unparented_log: str | None = None,
+    ) -> Message:
+        """Sends a reply, falling back to an unparented channel send when the source was deleted.
+
+        `file` and `files` take zero-argument factories because `nextcord` closes `File` handles
+        in `send`'s `finally` block before raising, so retries require fresh handles.
+
+        Args:
+            content (str | None): Message text content.
+            embed (Embed | None): Single embed to attach.
+            file (Callable[[], File] | None): Zero-argument factory for a single file attachment.
+            files (Callable[[], list[File] | None] | None): Zero-argument factory for multiple file
+                attachments.
+            allowed_mentions (AllowedMentions | None): Mention policy for the send.
+            view (View | None): Optional component view to attach.
+            unparented_log (str | None): Optional info log emitted when falling back unparented.
+        """
+        try:
+            return await self.send(
+                content=content,
+                embed=embed,
+                file=file() if file is not None else None,
+                files=files() if files is not None else None,
+                allowed_mentions=allowed_mentions,
+                view=view,
+            )
+        except HTTPException as exc:
+            if self.interaction is not None or not is_reply_target_gone(error=exc):
+                raise
+            if unparented_log:
+                logfire.info(unparented_log, message_id=self.message.id)
+            return await self.send_unparented(
+                content=content,
+                embed=embed,
+                file=file() if file is not None else None,
+                files=files() if files is not None else None,
+                allowed_mentions=allowed_mentions,
+                view=view,
+            )
+
     async def follow_up(
         self,
         previous: Message,
@@ -242,8 +303,9 @@ class TurnSurface(BaseModel):
         )
         if self.interaction is None:
             return await previous.reply(**payload)
+        sent = await self.interaction.followup.send(**payload, wait=True)
         self._followups_spent += 1
-        return await self.interaction.followup.send(**payload, wait=True)
+        return sent
 
     async def fetch_history(self, limit: int) -> list[Message]:
         """Returns up to `limit` conversation messages before this turn, oldest first.

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, cast
 from datetime import timedelta
 
 import pytest
+from nextcord import File
 from nextcord.enums import InteractionContextType
 from nextcord.utils import utcnow
 from nextcord.iterators import history_iterator
@@ -15,7 +17,7 @@ from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.surface import INTERACTION_FOLLOWUP_LIMIT, TurnSurface
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns
 
-from tests.helpers.casting import as_message
+from tests.helpers.casting import as_message, make_server_error, make_invalid_form_body
 from tests.helpers.reply_fakes import FakeAuthor, FakeChannel, FakeMessage
 from tests.helpers.ask_interaction import (
     ASKER_ID,
@@ -224,3 +226,110 @@ def test_an_undeferred_invocation_has_nothing_to_spend_either() -> None:
     surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
 
     assert surface.delivery_budget_seconds() == 0.0
+
+
+async def test_failed_interaction_send_and_followup_do_not_consume_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed Discord calls leave `_original_consumed` and `_followups_spent` untouched."""
+    interaction = _interaction()
+    surface = TurnSurface.for_interaction(interaction=interaction, question="在幹嘛")
+    original_edit = interaction.edit_original_message
+    original_followup = interaction.followup.send
+
+    async def fail_once_edit(**kwargs: object) -> object:
+        del kwargs
+        raise RuntimeError("transient edit error")
+
+    monkeypatch.setattr(interaction, "edit_original_message", fail_once_edit)
+    with pytest.raises(RuntimeError, match="transient edit error"):
+        await surface.send(content="first")
+    assert surface.answer_capacity(has_landed_reply=False) == INTERACTION_FOLLOWUP_LIMIT + 1
+
+    monkeypatch.setattr(interaction, "edit_original_message", original_edit)
+    await surface.send(content="first")
+    assert [edit["content"] for edit in interaction.edits] == ["first"]
+    assert surface.answer_capacity(has_landed_reply=True) == INTERACTION_FOLLOWUP_LIMIT + 1
+
+    async def fail_followup(**kwargs: object) -> object:
+        del kwargs
+        raise RuntimeError("transient followup error")
+
+    monkeypatch.setattr(interaction.followup, "send", fail_followup)
+    with pytest.raises(RuntimeError, match="transient followup error"):
+        await surface.send(content="second")
+    with pytest.raises(RuntimeError, match="transient followup error"):
+        await surface.follow_up(previous=SimpleNamespace(), content="tail")  # ty: ignore[invalid-argument-type] -- never reaches previous.reply on /ask
+    assert surface.answer_capacity(has_landed_reply=True) == INTERACTION_FOLLOWUP_LIMIT + 1
+
+    monkeypatch.setattr(interaction.followup, "send", original_followup)
+    await surface.follow_up(previous=SimpleNamespace(), content="tail")  # ty: ignore[invalid-argument-type] -- never reaches previous.reply on /ask
+    assert surface.answer_capacity(has_landed_reply=True) == INTERACTION_FOLLOWUP_LIMIT
+
+
+def _sent_files(kwargs: dict[str, object]) -> list[File]:
+    """Extracts any `File` objects passed via `file` or `files` kwargs."""
+    items: list[object] = []
+    if (single := kwargs.get("file")) is not None:
+        items.append(single)
+    if isinstance(multi := kwargs.get("files"), list):
+        items.extend(multi)
+    return [item for item in items if isinstance(item, File)]
+
+
+async def test_send_or_unparented_rebuilds_file_factories_and_reraises_other_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleted-target fallback rebuilds file factories after `File.close()` and re-raises 5xx."""
+    reply_gone = make_invalid_form_body()
+    channel_payloads: list[bytes] = []
+
+    async def record_channel_send(**kwargs: object) -> SimpleNamespace:
+        channel_payloads.extend(item.fp.read() for item in _sent_files(kwargs=kwargs))
+        return SimpleNamespace(content=kwargs.get("content"))
+
+    async def fail_reply_closing_files(**kwargs: object) -> object:
+        # Mirror real `nextcord.abc.Messageable.send` closing file handles in `finally`.
+        for item in _sent_files(kwargs=kwargs):
+            item.fp.read()
+            item.close()
+        raise reply_gone
+
+    # Case 1: single-file factory builds a fresh File per attempt.
+    built_single = 0
+
+    def _make_file() -> File:
+        nonlocal built_single
+        built_single += 1
+        return File(fp=BytesIO(b"hello-factory"), filename="a.txt")
+
+    msg1 = FakeMessage()
+    monkeypatch.setattr(msg1.channel, "send", record_channel_send)
+    monkeypatch.setattr(msg1, "reply", fail_reply_closing_files)
+    surface1 = TurnSurface.for_message(message=as_message(fake=msg1))
+    await surface1.send_or_unparented(content="hi", file=_make_file)
+    assert built_single == 2
+    assert channel_payloads[-1] == b"hello-factory"
+
+    # Case 2: multi-file factory builds fresh Files per attempt.
+    built_multi = 0
+
+    def _make_files() -> list[File]:
+        nonlocal built_multi
+        built_multi += 1
+        return [File(fp=BytesIO(b"hello-multi"), filename="b.txt")]
+
+    msg2 = FakeMessage()
+    monkeypatch.setattr(msg2.channel, "send", record_channel_send)
+    monkeypatch.setattr(msg2, "reply", fail_reply_closing_files)
+    surface2 = TurnSurface.for_message(message=as_message(fake=msg2))
+    await surface2.send_or_unparented(content="hi", files=_make_files)
+    assert built_multi == 2
+    assert channel_payloads[-1] == b"hello-multi"
+
+    # Case 3: non-deleted HTTP error propagates instead of sending unparented.
+    msg3 = FakeMessage()
+    msg3.reply_error = make_server_error()
+    surface3 = TurnSurface.for_message(message=as_message(fake=msg3))
+    with pytest.raises(type(msg3.reply_error)):
+        await surface3.send_or_unparented(content="hi")
