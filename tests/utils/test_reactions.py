@@ -7,7 +7,7 @@ import pytest
 
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 
-from tests.helpers.casting import as_message, make_forbidden
+from tests.helpers.casting import as_message, make_forbidden, make_not_found, make_server_error
 from tests.helpers.reply_fakes import FakeMessage
 from tests.helpers.discord_mocks import FakeDiscordMessage
 from tests.helpers.logfire_capture import capture_logs
@@ -30,6 +30,57 @@ async def test_a_refused_reaction_is_a_warn_with_its_ids(monkeypatch: pytest.Mon
     assert added == "✅"
     assert [fields for _message, fields in warns] == [
         {"message_id": 1, "channel_id": 2, "emoji": "✅"}
+    ]
+
+
+async def test_update_reaction_suppresses_not_found_silently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adding a reaction to a deleted message is inert cleanup and produces no warning."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    message = FakeDiscordMessage()
+
+    async def gone(emoji: str) -> None:
+        del emoji
+        raise make_not_found(message="Unknown Message")
+
+    monkeypatch.setattr(target=message, name="add_reaction", value=gone)
+
+    added = await update_reaction(message=as_message(fake=message), bot_user=None, emoji="✅")
+
+    assert added == "✅"
+    assert warns == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type"),
+    [(make_server_error(), "HTTPException"), (RuntimeError("network reset"), "RuntimeError")],
+    ids=["http_500", "unexpected_error"],
+)
+async def test_update_reaction_logs_unexpected_errors_at_warn(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, error_type: str
+) -> None:
+    """Unexpected reaction failures log at `warn` with `error_type` and `_exc_info` without raising."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    message = FakeDiscordMessage()
+
+    async def broken(emoji: str) -> None:
+        del emoji
+        raise failure
+
+    monkeypatch.setattr(target=message, name="add_reaction", value=broken)
+
+    added = await update_reaction(message=as_message(fake=message), bot_user=None, emoji="✅")
+
+    assert added == "✅"
+    assert [fields for _message, fields in warns] == [
+        {
+            "message_id": 1,
+            "channel_id": 2,
+            "emoji": "✅",
+            "error_type": error_type,
+            "_exc_info": failure,
+        }
     ]
 
 

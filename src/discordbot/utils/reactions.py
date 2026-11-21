@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 
 import logfire
-from nextcord import Message, Forbidden, ClientUser
+from nextcord import Message, NotFound, Forbidden, ClientUser
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 
 
@@ -13,9 +13,9 @@ async def update_reaction(
 ) -> str:
     """Returns `emoji` after adding it to `message` and removing `previous` if present.
 
-    Both add and remove are best-effort; failures are suppressed so reaction
-    bookkeeping never breaks the surrounding flow, and a refused add is logged
-    with its ids.
+    Both add and remove are best-effort; `NotFound` is suppressed silently, a refused add is
+    logged with its ids, and unexpected add errors are logged at `warn` so reaction bookkeeping
+    never breaks the surrounding flow.
 
     Args:
         message (Message): The message to react on.
@@ -26,17 +26,28 @@ async def update_reaction(
     if previous and bot_user:
         with contextlib.suppress(Exception):
             await message.remove_reaction(emoji=previous, member=bot_user)
-    with contextlib.suppress(Exception):
-        try:
-            await message.add_reaction(emoji=emoji)
-        except Forbidden:
-            # The channel's permissions decide who may react; the ids are the whole finding.
-            logfire.warn(
-                "Discord refused a reaction",
-                message_id=message.id,
-                channel_id=message.channel.id,
-                emoji=emoji,
-            )
+    try:
+        await message.add_reaction(emoji=emoji)
+    except NotFound:
+        pass
+    except Forbidden:
+        # The channel's permissions decide who may react; the ids are the whole finding.
+        logfire.warn(
+            "Discord refused a reaction",
+            message_id=message.id,
+            channel_id=message.channel.id,
+            emoji=emoji,
+        )
+    except Exception as exc:
+        # Broad on purpose: reaction bookkeeping is best-effort and must never break the caller.
+        logfire.warn(
+            "Failed to add a reaction",
+            message_id=message.id,
+            channel_id=message.channel.id,
+            emoji=emoji,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
     return emoji
 
 

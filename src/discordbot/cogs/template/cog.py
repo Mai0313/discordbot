@@ -1,11 +1,11 @@
 """Small utility cog for ping and simple message-trigger reactions."""
 
-import logfire
 import nextcord
-from nextcord import Embed, Locale, Message, Forbidden, Interaction
+from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_GREEN
+from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
@@ -17,7 +17,7 @@ class TemplateCogs(commands.Cog):
         bot (commands.Bot): The Discord bot instance that owns this cog.
     """
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot) -> None:
         """Initializes the cog.
 
         Args:
@@ -35,20 +35,11 @@ class TemplateCogs(commands.Cog):
         if message.author.bot:
             return
 
-        try:
-            if message.content.lower() == "debug":
-                await message.add_reaction("🤬")
-            if message.content.lower() == "可愛捏":
-                await message.add_reaction("↖️")
-            if message.content.lower() == "可爱捏":
-                await message.add_reaction("↖️")
-        except Forbidden:
-            # The channel's permissions decide who may react; the ids are the whole finding.
-            logfire.warn(
-                "Discord refused a trigger reaction",
-                message_id=message.id,
-                channel_id=message.channel.id,
-            )
+        trigger_reactions = {"debug": "🤬", "可愛捏": "↖️", "可爱捏": "↖️"}
+        emoji = trigger_reactions.get(message.content.lower())
+        if emoji is None:
+            return
+        await update_reaction(message=message, bot_user=None, emoji=emoji)
 
     @nextcord.slash_command(
         name="ping",
