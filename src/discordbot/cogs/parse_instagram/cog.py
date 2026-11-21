@@ -22,6 +22,7 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
     PLACEHOLDER_TEXT = "-# 正在讀取 Instagram 貼文⋯"
     READ_TIMEOUT_SECONDS = INSTAGRAM_EXPAND_TIMEOUT_SECONDS
     EMBED_COLOR = 0xE4405F
+    DOWNLOAD_VIDEOS = True
     downloader_factory = InstagramDownloader
 
     @staticmethod
@@ -48,8 +49,13 @@ class InstagramCogs(ConversationExpansionCog[InstagramOutput, InstagramConversat
         """Returns the commenter's handle, the only name Instagram comments carry."""
         return f"@{comment.author_name}" if comment.author_name else ""
 
-    def _video_link(self, post: InstagramOutput) -> str:
-        """Returns `post.url` instead of `video_urls[0]`; signed CDN URLs expire within days."""
+    def _video_download_headers(self) -> dict[str, str]:
+        """Returns HTTP headers including Instagram's referer for CDN video fetches."""
+        return {**super()._video_download_headers(), "Referer": "https://www.instagram.com/"}
+
+    def _video_link(self, post: InstagramOutput, index: int = 0) -> str:
+        """Returns `post.url` instead of `video_urls`; signed CDN URLs expire within days."""
+        del index
         return post.url
 
     def _footer_text(self, post: InstagramOutput, shown_images: int) -> str:

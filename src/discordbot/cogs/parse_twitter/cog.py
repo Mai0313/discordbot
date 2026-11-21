@@ -1,7 +1,8 @@
 """Expands Twitter (x.com) post URLs into Discord embeds via `ConversationExpansionCog`.
 
-Renders the ancestor chain, target post (stills or video poster), and quoted post; skips replies
-(left to `gen_reply`) and flags truncated note tweets when FxTwitter is unavailable.
+Renders the ancestor chain, target post (stills and downloaded videos, falling back to video
+poster and link on failure), and quoted post; skips replies (left to `gen_reply`) and flags
+truncated note tweets when FxTwitter is unavailable.
 """
 
 from functools import partial
@@ -19,6 +20,7 @@ from discordbot.utils.expansion_cog import (
     post_card_embeds,
     omitted_posts_note,
     context_card_budget,
+    omitted_videos_note,
 )
 from discordbot.utils.discord_embeds import (
     DISCORD_EMBED_COUNT_LIMIT,
@@ -54,6 +56,7 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
     READ_TIMEOUT_SECONDS = TWITTER_EXPAND_TIMEOUT_SECONDS
     # Twitter blue rather than X black so the left embed bar stays visible on dark theme.
     EMBED_COLOR = 0x1DA1F2
+    DOWNLOAD_VIDEOS = True
     # Skipping the replies spares a short first post that quotes nothing the FxTwitter request.
     # `staticmethod` because a `partial` on a class turns into a method from Python 3.14 on.
     downloader_factory = staticmethod(partial(TwitterDownloader, read_replies=False))
@@ -95,30 +98,54 @@ class TwitterCogs(ConversationExpansionCog[TwitterOutput, TwitterConversation]):
             embed.set_author(name=author, url=post.url, icon_url=post.author_icon_url or None)
         return embed
 
-    def _build_embeds(self, conversation: TwitterConversation) -> list[Embed]:
+    def _build_embeds(
+        self, conversation: TwitterConversation, undelivered_video_indices: list[int] | None = None
+    ) -> list[Embed]:
         """Returns embeds for the ancestor thread, target post (with images), and quoted post."""
         post = conversation.target
         if post is None:
             return []
 
-        hint = VIDEO_HINT.format(url=self._video_link(post=post)) if post.video_urls else ""
+        missing_videos = (
+            list(range(len(post.video_urls)))
+            if undelivered_video_indices is None
+            else undelivered_video_indices
+        )
+        first_missing = missing_videos[0] if missing_videos else None
+        hint = (
+            VIDEO_HINT.format(url=self._video_link(post=post, index=first_missing))
+            if first_missing is not None
+            else ""
+        )
         truncated = _TRUNCATED_NOTICE if post.is_truncated else ""
         shown = post.image_urls[:POST_CARD_MAX_IMAGES]
-        # Fall back to video poster frame when there are no still images.
-        poster = next(iter(post.video_poster_urls), "")
+        # Fall back to the first undelivered clip's poster frame when there are no stills.
+        poster = (
+            post.video_poster_urls[first_missing]
+            if first_missing is not None and first_missing < len(post.video_poster_urls)
+            else ""
+        )
         images = shown or ([poster] if poster else [])
         room = DISCORD_EMBED_COUNT_LIMIT - max(len(images), 1) - bool(post.quoted)
         ancestors = conversation.chain[:-1][-room:]
         omitted = len(conversation.chain) - 1 - len(ancestors)
         context_count = len(ancestors) + bool(post.quoted)
-        footer = self._footer_text(post=post, shown_images=len(shown))
-        if omitted:
-            footer = f"{footer} · {omitted_posts_note(count=omitted)}"
+        footer_parts = [
+            part
+            for part in (
+                self._footer_text(post=post, shown_images=len(shown)),
+                omitted_videos_note(count=len(missing_videos) - 1)
+                if len(missing_videos) > 1
+                else "",
+                omitted_posts_note(count=omitted) if omitted else "",
+            )
+            if part
+        ]
         embeds = post_card_embeds(
             post=post,
             color=self.EMBED_COLOR,
             author=self._author_label(post=post),
-            footer=footer,
+            footer=" · ".join(footer_parts),
             images=images,
             suffix=truncated + hint,
             reserve=min(_CONTEXT_RESERVE * context_count, _CONTEXT_RESERVE_CAP),
