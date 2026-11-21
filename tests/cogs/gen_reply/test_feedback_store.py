@@ -7,6 +7,7 @@ from discordbot.cogs.gen_reply.feedback_store import (
     ReplyFeedbackRow,
     open_session,
     record_reply_turn,
+    clear_feedback_vote,
     set_feedback_reason,
     toggle_feedback_vote,
 )
@@ -20,6 +21,8 @@ async def _seed_turn(reply_message_id: int = 9001, author_id: int = 100) -> None
         guild_id=500,
         channel_id=600,
         author_id=author_id,
+        author_name="asker",
+        author_display_name="Asker Nick",
         surface="gateway",
         route="QA",
         model="gemini-4-neon",
@@ -35,7 +38,11 @@ async def test_vote_toggle_switch_and_cancel_leave_a_single_clean_row() -> None:
     await _seed_turn()
 
     first = await toggle_feedback_vote(
-        reply_message_id=9001, user_id=100, user_name="asker", vote="down"
+        reply_message_id=9001,
+        user_id=100,
+        user_name="asker",
+        user_display_name="Old Nick",
+        vote="down",
     )
     assert first is not None
     assert first.action == "set"
@@ -43,12 +50,25 @@ async def test_vote_toggle_switch_and_cancel_leave_a_single_clean_row() -> None:
     assert first.is_asker is True
     assert first.model == "gemini-4-neon"
 
+    async with open_session() as session:
+        turn = await session.get(entity=ReplyTurnRow, ident=9001)
+        initial_row = await session.get(entity=ReplyFeedbackRow, ident=(9001, 100))
+    assert turn is not None
+    assert turn.author_name == "asker"
+    assert turn.author_display_name == "Asker Nick"
+    assert initial_row is not None
+    assert initial_row.user_display_name == "Old Nick"
+
     reason = await set_feedback_reason(reply_message_id=9001, user_id=100, reason_tag="inaccurate")
     assert reason.updated is True
     assert reason.reason_tag == "inaccurate"
 
     switched = await toggle_feedback_vote(
-        reply_message_id=9001, user_id=100, user_name="asker", vote="up"
+        reply_message_id=9001,
+        user_id=100,
+        user_name="asker_renamed",
+        user_display_name="New Nick",
+        vote="up",
     )
     assert switched is not None
     assert switched.action == "change"
@@ -58,6 +78,8 @@ async def test_vote_toggle_switch_and_cancel_leave_a_single_clean_row() -> None:
         rows = list((await session.execute(select(ReplyFeedbackRow))).scalars())
     assert len(rows) == 1
     assert rows[0].vote == "up"
+    assert rows[0].user_name == "asker_renamed"
+    assert rows[0].user_display_name == "New Nick"
     assert rows[0].reason_tag is None
     assert rows[0].reason_text is None
 
@@ -148,3 +170,29 @@ async def test_deleting_reply_turn_cascades_to_feedback_rows() -> None:
     async with open_session() as session:
         remaining = list((await session.execute(select(ReplyFeedbackRow))).scalars())
     assert remaining == []
+
+
+async def test_clear_feedback_vote_requires_matching_expected_vote() -> None:
+    """`clear_feedback_vote` deletes only when the current vote matches `expected_vote`."""
+    await _seed_turn(reply_message_id=9005, author_id=100)
+    await toggle_feedback_vote(reply_message_id=9005, user_id=100, user_name="asker", vote="up")
+
+    # Mismatched expected_vote leaves the row intact and signals not cleared.
+    mismatch = await clear_feedback_vote(reply_message_id=9005, user_id=100, expected_vote="down")
+    assert mismatch is None
+    async with open_session() as session:
+        still_present = await session.get(entity=ReplyFeedbackRow, ident=(9005, 100))
+    assert still_present is not None
+    assert still_present.vote == "up"
+
+    # Matching expected_vote deletes the row and returns metadata with action="clear".
+    cleared = await clear_feedback_vote(reply_message_id=9005, user_id=100, expected_vote="up")
+    assert cleared is not None
+    assert cleared.action == "clear"
+    assert cleared.vote is None
+    assert cleared.is_asker is True
+    assert cleared.model == "gemini-4-neon"
+
+    # Clearing again after removal returns None.
+    again = await clear_feedback_vote(reply_message_id=9005, user_id=100, expected_vote="up")
+    assert again is None

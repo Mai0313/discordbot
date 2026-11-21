@@ -5,10 +5,11 @@ import re
 from discordbot.utils.model_pricing import get_token_rates
 
 # Strips bot usage footers (plus optional leading ✏️/🩹 memory notes from
-# `cogs/gen_reply/status_marks.py` and trailing owner credit) before re-reading replies as
-# assistant history so the model does not hallucinate footers. `^` covers note-only replies.
+# `cogs/gen_reply/status_marks.py` and trailing subtext lines such as owner credit and feedback
+# policy) before re-reading replies as assistant history so the model does not hallucinate footers.
+# `^` covers note-only replies.
 USAGE_FOOTER_RE = re.compile(
-    r"(?:(?:^|\n)-# (?:✏️|🩹) [^\n]*)*\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$"
+    r"(?:(?:^|\n)-# (?:✏️|🩹) [^\n]*)*\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)*$"
 )
 
 # Neutralizes `[id:` lookalikes in display names that could spoof trusted author prefixes.

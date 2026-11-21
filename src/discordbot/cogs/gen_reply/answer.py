@@ -186,6 +186,8 @@ class AnswerTurn(BaseModel):
                 guild_id=self.surface.guild_id,
                 channel_id=self.message.channel.id,
                 author_id=self.message.author.id,
+                author_name=self.message.author.name,
+                author_display_name=self.message.author.display_name,
                 surface="ask" if self.surface.interaction is not None else "gateway",
                 route=route,
                 model=model,
