@@ -40,6 +40,8 @@ class ReplyTurnRow(Base):
     guild_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     channel_id: Mapped[int] = mapped_column(Integer, nullable=False)
     author_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     surface: Mapped[str] = mapped_column(Text, nullable=False)
     route: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
@@ -65,6 +67,7 @@ class ReplyFeedbackRow(Base):
     )
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_name: Mapped[str] = mapped_column(Text, nullable=False)
+    user_display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     vote: Mapped[str] = mapped_column(Text, nullable=False)
     reason_tag: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -142,6 +145,8 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
     backend: str,
     question: str,
     answer: str,
+    author_name: str | None = None,
+    author_display_name: str | None = None,
 ) -> None:
     """Persists one finalized reply snapshot, updating in place if the reply id already exists.
 
@@ -158,6 +163,8 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
         backend (str): Backend label (`"responses"` or `"interactions"`).
         question (str): Snapshot of the user's request text.
         answer (str): Snapshot of the finalized reply text without the usage footer.
+        author_name (str | None): Write-time username of the prompt author, if available.
+        author_display_name (str | None): Write-time display name or guild nick of the author.
     """
     async with open_session() as session, session.begin():
         await session.merge(
@@ -167,6 +174,8 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
                 guild_id=guild_id,
                 channel_id=channel_id,
                 author_id=author_id,
+                author_name=author_name,
+                author_display_name=author_display_name,
                 surface=surface,
                 route=route,
                 model=model,
@@ -179,7 +188,11 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
 
 
 async def toggle_feedback_vote(
-    reply_message_id: int, user_id: int, user_name: str, vote: FeedbackVote
+    reply_message_id: int,
+    user_id: int,
+    user_name: str,
+    vote: FeedbackVote,
+    user_display_name: str | None = None,
 ) -> FeedbackVoteResult | None:
     """Creates, switches, or clears `user_id`'s vote on `reply_message_id`.
 
@@ -192,6 +205,7 @@ async def toggle_feedback_vote(
         user_id (int): Discord user id pressing the button.
         user_name (str): Write-time username snapshot for readability in reports.
         vote (FeedbackVote): `"up"` or `"down"`.
+        user_display_name (str | None): Write-time display name or guild nick of the voter.
     """
     async with open_session() as session, session.begin():
         turn = await session.get(entity=ReplyTurnRow, ident=reply_message_id)
@@ -207,6 +221,7 @@ async def toggle_feedback_vote(
                     reply_message_id=reply_message_id,
                     user_id=user_id,
                     user_name=user_name,
+                    user_display_name=user_display_name,
                     vote=vote,
                     created_at=now,
                     updated_at=now,
@@ -221,6 +236,7 @@ async def toggle_feedback_vote(
         else:
             existing.vote = vote
             existing.user_name = user_name
+            existing.user_display_name = user_display_name
             existing.reason_tag = None
             existing.reason_text = None
             existing.updated_at = now
@@ -229,6 +245,38 @@ async def toggle_feedback_vote(
         return FeedbackVoteResult(
             action=action,
             vote=resulting_vote,
+            source_message_id=turn.source_message_id,
+            model=turn.model,
+            effort=turn.effort,
+            route=turn.route,
+            is_asker=user_id == turn.author_id,
+        )
+
+
+async def clear_feedback_vote(
+    reply_message_id: int, user_id: int, expected_vote: FeedbackVote
+) -> FeedbackVoteResult | None:
+    """Deletes `user_id`'s vote on `reply_message_id` only when it still matches `expected_vote`.
+
+    Returns `FeedbackVoteResult` with `action="clear"` and `vote=None` when cleared, or None when
+    the turn is missing or the user already changed or cleared their vote.
+
+    Args:
+        reply_message_id (int): Discord message id carrying the feedback buttons.
+        user_id (int): Discord user id cancelling their vote.
+        expected_vote (FeedbackVote): Vote (`"up"` or `"down"`) that this confirmation belongs to.
+    """
+    async with open_session() as session, session.begin():
+        turn = await session.get(entity=ReplyTurnRow, ident=reply_message_id)
+        if turn is None:
+            return None
+        existing = await session.get(entity=ReplyFeedbackRow, ident=(reply_message_id, user_id))
+        if existing is None or existing.vote != expected_vote:
+            return None
+        await session.delete(instance=existing)
+        return FeedbackVoteResult(
+            action="clear",
+            vote=None,
             source_message_id=turn.source_message_id,
             model=turn.model,
             effort=turn.effort,

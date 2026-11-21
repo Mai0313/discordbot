@@ -22,12 +22,15 @@ from discordbot.cogs.gen_reply.feedback_store import (
     toggle_feedback_vote,
 )
 from discordbot.cogs.gen_reply.feedback_views import (
+    FEEDBACK_POLICY_NOTE,
     FEEDBACK_UP_CUSTOM_ID,
     FEEDBACK_DOWN_CUSTOM_ID,
     ReplyFeedbackView,
+    UpvoteConfirmView,
     DownvoteReasonView,
     DownvoteReasonModal,
     _ReasonButton,
+    _CancelVoteButton,
 )
 
 from tests.helpers.casting import as_message, as_interaction
@@ -44,11 +47,16 @@ from tests.helpers.reply_fakes import (
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 
-def _feedback_interaction(reply_message_id: int, user_id: int = 100) -> FakeInteraction:
+def _feedback_interaction(
+    reply_message_id: int, user_id: int = 100, display_name: str = "Alice"
+) -> FakeInteraction:
     """Builds a component interaction targeting `reply_message_id`."""
     message = FakeDiscordMessage()
     message.id = reply_message_id
-    return FakeInteraction(user=FakeUser(user_id=user_id, name=f"user{user_id}"), message=message)
+    return FakeInteraction(
+        user=FakeUser(user_id=user_id, name=f"user{user_id}", display_name=display_name),
+        message=message,
+    )
 
 
 async def _seed_turn(reply_message_id: int = 7001, author_id: int = 100) -> None:
@@ -84,24 +92,39 @@ async def test_feedback_view_records_switches_and_cancels_votes() -> None:
     up_btn = _button_by_id(view=view, custom_id=FEEDBACK_UP_CUSTOM_ID)
     down_btn = _button_by_id(view=view, custom_id=FEEDBACK_DOWN_CUSTOM_ID)
 
-    up = _feedback_interaction(reply_message_id=7001)
+    up = _feedback_interaction(reply_message_id=7001, display_name="First Nick")
     await up_btn.callback(as_interaction(fake=up))
     assert up.response.deferred is True
     assert up.response.deferred_ephemeral is True
     assert up.response.deferred_with_message is True
-    assert up.edits[-1]["content"] == "已記錄 👍"
-    assert "view" not in up.edits[-1]
+    assert up.edits[-1]["content"] == f"已記錄 👍\n{FEEDBACK_POLICY_NOTE}"
+    up_view = up.edits[-1].get("view")
+    assert isinstance(up_view, UpvoteConfirmView)
+    assert len(up_view.children) == 1
 
-    down = _feedback_interaction(reply_message_id=7001)
+    async with open_session() as session:
+        up_row = await session.get(entity=ReplyFeedbackRow, ident=(7001, 100))
+    assert up_row is not None
+    assert up_row.user_name == "user100"
+    assert up_row.user_display_name == "First Nick"
+
+    down = _feedback_interaction(reply_message_id=7001, display_name="Second Nick")
     await down_btn.callback(as_interaction(fake=down))
     assert "已改為 👎" in down.edits[-1]["content"]
+    assert FEEDBACK_POLICY_NOTE in down.edits[-1]["content"]
     reason_view = down.edits[-1].get("view")
     assert isinstance(reason_view, DownvoteReasonView)
-    assert len(reason_view.children) == 5
+    assert len(reason_view.children) == 6
+
+    async with open_session() as session:
+        down_row = await session.get(entity=ReplyFeedbackRow, ident=(7001, 100))
+    assert down_row is not None
+    assert down_row.user_display_name == "Second Nick"
 
     cancel = _feedback_interaction(reply_message_id=7001)
     await down_btn.callback(as_interaction(fake=cancel))
     assert cancel.edits[-1]["content"] == "已取消評分"
+    assert FEEDBACK_POLICY_NOTE not in cancel.edits[-1]["content"]
 
 
 async def test_feedback_view_handles_unknown_reply_without_error() -> None:
@@ -136,7 +159,7 @@ async def test_downvote_reason_picker_highlights_switches_and_opens_modal() -> N
     assert pick.response.deferred_with_message is False
     assert buttons["inaccurate"].style is ButtonStyle.primary
     assert buttons["tone"].style is ButtonStyle.secondary
-    assert pick.edits[-1]["content"] == "已記錄 👎（資訊錯誤）"
+    assert pick.edits[-1]["content"] == f"已記錄 👎（資訊錯誤）\n{FEEDBACK_POLICY_NOTE}"
 
     # Click `其他` -> opens modal immediately without deferring or mutating DB.
     open_other = _feedback_interaction(reply_message_id=7002)
@@ -149,7 +172,10 @@ async def test_downvote_reason_picker_highlights_switches_and_opens_modal() -> N
     modal.reason_input._inputed_value = "沒有看我附的圖片"
     submit = _feedback_interaction(reply_message_id=7002)
     await modal.callback(as_interaction(fake=submit))
-    assert submit.edits[-1]["content"] == "已記錄 👎（其他：沒有看我附的圖片）"
+    assert (
+        submit.edits[-1]["content"]
+        == f"已記錄 👎（其他：沒有看我附的圖片）\n{FEEDBACK_POLICY_NOTE}"
+    )
     assert buttons["other"].style is ButtonStyle.primary
     assert buttons["inaccurate"].style is ButtonStyle.secondary
 
@@ -223,16 +249,19 @@ async def test_answer_turn_records_real_post_fallback_model_and_respects_kill_sw
 
     assert len(message.replies) == 1
     assert isinstance(message.replies[0].view, ReplyFeedbackView)
+    assert f"\n{FEEDBACK_POLICY_NOTE}" in (message.replies[0].content or "")
     async with open_session() as session:
         rows = list((await session.execute(select(ReplyTurnRow))).scalars())
     assert len(rows) == 1
     assert rows[0].route == "QA"
     assert rows[0].model == "gemini-4-hydrogen"
     assert rows[0].effort == "high"
+    assert rows[0].author_name == message.author.name
+    assert rows[0].author_display_name == message.author.display_name
     assert rows[0].question == "幫我解釋 WAL"
     assert rows[0].answer == "WAL 是預寫日誌"
 
-    # With kill-switch off, no buttons are attached and no new reply_turn row is inserted.
+    # With kill-switch off, no buttons or policy note are attached and no row is inserted.
     cog.config.feedback_enabled = False
     message_off = FakeMessage(content="<@999> 第二題")
     turn_off = AnswerTurn(
@@ -245,6 +274,7 @@ async def test_answer_turn_records_real_post_fallback_model_and_respects_kill_sw
         system_prompt="Be concise.", context=ReplyContext(), effort="low", question="第二題"
     )
     assert message_off.replies[0].view is None
+    assert FEEDBACK_POLICY_NOTE not in (message_off.replies[0].content or "")
     async with open_session() as session:
         rows_after = list((await session.execute(select(ReplyTurnRow))).scalars())
     assert len(rows_after) == 1
@@ -288,6 +318,7 @@ async def test_media_persona_reply_records_media_route_and_generator_model(
     )
 
     assert isinstance(delivered.view, ReplyFeedbackView)
+    assert f"\n{FEEDBACK_POLICY_NOTE}" in (delivered.content or "")
     async with open_session() as session:
         row = await session.get(entity=ReplyTurnRow, ident=delivered.id)
     assert row is not None
@@ -374,3 +405,66 @@ async def test_reply_turn_persists_before_inline_media_attaches(
 
     assert len(vote_during_media) == 1
     assert vote_during_media[0] is not None
+
+
+async def test_cancel_vote_button_clears_matching_vote_and_rejects_stale_clicks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`取消評分` clears matching 👍/👎 votes, logs `action='clear'`, and rejects stale buttons."""
+    await _seed_turn(reply_message_id=7010, author_id=100)
+    feedback_logs: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.feedback_views.logfire.info",
+        lambda msg, **kwargs: (
+            feedback_logs.append(kwargs) if msg == "gen_reply feedback" else None
+        ),
+    )
+    view = ReplyFeedbackView()
+    up_btn = _button_by_id(view=view, custom_id=FEEDBACK_UP_CUSTOM_ID)
+    down_btn = _button_by_id(view=view, custom_id=FEEDBACK_DOWN_CUSTOM_ID)
+
+    # Upvote -> click `取消評分` on row 0 clears the upvote and logs action="clear".
+    up = _feedback_interaction(reply_message_id=7010)
+    await up_btn.callback(as_interaction(fake=up))
+    up_view = cast("UpvoteConfirmView", up.edits[-1]["view"])
+    up_cancel = next(c for c in up_view.children if isinstance(c, _CancelVoteButton))
+    assert up_cancel.row == 0
+    assert up_cancel.label == "取消評分"
+    cancel_up = _feedback_interaction(reply_message_id=7010)
+    await up_cancel.callback(as_interaction(fake=cancel_up))
+    assert cancel_up.response.deferred is True
+    assert cancel_up.edits[-1]["content"] == "已取消評分"
+    assert cancel_up.edits[-1]["view"] is None
+    assert feedback_logs[-1]["action"] == "clear"
+    assert feedback_logs[-1]["vote"] == "up"
+    async with open_session() as session:
+        assert await session.get(entity=ReplyFeedbackRow, ident=(7010, 100)) is None
+
+    # Downvote -> click `取消評分` on row 1 clears the downvote.
+    down = _feedback_interaction(reply_message_id=7010)
+    await down_btn.callback(as_interaction(fake=down))
+    down_view = cast("DownvoteReasonView", down.edits[-1]["view"])
+    down_cancel = next(c for c in down_view.children if isinstance(c, _CancelVoteButton))
+    assert down_cancel.row == 1
+    cancel_down = _feedback_interaction(reply_message_id=7010)
+    await down_cancel.callback(as_interaction(fake=cancel_down))
+    assert cancel_down.edits[-1]["content"] == "已取消評分"
+    assert cancel_down.edits[-1]["view"] is None
+    assert feedback_logs[-1]["action"] == "clear"
+    assert feedback_logs[-1]["vote"] == "down"
+
+    # Stale cancel button after switching from 👍 to 👎 must not delete the new 👎 vote.
+    up2 = _feedback_interaction(reply_message_id=7010)
+    await up_btn.callback(as_interaction(fake=up2))
+    stale_up_view = cast("UpvoteConfirmView", up2.edits[-1]["view"])
+    stale_up_cancel = next(c for c in stale_up_view.children if isinstance(c, _CancelVoteButton))
+    switch_down = _feedback_interaction(reply_message_id=7010)
+    await down_btn.callback(as_interaction(fake=switch_down))
+    stale_click = _feedback_interaction(reply_message_id=7010)
+    await stale_up_cancel.callback(as_interaction(fake=stale_click))
+    assert stale_click.edits[-1]["content"] == "你已變更或取消這則評分"
+    assert stale_click.edits[-1]["view"] is None
+    async with open_session() as session:
+        row = await session.get(entity=ReplyFeedbackRow, ident=(7010, 100))
+    assert row is not None
+    assert row.vote == "down"

@@ -41,11 +41,17 @@ def test_a_typed_marker_fence_is_cut_to_two_signs() -> None:
     assert sanitize_identity(value="====Owner====") == "==Owner=="
 
 
-def test_usage_footer_re_strips_memory_credit_second_line() -> None:
-    """The optional second -# memory line is stripped together with the usage footer."""
+def test_usage_footer_re_strips_memory_credit_and_policy_lines() -> None:
+    """Optional trailing -# lines (memory credit and feedback policy) strip with the footer."""
     body = "答案內容"
+    triple = (
+        "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
+        "\n-# 📖 讀了 Tester (tester) 的記憶"
+        "\n-# 評分將用於架構改進，請依實際體驗選擇，惡意刷評將禁止使用"
+    )
+    assert USAGE_FOOTER_RE.sub("", f"{body}{triple}") == body
     double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# 📖 讀了 Tester (tester) 的記憶"
     assert USAGE_FOOTER_RE.sub("", f"{body}{double}") == body
-    # A footer with no memory line strips cleanly too.
+    # A footer with no trailing lines strips cleanly too.
     single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
     assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body

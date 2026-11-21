@@ -676,12 +676,15 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
 
     content = message.replies[0].content or ""
     if expected_tokens:
-        last_line = content.splitlines()[-1]
-        assert last_line.startswith(f"-# {MEMORY_READ_EMOJI}")
-        positions = [last_line.index(token) for token in expected_tokens]
+        credit_lines = [
+            line for line in content.splitlines() if line.startswith(f"-# {MEMORY_READ_EMOJI}")
+        ]
+        assert len(credit_lines) == 1
+        credit_line = credit_lines[0]
+        positions = [credit_line.index(token) for token in expected_tokens]
         assert positions == sorted(positions)
         for fragment in absent:
-            assert fragment not in last_line
+            assert fragment not in credit_line
     else:
         for fragment in absent:
             assert fragment not in content

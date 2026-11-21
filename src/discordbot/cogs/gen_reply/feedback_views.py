@@ -17,6 +17,7 @@ from discordbot.utils.logged_ui import LoggedView, LoggedModal
 from discordbot.cogs.gen_reply.feedback_store import (
     FeedbackVote,
     DownvoteReasonTag,
+    clear_feedback_vote,
     set_feedback_reason,
     toggle_feedback_vote,
 )
@@ -25,6 +26,8 @@ FEEDBACK_UP_CUSTOM_ID = "gen_reply:feedback:up"
 FEEDBACK_DOWN_CUSTOM_ID = "gen_reply:feedback:down"
 # Matches Discord's 15-minute ephemeral interaction token window.
 FEEDBACK_REASON_VIEW_TIMEOUT_SECONDS = 900.0
+# Shared subtext notice appended to public feedback-enabled footers and ephemeral vote notices.
+FEEDBACK_POLICY_NOTE = "-# 評分將用於架構改進，請依實際體驗選擇，惡意刷評將禁止使用"
 
 DOWNVOTE_REASONS: tuple[tuple[DownvoteReasonTag, str], ...] = (
     ("off_topic", "答非所問"),
@@ -158,13 +161,79 @@ class _ReasonButton(Button["DownvoteReasonView"]):
                 await interaction.edit_original_message(content="記錄原因時發生錯誤，請稍後再試")
 
 
+class _CancelVoteButton(Button[View]):
+    """Secondary `取消評分` button attached to ephemeral upvote and downvote confirmations."""
+
+    def __init__(self, reply_message_id: int, expected_vote: FeedbackVote, row: int) -> None:
+        """Initializes the cancel-vote button on `row` guarded on `expected_vote`."""
+        super().__init__(label="取消評分", style=ButtonStyle.secondary, row=row)
+        self.reply_message_id = reply_message_id
+        self.expected_vote: FeedbackVote = expected_vote
+
+    async def callback(self, interaction: Interaction[commands.Bot]) -> None:
+        """Defers, clears the matching vote, logs `action="clear"`, and edits the notice."""
+        if interaction.user is None:
+            return
+        await interaction.response.defer()
+        try:
+            result = await clear_feedback_vote(
+                reply_message_id=self.reply_message_id,
+                user_id=interaction.user.id,
+                expected_vote=self.expected_vote,
+            )
+            if result is None:
+                await interaction.edit_original_message(
+                    content="你已變更或取消這則評分", view=None
+                )
+                return
+            logfire.info(
+                "gen_reply feedback",
+                reply_message_id=self.reply_message_id,
+                source_message_id=result.source_message_id,
+                model=result.model,
+                effort=result.effort,
+                route=result.route,
+                user_id=interaction.user.id,
+                vote=self.expected_vote,
+                action="clear",
+                is_asker=result.is_asker,
+            )
+            await interaction.edit_original_message(content="已取消評分", view=None)
+        except Exception as exc:
+            # Broad on purpose: deferred button callbacks must finish with a notice on failure.
+            logfire.error(
+                "Failed to cancel reply feedback vote",
+                reply_message_id=self.reply_message_id,
+                user_id=interaction.user.id,
+                expected_vote=self.expected_vote,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            with contextlib.suppress(HTTPException):
+                await interaction.edit_original_message(content="取消評分時發生錯誤，請稍後再試")
+
+
+class UpvoteConfirmView(LoggedView):
+    """Ephemeral confirmation view carrying a single `取消評分` button after a thumbs-up."""
+
+    interaction_failure_log: ClassVar[str] = "Upvote confirmation button failed"
+
+    def __init__(self, reply_message_id: int) -> None:
+        """Initializes the upvote confirmation view for `reply_message_id`."""
+        super().__init__(timeout=FEEDBACK_REASON_VIEW_TIMEOUT_SECONDS)
+        self.reply_message_id = reply_message_id
+        self.add_item(
+            item=_CancelVoteButton(reply_message_id=reply_message_id, expected_vote="up", row=0)
+        )
+
+
 class DownvoteReasonView(LoggedView):
-    """Ephemeral 5-button reason picker attached after a thumbs-down vote."""
+    """Ephemeral 5-button reason picker plus `取消評分` row attached after a thumbs-down vote."""
 
     interaction_failure_log: ClassVar[str] = "Downvote reason button failed"
 
     def __init__(self, reply_message_id: int, changed: bool = False) -> None:
-        """Initializes the single-row reason picker for `reply_message_id`.
+        """Initializes the reason picker on row 0 and `取消評分` button on row 1.
 
         Args:
             reply_message_id (int): Discord message id the user downvoted.
@@ -180,6 +249,9 @@ class DownvoteReasonView(LoggedView):
             btn = _ReasonButton(reason_tag=reason_tag, label=label)
             self._reason_buttons.append(btn)
             self.add_item(item=btn)
+        self.add_item(
+            item=_CancelVoteButton(reply_message_id=reply_message_id, expected_vote="down", row=1)
+        )
 
     def apply_selection(
         self, reason_tag: DownvoteReasonTag | None, reason_text: str | None
@@ -196,10 +268,12 @@ class DownvoteReasonView(LoggedView):
         """Returns the ephemeral message text reflecting the current downvote and reason."""
         prefix = "已改為 👎" if self.changed else "已記錄 👎"
         if self.selected_tag is None:
-            return f"{prefix}，想順手點個原因嗎?（選填）"
-        if self.selected_tag == "other" and self.selected_text:
-            return f"{prefix}（其他：{self.selected_text}）"
-        return f"{prefix}（{REASON_LABELS[self.selected_tag]}）"
+            headline = f"{prefix}，想順手點個原因嗎?（選填）"
+        elif self.selected_tag == "other" and self.selected_text:
+            headline = f"{prefix}（其他：{self.selected_text}）"
+        else:
+            headline = f"{prefix}（{REASON_LABELS[self.selected_tag]}）"
+        return f"{headline}\n{FEEDBACK_POLICY_NOTE}"
 
 
 class ReplyFeedbackView(LoggedView):
@@ -227,6 +301,7 @@ class ReplyFeedbackView(LoggedView):
                 reply_message_id=reply_message_id,
                 user_id=interaction.user.id,
                 user_name=interaction.user.name,
+                user_display_name=interaction.user.display_name,
                 vote=vote,
             )
             if result is None:
@@ -248,8 +323,11 @@ class ReplyFeedbackView(LoggedView):
                 await interaction.edit_original_message(content="已取消評分")
                 return
             if vote == "up":
-                label = "已改為 👍" if result.action == "change" else "已記錄 👍"
-                await interaction.edit_original_message(content=label)
+                headline = "已改為 👍" if result.action == "change" else "已記錄 👍"
+                await interaction.edit_original_message(
+                    content=f"{headline}\n{FEEDBACK_POLICY_NOTE}",
+                    view=UpvoteConfirmView(reply_message_id=reply_message_id),
+                )
                 return
             reason_view = DownvoteReasonView(
                 reply_message_id=reply_message_id, changed=result.action == "change"

@@ -38,9 +38,16 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     cog.config.inline_video_enabled = False
     message = FakeMessage(content="<@999> 你是哪個模型?")
     seen_calls: list[dict[str, object]] = []
+    finalized_logs: list[dict[str, object]] = []
 
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.secrets.choice", lambda seq: "gemini-4-carbon"
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.streaming.logfire.info",
+        lambda msg, **kwargs: (
+            finalized_logs.append(kwargs) if msg == "gen_reply reply finalized" else None
+        ),
     )
     monkeypatch.setattr(
         "discordbot.utils.model_pricing._LOADED_TABLE",
@@ -82,7 +89,8 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     assert "gemini-4-carbon" not in instructions
 
     reply_text = message.replies[0].content or ""
-    assert f"-# {BLIND_TEST_MODEL_LABEL} (high) · ⬆ 120 ⬇ 45 · $0.00069000" in reply_text
+    assert f"-# {BLIND_TEST_MODEL_LABEL} · ⬆ 120 ⬇ 45 · $0.00069000" in reply_text
+    assert "(high)" not in reply_text
     assert "gemini-4-carbon" not in reply_text
     assert USAGE_FOOTER_RE.sub(repl="", string=reply_text).strip() == "我是破貓"
 
@@ -92,6 +100,9 @@ async def test_blind_test_samples_candidate_masks_visible_label_and_records_real
     assert rows[0].model == "gemini-4-carbon"
     assert rows[0].effort == "high"
     assert rows[0].model != BLIND_TEST_MODEL_LABEL
+    assert len(finalized_logs) == 1
+    assert finalized_logs[0]["model"] == "gemini-4-carbon"
+    assert finalized_logs[0]["effort"] == "high"
 
 
 async def test_blind_test_records_real_post_fallback_model_while_hiding_footer(
@@ -132,13 +143,15 @@ async def test_blind_test_records_real_post_fallback_model_while_hiding_footer(
     )
 
     reply_text = message.replies[0].content or ""
-    assert f"-# {BLIND_TEST_MODEL_LABEL} (medium)" in reply_text
+    assert f"-# {BLIND_TEST_MODEL_LABEL} · ⬆ 10 ⬇ 5" in reply_text
+    assert "(medium)" not in reply_text
     assert "gemini-4-hydrogen" not in reply_text
 
     async with open_session() as session:
         rows = list((await session.execute(select(ReplyTurnRow))).scalars())
     assert len(rows) == 1
     assert rows[0].model == "gemini-4-hydrogen"
+    assert rows[0].effort == "medium"
 
 
 async def test_blind_test_disabled_uses_default_slow_model_and_visible_name(

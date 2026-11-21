@@ -64,6 +64,7 @@ from discordbot.cogs.gen_reply.status_marks import (
     MEMORY_WRITE_EMOJI,
     TIMEOUT_HINT_EMOJI,
 )
+from discordbot.cogs.gen_reply.feedback_views import FEEDBACK_POLICY_NOTE
 
 # Unwrap backticked Discord mentions (`<@id>`, `<@&id>`, `<#id>`) that Gemini sometimes emits.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
@@ -307,8 +308,9 @@ class ResponseStreamer(BaseModel):
     model_display_name: str = Field(
         default="",
         description=(
-            "Optional display label shown in the Discord usage footer in place of `model_name`; "
-            "pricing, logs, and `reply_turn.model` still read the real `model_name`."
+            "Optional display label shown in the Discord usage footer in place of `model_name` "
+            "(also hiding `model_effort`); pricing, logs, and `reply_turn` still read the real "
+            "`model_name` and `model_effort`."
         ),
     )
     model_effort: str = Field(
@@ -744,11 +746,17 @@ class ResponseStreamer(BaseModel):
     async def finalize_reply(self) -> str:
         """Returns the finalized reply text after extracting inline markers, writing the footer, and attaching media."""
         # Price using the stream's reported model so LiteLLM fallbacks reflect what answered;
-        # `model_display_name` masks only the visible model label (cost stays visible by design).
-        display_name = self.model_display_name or self.model_name
+        # `model_display_name` masks the visible model and effort label (cost stays visible by
+        # design).
+        if self.model_display_name:
+            label = self.model_display_name
+        elif self.model_effort:
+            label = f"{self.model_name} ({self.model_effort})"
+        else:
+            label = self.model_name
         usage_line, cost = render_usage_footer(
             model_name=self.model_name,
-            label=f"{display_name} ({self.model_effort})" if self.model_effort else display_name,
+            label=label,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
         )
@@ -775,8 +783,9 @@ class ResponseStreamer(BaseModel):
             )
         elif names:
             memory_line = f"\n-# {MEMORY_READ_EMOJI} 讀了 {', '.join(names)} 的記憶"
+        policy_line = f"\n{FEEDBACK_POLICY_NOTE}" if self.feedback_view is not None else ""
         # `utils/llm_transcript.py::USAGE_FOOTER_RE` anchors on the blank line opening the footer.
-        usage_footer = f"\n\n{usage_line}{memory_line}"
+        usage_footer = f"\n\n{usage_line}{memory_line}{policy_line}"
 
         reply_chars = len(self.stored_content)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
