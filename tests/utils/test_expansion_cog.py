@@ -7,9 +7,10 @@ line, and where its links point.
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Self
+from pathlib import Path
 from datetime import UTC, datetime
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 from nextcord import Embed
@@ -19,27 +20,44 @@ from discordbot.utils.expansion_cog import (
     VIDEO_HINT,
     TRUNCATION_NOTICE,
     POST_CARD_MAX_IMAGES,
+    VideoTooLargeError,
     ConversationExpansionCog,
     fetch_card_image,
+    fetch_card_video,
     omitted_images_note,
+    omitted_videos_note,
 )
-from discordbot.utils.discord_embeds import utf16_length, embed_text_length
+from discordbot.utils.discord_embeds import (
+    DISCORD_ATTACHMENT_LIMIT,
+    DEFAULT_EMBED_SPACER_FILENAME,
+    utf16_length,
+    embed_text_length,
+)
+from discordbot.utils.media_delivery import MEDIA_ENVELOPE_MARGIN
 from discordbot.cogs.parse_twitter.cog import TwitterCogs
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
 from discordbot.services.platforms.facebook import FacebookOutput
+from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 from discordbot.services.platforms.instagram import InstagramOutput
 
+from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
+    SAMPLE_POST_URLS,
     expand,
     twitter_post,
     facebook_post,
+    guild_message,
     instagram_post,
+    hosting_planner,
     expansion_embeds,
     serve_card_images,
+    serve_card_videos,
+    stub_conversation_cog,
 )
-from tests.helpers.discord_mocks import DiscordPayload, expansion_payload
+from tests.helpers.discord_mocks import DiscordPayload, FakeDiscordMessage, expansion_payload
+from tests.helpers.logfire_capture import capture_logs
 
 type _CogType = type[ConversationExpansionCog[Any, Any]]
 type _PostFactory = Callable[..., PlatformConversation[Any]]
@@ -67,6 +85,12 @@ commented_cards = pytest.mark.parametrize(
         (InstagramCogs, instagram_post, InstagramOutput),
     ],
     ids=["facebook", "instagram"],
+)
+# The cogs with target video downloading enabled.
+video_cards = pytest.mark.parametrize(
+    argnames=("cog_type", "post"),
+    argvalues=[(InstagramCogs, instagram_post), (TwitterCogs, twitter_post)],
+    ids=["instagram", "twitter"],
 )
 
 
@@ -249,8 +273,12 @@ async def test_a_named_comment_takes_its_room_from_the_post(
 
 
 def _uploads(payload: DiscordPayload) -> dict[str, bytes]:
-    """The files a delivered card attached, by name."""
-    return {str(file.filename): file.fp.read() for file in payload.get("files", [])}
+    """The non-spacer media files a delivered card attached, by name."""
+    return {
+        str(file.filename): file.fp.read()
+        for file in payload.get("files", [])
+        if str(file.filename) != DEFAULT_EMBED_SPACER_FILENAME
+    }
 
 
 @every_card
@@ -334,3 +362,415 @@ def test_a_card_image_download_refuses_what_is_not_a_served_image(
 
     with pytest.raises((requests.HTTPError, ValueError)):
         fetch_card_image(url="https://cdn.test/0.jpg")
+
+
+async def _expand_with_cog(
+    cog_type: _CogType,
+    outcome: PlatformConversation[Any],
+    filesize_limit: int = 25 * 1024 * 1024,
+    serve_dir: Path | None = None,
+) -> FakeDiscordMessage:
+    """Runs `cog_type` with configurable upload ceiling and optional media hosting."""
+    cog, _ = stub_conversation_cog(cog_type=cog_type, outcome=outcome)
+    if serve_dir is not None:
+        cog.media_delivery = hosting_planner(serve_dir=serve_dir)
+    message = guild_message(
+        content=SAMPLE_POST_URLS[cog_type.SOURCE], filesize_limit=filesize_limit
+    )
+    await cog.on_message(message=as_message(fake=message))
+    return message
+
+
+@video_cards
+async def test_target_video_is_attached_omitting_video_hint_and_cleaned_up(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A downloaded target video attaches natively, drops `VIDEO_HINT`, and removes its scratch file."""
+    clip = "https://cdn.test/clip.mp4"
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+
+    message, _ = await expand(cog_type=cog_type, outcome=post(image_urls=[], video_urls=[clip]))
+
+    payload = expansion_payload(message=message)
+    uploads = _uploads(payload=payload)
+    assert list(uploads.keys()) == ["video_0.mp4"]
+    assert uploads["video_0.mp4"].rstrip(b"\0") == clip.encode()
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+    assert "另有" not in (payload["embeds"][0].footer.text or "")
+    assert not calls[0]["filepath"].exists()
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
+@video_cards
+async def test_multi_video_post_attaches_all_clips_and_omits_footer_video_count(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every delivered video attaches in post order with no redundant video count in the footer."""
+    clips = [f"https://cdn.test/{index}.mp4" for index in range(3)]
+    serve_card_videos(monkeypatch=monkeypatch)
+
+    message, _ = await expand(cog_type=cog_type, outcome=post(image_urls=[], video_urls=clips))
+
+    payload = expansion_payload(message=message)
+    uploads = _uploads(payload=payload)
+    assert [uploads[f"video_{index}.mp4"].rstrip(b"\0") for index in range(3)] == [
+        clip.encode() for clip in clips
+    ]
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+    assert "部影片" not in (payload["embeds"][0].footer.text or "")
+
+
+@video_cards
+async def test_oversize_video_falls_back_to_link_and_logs_info(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An oversize clip degrades to `VIDEO_HINT` at `info` with no traceback instead of failing."""
+    clip = "https://cdn.test/huge.mp4"
+    serve_card_videos(monkeypatch=monkeypatch, oversize=frozenset({clip}))
+    infos = capture_logs(monkeypatch=monkeypatch, level="info")
+
+    message, _ = await expand(cog_type=cog_type, outcome=post(image_urls=[], video_urls=[clip]))
+
+    payload = expansion_payload(message=message)
+    assert _uploads(payload=payload) == {}
+    assert VIDEO_HINT.partition("{url}")[0] in (payload["embeds"][0].description or "")
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+    assert any("byte cap" in msg and "_exc_info" not in fields for msg, fields in infos)
+
+
+@video_cards
+async def test_partial_video_failure_delivers_succeeded_clip_and_counts_remaining(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One working clip still attaches while two failed clips yield `VIDEO_HINT` plus `另有 1 部影片`."""
+    clips = [f"https://cdn.test/{index}.mp4" for index in range(3)]
+    serve_card_videos(
+        monkeypatch=monkeypatch, refused=frozenset({clips[1]}), oversize=frozenset({clips[2]})
+    )
+
+    message, _ = await expand(cog_type=cog_type, outcome=post(image_urls=[], video_urls=clips))
+
+    payload = expansion_payload(message=message)
+    uploads = _uploads(payload=payload)
+    description = payload["embeds"][0].description or ""
+    assert list(uploads.keys()) == ["video_0.mp4"]
+    expected_link = clips[1] if cog_type is TwitterCogs else SAMPLE_POST_URLS[cog_type.SOURCE]
+    assert VIDEO_HINT.format(url=expected_link) in description
+    assert clips[0] not in description
+    assert omitted_videos_note(count=1) in (payload["embeds"][0].footer.text or "")
+
+
+@video_cards
+async def test_oversize_video_is_hosted_when_media_hosting_is_available(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With media hosting active, download cap rises to 100 MiB and oversize clips publish URLs."""
+    clip = "https://cdn.test/big.mp4"
+    guild_limit = 2 * 1024 * 1024
+    calls = serve_card_videos(monkeypatch=monkeypatch, size=guild_limit + 512)
+
+    message = await _expand_with_cog(
+        cog_type=cog_type,
+        outcome=post(image_urls=[], video_urls=[clip]),
+        filesize_limit=guild_limit,
+        serve_dir=tmp_path,
+    )
+
+    payload = expansion_payload(message=message)
+    assert calls[0]["max_bytes"] == cog_type.VIDEO_DOWNLOAD_MAX_BYTES
+    assert _uploads(payload=payload) == {}
+    content = payload.get("content") or ""
+    assert content.startswith("https://media.test/")
+    assert content.endswith(".mp4")
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+
+
+@video_cards
+async def test_without_media_hosting_download_cap_matches_native_upload_room(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When hosting is off, never download more than the guild's native attachment room."""
+    clip = "https://cdn.test/fit.mp4"
+    guild_limit = 8 * 1024 * 1024
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+
+    await _expand_with_cog(
+        cog_type=cog_type,
+        outcome=post(image_urls=[], video_urls=[clip]),
+        filesize_limit=guild_limit,
+    )
+
+    assert calls[0]["max_bytes"] == guild_limit - MEDIA_ENVELOPE_MARGIN
+
+
+@video_cards
+async def test_channel_refusing_uploads_without_hosting_skips_video_download(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without upload permission or hosting, nothing is downloaded and `VIDEO_HINT` remains."""
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+    monkeypatch.setattr(
+        "discordbot.utils.expansion_cog.target_allows_file_uploads", lambda target: False
+    )
+    monkeypatch.setattr(
+        "discordbot.utils.discord_embeds.target_allows_file_uploads", lambda target: False
+    )
+
+    message, _ = await expand(
+        cog_type=cog_type, outcome=post(image_urls=[], video_urls=["https://cdn.test/clip.mp4"])
+    )
+
+    payload = expansion_payload(message=message)
+    assert calls == []
+    assert payload.get("files", []) == []
+    assert VIDEO_HINT.partition("{url}")[0] in (payload["embeds"][0].description or "")
+
+
+@video_cards
+async def test_channel_refusing_uploads_with_hosting_hosts_video_without_attaching(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without Attach Files permission, an enabled media host still delivers the clip by URL."""
+    serve_card_videos(monkeypatch=monkeypatch)
+    monkeypatch.setattr(
+        "discordbot.utils.expansion_cog.target_allows_file_uploads", lambda target: False
+    )
+    monkeypatch.setattr(
+        "discordbot.utils.discord_embeds.target_allows_file_uploads", lambda target: False
+    )
+
+    message = await _expand_with_cog(
+        cog_type=cog_type,
+        outcome=post(image_urls=[], video_urls=["https://cdn.test/clip.mp4"]),
+        serve_dir=tmp_path,
+    )
+
+    payload = expansion_payload(message=message)
+    assert payload.get("files", []) == []
+    assert (payload.get("content") or "").startswith("https://media.test/")
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+
+
+@video_cards
+async def test_more_than_ten_videos_caps_downloads_and_shows_clamped_notice(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past Discord's ten-attachment ceiling, trailing videos are skipped with a clamped notice."""
+    clips = [f"https://cdn.test/{index}.mp4" for index in range(DISCORD_ATTACHMENT_LIMIT + 2)]
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+
+    message, _ = await expand(cog_type=cog_type, outcome=post(image_urls=[], video_urls=clips))
+
+    payload = expansion_payload(message=message)
+    assert len(calls) == DISCORD_ATTACHMENT_LIMIT
+    assert len(payload.get("files", [])) == DISCORD_ATTACHMENT_LIMIT
+    assert "已省略 2 部影片" in (payload.get("content") or "")
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+    assert "部影片" not in (payload["embeds"][0].footer.text or "")
+
+
+@video_cards
+async def test_mixed_photo_and_video_post_uploads_both_within_shared_budget(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card image upload shares attachment slots and byte room cleanly with target videos."""
+    images = [f"https://cdn.test/{index}.jpg" for index in range(2)]
+    clips = [f"https://cdn.test/{index}.mp4" for index in range(2)]
+    serve_card_images(monkeypatch=monkeypatch)
+    serve_card_videos(monkeypatch=monkeypatch)
+
+    message, _ = await expand(cog_type=cog_type, outcome=post(image_urls=images, video_urls=clips))
+
+    payload = expansion_payload(message=message)
+    uploads = _uploads(payload=payload)
+    assert {"video_0.mp4", "video_1.mp4"} < set(uploads)
+    assert len(uploads) == 4
+    assert all((embed.image.url or "").startswith("attachment://") for embed in payload["embeds"])
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+
+
+@video_cards
+async def test_card_images_stay_linked_when_videos_consume_remaining_upload_room(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_attach_card_images` subtracts delivered video bytes so images never bust the message cap."""
+    image = "https://cdn.test/0.jpg"
+    clip = "https://cdn.test/0.mp4"
+    serve_card_images(monkeypatch=monkeypatch, size=100)
+    serve_card_videos(monkeypatch=monkeypatch, size=150)
+
+    message = await _expand_with_cog(
+        cog_type=cog_type,
+        outcome=post(image_urls=[image], video_urls=[clip]),
+        filesize_limit=MEDIA_ENVELOPE_MARGIN + 200,
+    )
+
+    payload = expansion_payload(message=message)
+    assert list(_uploads(payload=payload).keys()) == ["video_0.mp4"]
+    assert payload["embeds"][0].image.url == image
+
+
+@video_cards
+async def test_combined_video_overflow_drops_excess_and_falls_back_to_link(
+    cog_type: _CogType, post: _PostFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two clips that fit alone but overflow combined with hosting off keep one clip and link the dropped one."""
+    clips = ["https://cdn.test/0.mp4", "https://cdn.test/1.mp4"]
+    serve_card_videos(monkeypatch=monkeypatch, sizes={clips[0]: 100, clips[1]: 150})
+
+    message = await _expand_with_cog(
+        cog_type=cog_type,
+        outcome=post(image_urls=[], video_urls=clips),
+        filesize_limit=MEDIA_ENVELOPE_MARGIN + 200,
+    )
+
+    payload = expansion_payload(message=message)
+    uploads = _uploads(payload=payload)
+    description = payload["embeds"][0].description or ""
+    assert list(uploads.keys()) == ["video_0.mp4"]
+    expected_link = clips[1] if cog_type is TwitterCogs else SAMPLE_POST_URLS[cog_type.SOURCE]
+    assert VIDEO_HINT.format(url=expected_link) in description
+    assert "部影片" not in (payload["embeds"][0].footer.text or "")
+
+
+async def test_video_download_timeout_degrades_to_link_without_failing_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled video download times out into the link fallback rather than failing the card."""
+    cog, _ = stub_conversation_cog(
+        cog_type=InstagramCogs,
+        outcome=instagram_post(image_urls=[], video_urls=["https://cdn.test/slow.mp4"]),
+    )
+
+    async def stall(**kwargs: object) -> list[Path]:
+        """Simulates a download exceeding `VIDEO_DOWNLOAD_TIMEOUT_SECONDS`."""
+        del kwargs
+        raise TimeoutError
+
+    cog.__dict__["_download_videos"] = stall
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    message = guild_message(content=SAMPLE_POST_URLS["instagram"])
+
+    await cog.on_message(message=as_message(fake=message))
+
+    payload = expansion_payload(message=message)
+    assert _uploads(payload=payload) == {}
+    assert VIDEO_HINT.partition("{url}")[0] in (payload["embeds"][0].description or "")
+    assert message.reactions[-1] == EXPANSION_DONE_EMOJI
+    assert any("timed out" in msg for msg, _ in warns)
+
+
+async def test_facebook_cog_leaves_video_downloading_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`DOWNLOAD_VIDEOS` stays opt-in so platforms without direct MP4 URLs keep link-only cards."""
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+
+    message, _ = await expand(
+        cog_type=FacebookCogs,
+        outcome=facebook_post(image_urls=[], video_urls=["https://www.facebook.com/watch/?v=1"]),
+    )
+
+    assert calls == []
+    assert VIDEO_HINT.partition("{url}")[0] in (
+        expansion_embeds(message=message)[0].description or ""
+    )
+
+
+def _install_fake_video_session(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[bytes], headers: dict[str, str] | None = None
+) -> list[bool]:
+    """Replaces `requests.Session` for `fetch_card_video` tests, recording whether body was read."""
+    read_body: list[bool] = []
+
+    class _Response:
+        def __init__(self) -> None:
+            self.headers = headers or {}
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            del exc
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+            del chunk_size
+            read_body.append(True)
+            yield from chunks
+
+    class _Session:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            del exc
+
+        def get(self, **kwargs: object) -> _Response:
+            del kwargs
+            return _Response()
+
+    monkeypatch.setattr("discordbot.utils.expansion_cog.requests.Session", _Session)
+    return read_body
+
+
+def test_fetch_card_video_rejects_oversize_content_length_before_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A `Content-Length` over `max_bytes` fails before opening the file or reading any chunk."""
+    read_body = _install_fake_video_session(
+        monkeypatch=monkeypatch, chunks=[b"x" * 200], headers={"Content-Length": "200"}
+    )
+    target = tmp_path / "video_0.mp4"
+
+    with pytest.raises(VideoTooLargeError):
+        fetch_card_video(
+            url="https://cdn.test/big.mp4", filepath=target, headers={}, timeout=5.0, max_bytes=100
+        )
+
+    assert read_body == []
+    assert not target.exists()
+
+
+def test_fetch_card_video_rejects_chunked_overflow_and_unlinks_partial_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When `Content-Length` is absent, streaming stops past `max_bytes` and removes the partial."""
+    _install_fake_video_session(monkeypatch=monkeypatch, chunks=[b"a" * 60, b"b" * 60])
+    target = tmp_path / "video_0.mp4"
+
+    with pytest.raises(VideoTooLargeError):
+        fetch_card_video(
+            url="https://cdn.test/chunked.mp4",
+            filepath=target,
+            headers={},
+            timeout=5.0,
+            max_bytes=100,
+        )
+
+    assert not target.exists()
+
+
+def test_fetch_card_video_rejects_empty_body_and_writes_valid_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An empty response raises `ValueError` with no leftover file; valid bytes write cleanly."""
+    _install_fake_video_session(monkeypatch=monkeypatch, chunks=[b""])
+    empty_target = tmp_path / "empty.mp4"
+    with pytest.raises(ValueError, match="empty"):
+        fetch_card_video(
+            url="https://cdn.test/empty.mp4",
+            filepath=empty_target,
+            headers={},
+            timeout=5.0,
+            max_bytes=100,
+        )
+    assert not empty_target.exists()
+
+    _install_fake_video_session(monkeypatch=monkeypatch, chunks=[b"mp4-", b"data"])
+    ok_target = tmp_path / "ok.mp4"
+    written = fetch_card_video(
+        url="https://cdn.test/ok.mp4", filepath=ok_target, headers={}, timeout=5.0, max_bytes=100
+    )
+    assert written == ok_target
+    assert ok_target.read_bytes() == b"mp4-data"

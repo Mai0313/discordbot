@@ -116,6 +116,9 @@ TWITTER_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
 # Per-image download bound for expansion cards; expiry leaves the image linked instead.
 CARD_IMAGE_FETCH_TIMEOUT_SECONDS: Final[float] = 10.0
 
+# Whole-download bound for an expansion post's target videos; expiry falls back to the video link.
+EXPANSION_VIDEO_DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 120.0
+
 # Bound on `/download_video` (yt-dlp or Douyin); stays under Discord's 15-min token limit.
 VIDEO_DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 600.0
 
@@ -135,6 +138,9 @@ THREADS_PAGE_TIMEOUT_SECONDS: Final[int] = 15
 
 # Per-chunk read bound for streamed Threads media downloads (kept separate from page fetch).
 THREADS_MEDIA_READ_TIMEOUT_SECONDS: Final[int] = 15
+
+# Per-chunk read bound for streamed expansion video downloads (kept separate from page fetch).
+EXPANSION_VIDEO_READ_TIMEOUT_SECONDS: Final[int] = 15
 
 # Bound on fetching one Facebook post page (~950 KB HTML).
 FACEBOOK_PAGE_TIMEOUT_SECONDS: Final[int] = 20

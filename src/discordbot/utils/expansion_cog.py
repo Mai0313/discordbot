@@ -8,9 +8,11 @@ Failures leave no message in the channel; the reaction on the source message is 
 There is deliberately no kill-switch; disabling an expansion means removing its cog.
 """
 
+import os
 import re
 from typing import Any, ClassVar, Protocol
 import asyncio
+from pathlib import Path
 from datetime import datetime
 from mimetypes import guess_extension
 import contextlib
@@ -27,13 +29,18 @@ from discordbot.typings.emojis import LINK_SOURCE_EMOJIS, LinkSourceName
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
-from discordbot.typings.timeouts import CARD_IMAGE_FETCH_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    CARD_IMAGE_FETCH_TIMEOUT_SECONDS,
+    EXPANSION_VIDEO_READ_TIMEOUT_SECONDS,
+    EXPANSION_VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
+)
 from discordbot.utils.link_errors import (
     LinkReadError,
     LinkRetryableError,
     LinkUnavailableError,
     is_retryable_fetch_failure,
 )
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.discord_embeds import (
     DISCORD_ATTACHMENT_LIMIT,
     DISCORD_EMBED_TOTAL_LIMIT,
@@ -50,6 +57,7 @@ from discordbot.utils.media_delivery import (
     MediaHostingService,
     MediaDeliveryPlanner,
     upload_limit_for,
+    build_media_delivery_planner,
 )
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
@@ -82,6 +90,14 @@ _COMMENT_HEADER = "💬 **指定的留言**"
 # Matches spoiler bars (`||...||`) and angle-bracketed links (`<...>`) shortest-first; does not
 # parse code spans or escapes.
 _HIDDEN_LINK_RE = re.compile(pattern=r"\|\|.+?\|\||<[^\s<>]+>", flags=re.DOTALL)
+
+_VIDEO_STREAM_CHUNK_BYTES = 1 << 16
+_DEFAULT_VIDEO_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_VIDEO_FILE_INDEX_RE = re.compile(pattern=r"^video_(\d+)\.mp4$")
+
+
+class VideoTooLargeError(RuntimeError):
+    """The video exceeds the expansion's byte cap; deterministic and not retryable."""
 
 
 class CardPost(Protocol):
@@ -271,6 +287,60 @@ async def _download_card_image(image_url: str, url: str, message_id: int) -> Loa
     return None
 
 
+def fetch_card_video(
+    url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int
+) -> Path:
+    """Streams one expansion video into `filepath`, enforcing `max_bytes`.
+
+    Checks `Content-Length` before reading and again while streaming, unlinking any partial file
+    on failure. Does not create the parent directory so removing the scratch directory aborts an
+    abandoned worker thread on its next write.
+
+    Args:
+        url (str): The video URL to download.
+        filepath (Path): Destination path inside an existing scratch directory.
+        headers (dict[str, str]): Request headers the CDN expects.
+        timeout (float): Per-socket read timeout in seconds.
+        max_bytes (int): Maximum allowed size in bytes.
+
+    Raises:
+        VideoTooLargeError: If the video exceeds `max_bytes`.
+        requests.RequestException: If the transfer fails or answers an error status.
+        ValueError: If the server returns an empty body.
+        OSError: If the file cannot be written or its directory was removed mid-download.
+    """
+    try:
+        with (
+            requests.Session() as session,
+            session.get(url=url, headers=headers, timeout=timeout, stream=True) as response,
+        ):
+            response.raise_for_status()
+            declared = response.headers.get("Content-Length")
+            if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+                raise VideoTooLargeError(
+                    f"Video at {url} declares {declared} bytes, over the {max_bytes} byte cap"
+                )
+            written = 0
+            with filepath.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=_VIDEO_STREAM_CHUNK_BYTES):
+                    if not chunk:
+                        continue
+                    # A removed scratch dir unlinks this file without failing its writes.
+                    if os.fstat(fd=handle.fileno()).st_nlink == 0:
+                        raise FileNotFoundError(f"{filepath} was removed mid-download")
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise VideoTooLargeError(f"Video at {url} exceeds {max_bytes} bytes")
+                    handle.write(chunk)
+        if written == 0:
+            filepath.unlink(missing_ok=True)
+            raise ValueError(f"Video at {url} returned an empty body")
+        return filepath
+    except Exception:
+        filepath.unlink(missing_ok=True)
+        raise
+
+
 def omitted_images_note(count: int) -> str:
     """Returns the footer note counting a post's images the card leaves out.
 
@@ -278,6 +348,15 @@ def omitted_images_note(count: int) -> str:
         count (int): Number of omitted images.
     """
     return f"🖼️ 另有 {count} 張"
+
+
+def omitted_videos_note(count: int) -> str:
+    """Returns the footer note counting a post's undelivered videos past the linked one.
+
+    Args:
+        count (int): Number of omitted videos.
+    """
+    return f"🎬 另有 {count} 部影片"
 
 
 def omitted_posts_note(count: int) -> str:
@@ -772,17 +851,32 @@ class ExpansionCog[ParsedT](commands.Cog):
         )
 
 
+class _ConversationRead[ConversationT](BaseModel):
+    """The parsed conversation paired with target videos downloaded on the expansion's stack."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    conversation: SkipValidation[ConversationT] = Field(
+        ..., description="The parsed conversation returned by the platform reader."
+    )
+    video_paths: list[Path] = Field(
+        default_factory=list,
+        description="Target video files downloaded into the expansion's scratch directory.",
+    )
+
+
 class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[Any]](
-    ExpansionCog[ConversationT]
+    ExpansionCog[_ConversationRead[ConversationT]]
 ):
     """Base for a cog whose reader parses a post and its discussion in one blocking call.
 
-    The read, the refusal of an unreadable post and the card are written here. A subclass
-    declares `ExpansionCog`'s attributes plus the three below and `_footer_text`, and
-    `_comment_url` as well when its conversations can carry a selected comment; the remaining
-    hooks have defaults it overrides where its platform differs. The default card is the post,
-    its gallery and the comment its URL singled out; a platform whose card shows other context
-    replaces `_build_embeds` and builds it from `post_card_embeds` and `context_card_budget`.
+    The read, optional target-video download, refusal of an unreadable post, and default card
+    are written here. A subclass declares `ExpansionCog`'s attributes plus the three below and
+    `_footer_text`, and `_comment_url` as well when its conversations can carry a selected
+    comment; the remaining hooks have defaults it overrides where its platform differs. The
+    default card is the post, its gallery and the comment its URL singled out; a platform whose
+    card shows other context replaces `_build_embeds` and builds it from `post_card_embeds` and
+    `context_card_budget`.
     """
 
     READ_TIMEOUT_SECONDS: ClassVar[float]
@@ -791,35 +885,178 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
     EMBED_COLOR: ClassVar[int]
     """The platform's own colour, down the post card's left edge."""
 
+    DOWNLOAD_VIDEOS: ClassVar[bool] = False
+    """Whether to download and deliver target videos instead of linking them."""
+
+    VIDEO_DOWNLOAD_MAX_BYTES: ClassVar[int] = 100 * 1024 * 1024
+    """Per-video byte cap when external media hosting is available (100 MiB)."""
+
+    VIDEO_DOWNLOAD_TIMEOUT_SECONDS: ClassVar[float] = EXPANSION_VIDEO_DOWNLOAD_TIMEOUT_SECONDS
+    """Whole-operation wall-clock bound on downloading a post's target videos."""
+
+    VIDEO_READ_TIMEOUT_SECONDS: ClassVar[float] = EXPANSION_VIDEO_READ_TIMEOUT_SECONDS
+    """Per-socket read timeout for streamed target video downloads."""
+
     downloader_factory: Callable[[], ConversationReader[ConversationT]]
     """Builds the reader; the seam a test replaces to keep an expansion off the network."""
 
-    async def read(
-        self, message: Message, url: str, stack: contextlib.AsyncExitStack
-    ) -> ConversationT:
-        """Returns the parsed conversation read under `READ_TIMEOUT_SECONDS` off the event loop.
+    def __init__(self, bot: commands.Bot) -> None:
+        """Initializes the cog and its external media-delivery planner.
 
         Args:
-            message (Message): Unused; nothing here logs.
-            url (str): The post to read.
-            stack (contextlib.AsyncExitStack): Unused; nothing here outlives the read.
+            bot (commands.Bot): The Discord bot instance.
         """
-        del message, stack
+        super().__init__(bot=bot)
+        self.media_delivery = build_media_delivery_planner()
+
+    def _video_download_headers(self) -> dict[str, str]:
+        """Returns HTTP headers used when downloading target videos."""
+        return dict(_DEFAULT_VIDEO_HEADERS)
+
+    def _hosting_available(self) -> bool:
+        """Returns whether external media hosting is configured and its serve dir exists."""
+        config = self.media_delivery.media_hosting.config
+        return config.available and Path(config.serve_dir).is_dir()
+
+    def _video_download_cap(self, message: Message) -> int:
+        """Returns the max bytes worth downloading per video for `message`, or 0 to skip."""
+        if self._hosting_available():
+            return self.VIDEO_DOWNLOAD_MAX_BYTES
+        if not target_allows_file_uploads(target=message):
+            return 0
+        native_cap = max(upload_limit_for(guild=message.guild) - MEDIA_ENVELOPE_MARGIN, 0)
+        return min(self.VIDEO_DOWNLOAD_MAX_BYTES, native_cap)
+
+    async def _download_one_video(  # noqa: PLR0913 -- one argument per download context field
+        self,
+        video_url: str,
+        filepath: Path,
+        headers: dict[str, str],
+        max_bytes: int,
+        url: str,
+        message_id: int,
+    ) -> Path | None:
+        """Downloads one target video into `filepath`, returning None on oversize or fetch failure."""
+        try:
+            return await asyncio.to_thread(
+                fetch_card_video,
+                url=video_url,
+                filepath=filepath,
+                headers=headers,
+                timeout=self.VIDEO_READ_TIMEOUT_SECONDS,
+                max_bytes=max_bytes,
+            )
+        except VideoTooLargeError as error:
+            logfire.info(
+                f"{self.PLATFORM} video exceeds the byte cap; falling back to link",
+                url=url,
+                message_id=message_id,
+                max_bytes=max_bytes,
+                reason=str(error),
+            )
+        except requests.RequestException as error:
+            logfire.warn(
+                f"Could not download a {self.PLATFORM} video; falling back to link",
+                url=url,
+                message_id=message_id,
+                retryable=is_retryable_fetch_failure(error=error),
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+        except (OSError, ValueError) as error:
+            logfire.warn(
+                f"Could not download a {self.PLATFORM} video; falling back to link",
+                url=url,
+                message_id=message_id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+        return None
+
+    async def _download_videos(
+        self, post: PostT, download_dir: str, max_bytes: int, url: str, message_id: int
+    ) -> list[Path]:
+        """Downloads up to `DISCORD_ATTACHMENT_LIMIT` target videos into `download_dir`.
+
+        Subclasses whose videos are not direct progressive HTTP URLs override this hook and
+        return whichever files succeeded.
+        """
+        headers = self._video_download_headers()
+        tasks: list[Coroutine[Any, Any, Path | None]] = []
+        for index, video_url in enumerate(post.video_urls[:DISCORD_ATTACHMENT_LIMIT]):
+            tasks.append(
+                self._download_one_video(
+                    video_url=video_url,
+                    filepath=Path(download_dir) / f"video_{index}.mp4",
+                    headers=headers,
+                    max_bytes=max_bytes,
+                    url=url,
+                    message_id=message_id,
+                )
+            )
+        results = await asyncio.gather(*tasks)
+        return [path for path in results if path is not None]
+
+    async def read(
+        self, message: Message, url: str, stack: contextlib.AsyncExitStack
+    ) -> _ConversationRead[ConversationT]:
+        """Returns the parsed conversation and any downloaded target videos held on `stack`.
+
+        Args:
+            message (Message): The message carrying the link, used for upload limits and logging.
+            url (str): The post to read.
+            stack (contextlib.AsyncExitStack): Keeps downloaded videos alive until delivery ends.
+        """
         downloader = self.downloader_factory()
         async with asyncio.timeout(delay=self.READ_TIMEOUT_SECONDS):
-            return await asyncio.to_thread(downloader.parse_metadata, url=url)
+            conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
+
+        target = conversation.target
+        if not (
+            self.DOWNLOAD_VIDEOS
+            and target is not None
+            and target.is_readable
+            and target.video_urls
+        ):
+            return _ConversationRead(conversation=conversation)
+
+        max_bytes = self._video_download_cap(message=message)
+        if max_bytes <= 0:
+            return _ConversationRead(conversation=conversation)
+
+        download_dir = stack.enter_context(scratch_directory(prefix=f"parse-{self.SOURCE}-"))
+        try:
+            async with asyncio.timeout(delay=self.VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
+                video_paths = await self._download_videos(
+                    post=target,
+                    download_dir=download_dir,
+                    max_bytes=max_bytes,
+                    url=url,
+                    message_id=message.id,
+                )
+        except TimeoutError as error:
+            logfire.warn(
+                f"{self.PLATFORM} video download timed out; falling back to link",
+                url=url,
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            video_paths = []
+        return _ConversationRead(conversation=conversation, video_paths=video_paths)
 
     async def build_delivery(
-        self, message: Message, url: str, parsed: ConversationT
+        self, message: Message, url: str, parsed: _ConversationRead[ConversationT]
     ) -> ExpansionDelivery | None:
-        """Returns the finished card for `parsed`, or None when target is missing or unreadable.
+        """Returns the finished card and target videos, or None when target is unreadable.
 
         Args:
             message (Message): The message carrying the link.
             url (str): The post that was read.
-            parsed (ConversationT): The parsed conversation.
+            parsed (_ConversationRead[ConversationT]): The conversation and downloaded videos.
         """
-        target = parsed.target
+        conversation = parsed.conversation
+        target = conversation.target
         if target is None or not target.is_readable:
             logfire.info(
                 f"{self.PLATFORM} post is not readable; nothing to expand",
@@ -827,21 +1064,98 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
                 message_id=message.id,
             )
             return None
-        return ExpansionDelivery(embeds=self._build_embeds(conversation=parsed))
 
-    def _build_embeds(self, conversation: ConversationT) -> list[Embed]:
+        total_videos = len(target.video_urls)
+        native_media: list[MediaItem] = []
+        content_lines: list[str] = []
+        undelivered_indices = list(range(total_videos))
+
+        if self.DOWNLOAD_VIDEOS and total_videos > 0:
+            attempted = min(total_videos, DISCORD_ATTACHMENT_LIMIT)
+            overflow = max(total_videos - DISCORD_ATTACHMENT_LIMIT, 0)
+            items = [MediaItem(source=path, filename=path.name) for path in parsed.video_paths]
+            if items:
+                allows_uploads = target_allows_file_uploads(target=message)
+                plan = await self.media_delivery.plan(
+                    items=items,
+                    upload_limit=upload_limit_for(guild=message.guild) if allows_uploads else 0,
+                    envelope_margin=MEDIA_ENVELOPE_MARGIN,
+                )
+                native_media = plan.native
+                if plan.dropped_items:
+                    logfire.info(
+                        f"{self.PLATFORM} videos could not be attached or hosted; falling back to link",
+                        url=url,
+                        message_id=message.id,
+                        dropped=len(plan.dropped_items),
+                    )
+                delivered_count = len(plan.native) + len(plan.hosted_urls)
+                if delivered_count > 0:
+                    clamped_count = overflow + len(plan.clamped_items)
+                    if clamped_count:
+                        content_lines.append(
+                            f"-# 已省略 {clamped_count} 部影片 (Discord 單則訊息最多 "
+                            f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
+                        )
+                    content_lines.extend(plan.hosted_urls)
+                    undelivered_ids = {
+                        id(item) for item in (*plan.dropped_items, *plan.clamped_items)
+                    }
+                    delivered_indices: set[int] = set()
+                    for pos, item in enumerate(items):
+                        if id(item) in undelivered_ids:
+                            continue
+                        match = _VIDEO_FILE_INDEX_RE.fullmatch(string=item.filename)
+                        delivered_indices.add(int(match.group(1)) if match else pos)
+                    undelivered_indices = [
+                        index for index in range(attempted) if index not in delivered_indices
+                    ]
+                    if plan.dropped_items and not undelivered_indices:
+                        undelivered_indices = [0]
+
+        embeds = self._build_embeds(
+            conversation=conversation, undelivered_video_indices=undelivered_indices
+        )
+        return ExpansionDelivery(
+            content="\n".join(content_lines) if content_lines else None,
+            embeds=embeds,
+            media=native_media,
+        )
+
+    def _build_embeds(
+        self, conversation: ConversationT, undelivered_video_indices: list[int] | None = None
+    ) -> list[Embed]:
         """Builds the post embed, gallery embeds, and optional selected-comment embed."""
         post: PostT | None = conversation.target
         if post is None:
             return []
         comment: PostT | None = conversation.selected_comment
-        hint = VIDEO_HINT.format(url=self._video_link(post=post)) if post.video_urls else ""
+        missing_videos = (
+            list(range(len(post.video_urls)))
+            if undelivered_video_indices is None
+            else undelivered_video_indices
+        )
+        hint = (
+            VIDEO_HINT.format(url=self._video_link(post=post, index=missing_videos[0]))
+            if missing_videos
+            else ""
+        )
         shown = post.image_urls[:POST_CARD_MAX_IMAGES]
+        footer_parts = [
+            part
+            for part in (
+                self._footer_text(post=post, shown_images=len(shown)),
+                omitted_videos_note(count=len(missing_videos) - 1)
+                if len(missing_videos) > 1
+                else "",
+            )
+            if part
+        ]
         embeds = post_card_embeds(
             post=post,
             color=self.EMBED_COLOR,
             author=self._author_label(post=post),
-            footer=self._footer_text(post=post, shown_images=len(shown)),
+            footer=" · ".join(footer_parts),
             images=shown,
             suffix=hint,
             reserve=_COMMENT_RESERVE if comment is not None else 0,
@@ -883,21 +1197,15 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         """The comment card's author line, empty for none."""
         return comment.author_name
 
-    def _video_link(self, post: PostT) -> str:
-        """Where a video post's link points; only its first video gets one."""
-        return post.video_urls[0]
+    def _video_link(self, post: PostT, index: int = 0) -> str:
+        """Where a video post's fallback link points; defaults to `post.video_urls[index]`."""
+        return post.video_urls[index] if index < len(post.video_urls) else post.video_urls[0]
 
     @staticmethod
     def _omitted_media_notes(post: CardPost, shown_images: int) -> list[str]:
-        """Returns the footer notes for images past `shown_images` and videos past the first."""
-        notes: list[str] = []
+        """Returns the footer note for images past `shown_images`."""
         remaining_images = len(post.image_urls) - shown_images
-        if remaining_images > 0:
-            notes.append(omitted_images_note(count=remaining_images))
-        remaining_videos = len(post.video_urls) - 1
-        if remaining_videos > 0:
-            notes.append(f"🎬 另有 {remaining_videos} 部影片")
-        return notes
+        return [omitted_images_note(count=remaining_images)] if remaining_images > 0 else []
 
     def _footer_text(self, post: PostT, shown_images: int) -> str:
         """The post card's counter line, given how many of its images the card shows.

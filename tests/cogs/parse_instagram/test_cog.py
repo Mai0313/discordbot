@@ -7,12 +7,22 @@ a reader sees when the post cannot be read.
 
 import re
 
-from discordbot.utils.expansion_cog import omitted_images_note
+import pytest
+
+from discordbot.utils.expansion_cog import VIDEO_HINT, omitted_images_note
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 from discordbot.services.platforms.instagram import InstagramOutput
 
-from tests.helpers.link_sources import INSTAGRAM_URL, expand, instagram_post, expansion_embeds
+from tests.helpers.link_sources import (
+    INSTAGRAM_URL,
+    expand,
+    instagram_post,
+    expansion_embeds,
+    serve_card_videos,
+)
+from tests.helpers.discord_mocks import expansion_payload
 
 
 async def test_a_pasted_link_is_expanded_into_a_card() -> None:
@@ -126,3 +136,49 @@ async def test_an_author_with_only_a_display_name_still_gets_a_line() -> None:
     )
 
     assert expansion_embeds(message=message)[0].author.name == "晏凌"
+
+
+async def test_a_reel_downloads_with_instagram_referer_and_omits_video_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instagram CDN fetches carry `Referer: https://www.instagram.com/` and attach natively."""
+    clip = "https://instagram.example/reel.mp4?oe=DEADBEEF"
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+
+    message, _ = await expand(
+        cog_type=InstagramCogs, outcome=instagram_post(image_urls=[], video_urls=[clip])
+    )
+
+    payload = expansion_payload(message=message)
+    assert calls[0]["headers"]["Referer"] == "https://www.instagram.com/"
+    assert "User-Agent" in calls[0]["headers"]
+    media_names = [
+        file.filename
+        for file in payload.get("files", [])
+        if file.filename != DEFAULT_EMBED_SPACER_FILENAME
+    ]
+    assert media_names == ["video_0.mp4"]
+    assert VIDEO_HINT.partition("{url}")[0] not in (payload["embeds"][0].description or "")
+
+
+async def test_an_oversize_instagram_reel_falls_back_to_permanent_post_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversize fallback still points at the permanent post URL, never an expiring CDN link."""
+    clip = "https://instagram.example/huge.mp4?oe=DEADBEEF"
+    serve_card_videos(monkeypatch=monkeypatch, oversize=frozenset({clip}))
+
+    message, _ = await expand(
+        cog_type=InstagramCogs, outcome=instagram_post(image_urls=[], video_urls=[clip])
+    )
+
+    payload = expansion_payload(message=message)
+    description = payload["embeds"][0].description or ""
+    media_names = [
+        file.filename
+        for file in payload.get("files", [])
+        if file.filename != DEFAULT_EMBED_SPACER_FILENAME
+    ]
+    assert media_names == []
+    assert clip not in description
+    assert INSTAGRAM_URL in description

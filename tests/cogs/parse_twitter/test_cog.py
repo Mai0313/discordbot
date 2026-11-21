@@ -7,8 +7,14 @@ reader sees when the post cannot be read.
 
 import re
 
-from discordbot.utils.expansion_cog import TRUNCATION_NOTICE, omitted_posts_note
-from discordbot.utils.discord_embeds import utf16_length
+import pytest
+
+from discordbot.utils.expansion_cog import VIDEO_HINT, TRUNCATION_NOTICE, omitted_posts_note
+from discordbot.utils.discord_embeds import (
+    DEFAULT_EMBED_SPACER_FILENAME,
+    utf16_length,
+    embed_spacer_url,
+)
 from discordbot.cogs.parse_twitter.cog import _PARENT_HEADER, _TRUNCATED_NOTICE, TwitterCogs
 from discordbot.services.platforms.twitter import (
     TwitterOutput,
@@ -24,7 +30,10 @@ from tests.helpers.link_sources import (
     twitter_post,
     twitter_output,
     expansion_embeds,
+    serve_card_images,
+    serve_card_videos,
 )
+from tests.helpers.discord_mocks import expansion_payload
 
 
 async def test_a_pasted_link_is_expanded_into_a_card() -> None:
@@ -309,3 +318,135 @@ async def test_the_link_is_read_at_the_url_the_message_carried() -> None:
     )
 
     assert stub.seen == [f"{TWITTER_URL}?s=46&t=abc"]
+
+
+async def test_a_delivered_video_omits_its_redundant_poster_and_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the video attaches directly, the poster frame would duplicate the player."""
+    serve_card_videos(monkeypatch=monkeypatch)
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=twitter_post(
+            image_urls=[],
+            video_urls=["https://video.twimg.com/a/1280.mp4"],
+            video_poster_urls=["https://pbs.twimg.com/amplify_video_thumb/p.jpg"],
+        ),
+    )
+
+    payload = expansion_payload(message=message)
+    embed = payload["embeds"][0]
+    media_names = [
+        file.filename
+        for file in payload.get("files", [])
+        if file.filename != DEFAULT_EMBED_SPACER_FILENAME
+    ]
+    assert media_names == ["video_0.mp4"]
+    assert embed.image.url == embed_spacer_url()
+    assert VIDEO_HINT.partition("{url}")[0] not in (embed.description or "")
+
+
+async def test_a_mixed_photo_and_delivered_video_keeps_the_photo_and_attaches_the_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting the video poster on delivery must never drop actual still photos."""
+    serve_card_images(monkeypatch=monkeypatch)
+    serve_card_videos(monkeypatch=monkeypatch)
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=twitter_post(
+            image_urls=["https://pbs.twimg.com/media/a.jpg"],
+            video_urls=["https://video.twimg.com/a/1280.mp4"],
+            video_poster_urls=["https://pbs.twimg.com/amplify_video_thumb/p.jpg"],
+        ),
+    )
+
+    payload = expansion_payload(message=message)
+    embed = payload["embeds"][0]
+    filenames = {file.filename for file in payload.get("files", [])}
+    assert "video_0.mp4" in filenames
+    assert (embed.image.url or "").startswith("attachment://")
+    assert VIDEO_HINT.partition("{url}")[0] not in (embed.description or "")
+
+
+async def test_an_oversize_twitter_video_keeps_its_poster_and_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the video exceeds the cap, the card falls back to poster frame plus link."""
+    clip = "https://video.twimg.com/a/huge.mp4"
+    poster = "https://pbs.twimg.com/amplify_video_thumb/p.jpg"
+    serve_card_videos(monkeypatch=monkeypatch, oversize=frozenset({clip}))
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=twitter_post(image_urls=[], video_urls=[clip], video_poster_urls=[poster]),
+    )
+
+    payload = expansion_payload(message=message)
+    embed = payload["embeds"][0]
+    assert payload.get("files", []) == []
+    assert embed.image.url == poster
+    assert clip in (embed.description or "")
+
+
+async def test_a_partial_multi_video_fallback_links_and_shows_poster_for_the_undelivered_clip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When clip 0 attaches and clip 1 fails, `VIDEO_HINT` and poster target clip 1, not clip 0."""
+    clips = ["https://video.twimg.com/a/0.mp4", "https://video.twimg.com/a/1.mp4"]
+    posters = [
+        "https://pbs.twimg.com/amplify_video_thumb/p0.jpg",
+        "https://pbs.twimg.com/amplify_video_thumb/p1.jpg",
+    ]
+    serve_card_videos(monkeypatch=monkeypatch, oversize=frozenset({clips[1]}))
+    message, _ = await expand(
+        cog_type=TwitterCogs,
+        outcome=twitter_post(image_urls=[], video_urls=clips, video_poster_urls=posters),
+    )
+
+    payload = expansion_payload(message=message)
+    embed = payload["embeds"][0]
+    media_names = [
+        file.filename
+        for file in payload.get("files", [])
+        if file.filename != DEFAULT_EMBED_SPACER_FILENAME
+    ]
+    assert media_names == ["video_0.mp4"]
+    assert embed.image.url == posters[1]
+    assert clips[1] in (embed.description or "")
+    assert clips[0] not in (embed.description or "")
+
+
+async def test_an_ancestor_video_stays_link_and_poster_only_while_target_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only target videos are downloaded; ancestor videos keep their poster and link."""
+    ancestor_clip = "https://video.twimg.com/ancestor.mp4"
+    target_clip = "https://video.twimg.com/target.mp4"
+    calls = serve_card_videos(monkeypatch=monkeypatch)
+    ancestor = _ancestor(
+        index=1,
+        video_urls=[ancestor_clip],
+        video_poster_urls=["https://pbs.twimg.com/ancestor_thumb.jpg"],
+    )
+    target = twitter_output(
+        image_urls=[],
+        video_urls=[target_clip],
+        video_poster_urls=["https://pbs.twimg.com/target_thumb.jpg"],
+    )
+    message, _ = await expand(
+        cog_type=TwitterCogs, outcome=TwitterConversation(chain=[ancestor, target])
+    )
+
+    payload = expansion_payload(message=message)
+    embeds = payload["embeds"]
+    assert [call["url"] for call in calls] == [target_clip]
+    assert embeds[0].image.url == "https://pbs.twimg.com/ancestor_thumb.jpg"
+    assert ancestor_clip in (embeds[0].description or "")
+    assert embeds[1].image.url == embed_spacer_url()
+    assert target_clip not in (embeds[1].description or "")
+    media_names = [
+        file.filename
+        for file in payload.get("files", [])
+        if file.filename != DEFAULT_EMBED_SPACER_FILENAME
+    ]
+    assert media_names == ["video_0.mp4"]
