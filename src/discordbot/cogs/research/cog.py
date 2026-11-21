@@ -267,6 +267,15 @@ class ResearchCogs(commands.Cog):
             )
             return
         await interaction.response.defer(ephemeral=True)
+        # Check here before posting a public anchor so an existing run never flashes a ghost ping.
+        slot_outcome, existing_thread_id = await self._check_owner_slot(
+            owner_id=interaction.user.id, channel_id=interaction.channel.id
+        )
+        if slot_outcome is not None:
+            await interaction.edit_original_message(
+                content=_launch_reply(outcome=slot_outcome, thread_id=existing_thread_id)
+            )
+            return
         # Restrict mentions to the requester so user-supplied topic text cannot mass-ping.
         try:
             anchor = await interaction.channel.send(
@@ -307,27 +316,39 @@ class ResearchCogs(commands.Cog):
             content=_launch_reply(outcome=outcome, thread_id=thread_id)
         )
 
-    async def _start_for(  # noqa: PLR0911 -- one early outcome per way a launch stops short
+    async def _check_owner_slot(
+        self, owner_id: int, channel_id: int, message_id: int | None = None
+    ) -> tuple[StartOutcome | None, int | None]:
+        """Returns `(outcome, thread_id)` when `owner_id` cannot start a run, else `(None, None)`."""
+        try:
+            existing = await db.active_thread_for_owner(owner_id=owner_id)
+        except Exception as exc:
+            # Broad: every store failure ends the launch the same way, as an answered error.
+            logfire.error(
+                "failed to read the owner's research slot",
+                channel_id=channel_id,
+                message_id=message_id,
+                owner_id=owner_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return "error", None
+        if existing is not None:
+            return "exists", existing
+        return None, None
+
+    async def _start_for(
         self, owner_id: int, brief: str, anchor: "Message"
     ) -> tuple[StartOutcome, int | None]:
         """Claims `owner_id`'s slot, opens the thread, spawns the run, and returns `(outcome, thread_id)`."""
         if anchor.guild is None or not isinstance(anchor.channel, TextChannel):
             return "unsupported", None
         async with self._owner_locks.hold(key=owner_id):
-            try:
-                existing = await db.active_thread_for_owner(owner_id=owner_id)
-            except Exception as exc:
-                # Broad: every store failure ends the launch the same way, as an answered error.
-                logfire.error(
-                    "failed to read the owner's research slot",
-                    message_id=anchor.id,
-                    owner_id=owner_id,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
-                )
-                return "error", None
-            if existing is not None:
-                return "exists", existing
+            slot_outcome, existing = await self._check_owner_slot(
+                owner_id=owner_id, channel_id=anchor.channel.id, message_id=anchor.id
+            )
+            if slot_outcome is not None:
+                return slot_outcome, existing
             name = await self._generate_thread_name(brief=brief)
             try:
                 thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
@@ -591,7 +612,22 @@ class ResearchCogs(commands.Cog):
 
     async def _resume_one(self, session: db.PersistentResearchSession) -> None:
         """Re-attaches to `session`, taking over its prior status message and delivering on completion."""
-        thread = await self._fetch_thread(thread_id=session.thread_id)
+        try:
+            thread = await self._fetch_thread(thread_id=session.thread_id)
+        except Exception as exc:
+            # Broad: a transient Discord error at boot must not discard a running research job;
+            # stream headless and re-fetch before delivering.
+            logfire.warn(
+                "could not fetch the research thread; resuming without it",
+                thread_id=session.thread_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            thread = None
+        else:
+            if thread is None:
+                await self._release(thread_id=session.thread_id, phase="cancelled")
+                return
         status = await self._find_prior_status(thread=thread) if thread is not None else None
         # Restarted before interaction_id was persisted; nothing to re-attach to.
         if session.interaction_id is None:
@@ -614,8 +650,14 @@ class ResearchCogs(commands.Cog):
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
+            if thread is None:
+                thread, status = await self._refetch_thread_for_delivery(
+                    thread_id=session.thread_id
+                )
             await self._abandon_resume(session=session, thread=thread, status=status)
             return
+        if thread is None:
+            thread, status = await self._refetch_thread_for_delivery(thread_id=session.thread_id)
         if thread is None:
             await self._release(
                 thread_id=session.thread_id, phase=_terminal_phase(status=result.status)
@@ -628,6 +670,25 @@ class ResearchCogs(commands.Cog):
             agent=session.agent,
             status=status,
         )
+
+    async def _refetch_thread_for_delivery(
+        self, thread_id: int
+    ) -> "tuple[Thread | None, Message | None]":
+        """Retries fetching a transiently unreachable thread and its pre-restart status line."""
+        try:
+            thread = await self._fetch_thread(thread_id=thread_id)
+        except Exception as exc:
+            # Broad: delivery falls back to releasing the session when Discord stays unreachable.
+            logfire.warn(
+                "could not re-fetch the research thread after streaming",
+                thread_id=thread_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return None, None
+        if thread is None:
+            return None, None
+        return thread, await self._find_prior_status(thread=thread)
 
     async def _abandon_resume(
         self,
@@ -668,7 +729,10 @@ class ResearchCogs(commands.Cog):
         return None
 
     async def _fetch_thread(self, thread_id: int) -> "Thread | None":
-        """Returns the thread by id from cache or a REST fetch, or None when gone."""
+        """Returns the thread by id, or None when permanently gone (`NotFound`/`Forbidden`).
+
+        Transient REST errors propagate so `_resume_one` can stream headless and re-fetch later.
+        """
         cached = self.bot.get_channel(thread_id)
         if isinstance(cached, Thread):
             return cached
@@ -679,15 +743,6 @@ class ResearchCogs(commands.Cog):
             return None
         except Forbidden:
             logfire.warn("research thread refused the fetch; skipping", thread_id=thread_id)
-            return None
-        # Broad: resume callers treat None as gone; log REST errors separately from NotFound.
-        except Exception as exc:
-            logfire.warn(
-                "could not fetch the research thread; treating it as gone",
-                thread_id=thread_id,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
             return None
         return fetched if isinstance(fetched, Thread) else None
 

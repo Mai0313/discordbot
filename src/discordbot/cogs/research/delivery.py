@@ -11,7 +11,12 @@ import logfire
 from nextcord import File, Object, Message, Forbidden, AllowedMentions
 
 from discordbot.utils.discord_embeds import DISCORD_MESSAGE_LIMIT
-from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
+from discordbot.utils.media_delivery import (
+    MEDIA_ENVELOPE_MARGIN,
+    MediaItem,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 
 if TYPE_CHECKING:
     from nextcord import Thread
@@ -120,16 +125,19 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     """
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report_by_sections(text=report) or ["(empty report)"]
-    # Plan research.md and research.png separately so their combined size never forces .md off
-    # native attach.
-    limit = upload_limit_for(guild=thread.guild)
+    # Plan research.md before research.png against a shared remaining budget so .md keeps native
+    # priority while combined attachments stay within upload_limit - MEDIA_ENVELOPE_MARGIN.
+    remaining_limit = upload_limit_for(guild=thread.guild)
     items: list[MediaItem] = [MediaItem(source=report.encode("utf-8"), filename="research.md")]
     if result.image_bytes is not None:
         items.append(MediaItem(source=result.image_bytes, filename="research.png"))
     files: list[File] = []
     hosted_urls: list[str] = []
     for item in items:
-        item_plan = await media_delivery.plan(items=[item], upload_limit=limit)
+        item_plan = await media_delivery.plan(
+            items=[item], upload_limit=remaining_limit, envelope_margin=MEDIA_ENVELOPE_MARGIN
+        )
+        remaining_limit = max(remaining_limit - sum(native.size for native in item_plan.native), 0)
         files.extend(native.to_file() for native in item_plan.native)
         hosted_urls.extend(item_plan.hosted_urls)
         if item_plan.dropped_items:

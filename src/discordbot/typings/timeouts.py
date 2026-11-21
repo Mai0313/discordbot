@@ -86,6 +86,10 @@ PROMPT_REFINE_TIMEOUT_SECONDS: Final[float] = 120.0
 # Bound on research-thread title generation; expiry falls back to the brief's first line.
 THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
 
+# Per-RPC bound on deep-research `interactions.create` / `interactions.get` handshakes and polls
+# (`google-genai` has no default); the research job itself remains unbounded.
+RESEARCH_RPC_TIMEOUT_SECONDS: Final[float] = 60.0
+
 # --------------------------------------------------------------------------------------
 # Background LLM work
 # --------------------------------------------------------------------------------------

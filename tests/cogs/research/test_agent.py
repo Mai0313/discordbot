@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING
+import asyncio
 
 from google import genai
 import httpx2
@@ -338,3 +339,181 @@ def test_to_result_handles_failure_and_missing_fields() -> None:
     assert result.report_text == ""
     assert result.image_bytes is None
     assert result.input_tokens == 0
+
+
+def test_extract_image_returns_none_and_warns_on_corrupt_base64(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupt chart base64 is dropped with a warning so the text report still delivers."""
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    interaction = SimpleNamespace(
+        id="int_bad",
+        status="completed",
+        output_text="# Report",
+        usage=None,
+        steps=[
+            SimpleNamespace(
+                type="thought", content=[SimpleNamespace(type="image", data="ignored")]
+            ),
+            SimpleNamespace(
+                type="model_output",
+                content=[
+                    SimpleNamespace(type="text", text="hello"),
+                    SimpleNamespace(type="image", data="!!!not-base64!!!"),
+                ],
+            ),
+        ],
+    )
+
+    result = agent._to_result(interaction=interaction)
+
+    assert result.image_bytes is None
+    assert [fields["interaction_id"] for _, fields in warns] == ["int_bad"]
+
+
+async def test_poll_until_terminal_retries_per_rpc_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung `interactions.get` poll trips the per-RPC timeout and retries to completion."""
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(agent, "RESEARCH_RPC_TIMEOUT_SECONDS", 0.01)
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+    attempts = 0
+
+    async def slow_then_ok(**_kwargs: object) -> SimpleNamespace:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await asyncio.sleep(delay=1.0)
+        return _terminal_interaction()
+
+    fake = SimpleNamespace(aio=SimpleNamespace(interactions=SimpleNamespace(get=slow_then_ok)))
+    interaction = await agent._poll_until_terminal(client=as_client(fake=fake), interaction_id="i")
+
+    assert attempts == 2
+    assert interaction.status == "completed"
+    assert any(fields.get("error_type") == "TimeoutError" for _, fields in warns)
+
+
+async def test_stream_retries_failed_reopen_inside_the_reconnect_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing or timed-out `_reopen()` is retried instead of aborting streaming on attempt 1."""
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(agent, "RESEARCH_RPC_TIMEOUT_SECONDS", 0.01)
+    reopen_attempts = 0
+
+    class _FlakyReopenInteractions:
+        async def create(self, **_kwargs: object) -> _FakeStream:
+            return _FakeStream([_created_event(event_id="e1")], raise_after=1)
+
+        async def get(self, **kwargs: object) -> object:
+            nonlocal reopen_attempts
+            if kwargs.get("stream"):
+                reopen_attempts += 1
+                if reopen_attempts == 1:
+                    raise RuntimeError("transient 503 on reopen")
+                if reopen_attempts == 2:
+                    await asyncio.sleep(delay=1.0)
+                return _FakeStream([_completed_event(event_id="e2")])
+            return _terminal_interaction()
+
+    fake = SimpleNamespace(aio=SimpleNamespace(interactions=_FlakyReopenInteractions()))
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    result = await agent.stream_antigravity(
+        client=as_client(fake=fake),
+        agent="a",
+        brief="b",
+        system_instruction="s",
+        streamer=streamer,
+        on_created=agent._noop_created,
+    )
+
+    assert reopen_attempts == 3
+    assert result.ok is True
+
+
+async def test_stream_does_not_persist_empty_interaction_id() -> None:
+    """An `interaction.created` event with empty/missing id must never call `on_created`."""
+    persisted: list[str] = []
+
+    async def _persist(interaction_id: str) -> None:
+        persisted.append(interaction_id)
+
+    client = _fake_client(
+        streams=[_FakeStream([_created_event(interaction_id=""), _completed_event()])],
+        terminal=_terminal_interaction(),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    await agent.stream_antigravity(
+        client=as_client(fake=client),
+        agent="a",
+        brief="b",
+        system_instruction="s",
+        streamer=streamer,
+        on_created=_persist,
+    )
+
+    assert persisted == []
+
+
+async def test_stream_create_times_out_when_initial_handshake_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`stream_antigravity` bounds the initial `interactions.create` handshake."""
+    monkeypatch.setattr(agent, "RESEARCH_RPC_TIMEOUT_SECONDS", 0.01)
+
+    async def hung_create(**_kwargs: object) -> None:
+        await asyncio.sleep(delay=1.0)
+
+    fake = SimpleNamespace(aio=SimpleNamespace(interactions=SimpleNamespace(create=hung_create)))
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    with pytest.raises(TimeoutError):
+        await agent.stream_antigravity(
+            client=as_client(fake=fake),
+            agent="a",
+            brief="b",
+            system_instruction="s",
+            streamer=streamer,
+            on_created=agent._noop_created,
+        )
+
+
+async def test_stream_reopen_fails_fast_on_permanent_api_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A permanent 400/404 API refusal on `_reopen()` falls back to polling immediately."""
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    reopen_attempts = 0
+
+    class _BadRequestError(Exception):
+        status_code = 400
+
+    class _RefusingReopenInteractions:
+        async def create(self, **_kwargs: object) -> _FakeStream:
+            return _FakeStream([_created_event(event_id="e1")], raise_after=1)
+
+        async def get(self, **kwargs: object) -> object:
+            nonlocal reopen_attempts
+            if kwargs.get("stream"):
+                reopen_attempts += 1
+                raise _BadRequestError("invalid last_event_id")
+            return _terminal_interaction()
+
+    fake = SimpleNamespace(aio=SimpleNamespace(interactions=_RefusingReopenInteractions()))
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    result = await agent.stream_antigravity(
+        client=as_client(fake=fake),
+        agent="a",
+        brief="b",
+        system_instruction="s",
+        streamer=streamer,
+        on_created=agent._noop_created,
+    )
+
+    assert reopen_attempts == 1
+    assert result.ok is True
