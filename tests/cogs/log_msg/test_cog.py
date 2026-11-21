@@ -5,8 +5,11 @@ from typing import Any
 import asyncio
 from pathlib import Path
 import sqlite3
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
+from nextcord import Message, DMChannel
 from sqlalchemy import text
 from nextcord.ext import commands
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -14,6 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from discordbot.cogs.log_msg import cog as log_msg
 
 from tests.helpers.casting import as_bot
+from tests.helpers.discord_mocks import FakeUser
 from tests.helpers.logfire_capture import capture_logs
 
 _SAMPLE_ROW: dict[str, str] = {
@@ -150,3 +154,70 @@ async def test_setup_leaves_logging_off_while_messages_db_is_behind(
     assert added == []
     assert [fields["current"] for _, fields in errors] == ["older"]
     assert await _query(sql="SELECT version_num FROM alembic_version") == [("older",)]
+
+
+def _dm_message(
+    channel: MagicMock, author: FakeUser, message_id: int = 1, content: str = "hi"
+) -> Message:
+    """Builds a `Message` spec double with the given DM channel, author, id, and content."""
+    msg = MagicMock(spec=Message)
+    msg.id = message_id
+    msg.channel = channel
+    msg.author = author
+    msg.content = content
+    msg.created_at = datetime(2026, 11, 21, 12, 0, 0, tzinfo=UTC)
+    msg.attachments = []
+    msg.stickers = []
+    return msg
+
+
+def test_dm_message_logger_keys_both_human_and_bot_replies_by_dm_partner() -> None:
+    """Bot replies in a DM share the recipient's key instead of collapsing under the bot's ID."""
+    partner = FakeUser(user_id=800, name="alice", display_name="Alice")
+    bot_user = FakeUser(user_id=999, name="bot", display_name="Bot", bot=True)
+    dm_channel = MagicMock(spec=DMChannel)
+    dm_channel.id = 555
+    dm_channel.recipient = partner
+
+    human_logger = log_msg.MessageLogger(message=_dm_message(channel=dm_channel, author=partner))
+    bot_logger = log_msg.MessageLogger(message=_dm_message(channel=dm_channel, author=bot_user))
+
+    assert human_logger.channel_id_or_author_id == "800"
+    assert bot_logger.channel_id_or_author_id == "800"
+    assert human_logger.channel_name_or_author_name == "DM_Alice_800"
+    assert bot_logger.channel_name_or_author_name == "DM_Alice_800"
+
+
+async def test_uncached_gateway_dm_preserves_partner_key_for_human_and_bot_replies() -> None:
+    """When nextcord builds a gateway DM with `recipient=None`, human and bot share the partner ID."""
+    partner = FakeUser(user_id=800, name="alice", display_name="Alice")
+    bot_user = FakeUser(user_id=999, name="bot", display_name="Bot", bot=True)
+    dm_channel = MagicMock(spec=DMChannel)
+    dm_channel.id = 555
+    dm_channel.recipient = None
+
+    cog = log_msg.LogMessageCog(bot=as_bot(fake=SimpleNamespace(user=bot_user)))
+    human_msg = _dm_message(channel=dm_channel, author=partner, message_id=10, content="hello")
+    bot_msg = _dm_message(channel=dm_channel, author=bot_user, message_id=11, content="hi back")
+
+    await cog.on_message(message=human_msg)
+    await cog.on_message(message=bot_msg)
+    await asyncio.gather(*cog._tasks)
+
+    rows = await _query(
+        sql='SELECT discord_message_id, author_id, channel_id, channel_name FROM "messages" ORDER BY id'
+    )
+    assert rows == [("10", "800", "800", "DM_Alice_800"), ("11", "999", "800", "DM_Alice_800")]
+
+
+def test_dm_message_logger_falls_back_to_channel_id_when_bot_dm_partner_is_unknown() -> None:
+    """An uncached DM channel with no recipient or cached partner falls back to `channel.id`."""
+    bot_user = FakeUser(user_id=999, name="bot", display_name="Bot", bot=True)
+    dm_channel = MagicMock(spec=DMChannel)
+    dm_channel.id = 555
+    dm_channel.recipient = None
+
+    logger = log_msg.MessageLogger(message=_dm_message(channel=dm_channel, author=bot_user))
+
+    assert logger.channel_id_or_author_id == "555"
+    assert logger.channel_name_or_author_name == "DM_555"
