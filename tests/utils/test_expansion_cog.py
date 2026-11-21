@@ -38,7 +38,7 @@ from discordbot.cogs.parse_twitter.cog import TwitterCogs
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
-from discordbot.services.platforms.facebook import FacebookOutput
+from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 from discordbot.services.platforms.instagram import InstagramOutput
 
@@ -86,7 +86,7 @@ commented_cards = pytest.mark.parametrize(
     ],
     ids=["facebook", "instagram"],
 )
-# The cogs with target video downloading enabled.
+# The cogs downloading direct MP4 target videos via the base hook.
 video_cards = pytest.mark.parametrize(
     argnames=("cog_type", "post"),
     argvalues=[(InstagramCogs, instagram_post), (TwitterCogs, twitter_post)],
@@ -660,13 +660,29 @@ async def test_video_download_timeout_degrades_to_link_without_failing_post(
     assert any("timed out" in msg for msg, _ in warns)
 
 
-async def test_facebook_cog_leaves_video_downloading_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`DOWNLOAD_VIDEOS` stays opt-in so platforms without direct MP4 URLs keep link-only cards."""
+async def test_download_videos_defaults_to_off_on_base_conversation_cog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`DOWNLOAD_VIDEOS` stays opt-in so a subclass that leaves it unset keeps link-only cards."""
+
+    class _OptOutConversationCog(ConversationExpansionCog[FacebookOutput, FacebookConversation]):
+        SOURCE = FacebookCogs.SOURCE
+        PLATFORM = FacebookCogs.PLATFORM
+        URL_PATTERN = FacebookCogs.URL_PATTERN
+        PLACEHOLDER_TEXT = FacebookCogs.PLACEHOLDER_TEXT
+        READ_TIMEOUT_SECONDS = FacebookCogs.READ_TIMEOUT_SECONDS
+        EMBED_COLOR = FacebookCogs.EMBED_COLOR
+        downloader_factory = FacebookCogs.downloader_factory
+
+        def _footer_text(self, post: FacebookOutput, shown_images: int) -> str:
+            del post, shown_images
+            return ""
+
     calls = serve_card_videos(monkeypatch=monkeypatch)
 
     message, _ = await expand(
-        cog_type=FacebookCogs,
-        outcome=facebook_post(image_urls=[], video_urls=["https://www.facebook.com/watch/?v=1"]),
+        cog_type=_OptOutConversationCog,
+        outcome=facebook_post(image_urls=[], video_urls=["https://cdn.test/clip.mp4"]),
     )
 
     assert calls == []
