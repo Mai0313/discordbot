@@ -1,6 +1,10 @@
 """Tests for the manual balance adjustment script."""
 
+from io import StringIO
+from pathlib import Path
+
 import pytest
+from rich.console import Console
 
 from discordbot.admin import modify_balance as modify_balance_script
 from discordbot.typings.economy import AccountSnapshot, BalanceAdjustmentResult
@@ -136,3 +140,88 @@ async def test_dry_run_projects_the_change_without_writing(
     )
     assert (applied.before, applied.applied_delta, applied.after) == expected
     assert change.created == applied.created
+
+
+async def test_modify_all_balances_avoids_per_account_get_account_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bulk adjustment uses `top_n` snapshots directly without N+1 `get_account` queries."""
+    await seed_balance(user_id=1, name="alice", amount=100)
+    await seed_balance(user_id=2, name="bob", amount=200)
+
+    async def fail_get_account(user_id: int) -> None:
+        raise AssertionError(f"unexpected N+1 get_account({user_id})")
+
+    monkeypatch.setattr(target=modify_balance_script, name="get_account", value=fail_get_account)
+
+    result = await modify_balance_script.modify_all_balances(delta=50, dry_run=True)
+
+    assert len(result.changes) == 2
+    assert result.applied_delta == 100
+
+
+def test_main_skips_db_setup_on_help_invalid_args_and_dry_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`main` parses CLI args before `mkdir` + Alembic upgrade and handles missing DB on `--dry-run`."""
+    monkeypatch.chdir(path=tmp_path)
+    upgrades: list[str] = []
+    monkeypatch.setattr(
+        target=modify_balance_script.command,
+        name="upgrade",
+        value=lambda **kwargs: upgrades.append(str(kwargs)),
+    )
+
+    with pytest.raises(SystemExit):
+        modify_balance_script.main(argv=["--help"])
+    with pytest.raises(SystemExit):
+        modify_balance_script.main(argv=["not-a-user", "10"])
+    with pytest.raises(SystemExit, match="no economy database"):
+        modify_balance_script.main(argv=["1", "10", "--dry-run"])
+
+    assert upgrades == []
+    assert not (tmp_path / "data").exists()
+
+    # Once `economy.db` exists on disk, `--dry-run` runs cleanly without invoking Alembic upgrade.
+    db_file = tmp_path / "data" / "database" / "economy.db"
+    db_file.parent.mkdir(parents=True)
+    db_file.touch()
+    buf = StringIO()
+    monkeypatch.setattr(
+        target=modify_balance_script,
+        name="console",
+        value=Console(file=buf, force_terminal=False, color_system=None),
+    )
+    modify_balance_script.main(argv=["1", "10", "--dry-run"])
+
+    assert upgrades == []
+    assert "Dry run" in buf.getvalue()
+
+
+def test_print_helpers_escape_rich_markup_in_usernames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Usernames containing Rich markup brackets render literally without `MarkupError`."""
+    buf = StringIO()
+    monkeypatch.setattr(
+        target=modify_balance_script,
+        name="console",
+        value=Console(file=buf, width=200, force_terminal=False, color_system=None),
+    )
+    change = modify_balance_script.BalanceChange(
+        user_id=1,
+        name="[Owner] [/b]Nick[/]",
+        before=100,
+        requested_delta=50,
+        applied_delta=50,
+        after=150,
+        created=False,
+        dry_run=True,
+    )
+    bulk = modify_balance_script.BulkBalanceChange(
+        changes=(change,), requested_delta=50, applied_delta=50, dry_run=True
+    )
+
+    modify_balance_script._print_change(change=change)
+    modify_balance_script._print_bulk_change(change=bulk)
+
+    rendered = buf.getvalue()
+    assert rendered.count("[Owner] [/b]Nick[/]") == 2

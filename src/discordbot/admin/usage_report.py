@@ -28,6 +28,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 
 from rich import box
+from rich.text import Text
 from rich.table import Table
 from rich.console import Console
 
@@ -211,11 +212,11 @@ def _top_table(
     peak = max((count for _, count in top), default=0)
     for name, count in top:
         table.add_row(
-            (display or {}).get(name, name),
+            Text(text=(display or {}).get(name, name)),
             str(count),
             _share(value=count, total=len(records)),
             _bar(value=count, peak=peak),
-            features[name].most_common(1)[0][0],
+            Text(text=features[name].most_common(1)[0][0]),
         )
     tail = len(records) - sum(count for _, count in top)
     if tail:
