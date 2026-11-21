@@ -46,6 +46,20 @@ def test_the_toolkit_memory_writer_knows_the_bots_own_id() -> None:
     assert toolkit.memory_writer.bot_user_id == 999
 
 
+def test_memory_writer_does_not_cache_none_bot_user_id_before_login() -> None:
+    """Accessing `memory_writer` before login never pins `bot_user_id=None` permanently."""
+    raw_bot = SimpleNamespace(user=None)
+    toolkit = ReplyToolkit(bot=as_bot(fake=raw_bot), openai_client=FakeClient(), gemini_api_key="")
+
+    pre_login = toolkit.memory_writer
+    assert pre_login.bot_user_id is None
+
+    raw_bot.user = SimpleNamespace(id=999, name="bot")
+    post_login = toolkit.memory_writer
+    assert post_login.bot_user_id == 999
+    assert toolkit.memory_writer is post_login
+
+
 async def test_gemini_client_pins_v1beta_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
     """Direct Gemini calls use `v1beta` so omni/Lyria resolve and Files URIs match LiteLLM."""
     paths: list[str] = []

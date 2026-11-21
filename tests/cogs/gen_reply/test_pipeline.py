@@ -29,6 +29,7 @@ from discordbot.cogs.gen_reply.speculation import (
     discard_link_tasks,
     run_until_deadline,
     await_deadline_bound_task,
+    drain_deadline_bound_task,
 )
 from discordbot.cogs.gen_reply.link_sources import link_context_blocks
 from discordbot.cogs.gen_reply.status_marks import DONE_EMOJI
@@ -1068,3 +1069,36 @@ async def test_handle_message_reply_uses_route_effort(
     await _run_pipeline(cog=cog, message=message)
 
     assert _recorded(cog).responses.create_reasonings[-1]["effort"] == effort
+
+
+async def test_drain_deadline_bound_task_reraises_outer_cancellation_after_cleanup() -> None:
+    """An outer cancellation during drain still finishes waiting for cleanup, then propagates."""
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def cleaning_task() -> str:
+        cleanup_started.set()
+        await release_cleanup.wait()
+        cleanup_finished.set()
+        return "done"
+
+    task = asyncio.create_task(coro=cleaning_task())
+    await cleanup_started.wait()
+    # Past deadline so `drain_deadline_bound_task` waits for cleanup instead of cancelling `task`.
+    past_deadline = asyncio.get_running_loop().time() - 1.0
+    drainer = asyncio.create_task(
+        coro=drain_deadline_bound_task(
+            task=task, deadline=past_deadline, label="bilibili", message_id=1
+        )
+    )
+    await asyncio.sleep(0)
+    drainer.cancel()
+    await asyncio.sleep(0)
+    assert not drainer.done(), "drainer must wait for cleanup before propagating cancellation"
+    assert not cleanup_finished.is_set()
+
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await drainer
+    assert cleanup_finished.is_set()

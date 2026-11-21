@@ -263,7 +263,9 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     """on_ready resume re-enqueues persisted jobs and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
     writer_sentinel = object()
-    cog.toolkit.__dict__["memory_writer"] = writer_sentinel
+    monkeypatch.setattr(
+        type(cog.toolkit), "memory_writer", property(lambda _self: writer_sentinel)
+    )
 
     user_job_scope = user_scope(user_id=1)
     server_job_scope = server_scope(server_id=2)
