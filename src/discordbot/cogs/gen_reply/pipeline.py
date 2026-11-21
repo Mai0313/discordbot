@@ -55,6 +55,24 @@ UNROUTED_REPLY = "unrouted"
 type LinkTask = asyncio.Task[list[EasyInputMessageParam]]
 
 
+class RegenOptions(BaseModel):
+    """Parameters carried into `ReplyPipeline` when regenerating an earlier QA reply."""
+
+    regen_of_reply_message_id: int = Field(
+        ..., description="Discord message id of the reply being replaced."
+    )
+    regen_count: int = Field(
+        ..., description="1-based regeneration depth of the new reply in its chain."
+    )
+    excluded_models: frozenset[str] = Field(
+        default_factory=frozenset,
+        description="Models already tried earlier in this regen chain, excluded in blind-test mode.",
+    )
+    forced_effort: Literal["low", "medium", "high"] | None = Field(
+        default=None, description="Reasoning effort preserved from the replaced turn, when valid."
+    )
+
+
 class ReplyPipeline(BaseModel):
     """Routes one message and dispatches the handler the route named."""
 
@@ -80,6 +98,10 @@ class ReplyPipeline(BaseModel):
     )
     reactions: ReactionStatusChain = Field(
         ..., description="Ordered status-reaction chain on the source message."
+    )
+    regen: RegenOptions | None = Field(
+        default=None,
+        description="Optional regeneration context when re-answering an earlier QA reply.",
     )
 
     @property
@@ -196,7 +218,7 @@ class ReplyPipeline(BaseModel):
 
     async def _answer_qa(
         self, route: "RouteClassification", context: ReplyContext, pipeline_started: float
-    ) -> None:
+    ) -> int | None:
         """Streams the QA answer, watching a linked YouTube video when the router asked for one."""
         message = self.message
         # Take the URL from the message/replied-to (never the model) so the exact link is watched.
@@ -212,20 +234,42 @@ class ReplyPipeline(BaseModel):
             decision=route.decision,
             message_id=message.id,
         )
-        await self._answer_turn().stream_answer(
+        return await self._answer_turn().stream_answer(
             system_prompt=REPLY_PROMPT,
             context=context,
             effort=route.effort,
             allow_research=can_launch_research(message=message),
             yt_url=yt_url,
             question=self.user_prompt,
+            regen_count=self.regen.regen_count if self.regen is not None else 0,
+            regen_of_reply_message_id=(
+                self.regen.regen_of_reply_message_id if self.regen is not None else None
+            ),
+            excluded_models=self.regen.excluded_models if self.regen is not None else frozenset(),
         )
 
-    async def run(self) -> None:  # noqa: PLR0915 -- the turn's sequence, and the task handles its `finally` drains
+    def _apply_route_overrides(self, route: "RouteClassification") -> "RouteClassification":
+        """Applies regeneration overrides (forced QA + preserved effort) and keyless VIDEO downgrade."""
+        if self.regen is not None:
+            overrides: dict[str, object] = {"decision": "QA"}
+            if self.regen.forced_effort is not None:
+                overrides["effort"] = self.regen.forced_effort
+            return route.model_copy(update=overrides)
+        if route.decision == "VIDEO" and not self.config.gemini_key_configured:
+            # VIDEO renders direct to Google; without a Gemini key, downgrade to QA.
+            logfire.info(
+                "gen_reply VIDEO route needs a Gemini key; answering as QA",
+                message_id=self.message.id,
+            )
+            return route.model_copy(update={"decision": "QA"})
+        return route
+
+    async def run(self) -> int | None:  # noqa: PLR0915 -- the turn's sequence, and the task handles its `finally` drains
         """Routes the message and dispatches the matching handler with speculative QA context."""
         message = self.message
         # Tracked here so finally records the reached route (or UNROUTED_REPLY) in usage.
         route_decision: Literal["IMAGE", "VIDEO", "QA"] | None = None
+        reply_message_id: int | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
         link_builds: tuple[dict[str, LinkTask], float] | None = None
@@ -264,13 +308,7 @@ class ReplyPipeline(BaseModel):
                 recall_picks.set_result(
                     route.recall_user_ids if isinstance(route, RecallRouteClassification) else []
                 )
-                if route.decision == "VIDEO" and not self.config.gemini_key_configured:
-                    # VIDEO renders direct to Google; without a Gemini key, downgrade to QA.
-                    logfire.info(
-                        "gen_reply VIDEO route needs a Gemini key; answering as QA",
-                        message_id=message.id,
-                    )
-                    route = route.model_copy(update={"decision": "QA"})
+                route = self._apply_route_overrides(route=route)
                 route_decision = route.decision
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "QA" and route.link_context_sources:
@@ -306,7 +344,7 @@ class ReplyPipeline(BaseModel):
                         )
                         context = context.model_copy(update={"link_blocks": link_blocks})
                     pipeline_span.set_attribute(key="effort", value=route.effort)
-                    await self._answer_qa(
+                    reply_message_id = await self._answer_qa(
                         route=route, context=context, pipeline_started=pipeline_started
                     )
                 self.reactions.advance(emoji=DONE_EMOJI)
@@ -317,6 +355,7 @@ class ReplyPipeline(BaseModel):
                     decision=route.decision,
                     message_id=message.id,
                 )
+                return reply_message_id
         finally:
             for task, label in ((prep_task, "prep"), (parts_task, "parts")):
                 if task is not None:

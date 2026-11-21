@@ -34,6 +34,7 @@ REASON_LABELS = {
     "tone": "語氣怪",
     "verbose": "太囉嗦",
     "other": "其他",
+    "regen": "重新生成",
 }
 
 
@@ -58,6 +59,9 @@ class TurnRecord(BaseModel):
     backend: str = Field(..., description="Backend label (`responses` or `interactions`).")
     question: str = Field(..., description="Snapshot of the user prompt.")
     answer: str = Field(..., description="Snapshot of the finalized reply text.")
+    regen_of_reply_message_id: int | None = Field(
+        default=None, description="Parent reply message id replaced by this regen turn, or None."
+    )
     created_at: str = Field(..., description="ISO timestamp written to `reply_turn`.")
 
 
@@ -113,6 +117,23 @@ class ContextMessage(BaseModel):
     stickers: str = Field(..., description="Semicolon-separated sticker URLs, or empty.")
 
 
+class PairwiseStats(BaseModel):
+    """Aggregated pairwise regeneration outcomes for one `(from_model, to_model)` pair."""
+
+    pairs: int = Field(default=0, description="Total regen edges from `from_model` to `to_model`.")
+    explicit_win: int = Field(
+        default=0,
+        description="Regen targets with an upvote, no downvote, and no further regeneration.",
+    )
+    soft_accept: int = Field(
+        default=0,
+        description="Regen targets with no upvote, no downvote, and no further regeneration.",
+    )
+    both_failed: int = Field(
+        default=0, description="Regen targets with any downvote or a further regeneration child."
+    )
+
+
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     """Opens `db_path` in SQLite read-only mode; exits cleanly when the file is missing."""
     if not db_path.is_file():
@@ -161,7 +182,7 @@ def _load_turns(
     rows = conn.execute(
         "SELECT reply_message_id, source_message_id, guild_id, channel_id, author_id, "
         "author_name, author_display_name, surface, route, model, effort, backend, question, "
-        "answer, created_at "
+        "answer, regen_of_reply_message_id, created_at "
         "FROM reply_turn "
         "WHERE (? IS NULL OR route = ?) "
         "AND (? IS NULL OR model = ?) "
@@ -336,11 +357,18 @@ def _format_media_markers(attachments: str, stickers: str) -> str:
     return " ".join(markers)
 
 
-def _render_overview(turns: list[TurnRecord], feedback: list[FeedbackRecord]) -> Table:
+def _render_overview(
+    turns: list[TurnRecord],
+    feedback: list[FeedbackRecord],
+    regenerated_parent_ids: set[int] | frozenset[int] = frozenset(),
+) -> Table:
     """Returns the top-level summary grid."""
-    up = sum(1 for item in feedback if item.vote == "up")
-    down = sum(1 for item in feedback if item.vote == "down")
-    voters = len({item.user_id for item in feedback})
+    explicit = [item for item in feedback if item.reason_tag != "regen"]
+    up = sum(1 for item in explicit if item.vote == "up")
+    down = sum(1 for item in explicit if item.vote == "down")
+    voters = len({item.user_id for item in explicit})
+    regens = sum(1 for turn in turns if turn.reply_message_id in regenerated_parent_ids)
+    regen_label = f"{regens} ({regens / len(turns) * 100:.1f}%)" if turns else "-"
     period = (
         f"{turns[0].created_at[:10]} - {turns[-1].created_at[:10]}"
         if turns
@@ -351,17 +379,29 @@ def _render_overview(turns: list[TurnRecord], feedback: list[FeedbackRecord]) ->
     grid.add_column()
     grid.add_row("period", Text(text=period))
     grid.add_row("turns", str(len(turns)))
-    grid.add_row("votes", f"{len(feedback)}  (👍 {up} / 👎 {down}, {voters} voter(s))")
+    grid.add_row("votes", f"{len(explicit)}  (👍 {up} / 👎 {down}, {voters} voter(s))")
+    grid.add_row("regens", regen_label)
     return grid
 
 
-def _render_model_summary(turns: list[TurnRecord], feedback: list[FeedbackRecord]) -> Table:
-    """Returns one row per `(route, model)` summarizing turns, votes, approval, and reasons."""
+def _render_model_summary(
+    turns: list[TurnRecord],
+    feedback: list[FeedbackRecord],
+    regenerated_parent_ids: set[int] | frozenset[int] = frozenset(),
+) -> Table:
+    """Returns one row per `(route, model)` summarizing turns, votes, approval, regens, and reasons."""
     turn_counts: Counter[tuple[str, str]] = Counter((turn.route, turn.model) for turn in turns)
+    regen_counts: Counter[tuple[str, str]] = Counter(
+        (turn.route, turn.model)
+        for turn in turns
+        if turn.reply_message_id in regenerated_parent_ids
+    )
     up_counts: Counter[tuple[str, str]] = Counter()
     down_counts: Counter[tuple[str, str]] = Counter()
     reason_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
     for item in feedback:
+        if item.reason_tag == "regen":
+            continue
         key = (item.route, item.model)
         if item.vote == "up":
             up_counts[key] += 1
@@ -381,6 +421,7 @@ def _render_model_summary(turns: list[TurnRecord], feedback: list[FeedbackRecord
     table.add_column("👍", justify="right", style="green", no_wrap=True)
     table.add_column("👎", justify="right", style="red", no_wrap=True)
     table.add_column("Appr", justify="right", no_wrap=True)
+    table.add_column("Regen", justify="right", no_wrap=True)
     table.add_column("Reasons")
 
     for key in keys:
@@ -388,14 +429,83 @@ def _render_model_summary(turns: list[TurnRecord], feedback: list[FeedbackRecord
         down = down_counts[key]
         total = up + down
         approval = f"{up / total * 100:.1f}%" if total else "-"
+        total_turns = turn_counts[key]
+        regens = regen_counts[key]
+        regen_label = f"{regens} ({regens / total_turns * 100:.1f}%)" if total_turns else "-"
         table.add_row(
             Text(text=key[0]),
             Text(text=key[1]),
-            str(turn_counts[key]),
+            str(total_turns),
             str(up),
             str(down),
             approval,
+            regen_label,
             Text(text=_format_model_reasons(reasons=reason_counts[key])),
+        )
+    return table
+
+
+def _render_pairwise(
+    scope_turns: list[TurnRecord],
+    scope_feedback: list[FeedbackRecord],
+    model_filter: str | None = None,
+) -> Table | None:
+    """Returns a head-to-head table for `R1 (M1) -> R2 (M2)` regen edges, or None if none exist."""
+    turns_by_id = {turn.reply_message_id: turn for turn in scope_turns}
+    regenerated_parent_ids = {
+        turn.regen_of_reply_message_id
+        for turn in scope_turns
+        if turn.regen_of_reply_message_id is not None
+    }
+    votes_by_reply: dict[int, list[FeedbackRecord]] = defaultdict(list)
+    for item in scope_feedback:
+        votes_by_reply[item.reply_message_id].append(item)
+
+    stats: dict[tuple[str, str], PairwiseStats] = defaultdict(PairwiseStats)
+    for child in scope_turns:
+        if child.regen_of_reply_message_id is None:
+            continue
+        parent = turns_by_id.get(child.regen_of_reply_message_id)
+        if parent is None:
+            continue
+        if model_filter is not None and model_filter not in (parent.model, child.model):
+            continue
+        child_votes = votes_by_reply.get(child.reply_message_id, [])
+        has_down = any(vote.vote == "down" for vote in child_votes)
+        has_up = any(vote.vote == "up" for vote in child_votes)
+        has_further_regen = child.reply_message_id in regenerated_parent_ids
+        bucket = stats[(parent.model, child.model)]
+        bucket.pairs += 1
+        if has_down or has_further_regen:
+            bucket.both_failed += 1
+        elif has_up:
+            bucket.explicit_win += 1
+        else:
+            bucket.soft_accept += 1
+
+    if not stats:
+        return None
+
+    table = Table(title="Pairwise", box=box.SIMPLE_HEAVY, show_edge=False)
+    table.add_column("From", style="bold", no_wrap=True)
+    table.add_column("To", style="bold", no_wrap=True)
+    table.add_column("Pairs", justify="right", no_wrap=True)
+    table.add_column("Explicit Win", justify="right", style="green", no_wrap=True)
+    table.add_column("Soft Accept", justify="right", no_wrap=True)
+    table.add_column("Both Failed", justify="right", style="red", no_wrap=True)
+    table.add_column("Accept Rate", justify="right", no_wrap=True)
+
+    ordered = sorted(stats.items(), key=lambda entry: (-entry[1].pairs, entry[0][0], entry[0][1]))
+    for (from_model, to_model), bucket in ordered:
+        accept_rate = f"{(bucket.explicit_win + bucket.soft_accept) / bucket.pairs * 100:.1f}%"
+        table.add_row(
+            Text(text=from_model),
+            Text(text=to_model),
+            str(bucket.pairs),
+            str(bucket.explicit_win),
+            str(bucket.soft_accept),
+            str(bucket.both_failed),
+            accept_rate,
         )
     return table
 
@@ -466,13 +576,18 @@ def _show_turn(  # noqa: PLR0913 -- scene rendering reads both DBs, cache, conte
     row = conn.execute(
         "SELECT reply_message_id, source_message_id, guild_id, channel_id, author_id, "
         "author_name, author_display_name, surface, route, model, effort, backend, question, "
-        "answer, created_at "
+        "answer, regen_of_reply_message_id, created_at "
         "FROM reply_turn WHERE reply_message_id = ?",
         (reply_message_id,),
     ).fetchone()
     if row is None:
         raise SystemExit(f"no reply_turn found for reply_message_id={reply_message_id}")
     turn = TurnRecord(**dict(row))
+    child_row = conn.execute(
+        "SELECT reply_message_id FROM reply_turn WHERE regen_of_reply_message_id = ? LIMIT 1",
+        (reply_message_id,),
+    ).fetchone()
+    child_reply_id = int(child_row["reply_message_id"]) if child_row is not None else None
     vote_rows = conn.execute(
         "SELECT user_id, user_name, user_display_name, vote, reason_tag, reason_text, updated_at "
         "FROM reply_feedback WHERE reply_message_id = ? ORDER BY updated_at ASC",
@@ -497,6 +612,10 @@ def _show_turn(  # noqa: PLR0913 -- scene rendering reads both DBs, cache, conte
     meta.add_column()
     meta.add_row("reply_message_id", str(turn.reply_message_id))
     meta.add_row("source_message_id", str(turn.source_message_id))
+    if turn.regen_of_reply_message_id is not None:
+        meta.add_row("regen_of", str(turn.regen_of_reply_message_id))
+    if child_reply_id is not None:
+        meta.add_row("regenerated_to", str(child_reply_id))
     meta.add_row("route / surface", Text(text=f"{turn.route} / {turn.surface}"))
     meta.add_row(
         "model / effort / backend",
@@ -583,8 +702,8 @@ def _inspect_turns(  # noqa: PLR0913 -- batch scene inspection carries DBs, filt
         )
 
 
-def run_report(argv: list[str] | None = None, out: Console | None = None) -> None:
-    """Parses CLI arguments and renders the feedback report to `out`."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Returns the CLI argument parser for `uv run feedback-report`."""
     parser = argparse.ArgumentParser(
         description="Inspect reply_turn snapshots and user feedback in data/database/reply.db."
     )
@@ -643,6 +762,12 @@ def run_report(argv: list[str] | None = None, out: Console | None = None) -> Non
         metavar="REPLY_MESSAGE_ID",
         help="Show the full scene, question, answer, and votes for one reply_message_id.",
     )
+    return parser
+
+
+def run_report(argv: list[str] | None = None, out: Console | None = None) -> None:
+    """Parses CLI arguments and renders the feedback report to `out`."""
+    parser = _build_parser()
     args = parser.parse_args(args=argv)
     try:
         since = _validate_since(value=args.since)
@@ -668,18 +793,24 @@ def run_report(argv: list[str] | None = None, out: Console | None = None) -> Non
             )
             return
         try:
-            turns = _load_turns(conn=conn, route=args.route, model=args.model, since=since)
-            feedback = _load_feedback(
-                conn=conn,
-                route=args.route,
-                model=args.model,
-                asker_only=args.asker_only,
-                since=since,
+            scope_turns = _load_turns(conn=conn, route=args.route, model=None, since=since)
+            scope_feedback = _load_feedback(
+                conn=conn, route=args.route, model=None, asker_only=args.asker_only, since=since
             )
         except sqlite3.OperationalError as exc:
             raise SystemExit(
                 f"reply feedback tables missing in {args.db} (run migrations first): {exc}"
             ) from exc
+        turns = (
+            scope_turns
+            if args.model is None
+            else [turn for turn in scope_turns if turn.model == args.model]
+        )
+        feedback = (
+            scope_feedback
+            if args.model is None
+            else [item for item in scope_feedback if item.model == args.model]
+        )
         if args.inspect:
             _inspect_turns(
                 conn=conn,
@@ -697,9 +828,28 @@ def run_report(argv: list[str] | None = None, out: Console | None = None) -> Non
         if messages_conn is not None:
             messages_conn.close()
 
-    target.print(_render_overview(turns=turns, feedback=feedback))
+    regenerated_parent_ids = {
+        turn.regen_of_reply_message_id
+        for turn in scope_turns
+        if turn.regen_of_reply_message_id is not None
+    }
+    target.print(
+        _render_overview(
+            turns=turns, feedback=feedback, regenerated_parent_ids=regenerated_parent_ids
+        )
+    )
     target.print()
-    target.print(_render_model_summary(turns=turns, feedback=feedback))
+    target.print(
+        _render_model_summary(
+            turns=turns, feedback=feedback, regenerated_parent_ids=regenerated_parent_ids
+        )
+    )
+    pairwise = _render_pairwise(
+        scope_turns=scope_turns, scope_feedback=scope_feedback, model_filter=args.model
+    )
+    if pairwise is not None:
+        target.print()
+        target.print(pairwise)
     target.print()
     target.print(
         _render_details(

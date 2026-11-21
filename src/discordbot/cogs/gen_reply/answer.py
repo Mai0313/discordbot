@@ -10,7 +10,7 @@ from typing import Literal, cast
 import asyncio
 import secrets
 import contextlib
-from collections.abc import Callable, Awaitable, AsyncIterator
+from collections.abc import Callable, Sequence, Awaitable, AsyncIterator
 
 import logfire
 from nextcord import Message, HTTPException, AllowedMentions
@@ -63,9 +63,20 @@ from discordbot.cogs.gen_reply.status_marks import (
     MEMORY_WRITE_EMOJI,
     MEMORY_FORGET_EMOJI,
 )
-from discordbot.cogs.gen_reply.feedback_store import ReplyRoute, record_reply_turn
+from discordbot.cogs.gen_reply.feedback_store import (
+    ReplyRoute,
+    record_reply_turn,
+    update_reply_message_ids,
+)
 from discordbot.cogs.gen_reply.feedback_views import ReplyFeedbackView
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
+
+
+def max_regens_for(config: LLMConfig, candidates: Sequence[str]) -> int:
+    """Returns the maximum number of regenerations allowed for one QA reply chain."""
+    if config.slow_model_blind_test_enabled:
+        return max(1, len(candidates) - 1)
+    return 1
 
 
 def build_runtime_instructions(system_prompt: str, message: Message, guild_id: int | None) -> str:
@@ -171,6 +182,7 @@ class AnswerTurn(BaseModel):
         effort: str,
         backend: str,
         question: str,
+        regen_of_reply_message_id: int | None = None,
     ) -> None:
         """Persists a best-effort `reply_turn` snapshot for feedback buttons when enabled."""
         if not self.config.feedback_enabled or streamer.last_reply is None:
@@ -179,6 +191,7 @@ class AnswerTurn(BaseModel):
         if not recorded_question and (self.message.attachments or self.message.stickers):
             recorded_question = "[attachment]"
         recorded_answer = USAGE_FOOTER_RE.sub(repl="", string=streamer.final_answer_text()).strip()
+        chunk_ids = [msg.id for msg in streamer.reply_messages] or [streamer.last_reply.id]
         try:
             await record_reply_turn(
                 reply_message_id=streamer.last_reply.id,
@@ -195,6 +208,8 @@ class AnswerTurn(BaseModel):
                 backend=backend,
                 question=recorded_question,
                 answer=recorded_answer,
+                reply_message_ids=chunk_ids,
+                regen_of_reply_message_id=regen_of_reply_message_id,
             )
         except Exception as exc:
             # Broad on purpose: best-effort feedback snapshot must never fail a delivered reply.
@@ -215,6 +230,7 @@ class AnswerTurn(BaseModel):
         backend: str,
         question: str,
         prefer_default_model: bool = False,
+        regen_of_reply_message_id: int | None = None,
     ) -> Callable[[ResponseStreamer], Awaitable[None]] | None:
         """Returns the `on_final_message` hook when feedback is enabled, else None."""
         if not self.config.feedback_enabled:
@@ -233,6 +249,7 @@ class AnswerTurn(BaseModel):
                 effort=effort,
                 backend=backend,
                 question=question,
+                regen_of_reply_message_id=regen_of_reply_message_id,
             )
 
         return record
@@ -295,7 +312,9 @@ class AnswerTurn(BaseModel):
                 memory_lookups=context.memory_credits,
                 model_effort=model.effort or "",
                 media_delivery=self.media_delivery,
-                feedback_view=ReplyFeedbackView() if self.config.feedback_enabled else None,
+                feedback_view=(
+                    ReplyFeedbackView(allow_regen=False) if self.config.feedback_enabled else None
+                ),
                 on_final_message=self._feedback_hook(
                     route="IMAGE" if media_noun == "image" else "VIDEO",
                     default_model=media_model or model.name,
@@ -397,20 +416,24 @@ class AnswerTurn(BaseModel):
             )
 
     def _select_qa_model(
-        self, effort: Literal["low", "medium", "high"], system_prompt: str
+        self,
+        effort: Literal["low", "medium", "high"],
+        system_prompt: str,
+        excluded_models: frozenset[str] = frozenset(),
     ) -> tuple[ModelSettings, str, str]:
         """Returns `(slow_model, system_prompt, model_display_name)` for one QA turn.
 
         When `slow_model_blind_test_enabled` is true, draws one candidate once for the whole turn
-        and masks the visible model label in `system_prompt` and the usage footer while leaving
-        pricing, logs, and `reply_turn.model` on the real model name.
+        (excluding models already tried in the current regen chain when others remain) and masks
+        the visible model label in `system_prompt` and the usage footer while leaving pricing,
+        logs, and `reply_turn.model` on the real model name.
         """
         base_slow_model = self.toolkit.runtime_models.slow_model
         if not self.config.slow_model_blind_test_enabled:
             return base_slow_model.model_copy(update={"effort": effort}), system_prompt, ""
-        chosen_name = secrets.choice(
-            seq=self.toolkit.runtime_models.slow_model_blind_test_candidates
-        )
+        candidates = self.toolkit.runtime_models.slow_model_blind_test_candidates
+        remaining = [candidate for candidate in candidates if candidate not in excluded_models]
+        chosen_name = secrets.choice(seq=remaining or candidates)
         # Mask the baked-in identity model name so asking the bot does not spoil blind tests.
         masked_prompt = system_prompt.replace(
             f"({base_slow_model.name})", f"({BLIND_TEST_MODEL_LABEL})"
@@ -429,7 +452,10 @@ class AnswerTurn(BaseModel):
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
-    ) -> None:
+        regen_count: int = 0,
+        regen_of_reply_message_id: int | None = None,
+        excluded_models: frozenset[str] = frozenset(),
+    ) -> int | None:
         """Streams the QA answer from `context`, launches any research brief, and schedules memory updates.
 
         Offers each inline media or `<deep-research>` marker only when its generator and config
@@ -443,6 +469,12 @@ class AnswerTurn(BaseModel):
             allow_research (bool): Whether the channel supports opening a deep-research thread.
             yt_url (str | None): YouTube URL to watch via the Interactions API, or None.
             question (str): Mention-stripped user prompt recorded on the feedback snapshot.
+            regen_count (int): 0 for an initial reply, or 1-based depth for a regenerated reply.
+            regen_of_reply_message_id (int | None): Parent reply id replaced by this regen turn.
+            excluded_models (frozenset[str]): Candidate models already tried earlier in this chain.
+
+        Returns:
+            int | None: Discord message id of the final landed reply chunk, or None if not sent.
         """
         toolkit = self.toolkit
         voice_generator = toolkit.voice_generator if self.config.inline_voice_enabled else None
@@ -464,7 +496,7 @@ class AnswerTurn(BaseModel):
         if research_offered:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model, system_prompt, model_display_name = self._select_qa_model(
-            effort=effort, system_prompt=system_prompt
+            effort=effort, system_prompt=system_prompt, excluded_models=excluded_models
         )
         dispatched_model.set(slow_model.name)
         answer_input = context.answer_input(config=self.config)
@@ -492,6 +524,9 @@ class AnswerTurn(BaseModel):
             # this REST round trip does not inflate answer latency measured from `created_at`.
             await self.surface.mark(emoji=YOUTUBE_EMOJI)
 
+        allow_regen = self.surface.interaction is None and regen_count < max_regens_for(
+            config=self.config, candidates=toolkit.runtime_models.slow_model_blind_test_candidates
+        )
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
@@ -505,13 +540,18 @@ class AnswerTurn(BaseModel):
             video_generator=video_generator,
             media_delivery=self.media_delivery,
             input_builder=toolkit.input_builder,
-            feedback_view=ReplyFeedbackView() if self.config.feedback_enabled else None,
+            feedback_view=(
+                ReplyFeedbackView(allow_regen=allow_regen)
+                if self.config.feedback_enabled
+                else None
+            ),
             on_final_message=self._feedback_hook(
                 route="QA",
                 default_model=slow_model.name,
                 effort=effort,
                 backend=backend,
                 question=question,
+                regen_of_reply_message_id=regen_of_reply_message_id,
             ),
         )
         logfire.info(
@@ -573,6 +613,7 @@ class AnswerTurn(BaseModel):
             full_reply = await stream_answer_with_retry(
                 streamer=streamer, open_stream=open_stream, message_id=self.message.id
             )
+        await self._sync_extra_reply_chunk_ids(streamer=streamer)
         # Launch after streaming finishes so thread creation never races the reply's media edit.
         if research_offered and streamer.markers.research_brief:
             await maybe_launch_research(
@@ -584,6 +625,31 @@ class AnswerTurn(BaseModel):
         # Persist the `/ask` turn before scheduling fire-and-forget memory review.
         await self.surface.record_turn(answer=full_reply)
         self._schedule_memory_updates(context=context, full_reply=full_reply, streamer=streamer)
+        return streamer.last_reply.id if streamer.last_reply is not None else None
+
+    async def _sync_extra_reply_chunk_ids(self, streamer: ResponseStreamer) -> None:
+        """Persists all chunk ids if hosted-link media appended a follow-up after `on_final_message`."""
+        if (
+            not self.config.feedback_enabled
+            or streamer.last_reply is None
+            or not streamer.reply_messages
+            or streamer.reply_messages[-1].id == streamer.last_reply.id
+        ):
+            return
+        try:
+            await update_reply_message_ids(
+                reply_message_id=streamer.last_reply.id,
+                reply_message_ids=[msg.id for msg in streamer.reply_messages],
+            )
+        except Exception as exc:
+            # Broad on purpose: best-effort chunk-id update must not fail a delivered reply.
+            logfire.warn(
+                "Failed to update reply_message_ids after hosted-link follow-up",
+                message_id=self.message.id,
+                reply_message_id=streamer.last_reply.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     def _schedule_memory_updates(
         self, context: ReplyContext, full_reply: str, streamer: ResponseStreamer

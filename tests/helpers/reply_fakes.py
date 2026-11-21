@@ -66,6 +66,7 @@ TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 # Every `FakeMessage` takes the next id, so two messages in one test are never the same message.
 _FAKE_MESSAGE_IDS = itertools.count(start=1000)
+_FAKE_REPLY_IDS = itertools.count(start=654)
 
 
 class FakeGuild:
@@ -149,7 +150,7 @@ class FakeReply:
 
     def __init__(self) -> None:
         """Initializes the fake reply with empty content and no follow-up chain."""
-        self.id = 654
+        self.id = next(_FAKE_REPLY_IDS)
         self.content: str | None = ""
         self.file: File | None = None
         self.files: list[File] | None = None
@@ -593,11 +594,18 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     answer model gets the uploading handler a keyed deployment does.
     """
     added_views: list[object] = []
+
+    async def _is_owner(user: object) -> bool:
+        del user
+        return False
+
     cog = ReplyGeneratorCogs(
         bot=as_bot(
             fake=SimpleNamespace(
                 user=SimpleNamespace(id=bot_user_id, name="bot"),
                 get_cog=lambda name: None,
+                get_channel=lambda channel_id: None,
+                is_owner=_is_owner,
                 add_view=added_views.append,
                 added_views=added_views,
             )

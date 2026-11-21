@@ -5,12 +5,14 @@ SQLAlchemy resolves `Mapped[datetime]` at class-build time without ruff's TC rul
 `datetime` under `TYPE_CHECKING`.
 """
 
+import json
 from typing import Literal
 from datetime import datetime
 from contextlib import AbstractAsyncContextManager
+from collections.abc import Sequence
 
 from pydantic import Field, BaseModel
-from sqlalchemy import Text, Index, Integer, DateTime, ForeignKey
+from sqlalchemy import Text, Index, Integer, DateTime, ForeignKey, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -19,6 +21,7 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 
 FeedbackVote = Literal["up", "down"]
 DownvoteReasonTag = Literal["off_topic", "inaccurate", "tone", "verbose", "other"]
+FeedbackReasonTag = DownvoteReasonTag | Literal["regen"]
 ReplyRoute = Literal["QA", "IMAGE", "VIDEO"]
 ReplySurface = Literal["gateway", "ask"]
 FeedbackAction = Literal["set", "change", "clear"]
@@ -49,11 +52,22 @@ class ReplyTurnRow(Base):
     backend: Mapped[str] = mapped_column(Text, nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
+    regen_of_reply_message_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "reply_turn.reply_message_id",
+            name="fk_reply_turn_regen_of_reply_message_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    reply_message_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
 
     __table_args__ = (
         Index("ix_reply_turn_source_message_id", "source_message_id"),
         Index("ix_reply_turn_model_created_at", "model", "created_at"),
+        Index("ix_reply_turn_regen_of_reply_message_id", "regen_of_reply_message_id", unique=True),
     )
 
 
@@ -124,6 +138,55 @@ class FeedbackReasonResult(BaseModel):
     )
 
 
+class RegenChainState(BaseModel):
+    """Target turn metadata and ancestry state for one regeneration check."""
+
+    reply_message_id: int = Field(
+        ..., description="Discord message id of the reply targeted for regeneration."
+    )
+    source_message_id: int = Field(
+        ..., description="Triggering Discord source message id to re-answer."
+    )
+    channel_id: int = Field(..., description="Discord channel id where the reply lives.")
+    author_id: int = Field(..., description="Discord user id who originally asked the prompt.")
+    surface: str = Field(..., description="Surface that ran the turn (`gateway` or `ask`).")
+    route: str = Field(..., description="Pipeline route (`QA`, `IMAGE`, or `VIDEO`).")
+    effort: str = Field(..., description="Reasoning effort recorded on the reply turn.")
+    reply_message_ids: str | None = Field(
+        default=None, description="JSON-encoded list of Discord chunk message ids for this reply."
+    )
+    already_regenerated: bool = Field(
+        ..., description="Whether another `reply_turn` row already regenerates this reply."
+    )
+    chain_depth: int = Field(
+        ..., description="Number of ancestor turns before this reply in its regen chain."
+    )
+    tried_models: tuple[str, ...] = Field(
+        ..., description="Models already tried across this reply and its regen ancestors."
+    )
+
+
+def parse_reply_message_ids(raw: str | None, fallback_id: int) -> list[int]:
+    """Returns ordered, deduplicated chunk message ids decoded from `raw`, falling back to `fallback_id`."""
+    if not raw:
+        return [fallback_id]
+    try:
+        parsed = json.loads(s=raw)
+    except ValueError:
+        return [fallback_id]
+    if not isinstance(parsed, list):
+        return [fallback_id]
+    ids: list[int] = []
+    for item in parsed:
+        if isinstance(item, int) and not isinstance(item, bool) and item not in ids:
+            ids.append(item)
+    if not ids:
+        return [fallback_id]
+    if fallback_id not in ids:
+        ids.append(fallback_id)
+    return ids
+
+
 _database = SqliteBootstrap(enable_foreign_keys=True)
 
 
@@ -147,6 +210,8 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
     answer: str,
     author_name: str | None = None,
     author_display_name: str | None = None,
+    reply_message_ids: Sequence[int] | None = None,
+    regen_of_reply_message_id: int | None = None,
 ) -> None:
     """Persists one finalized reply snapshot, updating in place if the reply id already exists.
 
@@ -165,7 +230,10 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
         answer (str): Snapshot of the finalized reply text without the usage footer.
         author_name (str | None): Write-time username of the prompt author, if available.
         author_display_name (str | None): Write-time display name or guild nick of the author.
+        reply_message_ids (Sequence[int] | None): Ordered Discord chunk message ids for this reply.
+        regen_of_reply_message_id (int | None): Parent reply message id replaced by this regen turn.
     """
+    serialized_ids = json.dumps(obj=list(reply_message_ids)) if reply_message_ids else None
     async with open_session() as session, session.begin():
         await session.merge(
             instance=ReplyTurnRow(
@@ -183,8 +251,100 @@ async def record_reply_turn(  # noqa: PLR0913 -- one snapshot row's columns are 
                 backend=backend,
                 question=question,
                 answer=answer,
+                regen_of_reply_message_id=regen_of_reply_message_id,
+                reply_message_ids=serialized_ids,
             )
         )
+
+
+async def update_reply_message_ids(
+    reply_message_id: int, reply_message_ids: Sequence[int]
+) -> None:
+    """Updates `reply_message_ids` on an existing `reply_turn` row (e.g. after hosted-link follow-up)."""
+    if not reply_message_ids:
+        return
+    async with open_session() as session, session.begin():
+        turn = await session.get(entity=ReplyTurnRow, ident=reply_message_id)
+        if turn is None:
+            return
+        turn.reply_message_ids = json.dumps(obj=list(reply_message_ids))
+
+
+async def load_regen_chain_state(reply_message_id: int) -> RegenChainState | None:
+    """Loads regeneration target metadata, whether it was already regenerated, and chain ancestry."""
+    async with open_session() as session:
+        turn = await session.get(entity=ReplyTurnRow, ident=reply_message_id)
+        if turn is None:
+            return None
+        child_id = (
+            await session.execute(
+                statement=select(ReplyTurnRow.reply_message_id)
+                .where(ReplyTurnRow.regen_of_reply_message_id == reply_message_id)
+                .limit(limit=1)
+            )
+        ).scalar_one_or_none()
+        tried_models: list[str] = [turn.model]
+        seen: set[int] = {turn.reply_message_id}
+        parent_id = turn.regen_of_reply_message_id
+        chain_depth = 0
+        while parent_id is not None and parent_id not in seen:
+            seen.add(parent_id)
+            parent = await session.get(entity=ReplyTurnRow, ident=parent_id)
+            if parent is None:
+                break
+            chain_depth += 1
+            tried_models.append(parent.model)
+            parent_id = parent.regen_of_reply_message_id
+        return RegenChainState(
+            reply_message_id=turn.reply_message_id,
+            source_message_id=turn.source_message_id,
+            channel_id=turn.channel_id,
+            author_id=turn.author_id,
+            surface=turn.surface,
+            route=turn.route,
+            effort=turn.effort,
+            reply_message_ids=turn.reply_message_ids,
+            already_regenerated=child_id is not None,
+            chain_depth=chain_depth,
+            tried_models=tuple(tried_models),
+        )
+
+
+async def record_regen_feedback(
+    reply_message_id: int, user_id: int, user_name: str, user_display_name: str | None = None
+) -> None:
+    """Records implicit `reason_tag='regen'` downvote on a replaced reply without clobbering explicit downvotes.
+
+    Inserts a new `vote='down', reason_tag='regen'` row when absent, overwrites an existing
+    `vote='up'` row, and preserves any existing `vote='down'` row (and its explicit reason).
+    """
+    async with open_session() as session, session.begin():
+        turn = await session.get(entity=ReplyTurnRow, ident=reply_message_id)
+        if turn is None:
+            return
+        existing = await session.get(entity=ReplyFeedbackRow, ident=(reply_message_id, user_id))
+        now = _database_now()
+        if existing is None:
+            session.add(
+                instance=ReplyFeedbackRow(
+                    reply_message_id=reply_message_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    user_display_name=user_display_name,
+                    vote="down",
+                    reason_tag="regen",
+                    reason_text=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        elif existing.vote == "up":
+            existing.vote = "down"
+            existing.user_name = user_name
+            existing.user_display_name = user_display_name
+            existing.reason_tag = "regen"
+            existing.reason_text = None
+            existing.updated_at = now
 
 
 async def toggle_feedback_vote(

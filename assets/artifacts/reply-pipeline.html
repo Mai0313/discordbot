@@ -426,7 +426,7 @@ footer.end{
     </p>
     <div class="meta-row">
       <span><b>視角</b> 使用者端，不是模組結構</span>
-      <span><b>入口</b> @提及 / 私訊 / <code>/ask</code></span>
+      <span><b>入口</b> @提及 / 私訊 / <code>/ask</code> / 🔄 重新生成</span>
       <span><b>路線</b> QA · IMAGE · VIDEO</span>
       <span><b>對照</b> 目前 main 分支</span>
     </div>
@@ -482,12 +482,13 @@ footer.end{
 
     <figure class="map">
       <div class="map-scroll">
-        <svg viewBox="0 0 980 772" role="img" aria-label="回覆引擎流程圖。訊息進來後，附件上傳、路由分類、讀頻道歷史同時開跑；分類回來後分派到 QA、IMAGE 或 VIDEO；三條路線回到共同收尾，記憶審查與深度研究在背景另外跑。">
+        <svg viewBox="0 0 980 772" role="img" aria-label="回覆引擎流程圖。訊息進來（或從既有的 QA 回覆按 🔄 重新生成）後，附件上傳、路由分類、讀頻道歷史同時開跑；分類回來後分派到 QA、IMAGE 或 VIDEO；三條路線回到共同收尾並掛上回饋按鈕，記憶審查與深度研究在背景另外跑。">
           <defs>
             <marker id="map-ah" viewBox="0 0 8 8" refX="8" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path class="ah" d="M0,0.5 L8,4 L0,7.5 z"/></marker>
           </defs>
 
           <!-- edges -->
+          <path class="edge dash" d="M320,44 H360" marker-end="url(#map-ah)"/>
           <path class="edge" d="M640,44 H680" marker-end="url(#map-ah)"/>
           <path class="edge" d="M500,72 V104" marker-end="url(#map-ah)"/>
           <text class="lbl" x="510" y="92">要回應</text>
@@ -522,6 +523,7 @@ footer.end{
           <text class="lbl" x="12" y="596" text-anchor="middle" transform="rotate(-90 12 596)">不擋回覆</text>
 
           <!-- entry -->
+          <a class="n bg" href="#s4"><rect class="box" x="40" y="16" width="280" height="56" rx="6"/><rect class="pill" x="42" y="24" width="3" height="40" rx="1.5"/><text class="t" x="58" y="40">🔄 重新生成</text><text class="d" x="58" y="59">原發問者 · 固定 QA · 成功才刪舊</text></a>
           <a class="n" href="#s1"><rect class="box" x="360" y="16" width="280" height="56" rx="6"/><rect class="pill" x="362" y="24" width="3" height="40" rx="1.5"/><text class="t" x="378" y="40">收到訊息</text><text class="d" x="378" y="59">伺服器 @提及 · 私訊 · /ask</text></a>
           <a class="n flag" href="#s1"><rect class="box" x="680" y="16" width="280" height="56" rx="6"/><rect class="pill" x="682" y="24" width="3" height="40" rx="1.5"/><text class="t" x="698" y="40">不回應，或只回一個 ?</text><text class="d" x="698" y="59">bot 發話 · 沒有 @ · 研究佔用 · 空訊息</text></a>
 
@@ -552,7 +554,7 @@ footer.end{
           <a class="n px" href="#s7"><rect class="box" x="680" y="512" width="280" height="56" rx="6"/><rect class="pill" x="682" y="520" width="3" height="40" rx="1.5"/><text class="t" x="698" y="536">送出影片，看過再回話</text><text class="d" x="698" y="555">影片先直連上傳 Files 才看得到</text></a>
 
           <!-- end + background -->
-          <a class="n" href="#s15"><rect class="box" x="360" y="624" width="280" height="56" rx="6"/><rect class="pill" x="362" y="632" width="3" height="40" rx="1.5"/><text class="t" x="378" y="648">收尾</text><text class="d" x="378" y="667">✅ 或 ❌ · 記一筆使用紀錄</text></a>
+          <a class="n" href="#s15"><rect class="box" x="360" y="624" width="280" height="56" rx="6"/><rect class="pill" x="362" y="632" width="3" height="40" rx="1.5"/><text class="t" x="378" y="648">收尾</text><text class="d" x="378" y="667">✅ 或 ❌ · 👍👎🔄 · 記一筆使用紀錄</text></a>
           <a class="n px bg" href="#s12"><rect class="box" x="40" y="624" width="280" height="56" rx="6"/><rect class="pill" x="42" y="632" width="3" height="40" rx="1.5"/><text class="t" x="58" y="648">記憶審查與整併</text><text class="d" x="58" y="667">有記憶標記才跑</text></a>
           <a class="n dx bg" href="#s9"><rect class="box" x="40" y="700" width="280" height="56" rx="6"/><rect class="pill" x="42" y="708" width="3" height="40" rx="1.5"/><text class="t" x="58" y="724">深度研究</text><text class="d" x="58" y="743">有研究標記，另開討論串</text></a>
         </svg>
@@ -645,6 +647,7 @@ footer.end{
         <tr><td class="nowrap"><b>訊息額度</b></td><td>無上限</td><td>編輯原始回應不限次，但<strong>只能再發 5 則 follow-up</strong>。超過大約一萬二千字的答案會被截斷並註明</td></tr>
         <tr><td class="nowrap"><b>時間額度</b></td><td>無</td><td>互動 token <strong>15 分鐘</strong>後失效，之後連失敗通知都送不出去。所以 IMAGE / VIDEO 生成、QA 答案串流（重試在內）與 QA 回覆的內嵌媒體都被綁在「token 剩餘時間扣掉 60 秒」之內：生成或答案來不及就說明 Discord 視窗關了，內嵌媒體來不及就丟掉並留 ⏱️。IMAGE / VIDEO 交付後的人格回話刻意不綁，它沒有失敗通知需要留這段餘裕；VIDEO 人格回話看片用的 Files 上傳與記憶結果那行的事後編輯也沒綁</td></tr>
         <tr><td class="nowrap"><b>伺服器記憶</b></td><td>會讀也會寫（限公開頻道）</td><td>完全不碰。bot 不在頻道裡，判斷不了誰看得到，寫得進去卻讀不回來的社群記憶只會默默過期</td></tr>
+        <tr><td class="nowrap"><b>回饋與重抽按鈕</b></td><td>開啟 <code>FEEDBACK_ENABLED</code> 時附帶 👍 / 👎；QA 回覆在未達重抽上限前另附 🔄</td><td>開啟 <code>FEEDBACK_ENABLED</code> 時附帶 👍 / 👎，但不提供 🔄（沒有可重抓的來源訊息）</td></tr>
       </tbody>
     </table></div>
   </section>
@@ -776,7 +779,7 @@ footer.end{
       <div class="branch-col">
         <header><b>預設後端</b><span class="chip proxy">Proxy</span></header>
         <div class="bc-body">
-          <p>全天都是 <code>gemini-4-carbon</code>，用路由給的強度，開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
+          <p>全天都是 <code>gemini-4-neon</code>（開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時則從候選池 <code>gemini-4-carbon</code> / <code>gemini-4-neon</code> / <code>gemini-4-hydrogen</code> 均勻抽樣），用路由給的強度，開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
           <p class="mut">這一輪不掛任何自訂 function tool，這是刻意的：一旦掛上，Gemini 那一輪會變成「呼叫工具就結束、正文空白」，接地引用歸零。</p>
         </div>
       </div>
@@ -796,6 +799,13 @@ footer.end{
       <li><strong>收尾</strong>：抽出所有內嵌標記 → 寫最終文字與用量頁尾 → 超過 2000 字就切成 follow-up → 然後才去生成附件媒體。切點依序找空行、換行、空格；都找不到才硬切，硬切也不會切斷提及或 emoji。放不下的程式碼區塊會在切點收起，下一則用同一個語言標籤重開。</li>
       <li><strong>來源被刪</strong>：回覆改成不帶父訊息直接送進頻道，IMAGE / VIDEO 生成好的圖或片也一樣；回覆自己被刪則安靜結束，不會重發。</li>
     </ul>
+
+    <h3>盲測抽樣與 🔄 重新生成</h3>
+    <div class="kv">
+      <dt>盲測遮蔽</dt><dd>開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時，每一輪 QA 會從候選清單均勻抽一個模型，並將系統提示詞與頁尾可見的模型名稱改寫為 <code>blind-test-model</code>（同時隱藏思考強度）；計費、日誌與 <code>reply.db</code> 快照仍記錄真實回答模型與強度。</dd>
+      <dt>🔄 按鈕範圍</dt><dd>僅在開啟 <code>FEEDBACK_ENABLED</code> 的伺服器與私訊 QA 回覆上出現（<code>/ask</code>、IMAGE、VIDEO 一律不提供），且只顯示到達到重抽上限為止：一般模式最多重抽 1 次；盲測模式最多重抽 <code>候選數 - 1</code> 次，每一輪會排除同條重抽鏈上已抽過的模型。</dd>
+      <dt>重抽與刪舊順序</dt><dd>僅限原發問者（或 bot 擁有者）點擊，同一則回覆以鎖序列化防連點。重抽時會重取原始發問訊息、保留原思考強度並強制走 QA 路線（仍執行分類以保留 YouTube、連結貼文與第三人記憶判定）。只有在新回覆順利落地並寫入 <code>reply.db</code> 後，才會對舊回合補記一筆 <code>regen</code> 隱含倒讚（若使用者原本已點過明確 👎 則保留原原因不覆寫）並由後往前刪除舊分段訊息；任何失敗都會保留舊回覆與評分原狀。</dd>
+    </div>
 
     <h3>唯一有 bot 端重試的呼叫</h3>
     <div class="note warn">
@@ -1078,7 +1088,7 @@ footer.end{
     <h3>寫：模型在回覆裡標，背景再審一次</h3>
     <ol class="flow">
       <li><span class="st">回覆落地時先掛一行「正在整理記憶⋯」</span><span class="sd">只有這一輪真的下了記憶標記才會出現，而且是<strong>拼進本來就要寫的那次編輯</strong>裡，不多花一次 Discord 編輯。</span></li>
-      <li class="px"><span class="st">背景審查（不擋回覆，失敗完全靜音）</span><span class="sd"><code>gemini-4-carbon</code>，走 proxy。它拿標記去對照逐字稿，並補上結構化欄位（類別、耐久度、分享範圍、正規化鍵）。之後還有一整排程式端的閘門會擋掉隨口提到的、假設性的、bot 自己建議的、關於別人的、信心不足的；重複的照樣記下，讓舊事實不過期。審查失敗就保留原狀，下次重啟再試一次，再失敗就放棄。</span></li>
+      <li class="px"><span class="st">背景審查（不擋回覆，失敗完全靜音）</span><span class="sd"><code>gemini-4-neon</code>，走 proxy。它拿標記去對照逐字稿，並補上結構化欄位（類別、耐久度、分享範圍、正規化鍵）。之後還有一整排程式端的閘門會擋掉隨口提到的、假設性的、bot 自己建議的、關於別人的、信心不足的；重複的照樣記下，讓舊事實不過期。審查失敗就保留原狀，下次重啟再試一次，再失敗就放棄。</span></li>
       <li><span class="st">把結果換回那一行</span><span class="sd">「✏️ 記下了 ⋯」、「🩹 不再記得 ⋯」，或者「✏️ 這次沒有記下什麼」。<strong>一定會有一個答案</strong>，因為畫面上那句承諾必須被收回。私下範圍的觀察只報數量不報內容。</span></li>
       <li><span class="st">攢夠了才整併成事實檔</span><span class="sd">整併是另一支呼叫，按隔間扇出，每一支<strong>只看得到路由到它那個隔間的證據</strong>。資訊只會從跨伺服器流向公會，不會反向。一個隔間的事實文字超過門檻時，遺忘處理完之後再用另一支只帶事實的呼叫把它壓縮。所有記憶呼叫都用 <code>medium</code>：在 <code>high</code> 時壓縮會把輸出額度全部花在推理上，<code>low</code> 壓出來的批次則多半被當時（事實數的一半）的淨刪除上限擋下。這個上限現在放寬到九成，只擋幾乎清空整個隔間的批次。</span></li>
       <li><span class="st">遺忘是證據，不是刪除</span><span class="sd"><code>forget-memory</code> 寫的是一筆「遺忘請求」，整併時交給一支只准刪除的呼叫，只能刪、不能改寫。所以回覆路徑本身<strong>沒有長出任何刪除能力</strong>，事實 id 也從來不會出現在答案提示詞裡。</span></li>
@@ -1104,7 +1114,7 @@ footer.end{
       <thead><tr><th>功能</th><th>觸發時機</th><th>路徑</th><th>SDK / API</th><th>模型</th></tr></thead>
       <tbody>
         <tr><td><b>路由分類</b>（含思考強度、第三人記憶）</td><td class="mut">每一輪</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
-        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses stream</td><td class="m">gemini-4-carbon<br>· 路由給的強度</td></tr>
+        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設（含 🔄 重新生成）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses stream</td><td class="m">gemini-4-neon（盲測抽樣碳/氖/氫）<br>· 路由給的強度</td></tr>
         <tr><td><b>QA 答案（看 YouTube）</b></td><td class="mut">四道閘全過</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions stream</td><td class="m">同上</td></tr>
         <tr><td><b>提示詞導演</b></td><td class="mut">IMAGE / VIDEO 生成前（編輯影片時跳過）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses + 搜尋工具</td><td class="m">gemini-4-hydrogen · low</td></tr>
         <tr><td><b>圖片生成 / 編輯</b></td><td class="mut">IMAGE 路線、<code>generate-image</code> 標記</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · images.generate / edit</td><td class="m">gemini-nano-banana-2.1</td></tr>
@@ -1116,8 +1126,8 @@ footer.end{
         <tr><td><b>研究討論串標題</b></td><td class="mut">研究啟動時</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
         <tr><td><b>附件上傳</b></td><td class="mut">Gemini 答案模型 ＋ 開關開著 ＋ 有 <code>GEMINI_API_KEY</code>（否則內嵌經 proxy 送）</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
         <tr><td><b>連結媒體上傳</b></td><td class="mut">被選中的來源抓到媒體時</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
-        <tr><td><b>記憶審查 / 整併</b></td><td class="mut">下了記憶標記之後（背景）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-carbon · medium</td></tr>
-        <tr><td><b>記憶跟上進度</b>（提出筆記，再走同一個審查）</td><td class="mut"><code>/memory server catchup</code></td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-carbon · medium</td></tr>
+        <tr><td><b>記憶審查 / 整併</b></td><td class="mut">下了記憶標記之後（背景）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-neon · medium</td></tr>
+        <tr><td><b>記憶跟上進度</b>（提出筆記，再走同一個審查）</td><td class="mut"><code>/memory server catchup</code></td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-neon · medium</td></tr>
       </tbody>
     </table></div>
 
@@ -1143,6 +1153,8 @@ footer.end{
         <tr><td class="m">DOUYIN_VIDEO_ENABLED</td><td>貼文說明文字照樣當上下文，但會明白告訴模型它沒看到影片</td><td><b>是</b></td></tr>
         <tr><td class="m">BILIBILI_VIDEO_ENABLED</td><td>標題與簡介照樣帶，同樣明說沒看過片</td><td><b>是</b></td></tr>
         <tr><td class="m">DEEP_RESEARCH_ENABLED</td><td>不提供標記也不能用指令；重啟時<strong>不接回</strong>進行中的研究，那些列留著等下次</td><td><b>是</b></td></tr>
+        <tr><td class="m">FEEDBACK_ENABLED</td><td>完成的回覆不再附帶 👍 / 👎 / 🔄 按鈕與評分小字，也不寫入 <code>reply.db</code> 回合快照，並停用 🔄 重新生成</td><td>否</td></tr>
+        <tr><td class="m">SLOW_MODEL_BLIND_TEST_ENABLED</td><td>預設關閉。開啟時 QA 從候選模型均勻抽樣、在提示詞與頁尾改以 <code>blind-test-model</code> 遮蔽模型與強度，並允許多輪不重複模型重抽</td><td>否</td></tr>
         <tr><td class="m">IMAGE_REFINE_PROMPT_ENABLED</td><td>IMAGE 路線跳過導演，原始請求直接送給圖像模型</td><td>否</td></tr>
         <tr><td class="m">VIDEO_REFINE_PROMPT_ENABLED</td><td>同上，對 VIDEO 路線</td><td>否</td></tr>
         <tr><td class="m">FILE_API_ENABLED</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
@@ -1184,7 +1196,8 @@ footer.end{
 
     <h4>回覆底下的小字</h4>
     <div class="kv">
-      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。<span class="mut">注意重試過的那一輪會少報：用量只在完成事件送出，死掉的那次上游照樣計費但回報不了。</span></dd>
+      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本；開啟 <code>SLOW_MODEL_BLIND_TEST_ENABLED</code> 時模型與強度會被遮蔽成 <code>blind-test-model</code>（token 數與成本照常顯示）。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。<span class="mut">注意重試過的那一輪會少報：用量只在完成事件送出，死掉的那次上游照樣計費但回報不了。</span></dd>
+      <dt>回饋按鈕與評分小字</dt><dd>開啟 <code>FEEDBACK_ENABLED</code> 時，最終回覆（或長回覆最後一段）底下會附帶 <code>-# 評分將用於架構改進⋯</code> 小字與常駐按鈕：👍 / 👎 供任何人評分（再按取消、切換覆寫，👎 另提供僅本人可見的原因按鈕、自由填寫與「取消評分」）；伺服器與私訊的 QA 回覆在未達重抽上限前另附 🔄，供原發問者就地重新生成。</dd>
       <dt>📖 讀了</dt><dd>這則回覆讀了誰的記憶。超過兩個人會收斂成「等 N 人」。</dd>
       <dt>✏️ 記下了 / 🩹 不再記得</dt><dd>背景審查完才會出現，換掉那句「正在整理記憶⋯」。一則回覆只會有一條記憶結果，而且這行不會進入之後的對話歷史。</dd>
       <dt>媒體過大，改用連結</dt><dd>附件超過該處的上傳上限，改成託管網址。放在用量頁尾<strong>之前</strong>，否則之後的歷史渲染會把頁尾當成回覆內容的一部分。</dd>

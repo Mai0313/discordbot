@@ -205,12 +205,23 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orche
         allow_research: bool = False,
         yt_url: str | None = None,
         question: str = "",
-    ) -> None:
+        regen_count: int = 0,
+        regen_of_reply_message_id: int | None = None,
+        excluded_models: frozenset[str] = frozenset(),
+    ) -> int | None:
         """Records slow message handler dispatch."""
-        del yt_url, allow_research, question
+        del (
+            yt_url,
+            allow_research,
+            question,
+            regen_count,
+            regen_of_reply_message_id,
+            excluded_models,
+        )
         calls.append("stream_answer")
         effort_flags.append(effort)
         contexts.append(context)
+        return None
 
     monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)

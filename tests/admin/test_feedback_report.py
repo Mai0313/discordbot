@@ -191,7 +191,7 @@ def test_feedback_report_no_wrap_and_non_terminal_widening(
     """Key summary/detail columns disable wrapping and non-terminal consoles widen to at least 160."""
     table = _render_model_summary(turns=[], feedback=[])
     no_wrap_headers = {col.header: col.no_wrap for col in table.columns}
-    for header in ("Route", "Model", "Turns", "👍", "👎", "Appr"):
+    for header in ("Route", "Model", "Turns", "👍", "👎", "Appr", "Regen"):
         assert no_wrap_headers[header] is True
 
     db_path = _copy_reply_db(tmp_path=tmp_path, migrated_databases=migrated_databases)
@@ -397,3 +397,137 @@ def test_format_identity_handles_all_combinations() -> None:
     assert _format_identity(user_id=1, username="alice", display_name=None) == "alice (1)"
     assert _format_identity(user_id=1, username=None, display_name="Alice") == "Alice (1)"
     assert _format_identity(user_id=1, username=None, display_name=None) == "1"
+
+
+def _seed_regen_db(db_path: Path) -> None:
+    """Seeds regen chains covering explicit win, soft accept, both failed, and prior explicit downvote."""
+    conn = sqlite3.connect(database=db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO reply_turn (
+                reply_message_id, source_message_id, guild_id, channel_id, author_id,
+                author_name, author_display_name, surface, route, model, effort, backend,
+                question, answer, regen_of_reply_message_id, created_at
+            ) VALUES
+                -- Chain 1: carbon (explicit down before regen) -> neon (explicit up => Explicit Win)
+                (301, 3001, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-carbon',
+                 'high', 'responses', 'Q1', 'A1 carbon', NULL, '2026-11-20T10:00:00+08:00'),
+                (302, 3001, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'high', 'responses', 'Q1', 'A2 neon', 301, '2026-11-20T10:00:30+08:00'),
+                -- Chain 2: carbon (implicit regen) -> neon (no votes => Soft Accept)
+                (303, 3002, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-carbon',
+                 'medium', 'responses', 'Q2', 'A1 carbon', NULL, '2026-11-20T11:00:00+08:00'),
+                (304, 3002, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'medium', 'responses', 'Q2', 'A2 neon', 303, '2026-11-20T11:00:20+08:00'),
+                -- Chain 3: carbon -> hydrogen (further regen child => Both Failed) -> neon (bystander down only)
+                (305, 3003, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-carbon',
+                 'medium', 'responses', 'Q3', 'A1 carbon', NULL, '2026-11-21T12:00:00+08:00'),
+                (306, 3003, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-hydrogen',
+                 'medium', 'responses', 'Q3', 'A2 hydrogen', 305, '2026-11-21T12:00:20+08:00'),
+                (307, 3003, 1, 10, 500, 'mai9999', '麥麥', 'gateway', 'QA', 'gemini-4-neon',
+                 'medium', 'responses', 'Q3', 'A3 neon', 306, '2026-11-21T12:00:40+08:00')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO reply_feedback (
+                reply_message_id, user_id, user_name, user_display_name, vote,
+                reason_tag, reason_text, created_at, updated_at
+            ) VALUES
+                (301, 500, 'mai9999', '麥麥', 'down', 'inaccurate', NULL,
+                 '2026-11-20T10:00:10+08:00', '2026-11-20T10:00:10+08:00'),
+                (302, 500, 'mai9999', '麥麥', 'up', NULL, NULL,
+                 '2026-11-20T10:00:40+08:00', '2026-11-20T10:00:40+08:00'),
+                (303, 500, 'mai9999', '麥麥', 'down', 'regen', NULL,
+                 '2026-11-20T11:00:21+08:00', '2026-11-20T11:00:21+08:00'),
+                (305, 500, 'mai9999', '麥麥', 'down', 'regen', NULL,
+                 '2026-11-21T12:00:21+08:00', '2026-11-21T12:00:21+08:00'),
+                (306, 500, 'mai9999', '麥麥', 'down', 'regen', NULL,
+                 '2026-11-21T12:00:41+08:00', '2026-11-21T12:00:41+08:00'),
+                (307, 777, 'bystander', NULL, 'down', 'verbose', NULL,
+                 '2026-11-21T12:01:00+08:00', '2026-11-21T12:01:00+08:00')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_feedback_report_separates_regen_from_explicit_votes_and_renders_pairwise(
+    tmp_path: Path, migrated_databases: dict[str, Path]
+) -> None:
+    """Explicit votes exclude `reason_tag='regen'`, `Regen` counts structurally, and `Pairwise` respects filters."""
+    # Without any regen edges, the Pairwise table is omitted.
+    plain_db = _copy_reply_db(tmp_path=tmp_path, migrated_databases=migrated_databases)
+    plain_out = _capture(argv=["--db", str(plain_db), "--messages-db", str(tmp_path / "none.db")])
+    assert "Pairwise" not in plain_out
+    assert "regens" in plain_out
+    assert "0 (0.0%)" in plain_out
+
+    regen_db = tmp_path / "regen_reply.db"
+    regen_db.write_bytes(migrated_databases["reply"].read_bytes())
+    _seed_regen_db(db_path=regen_db)
+
+    full = _capture(argv=["--db", str(regen_db), "--messages-db", str(tmp_path / "none.db")])
+    # Overview: 7 turns, 3 explicit votes (1 up, 2 explicit down; 3 regen rows excluded), 4 regens (57.1%).
+    assert "3  (👍 1 / 👎 2, 2 voter(s))" in full
+    assert "4 (57.1%)" in full
+    # By Model: carbon has 3 turns, 1 explicit down (301), 3 regens (100.0%), and reasons exclude 'regen'.
+    assert "3 (100.0%)" in full
+    assert "資訊錯誤x1" in full
+    assert "重新生成x" not in full
+    # Pairwise table present with all 3 model pairs:
+    # carbon -> neon: 2 pairs (1 Explicit Win, 1 Soft Accept, 0 Both Failed, 100.0%)
+    # carbon -> hydrogen: 1 pair (0, 0, 1 Both Failed, 0.0%)
+    # hydrogen -> neon: 1 pair (bystander down => Both Failed, 0.0%)
+    assert "Pairwise" in full
+    assert "Explicit Win" in full
+    assert "Soft Accept" in full
+    assert "Both Failed" in full
+    assert "Accept Rate" in full
+    assert "100.0%" in full
+    # Recent Feedback renders reason_tag='regen' as 重新生成.
+    assert "重新生成" in full
+
+    # --asker-only drops bystander's downvote on 307, turning hydrogen -> neon into Soft Accept (100.0%).
+    asker_only = _capture(
+        argv=[
+            "--db",
+            str(regen_db),
+            "--messages-db",
+            str(tmp_path / "none.db"),
+            "--asker-only",
+            "--since",
+            "2026-11-21",
+        ]
+    )
+    assert "gemini-4-hydrogen" in asker_only
+    # On 2026-11-21, hydrogen -> neon has 1 pair with Soft Accept => 100.0%.
+    assert "100.0%" in asker_only
+
+    # --model keeps structural Regen count and cross-model Pairwise rows touching that model.
+    carbon_only = _capture(
+        argv=[
+            "--db",
+            str(regen_db),
+            "--messages-db",
+            str(tmp_path / "none.db"),
+            "--model",
+            "gemini-4-carbon",
+        ]
+    )
+    assert "3 (100.0%)" in carbon_only
+    assert "Pairwise" in carbon_only
+    assert "gemini-4-neon" in carbon_only
+    assert "gemini-4-hydrogen" in carbon_only
+
+    # --show displays regen_of / regenerated_to links and renders 'regen' reason as 重新生成.
+    show_middle = _capture(
+        argv=["--db", str(regen_db), "--messages-db", str(tmp_path / "none.db"), "--show", "306"]
+    )
+    assert "regen_of" in show_middle
+    assert "305" in show_middle
+    assert "regenerated_to" in show_middle
+    assert "307" in show_middle
+    assert "重新生成" in show_middle

@@ -48,9 +48,10 @@ flowchart TD
     V1 --> V2["Render or edit the clip"]
     V2 --> V3["Send it, watch it, then reply"]
 
-    Q2 & I2 & V3 --> OUT(["Reply on screen"])
+    Q2 & I2 & V3 --> OUT(["Reply on screen<br/>👍 · 👎 · 🔄"])
     Q2 -.->|"memory marker"| MM["Background: memory review"]
     Q2 -.->|"research marker"| DR["Deep research thread"]
+    OUT -.->|"🔄 regen (QA)"| U
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
@@ -58,7 +59,7 @@ flowchart TD
     class UP,LF,YT,V2,DR direct
 ```
 
-Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly. Attachment uploads and channel history start alongside the route call and are waited on only when the reply is written.
+Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly. Attachment uploads and channel history start alongside the route call and are waited on only when the reply is written. Finished replies carry feedback buttons (`👍`/`👎`), and gateway/DM QA replies also carry `🔄` for the original asker to regenerate in place (replacing the old reply once the new one lands; optional blind-test mode samples across QA candidates and masks the visible model label).
 
 ## Features
 
