@@ -884,3 +884,56 @@ def test_a_fact_dated_by_evidence_keeps_an_earlier_creation_date() -> None:
     [fact] = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert dated == 1
     assert (fact.created, fact.last_confirmed) == (STAMPED_AT, datetime(2026, 8, 5, tzinfo=UTC))
+
+
+def test_date_facts_from_evidence_skips_bad_stamps_and_normalizes_naive_utc() -> None:
+    """Unheadered tails, legacy malformed stamps, and naive timestamps must not crash dating."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(keys=("preference.test",)))
+    evidence = "\n\n".join([
+        "### stable_preference\n- normalized_key: preference.test\n- summary_zh: 無時間戳",
+        "## 2026-07-01T00:00:00 | bad\n### stable_preference\n- normalized_key: preference.test",
+        _entry("2026-08-10T12:00:00", _observation(summary="喜歡簡短")),
+    ])
+
+    dated = date_facts_from_evidence(
+        scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT, raw_text=evidence
+    )
+
+    [fact] = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert dated == 1
+    assert fact.last_confirmed == datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+
+
+def test_dropped_delta_warnings_include_scope_and_compartment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every dropped-delta warning carries `scope` and `compartment` for log grepping."""
+    warned = capture_logs(monkeypatch=monkeypatch, level="warn")
+    apply_deltas(
+        scope=USER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="user",
+        deltas=(make_delta(action="create"),),
+        owner=_OWNER,
+        allow_mass_delete=True,
+        deletes_only=True,
+    )
+    apply_deltas(
+        scope=SERVER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="server",
+        deltas=(
+            make_delta(section="preference"),
+            make_delta(section="fact", summary="", text=""),
+            _alias_delta(subject_id=""),
+        ),
+        owner=SERVER_OWNER,
+        allow_mass_delete=False,
+    )
+
+    assert len(warned) == 4
+    assert all(
+        fields.get("scope") in {USER_SCOPE, SERVER_SCOPE}
+        and fields.get("compartment") == GLOBAL_COMPARTMENT
+        for _message, fields in warned
+    )

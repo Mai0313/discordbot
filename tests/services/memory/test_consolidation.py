@@ -1028,3 +1028,40 @@ async def test_a_consolidation_dates_what_it_writes_by_when_it_ran(
     [fact] = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert fact.created >= now
     assert fact.last_confirmed >= now
+
+
+async def test_update_tone_note_timeout_keeps_raw_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tone-update call hanging past the timeout aborts cleanly without retiring `raw.md`."""
+    monkeypatch.setattr(consolidation, "MEMORY_CONSOLIDATE_TIMEOUT_SECONDS", 0.1)
+    _stage_raw(_entry("2026-09-01T00:00:00+00:00", _PET))
+    writer, fake_client = _writer()
+    stage = _consolidation_stage(calls=[])
+
+    async def slow_tone(body: str, text_format: type[BaseModel]) -> BaseModel | None:
+        if "<tone_evidence>" in body:
+            await asyncio.sleep(5)
+        return await stage(body=body, text_format=text_format)
+
+    fake_client.responses.answer = slow_tone
+    await _consolidate_forced(writer=writer)
+
+    assert "fact.pet" in read_raw_entries(scope=USER_SCOPE)
+    assert read_detail_tail(scope=USER_SCOPE, max_chars=100_000) == ""
+
+
+def test_split_after_uses_last_duplicate_boundary() -> None:
+    """Two identical forgets sharing a timestamp both retire instead of leaving a duplicate behind."""
+    duplicate_forget = (
+        "## 2026-09-02T00:00:00+00:00\n"
+        "### forget_request\n- text: 忘記台中\n\n"
+        "### forget_request\n- text: 忘記台中"
+    )
+    later = _entry("2026-09-03T00:00:00+00:00", _CITY)
+    raw = "\n\n".join([_entry("2026-09-01T00:00:00+00:00", _PET), duplicate_forget, later])
+    boundary = ("2026-09-02T00:00:00+00:00", "### forget_request\n- text: 忘記台中")
+
+    retired, remaining = consolidation._split_after(raw_text=raw, boundary=boundary)
+
+    assert retired.count("忘記台中") == 2
+    assert "忘記台中" not in remaining
+    assert "fact.city" in remaining

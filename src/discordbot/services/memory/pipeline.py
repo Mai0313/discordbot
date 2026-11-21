@@ -20,6 +20,7 @@ from discordbot.services.memory import database as memory_db
 from discordbot.services.memory.store import (
     flavor_of,
     scope_lock,
+    trim_detail,
     mark_cleared,
     cleared_since,
     append_raw_entry,
@@ -298,6 +299,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
         forget_text = render_forget_requests(notes=filing, source=source)
         if forget_text and not cleared_since(scope=scope, started_at=turn.captured_at):
             append_raw_entry(scope=scope, entry_text=forget_text)
+            await trim_detail(scope=scope, started_at=turn.captured_at)
         forget_notes += filing
         remember_notes += remember
         if not remember or not reviewed:
@@ -326,6 +328,7 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
                     observations=draft.observations, source=source
                 ),
             )
+            await trim_detail(scope=scope, started_at=turn.captured_at)
             kept.extend(draft.observations)
     if not reviewed and turn.retry:
         # Close the row on second failure so restarts do not loop on a permanent refusal.

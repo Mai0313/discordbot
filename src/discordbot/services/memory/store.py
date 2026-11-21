@@ -10,7 +10,9 @@ Server scopes use only `global/`. Per-scope files sit alongside compartments: `r
 phase-1 entries), `detail.md` (append-only cold evidence trimmed to a byte cap, losing only
 forget-released entries), and `tone.md` (per-user tone note).
 
-Store IO is synchronous. `read_memory_document` caches rendered documents by `(scope,
+Store IO is synchronous except `trim_detail` and `rewrite_evidence`, which offload megabyte
+`detail.md` parsing to a worker thread and re-check `cleared_since` right before writing.
+`read_memory_document` caches rendered documents by `(scope,
 compartments, flavor, max_chars)` stamped with a per-scope write generation and UTC day (for date
 TTL filtering). Out-of-process edits while the bot runs are unsupported.
 """
@@ -319,6 +321,7 @@ def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
                 compartment=compartment,
                 filename=path.name,
                 error_type=type(error).__name__,
+                _exc_info=error,
             )
             continue
         if not text:
@@ -553,7 +556,8 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
 def append_detail(scope: str, text: str) -> None:
     """Appends consumed or evicted raw evidence to `scope`'s cold-tier detail file.
 
-    Trims the oldest entries once the file exceeds `DETAIL_FILE_MAX_BYTES`.
+    Async callers follow up with `await trim_detail(...)` to enforce `DETAIL_FILE_MAX_BYTES` off
+    the event loop.
 
     Args:
         scope (str): Memory scope key.
@@ -568,13 +572,13 @@ def append_detail(scope: str, text: str) -> None:
         if handle.tell() > 0:
             handle.write("\n")
         handle.write(block + "\n")
-    if detail_path.stat().st_size > DETAIL_FILE_MAX_BYTES:
-        _trim_detail(path=detail_path)
 
 
-def _trim_detail(path: Path) -> None:
-    """Atomically drops oldest entries from `path` down to `DETAIL_FILE_TRIM_TARGET_BYTES`."""
+def _trimmed_detail_text(path: Path) -> str | None:
+    """Returns `path` trimmed down to `DETAIL_FILE_TRIM_TARGET_BYTES`, or None when empty."""
     entries = split_raw_entries(text=_read_text(path=path))
+    if not entries:
+        return None
     # Track byte total incrementally to avoid O(n^2) re-joins on megabyte files.
     sizes = [len(entry.encode("utf-8")) for entry in entries]
     total = sum(sizes) + 2 * max(len(entries) - 1, 0)
@@ -583,21 +587,60 @@ def _trim_detail(path: Path) -> None:
         # Dropping an entry also drops one "\n\n" separator (2 bytes).
         total -= sizes[start] + 2
         start += 1
-    _replace_file(path=path, text="\n\n".join(entries[start:]) + "\n")
+    return "\n\n".join(entries[start:]) + "\n"
 
 
-def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
+async def trim_detail(scope: str, started_at: float) -> None:
+    """Drops oldest entries from `detail.md` down to `DETAIL_FILE_TRIM_TARGET_BYTES` when oversized.
+
+    Offloads reading and splitting the megabyte file off the event loop, then re-checks
+    `cleared_since` right before atomically replacing it.
+
+    Args:
+        scope (str): Memory scope key.
+        started_at (float): `time.monotonic()` timestamp for `cleared_since` checks.
+    """
+    if detail_file_bytes(scope=scope) <= DETAIL_FILE_MAX_BYTES:
+        return
+    detail_path = _detail_path(scope=scope)
+    trimmed = await asyncio.to_thread(_trimmed_detail_text, path=detail_path)
+    if trimmed is None or cleared_since(scope=scope, started_at=started_at):
+        return
+    _replace_file(path=detail_path, text=trimmed)
+
+
+def _transform_evidence_files(
+    paths: tuple[Path, Path], edit: Callable[[str], str]
+) -> list[tuple[Path, str]]:
+    """Reads and applies `edit` to each file, returning only changed `(path, text)` pairs."""
+    changed: list[tuple[Path, str]] = []
+    for path in paths:
+        text = _read_text(path=path)
+        edited = edit(text)
+        if edited != text:
+            changed.append((path, edited))
+    return changed
+
+
+async def rewrite_evidence(scope: str, edit: Callable[[str], str], started_at: float) -> None:
     """Passes `raw.md` and `detail.md` through `edit`, atomically replacing each file it changes.
+
+    Offloads reading and transforming both files so megabyte `detail.md` parses do not block
+    the event loop, then re-checks `cleared_since` right before writing.
 
     Args:
         scope (str): Memory scope key.
         edit (Callable[[str], str]): Pure transformation over raw or detail file text.
+        started_at (float): `time.monotonic()` timestamp for `cleared_since` checks.
     """
-    for path in (_raw_path(scope=scope), _detail_path(scope=scope)):
-        text = _read_text(path=path)
-        edited = edit(text)
-        if edited == text:
-            continue
+    changed = await asyncio.to_thread(
+        _transform_evidence_files,
+        paths=(_raw_path(scope=scope), _detail_path(scope=scope)),
+        edit=edit,
+    )
+    if not changed or cleared_since(scope=scope, started_at=started_at):
+        return
+    for path, edited in changed:
         _replace_file(path=path, text=edited + "\n")
 
 
@@ -657,12 +700,13 @@ def count_raw_entries(scope: str) -> int:
 
 
 def raw_file_bytes(scope: str) -> int:
-    """Returns `scope`'s `raw.md` size in bytes, or `0` when missing.
+    """Returns `scope`'s `raw.md` size in bytes via `stat`, or `0` when missing.
 
     Args:
         scope (str): Memory scope key.
     """
-    return len(_read_text(path=_raw_path(scope=scope)).encode("utf-8"))
+    path = _raw_path(scope=scope)
+    return path.stat().st_size if path.is_file() else 0
 
 
 def detail_file_bytes(scope: str) -> int:
