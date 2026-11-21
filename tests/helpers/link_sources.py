@@ -27,7 +27,7 @@ from discordbot.typings.timeouts import (
     LINK_MEDIA_TIMEOUT_SECONDS,
     LINK_MEDIA_DEGRADE_MARGIN_SECONDS,
 )
-from discordbot.utils.expansion_cog import ConversationExpansionCog
+from discordbot.utils.expansion_cog import VideoTooLargeError, ConversationExpansionCog
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.services.platforms.base import PlatformDownloader, PlatformConversation
 from discordbot.services.platforms.douyin import DouyinDownload, DouyinMetadata
@@ -281,6 +281,48 @@ def serve_card_images(
 
     monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_image", fetch)
     return asked
+
+
+def serve_card_videos(
+    monkeypatch: pytest.MonkeyPatch,
+    refused: frozenset[str] = frozenset(),
+    oversize: frozenset[str] = frozenset(),
+    size: int = 40,
+    sizes: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Serves every expansion target video as `size` bytes of MP4 unless refused or oversize.
+
+    The bytes begin with the URL itself, padded or cut to the target size, so a test can tell
+    which upload came from which video URL. Also enforces `max_bytes` so tests see the real
+    oversize fallback when `size > max_bytes`.
+
+    Returns:
+        Every download call recorded as `{url, headers, timeout, max_bytes, filepath}`.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def fetch(
+        url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int
+    ) -> Path:
+        """Writes a stub MP4 into `filepath`, or raises on refused/oversize."""
+        calls.append({
+            "url": url,
+            "headers": dict(headers),
+            "timeout": timeout,
+            "max_bytes": max_bytes,
+            "filepath": filepath,
+        })
+        if url in refused:
+            raise requests.ConnectionError(f"refused: {url}")
+        target_size = (sizes or {}).get(url, size)
+        if url in oversize or target_size > max_bytes:
+            raise VideoTooLargeError(f"{url} exceeds {max_bytes} bytes")
+        payload = url.encode().ljust(target_size, b"\0")[:target_size]
+        filepath.write_bytes(payload)
+        return filepath
+
+    monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_video", fetch)
+    return calls
 
 
 def hosting_off_planner() -> MediaDeliveryPlanner:

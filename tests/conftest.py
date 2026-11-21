@@ -326,6 +326,25 @@ def card_images_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def card_videos_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fails every expansion card video download, so a card falls back to its video link.
+
+    Autouse because video-downloading conversation cogs fetch `video_urls` before delivery,
+    which would otherwise reach past loopback; a test about video delivery stubs
+    `fetch_card_video` itself.
+    """
+
+    def unreachable(
+        url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int
+    ) -> Path:
+        """Refuses the download as an unreachable CDN does."""
+        del filepath, headers, timeout, max_bytes
+        raise requests.ConnectionError(f"card video downloads are refused in tests: {url}")
+
+    monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_video", unreachable)
+
+
+@pytest.fixture(autouse=True)
 def cleanup_store_isolated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migrated_databases: dict[str, Path]
 ) -> None:
