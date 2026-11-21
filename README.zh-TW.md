@@ -48,9 +48,10 @@ flowchart TD
     V1 --> V2["生成或編輯影片"]
     V2 --> V3["先送出，看過再回覆"]
 
-    Q2 & I2 & V3 --> OUT(["回覆上畫面"])
+    Q2 & I2 & V3 --> OUT(["回覆上畫面<br/>👍 · 👎 · 🔄"])
     Q2 -.->|"記憶標記"| MM["背景：整理記憶"]
     Q2 -.->|"研究標記"| DR["深度研究討論串"]
+    OUT -.->|"🔄 重新生成 (QA)"| U
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
@@ -58,7 +59,7 @@ flowchart TD
     class UP,LF,YT,V2,DR direct
 ```
 
-藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google。附件上傳和頻道歷史跟路由同時開跑，等到寫回覆時才等它們。
+藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google。附件上傳和頻道歷史跟路由同時開跑，等到寫回覆時才等它們。完成的回覆會附帶回饋按鈕（`👍`/`👎`），伺服器與私訊的 QA 回覆還會附帶 `🔄` 供原發問者就地重新生成（新回覆落地後才刪除舊回覆；開啟盲測模式時會在候選模型間抽樣並遮蔽頁尾模型名）。
 
 ## 功能
 

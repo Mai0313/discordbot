@@ -48,9 +48,10 @@ flowchart TD
     V1 --> V2["生成或编辑视频"]
     V2 --> V3["先发出，看过再回复"]
 
-    Q2 & I2 & V3 --> OUT(["回复上屏"])
+    Q2 & I2 & V3 --> OUT(["回复上屏<br/>👍 · 👎 · 🔄"])
     Q2 -.->|"记忆标记"| MM["后台：整理记忆"]
     Q2 -.->|"研究标记"| DR["深度研究讨论串"]
+    OUT -.->|"🔄 重新生成 (QA)"| U
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
@@ -58,7 +59,7 @@ flowchart TD
     class UP,LF,YT,V2,DR direct
 ```
 
-蓝色的步骤走 OpenAI-compatible proxy，橙色的直接调用 Google。附件上传和频道历史与路由同时开跑，等到写回复时才等它们。
+蓝色的步骤走 OpenAI-compatible proxy，橙色的直接调用 Google。附件上传和频道历史与路由同时开跑，等到写回复时才等它们。完成的回复会附带反馈按钮（`👍`/`👎`），服务器与 DM 的 QA 回复还会附带 `🔄` 供原提问者就地重新生成（新回复送达后才删除旧回复；开启盲测模式时会在候选模型间抽样并遮蔽页尾模型名）。
 
 ## 功能
 
