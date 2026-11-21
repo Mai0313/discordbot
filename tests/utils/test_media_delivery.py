@@ -604,3 +604,49 @@ async def test_plan_count_clamp_precedes_peel_so_marginal_overflow_keeps_voice()
     assert plan.hosted_urls == []
     assert plan.dropped_items == []
     assert [item.filename for item in plan.clamped_items] == ["generated_9.png"]
+
+
+async def test_plan_clamps_negative_attachment_limit_to_zero() -> None:
+    """A negative remaining attachment limit leaves no native items instead of slicing from the end."""
+    planner = hosting_off_planner()
+    items = [
+        MediaItem(source=b"a" * 10, filename="first.png"),
+        MediaItem(source=b"b" * 10, filename="second.png"),
+    ]
+
+    plan = await planner.plan(items=items, upload_limit=100, attachment_limit=-1)
+
+    assert plan.native == []
+    assert [item.filename for item in plan.clamped_items] == ["first.png", "second.png"]
+    assert plan.dropped_items == []
+
+
+async def test_plan_classifies_items_past_effective_limit_as_oversize_before_clamping(
+    tmp_path: Path,
+) -> None:
+    """An item over `upload_limit - envelope_margin` goes straight to oversize without stealing a slot."""
+    planner = hosting_planner(serve_dir=tmp_path)
+    items = [
+        MediaItem(source=b"b" * 80, filename="too_big_with_margin.mp4"),
+        MediaItem(source=b"s" * 20, filename="fits.png"),
+    ]
+
+    plan = await planner.plan(
+        items=items, upload_limit=100, envelope_margin=50, attachment_limit=1
+    )
+
+    assert [item.filename for item in plan.native] == ["fits.png"]
+    assert len(plan.hosted_urls) == 1
+    assert plan.hosted_urls[0].endswith(".mp4")
+    assert plan.clamped_items == []
+
+
+async def test_plan_treats_margin_above_limit_as_zero_effective_limit() -> None:
+    """When `envelope_margin` exceeds `upload_limit`, positive-size items drop/host cleanly."""
+    planner = hosting_off_planner()
+    items = [MediaItem(source=b"x" * 10, filename="small.png")]
+
+    plan = await planner.plan(items=items, upload_limit=10, envelope_margin=100)
+
+    assert plan.native == []
+    assert [item.filename for item in plan.dropped_items] == ["small.png"]

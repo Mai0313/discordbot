@@ -321,7 +321,7 @@ class MediaHostingService(BaseModel):
         if destination is None:
             return None
         serve, ext = destination
-        name = f"{_hash_bytes(data)}{ext}"
+        name = f"{_hash_bytes(data=data)}{ext}"
         hit = self._dedup_hit(serve=serve, name=name)
         if hit is not None:
             return hit
@@ -360,7 +360,7 @@ class MediaHostingService(BaseModel):
             return None
         serve, ext = destination
         try:
-            name = f"{_hash_file(file_path)}{ext}"
+            name = f"{_hash_file(path=file_path)}{ext}"
         except OSError as exc:
             logfire.warn(
                 "Failed to hash media file",
@@ -643,8 +643,9 @@ class MediaDeliveryPlanner(BaseModel):
         hosted_urls: list[str] = []
         dropped: list[MediaItem] = []
 
-        fitting = [item for item in items if sizes[id(item)] <= upload_limit]
-        oversize = [item for item in items if sizes[id(item)] > upload_limit]
+        effective_limit = max(upload_limit - envelope_margin, 0)
+        fitting = [item for item in items if sizes[id(item)] <= effective_limit]
+        oversize = [item for item in items if sizes[id(item)] > effective_limit]
         if oversize:
             urls = await asyncio.gather(*(self._host(item=item) for item in oversize))
             for item, url in zip(oversize, urls, strict=True):
@@ -653,12 +654,13 @@ class MediaDeliveryPlanner(BaseModel):
                 else:
                     dropped.append(item)
 
+        attachment_limit = max(attachment_limit, 0)
         # Clamp count before byte-peeling so trailing items drop before prioritized leading clips.
         clamped = fitting[attachment_limit:]
         fitting = fitting[:attachment_limit]
 
         total = sum(sizes[id(item)] for item in fitting)
-        while fitting and total + envelope_margin > upload_limit:
+        while fitting and total > effective_limit:
             largest = max(fitting, key=lambda item: sizes[id(item)])
             fitting.remove(largest)
             total -= sizes[id(largest)]
