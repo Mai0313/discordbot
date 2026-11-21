@@ -106,6 +106,5 @@ The suite reads no `.env`, starts with every variable `.env.example` names clear
 ## Documentation Split
 
 - **`README.md` is the canonical user-facing README**; `README.zh-CN.md` / `README.zh-TW.md` mirror its structure.
-- **`assets/artifacts/` holds the project's claude.ai Artifact pages, and the local file is the copy to edit and keep current**; its first line names the published URL. Republishing is best-effort: when the harness can publish an Artifact, pass that URL so the page updates in place instead of minting a second one, and otherwise skip it. The file has no `<!doctype>…<body>` skeleton, since a publish adds one.
-- **The reply pipeline's visual companion is `assets/artifacts/reply-pipeline.html`**, which describes the code and never overrides it; a change to the pipeline's SHAPE (a route, a trigger condition, an endpoint or SDK a feature dispatches on, a model tier, a kill-switch) updates it in the same change.
-- **`README.md`'s "How a reply happens" mermaid, mirrored into both translated READMEs, is a condensed copy**: those three and the pipeline page move together or not at all.
+- **The reply pipeline's visual companion is `assets/artifacts/reply-pipeline.html`**, never a source; a change to the pipeline's SHAPE (a route, a trigger condition, an endpoint or SDK a feature dispatches on, a model tier, a kill-switch) updates it in the same change.
+- **`README.md`'s "How a reply happens" mermaid, mirrored into both translated READMEs, is a condensed copy**: those three and the artifact move together or not at all.
