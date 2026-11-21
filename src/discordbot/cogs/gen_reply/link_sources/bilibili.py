@@ -107,7 +107,8 @@ async def _fetch_and_upload(url: str, gemini_client: genai.Client) -> list[Respo
             download = await download_with_stop_signal(
                 downloader=downloader, url=url, quality=AI_INGEST_QUALITY
             )
-        size_bytes = download.filename.stat().st_size
+        clip = download.filenames[0]
+        size_bytes = clip.stat().st_size
         if size_bytes > FILES_API_MAX_BYTES:
             logfire.warn(
                 "Bilibili clip exceeds the Files API ceiling; answering from the text",
@@ -118,9 +119,9 @@ async def _fetch_and_upload(url: str, gemini_client: genai.Client) -> list[Respo
             return []
         part = await upload_as_input_file(
             client=gemini_client,
-            source=download.filename,
+            source=clip,
             mime_type="video/mp4",
-            filename=download.filename.name,
+            filename=clip.name,
             timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
         )
         return [part] if part is not None else []

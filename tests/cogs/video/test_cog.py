@@ -136,7 +136,7 @@ async def test_video_deliver_and_download_branches(
     big.write_bytes(data=b"0" * 300)
 
     # Fits: attached natively, under its size and source lines.
-    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=small))
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=[small]))
     interaction = FakeInteraction()
     await VideoCogs.download_video.callback(
         cog, interaction, url="https://source.test/video", quality="best"
@@ -148,13 +148,14 @@ async def test_video_deliver_and_download_branches(
     assert interaction.followup.sent == []
 
     # Too big for native upload + hosting on: post the URL, no 480p retry, no attachment.
-    cog, downloader = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=big))
+    cog, downloader = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=[big]))
     cog.media_delivery = hosting_planner(serve_dir=serve_dir)
     host_interaction = FakeInteraction(filesize_limit=200)
     await VideoCogs.download_video.callback(
         cog, host_interaction, url="https://x.test", quality="best"
     )
     assert [call["quality"] for call in downloader.calls] == ["best"]
+    assert [call["max_items"] for call in downloader.calls] == [video.DISCORD_ATTACHMENT_LIMIT]
     host_content = host_interaction.edits[-1]["content"]
     assert any(line.startswith("https://media.test/") for line in host_content.splitlines())
     # The source link is omitted so the hosted URL is the only link and Discord inline-plays it.
@@ -166,7 +167,7 @@ async def test_video_deliver_and_download_branches(
     # size and the limit it exceeds as two different numbers.
     big2 = tmp_path / "big2.mp4"
     big2.write_bytes(data=b"0" * (3 * 1024 * 1024))
-    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=big2))
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=[big2]))
     fail_interaction = FakeInteraction(filesize_limit=2 * 1024 * 1024)
     await VideoCogs.download_video.callback(
         cog, fail_interaction, url="https://x.test", quality="best"
@@ -199,7 +200,7 @@ async def test_video_ceiling_comes_from_the_interaction_the_reply_goes_out_throu
     monkeypatch.setattr(video, "upload_limit_for", record_ceiling)
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(data=b"0" * 300)
-    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=clip))
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=[clip]))
     interaction = FakeInteraction(filesize_limit=200)
 
     await VideoCogs.download_video.callback(
@@ -233,7 +234,7 @@ async def test_a_refused_attach_is_logged_as_a_delivery_failure(
     """
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(data=b"0" * 1024)
-    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filename=clip))
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=[clip]))
     warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
     interaction = _RefusesAttachments()
 
@@ -266,10 +267,15 @@ async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.Mo
             self.aborted = False
 
         def download(
-            self, url: str, quality: str, stop_signal: threading.Event | None = None
+            self,
+            url: str,
+            quality: str,
+            stop_signal: threading.Event | None = None,
+            max_items: int = 1,
+            max_bytes: int | None = None,
         ) -> DownloadResult:
             """Outlasts the command's bound by two orders of magnitude unless told to stop."""
-            del url, quality
+            del url, quality, max_items, max_bytes
             self.aborted = stop_signal is not None and stop_signal.wait(timeout=5.0)
             raise RuntimeError("download stopped")
 
@@ -448,3 +454,141 @@ async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
     assert video._DOWNLOAD_FAILED not in content
     # The file really was hosted, so discarding the URL would have lost a completed upload.
     assert list(serve_dir.glob("*.mp4"))
+
+
+async def test_multi_video_download_attaches_every_fitting_clip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A multi-video post attaches every downloaded clip in order with their combined size."""
+    clips = []
+    for index in range(3):
+        clip = tmp_path / f"clip_{index}.mp4"
+        clip.write_bytes(data=bytes([index]) * (200 * 1024))
+        clips.append(clip)
+
+    cog, stub = _install(
+        monkeypatch=monkeypatch, outcome=DownloadResult(filenames=clips, total_items=3)
+    )
+    interaction = FakeInteraction()
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://x.com/user/status/123", quality="best"
+    )
+
+    assert stub.calls[0]["max_items"] == video.DISCORD_ATTACHMENT_LIMIT
+    assert [file.filename for file in interaction.edits[-1]["files"]] == [
+        "clip_0.mp4",
+        "clip_1.mp4",
+        "clip_2.mp4",
+    ]
+    content = interaction.edits[-1]["content"]
+    assert "0.6MB" in content
+    assert "<https://x.com/user/status/123>" in content
+
+
+async def test_multi_video_download_mixes_native_and_hosted_and_reports_omitted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Oversize clips in a multi-video download are hosted while fitting ones attach natively."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    small = tmp_path / "small.mp4"
+    small.write_bytes(data=b"a" * (200 * 1024))
+    oversize = tmp_path / "oversize.mp4"
+    oversize.write_bytes(data=b"b" * (3 * 1024 * 1024))
+
+    cog, _ = _install(
+        monkeypatch=monkeypatch, outcome=DownloadResult(filenames=[small, oversize], total_items=5)
+    )
+    cog.media_delivery = hosting_planner(serve_dir=serve_dir)
+    interaction = FakeInteraction(filesize_limit=2 * 1024 * 1024)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://x.com/user/status/999", quality="best"
+    )
+
+    assert [file.filename for file in interaction.edits[-1]["files"]] == ["small.mp4"]
+    content = interaction.edits[-1]["content"]
+    # Combined size is read before hosting unlinks `oversize.mp4`.
+    assert "3.2MB" in content.splitlines()[0]
+    assert re.search(pattern=r"(?<!\d)3(?!\d)", string=content)
+    hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
+    assert len(hosted) == 1
+
+
+async def test_multi_video_download_keeps_every_hosted_url_when_none_attach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When every clip in a multi-video download is hosted, every URL is posted without `files`."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    clips = []
+    for index in range(3):
+        clip = tmp_path / f"big_{index}.mp4"
+        clip.write_bytes(data=bytes([index]) * 4096)
+        clips.append(clip)
+
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=clips))
+    cog.media_delivery = hosting_planner(serve_dir=serve_dir)
+    interaction = FakeInteraction(filesize_limit=1024)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://x.com/user/status/456", quality="best"
+    )
+
+    assert "files" not in interaction.edits[-1]
+    assert "file" not in interaction.edits[-1]
+    content = interaction.edits[-1]["content"]
+    hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
+    assert len(hosted) == 3
+
+
+async def test_multi_video_download_reports_dropped_and_clamped_items(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Dropped oversize items and clamped overflow items both surface notices in the reply."""
+    clips = []
+    for index in range(video.DISCORD_ATTACHMENT_LIMIT + 1):
+        clip = tmp_path / f"fit_{index}.mp4"
+        clip.write_bytes(data=b"0" * 1024)
+        clips.append(clip)
+    oversize = tmp_path / "oversize.mp4"
+    oversize.write_bytes(data=b"1" * (3 * 1024 * 1024))
+    clips.append(oversize)
+
+    # Hosting is off, so `oversize` is dropped while 1 of the 11 fitting clips is clamped.
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=clips))
+    warnings = capture_logs(monkeypatch=monkeypatch, level="warn")
+    interaction = FakeInteraction(filesize_limit=2 * 1024 * 1024)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://x.com/user/status/777", quality="best"
+    )
+
+    assert len(interaction.edits[-1]["files"]) == video.DISCORD_ATTACHMENT_LIMIT
+    content = interaction.edits[-1]["content"]
+    assert "已省略 1 個檔案" in content
+    assert "有 1 個檔案傳送失敗" in content
+    assert [message for message, _ in warnings] == ["Video download dropped some media"]
+
+
+async def test_multi_video_download_refuses_when_all_clips_are_oversize_with_hosting_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When hosting is off and no clip fits, the oversize refusal names combined size and limit."""
+    clips = []
+    for index in range(2):
+        clip = tmp_path / f"huge_{index}.mp4"
+        clip.write_bytes(data=b"0" * (2 * 1024 * 1024))
+        clips.append(clip)
+
+    cog, _ = _install(monkeypatch=monkeypatch, outcome=DownloadResult(filenames=clips))
+    interaction = FakeInteraction(filesize_limit=1024 * 1024)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://x.com/user/status/888", quality="best"
+    )
+
+    content = interaction.edits[-1]["content"]
+    assert "4.0MB" in content
+    assert "1MB" in content

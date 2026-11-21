@@ -72,7 +72,11 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
         return resolved
 
     def fake_download(
-        self: VideoDownloader, url: str, quality: str = "best", stop_signal: object = None
+        self: VideoDownloader,
+        url: str,
+        quality: str = "best",
+        stop_signal: object = None,
+        **_kwargs: object,
     ) -> DownloadResult:
         """Writes a canned clip into the builder's scratch dir, or raises."""
         del url, stop_signal
@@ -81,7 +85,7 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
             raise download_error
         path = Path(self.output_folder) / "BV1jpK86hEc8.mp4"
         path.write_bytes(b"x" * file_size)
-        return DownloadResult(filename=path)
+        return DownloadResult(filenames=[path])
 
     monkeypatch.setattr(target=VideoDownloader, name="parse_metadata", value=fake_parse_metadata)
     monkeypatch.setattr(target=VideoDownloader, name="download", value=fake_download)
@@ -352,6 +356,7 @@ async def test_the_media_step_timeout_degrades_to_the_text(
         url: str,
         quality: str = "best",
         stop_signal: threading.Event | None = None,
+        **_kwargs: object,
     ) -> DownloadResult:
         """Outlasts the media bound so the internal timeout fires, until it is told to stop."""
         del url, quality
@@ -359,7 +364,7 @@ async def test_the_media_step_timeout_degrades_to_the_text(
             stop_signal.wait(timeout=5.0)
         path = Path(self.output_folder) / "late.mp4"
         path.write_bytes(b"late")
-        return DownloadResult(filename=path)
+        return DownloadResult(filenames=[path])
 
     monkeypatch.setattr(target=VideoDownloader, name="download", value=slow_download)
 
@@ -389,7 +394,11 @@ async def test_a_read_that_spent_the_media_budget_starts_no_download(
     release = threading.Event()
 
     def deaf_download(
-        self: VideoDownloader, url: str, quality: str = "best", stop_signal: object = None
+        self: VideoDownloader,
+        url: str,
+        quality: str = "best",
+        stop_signal: object = None,
+        **_kwargs: object,
     ) -> DownloadResult:
         """Ignores the stop signal until the test releases it."""
         del self, url, quality, stop_signal
@@ -453,6 +462,7 @@ async def test_a_cancelled_build_signals_the_download_to_stop(
         url: str,
         quality: str = "best",
         stop_signal: threading.Event | None = None,
+        **_kwargs: object,
     ) -> DownloadResult:
         """Runs until the stop signal arrives, recording whether it ever did."""
         del url, quality
