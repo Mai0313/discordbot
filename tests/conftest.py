@@ -331,7 +331,7 @@ def card_videos_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Autouse because video-downloading conversation cogs fetch `video_urls` before delivery,
     which would otherwise reach past loopback; a test about video delivery stubs
-    `fetch_card_video` itself.
+    `fetch_card_video` or `FacebookCogs.video_downloader_factory` itself.
     """
 
     def unreachable(
@@ -341,7 +341,21 @@ def card_videos_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
         del filepath, headers, timeout, max_bytes
         raise requests.ConnectionError(f"card video downloads are refused in tests: {url}")
 
+    class _UnreachableVideoDownloader:
+        """Refuses yt-dlp video downloads as an unreachable remote does."""
+
+        def __init__(self, output_folder: str) -> None:
+            self.output_folder = output_folder
+
+        def download(self, url: str, **kwargs: object) -> object:
+            del kwargs
+            raise requests.ConnectionError(f"card video downloads are refused in tests: {url}")
+
     monkeypatch.setattr("discordbot.utils.expansion_cog.fetch_card_video", unreachable)
+    monkeypatch.setattr(
+        "discordbot.cogs.parse_facebook.cog.FacebookCogs.video_downloader_factory",
+        _UnreachableVideoDownloader,
+    )
 
 
 @pytest.fixture(autouse=True)
