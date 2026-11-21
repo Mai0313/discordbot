@@ -18,7 +18,11 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 
 from discordbot.typings.memory import MemoryConfig
+from discordbot.typings.timeouts import YTDLP_SOCKET_TIMEOUT_SECONDS
 from discordbot.services.memory.store import scope_lock, memory_root
+
+# Reuses a 30s bound from `typings/timeouts.py` so a hung git subprocess cannot deadlock scope_lock.
+_GIT_COMMAND_TIMEOUT_SECONDS: float = YTDLP_SOCKET_TIMEOUT_SECONDS
 
 
 class _GitRequest(BaseModel):
@@ -103,7 +107,13 @@ class MemoryGitService(BaseModel):
                     # Guard required: `git add` on an untracked, deleted path exits 128.
                     return
                 await self._git("add", "-A", "--", request.scope)
-                await self._git("commit", "-m", f"chore(memory): {request.reason} {request.scope}")
+                await self._git(
+                    "commit",
+                    "-m",
+                    f"chore(memory): {request.reason} {request.scope}",
+                    "--",
+                    request.scope,
+                )
         except Exception as error:
             # Broad on purpose: this is a background best-effort path, and every git
             # failure mode (missing binary, index lock, full disk, hook rejection)
@@ -148,7 +158,15 @@ class MemoryGitService(BaseModel):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            async with asyncio.timeout(delay=_GIT_COMMAND_TIMEOUT_SECONDS):
+                stdout, stderr = await process.communicate()
+        except BaseException:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
+            raise
         if process.returncode != 0:
             raise RuntimeError(
                 f"git {' '.join(args)} exited {process.returncode}: "
