@@ -18,15 +18,12 @@ from datetime import UTC, datetime, timedelta
 from functools import cached_property
 
 import logfire
-from nextcord import Attachment, StickerItem
 from pydantic import Field
 from anthropic import AsyncAnthropic
-from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.media import UploadedFile, RenderedAttachment
+from discordbot.typings.media import UploadedFile
 from discordbot.cogs.gen_reply.attachment.base import UploadKind, FileUploadRenderer
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, resolve_source_filename
 
 # Synthetic local cache window; Anthropic files have no provider auto-expiry.
 ANTHROPIC_FILE_CACHE_TTL = timedelta(hours=12)
@@ -47,32 +44,6 @@ class AnthropicFileUploader(FileUploadRenderer):
         A missing key does not fail construction; it surfaces at the upload call.
         """
         return AsyncAnthropic(api_key=self.config.anthropic_api_key)
-
-    async def render_image(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
-    ) -> RenderedAttachment | None:
-        """Returns `source` uploaded to the Anthropic Files API as an `input_image` part, or `None`.
-
-        Args:
-            source (Attachment | StickerItem | str): Image attachment, sticker, or URL to upload.
-            cache_key (int | str): Per-source identifier for dead-source caching.
-            allow_dead_cache (bool): Whether to skip and record sources whose fetch failed.
-        """
-        source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=source_name,
-            load_data=lambda: load_image_bytes(source=source),
-            kind="image",
-            allow_dead_cache=allow_dead_cache,
-        )
-        if uploaded is None:
-            return None
-        part = ResponseInputImageParam(type="input_image", file_id=uploaded.uri, detail="auto")
-        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _upload_file(
         self, cache_key: int | str, filename: str, data: bytes, content_type: str, kind: UploadKind

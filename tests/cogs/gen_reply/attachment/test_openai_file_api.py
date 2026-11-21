@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tests.helpers.reply_fakes import FakeOpenAIFiles, _fake_openai_uploader
+from tests.helpers.reply_fakes import FakeOpenAIFiles, _att, _png_bytes, _fake_openai_uploader
 
 if TYPE_CHECKING:
     from io import BytesIO
@@ -41,3 +41,16 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
         )
         is None
     )
+
+
+async def test_openai_file_uploader_inherits_file_upload_render_image() -> None:
+    """`OpenAIFileUploader` inherits `FileUploadRenderer.render_image` returning `input_image`."""
+    uploader = _fake_openai_uploader(files=FakeOpenAIFiles())
+    rendered = await uploader.render_image(
+        source=_att(filename="pic.png", content_type="image/png", payload=_png_bytes()),
+        cache_key="pic.png",
+    )
+
+    assert rendered is not None
+    assert rendered.part["type"] == "input_image"
+    assert rendered.part["file_id"] == "file-test"
