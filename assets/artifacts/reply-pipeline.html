@@ -1,0 +1,1205 @@
+<!-- Published at https://claude.ai/code/artifact/a430046d-dd13-4d85-99ac-dd46b434f243 -->
+<title>破貓回覆引擎</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Tokens. Light is the base; dark redefines only these values.
+   Two channel colours carry the whole document: 藍 = 走 proxy,
+   赭 = 直連 Google. 灰 = 沒有 LLM 參與。
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --paper:#F1F4F7;
+  --surface:#FFFFFF;
+  --surface-2:#E8EDF2;
+  --ink:#131820;
+  --ink-2:#374252;
+  --muted:#606C7B;
+  --rule:#D3DBE4;
+  --rule-strong:#B6C1CE;
+
+  --proxy:#0F6B88;
+  --proxy-soft:#DEEDF3;
+  --proxy-line:#8FC2D3;
+
+  --direct:#B04C1C;
+  --direct-soft:#FAE9DE;
+  --direct-line:#E0AB88;
+
+  --local:#5B6675;
+  --local-soft:#E4E8ED;
+  --local-line:#B7C0CB;
+
+  --flag:#96293D;
+  --flag-soft:#F8E4E8;
+
+  --shadow:0 1px 2px rgba(19,24,32,.05), 0 8px 24px -16px rgba(19,24,32,.35);
+
+  --f-display:"Archivo","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+  --f-body:"IBM Plex Sans","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+  --f-mono:"IBM Plex Mono","Noto Sans TC","PingFang TC",ui-monospace,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1015;
+    --surface:#151A21;
+    --surface-2:#1D232C;
+    --ink:#E3E8F0;
+    --ink-2:#C2CBD7;
+    --muted:#8B96A5;
+    --rule:#28303A;
+    --rule-strong:#3A4453;
+
+    --proxy:#5FBEDE;
+    --proxy-soft:#10303C;
+    --proxy-line:#2C6C85;
+
+    --direct:#EE9364;
+    --direct-soft:#362115;
+    --direct-line:#8A522F;
+
+    --local:#8B96A5;
+    --local-soft:#212832;
+    --local-line:#414B59;
+
+    --flag:#EE7B92;
+    --flag-soft:#361A22;
+
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1015;
+  --surface:#151A21;
+  --surface-2:#1D232C;
+  --ink:#E3E8F0;
+  --ink-2:#C2CBD7;
+  --muted:#8B96A5;
+  --rule:#28303A;
+  --rule-strong:#3A4453;
+
+  --proxy:#5FBEDE;
+  --proxy-soft:#10303C;
+  --proxy-line:#2C6C85;
+
+  --direct:#EE9364;
+  --direct-soft:#362115;
+  --direct-line:#8A522F;
+
+  --local:#8B96A5;
+  --local-soft:#212832;
+  --local-line:#414B59;
+
+  --flag:#EE7B92;
+  --flag-soft:#361A22;
+
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box;}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--f-body);
+  font-size:15px;
+  line-height:1.72;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--proxy-soft);color:var(--ink);}
+:focus-visible{outline:2px solid var(--proxy);outline-offset:3px;border-radius:2px;}
+
+/* ── shell ─────────────────────────────────────────────────── */
+.shell{max-width:1360px;margin:0 auto;padding:0 28px 120px;}
+@media (min-width:1080px){
+  .shell{display:grid;grid-template-columns:212px minmax(0,1fr);gap:56px;align-items:start;}
+  .masthead{grid-column:1 / -1;}
+}
+
+/* ── masthead ──────────────────────────────────────────────── */
+.masthead{padding:64px 0 40px;border-bottom:1px solid var(--rule);margin-bottom:44px;}
+.eyebrow{
+  font-family:var(--f-mono);font-size:11px;font-weight:500;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+}
+.eyebrow::after{content:"";height:1px;flex:1;min-width:40px;background:var(--rule);}
+h1{
+  font-family:var(--f-display);font-weight:700;
+  font-size:clamp(38px,6.2vw,68px);line-height:1.02;letter-spacing:-.028em;
+  margin:20px 0 0;text-wrap:balance;color:var(--ink);
+}
+h1 .thin{color:var(--muted);font-weight:600;}
+.standfirst{
+  margin:22px 0 0;max-width:62ch;font-size:17px;line-height:1.7;color:var(--ink-2);
+}
+.meta-row{
+  margin-top:30px;display:flex;flex-wrap:wrap;gap:10px 26px;
+  font-family:var(--f-mono);font-size:11.5px;color:var(--muted);letter-spacing:.04em;
+}
+.meta-row b{color:var(--ink-2);font-weight:500;}
+
+/* ── nav rail ──────────────────────────────────────────────── */
+.rail{display:none;}
+@media (min-width:1080px){
+  .rail{
+    display:block;position:sticky;top:28px;
+    font-family:var(--f-mono);font-size:11.5px;line-height:1.5;
+  }
+  .rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;}
+  .rail a{
+    display:grid;grid-template-columns:26px 1fr;gap:6px;align-items:baseline;
+    padding:5px 8px 5px 0;color:var(--muted);text-decoration:none;
+    border-left:2px solid transparent;padding-left:10px;transition:color .15s,border-color .15s;
+  }
+  .rail a:hover{color:var(--ink);border-left-color:var(--proxy);}
+  .rail .num{color:var(--rule-strong);font-variant-numeric:tabular-nums;}
+  .rail .grp{
+    margin:20px 0 6px 10px;letter-spacing:.16em;text-transform:uppercase;
+    font-size:10px;color:var(--rule-strong);
+  }
+  .rail .grp:first-child{margin-top:0;}
+}
+
+/* ── channel chips ─────────────────────────────────────────── */
+.chip{
+  display:inline-flex;align-items:center;gap:5px;
+  font-family:var(--f-mono);font-size:10.5px;font-weight:500;
+  letter-spacing:.09em;text-transform:uppercase;
+  padding:2px 7px;border-radius:3px;white-space:nowrap;
+  border:1px solid transparent;vertical-align:2px;
+}
+.chip.proxy{background:var(--proxy-soft);color:var(--proxy);border-color:var(--proxy-line);}
+.chip.direct{background:var(--direct-soft);color:var(--direct);border-color:var(--direct-line);}
+.chip.local{background:var(--local-soft);color:var(--local);border-color:var(--local-line);}
+.chip.flag{background:var(--flag-soft);color:var(--flag);border-color:var(--flag);}
+
+/* ── legend ────────────────────────────────────────────────── */
+.legend{
+  display:grid;gap:0;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+  border:1px solid var(--rule);border-radius:6px;overflow:hidden;background:var(--surface);
+  box-shadow:var(--shadow);margin:34px 0 0;
+}
+.legend > div{padding:18px 20px;border-right:1px solid var(--rule);}
+.legend > div:last-child{border-right:none;}
+.legend h4{margin:0 0 8px;font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;font-weight:600;}
+.legend .lp{color:var(--proxy);}
+.legend .ld{color:var(--direct);}
+.legend .ll{color:var(--local);}
+.legend p{margin:0;font-size:13.5px;line-height:1.6;color:var(--muted);}
+.legend code{font-size:12px;}
+
+/* ── sections ──────────────────────────────────────────────── */
+section{padding-top:12px;margin-top:56px;scroll-margin-top:24px;}
+section:first-of-type{margin-top:0;}
+.s-head{display:flex;gap:14px;align-items:baseline;border-top:2px solid var(--ink);
+  padding-top:14px;margin-bottom:8px;}
+.s-num{font-family:var(--f-mono);font-size:12px;font-weight:600;color:var(--muted);
+  letter-spacing:.08em;flex:none;padding-top:5px;font-variant-numeric:tabular-nums;}
+h2{font-family:var(--f-display);font-weight:700;font-size:27px;line-height:1.2;
+  letter-spacing:-.018em;margin:0;text-wrap:balance;}
+h3{font-family:var(--f-display);font-weight:600;font-size:17.5px;letter-spacing:-.008em;
+  margin:36px 0 10px;text-wrap:balance;}
+h4{font-family:var(--f-body);font-weight:600;font-size:14.5px;margin:24px 0 6px;}
+p{margin:0 0 14px;max-width:68ch;}
+.lede{font-size:16px;color:var(--ink-2);max-width:66ch;margin-bottom:22px;}
+ul,ol{margin:0 0 16px;padding-left:20px;max-width:68ch;}
+li{margin-bottom:7px;}
+li::marker{color:var(--rule-strong);}
+strong{font-weight:600;color:var(--ink);}
+a{color:var(--proxy);}
+code{
+  font-family:var(--f-mono);font-size:.86em;background:var(--surface-2);
+  padding:1px 5px;border-radius:3px;color:var(--ink-2);
+}
+.mut{color:var(--muted);}
+hr.soft{border:none;border-top:1px solid var(--rule);margin:32px 0;}
+
+/* ── callout ───────────────────────────────────────────────── */
+.note{
+  border-left:3px solid var(--rule-strong);background:var(--surface);
+  padding:14px 18px;margin:20px 0;border-radius:0 5px 5px 0;
+  font-size:14px;color:var(--ink-2);max-width:70ch;
+}
+.note.warn{border-left-color:var(--flag);background:var(--flag-soft);}
+.note.warn strong{color:var(--flag);}
+.note.key{border-left-color:var(--direct);}
+.note p:last-child{margin-bottom:0;}
+.note .tag{
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);display:block;margin-bottom:5px;
+}
+
+/* ── flow: vertical step rail ──────────────────────────────── */
+.flow{list-style:none;margin:22px 0 26px;padding:0;position:relative;}
+.flow::before{
+  content:"";position:absolute;left:9px;top:12px;bottom:12px;width:1px;
+  background:var(--rule-strong);
+}
+.flow > li{position:relative;padding:0 0 20px 38px;margin:0;}
+.flow > li::before{
+  content:"";position:absolute;left:5px;top:9px;width:9px;height:9px;border-radius:50%;
+  background:var(--paper);border:2px solid var(--rule-strong);
+}
+.flow > li.px::before{border-color:var(--proxy);background:var(--proxy);}
+.flow > li.dx::before{border-color:var(--direct);background:var(--direct);}
+.flow > li:last-child{padding-bottom:0;}
+.flow .st{font-weight:600;font-size:15px;display:block;margin-bottom:2px;}
+.flow .sd{font-size:13.5px;color:var(--muted);line-height:1.65;max-width:64ch;}
+.flow .sd code{font-size:12px;}
+
+/* ── node card ─────────────────────────────────────────────── */
+.node{
+  background:var(--surface);border:1px solid var(--rule);border-left-width:3px;
+  border-left-color:var(--local-line);border-radius:4px;padding:13px 16px;
+  box-shadow:var(--shadow);
+}
+.node.px{border-left-color:var(--proxy);}
+.node.dx{border-left-color:var(--direct);}
+.node .nlabel{
+  font-family:var(--f-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);display:block;margin-bottom:4px;
+}
+.node .ntitle{font-weight:600;font-size:14.5px;display:block;margin-bottom:4px;line-height:1.4;}
+.node .nbody{font-size:13px;color:var(--muted);line-height:1.6;}
+.node .nbody code{font-size:11.5px;}
+
+/* ── parallel lanes ────────────────────────────────────────── */
+.lanes{
+  display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(238px,1fr));
+  margin:6px 0 4px;
+}
+.lane-frame{
+  border:1px dashed var(--rule-strong);border-radius:7px;padding:14px;
+  background:color-mix(in srgb, var(--surface) 55%, transparent);
+  margin:16px 0 22px;
+}
+.lane-frame > .lf-head{
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 12px;display:flex;align-items:center;gap:10px;
+}
+.lane-frame > .lf-head::after{content:"";height:1px;flex:1;background:var(--rule);}
+.lf-foot{
+  margin:14px 0 0;padding-top:12px;border-top:1px solid var(--rule);
+  font-size:13px;color:var(--muted);
+}
+.lf-foot strong{color:var(--ink);}
+
+/* ── branch (3 routes) ─────────────────────────────────────── */
+.branch{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));margin:22px 0 8px;}
+.branch-col{
+  border:1px solid var(--rule);border-radius:6px;background:var(--surface);
+  box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;
+}
+.branch-col > header{
+  padding:12px 16px;border-bottom:1px solid var(--rule);background:var(--surface-2);
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;
+}
+.branch-col > header b{font-family:var(--f-display);font-size:15px;letter-spacing:.01em;}
+.branch-col > .bc-body{padding:14px 16px;font-size:13.5px;color:var(--ink-2);flex:1;}
+.branch-col ol{padding-left:17px;margin:0;font-size:13px;color:var(--muted);}
+.branch-col ol li{margin-bottom:6px;}
+.branch-col ol li b{color:var(--ink);font-weight:600;}
+
+/* ── tables ────────────────────────────────────────────────── */
+.tw{overflow-x:auto;margin:20px 0 24px;border:1px solid var(--rule);border-radius:6px;
+  background:var(--surface);box-shadow:var(--shadow);}
+table{border-collapse:collapse;width:100%;font-size:13.2px;min-width:560px;}
+thead th{
+  text-align:left;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--muted);font-weight:600;
+  padding:11px 14px;border-bottom:1px solid var(--rule-strong);white-space:nowrap;
+  background:var(--surface-2);
+}
+tbody td{padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.6;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover{background:var(--surface-2);}
+td.nowrap{white-space:nowrap;}
+td b{font-weight:600;}
+td code{font-size:11.8px;background:transparent;padding:0;color:var(--ink-2);}
+table .m{font-family:var(--f-mono);font-size:11.8px;color:var(--ink-2);white-space:nowrap;}
+
+/* ── decision tree ─────────────────────────────────────────── */
+.tree{margin:22px 0;font-size:13.8px;}
+.tree ul{list-style:none;padding-left:22px;margin:0;position:relative;}
+.tree > ul{padding-left:0;}
+.tree ul ul{border-left:1px solid var(--rule-strong);margin-left:6px;}
+.tree li{position:relative;padding:5px 0 5px 18px;margin:0;}
+.tree ul ul > li::before{
+  content:"";position:absolute;left:-1px;top:18px;width:12px;height:1px;background:var(--rule-strong);
+}
+.tree .q{font-weight:600;}
+.tree .a{color:var(--muted);}
+.tree .out{
+  font-family:var(--f-mono);font-size:12px;padding:1px 6px;border-radius:3px;
+  background:var(--surface-2);color:var(--ink-2);
+}
+.tree .out.px{background:var(--proxy-soft);color:var(--proxy);}
+.tree .out.dx{background:var(--direct-soft);color:var(--direct);}
+.tree .out.no{background:var(--flag-soft);color:var(--flag);}
+
+/* ── signal grid (reactions) ───────────────────────────────── */
+.signals{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin:20px 0;}
+.sig{
+  display:grid;grid-template-columns:auto 1fr;gap:11px;align-items:start;
+  background:var(--surface);border:1px solid var(--rule);border-radius:5px;padding:11px 13px;
+}
+.sig .ic{font-size:17px;line-height:1.3;}
+.sig .sn{font-weight:600;font-size:13.5px;display:block;}
+.sig .sx{font-size:12.5px;color:var(--muted);line-height:1.55;}
+
+/* ── kv pairs ──────────────────────────────────────────────── */
+.kv{
+  display:grid;grid-template-columns:auto 1fr;gap:6px 18px;margin:16px 0 22px;
+  font-size:13.5px;max-width:70ch;
+}
+.kv dt{font-family:var(--f-mono);font-size:11.5px;letter-spacing:.06em;color:var(--muted);
+  padding-top:3px;white-space:nowrap;}
+.kv dd{margin:0;color:var(--ink-2);}
+
+/* ── map: one inline SVG, every colour from the tokens ──────── */
+.map{margin:22px 0 0;}
+.map-scroll{overflow-x:auto;padding-bottom:6px;}
+.map svg{display:block;width:100%;min-width:860px;height:auto;}
+.map .box{fill:var(--surface);stroke:var(--rule-strong);stroke-width:1;}
+.map .pill{fill:var(--local-line);}
+.map .px .pill{fill:var(--proxy);}
+.map .dx .pill{fill:var(--direct);}
+.map .flag .box{fill:var(--flag-soft);stroke:var(--flag);}
+.map .flag .pill{fill:var(--flag);}
+.map .bg .box{stroke-dasharray:5 4;}
+.map .t{fill:var(--ink);font:600 14px var(--f-body);}
+.map .h .t{font-size:12.5px;}
+.map .d{fill:var(--muted);font:400 11.5px var(--f-body);}
+.map .hit{fill:transparent;}
+.map .div{stroke:var(--rule-strong);stroke-width:1;}
+.map a:hover .box,.map a:focus-visible .box{stroke:var(--proxy);}
+.map a:hover .t,.map a:focus-visible .t{fill:var(--proxy);}
+.map .edge{fill:none;stroke:var(--rule-strong);stroke-width:1.25;}
+.map .edge.dash{stroke-dasharray:5 4;}
+.map .ah{fill:var(--rule-strong);}
+.map .frame{fill:none;stroke:var(--rule-strong);stroke-dasharray:4 4;}
+.map .tab{fill:var(--paper);}
+.map .lbl{fill:var(--muted);font:500 10.5px var(--f-mono);letter-spacing:.08em;}
+.map .route{fill:var(--ink);font:600 11px var(--f-mono);letter-spacing:.14em;}
+.map figcaption{
+  display:flex;flex-wrap:wrap;gap:6px 20px;margin-top:12px;
+  font-size:12.8px;color:var(--muted);max-width:none;
+}
+.map figcaption .why{flex-basis:100%;color:var(--ink-2);font-size:13.5px;margin-bottom:4px;}
+.map .sw{
+  display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;
+  vertical-align:-1px;background:var(--local-line);
+}
+.map .sw.px{background:var(--proxy);}
+.map .sw.dx{background:var(--direct);}
+.map .sw.fl{background:var(--flag);}
+.map .sw.fr{background:none;border:1px dashed var(--rule-strong);}
+.map .sw.ln{background:none;width:16px;height:0;border-radius:0;border-top:1.5px dashed var(--rule-strong);vertical-align:3px;}
+.map-note{
+  font-size:13.5px;color:var(--muted);max-width:70ch;
+  margin-top:18px;padding-top:12px;border-top:1px solid var(--rule);
+}
+
+footer.end{
+  margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
+  font-family:var(--f-mono);font-size:11.5px;color:var(--muted);line-height:1.8;
+}
+
+@media (prefers-reduced-motion: reduce){
+  *{transition:none !important;animation:none !important;}
+}
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <div class="eyebrow"><span>破貓 · Discord Bot</span><span>gen_reply</span></div>
+    <h1>回覆引擎<span class="thin">全景圖</span></h1>
+    <p class="standfirst">
+      從一則訊息送進來，到回覆落在畫面上為止的完整路徑。每一步都標了走
+      <span class="chip proxy">LiteLLM Proxy</span> 還是
+      <span class="chip direct">直連 Google</span>，
+      以及觸發它的條件到底是什麼。
+    </p>
+    <div class="meta-row">
+      <span><b>視角</b> 使用者端，不是模組結構</span>
+      <span><b>入口</b> @提及 / 私訊 / <code>/ask</code></span>
+      <span><b>路線</b> QA · IMAGE · VIDEO</span>
+      <span><b>對照</b> 目前 main 分支</span>
+    </div>
+
+    <div class="legend">
+      <div>
+        <h4 class="lp">走 LiteLLM Proxy</h4>
+        <p>用 <code>OpenAI SDK</code> 打 <code>OPENAI_BASE_URL</code>，一律 Responses API。有 proxy 端的成本與用量追蹤，也有 router 自己的重試與 fallback。</p>
+      </div>
+      <div>
+        <h4 class="ld">直連 Google</h4>
+        <p>用 <code>google-genai SDK</code> 打 Google 官方端點，走 Interactions API 或 Files API。用 <code>GEMINI_API_KEY</code>，<b>沒有</b> proxy 端的成本追蹤。</p>
+      </div>
+      <div>
+        <h4 class="ll">沒有模型參與</h4>
+        <p>純本地判斷、Discord REST、讀寫磁碟檔案或 SQLite。這些步驟不花 token，但很多觸發條件是在這裡決定的。</p>
+      </div>
+    </div>
+  </header>
+
+  <nav class="rail" aria-label="章節">
+    <ol>
+      <li class="grp">起點</li>
+      <li><a href="#map"><span class="num">◇</span><span>全景流程圖</span></a></li>
+      <li><a href="#s0"><span class="num">00</span><span>兩條網路路徑</span></a></li>
+      <li><a href="#s1"><span class="num">01</span><span>什麼時候會被觸發</span></a></li>
+      <li><a href="#s2"><span class="num">02</span><span>一次回覆的生命週期</span></a></li>
+      <li><a href="#s3"><span class="num">03</span><span>Router 決定什麼</span></a></li>
+      <li class="grp">三條路線</li>
+      <li><a href="#s4"><span class="num">04</span><span>QA 路線</span></a></li>
+      <li><a href="#s5"><span class="num">05</span><span>回覆內嵌標記</span></a></li>
+      <li><a href="#s6"><span class="num">06</span><span>IMAGE 路線</span></a></li>
+      <li><a href="#s7"><span class="num">07</span><span>VIDEO 路線</span></a></li>
+      <li class="grp">內容來源</li>
+      <li><a href="#s8"><span class="num">08</span><span>YouTube 觸發</span></a></li>
+      <li><a href="#s9"><span class="num">09</span><span>深度研究觸發</span></a></li>
+      <li><a href="#s10"><span class="num">10</span><span>連結貼文</span></a></li>
+      <li><a href="#s11"><span class="num">11</span><span>附件處理</span></a></li>
+      <li><a href="#s12"><span class="num">12</span><span>記憶讀寫</span></a></li>
+      <li class="grp">總表</li>
+      <li><a href="#s13"><span class="num">13</span><span>功能對照端點</span></a></li>
+      <li><a href="#s14"><span class="num">14</span><span>總開關</span></a></li>
+      <li><a href="#s15"><span class="num">15</span><span>畫面上的訊號</span></a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+  <!-- ══════════════════════════════════════════════ MAP -->
+  <section id="map">
+    <div class="s-head"><span class="s-num">◇</span><h2>一則訊息走過的路</h2></div>
+    <p class="lede">這張圖只畫形狀，也就是一則訊息會經過哪幾步、在哪裡分成三條路線、每一步走 proxy 還是直連 Google。失敗與降級的分支不在圖上，點方塊就會跳到寫它的那一段。</p>
+
+    <figure class="map">
+      <div class="map-scroll">
+        <svg viewBox="0 0 980 772" role="img" aria-label="回覆引擎流程圖。訊息進來後，附件上傳、路由分類、讀頻道歷史同時開跑；分類回來後分派到 QA、IMAGE 或 VIDEO；三條路線回到共同收尾，記憶審查與深度研究在背景另外跑。">
+          <defs>
+            <marker id="map-ah" viewBox="0 0 8 8" refX="8" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path class="ah" d="M0,0.5 L8,4 L0,7.5 z"/></marker>
+          </defs>
+
+          <!-- edges -->
+          <path class="edge" d="M640,44 H680" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M500,72 V104" marker-end="url(#map-ah)"/>
+          <text class="lbl" x="510" y="92">要回應</text>
+
+          <rect class="frame" x="24" y="104" width="932" height="104" rx="10"/>
+          <rect class="tab" x="38" y="97" width="66" height="14"/>
+          <text class="lbl" x="44" y="108">同時開跑</text>
+
+          <path class="edge" d="M500,184 V244" marker-end="url(#map-ah)"/>
+          <text class="lbl" x="510" y="230">分類回來</text>
+
+          <path class="edge" d="M500,300 V320 M180,320 H820"/>
+          <path class="edge" d="M180,320 V352" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M500,320 V352" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M820,320 V352" marker-end="url(#map-ah)"/>
+          <text class="route" x="190" y="342">QA</text>
+          <text class="route" x="510" y="342">IMAGE</text>
+          <text class="route" x="830" y="342">VIDEO</text>
+
+          <path class="edge" d="M180,408 V432" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M180,488 V512" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M500,408 V432" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M500,488 V512" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M820,408 V432" marker-end="url(#map-ah)"/>
+          <path class="edge" d="M820,488 V512" marker-end="url(#map-ah)"/>
+
+          <path class="edge" d="M180,568 V596 H820 M500,568 V596 M820,568 V596"/>
+          <path class="edge" d="M500,596 V624" marker-end="url(#map-ah)"/>
+
+          <path class="edge dash" d="M40,540 H20 V728 H40" marker-end="url(#map-ah)"/>
+          <path class="edge dash" d="M20,652 H40" marker-end="url(#map-ah)"/>
+          <text class="lbl" x="12" y="596" text-anchor="middle" transform="rotate(-90 12 596)">不擋回覆</text>
+
+          <!-- entry -->
+          <a class="n" href="#s1"><rect class="box" x="360" y="16" width="280" height="56" rx="6"/><rect class="pill" x="362" y="24" width="3" height="40" rx="1.5"/><text class="t" x="378" y="40">收到訊息</text><text class="d" x="378" y="59">伺服器 @提及 · 私訊 · /ask</text></a>
+          <a class="n flag" href="#s1"><rect class="box" x="680" y="16" width="280" height="56" rx="6"/><rect class="pill" x="682" y="24" width="3" height="40" rx="1.5"/><text class="t" x="698" y="40">不回應，或只回一個 ?</text><text class="d" x="698" y="59">bot 發話 · 沒有 @ · 研究佔用 · 空訊息</text></a>
+
+          <!-- parallel -->
+          <a class="n dx" href="#s11"><rect class="box" x="40" y="128" width="280" height="56" rx="6"/><rect class="pill" x="42" y="136" width="3" height="40" rx="1.5"/><text class="t" x="58" y="152">附件上傳</text><text class="d" x="58" y="171">Files API · 用到時才等</text></a>
+          <a class="n px" href="#s3"><rect class="box" x="360" y="128" width="280" height="56" rx="6"/><rect class="pill" x="362" y="136" width="3" height="40" rx="1.5"/><text class="t" x="378" y="152">路由分類</text><text class="d" x="378" y="171">路線 · 強度 · 要讀的連結與影片</text></a>
+          <a class="n" href="#s2"><rect class="box" x="680" y="128" width="280" height="56" rx="6"/><rect class="pill" x="682" y="136" width="3" height="40" rx="1.5"/><text class="t" x="698" y="152">讀頻道歷史</text><text class="d" x="698" y="171">歷史 · 歷史裡的附件 · 語氣偏好</text></a>
+
+          <!-- dispatch -->
+          <a class="n" href="#s2"><rect class="box" x="360" y="244" width="280" height="56" rx="6"/><rect class="pill" x="362" y="252" width="3" height="40" rx="1.5"/><text class="t" x="378" y="268">分派路線</text><text class="d" x="378" y="287">分類失敗一律走 QA</text></a>
+
+          <!-- QA -->
+          <a class="n dx" href="#s10"><rect class="box" x="40" y="352" width="280" height="56" rx="6"/><rect class="pill" x="42" y="360" width="3" height="40" rx="1.5"/><text class="t" x="58" y="376">抓連結貼文</text><text class="d" x="58" y="395">只抓路由選中的來源</text></a>
+          <rect class="box" x="40" y="432" width="280" height="56" rx="6"/>
+          <line class="div" x1="180" y1="432" x2="180" y2="488"/>
+          <a class="n h px" href="#s4"><rect class="hit" x="41" y="433" width="138" height="54" rx="5"/><rect class="pill" x="42" y="440" width="3" height="40" rx="1.5"/><text class="t" x="56" y="456">Responses 串流</text><text class="d" x="56" y="475">預設</text></a>
+          <a class="n h dx" href="#s8"><rect class="hit" x="181" y="433" width="138" height="54" rx="5"/><rect class="pill" x="183" y="440" width="3" height="40" rx="1.5"/><text class="t" x="196" y="456">Interactions 串流</text><text class="d" x="196" y="475">要看 YouTube 時</text></a>
+          <a class="n" href="#s5"><rect class="box" x="40" y="512" width="280" height="56" rx="6"/><rect class="pill" x="42" y="520" width="3" height="40" rx="1.5"/><text class="t" x="58" y="536">抽出內嵌標記</text><text class="d" x="58" y="555">語音 · 圖 · 音樂 · 影片 · 研究 · 記憶</text></a>
+
+          <!-- IMAGE -->
+          <a class="n px" href="#s6"><rect class="box" x="360" y="352" width="280" height="56" rx="6"/><rect class="pill" x="362" y="360" width="3" height="40" rx="1.5"/><text class="t" x="378" y="376">導演擴寫提示</text><text class="d" x="378" y="395">可關閉，失敗就用原句</text></a>
+          <a class="n px" href="#s6"><rect class="box" x="360" y="432" width="280" height="56" rx="6"/><rect class="pill" x="362" y="440" width="3" height="40" rx="1.5"/><text class="t" x="378" y="456">生成或編輯圖片</text><text class="d" x="378" y="475">有來源圖就走編輯</text></a>
+          <a class="n px" href="#s6"><rect class="box" x="360" y="512" width="280" height="56" rx="6"/><rect class="pill" x="362" y="520" width="3" height="40" rx="1.5"/><text class="t" x="378" y="536">送出圖片，再用人格回話</text><text class="d" x="378" y="555">回話失敗也不出聲</text></a>
+
+          <!-- VIDEO -->
+          <a class="n px" href="#s7"><rect class="box" x="680" y="352" width="280" height="56" rx="6"/><rect class="pill" x="682" y="360" width="3" height="40" rx="1.5"/><text class="t" x="698" y="376">導演擴寫提示</text><text class="d" x="698" y="395">編輯既有影片時跳過</text></a>
+          <a class="n dx" href="#s7"><rect class="box" x="680" y="432" width="280" height="56" rx="6"/><rect class="pill" x="682" y="440" width="3" height="40" rx="1.5"/><text class="t" x="698" y="456">omni 渲染影片</text><text class="d" x="698" y="475">生成或編輯，最長 600 秒</text></a>
+          <a class="n px" href="#s7"><rect class="box" x="680" y="512" width="280" height="56" rx="6"/><rect class="pill" x="682" y="520" width="3" height="40" rx="1.5"/><text class="t" x="698" y="536">送出影片，看過再回話</text><text class="d" x="698" y="555">影片先直連上傳 Files 才看得到</text></a>
+
+          <!-- end + background -->
+          <a class="n" href="#s15"><rect class="box" x="360" y="624" width="280" height="56" rx="6"/><rect class="pill" x="362" y="632" width="3" height="40" rx="1.5"/><text class="t" x="378" y="648">收尾</text><text class="d" x="378" y="667">✅ 或 ❌ · 記一筆使用紀錄</text></a>
+          <a class="n px bg" href="#s12"><rect class="box" x="40" y="624" width="280" height="56" rx="6"/><rect class="pill" x="42" y="632" width="3" height="40" rx="1.5"/><text class="t" x="58" y="648">記憶審查與整併</text><text class="d" x="58" y="667">有記憶標記才跑</text></a>
+          <a class="n dx bg" href="#s9"><rect class="box" x="40" y="700" width="280" height="56" rx="6"/><rect class="pill" x="42" y="708" width="3" height="40" rx="1.5"/><text class="t" x="58" y="724">深度研究</text><text class="d" x="58" y="743">有研究標記，另開討論串</text></a>
+        </svg>
+      </div>
+      <figcaption>
+        <span class="why">分類是唯一擋住分派的呼叫。附件上傳與頻道歷史跟它同時開跑，等到答案或人格回話要用時才等。伺服器記憶與參與者記憶在開跑前就讀好了，因為分類要帶著它們挑第三人。</span>
+        <span><i class="sw px"></i>走 proxy</span>
+        <span><i class="sw dx"></i>直連 Google</span>
+        <span><i class="sw"></i>沒有模型</span>
+        <span><i class="sw fl"></i>不回應</span>
+        <span><i class="sw fr"></i>同時開跑</span>
+        <span><i class="sw ln"></i>不擋回覆的背景工作</span>
+      </figcaption>
+    </figure>
+
+    <p class="map-note">語氣偏好每則回覆都帶，所以不算分支。對話發生在哪裡（私訊、公開頻道、私密頻道、群組私訊、<code>/ask</code>）改變的是記憶隔間、伺服器記憶與時間額度，它是情境而不是步驟，寫在 <a href="#s1">01</a> 與 <a href="#s12">12</a>。<code>/deep_research</code> 指令也會開研究，那條路不經過這張圖，寫在 <a href="#s9">09</a>。</p>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 00 -->
+  <section id="s0">
+    <div class="s-head"><span class="s-num">00</span><h2>兩條網路路徑，以及為什麼一定要有第二條</h2></div>
+    <p class="lede">整個專案原則上只用一套 SDK：OpenAI SDK 打 LiteLLM Proxy，模型字串換一下就能換後端。直連 Google 是例外清單，不是預設。</p>
+
+    <div class="lanes">
+      <div class="node px">
+        <span class="nlabel">主要路徑</span>
+        <span class="ntitle">OpenAI SDK → LiteLLM Proxy</span>
+        <span class="nbody">分類、答案串流、圖片生成、TTS、提示詞導演、記憶寫入、研究討論串標題。全部都是 Responses API（或 <code>images</code> / <code>audio.speech</code> 端點）。每個請求都帶 <code>x-litellm-end-user-id</code>，所以成本可以歸到人頭上。</span>
+      </div>
+      <div class="node dx">
+        <span class="nlabel">例外清單</span>
+        <span class="ntitle">google-genai SDK → Google</span>
+        <span class="nbody">Files API 上傳、影片生成與編輯、音樂生成、看 YouTube 的那一輪回答、深度研究 agent。全部走 Interactions API 或 Files API，用 <code>GEMINI_API_KEY</code>。</span>
+      </div>
+    </div>
+
+    <h3>四個非直連不可的理由</h3>
+    <ol>
+      <li><strong>Interactions API 是 Gemini 專屬的。</strong> Proxy 沒有等價的轉換，影片與音樂生成只有這條路。</li>
+      <li><strong>Proxy 會把 YouTube 連結當成一般網址抓下來。</strong> 抓回來的是 HTML，模型永遠看不到影片本身；原生 API 則是把 uri 原封不動轉給 Google 自己去抓。</li>
+      <li><strong>Files API 上傳必須能 poll 到 ACTIVE。</strong> Proxy 的檔案資源回報的是已棄用的狀態，引用一個還沒 ACTIVE 的檔案會間歇性讓整個回答請求 400。</li>
+      <li><strong>深度研究的 agent 設定會被 proxy 的轉換丟掉。</strong> 實測過，不是推測。</li>
+    </ol>
+
+    <div class="note key">
+      <span class="tag">一把金鑰的規則</span>
+      <p>Files API 上傳的檔案<strong>只有上傳它的專案讀得到</strong>，而且一個請求同時引用兩把金鑰的檔案會直接失敗。所以「上傳附件的金鑰」必須等於「回答這則訊息的金鑰」。實務上就是 bot 端用 <code>GEMINI_API_KEY</code> 直接上傳，而 proxy 裡的對話類別名也綁同一把。第二把、第三把金鑰只服務不會攜帶檔案的工作（媒體生成、TTS、音樂、embedding）。</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 01 -->
+  <section id="s1">
+    <div class="s-head"><span class="s-num">01</span><h2>什麼時候 bot 才會理你</h2></div>
+    <p class="lede">兩個入口通往同一條流水線。差別只在「回覆要送去哪裡」、「讀得到什麼歷史」、「能不能對來源訊息按表情」。</p>
+
+    <h3>入口 A · Gateway 訊息事件</h3>
+    <div class="tree">
+      <ul>
+        <li><span class="q">發話的是 bot？</span>
+          <ul><li><span class="a">是 →</span> <span class="out no">完全忽略</span></li></ul>
+        </li>
+        <li><span class="q">這是私訊嗎？</span>
+          <ul>
+            <li><span class="a">是 →</span> 一律回應，不需要提及</li>
+            <li><span class="a">否 →</span> 訊息<strong>內文</strong>必須出現 <code>&lt;@bot&gt;</code>。只看內文不看 mentions 欄位，因為回覆通知會把 bot 塞進 mentions，那會讓「回覆 bot 貼的 Threads 展開」也被誤判成在叫它</li>
+          </ul>
+        </li>
+        <li><span class="q">這個頻道正在被深度研究佔用嗎？</span>
+          <ul><li><span class="a">是 →</span> <span class="out no">跳過</span>，研究討論串在報告落地前是它自己的工作區；報告一落地就解除</li></ul>
+        </li>
+        <li><span class="q">去掉提及後還有字，或有附件、貼圖、轉發嗎？</span>
+          <ul><li><span class="a">都沒有 →</span> 加一個 ❓ 然後回一個 <span class="out">?</span></li></ul>
+        </li>
+      </ul>
+    </div>
+
+    <div class="note">
+      <span class="tag">轉發訊息</span>
+      <p>Discord 的轉發會把 <code>content</code>、<code>embeds</code>、<code>attachments</code> 全部清空，真正的內容躺在快照裡。所以轉發不會被當成空訊息擋掉，而且快照裡的文字會<strong>併進</strong>使用者提示詞（接在轉發者自己的留言後面）——這樣「@bot 幫我」轉發一張「畫隻貓」才有辦法真的走到 IMAGE 路線。</p>
+    </div>
+
+    <h3>入口 B · <code>/ask</code> 指令</h3>
+    <p><code>/ask</code> 存在的唯一理由，是有三個地方永遠不會有 gateway 訊息事件：<strong>bot 沒被加進去的伺服器</strong>、<strong>群組私訊</strong>、<strong>兩個別人之間的私訊</strong>。在那些地方提及 bot、回覆 bot、貼連結全都沒有反應。</p>
+    <div class="tw"><table>
+      <thead><tr><th>面向</th><th>Gateway 訊息</th><th><code>/ask</code></th></tr></thead>
+      <tbody>
+        <tr><td class="nowrap"><b>回覆去處</b></td><td>回覆到來源訊息</td><td>編輯互動的原始回應；超出的部分用 follow-up</td></tr>
+        <tr><td class="nowrap"><b>歷史來源</b></td><td>直接走頻道歷史</td><td>bot 不在頻道裡、沒有讀取歷史權限，只能重播<strong>它自己記下的對話</strong>（每個頻道 × 每個人一組）</td></tr>
+        <tr><td class="nowrap"><b>狀態表情</b></td><td>有，一整串</td><td>沒有。合成出來的訊息在 Discord 上不存在，加表情只會 404。改由 Discord 自己的「思考中」狀態和就地串流的回覆來代替</td></tr>
+        <tr><td class="nowrap"><b>訊息額度</b></td><td>無上限</td><td>編輯原始回應不限次，但<strong>只能再發 5 則 follow-up</strong>。超過大約一萬二千字的答案會被截斷並註明</td></tr>
+        <tr><td class="nowrap"><b>時間額度</b></td><td>無</td><td>互動 token <strong>15 分鐘</strong>後失效，之後連失敗通知都送不出去。所以 IMAGE / VIDEO 生成、QA 答案串流（重試在內）與 QA 回覆的內嵌媒體都被綁在「token 剩餘時間扣掉 60 秒」之內：生成或答案來不及就說明 Discord 視窗關了，內嵌媒體來不及就丟掉並留 ⏱️。IMAGE / VIDEO 交付後的人格回話刻意不綁，它沒有失敗通知需要留這段餘裕；VIDEO 人格回話看片用的 Files 上傳與記憶結果那行的事後編輯也沒綁</td></tr>
+        <tr><td class="nowrap"><b>伺服器記憶</b></td><td>會讀也會寫（限公開頻道）</td><td>完全不碰。bot 不在頻道裡，判斷不了誰看得到，寫得進去卻讀不回來的社群記憶只會默默過期</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 02 -->
+  <section id="s2">
+    <div class="s-head"><span class="s-num">02</span><h2>一次回覆的生命週期</h2></div>
+    <p class="lede">關鍵設計：只有一支呼叫在關鍵路徑上（分類），其他全部提前開跑，跑錯了就丟掉。</p>
+
+    <ol class="flow">
+      <li>
+        <span class="st">上 🔀 流程圖表情，同時開三條線</span>
+        <span class="sd">三條線幾乎是同一瞬間啟動的。第一次讀歷史也在這裡，整輪只讀這一次。</span>
+      </li>
+    </ol>
+
+    <div class="lane-frame">
+      <p class="lf-head">同時開跑，互不等待</p>
+      <div class="lanes">
+        <div class="node dx">
+          <span class="nlabel">線 A · 直連 Google</span>
+          <span class="ntitle">附件上傳與啟用輪詢</span>
+          <span class="nbody">把當前訊息與被回覆訊息的附件推上 Gemini Files API，輪詢到 ACTIVE。<strong>只有最後的答案會等它</strong>——分類讀的是純文字版本，所以路由從不卡在上傳上。</span>
+        </div>
+        <div class="node px">
+          <span class="nlabel">線 B · Proxy · 一支呼叫</span>
+          <span class="ntitle">路由分類 ＋ 思考強度 ＋ 第三人記憶</span>
+          <span class="nbody">一支 triage 模型的 Responses 結構化輸出，也是唯一擋住分派的呼叫。強度只有 QA 會用。公開頻道的暱稱表裡有沒說話的成員時，同一支呼叫多帶伺服器記憶與候選清單，順便回答要讀誰的記憶；它不帶頻道歷史，所以從不等歷史讀完。</span>
+        </div>
+        <div class="node">
+          <span class="nlabel">線 C · 本地為主</span>
+          <span class="ntitle">推測性上下文</span>
+          <span class="nbody">頻道歷史（連同歷史裡的附件上傳）與語氣偏好，全部只讀不寫，所以走錯路線可以安全丟棄。伺服器記憶與程式端確定的參與者記憶在三條線開跑前就讀好了，因為分類那支呼叫要帶著它們。分類挑中的第三人，會在歷史與上傳都好了之後併進記憶區塊。</span>
+        </div>
+      </div>
+      <p class="lf-foot"><strong>會合點：</strong>分類一回來，它挑中的第三人就交給線 C。強度和挑人都是分類本身的欄位，所以沒有另外的寬限期要等；分類解析失敗或撞上暫時性錯誤時一起退回保守值：走 QA、強度 <code>medium</code>、只保留程式端確定的那幾個人。</p>
+    </div>
+
+    <ol class="flow" start="2">
+      <li class="px">
+        <span class="st">分類回來，決定這輪的形狀</span>
+        <span class="sd">分類同時吐出這一輪的形狀：走哪條路、思考強度、要不要看 YouTube、要不要讀哪些連結貼文，有候選人時再加上要讀誰的記憶。解析失敗或暫時性錯誤就退回 QA。若有選中的連結來源，此刻固定一個共用的 180 秒截止時間。</span>
+      </li>
+      <li>
+        <span class="st">換表情，分派</span>
+        <span class="sd">QA 上 💬 訊息表情，IMAGE 上 🖼️，VIDEO 上 🎬。IMAGE / VIDEO <strong>永遠不會啟動連結貼文的抓取</strong>。</span>
+      </li>
+      <li>
+        <span class="st">路線各自完成，最後上 ✅</span>
+        <span class="sd">失敗則上 ❌ 並貼出錯誤 embed。如果答案已經開始串流了，錯誤會蓋在那則半成品回覆上，而不是另開一則——半成品沒有用量頁尾，單獨看會被誤讀成「答案答完了只是被砍掉」。</span>
+      </li>
+      <li>
+        <span class="st">寫一筆使用紀錄</span>
+        <span class="sd">每則觸發訊息一筆，不是每個產出一筆。失敗也記，記在它當時走到的路線底下。</span>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 03 -->
+  <section id="s3">
+    <div class="s-head"><span class="s-num">03</span><h2>Router 到底決定了什麼</h2></div>
+    <p class="lede">一支 <span class="chip proxy">proxy</span> 呼叫，triage 模型 <code>gemini-3.5-flash-lite</code>，思考強度 <code>minimal</code>，讀的是純文字（附件只呈現成 <code>[attachment: image]</code> 這種標記）。</p>
+
+    <div class="tw"><table>
+      <thead><tr><th>欄位</th><th>可能值</th><th>判斷準則</th><th>何時生效</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="nowrap"><b>路線</b></td>
+          <td class="m">QA / IMAGE / VIDEO</td>
+          <td>IMAGE 只在「圖本身就是交付物」時才選：明確要求生成一張新圖，或明確要求修改既有的圖。VIDEO 是明確要求做影片或動畫，或附上影片檔（或回覆一則附有影片檔的訊息）並明確要求修改那段片、要拿回改好的片。路由只看得到 <code>[attachment: file]</code>，所以這一條要靠使用者自己講出「影片」。其餘全部 QA，含分析圖片、看網頁、做懶人包、總結頻道對話。曖昧一律偏向 QA</td>
+          <td>永遠；沒有 <code>GEMINI_API_KEY</code> 時 VIDEO 改走 QA</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>看影片</b></td>
+          <td class="m">true / false</td>
+          <td>有 YouTube 連結<strong>而且</strong>使用者想知道影片內容。只是順手分享、問的是別的事，就是 false</td>
+          <td class="nowrap">只有 QA</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>連結來源</b></td>
+          <td class="m">threads / facebook / instagram<br>/ twitter / douyin / bilibili</td>
+          <td>有對應連結<strong>而且</strong>使用者想讓 bot 讀那則貼文的實際內容。每個來源獨立判斷，可以同時選多個</td>
+          <td class="nowrap">只有 QA</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>思考強度</b></td>
+          <td class="m">low / medium / high</td>
+          <td><code>medium</code> 是常態，拿不準也給它。<code>low</code> 要爭取：什麼都不用查、不用算，看到的東西就能一行回完的閒聊。<code>high</code> 也要爭取：寫或除錯程式、數學與多步計算、多步分析或規劃，以及要求修改或延伸被回覆訊息裡的程式碼或計算。指著分類看不到的東西的短問句（「真的嗎」「這是什麼」）一律 <code>medium</code></td>
+          <td class="nowrap">只有 QA</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>第三人記憶</b></td>
+          <td class="m">候選成員的 id</td>
+          <td>最新這則用暱稱、合理的錯字或不會搞錯的間接說法指到某個候選人，而且他的記憶對回答有幫助。只在舊歷史、附件或連結裡出現過不算，曖昧就空著</td>
+          <td class="nowrap">公開頻道 ＋ 有候選人時才問</td>
+        </tr>
+      </tbody>
+    </table></div>
+
+    <h3>思考強度是同一支呼叫的一個欄位</h3>
+    <p>輸出是 <code>low</code> / <code>medium</code> / <code>high</code> 三選一。<strong><code>medium</code> 是常態，<code>low</code> 和 <code>high</code> 都要爭取來的</strong>：只有完全不需要查、不需要算、光靠看到的東西就能一行回完的訊息（打招呼、道謝、貼圖、純鬥嘴）才給 low；只有真的要推理才寫得對的工作（程式、數學、多步分析或規劃）才給 high。拿不準、或分類呼叫失敗時，一律 <code>medium</code>。</p>
+    <p>分類讀的是純文字，看不到附件內容、連結背後的東西和短訊息背後的歷史，而且刻意不給它頻道歷史（給了它會從舊訊息裡挑連結來源）。這個盲點用規則補：指著它看不到的東西的短問句一律 medium，不會是 low。另外把貼圖標成「sticker」而不是「image」，因為純貼圖反應被當成截圖會被誤判成要回答的問題。</p>
+    <p>QA 拿到這個等級後，會用它覆蓋答案模型的預設強度，並顯示在回覆頁尾的 <code>模型 (強度)</code> 上。</p>
+
+    <h3>為什麼是一支，不是三支</h3>
+    <p>路由、強度、第三人記憶以前是三支呼叫。拿 239 則真實回覆重播實測：合併後延遲不變（p50 0.85 秒對 0.83 秒），路由與強度跟分開時的一致程度，等於分開的呼叫自己重跑一次的一致程度。第三人記憶反而變準：分開那支是帶 function tool 的呼叫，在沒人被點名的回合裡有 64% 會挑人；改成合併呼叫的一個欄位後是 0%。</p>
+    <p class="mut">代價是解析失敗或呼叫暫時失敗時所有欄位一起退回保守值。有候選人的那種形狀多帶了伺服器記憶，實測約 470 次沒有一次失敗。</p>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 04 -->
+  <section id="s4">
+    <div class="s-head"><span class="s-num">04</span><h2>QA 路線：預設，也是最複雜的一條</h2></div>
+
+    <h3>送進答案模型的東西，順序是固定的</h3>
+    <ol class="flow">
+      <li><span class="st">能力說明文件</span><span class="sd">放最前面。同一個部署的每則回覆它都完全一樣，擺前面對前綴快取最划算。它照部署的開關與金鑰改寫：關掉的語音、音樂、影片，看不了的 YouTube、抖音、Bilibili，以及停用的深度研究，都不會被寫成做得到；全部開著又有金鑰時就是原文。這份英文文件是唯一描述「這隻 bot 會什麼」的地方，取代了被刪掉的 <code>/help</code>。只有 QA 帶它——交付一張生成圖時不是在回答「你會什麼」。</span></li>
+      <li><span class="st">頻道歷史</span><span class="sd">三個軸同時限制，誰先撞到算誰：最多 100 則、8000 字、每則額外算 40 字的開銷。從最新往回留，切在訊息邊界上。附件另有第三軸，最多 10 個真實檔案，超出的訊息退回純標記——一旦有一則被拒，比它更舊的全部一起拒，模型看到的檔案永遠是一段連到現在為止不中斷的區間。附件以內嵌送出時再多一道位元組預算（約 48 MB），超過的較舊訊息同樣退回標記；單一附件超過 20 MiB 則在模態閘就不內嵌。</span></li>
+      <li><span class="st">伺服器記憶</span><span class="sd">每個公會一份，直接讀檔沒有選取階段。私訊和 <code>/ask</code> 沒有。</span></li>
+      <li><span class="st">使用者記憶</span><span class="sd">程式端固定解析：發話者、被回覆訊息的作者、當前訊息裡明確提及的人，再加上公開頻道裡分類挑中的第三人。目標 8 人：程式端確定的人不受限，挑中的人只補剩下的名額。</span></li>
+      <li><span class="st">語氣偏好</span><span class="sd">只讀發話者一個人的，每一則回覆都無條件帶上，不做選取。它會覆蓋預設的嘴賤人格——但只管「怎麼講」，不管「講什麼」。</span></li>
+      <li><span class="st">被回覆的訊息</span><span class="sd">緊貼在當前訊息上方，附一段分隔說明：當前訊息指涉不明的東西就在這裡，包含它的附件。只會有一則，Discord 不會巢狀傳遞更上層的父訊息。</span></li>
+      <li><span class="st">連結貼文區塊</span><span class="sd">被路由選中的來源才有，按註冊順序排。</span></li>
+      <li><span class="st">當前訊息</span><span class="sd">永遠放最後，模型答的就是它。</span></li>
+    </ol>
+    <p class="mut">另外，時間與地點（公會 id 或「私訊」）以 developer 權限放在頂層指令裡。地點只放 id 不放公會名稱——公會名是擁有者可控的文字，放進 developer 權限的區塊等於送人一個注入面。</p>
+
+    <h3>答案的兩個後端</h3>
+    <div class="branch">
+      <div class="branch-col">
+        <header><b>預設後端</b><span class="chip proxy">Proxy</span></header>
+        <div class="bc-body">
+          <p>全天都是 <code>gemini-4-carbon</code>，用路由給的強度，開著 <code>googleSearch</code> 與 <code>urlContext</code> 兩個內建工具，串流。</p>
+          <p class="mut">這一輪不掛任何自訂 function tool，這是刻意的：一旦掛上，Gemini 那一輪會變成「呼叫工具就結束、正文空白」，接地引用歸零。</p>
+        </div>
+      </div>
+      <div class="branch-col">
+        <header><b>YouTube 後端</b><span class="chip direct">直連</span></header>
+        <div class="bc-body">
+          <p>同一個模型、同一套系統指令、同樣的內建工具，只是改用 Interactions API 送出，讓 Gemini 自己去抓影片。</p>
+          <p class="mut">事件流會被翻譯回 Responses 的形狀，所以預覽、頁尾、標記處理、記憶排程整套完全共用。詳見 <a href="#s8">08</a>。</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>串流的畫面行為</h3>
+    <ul>
+      <li><strong>思考預覽</strong>：第一個推理摘要 delta 到達時才建立回覆訊息，以 <code>-#</code> 小字顯示思路的最新幾行（最多 4 行 / 320 字）。第一個正文 delta 一到就整段換掉。</li>
+      <li><strong>編輯節奏</strong>：另一條任務以 1 秒為週期把快照寫回 Discord，主迴圈從不等 Discord。</li>
+      <li><strong>收尾</strong>：抽出所有內嵌標記 → 寫最終文字與用量頁尾 → 超過 2000 字就切成 follow-up → 然後才去生成附件媒體。切點依序找空行、換行、空格；都找不到才硬切，硬切也不會切斷提及或 emoji。放不下的程式碼區塊會在切點收起，下一則用同一個語言標籤重開。</li>
+      <li><strong>來源被刪</strong>：回覆改成不帶父訊息直接送進頻道，IMAGE / VIDEO 生成好的圖或片也一樣；回覆自己被刪則安靜結束，不會重發。</li>
+    </ul>
+
+    <h3>唯一有 bot 端重試的呼叫</h3>
+    <div class="note warn">
+      <span class="tag">為什麼只有這一支</span>
+      <p>LiteLLM 的 router 會對<strong>非串流</strong>路徑套用重試與 fallback，所以那些一次性呼叫失敗會自動降級。串流的 Responses 在 LiteLLM 1.103 以前完全沒有 fallback，provider 5xx 會原封不動打到客戶端——而那正好是使用者親眼看著它失敗的那一輪。實測某 12 小時窗口內 82 則回覆有 46 則死在這裡，同期一次性呼叫零失敗。1.104 起串流也會 fallback，不管是還沒吐字就 503，還是吐到一半才收到錯誤幀（備援模型會接著寫下去）。bot 端重試現在補的是 fallback 鏈蓋不到的部分：整條鏈一起失敗的時候，以及 YouTube 那條直連 Google、沒有 proxy 的串流。</p>
+      <p>所以答案串流最多開 <strong>3 次</strong>（重試 2 次），每次間隔 5 秒加最多 1 秒抖動。重試不是無聲的：來源訊息上會多一個 🔁，已經存在的回覆會被換成「Retrying… (n/3)」的字樣，次數用完而畫面上只剩這行字時再把它撤掉。在 <code>/ask</code> 上，三次嘗試全部綁在 token 剩下的時間裡，到點就不再試，改說明 Discord 視窗關了。</p>
+      <p>判斷可不可以重試是看結構不是看訊息文字。中途失敗常常是一個裸的 API 錯誤，狀態碼是<strong>字串</strong> <code>"503"</code> 藏在 body 裡，只讀 <code>status_code</code> 什麼都抓不到。YouTube 那個後端丟的是 google-genai 另一套錯誤類別，判斷時一併認得，所以暫時性狀態碼與斷線一樣會重試；不重試的是它串流裡的 in-band 錯誤事件，因為照文件那裡的 code 是一個 URI 而不是狀態碼。</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 05 -->
+  <section id="s5">
+    <div class="s-head"><span class="s-num">05</span><h2>答案模型自己在回覆裡下的標記</h2></div>
+    <p class="lede">生不生圖、講不講話、記不記這件事，全部由答案模型在它自己的輸出裡決定。這樣文字、語音和媒體才會一致——事後再用一個分類器去猜是做不到的。</p>
+
+    <div class="tw"><table>
+      <thead><tr><th>標記</th><th>做什麼</th><th>內容留在畫面上？</th><th>走哪裡</th><th>限制</th></tr></thead>
+      <tbody>
+        <tr><td class="nowrap"><code>generate-voice</code></td><td>把包住的段落唸成語音</td><td><b>會留</b></td><td><span class="chip proxy">Proxy</span> TTS</td><td>多段會串成<strong>同一個</strong>音檔，所以模型只挑值得聽的句子標</td></tr>
+        <tr><td class="nowrap"><code>generate-image</code></td><td>生成圖片並附上</td><td>整段刪掉</td><td><span class="chip proxy">Proxy</span> 圖像模型</td><td>每則最多 9 張；使用者有傳圖時會變成編輯那些圖</td></tr>
+        <tr><td class="nowrap"><code>generate-music</code></td><td>生成一段音樂</td><td>整段刪掉</td><td><span class="chip direct">直連</span> Lyria</td><td>每則 1 首，取第一個非空的</td></tr>
+        <tr><td class="nowrap"><code>generate-video</code></td><td>生成一段短片</td><td>整段刪掉</td><td><span class="chip direct">直連</span> omni</td><td>每則 1 支；使用者傳的圖會當參考影格</td></tr>
+        <tr><td class="nowrap"><code>deep-research</code></td><td>開一條研究討論串</td><td>整段刪掉</td><td><span class="chip direct">直連</span> agent</td><td>只在公會的一般文字頻道、而且 bot 在那裡開得了討論串並寫得進去時，才提供這個標記</td></tr>
+        <tr><td class="nowrap"><code>write-memory</code></td><td>記一件關於對話者的事</td><td>整段刪掉</td><td><span class="chip local">背景</span></td><td>每則最多 5 條</td></tr>
+        <tr><td class="nowrap"><code>forget-memory</code></td><td>指出哪件事該不算了</td><td>整段刪掉</td><td><span class="chip local">背景</span></td><td>寫成「遺忘請求」的證據，不是直接刪除</td></tr>
+        <tr><td class="nowrap"><code>write-server-memory</code></td><td>記一件關於這個社群的事</td><td>整段刪掉</td><td><span class="chip local">背景</span></td><td>私訊與非公開頻道會被丟棄，模型不知情</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="kv">
+      <dt>時機</dt><dd>全部在文字上畫面之後才跑，所以對文字的延遲是零。所有附件用<strong>一次</strong>編輯掛上去（Discord 的編輯會整組取代附件清單）。</dd>
+      <dt>沒開的功能</dt><dd>提示詞裡<strong>不會提到</strong>那個標記，語音也一樣（它的說明寫在共用提示詞裡，關掉時會被剪掉），能力文件也不會寫成做得到。否則模型會照寫，然後標記被剝掉、什麼也沒產出，需求就這樣默默消失。</dd>
+      <dt>失敗</dt><dd>語音、圖、音樂、影片任一失敗，主要交付物照留，只在來源訊息加一個 ⏱️（語音逾時）或 ⚠️（其他，含圖、音樂、影片逾時）。<code>/ask</code> 上四種共用 token 剩下的時間：到點前做好的照樣掛上，還在算的放掉並留 ⏱️。</dd>
+      <dt>太大</dt><dd>先試著上傳到外部靜態站變成連結貼出來；連這個都做不到才丟棄加 ⚠️。</dd>
+      <dt>記憶標記的歸屬</dt><dd>由<strong>訊息的作者與公會</strong>決定，標記內容永遠沒有發言權。這是隔間邊界能維持結構性的關鍵。</dd>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 06 -->
+  <section id="s6">
+    <div class="s-head"><span class="s-num">06</span><h2>IMAGE 路線</h2></div>
+    <p class="lede">圖先送出去，再用同一則訊息串流一段人格化的回話。所以是「做圖的人把圖遞給你順便講兩句」，不是「冷冰冰地描述一張圖」。</p>
+
+    <ol class="flow">
+      <li><span class="st">載入來源像素</span><span class="sd">當前訊息 ＋ 被回覆訊息的圖片，直接下載原始 bytes（不是 Files API handle，因為編輯要真的餵像素進去），先縮到長邊 3072。</span></li>
+      <li class="px"><span class="st">提示詞導演</span><span class="sd"><code>gemini-4-hydrogen</code> 開著搜尋工具，把一句話的請求擴寫成一段完整、能獨立成立的生成提示。它是<strong>忠實翻譯不是美術指導</strong>：只釐清「畫什麼」，不發明沒被要求的場景、風格、光線。命名的角色或作品會實際去搜尋確認外觀。來源圖也會一起送進去當接地依據。<br>失敗、逾時、或開關關掉，都直接用原始請求，不會中斷。上限 120 秒。</span></li>
+      <li class="px"><span class="st">圖像模型渲染</span><span class="sd"><code>gemini-nano-banana-2.1</code>。有來源像素就走編輯端點，沒有就走生成端點。回傳空結果會自動重試一次才報錯。</span></li>
+      <li><span class="st">送出</span><span class="sd">太大就改成託管連結另發一則，人格回話也另開一則，不會蓋掉那個連結。生成到這裡為止都在硬失敗路徑上——圖是交付物，失敗要讓使用者知道。</span></li>
+      <li class="px"><span class="st">人格化回話（盡力而為）</span><span class="sd"><code>gemini-4-hydrogen</code>，不帶任何工具，把剛做好的圖以 base64 內嵌當焦點，串流到<strong>同一則訊息</strong>上。帶歷史與使用者記憶，<strong>不帶</strong>伺服器記憶，也不帶能力說明。這一步失敗完全靜音，圖留著。</span></li>
+    </ol>
+    <p class="mut">推測性上下文是在圖已經上畫面之後才被取用的，所以那份 context 的建構完全和生成重疊，不佔時間。</p>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 07 -->
+  <section id="s7">
+    <div class="s-head"><span class="s-num">07</span><h2>VIDEO 路線</h2></div>
+    <p class="lede">和 IMAGE 同形狀，但生成端整段是直連 Google，而且它有兩種互斥的模式。沒有 <code>GEMINI_API_KEY</code> 的部署走不了這條：分類判成 VIDEO 時，分派前就改走 QA 用文字回答，導演也不會先被呼叫。</p>
+
+    <ol class="flow">
+      <li><span class="st">先找來源影片</span><span class="sd">依序看當前訊息、被回覆訊息，每則最多讀第一支影片。找到就進編輯模式。只有在找不到的情況下才去下載參考圖片——編輯絕不該被它會丟掉的素材拖慢。</span></li>
+      <li class="dx"><span class="st">模式 A · 有來源影片 → 就地編輯</span><span class="sd">把整支片上傳 Files API 拿到 uri，然後以 <code>task=edit</code> 送出，提示詞就是使用者原話。<strong>導演在這裡被跳過</strong>：它只能靠圖片接地，對純影片編輯等於瞎猜，而且它是串在時間線上的。編輯模式下附帶的參考圖會被丟棄。</span></li>
+      <li class="dx"><span class="st">模式 B · 沒有來源影片</span><span class="sd">當前 ＋ 被回覆訊息的圖片當主體參考（最多 3 張，每張都必須帶真實 MIME，空 MIME 會直接 400）。先跑一次導演擴寫，然後<strong>省略 task 欄位</strong>讓 omni 自己判斷是 image-to-video、reference-to-video 還是 text-to-video。純文字生成才會送 16:9。</span></li>
+      <li class="dx"><span class="st">取回影片</span><span class="sd">用 <code>delivery=uri</code>，所以回來的是 Files 上的參照而不是 base64。互動回報 completed 時檔案可能還在收尾，所以下載本身帶有界重試。渲染本體上限 600 秒，兩端各再加 180 秒。</span></li>
+      <li><span class="st">送出</span><span class="sd">同 IMAGE。軟性拒絕會表現成「狀態不是 completed 且沒有影片輸出」，會被折進錯誤訊息。</span></li>
+      <li class="dx"><span class="st">看片，然後回話</span><span class="sd">影片沒辦法內嵌，所以要<strong>再上傳一次 Files API</strong>（啟用上限 60 秒），bot 用這個 handle 真的把自己做的片看過一遍再回話。上傳失敗就沒有回話，也不會留下空訊息。</span></li>
+    </ol>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 08 -->
+  <section id="s8">
+    <div class="s-head"><span class="s-num">08</span><h2>YouTube：觸發時機與整條路徑</h2></div>
+    <p class="lede">這是整個流水線裡<strong>唯一的後端切換</strong>。不是第二輪、不是額外一趟，就是同一輪答案改用另一個 API 送出去。</p>
+
+    <h3>四道閘門，全過才切換</h3>
+    <div class="tree">
+      <ul>
+        <li><span class="q">路由把 <code>watch_video</code> 判成 true 了嗎？</span>
+          <ul><li><span class="a">否 →</span> <span class="out">走一般 Responses</span>，連結只是連結</li></ul>
+        </li>
+        <li><span class="q">在允許的範圍內掃得到 YouTube 網址嗎？</span>
+          <ul>
+            <li><span class="a">先看當前訊息 →</span> 內文、embed 卡片、轉發快照都算（YouTube 的連結卡<strong>就是</strong>那個連結本身）</li>
+            <li><span class="a">再看被回覆的那一則 →</span> 一跳為止，而且會先剝掉 bot 自己的用量頁尾，免得頁尾裡的記憶標籤（那是使用者可控的顯示名稱）去挑到另一支影片</li>
+            <li><span class="a">都找不到 →</span> <span class="out">照常回答</span>，只留一行日誌</li>
+          </ul>
+        </li>
+        <li><span class="q">答案模型是 Gemini 嗎？總開關開著嗎？有直連金鑰嗎？</span>
+          <ul><li><span class="a">任一為否 →</span> <span class="out">退回 Responses</span>，對使用者完全無感，只在日誌記下是哪一道閘擋的</li></ul>
+        </li>
+      </ul>
+    </div>
+
+    <h3>切換以後發生什麼</h3>
+    <div class="lanes">
+      <div class="node dx">
+        <span class="nlabel">請求端</span>
+        <span class="ntitle">已組好的輸入被翻譯成 Interactions 步驟</span>
+        <span class="nbody">system / developer 區塊併進使用者步驟（Interactions 沒有 system 步驟，那些指令改走獨立的 system_instruction 欄位），連續同角色會合併。<strong>影片被附加在最後一個使用者步驟</strong>，也就是當前訊息，所以影片跟它要回答的問題貼在一起。影片部件帶 <code>processing: agentic</code>，模型只載入問題需要的片段或逐字稿，而不是每秒抽一格全部塞進來。已經上傳過的附件用既有 uri 引用，不會重傳。</span>
+      </div>
+      <div class="node dx">
+        <span class="nlabel">回應端</span>
+        <span class="ntitle">事件流被翻譯回 Responses 的形狀</span>
+        <span class="nbody">思路摘要、正文 delta、用量、完成事件全部改名成 Responses 的欄位，所以預覽、頁尾、標記抽取、記憶排程整套一行都不用改。用量只在完成時發一次（否則會重複累加）。接地引用回報成 <strong>「未回報」而不是 0</strong>——這個後端根本不用那個形狀報接地，寫 0 會被誤讀成沒接地。</span>
+      </div>
+    </div>
+    <p>來源訊息上會多一個常駐的 ▶️ YouTube 表情（在最後那個 ✅ 之後仍然留著），表示這則回覆是真的看過影片才寫的。這個表情刻意在建立串流器<strong>之前</strong>加上，否則這一趟 REST 往返會被算進「答案延遲」，讓唯一付這個成本的後端數字難看。</p>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 09 -->
+  <section id="s9">
+    <div class="s-head"><span class="s-num">09</span><h2>深度研究：觸發時機與生命週期</h2></div>
+    <p class="lede">整段直連 Google，跑的是一個 managed agent，時間以分鐘計。就一份報告，沒有升級檔次、報告底下也沒有任何按鈕。</p>
+
+    <h3>兩個入口</h3>
+    <div class="branch">
+      <div class="branch-col">
+        <header><b>答案模型自己發動</b><span class="chip proxy">QA 標記</span></header>
+        <div class="bc-body">
+          <p>QA 回覆裡出現 <code>deep-research</code> 標記時。這個標記<strong>只在公會的一般文字頻道</strong>才會出現在提示詞裡——私訊或已經在討論串裡開不了新的 thread，不能讓模型承諾一件做不到的事。同樣的理由，bot 在這個頻道缺發言、附檔、開討論串或在討論串裡發言任一項權限時，標記也不提供（讀的是 bot 自己成員身分的頻道權限快取）。</p>
+          <p class="mut">提示詞要求它極度節制：一般問題就直接回答，不要開研究串。發動時要在可見回覆裡用人格語氣說一聲「要花幾分鐘」，不能承諾即時。</p>
+        </div>
+      </div>
+      <div class="branch-col">
+        <header><b>使用者直接下指令</b><span class="chip local">斜線指令</span></header>
+        <div class="bc-body">
+          <p><code>/deep_research</code>，帶一個主題參數。頻道不對就直接擋掉，並說明只能在伺服器的一般文字頻道用。bot 在這裡缺上面那四項權限時，也在發任何東西之前就擋掉，回一句權限不夠；權限若在檢查之後才被收回，發錨點或開討論串被拒時一樣這樣說明。</p>
+          <p class="mut">會先發一則錨點訊息，討論串掛在它下面；主題是使用者輸入的，所以提及被限制到只能 ping 發起人。</p>
+        </div>
+      </div>
+    </div>
+
+    <ol class="flow">
+      <li><span class="st">搶佔名額</span><span class="sd">一個人同時只能有一份研究在跑。已經有了就回覆現有討論串的連結。</span></li>
+      <li class="px"><span class="st">生一個討論串標題</span><span class="sd">triage 模型，走 proxy，15 秒上限。失敗就退回用 brief 的第一行。</span></li>
+      <li><span class="st">開討論串、寫進資料庫、討論串掛的那則訊息上 🦕</span><span class="sd">🦕 這個表情刻意跟一般 QA 的表情不同，一眼就看得出這是研究而不是回覆。</span></li>
+      <li class="dx"><span class="st">跑 agent</span><span class="sd"><code>antigravity-preview-09-2026</code>，推理模型指定為 <code>gemini-4-hydrogen</code>，開著網頁搜尋與 URL 讀取（<strong>刻意不開程式執行</strong>：agent 的 bash/python 呼叫會以原始文字漏進報告裡）。用 <code>background=true</code> + <code>store=true</code> + <code>stream=true</code>，所以它的思路會即時畫在討論串開頭那則狀態訊息上。</span></li>
+      <li class="dx"><span class="st">串流斷了就重新接上</span><span class="sd">SDK 會在 agent 還在工作時把長連線關掉，所以會帶著續傳 token 重新掛回去。</span></li>
+      <li class="dx"><span class="st">最終結果一律另外取一次</span><span class="sd">完成事件<strong>刻意不帶報告本體</strong>，串流出來的只是即時視圖。所以永遠用一次終態查詢把報告拿回來，順便把「串流死了但 agent 沒死」的情況也一起收尾。</span></li>
+      <li><span class="st">交付</span><span class="sd">報告分段貼進討論串，第一段編輯進開場的狀態訊息，附上用量頁尾並 ping 發起人。agent 產的圖表也一起送。報告文字裡的任何提及都不會真的 ping 到人。</span></li>
+    </ol>
+
+    <div class="note">
+      <span class="tag">重啟之後</span>
+      <p>互動是掛在 Google 那邊跑的，所以重啟後會照著資料庫重新接上串流。但如果總開關是關的，這個掃描會<strong>直接跳過而不是標記失敗</strong>——那一輪不管怎樣都已經在對面計費了，標成失敗只是把一份已經做完的報告丟掉。</p>
+      <p>另外，只要這個 cog 還在寫這條討論串，QA 就不會在裡面回話，免得蓋掉即時狀態；報告一落地就解除。</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 10 -->
+  <section id="s10">
+    <div class="s-head"><span class="s-num">10</span><h2>連結貼文：Threads / Facebook / Instagram / Twitter / 抖音 / Bilibili</h2></div>
+    <p class="lede">六個來源同一個形狀。核心規則：<strong>路由沒有選中的來源，一個位元組都不會抓</strong>。順手貼的連結不花任何錢。</p>
+
+    <ol class="flow">
+      <li><span class="st">本地掃到連結</span><span class="sd">只掃「模型實際看得到的文字」，所以掃描器不可能對一個模型從沒被展示過的連結開火。</span></li>
+      <li class="px"><span class="st">路由決定要不要讀</span><span class="sd">要「總結、解釋、分析、反應、問內容」才算要讀。只是分享、只是引用當背景，就不選。</span></li>
+      <li><span class="st">選中的才開始抓，並固定一個共用截止時間</span><span class="sd">180 秒，所有被選中的來源共用同一個截止點，跟後續的回覆準備工作重疊進行。</span></li>
+      <li><span class="st">先拿到文字，再拿媒體</span><span class="sd">先解析中繼資料（快，文字先落地），再抓媒體，再上傳 <span class="chip direct">Files API</span> 變成檔案部件。媒體那一步要在共用截止前留一段餘裕就結束，讀文字花掉的時間會從媒體那邊扣，慢了就<strong>降級成純文字</strong>，而不是整個被取消掉什麼都不剩。</span></li>
+      <li><span class="st">失敗與逾時都有明確說法</span><span class="sd">會注入一段說明，而不是什麼都不給：平台說貼文不在、這次讀不到（限流、5xx、斷線）、來不及讀，各是不同的說法，讀不到絕不會被說成貼文已刪除。所以模型絕對不會編一段內容出來，也不會宣稱它看過其實沒拿到的影片。</span></li>
+    </ol>
+
+    <div class="tw"><table>
+      <thead><tr><th>來源</th><th>連結可以在哪裡</th><th>抓什麼</th><th>媒體開關</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="nowrap"><b>Threads</b></td>
+          <td>當前訊息，<strong>或它回覆的那一則</strong></td>
+          <td>整串對話（祖先鏈、目標貼文、它引用的貼文、底下的留言），但只吃<strong>目標貼文</strong>和<strong>被引用貼文</strong>的媒體。鏈與留言各有獨立上限，互不排擠</td>
+          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>Facebook</b></td>
+          <td>當前訊息，<strong>或它回覆的那一則</strong></td>
+          <td>公開貼文的全文、圖片、互動數字，加上<strong>頁面預先載入的那幾則留言</strong>（不是整個留言區）。網址帶 <code>comment_id</code> 時會標出被指名的那一則。影片拿不到檔案，只帶連結</td>
+          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>Instagram</b></td>
+          <td>當前訊息，<strong>或它回覆的那一則</strong></td>
+          <td>公開貼文的內文、輪播原圖、互動數字，加上<strong>頁面給的留言</strong>——登出狀態下一般貼文就是全部（實測 11 則報 11 則），這是它比 Facebook 多的地方；熱門貼文只有第一頁，最多帶 20 則。網址帶 <code>/c/&lt;id&gt;/</code> 時會標出被指名的那一則。Reel 只帶連結，不上傳影片</td>
+          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>Twitter</b></td>
+          <td>當前訊息，<strong>或它回覆的那一則</strong></td>
+          <td>貼文本身與它引用的那一則走官方嵌入端點；<strong>它上面的整串</strong>（最多 6 篇）和<strong>底下最熱門的回覆</strong>（第一頁，最多 30 則，回覆的回覆接在它回的那則後面）另外向第三方的 FxTwitter 要；長文與它引用的那一則的全文也向它要，因為官方端點在約 275 字處截斷，而且引用的那一則截了也不標記。FxTwitter 讀不到時退回官方端點附的上一層與截斷的文字，並明說留言這次讀不到。只吃目標貼文的圖，影片只帶連結，不下載</td>
+          <td>沒有自己的開關，但要 Files API 開著與金鑰</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>抖音</b></td>
+          <td>只在當前訊息</td>
+          <td>影片或圖集，以 <code>low</code> 畫質下載（刻意低於給人看的展開品質）</td>
+          <td>有，且需要 Files API 開著與金鑰</td>
+        </tr>
+        <tr>
+          <td class="nowrap"><b>Bilibili</b></td>
+          <td>只在當前訊息</td>
+          <td>標題、簡介與影片，同樣 <code>low</code> 畫質</td>
+          <td>有，同上</td>
+        </tr>
+      </tbody>
+    </table></div>
+
+    <p><strong>為什麼只有 Threads、Facebook、Instagram 和 Twitter 會往回看一跳：</strong>它們抓的都包含留言，而那正好是各自的展開 cog 刻意不顯示的東西，所以「@bot 這篇底下在吵什麼」回覆在別人的連結上時，沒有別的東西可以回答。抖音和 Bilibili 帶的是影片而不是討論，而且都對頻率限制敏感。</p>
+
+    <div class="note">
+      <span class="tag">四個社群來源同一個形狀</span>
+      <p>Threads、Facebook、Instagram 與 Twitter 的解析層現在回傳同一種結構：一個 <code>chain</code>（最後一個元素就是連結指到的那則貼文）加上 <code>reply_branches</code>（每則頂層留言一條分支，回覆接在它後面），而且貼文和留言共用同一個元素型別。入口也統一叫 <code>parse_metadata</code>。Twitter 的 <code>reply_branches</code> 在 FxTwitter 讀不到時是空的，但欄位照樣在——形狀一致的意思就是每個欄位在每個來源都代表同一件事，而不是各家給什麼就長什麼。Facebook、Instagram 和 Twitter <strong>都沒有</strong> Threads 那個 <code>parse</code>，這是規則不是遺漏：<code>parse</code> 會把目標貼文的影片下載到呼叫端給的暫存資料夾，由呼叫端負責刪掉，而只有 Threads 讀貼文時真的把影片寫到磁碟。</p>
+    </div>
+
+    <div class="note">
+      <span class="tag">回覆 bot 的展開不算觸發</span>
+      <p>往回掃父訊息時<strong>不看 embed 卡片</strong>，只看作者真的打出來的文字。bot 自己的 Threads 展開會列出整串每則貼文的永久連結、ROOT 在最前面，如果照掃就會去讀串頂的貼文而不是人類貼的那一則。人打的連結一定在內文裡，所以不會漏。</p>
+    </div>
+
+    <div class="note">
+      <span class="tag">提及規則</span>
+      <p>一則<strong>對著 bot 講</strong>的訊息（私訊或明確提及）只會被回答，不會被自動展開。所以一則帶連結的訊息只會付一次媒體下載的代價。反過來說，這也代表 AI 讀一次、展開 cog 讀一次，是兩件事。</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 11 -->
+  <section id="s11">
+    <div class="s-head"><span class="s-num">11</span><h2>附件是怎麼進到模型裡的</h2></div>
+    <p class="lede">一句話原則：<strong>媒體靠上傳進模型，永遠不靠網址。</strong> 給 proxy 一個帶 http 的 file_id，它會把整個檔案抓下來轉成 base64 塞進請求裡，抓失敗還是無聲的。</p>
+
+    <h3>收集 → 過濾 → 渲染</h3>
+    <div class="tree">
+      <ul>
+        <li><span class="q">這則訊息上有哪些可渲染的來源？</span>
+          <ul>
+            <li><span class="a">附件、貼圖、embed 的圖與縮圖，以及轉發快照裡的同樣三種</span></li>
+            <li><span class="a">embed 優先用 Discord 的代理網址</span>（像 Threads CDN 那種來源會過期、也會擋沒帶特定標頭的請求）</li>
+            <li><span class="a">bot 自己的語音檔會被跳過</span>（文字已經在逐字稿裡了，重傳只是延遲加自我輸入重複）；<strong>音樂檔不跳過</strong>，因為描述被剝掉了，那個檔案是那首歌唯一的痕跡</li>
+          </ul>
+        </li>
+        <li><span class="q">答案模型吃得下、這次的渲染方式也帶得走這個模態嗎？</span>
+          <ul>
+            <li><span class="a">吃不下 →</span> <span class="out no">在任何 LLM 呼叫之前就丟掉</span>。這道閘查的是<strong>當下那一支答案模型</strong>，所以答案模型一換它就跟著換；價格表沒寫模態的 Gemini 模型預設文字、圖片、音訊、影片都收，其他模型才退回「文字 ＋ 圖片」保底值，連兩種渲染都看不到音訊與影片附件</li>
+            <li><span class="a">帶不走 →</span> <span class="out no">同樣在這裡丟掉</span>。內嵌渲染帶不了影音，所以走內嵌時影音不會被標給路由、不佔歷史的附件額度，同一則訊息的其他附件也照常進快取</li>
+            <li><span class="a">壓縮檔、執行檔、Office 與 OpenDocument 檔 →</span> <span class="out no">直接丟</span>（Files API 存得下，但模型生成時會 400，而回答請求沒有單檔重試，一顆老鼠屎會壞掉整鍋）</li>
+            <li><span class="a">其他文件、程式碼、結構化文字 →</span> 一律當作可以走檔案路徑</li>
+          </ul>
+        </li>
+        <li><span class="q">要用哪種渲染方式？</span>
+          <ul>
+            <li><span class="a">Files API 總開關關著 →</span> <span class="out">一律內嵌</span></li>
+            <li><span class="a">答案模型是 Gemini 但沒有 <code>GEMINI_API_KEY</code> →</span> <span class="out">內嵌</span>（沒有金鑰就上傳不了，與其下載完再丟掉，不如直接內嵌）</li>
+            <li><span class="a">答案模型是 Gemini →</span> <span class="out dx">上傳 Files API，引用完整 uri</span></li>
+            <li><span class="a">其他 provider →</span> <span class="out">內嵌</span>（它們解析不了 Gemini 的 Files uri，proxy 會轉錯）。圖片轉 base64、PDF 轉 base64、UTF-8 文字直接當文字放進去、<strong>影音在模態閘就已擋下</strong></li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+
+    <div class="kv">
+      <dt>圖片預處理</dt><dd>上傳或內嵌前先縮到長邊 3072。從連結讀進來的動圖只送第一格靜態圖，透明背景照樣保留。</dd>
+      <dt>快取</dt><dd>以「訊息 id ＋ 編輯時間 ＋ 這次實際渲染的來源清單」為鍵，存的是 Files uri 與它們真正的到期時間，並保留 2 小時安全邊際。所以留在歷史視窗裡的訊息只上傳一次，不是每則回覆重傳一次。任一部件失敗就整筆不快取，下次重試。</dd>
+      <dt>兩種渲染</dt><dd>純文字版把附件呈現成 <code>[attachment: image]</code> 這種標記，給路由用，完全不碰上傳。完整版才做上傳，只有答案會等它。兩版共用同一次來源收集，所以路由絕不會標一個答案其實拿不到的附件。</dd>
+      <dt>歷史裡的死連結</dt><dd>只有歷史渲染會接受「已知會失敗」的快取結果——過期的 CDN 附件每一輪都會重新失敗一次。當前與被回覆的訊息不吃這一套，剛貼的附件遇到暫時性失敗，下一則回覆會重試。</dd>
+      <dt>總開關的存在理由</dt><dd>它不擋任何功能，擋的是好幾個功能底下的<strong>機制</strong>。曾經發生過上傳成功、模型卻被拒絕讀那個檔案的 provider 事故——那會賠掉<strong>整則回覆</strong>，因為壞掉的部件就在答案請求裡。</dd>
+    </div>
+
+    <h3>圖片與影片的第二條路：原始像素</h3>
+    <p>IMAGE 路線的編輯、內嵌 <code>generate-image</code> 的編輯、以及 VIDEO 的參考影格，走的都不是 Files handle 而是<strong>直接下載 bytes</strong>——編輯需要真的把像素餵進去。同一輪裡如果圖片和影片標記同時出現，這批來源只會載入一次共用。</p>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 12 -->
+  <section id="s12">
+    <div class="s-head"><span class="s-num">12</span><h2>記憶：讀的路徑與寫的路徑是分開的</h2></div>
+
+    <h3>讀：先確定的，再選填的</h3>
+    <ol class="flow">
+      <li><span class="st">程式端固定解析（沒有模型參與）</span><span class="sd">當前發話者 → 被回覆訊息的作者 → 當前訊息裡明確提及的人。這串會經過去重與清理，本身不設上限；8 人是目標，只限制選填的人。</span></li>
+      <li><span class="st">隔間邊界是「路徑」不是「過濾器」</span><span class="sd">記憶是一件事一個檔案，存在允許讀它的那個資料夾底下。在公會裡讀 = 開「跨伺服器」＋「這個公會」兩個資料夾；在私訊裡讀別人的、或在群組私訊裡讀任何人的 = 只開跨伺服器那個；只有本人在自己的一對一私訊裡才讀得到全部。<strong>讀不到的隔間是一個從沒被打開的資料夾</strong>，沒有東西可以出錯，也沒有「失敗時該怎麼保守處理」的問題。</span></li>
+      <li class="px"><span class="st">選填的第三人（由分類順便回答）</span><span class="sd">只有在<strong>公開頻道</strong>、伺服器記憶的暱稱表裡有「沒說話但可能被指涉」的成員、而且程式端確定的人還沒佔滿名額時，分類那支呼叫才會多帶暱稱表與候選清單，多回答一題「最新這則訊息有沒有拐彎指到某個人」。挑中的人只收候選清單裡的，也不會擠掉程式端確定的那幾個人；分類解析失敗或暫時失敗就一個都不挑。</span></li>
+      <li><span class="st">語氣偏好走另一條</span><span class="sd">它<strong>刻意放在隔間樹之外</strong>，因為它記的是「你希望我怎麼講話」，跨伺服器天生安全。每則回覆無條件帶上，包含 IMAGE / VIDEO 的人格回話。</span></li>
+    </ol>
+
+    <h3>寫：模型在回覆裡標，背景再審一次</h3>
+    <ol class="flow">
+      <li><span class="st">回覆落地時先掛一行「正在整理記憶⋯」</span><span class="sd">只有這一輪真的下了記憶標記才會出現，而且是<strong>拼進本來就要寫的那次編輯</strong>裡，不多花一次 Discord 編輯。</span></li>
+      <li class="px"><span class="st">背景審查（不擋回覆，失敗完全靜音）</span><span class="sd"><code>gemini-4-carbon</code>，走 proxy。它拿標記去對照逐字稿，並補上結構化欄位（類別、耐久度、分享範圍、正規化鍵）。之後還有一整排程式端的閘門會擋掉隨口提到的、假設性的、bot 自己建議的、關於別人的、信心不足的；重複的照樣記下，讓舊事實不過期。審查失敗就保留原狀，下次重啟再試一次，再失敗就放棄。</span></li>
+      <li><span class="st">把結果換回那一行</span><span class="sd">「✏️ 記下了 ⋯」、「🩹 不再記得 ⋯」，或者「✏️ 這次沒有記下什麼」。<strong>一定會有一個答案</strong>，因為畫面上那句承諾必須被收回。私下範圍的觀察只報數量不報內容。</span></li>
+      <li><span class="st">攢夠了才整併成事實檔</span><span class="sd">整併是另一支呼叫，按隔間扇出，每一支<strong>只看得到路由到它那個隔間的證據</strong>。資訊只會從跨伺服器流向公會，不會反向。一個隔間的事實文字超過門檻時，遺忘處理完之後再用另一支只帶事實的呼叫把它壓縮。所有記憶呼叫都用 <code>medium</code>：在 <code>high</code> 時壓縮會把輸出額度全部花在推理上，<code>low</code> 壓出來的批次則多半被當時（事實數的一半）的淨刪除上限擋下。這個上限現在放寬到九成，只擋幾乎清空整個隔間的批次。</span></li>
+      <li><span class="st">遺忘是證據，不是刪除</span><span class="sd"><code>forget-memory</code> 寫的是一筆「遺忘請求」，整併時交給一支只准刪除的呼叫，只能刪、不能改寫。所以回覆路徑本身<strong>沒有長出任何刪除能力</strong>，事實 id 也從來不會出現在答案提示詞裡。</span></li>
+    </ol>
+
+    <div class="note">
+      <span class="tag">伺服器記憶的兩道閘</span>
+      <p>私訊沒有，非 <code>@everyone</code> 可見的頻道也沒有。這兩道閘對答案模型是<strong>不可見的</strong>——所以在私訊或私密頻道下的 <code>write-server-memory</code> 標記會被安靜丟掉。標記來的時候長得跟其他標記一模一樣，是頻道說了算，不是模型。</p>
+    </div>
+
+    <div class="note">
+      <span class="tag">唯一不靠標記的寫入 · /memory server catchup</span>
+      <p>有人在公開頻道下 <code>/memory server catchup</code> 時，bot 讀這個頻道從上一則「跟上進度」結果訊息之後的對話（最多 100 則，略過 bot），由記憶模型<strong>自己提出</strong>關於社群的筆記，再交給同一個背景審查，通過的才寫進伺服器記憶。這裡沒有答案模型在場，所以它是「答案模型自己標」唯一的例外，而且只寫伺服器記憶，從不寫任何人的個人記憶。</p>
+      <p>它不走上面那條記憶排隊：那條隊伍會把同一伺服器的兩輪併成只剩較新的逐字稿，也會把審查失敗報成「沒記到」。這裡的結果訊息是下一次從哪裡開始讀的節點，失敗必須分得出來，所以失敗的那則不算節點，下次會重讀。同一個伺服器 10 分鐘冷卻，整段必須在互動 token 失效前回報，否則公開的開始訊息就收不回來。</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 13 -->
+  <section id="s13">
+    <div class="s-head"><span class="s-num">13</span><h2>總表：哪個功能打去哪裡</h2></div>
+
+    <div class="tw"><table>
+      <thead><tr><th>功能</th><th>觸發時機</th><th>路徑</th><th>SDK / API</th><th>模型</th></tr></thead>
+      <tbody>
+        <tr><td><b>路由分類</b>（含思考強度、第三人記憶）</td><td class="mut">每一輪</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
+        <tr><td><b>QA 答案（一般）</b></td><td class="mut">QA 路線預設</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses stream</td><td class="m">gemini-4-carbon<br>· 路由給的強度</td></tr>
+        <tr><td><b>QA 答案（看 YouTube）</b></td><td class="mut">四道閘全過</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions stream</td><td class="m">同上</td></tr>
+        <tr><td><b>提示詞導演</b></td><td class="mut">IMAGE / VIDEO 生成前（編輯影片時跳過）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses + 搜尋工具</td><td class="m">gemini-4-hydrogen · low</td></tr>
+        <tr><td><b>圖片生成 / 編輯</b></td><td class="mut">IMAGE 路線、<code>generate-image</code> 標記</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · images.generate / edit</td><td class="m">gemini-nano-banana-2.1</td></tr>
+        <tr><td><b>語音合成</b></td><td class="mut"><code>generate-voice</code> 標記</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · audio.speech</td><td class="m">gemini-3.8-flash-tts</td></tr>
+        <tr><td><b>人格化回話</b></td><td class="mut">IMAGE / VIDEO 交付之後</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses stream</td><td class="m">gemini-4-hydrogen · low</td></tr>
+        <tr><td><b>影片生成 / 編輯</b></td><td class="mut">VIDEO 路線、<code>generate-video</code> 標記</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions</td><td class="m">gemini-omni-1.2-flash</td></tr>
+        <tr><td><b>音樂生成</b></td><td class="mut"><code>generate-music</code> 標記</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions</td><td class="m">lyria-3.5</td></tr>
+        <tr><td><b>深度研究</b></td><td class="mut"><code>deep-research</code> 標記、<code>/deep_research</code></td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Interactions（背景 agent）</td><td class="m">antigravity-preview-09-2026<br>· 推理 gemini-4-hydrogen</td></tr>
+        <tr><td><b>研究討論串標題</b></td><td class="mut">研究啟動時</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-3.5-flash-lite · minimal</td></tr>
+        <tr><td><b>附件上傳</b></td><td class="mut">Gemini 答案模型 ＋ 開關開著 ＋ 有 <code>GEMINI_API_KEY</code>（否則內嵌經 proxy 送）</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
+        <tr><td><b>連結媒體上傳</b></td><td class="mut">被選中的來源抓到媒體時</td><td><span class="chip direct">直連</span></td><td class="m">google-genai · Files API</td><td class="mut">—</td></tr>
+        <tr><td><b>記憶審查 / 整併</b></td><td class="mut">下了記憶標記之後（背景）</td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-carbon · medium</td></tr>
+        <tr><td><b>記憶跟上進度</b>（提出筆記，再走同一個審查）</td><td class="mut"><code>/memory server catchup</code></td><td><span class="chip proxy">Proxy</span></td><td class="m">OpenAI · Responses</td><td class="m">gemini-4-carbon · medium</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note warn">
+      <span class="tag">一個只有直連才看得見的差異</span>
+      <p>送出一個模型不支援的思考強度，在<strong>直連</strong>時會硬失敗、看得見；但透過 <strong>proxy</strong> 的非串流呼叫根本不會表現成錯誤——LiteLLM 會把那個強度轉出去讓模型自己拒絕，然後改用 fallback 的部署回答，於是呼叫端拿到的是一個 HTTP 200，但 <code>model</code> 欄位是另一個模型（串流呼叫遇到這種 400 不會 fallback，照樣報錯）。狀態碼在這裡什麼也證明不了，只有回應自己回報的模型名才算數。</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 14 -->
+  <section id="s14">
+    <div class="s-head"><span class="s-num">14</span><h2>總開關與它們關掉之後的行為</h2></div>
+    <p class="lede">共通規則：關掉之後標記<strong>還是會被剝掉</strong>，只是不產出東西——所以提示詞裡也不會再提到那個標記，能力文件也不會再把它寫成做得到。改這些設定需要重啟。</p>
+
+    <div class="tw"><table>
+      <thead><tr><th>開關</th><th>關掉會怎樣</th><th>需要直連金鑰</th></tr></thead>
+      <tbody>
+        <tr><td class="m">INLINE_VOICE_ENABLED</td><td>不合成語音，答案提示詞也不再提供語音標記，回覆照常</td><td>否</td></tr>
+        <tr><td class="m">INLINE_IMAGE_ENABLED</td><td>QA 回覆不再內嵌生成圖，router 也不再被告知 QA 能自己附圖（IMAGE 路線本身不受影響）</td><td>否</td></tr>
+        <tr><td class="m">INLINE_MUSIC_ENABLED</td><td>不生音樂</td><td><b>是</b></td></tr>
+        <tr><td class="m">INLINE_VIDEO_ENABLED</td><td>QA 回覆不再內嵌生成片（VIDEO 路線不受影響）</td><td><b>是</b></td></tr>
+        <tr><td class="m">YOUTUBE_VIDEO_ENABLED</td><td>退回一般 Responses，也就是看不到影片</td><td><b>是</b></td></tr>
+        <tr><td class="m">DOUYIN_VIDEO_ENABLED</td><td>貼文說明文字照樣當上下文，但會明白告訴模型它沒看到影片</td><td><b>是</b></td></tr>
+        <tr><td class="m">BILIBILI_VIDEO_ENABLED</td><td>標題與簡介照樣帶，同樣明說沒看過片</td><td><b>是</b></td></tr>
+        <tr><td class="m">DEEP_RESEARCH_ENABLED</td><td>不提供標記也不能用指令；重啟時<strong>不接回</strong>進行中的研究，那些列留著等下次</td><td><b>是</b></td></tr>
+        <tr><td class="m">IMAGE_REFINE_PROMPT_ENABLED</td><td>IMAGE 路線跳過導演，原始請求直接送給圖像模型</td><td>否</td></tr>
+        <tr><td class="m">VIDEO_REFINE_PROMPT_ENABLED</td><td>同上，對 VIDEO 路線</td><td>否</td></tr>
+        <tr><td class="m">FILE_API_ENABLED</td><td>附件改成 base64 內嵌（影音在模態閘就擋下，不標給路由也不佔額度），連結媒體一律不抓也不上傳，Threads 也一樣。這是<strong>營運用</strong>的開關，擋的是機制不是功能</td><td>否</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ 15 -->
+  <section id="s15">
+    <div class="s-head"><span class="s-num">15</span><h2>使用者在畫面上會看到的訊號</h2></div>
+    <p class="lede">狀態表情是有序的一條鏈，後面的會取代前面的。常駐標記則是額外加的，不會被鏈清掉，所以 ✅ 之後仍然留在那裡。</p>
+
+    <h4>狀態鏈（會被下一個取代）</h4>
+    <div class="signals">
+      <div class="sig"><span class="ic">🔀</span><span><span class="sn">流程圖</span><span class="sx">收到了，開始跑</span></span></div>
+      <div class="sig"><span class="ic">💬</span><span><span class="sn">訊息</span><span class="sx">走 QA，要寫字了</span></span></div>
+      <div class="sig"><span class="ic">🖼️</span><span><span class="sn">圖片</span><span class="sx">走 IMAGE，在生圖</span></span></div>
+      <div class="sig"><span class="ic">🎬</span><span><span class="sn">影片</span><span class="sx">走 VIDEO，在生片</span></span></div>
+      <div class="sig"><span class="ic">✅</span><span><span class="sn">綠勾</span><span class="sx">整輪順利結束</span></span></div>
+      <div class="sig"><span class="ic">❌</span><span><span class="sn">紅叉</span><span class="sx">失敗，旁邊會有錯誤 embed</span></span></div>
+    </div>
+
+    <h4>常駐標記（會一直留著）</h4>
+    <div class="signals">
+      <div class="sig"><span class="ic">🧵</span><span><span class="sn">Threads</span><span class="sx">讀過那則 Threads 貼文了</span></span></div>
+      <div class="sig"><span class="ic">📘</span><span><span class="sn">Facebook</span><span class="sx">讀過那則 Facebook 貼文了</span></span></div>
+      <div class="sig"><span class="ic">📷</span><span><span class="sn">Instagram</span><span class="sx">讀過那則 Instagram 貼文了</span></span></div>
+      <div class="sig"><span class="ic">🐦</span><span><span class="sn">Twitter</span><span class="sx">讀過那則 Twitter 貼文了</span></span></div>
+      <div class="sig"><span class="ic">🎶</span><span><span class="sn">抖音</span><span class="sx">讀過那則抖音貼文了</span></span></div>
+      <div class="sig"><span class="ic">📺</span><span><span class="sn">Bilibili</span><span class="sx">讀過那支 Bilibili 影片了</span></span></div>
+      <div class="sig"><span class="ic">▶️</span><span><span class="sn">YouTube</span><span class="sx">這則回覆是真的看過影片</span></span></div>
+      <div class="sig"><span class="ic">🦕</span><span><span class="sn">恐龍</span><span class="sx">開了一條深度研究討論串</span></span></div>
+      <div class="sig"><span class="ic">🔁</span><span><span class="sn">重試</span><span class="sx">這則回覆花了不只一次嘗試</span></span></div>
+      <div class="sig"><span class="ic">🗣️🎵</span><span><span class="sn">生成中</span><span class="sx">語音、圖、片、音樂正在算</span></span></div>
+      <div class="sig"><span class="ic">⏱️</span><span><span class="sn">碼表</span><span class="sx">語音算太久，被放掉了（其他媒體逾時是 ⚠️）；<code>/ask</code> 視窗到期時還沒做好的任何媒體也標這個</span></span></div>
+      <div class="sig"><span class="ic">⚠️</span><span><span class="sn">警告</span><span class="sx">語音以外的附加媒體沒生出來，逾時也算（<code>/ask</code> 視窗到期除外，那是 ⏱️）</span></span></div>
+      <div class="sig"><span class="ic">❓</span><span><span class="sn">問號</span><span class="sx">訊息是空的，只回了一個 <code>?</code></span></span></div>
+    </div>
+
+    <h4>回覆底下的小字</h4>
+    <div class="kv">
+      <dt>用量頁尾</dt><dd><code>模型 (強度) · ⬆ 輸入 ⬇ 輸出 · $成本</code>，價格表查不到這個模型時不顯示成本。模型名是<strong>串流實際回報的那個</strong>，不是被派發的那個——proxy 的 fallback 只有在這裡看得出來。<span class="mut">注意重試過的那一輪會少報：用量只在完成事件送出，死掉的那次上游照樣計費但回報不了。</span></dd>
+      <dt>📖 讀了</dt><dd>這則回覆讀了誰的記憶。超過兩個人會收斂成「等 N 人」。</dd>
+      <dt>✏️ 記下了 / 🩹 不再記得</dt><dd>背景審查完才會出現，換掉那句「正在整理記憶⋯」。一則回覆只會有一條記憶結果，而且這行不會進入之後的對話歷史。</dd>
+      <dt>媒體過大，改用連結</dt><dd>附件超過該處的上傳上限，改成託管網址。放在用量頁尾<strong>之前</strong>，否則之後的歷史渲染會把頁尾當成回覆內容的一部分。</dd>
+    </div>
+
+    <div class="note">
+      <span class="tag">/ask 上沒有表情</span>
+      <p>合成訊息在 Discord 上不存在，所以整條狀態鏈與所有常駐標記全部無聲跳過。唯一不能就這樣丟掉的是<strong>失敗提示</strong>（⏱️ / ⚠️）——照慣例那是被放掉的媒體唯一的痕跡，所以它們會被收集起來，在媒體步驟結束時寫成回覆上的一行。視窗快到期時還在算的媒體會被提早放掉，留下的那段餘裕就是用來寫這一行的。</p>
+    </div>
+  </section>
+
+  <footer class="end">
+    <div>gen_reply · 三條路線 · 兩條網路路徑 · 一個 toolkit 服務整個 process</div>
+    <div>整份文件寫的是行為與觸發條件，不是模組結構。程式細節請直接看原始碼。</div>
+  </footer>
+
+  </main>
+</div>

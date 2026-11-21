@@ -1,0 +1,611 @@
+<!-- Published at https://claude.ai/artifact/B4SewcTy81hr6xz9kjnpAU -->
+<title>Gemini 延遲實測</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* Layout: one reading column; the chart and the table run full width, each scrolling on its own. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #15181d;
+  --muted: #5a6170;
+  --rule: #dde1e8;
+  --tick: #eceff3;
+  --proxy: #2a78d6;
+  --native: #eb6834;
+  --critical: #d03b3b;
+  --highlight: #fff4d6;
+  --code-bg: #f0f2f5;
+  --font-display: "Archivo", "Noto Sans TC", system-ui, sans-serif;
+  --font-body: "Noto Sans TC", system-ui, -apple-system, "PingFang TC", sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111317; --surface: #191c21; --fg: #e8ebf0; --muted: #9aa2b1; --rule: #2c313a;
+    --tick: #22262d; --proxy: #3987e5; --native: #d95926; --critical: #e66767;
+    --highlight: #3a3120; --code-bg: #1f2329; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111317; --surface: #191c21; --fg: #e8ebf0; --muted: #9aa2b1; --rule: #2c313a;
+  --tick: #22262d; --proxy: #3987e5; --native: #d95926; --critical: #e66767;
+  --highlight: #3a3120; --code-bg: #1f2329; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.7 var(--font-body); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 32px 64px; }
+.wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 40px; }
+.prose { max-width: 68ch; }
+h1, h2 { font-family: var(--font-display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: 2rem; line-height: 1.2; }
+h2 { font-size: 1.25rem; margin-bottom: 12px; }
+p { margin: 0 0 10px; }
+code, .mono { font-family: var(--font-data); font-size: 0.86em; }
+a { color: var(--proxy); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--muted); font-size: 0.86rem; margin-top: 14px; }
+.meta b { color: var(--fg); font-weight: 500; }
+ul, ol { margin: 0; padding-left: 1.3em; display: grid; gap: 6px; }
+section { min-width: 0; }
+
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 14px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg button { font: inherit; font-size: 0.86rem; padding: 4px 14px; border: 0; background: var(--surface); color: var(--muted); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+.seg button:focus-visible, .copy:focus-visible { outline: 2px solid var(--proxy); outline-offset: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.86rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+.chart-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px 8px; }
+.chart { min-width: 560px; position: relative; }
+.ghead { font-family: var(--font-data); font-weight: 600; font-size: 0.8rem; border-top: 1px solid var(--rule); padding-top: 8px; }
+.row { display: grid; grid-template-columns: 130px 1fr; align-items: stretch; min-height: 36px; }
+.row:hover .track, .row:focus .track { background: var(--code-bg); }
+.row:focus { outline: none; }
+.label { font-size: 0.82rem; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-right: 12px; white-space: nowrap; }
+.label .effort { font-family: var(--font-data); color: var(--muted); font-size: 0.78rem; }
+.tag { font-size: 0.68rem; padding: 0 6px; border-radius: 4px; background: var(--highlight); color: var(--fg); letter-spacing: 0.02em; }
+.track { position: relative; border-radius: 4px; }
+.tickline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--tick); }
+.range { position: absolute; height: 2px; border-radius: 1px; transform: translateY(-1px); }
+.dot { position: absolute; width: 9px; height: 9px; border-radius: 50%; transform: translate(-4.5px, -4.5px); box-shadow: 0 0 0 2px var(--surface); }
+.err { position: absolute; font: 600 0.68rem var(--font-data); color: var(--critical); transform: translateY(-50%); white-space: nowrap; }
+.err .served, .err .over { color: var(--muted); font-weight: 400; }
+.absent { position: absolute; font-size: 0.68rem; color: var(--muted); transform: translateY(-50%); left: 4px; }
+.axis { display: grid; grid-template-columns: 130px 1fr; height: 22px; }
+.axis .track span { position: absolute; transform: translateX(-50%); font: 0.72rem var(--font-data); color: var(--muted); }
+.axis-title { font-size: 0.78rem; color: var(--muted); text-align: right; margin-top: 2px; }
+.tip { position: absolute; z-index: 2; pointer-events: none; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; font-size: 0.8rem; line-height: 1.5; box-shadow: 0 4px 16px rgb(0 0 0 / 0.12); min-width: 220px; }
+.tip b { font-family: var(--font-data); }
+.tip .k { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+th, td { padding: 5px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--tick); }
+th { font-weight: 500; color: var(--muted); font-size: 0.74rem; position: sticky; top: 0; background: var(--surface); }
+thead tr:first-child th { font-size: 0.8rem; color: var(--fg); border-bottom: 0; }
+td.m, th.m { text-align: left; font-family: var(--font-data); }
+td.num { font-family: var(--font-data); }
+td.sep, th.sep { border-left: 1px solid var(--rule); }
+td.bad { color: var(--critical); }
+tr.group td { border-top: 1px solid var(--rule); }
+.sort { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.sort:hover { color: var(--fg); text-decoration: underline; }
+.sort:focus-visible { outline: 2px solid var(--proxy); outline-offset: 2px; }
+th[aria-sort] .sort { color: var(--fg); font-weight: 600; }
+
+.code { position: relative; background: var(--code-bg); border-radius: 8px; border: 1px solid var(--rule); }
+.code pre { margin: 0; padding: 16px; overflow-x: auto; font: 0.78rem/1.55 var(--font-data); tab-size: 4; }
+.copy { position: absolute; top: 8px; right: 8px; font: inherit; font-size: 0.78rem; padding: 3px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--surface); color: var(--fg); cursor: pointer; }
+.note { color: var(--muted); font-size: 0.86rem; }
+summary { cursor: pointer; margin-bottom: 12px; }
+summary h2 { display: inline; }
+summary:focus-visible { outline: 2px solid var(--proxy); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="prose">
+    <h1>Gemini 延遲實測</h1>
+    <p style="margin-top:10px">同一題問每個 Gemini 文字模型、每個 effort，量 streaming 延遲。<b>Proxy</b> 走 LiteLLM，<b>Native</b> 直連 Google：Decisions API（<code>gemini-decision-1</code>，effort 記為 none）每次都測，Interactions 選測。</p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <section class="prose" id="findings">
+    <h2>TL;DR</h2>
+    <ul>
+  <li><b>gemini-4-hydrogen 沒有比 triage 快</b>：11-13 另外單測（UTC 04:57–04:59，台北 12:57–12:59），最快的 low 首字 2.50 秒、完成 2.58 秒，medium / high 首字 3.5–3.9 秒，30/30 成功；triage（3.5-flash-lite @ minimal）本表首字 0.79、完成 1.12 秒。它沒有 minimal，xhigh 被 LiteLLM 1.108.0 以 400 擋下。其他列是上一輪的數字。</li>
+  <li><b>Decisions API 很快</b>：<code>gemini-decision-1</code> 完成 0.17 秒（p90 0.34），10/10 成功。它不串流、不產生文字，首字等於完成。換成 route 大小的請求（1.7k–2.9k input tokens、9–14 題）p50 仍是 0.17–0.20 秒。</li>
+  <li><b>現行 triage</b>：3.5-flash-lite @ minimal 本輪完成 1.12 秒；discordbot 正式環境 log 約 2.5 萬次 route call，p50 0.94、p90 1.54 秒。</li>
+  <li><b>這輪 Gemini 4 很慢</b>：carbon 的 low（fast）首字 7.4 秒、high（slow / memory）23.9 秒；argon 33–47 秒。carbon 和 argon 共 7 次 180 秒逾時。</li>
+  <li><b>3.8-flash 仍慢</b>：首字 16–29 秒，1 次被 proxy fallback 到 3.1-pro。</li>
+  <li><b>最快的串流</b>：3.5-flash-lite 和 3-flash-preview 的 minimal，首字 0.79–0.84 秒。Native Interactions 這輪沒測。</li>
+</ul>
+  </section>
+
+  <section>
+    <h2>延遲</h2>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="指標">
+        <button type="button" id="m-ttft" aria-pressed="true">首字延遲</button>
+        <button type="button" id="m-total" aria-pressed="false">完成時間</button>
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--proxy)"></i>Proxy</span>
+        <span id="legend-native"><i class="sw" style="background:var(--native)"></i>Native</span>
+        <span>點是 p50，線到 p90，✕ 是失敗次數</span>
+        <span><i class="tag">fast</i> discordbot 在用</span>
+      </div>
+    </div>
+    <div class="chart-scroll"><div class="chart" id="chart"></div></div>
+  </section>
+
+  <section>
+    <h2>數據</h2>
+    <p class="note">秒數是 p50，只算成功的樣本。點欄位標題排序。</p>
+    <div class="table-scroll"><table id="table"></table></div>
+  </section>
+
+  <section>
+    <details>
+      <summary><h2>腳本</h2></summary>
+      <div class="code"><button type="button" class="copy" id="copy">複製</button><pre><code id="script-view"></code></pre></div>
+    </details>
+  </section>
+</div>
+
+<script type="text/plain" id="bench-script">
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["openai", "google-genai", "httpx"]
+# ///
+"""Streaming latency of every Gemini text model at every reasoning effort it accepts.
+
+Three surfaces, same prompt, no tools:
+  proxy      OpenAI Responses API through a LiteLLM proxy   (OPENAI_BASE_URL, OPENAI_API_KEY)
+  native     google-genai Interactions API to AI Studio      (GEMINI_API_KEY), only when the user asks
+  decisions  google-genai Decisions API to AI Studio         (GEMINI_API_KEY), every update
+             The proxy does not serve it. It streams nothing and generates no text, so first token
+             and completion are the same number. Its records go in the native column, effort "none".
+
+Updating the page is always a full re-run with fresh data, never a layout-only edit:
+  1. Save this file to a scratch directory, outside any repo.
+  2. Refresh RETIRED from https://aistudio.google.com/docs/deprecations, then list Google's
+     models and check every new text model is in the lineup. The lineup comes from openrouter,
+     so a model openrouter does not list yet is left out and has to be added by hand.
+       curl "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000" -H "x-goog-api-key: $GEMINI_API_KEY"
+  3. Run the proxy and decisions surfaces, each in its own process at the same time, and report
+     them. When the user asks for native too, run it the same way and pass its file to report;
+     the page drops native's columns when the data has none.
+       uv run --env-file .env gemini_latency_bench.py run > proxy.jsonl
+       uv run --env-file .env gemini_latency_bench.py run --surface decisions > decisions.jsonl
+       uv run --env-file .env gemini_latency_bench.py run --surface native > native.jsonl
+       uv run gemini_latency_bench.py report proxy.jsonl decisions.jsonl [native.jsonl] > results.json
+  4. In the page source, replace the run-data block with results.json, update the run-meta block
+     (rounds, versions, discordbot's tiers; the SDK versions are those in the interpreter
+     `uv python find --script gemini_latency_bench.py` prints), and rewrite the TL;DR from the new
+     numbers. Nothing from .env goes on the page.
+  5. Publish to the same artifact URL.
+"""
+
+import argparse
+import json
+import re
+import statistics
+import sys
+import time
+import uuid
+from collections import Counter
+
+import httpx
+from google import genai
+from google.genai import types
+from openai import OpenAI
+
+PROMPT = (
+    "How many positive integers below 1000 are divisible by 7 but not by 11? "
+    "Give the number and one sentence of reasoning."
+)
+EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+# Shut down, or routed to another model, per https://aistudio.google.com/docs/deprecations;
+# openrouter and models.list still list them.
+RETIRED = {"gemini-3.1-flash-lite-preview", "gemini-3.5-flash", "gemini-3.7-flash"}
+TIMEOUT_S = 180
+DECISION_MODEL = "gemini-decision-1"
+# Shaped like a reply router's call: one pick from a few routes, one effort grade, one yes/no.
+DECISION_QUESTIONS = {
+    "route": {
+        "type": "choice",
+        "instructions": "What should the reply to this message be?",
+        "criteria": {"image": "A generated picture.", "video": "A generated video clip.", "qa": "A text answer."},
+    },
+    "effort": {
+        "type": "choice",
+        "instructions": "How much reasoning does a good answer to this message need?",
+        "criteria": {"low": "Small talk or a lookup.", "high": "Anything that needs thought."},
+    },
+    "watch_video": {"type": "noul", "instructions": "Does the message ask about the content of a linked video?"},
+}
+
+
+def lineup(served: set[str]) -> list[tuple[str, str]]:
+    """Every (model, effort) openrouter lists for a text-only google/gemini-* model the surface serves."""
+    catalog = httpx.get(url="https://openrouter.ai/api/v1/models", timeout=30).json()["data"]
+    cells = []
+    for entry in catalog:
+        name = entry["id"].removeprefix("google/")
+        efforts = (entry.get("reasoning") or {}).get("supported_efforts") or []
+        text_only = entry["architecture"].get("output_modalities") == ["text"]
+        # customtools is pro tuned for function calling, not another model to compare.
+        if name.startswith("gemini-") and name in served and text_only and "customtools" not in name:
+            cells += [(name, effort) for effort in EFFORTS if effort in efforts]
+    return sorted(cells)
+
+
+def proxy_call(client: OpenAI, model: str, effort: str, prompt: str) -> dict:
+    start = time.perf_counter()
+    ttft = answered = usage = None
+    stream = client.responses.create(
+        model=model,
+        input=prompt,
+        reasoning={"effort": effort},
+        stream=True,
+        # The proxy's cache key ignores extra_body, so the nonce in the prompt is what defeats it;
+        # this flag stops the answer being stored for anyone else.
+        extra_body={"cache": {"no-cache": True}},
+    )
+    for response in stream:
+        if response.type == "response.output_text.delta" and ttft is None:
+            ttft = time.perf_counter() - start
+        elif response.type == "response.completed":
+            # A proxy fallback shows up here as another model's name.
+            answered, usage = response.response.model, response.response.usage
+        elif response.type == "response.failed":
+            raise RuntimeError(f"{response.response.error.code}: {response.response.error.message}")
+        elif response.type == "error":
+            raise RuntimeError(f"{response.code}: {response.message}")
+    # output_tokens includes thinking on this surface.
+    think = usage.output_tokens_details.reasoning_tokens or 0
+    return {
+        "ttft": ttft,
+        "total": time.perf_counter() - start,
+        "answered": answered,
+        "think": think,
+        "text": usage.output_tokens - think,
+    }
+
+
+def native_call(client: genai.Client, model: str, effort: str, prompt: str) -> dict:
+    start = time.perf_counter()
+    ttft = answered = usage = None
+    stream = client.interactions.create(
+        model=model, input=prompt, generation_config={"thinking_level": effort}, stream=True
+    )
+    for event in stream:
+        if event.event_type == "step.delta":
+            if event.delta.type == "text" and ttft is None:
+                ttft = time.perf_counter() - start
+            if event.metadata is not None and event.metadata.total_usage is not None:
+                usage = event.metadata.total_usage
+        elif event.event_type == "interaction.completed":
+            answered, usage = event.interaction.model, event.interaction.usage or usage
+        elif event.event_type == "error":
+            raise RuntimeError(f"{event.error.code}: {event.error.message}")
+    if usage is None:
+        reason = "stream ended before completion" if answered is None else "completed without usage"
+        raise RuntimeError(f"no-usage: {reason}")
+    # total_output_tokens excludes thinking on this surface.
+    return {
+        "ttft": ttft,
+        "total": time.perf_counter() - start,
+        "answered": answered,
+        "think": usage.total_thought_tokens or 0,
+        "text": usage.total_output_tokens or 0,
+    }
+
+
+def decisions_call(client: genai.Client, model: str, effort: str, prompt: str) -> dict:
+    start = time.perf_counter()
+    result = client.decisions.create(model=model, input=prompt, questions=DECISION_QUESTIONS)
+    if set(result.answers) != set(DECISION_QUESTIONS):
+        raise RuntimeError(f"answers: got {sorted(result.answers)}")
+    elapsed = time.perf_counter() - start
+    # The response names no model, so the requested one is recorded as the one that answered.
+    return {"ttft": elapsed, "total": elapsed, "answered": model, "think": 0, "text": 0}
+
+
+def run(surface: str, rounds: int) -> None:
+    if surface == "proxy":
+        client = OpenAI(timeout=TIMEOUT_S, max_retries=0)
+        served = {m.id for m in client.models.list()}
+        call = proxy_call
+    else:
+        # attempts is the RETRY count here (1 would still retry once), so 0 means one try.
+        # Decisions answers 404 on the SDK's default API version and exists only on v1beta.
+        client = genai.Client(
+            http_options=types.HttpOptions(
+                api_version="v1beta" if surface == "decisions" else None,
+                timeout=TIMEOUT_S * 1000,
+                retry_options=types.HttpRetryOptions(attempts=0),
+            )
+        )
+        served = {m.name.removeprefix("models/") for m in client.models.list()}
+        call = native_call
+    if surface == "decisions":
+        cells, call = [(DECISION_MODEL, "none")], decisions_call
+    else:
+        cells = lineup(served=served - RETIRED)
+    print(f"{surface}: {len(cells)} cells x {rounds} rounds", file=sys.stderr)
+    # Warm the connection once; this sample is not recorded.
+    try:
+        call(client, *cells[0], PROMPT)
+    except Exception as exc:  # noqa: BLE001 - a failed warmup is still a warm connection
+        print(f"warmup failed: {exc}", file=sys.stderr)
+    # Round-robin, so a bad stretch upstream lands on every cell instead of one.
+    for round_index in range(rounds):
+        for model, effort in cells:
+            # Decisions is direct to Google like native, so it shares native's column.
+            record = {"surface": "native" if surface == "decisions" else surface, "model": model, "effort": effort, "round": round_index}
+            record["ts"] = time.time()
+            prompt = f"[{uuid.uuid4().hex[:8]}] {PROMPT}"
+            try:
+                record |= call(client, model, effort, prompt) | {"ok": True}
+            except Exception as exc:  # noqa: BLE001 - every failure is a data point
+                record["elapsed"] = time.time() - record["ts"]
+                code = re.search(r"\b(4\d\d|5\d\d)\b", str(exc))
+                # LiteLLM's streamed failure names Google's status instead of the HTTP code.
+                unavailable = "UNAVAILABLE" in str(exc)
+                status = code.group(1) if code else "503" if unavailable else type(exc).__name__
+                record |= {"ok": False, "status": status, "error": str(exc)[:300]}
+            print(json.dumps(record), flush=True)
+
+
+def report(paths: list[str]) -> None:
+    records = [json.loads(line) for path in paths for line in open(path) if line.strip()]
+    groups: dict[tuple, list[dict]] = {}
+    for record in records:
+        groups.setdefault((record["surface"], record["model"], record["effort"]), []).append(record)
+
+    def stat(values: list[float], q: float) -> float | None:
+        values = sorted(v for v in values if v is not None)
+        if not values:
+            return None
+        if len(values) == 1:
+            return round(values[0], 2)
+        return round(statistics.quantiles(values, n=20, method="inclusive")[int(q * 20) - 1], 2)
+
+    cells = []
+    for (surface, model, effort), group in sorted(groups.items()):
+        ok = [r for r in group if r["ok"]]
+        # A proxy fallback or a Google-side redirect still answers 200: only the response's own
+        # model field says who answered, and those seconds belong to that other model.
+        own = [r for r in ok if (r["answered"] or "").split("/")[-1] == model]
+        cells.append({
+            "surface": surface,
+            "model": model,
+            "effort": effort,
+            "n": len(group),
+            "ok": len(own),
+            "served_as": dict(Counter(r["answered"] for r in ok if r not in own)),
+            "errors": dict(Counter(r["status"] for r in group if not r["ok"])),
+            "ttft_p50": stat([r["ttft"] for r in own], 0.5),
+            "ttft_p90": stat([r["ttft"] for r in own], 0.9),
+            "total_p50": stat([r["total"] for r in own], 0.5),
+            "total_p90": stat([r["total"] for r in own], 0.9),
+            "think_mean": round(statistics.mean(r["think"] for r in own)) if own else None,
+            "text_mean": round(statistics.mean(r["text"] for r in own)) if own else None,
+        })
+    window = [min(r["ts"] for r in records), max(r["ts"] for r in records)]
+    json.dump({"window": window, "prompt": PROMPT, "cells": cells}, sys.stdout, indent=1)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    run_parser = sub.add_parser("run")
+    run_parser.add_argument("--surface", choices=("proxy", "native", "decisions"), default="proxy")
+    run_parser.add_argument("--rounds", type=int, default=10)
+    report_parser = sub.add_parser("report")
+    report_parser.add_argument("paths", nargs="+")
+    args = parser.parse_args()
+    if args.command == "run":
+        run(surface=args.surface, rounds=args.rounds)
+    else:
+        report(paths=args.paths)
+</script>
+
+<script type="application/json" id="run-meta">
+{
+ "rounds": 10,
+ "versions": {"LiteLLM": "1.108.0", "openai": "3.49.0", "google-genai": "3.2.0"},
+ "marks": {
+  "gemini-3.5-flash-lite/minimal": "triage",
+  "gemini-4-carbon/low": "fast",
+  "gemini-4-carbon/high": "slow / memory"
+ }
+}
+</script>
+
+<script type="application/json" id="run-data">
+{"window": [1794482844.4060295, 1794487238.0578003], "prompt": "How many positive integers below 1000 are divisible by 7 but not by 11? Give the number and one sentence of reasoning.", "cells": [{"surface": "native", "model": "gemini-decision-1", "effort": "none", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 0.17, "ttft_p90": 0.34, "total_p50": 0.17, "total_p90": 0.34, "think_mean": 0, "text_mean": 0}, {"surface": "proxy", "model": "gemini-3-flash-preview", "effort": "high", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.41, "ttft_p90": 3.31, "total_p50": 2.63, "total_p90": 3.65, "think_mean": 483, "text_mean": 64}, {"surface": "proxy", "model": "gemini-3-flash-preview", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.39, "ttft_p90": 2.72, "total_p50": 2.69, "total_p90": 3.02, "think_mean": 456, "text_mean": 76}, {"surface": "proxy", "model": "gemini-3-flash-preview", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.42, "ttft_p90": 3.11, "total_p50": 2.61, "total_p90": 3.55, "think_mean": 466, "text_mean": 67}, {"surface": "proxy", "model": "gemini-3-flash-preview", "effort": "minimal", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 0.84, "ttft_p90": 0.92, "total_p50": 1.23, "total_p90": 1.31, "think_mean": 0, "text_mean": 86}, {"surface": "proxy", "model": "gemini-3.1-flash-lite", "effort": "high", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.48, "ttft_p90": 3.09, "total_p50": 2.71, "total_p90": 3.27, "think_mean": 819, "text_mean": 70}, {"surface": "proxy", "model": "gemini-3.1-flash-lite", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 1.37, "ttft_p90": 2.08, "total_p50": 1.94, "total_p90": 2.32, "think_mean": 136, "text_mean": 129}, {"surface": "proxy", "model": "gemini-3.1-flash-lite", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.0, "ttft_p90": 2.39, "total_p50": 2.29, "total_p90": 2.65, "think_mean": 455, "text_mean": 89}, {"surface": "proxy", "model": "gemini-3.1-flash-lite", "effort": "minimal", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 0.89, "ttft_p90": 1.87, "total_p50": 1.32, "total_p90": 2.23, "think_mean": 0, "text_mean": 130}, {"surface": "proxy", "model": "gemini-3.1-pro-preview", "effort": "high", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 6.55, "ttft_p90": 9.25, "total_p50": 7.0, "total_p90": 9.72, "think_mean": 682, "text_mean": 80}, {"surface": "proxy", "model": "gemini-3.1-pro-preview", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 4.28, "ttft_p90": 5.87, "total_p50": 4.87, "total_p90": 6.32, "think_mean": 323, "text_mean": 93}, {"surface": "proxy", "model": "gemini-3.1-pro-preview", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 4.58, "ttft_p90": 7.02, "total_p50": 5.13, "total_p90": 7.85, "think_mean": 348, "text_mean": 91}, {"surface": "proxy", "model": "gemini-3.5-flash-lite", "effort": "high", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.17, "ttft_p90": 2.71, "total_p50": 2.33, "total_p90": 2.86, "think_mean": 674, "text_mean": 52}, {"surface": "proxy", "model": "gemini-3.5-flash-lite", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 1.05, "ttft_p90": 1.69, "total_p50": 1.34, "total_p90": 1.88, "think_mean": 137, "text_mean": 77}, {"surface": "proxy", "model": "gemini-3.5-flash-lite", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 1.74, "ttft_p90": 2.16, "total_p50": 1.95, "total_p90": 2.32, "think_mean": 454, "text_mean": 56}, {"surface": "proxy", "model": "gemini-3.5-flash-lite", "effort": "minimal", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 0.79, "ttft_p90": 0.85, "total_p50": 1.12, "total_p90": 1.27, "think_mean": 0, "text_mean": 98}, {"surface": "proxy", "model": "gemini-3.6-flash", "effort": "high", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 4.11, "ttft_p90": 5.08, "total_p50": 4.44, "total_p90": 5.41, "think_mean": 566, "text_mean": 77}, {"surface": "proxy", "model": "gemini-3.6-flash", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.27, "ttft_p90": 3.1, "total_p50": 2.64, "total_p90": 3.46, "think_mean": 169, "text_mean": 84}, {"surface": "proxy", "model": "gemini-3.6-flash", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 3.54, "ttft_p90": 5.38, "total_p50": 3.87, "total_p90": 5.69, "think_mean": 480, "text_mean": 83}, {"surface": "proxy", "model": "gemini-3.6-flash", "effort": "minimal", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 1.11, "ttft_p90": 2.48, "total_p50": 1.79, "total_p90": 3.1, "think_mean": 0, "text_mean": 101}, {"surface": "proxy", "model": "gemini-3.8-flash", "effort": "high", "n": 10, "ok": 9, "served_as": {"gemini-3.1-pro-preview": 1}, "errors": {}, "ttft_p50": 28.66, "ttft_p90": 50.63, "total_p50": 29.0, "total_p90": 55.43, "think_mean": 596, "text_mean": 77}, {"surface": "proxy", "model": "gemini-3.8-flash", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 15.94, "ttft_p90": 71.49, "total_p50": 17.14, "total_p90": 72.0, "think_mean": 73, "text_mean": 79}, {"surface": "proxy", "model": "gemini-3.8-flash", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 22.82, "ttft_p90": 53.46, "total_p50": 23.3, "total_p90": 53.94, "think_mean": 293, "text_mean": 78}, {"surface": "proxy", "model": "gemini-4-argon", "effort": "high", "n": 10, "ok": 8, "served_as": {}, "errors": {"APITimeoutError": 2}, "ttft_p50": 42.73, "ttft_p90": 60.06, "total_p50": 43.34, "total_p90": 60.91, "think_mean": 761, "text_mean": 78}, {"surface": "proxy", "model": "gemini-4-argon", "effort": "low", "n": 10, "ok": 9, "served_as": {}, "errors": {"APITimeoutError": 1}, "ttft_p50": 47.23, "ttft_p90": 78.79, "total_p50": 48.07, "total_p90": 80.09, "think_mean": 0, "text_mean": 84}, {"surface": "proxy", "model": "gemini-4-argon", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 32.73, "ttft_p90": 51.86, "total_p50": 33.6, "total_p90": 52.54, "think_mean": 16, "text_mean": 82}, {"surface": "proxy", "model": "gemini-4-carbon", "effort": "high", "n": 10, "ok": 9, "served_as": {}, "errors": {"APITimeoutError": 1}, "ttft_p50": 23.85, "ttft_p90": 28.02, "total_p50": 24.75, "total_p90": 28.92, "think_mean": 1927, "text_mean": 86}, {"surface": "proxy", "model": "gemini-4-carbon", "effort": "low", "n": 10, "ok": 9, "served_as": {}, "errors": {"APITimeoutError": 1}, "ttft_p50": 7.43, "ttft_p90": 38.89, "total_p50": 10.19, "total_p90": 39.75, "think_mean": 4, "text_mean": 89}, {"surface": "proxy", "model": "gemini-4-carbon", "effort": "medium", "n": 10, "ok": 8, "served_as": {}, "errors": {"APITimeoutError": 2}, "ttft_p50": 5.6, "ttft_p90": 8.84, "total_p50": 6.37, "total_p90": 10.51, "think_mean": 122, "text_mean": 77}, {"surface": "proxy", "model": "gemini-4-hydrogen", "effort": "high", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 3.48, "ttft_p90": 5.47, "total_p50": 3.66, "total_p90": 5.48, "think_mean": 256, "text_mean": 84}, {"surface": "proxy", "model": "gemini-4-hydrogen", "effort": "low", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 2.5, "ttft_p90": 3.6, "total_p50": 2.58, "total_p90": 3.62, "think_mean": 303, "text_mean": 84}, {"surface": "proxy", "model": "gemini-4-hydrogen", "effort": "medium", "n": 10, "ok": 10, "served_as": {}, "errors": {}, "ttft_p50": 3.92, "ttft_p90": 5.59, "total_p50": 3.94, "total_p90": 5.61, "think_mean": 464, "text_mean": 82}, {"surface": "proxy", "model": "gemini-4-hydrogen", "effort": "xhigh", "n": 10, "ok": 0, "served_as": {}, "errors": {"400": 10}, "ttft_p50": null, "ttft_p90": null, "total_p50": null, "total_p90": null, "think_mean": null, "text_mean": null}]}
+</script>
+
+<script>
+(() => {
+  const data = JSON.parse(document.getElementById("run-data").textContent);
+  const meta = JSON.parse(document.getElementById("run-meta").textContent);
+  const scriptText = document.getElementById("bench-script").textContent.replace(/^\n/, "");
+  document.getElementById("script-view").textContent = scriptText;
+
+  const copyBtn = document.getElementById("copy");
+  copyBtn.addEventListener("click", () => {
+    navigator.clipboard.writeText(scriptText).then(
+      () => { copyBtn.textContent = "已複製"; setTimeout(() => (copyBtn.textContent = "複製"), 1500); },
+      () => { const r = document.createRange(); r.selectNodeContents(document.getElementById("script-view")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+    );
+  });
+
+  // The run window in UTC, to read whether the US or Europe was awake, and in Taipei time.
+  const stamp = (ts, timeZone) => {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ts * 1000));
+    const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+    return { day: `${p.year}-${p.month}-${p.day} (${p.weekday})`, time: `${p.hour}:${p.minute}` };
+  };
+  const runWindow = (timeZone) => {
+    const [start, end] = data.window.map((ts) => stamp(ts, timeZone));
+    return `${start.day} ${start.time}–${start.day === end.day ? "" : `${end.day} `}${end.time}`;
+  };
+  const metaEl = document.getElementById("meta");
+  const metaItems = [
+    ["UTC", runWindow("UTC")],
+    ["台北", runWindow("Asia/Taipei")],
+    ["每格樣本", `${meta.rounds} 次`],
+    ...Object.entries(meta.versions),
+  ];
+  metaEl.innerHTML = metaItems.map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join("");
+
+  // Index cells by model and effort; order models newest first then strongest first, efforts deepest first.
+  const EFFORTS = ["xhigh", "high", "medium", "low", "minimal", "none"];
+  const ver = (m) => (m.match(/gemini-(\d+(?:\.\d+)?)/) || [0, "0"])[1];
+  const tier = (m) => (m.includes("-pro") ? 0 : m.includes("flash-lite") ? 2 : 1);
+  const cells = {};
+  for (const c of data.cells) ((cells[c.model] ??= {})[c.effort] ??= {})[c.surface] = c;
+  const models = Object.keys(cells).sort((a, b) => parseFloat(ver(b)) - parseFloat(ver(a)) || tier(a) - tier(b) || a.localeCompare(b));
+  const rows = models.flatMap((m) => EFFORTS.filter((e) => cells[m][e]).map((e) => ({ model: m, effort: e, ...cells[m][e] })));
+  // Native is measured only on request; a surface with no data gets no row, column or legend.
+  const SURFACES = [["proxy", "Proxy", "--proxy"], ["native", "Native", "--native"]].filter(([key]) => data.cells.some((c) => c.surface === key));
+  document.getElementById("legend-native").hidden = !SURFACES.some(([key]) => key === "native");
+  const s = (v) => (v == null ? "–" : v.toFixed(v < 10 ? 2 : 1));
+  const errText = (c) => Object.entries(c.errors).map(([k, n]) => `${k}×${n}`)
+    .concat(Object.entries(c.served_as).map(([m, n]) => `→ ${m}×${n}`)).join(" ");
+
+  // Chart.
+  const chart = document.getElementById("chart");
+  let metric = "ttft";
+  function niceMax(v) { const steps = [2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180]; return steps.find((x) => x >= v) || Math.ceil(v / 60) * 60; }
+  function tickStep(max) { return max <= 2 ? 0.5 : max <= 5 ? 1 : max <= 15 ? 2.5 : max <= 30 ? 5 : max <= 60 ? 10 : 30; }
+  function draw() {
+    // Scale to the medians so one long tail does not flatten every other row; a p90 past the
+    // edge is drawn to it and labelled with its value.
+    const max = niceMax(Math.max(...data.cells.map((c) => c[metric + "_p50"] ?? 0)) * 1.4);
+    const step = tickStep(max);
+    const ticks = []; for (let t = 0; t <= max + 1e-9; t += step) ticks.push(t);
+    const x = (v) => `${(v / max) * 100}%`;
+    const tickHtml = ticks.map((t) => `<i class="tickline" style="left:${x(t)}"></i>`).join("");
+    let html = `<div class="axis"><div></div><div class="track">${ticks.map((t) => `<span style="left:${x(t)}">${t}</span>`).join("")}</div></div>`;
+    let prev = null;
+    rows.forEach((r, i) => {
+      const tag = meta.marks[`${r.model}/${r.effort}`];
+      const marks = SURFACES.map(([key, , color], j) => {
+        const c = r[key]; const y = SURFACES.length === 1 ? "50%" : j === 0 ? "35%" : "68%";
+        if (!c) return `<span class="absent" style="top:${y}">${key === "proxy" ? "Proxy 未提供" : "Native 未提供"}</span>`;
+        const p50 = c[metric + "_p50"], p90 = c[metric + "_p90"];
+        const end = p90 == null ? 0 : Math.min(p90, max);
+        let out = "";
+        if (p50 != null) {
+          out += `<i class="range" style="left:${x(p50)};width:calc(${x(end)} - ${x(p50)});top:${y};background:var(${color})"></i>`;
+          out += `<i class="dot" style="left:${x(p50)};top:${y};background:var(${color})"></i>`;
+        }
+        const notes = [];
+        if (p90 > max) notes.push(`<span class="over">p90 ${s(p90)}s ›</span>`);
+        const failed = Object.values(c.errors).reduce((a, b) => a + b, 0);
+        if (failed) notes.push(`✕${failed}`);
+        const served = Object.entries(c.served_as).map(([m, n]) => `<span class="served">→ ${m.replace("gemini-", "")} ×${n}</span>`);
+        notes.push(...served);
+        if (notes.length) {
+          const pos = p90 > max ? `right:0;transform:translateY(-120%)` : `left:calc(${x(end)} + 8px)`;
+          out += `<span class="err" style="${pos};top:${y}">${notes.join(" ")}</span>`;
+        }
+        return out;
+      }).join("");
+      if (r.model !== prev) html += `<div class="ghead">${r.model}</div>`;
+      html += `<div class="row" tabindex="0" data-i="${i}">
+        <div class="label">${tag ? `<span class="tag">${tag}</span>` : ""}<span class="effort">${r.effort}</span></div>
+        <div class="track">${tickHtml}${marks}</div></div>`;
+      prev = r.model;
+    });
+    html += `<div class="axis-title">${metric === "ttft" ? "首字延遲" : "完成時間"}（秒）</div><div class="tip" id="tip" hidden></div>`;
+    chart.innerHTML = html;
+  }
+  function tipFor(r) {
+    return `<div><b>${r.model}</b> · ${r.effort}</div>` + SURFACES.map(([key, label, color]) => {
+      const c = r[key];
+      if (!c) return `<div><i class="k" style="background:var(${color})"></i>${label}：未提供</div>`;
+      const err = errText(c);
+      return `<div><i class="k" style="background:var(${color})"></i>${label}：首字 ${s(c.ttft_p50)} / ${s(c.ttft_p90)}s，完成 ${s(c.total_p50)} / ${s(c.total_p90)}s，成功 ${c.ok}/${c.n}${err ? `，${err}` : ""}</div>`;
+    }).join("") + `<div class="note">p50 / p90</div>`;
+  }
+  function showTip(rowEl) {
+    const tip = document.getElementById("tip");
+    tip.innerHTML = tipFor(rows[rowEl.dataset.i]);
+    tip.hidden = false;
+    const top = rowEl.offsetTop + rowEl.offsetHeight + 4;
+    tip.style.top = (top + tip.offsetHeight > chart.offsetHeight ? rowEl.offsetTop - tip.offsetHeight - 4 : top) + "px";
+    tip.style.left = Math.min(130, chart.offsetWidth - tip.offsetWidth) + "px";
+  }
+  chart.addEventListener("mouseover", (e) => { const r = e.target.closest(".row"); if (r) showTip(r); });
+  chart.addEventListener("focusin", (e) => { const r = e.target.closest(".row"); if (r) showTip(r); });
+  chart.addEventListener("mouseleave", () => (document.getElementById("tip").hidden = true));
+  chart.addEventListener("focusout", () => (document.getElementById("tip").hidden = true));
+  for (const [id, m] of [["m-ttft", "ttft"], ["m-total", "total"]]) {
+    document.getElementById(id).addEventListener("click", () => {
+      metric = m;
+      document.getElementById("m-ttft").setAttribute("aria-pressed", m === "ttft");
+      document.getElementById("m-total").setAttribute("aria-pressed", m === "total");
+      draw();
+    });
+  }
+  draw();
+
+  // Table.
+  // Grouped by model until a column header is clicked; then flat, sorted by that column.
+  const COLS = [["ttft_p50", "首字"], ["total_p50", "完成"], ["ok", "成功"]];
+  const value = (r, surface, key) => (r[surface] ? (key === "ok" ? r[surface].ok / r[surface].n : r[surface][key]) : null);
+  const table = document.getElementById("table");
+  let sortBy = null;
+  const active = (surface, key) => sortBy?.surface === surface && sortBy.key === key;
+  function drawTable() {
+    const th = (surface, [key, label], i) => {
+      const on = active(surface, key);
+      return `<th${i === 0 ? ' class="sep"' : ""}${on ? ` aria-sort="${sortBy.dir > 0 ? "ascending" : "descending"}"` : ""}><button type="button" class="sort" data-surface="${surface}" data-key="${key}">${label}${on ? (sortBy.dir > 0 ? " ▲" : " ▼") : ""}</button></th>`;
+    };
+    const head = `<thead><tr><th class="m"></th><th></th>${SURFACES.map(([, l]) => `<th colspan="3" class="sep" style="text-align:center">${l}</th>`).join("")}</tr>
+      <tr><th class="m"><button type="button" class="sort" data-reset>模型</button></th><th class="m">effort</th>${SURFACES.map(([surface]) => COLS.map((col, i) => th(surface, col, i)).join("")).join("")}</tr></thead>`;
+    const ordered = !sortBy ? rows : [...rows].sort((a, b) => {
+      const va = value(a, sortBy.surface, sortBy.key), vb = value(b, sortBy.surface, sortBy.key);
+      // A cell with no value goes last whichever way the column runs.
+      if (va == null || vb == null) return (va == null) - (vb == null);
+      return (va - vb) * sortBy.dir;
+    });
+    let prev = null;
+    const body = ordered.map((r) => {
+      const cellsHtml = SURFACES.map(([key]) => {
+        const c = r[key];
+        if (!c) return `<td class="sep m" colspan="3" style="color:var(--muted)">未提供</td>`;
+        const err = errText(c);
+        return `<td class="num sep">${s(c.ttft_p50)}</td><td class="num">${s(c.total_p50)}</td><td class="num${c.ok < c.n ? " bad" : ""}">${c.ok}/${c.n}${err ? ` · ${err}` : ""}</td>`;
+      }).join("");
+      const tag = meta.marks[`${r.model}/${r.effort}`];
+      const first = sortBy || r.model !== prev;
+      const out = `<tr${!sortBy && r.model !== prev ? ' class="group"' : ""}><td class="m">${first ? r.model : ""}</td><td class="m">${r.effort}${tag ? ` <span class="tag">${tag}</span>` : ""}</td>${cellsHtml}</tr>`;
+      prev = r.model;
+      return out;
+    }).join("");
+    table.innerHTML = head + `<tbody>${body}</tbody>`;
+  }
+  table.addEventListener("click", (e) => {
+    const b = e.target.closest(".sort");
+    if (!b) return;
+    if ("reset" in b.dataset) sortBy = null;
+    else {
+      const { surface, key } = b.dataset;
+      // Times start fastest first and success highest first; a second click reverses.
+      sortBy = { surface, key, dir: active(surface, key) ? -sortBy.dir : key === "ok" ? -1 : 1 };
+    }
+    drawTable();
+  });
+  drawTable();
+})();
+</script>
