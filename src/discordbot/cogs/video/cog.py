@@ -14,6 +14,7 @@ from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.discord_embeds import DISCORD_ATTACHMENT_LIMIT
 from discordbot.utils.media_delivery import (
+    MEDIA_ENVELOPE_MARGIN,
     MediaItem,
     upload_limit_for,
     build_media_delivery_planner,
@@ -154,7 +155,10 @@ class VideoCogs(commands.Cog):
                 # Wall-clock bound; yt-dlp's `socket_timeout` multiplies across retries.
                 async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
                     result = await download_with_stop_signal(
-                        downloader=downloader, url=url, quality=quality
+                        downloader=downloader,
+                        url=url,
+                        quality=quality,
+                        max_items=DISCORD_ATTACHMENT_LIMIT,
                     )
                 try:
                     await self._deliver_download(
@@ -190,23 +194,61 @@ class VideoCogs(commands.Cog):
         upload_limit: int,
     ) -> None:
         """Attaches, hosts, or refuses a finished yt-dlp download."""
-        file_size_mb = result.filename.stat().st_size / 1024 / 1024
-        item = MediaItem(source=result.filename, filename=result.filename.name)
-        plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
-        if plan.native:
-            await self._deliver(
-                interaction=interaction, file_size_mb=file_size_mb, item=plan.native[0], url=url
+        # Measure sizes before planning: external hosting unlinks the source files on disk.
+        total_mb = sum(path.stat().st_size for path in result.filenames) / 1024 / 1024
+        items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
+        plan = await self.media_delivery.plan(
+            items=items,
+            upload_limit=upload_limit,
+            envelope_margin=MEDIA_ENVELOPE_MARGIN if len(items) > 1 else 0,
+        )
+
+        if not plan.native and not plan.hosted_urls:
+            await self._refuse_oversize(
+                interaction=interaction, file_size_mb=total_mb, upload_limit=upload_limit
             )
             return
 
-        if plan.hosted_urls:
+        if len(result.filenames) == 1 and not result.omitted_items:
+            if plan.native:
+                await self._deliver(
+                    interaction=interaction, file_size_mb=total_mb, item=plan.native[0], url=url
+                )
+                return
             await self._deliver_url(
-                interaction=interaction, file_size_mb=file_size_mb, public_url=plan.hosted_urls[0]
+                interaction=interaction, file_size_mb=total_mb, public_url=plan.hosted_urls[0]
             )
             return
 
-        await self._refuse_oversize(
-            interaction=interaction, file_size_mb=file_size_mb, upload_limit=upload_limit
+        lines = [_file_header(file_size_mb=total_mb, url=url)]
+        omitted_count = result.omitted_items + len(plan.clamped_items)
+        if omitted_count:
+            lines.append(
+                f"-# 已省略 {omitted_count} 個檔案 (Discord 單則訊息最多 "
+                f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
+            )
+        if plan.dropped_items:
+            logfire.warn(
+                "Video download dropped some media",
+                url=url,
+                dropped_count=len(plan.dropped_items),
+                native_count=len(plan.native),
+                hosted_count=len(plan.hosted_urls),
+                hosting_available=self.media_delivery.media_hosting.config.available,
+            )
+            lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
+        lines.extend(plan.hosted_urls)
+
+        # Omit `files` when an all-hosted batch has no native attachments.
+        files = [item.to_file() for item in plan.native]
+        if files:
+            await interaction.edit_original_message(
+                content="\n".join(lines), files=files, allowed_mentions=AllowedMentions.none()
+            )
+            return
+
+        await interaction.edit_original_message(
+            content="\n".join(lines), allowed_mentions=AllowedMentions.none()
         )
 
     async def _download_douyin(
