@@ -284,3 +284,29 @@ async def test_no_pending_note_on_a_reply_that_chunks() -> None:
         chunks.append(chunks[-1].replies[-1])
     assert len(chunks) > 1, "the reply did not chunk, so this test proves nothing"
     assert all(MEMORY_PENDING_NOTE not in (chunk.content or "") for chunk in chunks)
+
+
+async def test_memory_note_replacement_preserves_matching_body_text() -> None:
+    """A reply whose body literally quotes `MEMORY_PENDING_NOTE` is never corrupted by note edits."""
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    quoted_body = f"提示文字會顯示\n{MEMORY_PENDING_NOTE}\n像這樣"
+    full_reply = await _stream(
+        streamer=streamer,
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta=f"{quoted_body}<write-memory>喜歡貓</write-memory>"),
+                _completed_event(input_tokens=3, output_tokens=4),
+            ]
+        ),
+    )
+
+    assert full_reply.startswith(quoted_body)
+    assert (message.replies[0].content or "").count(MEMORY_PENDING_NOTE) == 2
+
+    await streamer.set_memory_note(line="-# ✏️ 記下了 喜歡貓")
+
+    content = message.replies[0].content or ""
+    assert content.startswith(quoted_body)
+    assert content.count(MEMORY_PENDING_NOTE) == 1
+    assert "-# ✏️ 記下了 喜歡貓" in content

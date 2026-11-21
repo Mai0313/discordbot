@@ -286,7 +286,8 @@ async def test_finalize_media_edit_posts_followup_when_content_would_overflow() 
     streamer = _streamer(message=FakeMessage())
     reply = FakeReply()
     streamer.reply = as_message(fake=reply)
-    streamer.stored_content = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+    streamer._body_text = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+    streamer.stored_content = streamer._body_text
 
     await streamer._finalize_media_edit(
         reply=as_message(fake=reply), files=[], hosted_urls=["https://media.test/abc.wav"]
@@ -306,7 +307,8 @@ async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> Non
     reply = FakeReply()
     reply.reply_error = RuntimeError("follow-up refused")
     streamer.reply = as_message(fake=reply)
-    streamer.stored_content = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+    streamer._body_text = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+    streamer.stored_content = streamer._body_text
 
     await streamer._finalize_media_edit(
         reply=as_message(fake=reply), files=[], hosted_urls=["https://media.test/abc.wav"]
@@ -314,6 +316,35 @@ async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> Non
 
     assert reply.replies == []
     assert DROPPED_HINT_EMOJI in message.added_reactions
+
+
+async def test_finalize_media_edit_keeps_state_clean_when_edit_fails() -> None:
+    """A failed hosted-URL edit must not mutate `stored_content` or leak into later memory edits."""
+    message = FakeMessage()
+    streamer = _streamer(message=message)
+    await _stream(
+        streamer=streamer,
+        responses=_stream_events_from(
+            events=[_text_event(delta="好喔"), _completed_event(input_tokens=3, output_tokens=4)]
+        ),
+    )
+    reply = message.replies[0]
+    before = streamer.stored_content
+    reply.edit_error = RuntimeError("edit failed")
+
+    ok = await streamer._finalize_media_edit(
+        reply=as_message(fake=reply), files=[], hosted_urls=["https://media.test/never-landed.mp4"]
+    )
+
+    assert ok is False
+    assert streamer.stored_content == before
+    assert "never-landed.mp4" not in streamer.final_answer_text()
+    assert DROPPED_HINT_EMOJI in message.added_reactions
+
+    reply.edit_error = None
+    await streamer.set_memory_note(line="-# ✏️ 記下了 測試")
+    assert "never-landed.mp4" not in (reply.content or "")
+    assert "記下了 測試" in (reply.content or "")
 
 
 @pytest.mark.parametrize("refused", [False, True], ids=["attached", "refused"])
@@ -989,3 +1020,73 @@ async def test_a_late_clip_on_a_finished_ask_answer_costs_the_clip_not_the_answe
     assert answer.startswith("hello from stream")
     assert reply.content is not None
     assert TIMEOUT_HINT_EMOJI in reply.content
+
+
+async def test_attach_generated_media_cancels_and_drains_source_images_task_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timed-out inline media cancels and drains `source_images_task` so no background fetch leaks."""
+    message = FakeMessage()
+    reply = FakeReply()
+    surface = _expiring_surface(message=as_message(fake=message), seconds_left=0.05)
+    streamer = ResponseStreamer(
+        message=message,
+        surface=surface,
+        media_delivery=hosting_off_planner(),
+        reply=as_message(fake=reply),
+        image_generator=cast("ImageGenerator", _FakeImageGenerator()),
+        markers=InlineMarkers(cleaned_text="hi", image_prompts=["cat"], image_requests=1),
+    )
+    source_started = asyncio.Event()
+    source_drained = asyncio.Event()
+
+    async def slow_sources() -> list[object]:
+        source_started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            source_drained.set()
+        return []
+
+    async def slow_image_builder(source_images_task: object) -> list[MediaItem]:
+        del source_images_task
+        await asyncio.sleep(60)
+        return []
+
+    monkeypatch.setattr(streamer, "_load_marker_source_images", slow_sources)
+    monkeypatch.setattr(streamer, "_build_image_candidates", slow_image_builder)
+
+    await asyncio.wait_for(streamer._attach_generated_media(), timeout=5)
+
+    assert source_started.is_set()
+    assert source_drained.is_set()
+    assert surface.take_hints() == [TIMEOUT_HINT_EMOJI]
+
+
+async def test_attach_generated_media_catches_unexpected_builder_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected builder exception logs + hints ⚠️ instead of escaping `finalize_reply()`."""
+    message = FakeMessage()
+    reply = FakeReply()
+    streamer = _streamer(message=message, reply=as_message(fake=reply))
+    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
+
+    async def explode_voice() -> MediaItem:
+        raise RuntimeError("unexpected tts crash")
+
+    async def ok_music() -> MediaItem:
+        return MediaItem(source=b"mp3", filename="song.mp3")
+
+    monkeypatch.setattr(streamer, "_build_voice_candidate", explode_voice)
+    monkeypatch.setattr(streamer, "_build_music_candidate", ok_music)
+
+    await streamer._attach_generated_media()
+
+    assert reply.files is not None
+    assert [file.filename for file in reply.files] == ["song.mp3"]
+    assert DROPPED_HINT_EMOJI in message.added_reactions
+    assert any(
+        fields.get("media") == "voice" and fields.get("error_type") == "RuntimeError"
+        for _, fields in warns
+    )
