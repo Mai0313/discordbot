@@ -6,7 +6,6 @@ decide is tested here once per cog; each cog's own file keeps its hooks: the foo
 line, and where its links point.
 """
 
-from types import SimpleNamespace
 from typing import Any, Self
 from pathlib import Path
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from discordbot.utils.expansion_cog import (
     VIDEO_HINT,
     TRUNCATION_NOTICE,
     POST_CARD_MAX_IMAGES,
+    ExpansionDelivery,
     VideoTooLargeError,
     ConversationExpansionCog,
     fetch_card_image,
@@ -33,7 +33,7 @@ from discordbot.utils.discord_embeds import (
     utf16_length,
     embed_text_length,
 )
-from discordbot.utils.media_delivery import MEDIA_ENVELOPE_MARGIN
+from discordbot.utils.media_delivery import MEDIA_ENVELOPE_MARGIN, MediaItem
 from discordbot.cogs.parse_twitter.cog import TwitterCogs
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.services.platforms.base import PlatformOutput, PlatformConversation
@@ -46,6 +46,7 @@ from tests.helpers.casting import as_message
 from tests.helpers.link_sources import (
     SAMPLE_POST_URLS,
     expand,
+    stub_bot,
     twitter_post,
     facebook_post,
     guild_message,
@@ -348,20 +349,116 @@ def test_a_card_image_download_refuses_what_is_not_a_served_image(
     monkeypatch: pytest.MonkeyPatch, status: int, content_type: str
 ) -> None:
     """An error page is never uploaded under an image's name; the card keeps the link instead."""
-    response = SimpleNamespace(
-        status_code=status, headers={"Content-Type": content_type}, content=b"<html></html>"
-    )
 
-    def raise_for_status() -> None:
-        """Raises as `requests` does on an error status."""
-        if status >= 400:
-            raise requests.HTTPError(f"{status}")
+    class _FakeResponse:
+        status_code = status
 
-    response.raise_for_status = raise_for_status
-    monkeypatch.setattr(requests, "get", lambda url, timeout: response)
+        def __init__(self) -> None:
+            self.headers = {"Content-Type": content_type}
+
+        def raise_for_status(self) -> None:
+            if status >= 400:
+                raise requests.HTTPError(f"{status}")
+
+        def iter_content(self, chunk_size: int) -> list[bytes]:
+            del chunk_size
+            return [b"<html></html>"]
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(requests, "get", lambda url, timeout, stream: _FakeResponse())
 
     with pytest.raises((requests.HTTPError, ValueError)):
         fetch_card_image(url="https://cdn.test/0.jpg")
+
+
+@pytest.mark.parametrize(
+    argnames=("headers", "chunks"),
+    argvalues=[
+        pytest.param(
+            {"Content-Type": "image/jpeg", "Content-Length": "100"},
+            [b"x" * 100],
+            id="declared-content-length",
+        ),
+        pytest.param({"Content-Type": "image/jpeg"}, [b"x" * 6, b"y" * 6], id="streamed-body"),
+    ],
+)
+def test_fetch_card_image_rejects_oversize_payloads(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], chunks: list[bytes]
+) -> None:
+    """Both declared `Content-Length` and chunked bodies past `max_bytes` raise `ValueError`."""
+    streamed = False
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self) -> None:
+            self.headers = headers
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int) -> list[bytes]:
+            nonlocal streamed
+            del chunk_size
+            streamed = True
+            return chunks
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(requests, "get", lambda url, timeout, stream: _FakeResponse())
+
+    with pytest.raises(ValueError, match="10"):
+        fetch_card_image(url="https://cdn.test/huge.jpg", max_bytes=10)
+
+    if "Content-Length" in headers:
+        assert streamed is False
+
+
+async def test_attach_card_images_short_circuits_without_slots_or_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no attachment slots or upload headroom remain, card images are not even downloaded."""
+    asked = serve_card_images(monkeypatch=monkeypatch)
+    cog = TwitterCogs(bot=stub_bot())
+    embed = Embed(url="https://x.com/a/status/1")
+    embed.set_image(url="https://cdn.test/img.jpg")
+
+    full_slots = ExpansionDelivery(
+        embeds=[embed],
+        media=[
+            MediaItem(source=b"x", filename=f"clip_{index}.mp4")
+            for index in range(DISCORD_ATTACHMENT_LIMIT)
+        ],
+    )
+    message = guild_message(content="https://x.com/a/status/1")
+    await cog._attach_card_images(
+        message=as_message(fake=message), url="https://x.com/a/status/1", delivery=full_slots
+    )
+    assert asked == []
+    assert embed.image.url == "https://cdn.test/img.jpg"
+
+    no_headroom = ExpansionDelivery(
+        embeds=[embed], media=[MediaItem(source=b"x" * 100, filename="clip.mp4")]
+    )
+    tight_message = guild_message(
+        content="https://x.com/a/status/1", filesize_limit=MEDIA_ENVELOPE_MARGIN + 100
+    )
+    await cog._attach_card_images(
+        message=as_message(fake=tight_message),
+        url="https://x.com/a/status/1",
+        delivery=no_headroom,
+    )
+    assert asked == []
+    assert embed.image.url == "https://cdn.test/img.jpg"
 
 
 async def _expand_with_cog(

@@ -571,9 +571,11 @@ class DouyinDownloader(PlatformDownloader):
                     _exc_info=e,
                 )
 
-        # Keep exhausted retries retryable (`DouyinTransferError`) rather than `DouyinError`.
+        # Keep exhausted retries classified (`DouyinBlockedError` on 429, `DouyinTransferError` otherwise).
         message = f"Failed to download Douyin media from {url}: {last_error}"
         if isinstance(last_error, RequestException):
+            if last_error.response is not None and last_error.response.status_code == 429:
+                raise DouyinBlockedError(message) from last_error
             raise DouyinTransferError(message) from last_error
         raise DouyinError(message) from last_error
 

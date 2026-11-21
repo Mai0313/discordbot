@@ -861,3 +861,18 @@ def test_a_stalled_media_download_is_retryable_but_not_the_bot_wall(
     # and blaming a wall sends someone off to wait out something that was never there.
     assert isinstance(raised.value, LinkRetryableError)
     assert not isinstance(raised.value, DouyinBlockedError)
+
+
+def test_exhausted_429_media_download_raises_douyin_blocked_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Exhausted HTTP 429 retries on media downloads report a block rather than a transfer stall."""
+    calls = _install_session(
+        monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(status_code=429)
+    )
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+
+    with pytest.raises(DouyinBlockedError):
+        downloader._download_to(url="https://cdn.test/v.mp4", filename="v.mp4")
+
+    assert len(calls) == downloader.max_retries

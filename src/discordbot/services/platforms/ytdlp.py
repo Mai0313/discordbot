@@ -25,7 +25,12 @@ from discordbot.typings.timeouts import (
     SHARE_RESOLVE_TIMEOUT_SECONDS,
 )
 from discordbot.services.platforms.base import PlatformDownloader
-from discordbot.services.platforms.facebook import FacebookDownloader, is_facebook_post_url
+from discordbot.services.platforms.facebook import (
+    _LOGIN_WALL_PATHS,
+    FacebookDownloader,
+    is_facebook_post_url,
+)
+from discordbot.services.platforms.page_json import BROWSER_HEADERS
 from discordbot.services.platforms.file_downloads import DownloadTooLargeError
 
 
@@ -378,7 +383,6 @@ class VideoDownloader(PlatformDownloader):
 
     def _resolve_facebook_share_url(self, url: str) -> str:
         """Follows redirects for `facebook.com/share/...` links to return the final target URL."""
-        headers = self._default_http_headers()
         with Session() as session:
             for method_name in ("head", "get"):
                 request_method = getattr(session, method_name)
@@ -387,7 +391,7 @@ class VideoDownloader(PlatformDownloader):
                     response = request_method(
                         url,
                         allow_redirects=True,
-                        headers=headers,
+                        headers=BROWSER_HEADERS,
                         timeout=SHARE_RESOLVE_TIMEOUT_SECONDS,
                         stream=True,
                     )
@@ -396,7 +400,11 @@ class VideoDownloader(PlatformDownloader):
 
                 final_url = response.url
                 response.close()
-                if final_url and final_url != url:
+                if (
+                    final_url
+                    and final_url != url
+                    and not urlparse(url=final_url).path.lower().startswith(_LOGIN_WALL_PATHS)
+                ):
                     return final_url
 
         return url

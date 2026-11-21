@@ -9,7 +9,10 @@ from nextcord import Color, Embed, Locale, Message, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    THREADS_PAGE_TIMEOUT_SECONDS,
+    THREADS_EXPAND_TIMEOUT_SECONDS,
+)
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.expansion_cog import (
     VIDEO_HINT,
@@ -26,6 +29,7 @@ from discordbot.utils.discord_embeds import (
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     utf16_length,
     embed_text_length,
+    target_allows_file_uploads,
 )
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -35,6 +39,7 @@ from discordbot.utils.media_delivery import (
 )
 from discordbot.services.platforms.threads import (
     THREADS_URL_RE,
+    ThreadsURL,
     ThreadsOutput,
     ThreadsDownloader,
     ThreadsConversation,
@@ -159,11 +164,14 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
             return None
 
+        upload_limit = (
+            upload_limit_for(guild=message.guild)
+            if target_allows_file_uploads(target=message)
+            else 0
+        )
         items = [MediaItem(source=path, filename=path.name) for path in target.video_paths]
         plan = await self.media_delivery.plan(
-            items=items,
-            upload_limit=upload_limit_for(guild=message.guild),
-            envelope_margin=MEDIA_ENVELOPE_MARGIN,
+            items=items, upload_limit=upload_limit, envelope_margin=MEDIA_ENVELOPE_MARGIN
         )
         if plan.dropped_items:
             # Refuse the whole post if any video cannot be attached or hosted.
@@ -362,12 +370,15 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
 
         # `resolve_clean_url` writes nothing to disk.
         downloader = self.downloader_factory(output_folder="")
+        raw_url = match.group(0)
         try:
-            clean_url = await asyncio.to_thread(downloader.resolve_clean_url, url=match.group(0))
-        except RuntimeError as error:
+            async with asyncio.timeout(delay=THREADS_PAGE_TIMEOUT_SECONDS):
+                clean_url = await asyncio.to_thread(downloader.resolve_clean_url, url=raw_url)
+        except (RuntimeError, TimeoutError) as error:
             logfire.warn(
                 "Could not resolve a Threads share link",
-                url=match.group(0),
+                # Strip `?xmt=` share-tracking token before logging.
+                url=ThreadsURL(raw_url=raw_url).clean_url,
                 error_type=type(error).__name__,
                 _exc_info=error,
             )

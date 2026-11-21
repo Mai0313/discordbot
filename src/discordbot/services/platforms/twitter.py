@@ -279,8 +279,7 @@ def _media_urls(tweet: _Tweet) -> tuple[list[str], list[str], list[str]]:
         if not renditions:
             continue
         videos.append(max(renditions, key=lambda variant: variant.bitrate).url)
-        if media.media_url_https:
-            posters.append(media.media_url_https)
+        posters.append(media.media_url_https)
     return images, videos, posters
 
 
@@ -429,8 +428,7 @@ def _fx_output(status: _FxStatus) -> TwitterOutput:
             images.append(media.url)
             continue
         videos.append(media.url)
-        if media.thumbnail_url:
-            posters.append(media.thumbnail_url)
+        posters.append(media.thumbnail_url)
     return TwitterOutput(
         text=_fx_text(status=status),
         url=post_url(handle=author.screen_name, status_id=status.id),
@@ -472,7 +470,9 @@ def _with_whole_text(post: TwitterOutput, whole: _FxStatus | None) -> TwitterOut
         update.update(text=_fx_text(status=whole), is_truncated=False)
     quotes = _fx_statuses(items=[whole.quote]) if whole.quote else []
     if post.quoted is not None and quotes and quotes[0].is_note_tweet:
-        update["quoted"] = post.quoted.model_copy(update={"text": _fx_text(status=quotes[0])})
+        update["quoted"] = post.quoted.model_copy(
+            update={"text": _fx_text(status=quotes[0]), "is_truncated": False}
+        )
     return post.model_copy(update=update)
 
 

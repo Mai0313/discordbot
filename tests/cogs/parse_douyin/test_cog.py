@@ -10,10 +10,13 @@ import threading
 import pytest
 
 from discordbot.cogs.parse_douyin import cog as parse_douyin
+from discordbot.utils.expansion_cog import TRUNCATION_NOTICE
+from discordbot.utils.discord_embeds import DISCORD_EMBED_DESCRIPTION_LIMIT, utf16_length
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.services.platforms.douyin import DouyinMetadata
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
+    EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
 )
 
@@ -194,3 +197,42 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
     assert removed  # the teardown really ran and really failed
     assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     assert placeholder_withdrawn(message=message)
+
+
+async def test_douyin_hosts_or_refuses_when_channel_denies_file_uploads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `Attach Files` is denied, media is hosted if available or refused without attaching."""
+    monkeypatch.setattr(
+        "discordbot.cogs.parse_douyin.cog.target_allows_file_uploads", lambda target: False
+    )
+    cog_off, _ = _cog()
+    denied_off = guild_message(content=_URL)
+    await cog_off.on_message(message=as_message(fake=denied_off))
+    assert denied_off.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
+    assert placeholder_withdrawn(message=denied_off)
+
+    cog_on, _ = _cog()
+    serve = tmp_path / "serve"
+    serve.mkdir()
+    cog_on.media_delivery = hosting_planner(serve_dir=serve)
+    denied_on = guild_message(content=_URL)
+    await cog_on.on_message(message=as_message(fake=denied_on))
+    delivered = expansion_payload(message=denied_on)
+    assert any(
+        line.startswith("https://media.test/")
+        for line in _reply_body(message=denied_on).splitlines()
+    )
+    assert "1.mp4" not in [file.filename for file in delivered.get("files", [])]
+    assert denied_on.reactions[-1] == EXPANSION_DONE_EMOJI
+
+
+def test_douyin_embed_clips_oversize_caption() -> None:
+    """Captions over Discord's 4096 UTF-16 limit clip with `TRUNCATION_NOTICE` instead of 400ing."""
+    post = DouyinMetadata(aweme_id="1", title="字" * 5000, author_name="author")
+
+    embed = DouyinCogs._build_embed(post=post, url=_URL)
+
+    assert embed.description is not None
+    assert utf16_length(value=embed.description) <= DISCORD_EMBED_DESCRIPTION_LIMIT
+    assert embed.description.endswith(TRUNCATION_NOTICE)

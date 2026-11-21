@@ -30,6 +30,7 @@ from discordbot.typings.timeouts import (
 from discordbot.utils.link_errors import (
     LinkRetryableError,
     LinkUnavailableError,
+    link_fetch_error,
     is_retryable_fetch_failure,
 )
 from discordbot.services.platforms.base import (
@@ -740,12 +741,26 @@ class ThreadsDownloader(PlatformDownloader):
             f"Threads answered {attempt + 1} times with no post JSON for {post_code}"
         )
 
+    def _resolve_redirect_url(self, url: str) -> str:
+        """Follows redirects for `url` without downloading the final HTML body."""
+        try:
+            with requests.get(
+                url=url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"},
+                timeout=THREADS_PAGE_TIMEOUT_SECONDS,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                return response.url
+        except requests.RequestException as error:
+            raise link_fetch_error(error=error, url=url) from error
+
     def resolve_clean_url(self, url: str) -> str:
         """Returns the canonical post URL for `url` without parsing post JSON or downloading media.
 
-        Canonical URLs are stripped locally without a network request; share links follow one
-        redirect and drop per-share `?xmt=` tokens. Returns an empty string when a share link
-        does not land on a post URL.
+        Canonical URLs are stripped locally without a network request; share links follow redirects
+        without reading the final HTML body and drop per-share `?xmt=` tokens. Returns an empty
+        string when a share link does not land on a post URL.
 
         Args:
             url (str): The Threads post URL, canonical or share form.
@@ -757,7 +772,7 @@ class ThreadsDownloader(PlatformDownloader):
         threads_url = ThreadsURL(raw_url=url)
         if threads_url.post_code:
             return threads_url.clean_url
-        resolved = ThreadsURL(raw_url=self._fetch_page(url=threads_url.clean_url).final_url)
+        resolved = ThreadsURL(raw_url=self._resolve_redirect_url(url=threads_url.clean_url))
         if not resolved.post_code:
             logfire.info(
                 "A Threads share link did not lead to a post; it has no clean URL to give",

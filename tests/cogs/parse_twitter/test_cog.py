@@ -450,3 +450,20 @@ async def test_an_ancestor_video_stays_link_and_poster_only_while_target_downloa
         if file.filename != DEFAULT_EMBED_SPACER_FILENAME
     ]
     assert media_names == ["video_0.mp4"]
+
+
+async def test_context_embed_skips_empty_video_poster_placeholders() -> None:
+    """An empty leading poster placeholder never hides a later clip's poster on a context card."""
+    ancestor = _ancestor(
+        index=1,
+        video_urls=["https://video.twimg.com/clip0.mp4", "https://video.twimg.com/clip1.mp4"],
+        video_poster_urls=["", "https://pbs.twimg.com/clip1_thumb.jpg"],
+    )
+    target = twitter_output(image_urls=[], video_urls=[], video_poster_urls=[])
+
+    message, _ = await expand(
+        cog_type=TwitterCogs, outcome=TwitterConversation(chain=[ancestor, target])
+    )
+
+    embeds = expansion_payload(message=message)["embeds"]
+    assert embeds[0].image.url == "https://pbs.twimg.com/clip1_thumb.jpg"
