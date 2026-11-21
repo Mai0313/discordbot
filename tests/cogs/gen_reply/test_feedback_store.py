@@ -1,6 +1,8 @@
 """Tests for the `reply_turn` and `reply_feedback` store in `reply.db`."""
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from discordbot.cogs.gen_reply.feedback_store import (
     ReplyTurnRow,
@@ -10,6 +12,10 @@ from discordbot.cogs.gen_reply.feedback_store import (
     clear_feedback_vote,
     set_feedback_reason,
     toggle_feedback_vote,
+    record_regen_feedback,
+    load_regen_chain_state,
+    parse_reply_message_ids,
+    update_reply_message_ids,
 )
 
 
@@ -196,3 +202,159 @@ async def test_clear_feedback_vote_requires_matching_expected_vote() -> None:
     # Clearing again after removal returns None.
     again = await clear_feedback_vote(reply_message_id=9005, user_id=100, expected_vote="up")
     assert again is None
+
+
+async def test_regen_chain_state_tracks_ancestry_chunk_ids_and_unique_parent() -> None:
+    """`load_regen_chain_state` walks regen ancestors, reports child existence, and enforces unique parent."""
+    await record_reply_turn(
+        reply_message_id=9101,
+        source_message_id=8100,
+        guild_id=500,
+        channel_id=600,
+        author_id=100,
+        surface="gateway",
+        route="QA",
+        model="gemini-4-carbon",
+        effort="high",
+        backend="responses",
+        question="Compare A and B",
+        answer="First try",
+        reply_message_ids=[9100, 9101],
+    )
+    state1 = await load_regen_chain_state(reply_message_id=9101)
+    assert state1 is not None
+    assert state1.already_regenerated is False
+    assert state1.chain_depth == 0
+    assert state1.tried_models == ("gemini-4-carbon",)
+    assert parse_reply_message_ids(raw=state1.reply_message_ids, fallback_id=9101) == [9100, 9101]
+
+    await update_reply_message_ids(reply_message_id=9101, reply_message_ids=[9100, 9101, 9109])
+    updated = await load_regen_chain_state(reply_message_id=9101)
+    assert updated is not None
+    assert parse_reply_message_ids(raw=updated.reply_message_ids, fallback_id=9101) == [
+        9100,
+        9101,
+        9109,
+    ]
+
+    await record_reply_turn(
+        reply_message_id=9102,
+        source_message_id=8100,
+        guild_id=500,
+        channel_id=600,
+        author_id=100,
+        surface="gateway",
+        route="QA",
+        model="gemini-4-neon",
+        effort="high",
+        backend="responses",
+        question="Compare A and B",
+        answer="Second try",
+        reply_message_ids=[9102],
+        regen_of_reply_message_id=9101,
+    )
+    state1_after = await load_regen_chain_state(reply_message_id=9101)
+    assert state1_after is not None
+    assert state1_after.already_regenerated is True
+
+    state2 = await load_regen_chain_state(reply_message_id=9102)
+    assert state2 is not None
+    assert state2.already_regenerated is False
+    assert state2.chain_depth == 1
+    assert state2.tried_models == ("gemini-4-neon", "gemini-4-carbon")
+
+    await record_reply_turn(
+        reply_message_id=9103,
+        source_message_id=8100,
+        guild_id=500,
+        channel_id=600,
+        author_id=100,
+        surface="gateway",
+        route="QA",
+        model="gemini-4-hydrogen",
+        effort="high",
+        backend="responses",
+        question="Compare A and B",
+        answer="Third try",
+        reply_message_ids=[9103],
+        regen_of_reply_message_id=9102,
+    )
+    state3 = await load_regen_chain_state(reply_message_id=9103)
+    assert state3 is not None
+    assert state3.chain_depth == 2
+    assert state3.tried_models == ("gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon")
+
+    # Unique index prevents a second regen row from pointing at the same parent reply.
+    with pytest.raises(IntegrityError):
+        await record_reply_turn(
+            reply_message_id=9104,
+            source_message_id=8100,
+            guild_id=500,
+            channel_id=600,
+            author_id=100,
+            surface="gateway",
+            route="QA",
+            model="gemini-4-hydrogen",
+            effort="high",
+            backend="responses",
+            question="Compare A and B",
+            answer="Duplicate regen",
+            regen_of_reply_message_id=9101,
+        )
+
+    assert await load_regen_chain_state(reply_message_id=999999) is None
+
+
+async def test_record_regen_feedback_inserts_overwrites_up_and_preserves_explicit_down() -> None:
+    """Implicit regen downvote inserts or flips an upvote, while preserving any explicit downvote."""
+    await _seed_turn(reply_message_id=9201, author_id=100)
+    await record_regen_feedback(
+        reply_message_id=9201, user_id=100, user_name="asker", user_display_name="Asker Nick"
+    )
+    async with open_session() as session:
+        row1 = await session.get(entity=ReplyFeedbackRow, ident=(9201, 100))
+        turn1 = await session.get(entity=ReplyTurnRow, ident=9201)
+    assert turn1 is not None
+    assert row1 is not None
+    assert row1.vote == "down"
+    assert row1.reason_tag == "regen"
+    assert row1.reason_text is None
+
+    # Prior upvote is overwritten to implicit regen downvote.
+    await _seed_turn(reply_message_id=9202, author_id=100)
+    await toggle_feedback_vote(reply_message_id=9202, user_id=100, user_name="asker", vote="up")
+    await record_regen_feedback(
+        reply_message_id=9202, user_id=100, user_name="asker", user_display_name="Updated Nick"
+    )
+    async with open_session() as session:
+        row2 = await session.get(entity=ReplyFeedbackRow, ident=(9202, 100))
+    assert row2 is not None
+    assert row2.vote == "down"
+    assert row2.reason_tag == "regen"
+    assert row2.user_display_name == "Updated Nick"
+
+    # Prior explicit downvote and its reason are preserved untouched.
+    await _seed_turn(reply_message_id=9203, author_id=100)
+    await toggle_feedback_vote(reply_message_id=9203, user_id=100, user_name="asker", vote="down")
+    await set_feedback_reason(
+        reply_message_id=9203, user_id=100, reason_tag="other", reason_text="wrong code"
+    )
+    await record_regen_feedback(
+        reply_message_id=9203, user_id=100, user_name="asker", user_display_name="Asker Nick"
+    )
+    async with open_session() as session:
+        row3 = await session.get(entity=ReplyFeedbackRow, ident=(9203, 100))
+    assert row3 is not None
+    assert row3.vote == "down"
+    assert row3.reason_tag == "other"
+    assert row3.reason_text == "wrong code"
+
+
+def test_parse_reply_message_ids_handles_legacy_malformed_and_missing_fallback() -> None:
+    """Pre-migration NULL, invalid JSON, non-lists, and partial lists degrade cleanly."""
+    assert parse_reply_message_ids(raw=None, fallback_id=50) == [50]
+    assert parse_reply_message_ids(raw="not-json", fallback_id=50) == [50]
+    assert parse_reply_message_ids(raw='{"a": 1}', fallback_id=50) == [50]
+    assert parse_reply_message_ids(raw="[]", fallback_id=50) == [50]
+    assert parse_reply_message_ids(raw="[10, 10, 20]", fallback_id=20) == [10, 20]
+    assert parse_reply_message_ids(raw="[10, 11]", fallback_id=12) == [10, 11, 12]

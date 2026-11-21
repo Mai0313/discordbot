@@ -7,6 +7,7 @@ interaction has been acknowledged.
 
 from typing import ClassVar
 import contextlib
+from collections.abc import Callable, Awaitable
 
 import logfire
 from nextcord import ButtonStyle, Interaction, HTTPException, TextInputStyle
@@ -24,6 +25,8 @@ from discordbot.cogs.gen_reply.feedback_store import (
 
 FEEDBACK_UP_CUSTOM_ID = "gen_reply:feedback:up"
 FEEDBACK_DOWN_CUSTOM_ID = "gen_reply:feedback:down"
+FEEDBACK_REGEN_CUSTOM_ID = "gen_reply:feedback:regen"
+type RegenHandler = Callable[[Interaction[commands.Bot]], Awaitable[None]]
 # Matches Discord's 15-minute ephemeral interaction token window.
 FEEDBACK_REASON_VIEW_TIMEOUT_SECONDS = 900.0
 # Shared subtext notice appended to public feedback-enabled footers and ephemeral vote notices.
@@ -277,15 +280,27 @@ class DownvoteReasonView(LoggedView):
 
 
 class ReplyFeedbackView(LoggedView):
-    """Persistent thumbs-up / thumbs-down action row attached to finalized replies."""
+    """Persistent thumbs-up / thumbs-down (and optional regen) action row on finalized replies."""
 
     interaction_failure_log: ClassVar[str] = "Reply feedback button failed"
 
-    def __init__(self) -> None:
-        """Initializes the persistent view (`timeout=None`) with stable `custom_id`s."""
+    def __init__(self, allow_regen: bool = False, on_regen: RegenHandler | None = None) -> None:
+        """Initializes the persistent view (`timeout=None`) with stable `custom_id`s.
+
+        Args:
+            allow_regen (bool): Whether to include the `🔄` regenerate button in this row.
+            on_regen (RegenHandler | None): Callback invoked when `🔄` is clicked on the globally
+                registered view.
+        """
         # `prevent_update=False` keeps nextcord from storing one immortal ViewStore entry per
-        # delivered reply; `bot.add_view(ReplyFeedbackView())` registers the single global handler.
+        # delivered reply; `bot.add_view(ReplyFeedbackView(allow_regen=True, on_regen=...))`
+        # registers the single global handler.
         super().__init__(timeout=None, prevent_update=False)
+        self._on_regen = on_regen
+        if not allow_regen:
+            for child in list(self.children):
+                if isinstance(child, Button) and child.custom_id == FEEDBACK_REGEN_CUSTOM_ID:
+                    self.remove_item(item=child)
 
     async def _handle_vote(
         self, interaction: Interaction[commands.Bot], vote: FeedbackVote
@@ -361,3 +376,17 @@ class ReplyFeedbackView(LoggedView):
     ) -> None:
         """Records, switches to, or cancels a thumbs-down vote."""
         await self._handle_vote(interaction=interaction, vote="down")
+
+    @button(emoji="🔄", style=ButtonStyle.secondary, custom_id=FEEDBACK_REGEN_CUSTOM_ID, row=0)
+    async def regenerate(
+        self, _button: Button["ReplyFeedbackView"], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Delegates a regeneration button press to the registered cog handler."""
+        if interaction.message is None or interaction.user is None:
+            return
+        if self._on_regen is None:
+            await interaction.response.send_message(
+                content="目前無法重新生成這則回覆", ephemeral=True
+            )
+            return
+        await self._on_regen(interaction)

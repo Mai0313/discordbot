@@ -25,6 +25,7 @@ from discordbot.cogs.gen_reply.feedback_views import (
     FEEDBACK_POLICY_NOTE,
     FEEDBACK_UP_CUSTOM_ID,
     FEEDBACK_DOWN_CUSTOM_ID,
+    FEEDBACK_REGEN_CUSTOM_ID,
     ReplyFeedbackView,
     UpvoteConfirmView,
     DownvoteReasonView,
@@ -45,6 +46,7 @@ from tests.helpers.reply_fakes import (
     hosting_off_planner,
 )
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.ask_interaction import _interaction as _ask_interaction
 
 
 def _feedback_interaction(
@@ -343,6 +345,9 @@ async def test_on_ready_registers_persistent_feedback_view_once(
     added = getattr(cog.bot, "added_views", [])
     assert len(added) == 1
     assert isinstance(added[0], ReplyFeedbackView)
+    custom_ids = [child.custom_id for child in added[0].children if isinstance(child, Button)]
+    assert custom_ids == [FEEDBACK_UP_CUSTOM_ID, FEEDBACK_DOWN_CUSTOM_ID, FEEDBACK_REGEN_CUSTOM_ID]
+    assert added[0]._on_regen is not None
 
 
 def test_response_streamer_defaults_feedback_view_to_none() -> None:
@@ -358,10 +363,126 @@ def test_response_streamer_defaults_feedback_view_to_none() -> None:
 
 
 async def test_persistent_feedback_view_skips_per_message_view_store() -> None:
-    """`ReplyFeedbackView` stays persistent for `bot.add_view` without leaking per-reply entries."""
-    view = ReplyFeedbackView()
-    assert view.is_persistent() is True
-    assert view.prevent_update is False
+    """`ReplyFeedbackView` stays persistent for `bot.add_view` with or without the regen button."""
+    without_regen = ReplyFeedbackView(allow_regen=False)
+    assert without_regen.is_persistent() is True
+    assert without_regen.prevent_update is False
+    assert [c.custom_id for c in without_regen.children if isinstance(c, Button)] == [
+        FEEDBACK_UP_CUSTOM_ID,
+        FEEDBACK_DOWN_CUSTOM_ID,
+    ]
+
+    called: list[int] = []
+
+    async def on_regen(interaction: object) -> None:
+        called.append(getattr(getattr(interaction, "message", None), "id", 0))
+
+    with_regen = ReplyFeedbackView(allow_regen=True, on_regen=on_regen)
+    assert with_regen.is_persistent() is True
+    assert with_regen.prevent_update is False
+    assert [c.custom_id for c in with_regen.children if isinstance(c, Button)] == [
+        FEEDBACK_UP_CUSTOM_ID,
+        FEEDBACK_DOWN_CUSTOM_ID,
+        FEEDBACK_REGEN_CUSTOM_ID,
+    ]
+
+    regen_btn = _button_by_id(view=with_regen, custom_id=FEEDBACK_REGEN_CUSTOM_ID)
+    click = _feedback_interaction(reply_message_id=7099)
+    await regen_btn.callback(as_interaction(fake=click))
+    assert called == [7099]
+
+    unwired = ReplyFeedbackView(allow_regen=True, on_regen=None)
+    unwired_click = _feedback_interaction(reply_message_id=7098)
+    await _button_by_id(view=unwired, custom_id=FEEDBACK_REGEN_CUSTOM_ID).callback(
+        as_interaction(fake=unwired_click)
+    )
+    assert unwired_click.response.sent == [
+        {"content": "目前無法重新生成這則回覆", "ephemeral": True}
+    ]
+
+
+async def test_answer_turn_attaches_regen_button_only_for_gateway_qa_under_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gateway QA attaches `🔄` below `max_regens`; `/ask`, IMAGE, and capped turns omit it."""
+    cog = _cog()
+    cog.config.inline_voice_enabled = False
+    cog.config.inline_image_enabled = False
+    cog.config.inline_music_enabled = False
+    cog.config.inline_video_enabled = False
+
+    async def fake_create(**_kwargs: object) -> AsyncIterator[ResponseStreamEvent]:
+        completed = _completed_event(input_tokens=10, output_tokens=5)
+        completed.response.model = "gemini-4-neon"
+        return _stream_events_from(events=[_text_event(delta="ok"), completed])
+
+    monkeypatch.setattr(cog.openai_client.responses, "create", fake_create)
+    monkeypatch.setattr(AnswerTurn, "_schedule_memory_updates", lambda *_args, **_kwargs: None)
+
+    def _has_regen(view: object) -> bool:
+        assert isinstance(view, ReplyFeedbackView)
+        return any(
+            isinstance(child, Button) and child.custom_id == FEEDBACK_REGEN_CUSTOM_ID
+            for child in view.children
+        )
+
+    # Gateway QA regen_count=0 -> has 🔄; regen_count=1 (blind test off, max=1) -> omits 🔄.
+    msg0 = FakeMessage(content="<@999> q0")
+    turn0 = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg0)),
+    )
+    await turn0.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=0)
+    assert _has_regen(view=msg0.replies[0].view) is True
+
+    msg1 = FakeMessage(content="<@999> q1")
+    turn1 = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg1)),
+    )
+    await turn1.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=1)
+    assert _has_regen(view=msg1.replies[0].view) is False
+
+    # Blind test on (3 candidates -> max_regens=2): regen_count=1 still shows 🔄, regen_count=2 hides it.
+    cog.config.slow_model_blind_test_enabled = True
+    msg_b1 = FakeMessage(content="<@999> qb1")
+    turn_b1 = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg_b1)),
+    )
+    await turn_b1.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=1)
+    assert _has_regen(view=msg_b1.replies[0].view) is True
+
+    msg_b2 = FakeMessage(content="<@999> qb2")
+    turn_b2 = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=TurnSurface.for_message(message=as_message(fake=msg_b2)),
+    )
+    await turn_b2.stream_answer(system_prompt="Be concise.", context=ReplyContext(), regen_count=2)
+    assert _has_regen(view=msg_b2.replies[0].view) is False
+
+    # `/ask` omits 🔄 even at regen_count=0.
+    ask_interaction = _ask_interaction()
+    await ask_interaction.response.defer()
+    ask_surface = TurnSurface.for_interaction(interaction=ask_interaction, question="ask q")
+    ask_turn = AnswerTurn(
+        config=cog.config,
+        media_delivery=hosting_off_planner(),
+        toolkit=cog.toolkit,
+        surface=ask_surface,
+    )
+    await ask_turn.stream_answer(
+        system_prompt="Be concise.", context=ReplyContext(), regen_count=0
+    )
+    assert _has_regen(view=ask_interaction.edits[-1]["view"]) is False
 
 
 async def test_reply_turn_persists_before_inline_media_attaches(

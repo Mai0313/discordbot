@@ -327,6 +327,7 @@ class FakeInteraction:
         guild_id: int = 100,
         guild_name: str = "test guild",
         channel_id: int = 200,
+        channel: object | None = None,
         administrator: bool = False,
         custom_id: str | None = None,
         slash_command: bool = False,
@@ -339,6 +340,7 @@ class FakeInteraction:
         """
         self.user = user or FakeUser()
         self.message = message
+        self.channel = channel
         self.data: dict[str, str] | None = {"custom_id": custom_id} if custom_id else None
         # Union rather than `FakeGuild`: a few tests hand in a stricter guild of their own (one
         # whose `fetch_member` asserts it is never reached), and the real attribute is a Guild

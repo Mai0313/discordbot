@@ -259,6 +259,10 @@ class ResponseStreamer(BaseModel):
         default=None,
         description="Final Discord message written for this reply (last chunk when chunked).",
     )
+    reply_messages: SkipValidation[list[Message]] = Field(
+        default_factory=list,
+        description="All Discord messages written for this reply in send order (parent plus follow-ups).",
+    )
     feedback_view: SkipValidation[View | None] = Field(
         default=None,
         description="Optional persistent feedback view attached to the final reply message.",
@@ -575,14 +579,17 @@ class ResponseStreamer(BaseModel):
                 )
                 self.reply = None
                 self.last_reply = None
+                self.reply_messages = []
                 self._reply_deleted = True
                 return
+        self.reply_messages = [self.reply]
         previous = self.reply
         for index, chunk in enumerate(follow_up_chunks):
             chunk_view = self.feedback_view if index == len(follow_up_chunks) - 1 else None
             previous = await self.surface.follow_up(
                 previous=previous, content=chunk, view=chunk_view
             )
+            self.reply_messages.append(previous)
         self.last_reply = previous
 
     def _on_reasoning_delta(self, delta: str) -> None:
@@ -1203,9 +1210,10 @@ class ResponseStreamer(BaseModel):
             return False
         if follow_up is not None:
             try:
-                await self.surface.follow_up(
+                hosted_message = await self.surface.follow_up(
                     previous=reply, content=follow_up, allowed_mentions=AllowedMentions.none()
                 )
+                self.reply_messages.append(hosted_message)
             except Exception as exc:
                 # Broad: best-effort hosted-link follow-up must not raise into the reply pipeline.
                 logfire.warn(
