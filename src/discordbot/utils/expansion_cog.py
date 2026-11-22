@@ -455,7 +455,7 @@ class ExpansionCog[ParsedT](commands.Cog):
     PLACEHOLDER_TEXT: ClassVar[str]
     """The line shown under the link until the card replaces it."""
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot) -> None:
         """Initializes the cog.
 
         Args:
@@ -559,14 +559,18 @@ class ExpansionCog[ParsedT](commands.Cog):
         if message.author.bot:
             return
 
+        matches = list(self.URL_PATTERN.finditer(string=message.content))
+        if not matches:
+            return
+        hidden_spans = [
+            (hidden.start(), hidden.end())
+            for hidden in _HIDDEN_LINK_RE.finditer(string=message.content)
+        ]
         url = next(
             (
                 match.group(0)
-                for match in self.URL_PATTERN.finditer(string=message.content)
-                if not any(
-                    hidden.start() < match.start() < hidden.end()
-                    for hidden in _HIDDEN_LINK_RE.finditer(string=message.content)
-                )
+                for match in matches
+                if not any(start < match.start() < end for start, end in hidden_spans)
                 and self.url_is_expandable(url=match.group(0))
             ),
             None,
@@ -686,7 +690,7 @@ class ExpansionCog[ParsedT](commands.Cog):
         items = {
             image_url: MediaItem(
                 source=image.data,
-                filename=f"card_image_{index}{guess_extension(image.mime_type) or '.jpg'}",
+                filename=f"card_image_{index}{guess_extension(type=image.mime_type) or '.jpg'}",
             )
             for index, (image_url, image) in enumerate(zip(image_urls, downloaded, strict=True))
             if image is not None
@@ -716,6 +720,42 @@ class ExpansionCog[ParsedT](commands.Cog):
                 linked=len(items) - len(uploaded),
             )
 
+    async def _set_source_embed_suppressed(self, message: Message, suppress: bool) -> bool:
+        """Toggles `message`'s embed suppression, returning whether the edit succeeded.
+
+        Propagates `NotFound` when suppressing so the caller can withdraw the expansion; ignores
+        `NotFound` when restoring.
+        """
+        action = "suppress" if suppress else "restore"
+        try:
+            await message.edit(suppress=suppress)
+        except NotFound:
+            if suppress:
+                raise
+            # Source message deleted meanwhile; nothing left to restore.
+            return False
+        except Forbidden as error:
+            # Missing Manage Messages is expected; omit identical traceback.
+            logfire.warn(
+                f"Could not {action} the source message embed",
+                message_id=message.id,
+                guild_id=message.guild.id if message.guild else None,
+                error_type=type(error).__name__,
+            )
+            return False
+        except Exception as error:
+            # Broad on purpose: toggling Discord's preview is cosmetic and must not abort
+            # delivery or keep the failure mark off.
+            logfire.warn(
+                f"Could not {action} the source message embed",
+                message_id=message.id,
+                guild_id=message.guild.id if message.guild else None,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            return False
+        return True
+
     async def _deliver(
         self,
         message: Message,
@@ -725,42 +765,24 @@ class ExpansionCog[ParsedT](commands.Cog):
         placeholder: ExpansionPlaceholder,
     ) -> None:
         """Suppresses source preview, delivers the card, and restores the preview on failure."""
-        # Restore preview only if this call hid it; otherwise the guild would refuse restore too.
-        preview_hidden = False
+        try:
+            # Restore preview only if this call hid it; otherwise the guild would refuse restore too.
+            preview_hidden = await self._set_source_embed_suppressed(
+                message=message, suppress=True
+            )
+        # Source message deleted mid-read withdraws the expansion.
+        except NotFound:
+            logfire.info(
+                f"{self.PLATFORM} expansion target is gone",
+                url=url,
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
+            return
+
         # Broad on purpose: delivery failures must not escape into the listener, and severity is
         # classified by `report_expansion_delivery_failure`.
         try:
-            try:
-                await message.edit(suppress=True)
-                preview_hidden = True
-            # Source message deleted mid-read withdraws the expansion.
-            except NotFound:
-                logfire.info(
-                    f"{self.PLATFORM} expansion target is gone",
-                    url=url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                )
-                return
-            # Missing Manage Messages is expected; omit identical traceback.
-            except Forbidden as error:
-                logfire.warn(
-                    "Could not suppress the source message embed",
-                    message_id=message.id,
-                    guild_id=message.guild.id if message.guild else None,
-                    error_type=type(error).__name__,
-                )
-            # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
-            # expansion.
-            except Exception as error:
-                logfire.warn(
-                    "Could not suppress the source message embed",
-                    message_id=message.id,
-                    guild_id=message.guild.id if message.guild else None,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-
             await placeholder.deliver(
                 content=delivery.content,
                 embeds=delivery.embeds,
@@ -775,29 +797,7 @@ class ExpansionCog[ParsedT](commands.Cog):
                 channel_id=message.channel.id,
             )
             if preview_hidden:
-                try:
-                    await message.edit(suppress=False)
-                # Source message deleted meanwhile; nothing left to restore.
-                except NotFound:
-                    pass
-                # Manage Messages revoked since hide; omit identical traceback.
-                except Forbidden as restore_error:
-                    logfire.warn(
-                        "Could not restore the source message embed",
-                        message_id=message.id,
-                        guild_id=message.guild.id if message.guild else None,
-                        error_type=type(restore_error).__name__,
-                    )
-                # Broad on purpose: showing the preview again is as cosmetic as hiding it, and
-                # must not keep the failure mark off.
-                except Exception as restore_error:
-                    logfire.warn(
-                        "Could not restore the source message embed",
-                        message_id=message.id,
-                        guild_id=message.guild.id if message.guild else None,
-                        error_type=type(restore_error).__name__,
-                        _exc_info=restore_error,
-                    )
+                await self._set_source_embed_suppressed(message=message, suppress=False)
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
@@ -1004,6 +1004,56 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             video_paths = []
         return _ConversationRead(conversation=conversation, video_paths=video_paths)
 
+    async def _plan_video_delivery(
+        self, message: Message, url: str, total_videos: int, video_paths: list[Path]
+    ) -> tuple[list[MediaItem], list[str], list[int]]:
+        """Plans video attachments and hosted links, returning `(native, content_lines, undelivered_indices)`."""
+        all_indices = list(range(total_videos))
+        if not self.DOWNLOAD_VIDEOS or total_videos == 0 or not video_paths:
+            return [], [], all_indices
+
+        items = [MediaItem(source=path, filename=path.name) for path in video_paths]
+        allows_uploads = target_allows_file_uploads(target=message)
+        plan = await self.media_delivery.plan(
+            items=items,
+            upload_limit=upload_limit_for(guild=message.guild) if allows_uploads else 0,
+            envelope_margin=MEDIA_ENVELOPE_MARGIN,
+        )
+        if plan.dropped_items:
+            logfire.info(
+                f"{self.PLATFORM} videos could not be attached or hosted; falling back to link",
+                url=url,
+                message_id=message.id,
+                dropped=len(plan.dropped_items),
+            )
+        if not plan.native and not plan.hosted_urls:
+            return [], [], all_indices
+
+        attempted = min(total_videos, DISCORD_ATTACHMENT_LIMIT)
+        clamped_count = max(total_videos - DISCORD_ATTACHMENT_LIMIT, 0) + len(plan.clamped_items)
+        content_lines: list[str] = []
+        if clamped_count:
+            content_lines.append(
+                f"-# 已省略 {clamped_count} 部影片 (Discord 單則訊息最多 "
+                f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
+            )
+        content_lines.extend(plan.hosted_urls)
+
+        undelivered_ids = {id(item) for item in (*plan.dropped_items, *plan.clamped_items)}
+        delivered_indices = {
+            int(match.group(1))
+            if (match := _VIDEO_FILE_INDEX_RE.fullmatch(string=item.filename))
+            else pos
+            for pos, item in enumerate(items)
+            if id(item) not in undelivered_ids
+        }
+        undelivered_indices = [
+            index for index in range(attempted) if index not in delivered_indices
+        ]
+        if plan.dropped_items and not undelivered_indices:
+            undelivered_indices = [0]
+        return plan.native, content_lines, undelivered_indices
+
     async def build_delivery(
         self, message: Message, url: str, parsed: _ConversationRead[ConversationT]
     ) -> ExpansionDelivery | None:
@@ -1024,54 +1074,12 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
             )
             return None
 
-        total_videos = len(target.video_urls)
-        native_media: list[MediaItem] = []
-        content_lines: list[str] = []
-        undelivered_indices = list(range(total_videos))
-
-        if self.DOWNLOAD_VIDEOS and total_videos > 0:
-            attempted = min(total_videos, DISCORD_ATTACHMENT_LIMIT)
-            overflow = max(total_videos - DISCORD_ATTACHMENT_LIMIT, 0)
-            items = [MediaItem(source=path, filename=path.name) for path in parsed.video_paths]
-            if items:
-                allows_uploads = target_allows_file_uploads(target=message)
-                plan = await self.media_delivery.plan(
-                    items=items,
-                    upload_limit=upload_limit_for(guild=message.guild) if allows_uploads else 0,
-                    envelope_margin=MEDIA_ENVELOPE_MARGIN,
-                )
-                native_media = plan.native
-                if plan.dropped_items:
-                    logfire.info(
-                        f"{self.PLATFORM} videos could not be attached or hosted; falling back to link",
-                        url=url,
-                        message_id=message.id,
-                        dropped=len(plan.dropped_items),
-                    )
-                delivered_count = len(plan.native) + len(plan.hosted_urls)
-                if delivered_count > 0:
-                    clamped_count = overflow + len(plan.clamped_items)
-                    if clamped_count:
-                        content_lines.append(
-                            f"-# 已省略 {clamped_count} 部影片 (Discord 單則訊息最多 "
-                            f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
-                        )
-                    content_lines.extend(plan.hosted_urls)
-                    undelivered_ids = {
-                        id(item) for item in (*plan.dropped_items, *plan.clamped_items)
-                    }
-                    delivered_indices: set[int] = set()
-                    for pos, item in enumerate(items):
-                        if id(item) in undelivered_ids:
-                            continue
-                        match = _VIDEO_FILE_INDEX_RE.fullmatch(string=item.filename)
-                        delivered_indices.add(int(match.group(1)) if match else pos)
-                    undelivered_indices = [
-                        index for index in range(attempted) if index not in delivered_indices
-                    ]
-                    if plan.dropped_items and not undelivered_indices:
-                        undelivered_indices = [0]
-
+        native_media, content_lines, undelivered_indices = await self._plan_video_delivery(
+            message=message,
+            url=url,
+            total_videos=len(target.video_urls),
+            video_paths=parsed.video_paths,
+        )
         embeds = self._build_embeds(
             conversation=conversation, undelivered_video_indices=undelivered_indices
         )
