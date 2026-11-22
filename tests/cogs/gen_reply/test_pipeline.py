@@ -18,7 +18,7 @@ from discordbot.typings.emojis import (
     FACEBOOK_EMOJI,
     INSTAGRAM_EMOJI,
 )
-from discordbot.typings.models import RouteClassification
+from discordbot.typings.models import ModelSettings, RouteClassification, RuntimeModelCatalog
 from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.context import ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.routing import RouteClassifier
@@ -524,8 +524,7 @@ async def test_on_message_injects_a_selected_link_source_before_current(
 
     (call,) = builder.calls
     assert call["url"] == SAMPLE_POST_URLS[name]
-    assert call["gemini_client"] is cog.toolkit.gemini_client
-    assert call["allow_media_ingest"] is True
+    assert call["media_client"] is cog.toolkit.gemini_client
     answer = request_input(responses=_recorded(cog).responses)
     assert extract_link_context_block(request=answer, source=name) == _LINK_POST_BODY
     assert block_index(request=answer, kind=name) < block_index(request=answer, kind="current")
@@ -585,8 +584,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     )
 
     (call,) = builder.calls
-    assert call["gemini_client"] is None
-    assert call["allow_media_ingest"] is False
+    assert call["media_client"] is None
     assert has_link_context_block(
         request=request_input(responses=_recorded(cog).responses), source=name
     )
@@ -597,7 +595,7 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
 async def test_on_message_link_media_ingest_kill_switch(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """With the source's switch off the builder still runs, but is told not to fetch the media."""
+    """With the source's switch off the builder still runs, with `media_client=None`."""
     case = _LINK_CASES[name]
     cog = _link_cog(sources=[name])
     monkeypatch.setattr(cog.config, case.media_switch, False)
@@ -607,7 +605,28 @@ async def test_on_message_link_media_ingest_kill_switch(
         message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
     )
 
-    assert [call["allow_media_ingest"] for call in builder.calls] == [False]
+    assert [call["media_client"] for call in builder.calls] == [None]
+
+
+@pytest.mark.parametrize("name", _LINK_SOURCES)
+@pytest.mark.usefixtures("quiet_turn")
+async def test_on_message_skips_link_media_ingest_for_non_gemini_slow_model(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A non-Gemini slow model cannot resolve Files API URIs, so the pipeline passes no client."""
+    cog = _link_cog(sources=[name])
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="openai/gpt-5.4")),
+    )
+    builder = _patch_link_builder(monkeypatch=monkeypatch, source=name)
+
+    await cog.on_message(
+        message=as_message(fake=_link_message(text=f"這在講什麼 {SAMPLE_POST_URLS[name]}"))
+    )
+
+    assert [call["media_client"] for call in builder.calls] == [None]
 
 
 @pytest.mark.parametrize("name", _LINK_SOURCES)

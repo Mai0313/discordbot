@@ -567,25 +567,19 @@ def _render_conversation_sections(
 
 
 async def build_threads_context_messages(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Threads post URL.
 
     Returns `[separator, user-content]` for a readable conversation, or a single notice marker
     block when the post cannot be read. Never raises. Renders the reply chain, any post quoted
     by the target, and the reply branches as text, and uploads up to `MAX_THREADS_MEDIA_PARTS`
-    of the target and quoted post's media to the Files API for Gemini answer models.
+    of the target and quoted post's media to the Files API when `media_client` is provided.
 
     Args:
         url (str): The Threads post URL selected from the conversation.
-        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API URI.
-        gemini_client (genai.Client | None): Direct-to-Google client for Files API uploads, or
-            `None` when unconfigured.
-        allow_media_ingest (bool): Whether media ingestion is enabled for Threads.
+        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
+            media ingestion is active, or `None` to build text-only context.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span("gen_reply threads context"):
@@ -594,9 +588,6 @@ async def build_threads_context_messages(
             url=url,
             # No output folder because `parse_metadata` writes nothing.
             reader=lambda: ThreadsDownloader(output_folder=""),
-            # Check non-empty chain, not `target.is_readable`: textless quote posts still show
-            # the quoted post.
-            readable=lambda conversation: bool(conversation.chain),
             # Same notice for both: Threads can return 200 with an empty page when throttled.
             unavailable_notice=THREADS_UNAVAILABLE_NOTICE,
             unreadable_notice=THREADS_UNAVAILABLE_NOTICE,
@@ -611,9 +602,9 @@ async def build_threads_context_messages(
             logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
         text_sections = _render_conversation_sections(chain=chain, conversation=conversation)
         media = IngestedMedia()
-        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
+        if media_client is not None:
             media = await _ingest_media(
-                target=target, gemini_client=gemini_client, deadline=deadline
+                target=target, gemini_client=media_client, deadline=deadline
             )
 
     url_lines: list[str] = []

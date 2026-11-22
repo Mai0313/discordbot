@@ -96,7 +96,7 @@ async def upload_image(
     """Returns one fetched, downscaled, and uploaded image part, or `None` when skipped.
 
     Downscales full-resolution originals via `load_image_bytes` before uploading; fetch and
-    upload exceptions propagate to the caller.
+    downscale exceptions propagate to the caller, while upload failures return `None`.
 
     Args:
         image_url (str): URL of the image to fetch.

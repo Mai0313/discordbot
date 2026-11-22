@@ -511,6 +511,11 @@ class ThreadsConversation(PlatformConversation[ThreadsOutput]):
     `selected_comment_id` is always empty; every Threads reply has its own post URL.
     """
 
+    @property
+    def is_readable(self) -> bool:
+        """Returns whether `chain` is non-empty; textless quote posts still show the quoted post."""
+        return bool(self.chain)
+
 
 _SJS_PATTERN = re.compile(
     pattern=r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', flags=re.DOTALL

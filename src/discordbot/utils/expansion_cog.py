@@ -153,6 +153,11 @@ class CardConversation[PostT: CardPost](Protocol):
         """The comment the URL singled out, None when it named none."""
         ...
 
+    @property
+    def is_readable(self) -> bool:
+        """Whether the conversation has a showable target post."""
+        ...
+
 
 class ConversationReader[ConversationT](Protocol):
     """A platform reader that fetches and parses a post in one blocking call."""
@@ -977,8 +982,8 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         target = conversation.target
         if not (
             self.DOWNLOAD_VIDEOS
+            and conversation.is_readable
             and target is not None
-            and target.is_readable
             and target.video_urls
         ):
             return _ConversationRead(conversation=conversation)
@@ -1070,7 +1075,7 @@ class ConversationExpansionCog[PostT: CardPost, ConversationT: CardConversation[
         """
         conversation = parsed.conversation
         target = conversation.target
-        if target is None or not target.is_readable:
+        if target is None or not conversation.is_readable:
             logfire.info(
                 f"{self.PLATFORM} post is not readable; nothing to expand",
                 url=url,

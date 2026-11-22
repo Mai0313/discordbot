@@ -80,13 +80,11 @@ def _stub_douyin(
     return resolved_uploads, made
 
 
-async def _build(gemini: bool = True, ingest: bool = True) -> list[EasyInputMessageParam]:
-    """Runs the builder with the flags most tests share."""
+async def _build(media: bool = True) -> list[EasyInputMessageParam]:
+    """Runs the builder with the defaults most tests share."""
     return await build_douyin_context_messages(
         url=_URL,
-        answer_model_is_gemini=gemini,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=ingest,
+        media_client=make_stub_gemini_client() if media else None,
         deadline=link_build_deadline(),
     )
 
@@ -243,43 +241,16 @@ async def test_a_failed_upload_degrades_to_the_caption(monkeypatch: pytest.Monke
     assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
 
 
-async def test_the_kill_switch_skips_the_media_but_keeps_the_caption(
+async def test_without_media_client_skips_the_media_and_keeps_the_caption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ingestion off the caption still rides, and the model is told it has not watched it."""
-    uploads, _ = _stub_douyin(monkeypatch)
+    """With no media client the caption still rides, and no clip is downloaded or uploaded."""
+    uploads, made = _stub_douyin(monkeypatch)
 
-    blocks = await _build(ingest=False)
-
-    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
-    assert uploads.calls == []
-
-
-async def test_a_missing_key_reads_the_caption_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No key means no client to upload with, which is a text-only read, not a failure."""
-    uploads, _ = _stub_douyin(monkeypatch)
-
-    blocks = await build_douyin_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=None,
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
-    )
+    blocks = await _build(media=False)
 
     assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
-    assert uploads.calls == []
-
-
-async def test_a_non_gemini_answer_model_skips_the_upload(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Files uri is Gemini-only, so another model gets the caption and no wasted upload."""
-    uploads, _ = _stub_douyin(monkeypatch)
-
-    blocks = await _build(gemini=False)
-
-    assert block_separator(blocks=blocks) == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert all(not d.download_calls for d in made)
     assert uploads.calls == []
 
 
@@ -400,11 +371,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         # A different link must get through while the first build sits in its upload.
         other = await asyncio.wait_for(
             build_douyin_context_messages(
-                url="https://v.douyin.com/other",
-                answer_model_is_gemini=True,
-                gemini_client=make_stub_gemini_client(),
-                allow_media_ingest=False,
-                deadline=link_build_deadline(),
+                url="https://v.douyin.com/other", media_client=None, deadline=link_build_deadline()
             ),
             timeout=5.0,
         )

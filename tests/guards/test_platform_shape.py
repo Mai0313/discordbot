@@ -69,15 +69,17 @@ class _Conversation(Protocol):
     def comments(self) -> list[BaseModel]: ...
     @property
     def posts(self) -> list[BaseModel]: ...
+    @property
+    def is_readable(self) -> bool: ...
 
 
-# The fields, computed fields and properties every conversation carries. `comments` and `posts`
-# are plain properties on purpose: they re-slice what `reply_branches` already holds, so a
-# computed field would put every comment in a dump twice, while `target` and `selected_comment`
-# resolve a pointer a dump cannot derive on its own.
+# The fields, computed fields and properties every conversation carries. `comments`, `posts` and
+# `is_readable` are plain properties on purpose: they derive from `chain` and `reply_branches`, so
+# computed fields would bloat dumps, while `target` and `selected_comment` resolve a pointer a dump
+# cannot derive on its own.
 _CONVERSATION_FIELDS = frozenset({"chain", "reply_branches", "selected_comment_id"})
 _CONVERSATION_COMPUTED = frozenset({"target", "selected_comment"})
-_CONVERSATION_PROPERTIES = frozenset({"comments", "posts"})
+_CONVERSATION_PROPERTIES = frozenset({"comments", "posts", "is_readable"})
 
 # What a caller may read off any post or comment from any source. Each carries more on top —
 # Threads its `video_paths`, `quoted` and repost/quote counters, Facebook its `group_name`,
@@ -217,6 +219,7 @@ def test_a_dump_carries_each_comment_once(name: str) -> None:
 
     assert "comments" not in dumped
     assert "posts" not in dumped
+    assert "is_readable" not in dumped
     assert str(dumped).count("a comment") == 1
 
 
@@ -234,6 +237,7 @@ def test_target_is_the_last_chain_entry_and_posts_is_everything(name: str) -> No
     assert conversation.target is chain[-1]
     assert conversation.comments == [reply]
     assert conversation.posts == [*chain, reply]
+    assert conversation.is_readable
 
 
 @pytest.mark.parametrize("name", sorted(_conversation_classes()))
@@ -245,6 +249,7 @@ def test_an_empty_conversation_reads_as_unreadable(name: str) -> None:
     assert empty.selected_comment is None
     assert empty.comments == []
     assert empty.posts == []
+    assert not empty.is_readable
 
 
 # Every platform reading a link today. A new one has to be written in here, which is the step that

@@ -134,11 +134,11 @@ async def _build(  # noqa: PLR0913 -- one knob per way a test varies the read
     branches: list[list[ThreadsOutput]] | None = None,
     uploads: FakeUploads | None = None,
     image_fetch_fails: bool = False,
-    gemini: bool = True,
+    media: bool = True,
 ) -> list[EasyInputMessageParam]:
     """Builds the context for a canned conversation with its media stubbed.
 
-    The answer model is a Gemini one with a client unless `gemini` is off.
+    Passes a stub media client unless `media` is off.
     """
     _stub_parse(monkeypatch=monkeypatch, results=chain, branches=branches)
     _stub_media(
@@ -148,9 +148,7 @@ async def _build(  # noqa: PLR0913 -- one knob per way a test varies the read
     )
     return await build_threads_context_messages(
         url=_URL,
-        answer_model_is_gemini=gemini,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
+        media_client=make_stub_gemini_client() if media else None,
         deadline=link_build_deadline(),
     )
 
@@ -706,11 +704,7 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
     await build_threads_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
 
     # Order-independent on purpose: `_ingest_media` gathers the two posts concurrently so a slow
@@ -756,9 +750,7 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
 
     blocks = await build_threads_context_messages(
         url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
+        media_client=make_stub_gemini_client(),
         deadline=link_build_deadline(media_seconds=0.01),
     )
 
@@ -803,11 +795,7 @@ async def test_a_slow_read_still_returns_the_post_inside_the_build_deadline(
 
     blocks = await run_until_deadline(
         awaitable=build_threads_context_messages(
-            url=_URL,
-            answer_model_is_gemini=True,
-            gemini_client=make_stub_gemini_client(),
-            allow_media_ingest=True,
-            deadline=deadline,
+            url=_URL, media_client=make_stub_gemini_client(), deadline=deadline
         ),
         deadline=deadline,
     )
@@ -819,7 +807,7 @@ async def test_a_slow_read_still_returns_the_post_inside_the_build_deadline(
 async def test_a_quoted_posts_urls_ride_as_text_for_a_model_that_cannot_read_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-Gemini model gets both posts' URLs, each named, rather than only the target's."""
+    """With no media client both posts' URLs ride as text, each named, rather than only the target's."""
     blocks = await _build(
         monkeypatch=monkeypatch,
         chain=[
@@ -829,7 +817,7 @@ async def test_a_quoted_posts_urls_ride_as_text_for_a_model_that_cannot_read_the
                 quoted=_quoted(videos=["https://cdn.test/quoted.mp4"]),
             )
         ],
-        gemini=False,
+        media=False,
     )
 
     assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
@@ -916,54 +904,10 @@ async def test_a_post_with_no_replies_at_all_renders_no_comment_section(
     assert block_body(blocks=blocks).split("\n\n")[1:] == [THREADS_CONTEXT_TRAILER]
 
 
-async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No key means no client to upload with, which is a text-only read, not a failure."""
-    _stub_parse(
-        monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
-    )
-    uploads = FakeUploads()
-    _stub_media(monkeypatch, uploads=uploads)
-
-    blocks = await build_threads_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=None,
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
-    )
-
-    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
-    assert uploads.calls == []
-
-
-async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A non-Gemini answer model gets the URLs as text and triggers no upload at all."""
-    uploads = FakeUploads()
-    blocks = await _build(
-        monkeypatch=monkeypatch,
-        chain=[_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])],
-        uploads=uploads,
-        gemini=False,
-    )
-
-    # The separator must not claim the media was fetched, since only its URLs are supplied.
-    assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
-    parts = block_parts(blocks=blocks)
-    assert [part["type"] for part in parts] == ["input_text"]
-    text = parts[0]["text"]
-    assert "https://cdn.test/a.jpg" in text
-    assert "https://cdn.test/v.mp4" in text
-    assert uploads.calls == []  # a Files uri is Gemini-only, so nothing is uploaded
-
-
-async def test_media_ingest_off_fetches_nothing_and_rides_urls_as_text(
+async def test_without_media_client_fetches_nothing_and_rides_urls_as_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With the Files API switched off the media is never fetched, not merely never uploaded.
-
-    Every upload would be refused at the switch, so fetching first only kept the reply waiting
-    on CDN reads and a whole clip download for the block the URLs alone already produce.
-    """
+    """With no media client the media is never fetched or uploaded, and its URLs ride as text."""
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
     )
@@ -971,17 +915,15 @@ async def test_media_ingest_off_fetches_nothing_and_rides_urls_as_text(
     fetched = _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=False,
-        deadline=link_build_deadline(),
+        url=_URL, media_client=None, deadline=link_build_deadline()
     )
 
     assert fetched == []
     assert uploads.calls == []
     assert block_separator(blocks=blocks) == THREADS_TEXT_ONLY_SEPARATOR
-    text = block_body(blocks=blocks)
+    parts = block_parts(blocks=blocks)
+    assert [part["type"] for part in parts] == ["input_text"]
+    text = parts[0]["text"]
     assert "Images of the linked post NOT attached (1), URLs only: https://cdn.test/a.jpg" in text
     assert "Videos of the linked post NOT attached (1), URLs only: https://cdn.test/v.mp4" in text
 
@@ -1086,7 +1028,7 @@ async def test_a_url_list_longer_than_the_cap_still_states_its_true_size(
 ) -> None:
     """A trimmed URL list is the same lie in a smaller font unless it says what it trimmed."""
     images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 3)]
-    blocks = await _build(monkeypatch=monkeypatch, chain=[_post(images=images)], gemini=False)
+    blocks = await _build(monkeypatch=monkeypatch, chain=[_post(images=images)], media=False)
 
     text = block_body(blocks=blocks)
     assert f"Images of the linked post NOT attached ({MAX_THREADS_MEDIA_PARTS + 3})" in text
@@ -1107,11 +1049,7 @@ async def test_build_empty_post_returns_unavailable_notice(
     _stub_parse(monkeypatch, [])
 
     blocks = await build_threads_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
 
     assert len(blocks) == 1
@@ -1126,11 +1064,7 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
     )
 
     blocks = await build_threads_context_messages(
-        url=_URL,
-        answer_model_is_gemini=True,
-        gemini_client=make_stub_gemini_client(),
-        allow_media_ingest=True,
-        deadline=link_build_deadline(),
+        url=_URL, media_client=make_stub_gemini_client(), deadline=link_build_deadline()
     )
 
     assert len(blocks) == 1

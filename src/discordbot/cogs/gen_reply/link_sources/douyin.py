@@ -29,7 +29,11 @@ from discordbot.services.platforms.douyin import (
     douyin_url_locks,
     douyin_fetch_semaphore,
 )
-from discordbot.cogs.gen_reply.link_sources import AI_INGEST_QUALITY, link_context_blocks
+from discordbot.cogs.gen_reply.link_sources import (
+    AI_INGEST_QUALITY,
+    link_context_blocks,
+    link_timeout_notice,
+)
 from discordbot.cogs.gen_reply.link_sources.image_ingest import (
     bounded_media_step,
     gather_media_parts,
@@ -82,11 +86,7 @@ DOUYIN_UNREADABLE_NOTICE = (
     "it, do not claim it is unavailable, and do not invent its contents. ===="
 )
 
-DOUYIN_TIMEOUT_NOTICE = (
-    "==== We tried to read the Douyin link in the user's message but it did not respond in "
-    "time, so its content could not be read for this reply. Tell the user this plainly and "
-    "suggest they try again; do not invent the post's contents. ===="
-)
+DOUYIN_TIMEOUT_NOTICE = link_timeout_notice(platform="Douyin", location="in the user's message")
 
 
 def _render_post_text(post: DouyinMetadata, url: str) -> str:
@@ -151,11 +151,7 @@ async def _fetch_and_upload(
 
 
 async def build_douyin_context_messages(
-    url: str,
-    answer_model_is_gemini: bool,
-    gemini_client: genai.Client | None,
-    allow_media_ingest: bool,
-    deadline: float,
+    url: str, media_client: genai.Client | None, deadline: float
 ) -> list[EasyInputMessageParam]:
     """Returns answer-model input blocks for a Douyin post URL.
 
@@ -164,10 +160,8 @@ async def build_douyin_context_messages(
 
     Args:
         url (str): The Douyin URL found in the current message.
-        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API URI.
-        gemini_client (genai.Client | None): Direct-to-Google client for Files API uploads, or
-            `None` when unconfigured.
-        allow_media_ingest (bool): Whether media ingestion is enabled for Douyin.
+        media_client (genai.Client | None): Direct-to-Google client for Files API uploads when
+            media ingestion is active, or `None` to build caption-only context.
         deadline (float): Event-loop timestamp at which the pipeline cancels this build.
     """
     with logfire.span("gen_reply douyin context"):
@@ -213,9 +207,9 @@ async def build_douyin_context_messages(
             return [marker_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
         media_parts: list[ResponseInputFileParam] = []
-        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
+        if media_client is not None:
             media_parts = await bounded_media_step(
-                step=_fetch_and_upload(url=url, post=post, gemini_client=gemini_client),
+                step=_fetch_and_upload(url=url, post=post, gemini_client=media_client),
                 subject="Douyin media",
                 fallback="the caption",
                 degraded=[],
