@@ -40,6 +40,7 @@ from discordbot.utils.link_errors import (
     is_retryable_fetch_failure,
 )
 from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.utils.sqlite_config import ensure_database_upgraded
 from discordbot.utils.discord_embeds import (
     DISCORD_ATTACHMENT_LIMIT,
     DISCORD_EMBED_TOTAL_LIMIT,
@@ -462,6 +463,9 @@ class ExpansionCog[ParsedT](commands.Cog):
             bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
+        # Every expansion cog persists placeholders in `reply.db`, so upgrade it even when no
+        # AI or memory cog is loaded.
+        ensure_database_upgraded(section="reply")
         # Host-free on purpose: an image left without room keeps the link it already has.
         self.card_image_planner = MediaDeliveryPlanner(
             media_hosting=MediaHostingService(

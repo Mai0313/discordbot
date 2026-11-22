@@ -8,6 +8,7 @@ line, and where its links point.
 
 from typing import Any, Self
 from pathlib import Path
+import sqlite3
 from datetime import UTC, datetime
 from collections.abc import Callable
 
@@ -41,6 +42,7 @@ from discordbot.utils.expansion_placeholder import EXPANSION_DONE_EMOJI
 from discordbot.services.platforms.instagram import InstagramOutput
 
 from tests.helpers.casting import as_message
+from tests.helpers.source_tree import REPO_ROOT
 from tests.helpers.link_sources import (
     SAMPLE_POST_URLS,
     expand,
@@ -784,3 +786,20 @@ async def test_download_videos_defaults_to_off_on_base_conversation_cog(
     assert VIDEO_HINT.partition("{url}")[0] in (
         expansion_embeds(message=message)[0].description or ""
     )
+
+
+def test_expansion_cog_init_upgrades_reply_db_for_pending_expansions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Initializing any `ExpansionCog` migrates `reply.db` so `pending_expansion` exists."""
+    (tmp_path / "alembic.ini").symlink_to(target=REPO_ROOT / "alembic.ini")
+    (tmp_path / "migrations").symlink_to(target=REPO_ROOT / "migrations")
+    monkeypatch.chdir(path=tmp_path)
+
+    TwitterCogs(bot=stub_bot())
+
+    db_path = tmp_path / "data" / "database" / "reply.db"
+    assert db_path.is_file()
+    with sqlite3.connect(database=db_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+    assert "pending_expansion" in tables
