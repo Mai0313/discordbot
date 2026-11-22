@@ -5,10 +5,10 @@ briefs without importing across cog packages.
 """
 
 import logfire
-from nextcord import Message, TextChannel
+from nextcord import Message
 from nextcord.ext import commands
 
-from discordbot.typings.research import has_research_permissions
+from discordbot.utils.research_access import research_access_denial
 
 
 def can_launch_research(message: Message) -> bool:
@@ -20,9 +20,7 @@ def can_launch_research(message: Message) -> bool:
     Args:
         message (Message): Triggering Discord message.
     """
-    if message.guild is None or not isinstance(message.channel, TextChannel):
-        return False
-    return has_research_permissions(channel=message.channel, member=message.guild.me)
+    return research_access_denial(channel=message.channel, guild=message.guild) is None
 
 
 def _research_cog(bot: commands.Bot) -> commands.Cog | None:

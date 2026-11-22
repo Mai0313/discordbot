@@ -46,7 +46,7 @@ from tests.helpers.discord_mocks import (
     FakeDiscordMessage,
     text_channel_granting,
 )
-from tests.helpers.logfire_capture import capture_logs
+from tests.helpers.logfire_capture import capture_logs, capture_levels
 
 if TYPE_CHECKING:
     from discordbot.utils.media_delivery import MediaDeliveryPlanner
@@ -428,9 +428,7 @@ async def test_a_launch_that_cannot_say_why_it_stopped_logs_it(
         raise failure
 
     anchor.reply = refuse
-    records = {
-        name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
-    }
+    records = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
 
     await _launching_cog(monkeypatch=monkeypatch).launch(
         message=as_message(fake=anchor), brief="b"
@@ -438,8 +436,7 @@ async def test_a_launch_that_cannot_say_why_it_stopped_logs_it(
 
     assert [
         (name, fields["message_id"], fields["channel_id"], "_exc_info" in fields)
-        for name, found in records.items()
-        for _, fields in found
+        for name, _, fields in records
     ] == [(level, 10, 20, traceback)]
 
 
@@ -458,14 +455,10 @@ async def test_a_thread_the_bot_lost_access_to_is_not_reported_as_deleted(
             get_channel=lambda channel_id: None, fetch_channel=AsyncMock(side_effect=failure)
         )
     )
-    records = {
-        name: capture_logs(monkeypatch=monkeypatch, level=name) for name in ("info", "warn")
-    }
+    records = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
 
     assert await cog._fetch_thread(thread_id=5) is None
-    assert [(name, fields) for name, found in records.items() for _, fields in found] == [
-        (level, {"thread_id": 5})
-    ]
+    assert [(name, fields) for name, _, fields in records] == [(level, {"thread_id": 5})]
 
 
 async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
@@ -493,6 +486,30 @@ async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
     ]
     channel.send.assert_not_called()
     channel.permissions_for.assert_called_once_with(channel.guild.me)
+
+
+async def test_a_marker_launch_refuses_up_front_where_it_lacks_channel_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_start_for` shares the channel check, refusing before titling or opening a thread."""
+    channel = text_channel_granting(
+        permissions=Permissions(
+            view_channel=True, send_messages=True, create_public_threads=True, attach_files=True
+        )
+    )
+    anchor = _Anchor(channel=channel)
+    anchor.create_thread = AsyncMock()
+    cog = _launching_cog(monkeypatch=monkeypatch)
+    titled = AsyncMock(return_value="research")
+    monkeypatch.setattr(target=cog, name="_generate_thread_name", value=titled)
+
+    await cog.launch(message=as_message(fake=anchor), brief="b")
+
+    assert [reply.get("content") for reply in anchor.replies] == [
+        research_cog._launch_reply(outcome="forbidden", thread_id=None)
+    ]
+    titled.assert_not_awaited()
+    anchor.create_thread.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1125,8 +1142,7 @@ async def test_a_failed_run_on_a_broken_thread_logs_each_write_and_still_ends(
 ) -> None:
     """A refusal is the server's setting and logs the id alone; any other failure keeps its trace."""
     error = make_forbidden(message="Missing Access") if refused else make_server_error()
-    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
-    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    records = capture_levels(monkeypatch=monkeypatch, levels=("warn", "error"))
     cog = _running_cog(
         monkeypatch=monkeypatch, client=_failing_client(error=RuntimeError("quota"))
     )
@@ -1134,26 +1150,27 @@ async def test_a_failed_run_on_a_broken_thread_logs_each_write_and_still_ends(
     await _launch_run(cog=cog, thread=_RunThread(error=error, status_posts=status_posts))
 
     trace = {} if refused else {"error_type": "HTTPException", "_exc_info": error}
-    assert warns == [
+    assert [(message, fields) for level, message, fields in records if level == "warn"] == [
         (_FAILED_RUN_WRITE_LOGS[write][0 if refused else 1], {"thread_id": _THREAD_ID, **trace})
         for write in writes
     ]
-    assert [message for message, _ in errors] == ["research failed"]
+    assert [message for level, message, _ in records if level == "error"] == ["research failed"]
     await _assert_owner_released(cog=cog, phase="failed")
 
 
 async def test_a_refused_report_logs_each_write_without_a_traceback_and_still_ends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
-    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    records = capture_levels(monkeypatch=monkeypatch, levels=("warn", "error"))
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
 
     await _launch_run(cog=cog, thread=_RunThread(error=make_forbidden(message="Missing Access")))
 
     where = {"thread_id": _THREAD_ID, "chunk_index": 0}
-    assert [fields for _, fields in warns] == [where, {**where, "is_last": True}]
-    assert errors == []
+    assert [(level, fields) for level, _, fields in records] == [
+        ("warn", where),
+        ("warn", {**where, "is_last": True}),
+    ]
     await _assert_owner_released(cog=cog, phase="done")
 
 
@@ -1161,18 +1178,17 @@ async def test_a_failing_report_logs_each_write_with_its_traceback_and_still_end
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     error = make_server_error()
-    warns = capture_logs(monkeypatch=monkeypatch, level="warn")
-    errors = capture_logs(monkeypatch=monkeypatch, level="error")
+    records = capture_levels(monkeypatch=monkeypatch, levels=("warn", "error"))
     cog = _running_cog(monkeypatch=monkeypatch, client=_settling_client(status="completed"))
 
     await _launch_run(cog=cog, thread=_RunThread(error=error))
 
     where = {"thread_id": _THREAD_ID, "chunk_index": 0}
     trace = {"error_type": "HTTPException", "_exc_info": error}
-    assert [fields for _, fields in warns] == [{**where, **trace}]
     # The last message carries the file, ping and footer, so losing it is an error.
-    assert [fields for _, fields in errors] == [
-        {**where, "is_last": True, "has_files": True, **trace}
+    assert [(level, fields) for level, _, fields in records] == [
+        ("warn", {**where, **trace}),
+        ("error", {**where, "is_last": True, "has_files": True, **trace}),
     ]
     await _assert_owner_released(cog=cog, phase="done")
 
