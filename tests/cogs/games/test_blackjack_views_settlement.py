@@ -610,3 +610,49 @@ async def test_a_lost_hand_beside_winning_insurance_nets_a_push() -> None:
     assert player_result_title(outcome="lose", player_total=17, dealer_total=21) in description
     assert insurance_line is not None
     assert insurance_line in description
+
+
+async def test_blackjack_round_settlement_batches_vip_lookups_once(
+    monkeypatch: pytest.MonkeyPatch, scheduled_cleanups: ScheduledDeletes
+) -> None:
+    """Settling a multi-seat Blackjack round queries VIP status once in batch, not per seat."""
+    for user_id, name in ((1, "alice"), (2, "bob"), (3, "carol")):
+        await seed_balance(user_id=user_id, name=name, amount=1_000)
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="9", suit="♥")],
+            [card(rank="10", suit="♣"), card(rank="9", suit="♦")],
+            [card(rank="10", suit="♠"), card(rank="9", suit="♣")],
+        ],
+        dealer=[card(rank="10", suit="♦"), card(rank="8", suit="♥")],
+        seats=[
+            seat(user_id=1, display_name="Alice", bet=100, balance_at_start=1_000),
+            seat(user_id=2, display_name="Bob", bet=100, balance_at_start=1_000),
+            seat(user_id=3, display_name="Carol", bet=100, balance_at_start=1_000),
+        ],
+        finished=True,
+    )
+    batch_calls: list[list[int]] = []
+    single_calls: list[int] = []
+    real_get_vips = blackjack_views.get_vips
+
+    async def spy_get_vips(user_ids: Any) -> dict[int, bool]:  # noqa: ANN401 -- test spy
+        batch_calls.append(list(user_ids))
+        return await real_get_vips(user_ids=user_ids)
+
+    async def spy_get_vip(user_id: int) -> bool:
+        single_calls.append(user_id)
+        return False
+
+    monkeypatch.setattr(blackjack_views, "get_vips", spy_get_vips)
+    monkeypatch.setattr("discordbot.cogs.games.settlement.get_vip", spy_get_vip)
+
+    message = FakeDiscordMessage()
+    view = blackjack_view(round_state=round_state)
+    view.message = as_message(fake=message)
+    await view.finalize(message=as_message(fake=message), interaction=None)
+    await view.wait_for_background_tasks()
+
+    assert batch_calls == [[1, 2, 3]]
+    assert single_calls == []
+    assert scheduled_cleanups.messages == [message]

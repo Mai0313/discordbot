@@ -8,7 +8,8 @@ engine, so they are asserted exactly.
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
 from random import Random
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
+import threading
 import contextlib
 
 import pytest
@@ -1016,3 +1017,125 @@ async def test_the_bot_plays_its_seat_through_the_press_that_handed_it_the_turn(
     bot_hand = table.round_state.players[1].hands[0]
     assert len(bot_hand.cards) == 4, "the bot drew twice on the press that handed it the turn"
     assert message.edits[-1]["view"] is None, "the bot played its hand out and the table settled"
+
+
+async def test_blackjack_interaction_check_does_not_mutate_round_state() -> None:
+    """`interaction_check` inspects the next active seat without advancing indices or phase."""
+    round_state = blackjack_round(
+        hands=[
+            [card(rank="10"), card(rank="9", suit="♥")],
+            [card(rank="6", suit="♣"), card(rank="7", suit="♦")],
+        ],
+        dealer=[card(rank="5", suit="♣"), card(rank="6", suit="♦")],
+        seats=[
+            seat(user_id=1, display_name="Alice", bet=10, balance_at_start=100),
+            seat(user_id=2, display_name="Bob", bet=10, balance_at_start=100),
+        ],
+    )
+    view = blackjack_view(round_state=round_state)
+    round_state.players[0].hands[0].finished = True
+    round_state.current_player_index = 0
+    message = FakeDiscordMessage()
+    view.message = as_message(fake=message)
+
+    bob_press = FakeInteraction(user=FakeUser(user_id=2, name="bob"), message=message)
+    assert await view.interaction_check(interaction=as_interaction(fake=bob_press)) is True
+    assert round_state.current_player_index == 0
+    assert round_state.phase == "player_actions"
+
+
+async def test_blackjack_bot_action_runs_off_the_event_loop_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot EV evaluation runs on a worker thread rather than blocking the event loop."""
+    main_thread_id = threading.get_ident()
+    observed_threads: list[int] = []
+    real_choose = blackjack_views.choose_bot_action
+
+    def spy_choose(*args: Any, **kwargs: Any) -> BotAction:  # noqa: ANN401 -- test spy
+        observed_threads.append(threading.get_ident())
+        return real_choose(*args, **kwargs)
+
+    monkeypatch.setattr(blackjack_views, "choose_bot_action", spy_choose)
+    bot = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
+    message = await _start_in_a_shut_out_channel(
+        monkeypatch=monkeypatch,
+        dealt=[card(rank="5")] * 4 + [card(rank="6"), card(rank="A")],
+        bot=bot,
+    )
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+    await attached_button(view=table, custom_id="bj:insure_no").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    await attached_button(view=table, custom_id="bj:stand").callback(
+        as_interaction(fake=_alice_press(message=message))
+    )
+    await table.wait_for_background_tasks()
+
+    assert observed_threads
+    assert all(thread_id != main_thread_id for thread_id in observed_threads)
+
+
+@pytest.mark.parametrize(
+    argnames=("failure", "level", "traceback"),
+    argvalues=[
+        (make_not_found(message="Unknown Message"), "info", False),
+        (make_forbidden(message="Missing Access"), "warn", False),
+        (make_server_error(), "warn", True),
+    ],
+    ids=["message_gone", "refused", "server_error"],
+)
+async def test_blackjack_in_progress_edit_failure_is_logged_without_stranding_bot_turn(
+    monkeypatch: pytest.MonkeyPatch, failure: HTTPException, level: str, traceback: bool
+) -> None:
+    """A transient intermediate edit failure is logged and never strands the bot's remaining turn."""
+    record_scheduled_deletes(monkeypatch=monkeypatch)
+    monkeypatch.setattr(blackjack_views, "PEEK_REVEAL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(blackjack_views, "BOT_TURN_EDIT_DELAY_SECONDS", 0)
+    reports = capture_levels(monkeypatch=monkeypatch, levels=("info", "warn"))
+    bot = seat(user_id=999, display_name="Dealer", bet=10, balance_at_start=100)
+    await seed_balance(user_id=1, name="alice", amount=100)
+    await seed_balance(user_id=999, name="dealer", amount=100)
+    # Alice 10 9, bot 5 5, dealer 6 + 9; shoe of 5s makes bot draw twice then stand.
+    lobby = scripted_blackjack_lobby(
+        dealt=[
+            card(rank="10"),
+            card(rank="5"),
+            card(rank="6"),
+            card(rank="9"),
+            card(rank="5"),
+            card(rank="9"),
+        ],
+        bot=bot,
+    )
+    message = FakeDiscordMessage()
+    lobby.message = as_message(fake=message)
+    start_press = FakeInteraction(user=FakeUser(user_id=1), message=message)
+    await lobby_button(view=lobby, label="開始").callback(as_interaction(fake=start_press))
+    table = message.edits[-1]["view"]
+    assert isinstance(table, BlackjackView)
+
+    class _FailFirstEditInteraction(FakeInteraction):
+        def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401 -- FakeInteraction kwargs
+            super().__init__(**kwargs)
+            self._failed_once = False
+
+        async def edit_original_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- Discord kwargs
+            if not self._failed_once:
+                self._failed_once = True
+                raise failure
+            await super().edit_original_message(**kwargs)
+
+    stand_press = _FailFirstEditInteraction(user=FakeUser(user_id=1), message=message)
+    await attached_button(view=table, custom_id="bj:stand").callback(
+        as_interaction(fake=stand_press)
+    )
+    await table.wait_for_background_tasks()
+
+    assert table.round_state.finished is True
+    assert message.edits[-1]["view"] is None
+    assert any(
+        entry_level == level and ("_exc_info" in fields) is traceback
+        for entry_level, _, fields in reports
+    )
